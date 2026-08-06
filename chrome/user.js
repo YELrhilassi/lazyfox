@@ -1,0 +1,12 @@
+user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
+user_pref("xpinstall.signatures.required", false);
+user_pref("extensions.autoDisableScopes", 0);
+user_pref("extensions.enabledScopes", 15);
+user_pref("browser.fullscreen.autohide", true);
+user_pref("browser.newtabpage.enabled", false);
+user_pref("browser.tabs.warnOnClose", false);
+user_pref("browser.tabs.warnOnCloseOtherTabs", false);
+user_pref("browser.urlbar.suggest.topsites", false);
+user_pref("browser.urlbar.suggest.quickactions", false);
+user_pref("browser.newtabpage.activity-stream.improvesearch.handoffToAwesomebar", false);
+user_pref("lazyfox.hoverReveal", true);
