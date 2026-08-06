@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lazyfox</title>
+<style>
+  body { margin: 0; background: #1e1e2e; color: #c0caf5; font-family: ui-monospace, Menlo, Consolas, monospace; width: 220px; }
+  .title { padding: 10px 14px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #7aa2f7; border-bottom: 1px solid #2a2f45; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 9px 14px; cursor: pointer; font-size: 13px; }
+  .item:hover { background: #292e42; }
+  .kbd { display: inline-block; min-width: 22px; text-align: center; background: #16161e; border: 1px solid #414868; border-bottom-width: 2px; border-radius: 5px; padding: 0 6px; color: #7aa2f7; font-size: 11px; }
+  .sep { height: 1px; background: #2a2f45; margin: 4px 0; }
+</style>
+</head>
+<body>
+  <div class="title">Lazyfox</div>
+  <div class="item" data-open="search"><span class="kbd">s</span> Search</div>
+  <div class="item" data-open="tabs"><span class="kbd">t</span> Tabs</div>
+  <div class="item" data-open="commands"><span class="kbd">p</span> Commands</div>
+  <div class="item" data-open="history"><span class="kbd">h</span> History</div>
+  <div class="item" data-open="bookmarks"><span class="kbd">b</span> Bookmarks</div>
+  <div class="item" data-open="downloads"><span class="kbd">d</span> Downloads</div>
+  <div class="sep"></div>
+  <div class="item" data-open="universal"><span class="kbd">u</span> Universal menu (sidebar)</div>
+  <div class="item" data-open="settings"><span class="kbd">S</span> Firefox settings</div>
+  <div class="item" data-open="zen"><span class="kbd">z</span> Zen mode</div>
+  <div class="item" data-open="options"><span class="kbd">o</span> Lazyfox options</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

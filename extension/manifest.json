@@ -1,0 +1,68 @@
+{
+  "manifest_version": 3,
+  "name": "Lazyfox",
+  "version": "0.3.4",
+  "description": "Keyboard-first, UI-free Firefox. Leader-key navigation, telescope-style command palette, centered search, tab switcher and link hints.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "lazyfox@lazyfox.dev",
+      "strict_min_version": "115.0"
+    }
+  },
+  "permissions": [
+    "tabs",
+    "history",
+    "bookmarks",
+    "downloads",
+    "sessions",
+    "search",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "chrome_url_overrides": {
+    "newtab": "commandcenter.html"
+  },
+  "sidebar_action": {
+    "default_panel": "commandcenter.html",
+    "default_title": "Lazyfox"
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file:///*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Lazyfox",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icons/icon48.png",
+      "96": "icons/icon96.png"
+    }
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Alt+Space",
+        "mac": "MacCtrl+Alt+Space"
+      },
+      "description": "Open Lazyfox menu"
+    }
+  },
+  "icons": {
+    "48": "icons/icon48.png",
+    "96": "icons/icon96.png",
+    "128": "icons/icon128.png"
+  }
+}
