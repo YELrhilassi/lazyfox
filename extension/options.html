@@ -61,6 +61,24 @@
     <span class="row"><input type="checkbox" id="openInNewTab"> Open URLs (URL mode, history, bookmarks) in a new tab</span>
   </label>
 
+  <label>
+    <span class="row"><input type="checkbox" id="hoverReveal"> Reveal toolbar when the mouse touches the top edge (chrome/userChrome.css)</span>
+  </label>
+
+  <h2 style="margin-top:34px;">Firefox chrome integration</h2>
+  <p>Handled by <span class="kbd">chrome/userChrome.uc.js</span> (installed by
+  <span class="kbd">scripts/install.ps1</span>). These hotkeys open Firefox's built-in pages and work even on
+  <span class="kbd">about:</span> / error pages where the extension can't run. Changes apply live - no restart needed.</p>
+  <label for="chPreferences">Firefox settings</label>
+  <input type="text" id="chPreferences" maxlength="32" placeholder="Ctrl+Alt+O">
+  <label for="chAddons">Add-ons manager</label>
+  <input type="text" id="chAddons" maxlength="32" placeholder="Ctrl+Alt+A">
+  <label for="chHistory">History</label>
+  <input type="text" id="chHistory" maxlength="32" placeholder="Ctrl+Alt+H">
+  <label for="chDownloads">Downloads</label>
+  <input type="text" id="chDownloads" maxlength="32" placeholder="Ctrl+Alt+D">
+  <span id="chStatus" style="color:#9ece6a;font-size:12px;"></span>
+
   <div class="row">
     <button id="save">Save</button>
     <span id="status"></span>
