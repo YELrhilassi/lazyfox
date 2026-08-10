@@ -82,8 +82,8 @@
     { kind: "cmd", title: "Switch mode", keys: "1-6", desc: "1 Search \u00b7 2 URL \u00b7 3 Tabs \u00b7 4 History \u00b7 5 Bookmarks \u00b7 6 Downloads (or Tab)", run: function () {} },
     { kind: "cmd", title: "Universal menu (sidebar)", keys: ";u", desc: "open/close the sidebar command center", run: function () { toggleUniversal(); } },
     { kind: "cmd", title: "Firefox settings", keys: "", desc: "open about:preferences", run: function () { send("openPage", { url: "about:preferences" }); } },
-    { kind: "cmd", title: "History page", keys: "", desc: "open about:history", run: function () { send("openPage", { url: "about:history" }); } },
-    { kind: "cmd", title: "Downloads page", keys: "", desc: "open about:downloads", run: function () { send("openPage", { url: "about:downloads" }); } }
+    { kind: "cmd", title: "History", keys: "", desc: "show history in this command center", run: function () { setMode("history"); } },
+    { kind: "cmd", title: "Downloads", keys: "", desc: "show downloads in this command center", run: function () { setMode("downloads"); } }
   ];
 
   function getItems(m, q) {

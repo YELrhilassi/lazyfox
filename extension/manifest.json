@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lazyfox",
-  "version": "0.3.4",
+  "version": "0.3.7",
   "description": "Keyboard-first, UI-free Firefox. Leader-key navigation, telescope-style command palette, centered search, tab switcher and link hints.",
   "browser_specific_settings": {
     "gecko": {
@@ -39,6 +39,7 @@
       "all_frames": false
     }
   ],
+  "web_accessible_resources": [],
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true
@@ -58,6 +59,12 @@
         "mac": "MacCtrl+Alt+Space"
       },
       "description": "Open Lazyfox menu"
+    },
+    "open-command-center": {
+      "suggested_key": {
+        "default": "Ctrl+Alt+K"
+      },
+      "description": "Open the Lazyfox command center (works on any page)"
     }
   },
   "icons": {

@@ -132,18 +132,26 @@
   async function doSearch(query) {
     const q = (query || "").trim();
     if (!q) return { ok: false };
-    let engine = "";
-    try {
-      const engines = await browser.search.get();
-      const g = engines.find((e) => /google/i.test(e.name));
-      if (g) engine = g.name;
-      await browser.search.search({ query: q, engine: g ? g.name : undefined });
-      return { ok: true, engine: g ? g.name : "default" };
-    } catch (e) {}
+    const tab = await getActiveTab();
+    if (isCommandCenter(tab)) {
+      let url = "";
+      try {
+        const engines = await browser.search.get();
+        const e = engines.find((x) => /google/i.test(x.name)) || engines[0];
+        if (e && e.searchUrl) {
+          url = e.searchUrl
+            .replace("{searchTerms}", encodeURIComponent(q))
+            .replace("{inputEncoding}", "UTF-8");
+        }
+      } catch (e) {}
+      if (!url) url = "https://www.google.com/search?q=" + encodeURIComponent(q);
+      await browser.tabs.update(tab.id, { url, active: true });
+      return { ok: true, engine: "default", reused: true };
+    }
     try {
       await browser.search.search({ query: q });
-      return { ok: true, engine: "default" };
-    } catch (e2) {}
+      return { ok: true };
+    } catch (e) {}
     await browser.tabs.create({
       url: "https://www.google.com/search?q=" + encodeURIComponent(q),
       active: true
@@ -367,13 +375,26 @@
     }
   }
 
+  function isCommandCenter(tab) {
+    return !!(tab && tab.url && tab.url.indexOf(CC_URL) === 0);
+  }
+
+  function stripHash(url) {
+    const i = url ? url.indexOf("#") : -1;
+    return i < 0 ? url : url.slice(0, i);
+  }
+
   async function openUrl(url, newTab) {
     if (!url) return { ok: false };
+    const tab = await getActiveTab();
+    if (isCommandCenter(tab)) {
+      await browser.tabs.update(tab.id, { url, active: true });
+      return { ok: true, reused: true };
+    }
     if (newTab == null) {
       const c = await getConfig();
       newTab = c.openInNewTab !== false;
     }
-    const tab = await getActiveTab();
     if (newTab || !tab) {
       await browser.tabs.create({ url, active: true });
     } else {
@@ -382,8 +403,65 @@
     return { ok: true };
   }
 
+  const CHROME_PAGES = {
+    "about:preferences": "preferences",
+    "about:addons": "addons",
+    "about:history": "history",
+    "about:downloads": "downloads"
+  };
+
   async function openPage(url) {
+    const target = CHROME_PAGES[url];
+    const tab = await getActiveTab();
+    if (target) {
+      const base = CC_URL;
+      if (isCommandCenter(tab)) {
+        await browser.tabs.update(tab.id, {
+          url: base + "#lfc=open." + target,
+          active: true
+        });
+        try {
+          await new Promise((r) => setTimeout(r, 800));
+          const t = await browser.tabs.get(tab.id);
+          if (t.url && t.url.indexOf("#lfc=") !== -1) {
+            await browser.tabs.update(tab.id, { url: t.url.split("#")[0] });
+          }
+        } catch (e) {}
+        return { ok: true, reused: true };
+      }
+      await browser.tabs.create({
+        url: base + "#lfc=open." + target + ".c",
+        active: true
+      });
+      return { ok: true };
+    }
+    if (isCommandCenter(tab)) {
+      await browser.tabs.update(tab.id, { url, active: true });
+      return { ok: true, reused: true };
+    }
     await browser.tabs.create({ url, active: true });
+    return { ok: true };
+  }
+
+  // Ask the chrome helper (userChrome.uc.js) to open one of its native popups.
+  async function openUI(which) {
+    const tab = await getActiveTab();
+    const hash = "open." + which + ".c";
+    if (isCommandCenter(tab)) {
+      await browser.tabs.update(tab.id, {
+        url: CC_URL + "#lfc=" + hash,
+        active: true
+      });
+      try {
+        await new Promise((r) => setTimeout(r, 800));
+        const t = await browser.tabs.get(tab.id);
+        if (t.url && t.url.indexOf("#lfc=") !== -1) {
+          await browser.tabs.update(tab.id, { url: stripHash(t.url) });
+        }
+      } catch (e) {}
+      return { ok: true, reused: true };
+    }
+    await browser.tabs.create({ url: CC_URL + "#lfc=" + hash, active: true });
     return { ok: true };
   }
 
@@ -402,8 +480,25 @@
           focused: true
         });
         return { ok: true };
-      case "activateTabByIndex":
+      case "activateTabAt":
+        if (data.last) {
+          const tabs = await browser.tabs.query({ currentWindow: true });
+          const t = tabs[tabs.length - 1];
+          if (!t) return { ok: false };
+          await browser.tabs.update(t.id, { active: true });
+          await browser.windows.update(t.windowId, { focused: true });
+          return { ok: true };
+        }
         return activateTabByIndex(data.index || 1);
+      case "moveTab": {
+        const tabs = await browser.tabs.query({ currentWindow: true });
+        const idx = tabs.findIndex((t) => t.id === data.id);
+        if (idx < 0) return { ok: false };
+        const dir = data.dir > 0 ? 1 : -1;
+        const ni = Math.max(0, Math.min(tabs.length - 1, idx + dir));
+        if (ni !== idx) await browser.tabs.move(data.id, { index: ni });
+        return { ok: true };
+      }
       case "closeTab":
         if (data.id != null) {
           await browser.tabs.remove(data.id);
@@ -441,6 +536,8 @@
         return openUrl(data.url, data.newTab);
       case "openPage":
         return openPage(data.url);
+      case "openUI":
+        return openUI(data.which);
       case "search":
         return doSearch(data.query || "");
       case "windowSize":
@@ -493,6 +590,14 @@
     }));
   });
 
+  browser.commands.onCommand.addListener((name) => {
+    if (name === "open-command-center") {
+      browser.tabs
+        .create({ url: browser.runtime.getURL("commandcenter.html"), active: true })
+        .catch(() => {});
+    }
+  });
+
   const CC_URL = browser.runtime.getURL("commandcenter.html");
   const HOMEISH = /^about:(home|newtab)$/i;
 
@@ -506,6 +611,40 @@
   browser.tabs.onUpdated.addListener((tabId, info, tab) => {
     if (info.status === "complete" && tab && tab.active) maybeConvertHome(tab);
   });
+
+  // Chrome helper request channel: a background tab whose URL is
+  // commandcenter.html#lfc=req.<action>. Handle the request, then remove the tab.
+  async function handleReq(tab, action) {
+    if (action === "alive") {
+      await browser.storage.local.set({ chromeAlive: true });
+      return;
+    }
+    if (action === "startHints" || action === "focusFirstInput") {
+      const t = await getActiveTab();
+      if (!t || t.id === tab.id) return;
+      try {
+        await browser.tabs.sendMessage(t.id, { action: action });
+      } catch (e) {}
+      return;
+    }
+    if (action === "openOptions") {
+      try {
+        await browser.runtime.openOptionsPage();
+      } catch (e) {}
+      return;
+    }
+  }
+
+  browser.tabs.onUpdated.addListener((tabId, info, tab) => {
+    if (info.status !== "complete" || !tab || !tab.url) return;
+    if (stripHash(tab.url) !== CC_URL) return;
+    const m = /#lfc=req\.([a-zA-Z]+)$/.exec(tab.url);
+    if (!m) return;
+    handleReq(tab, m[1])
+      .catch(() => {})
+      .then(() => browser.tabs.remove(tabId).catch(() => {}));
+  });
+
   browser.tabs.onActivated.addListener((info) => {
     browser.tabs
       .get(info.tabId)
@@ -517,4 +656,10 @@
       if (t.active) maybeConvertHome(t);
     }
   }).catch(() => {});
+
+  // Chrome helper absent unless it pings "alive" on window startup; clear the
+  // gate so a stale flag never permanently disables content-side handling.
+  browser.runtime.onStartup.addListener(() => {
+    browser.storage.local.set({ chromeAlive: false }).catch(() => {});
+  });
 })();

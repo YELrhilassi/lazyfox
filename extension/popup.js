@@ -1,28 +1,18 @@
 (function () {
   "use strict";
 
-  function currentTab() {
-    return browser.tabs
-      .query({ active: true, currentWindow: true })
-      .then((tabs) => tabs[0]);
-  }
-
-  function sendToContent(which) {
-    currentTab().then((tab) => {
-      if (tab) {
-        browser.tabs.sendMessage(tab.id, { action: "open", which }).catch(() => {});
-      }
-      window.close();
-    });
+  function sendToBackground(which) {
+    browser.runtime.sendMessage({ action: "openUI", data: { which: which } }).catch(() => {});
+    window.close();
   }
 
   const handlers = {
-    search: () => sendToContent("search"),
-    tabs: () => sendToContent("tabs"),
-    commands: () => sendToContent("commands"),
-    history: () => sendToContent("history"),
-    bookmarks: () => sendToContent("bookmarks"),
-    downloads: () => sendToContent("downloads"),
+    search: () => sendToBackground("search"),
+    tabs: () => sendToBackground("tabs"),
+    commands: () => sendToBackground("commands"),
+    history: () => sendToBackground("history"),
+    bookmarks: () => sendToBackground("bookmarks"),
+    downloads: () => sendToBackground("downloads"),
     universal: () => {
       if (browser.sidebarAction && browser.sidebarAction.toggle) {
         browser.sidebarAction.toggle().catch(() => {
@@ -34,7 +24,7 @@
       window.close();
     },
     settings: () => {
-      browser.tabs.create({ url: "about:preferences", active: true });
+      browser.runtime.sendMessage({ action: "openPage", data: { url: "about:preferences" } });
       window.close();
     },
     zen: () => {

@@ -1,7 +1,9 @@
 param(
   [string]$Profile = "",
   [switch]$NoExtension,
-  [switch]$NoLaunch
+  [switch]$NoLaunch,
+  [switch]$ChromeLoaderOnly,
+  [string]$FirefoxDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,7 +49,46 @@ function Stop-FirefoxForProfile {
   }
 }
 
+function Test-IsAdmin {
+  try {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $p = New-Object Security.Principal.WindowsPrincipal($id)
+    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  }
+  catch { return $false }
+}
+
+function Install-ChromeLoader {
+  param([string]$Dir)
+  if (-not $Dir -or -not (Test-Path -LiteralPath $Dir)) {
+    Write-Host "WARNING: could not find the Firefox installation folder: '$Dir'"
+    return $false
+  }
+  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+  [System.IO.File]::WriteAllText(
+    (Join-Path $Dir "config.js"),
+    (Get-Content -Raw -LiteralPath (Join-Path $repoRoot "chrome\loader\config.js")),
+    $utf8NoBom
+  )
+  $prefDir = Join-Path $Dir "defaults\pref"
+  New-Item -ItemType Directory -Force -Path $prefDir | Out-Null
+  [System.IO.File]::WriteAllText(
+    (Join-Path $prefDir "config-prefs.js"),
+    (Get-Content -Raw -LiteralPath (Join-Path $repoRoot "chrome\loader\config-prefs.js")),
+    $utf8NoBom
+  )
+  return $true
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+if ($ChromeLoaderOnly) {
+  if (Install-ChromeLoader $FirefoxDir) {
+    Write-Step "Chrome loader installed into $FirefoxDir"
+    exit 0
+  }
+  exit 1
+}
 
 $firefoxData = Join-Path $env:APPDATA "Mozilla\Firefox"
 $profilesIni = Join-Path $firefoxData "profiles.ini"
@@ -110,10 +151,42 @@ New-Item -ItemType Directory -Force -Path $chromeDir | Out-Null
 Copy-Item -Force (Join-Path $repoRoot "chrome\userChrome.css") (Join-Path $chromeDir "userChrome.css")
 Write-Step "Installed chrome\userChrome.css"
 
+Copy-Item -Force (Join-Path $repoRoot "chrome\userChrome.uc.js") (Join-Path $chromeDir "userChrome.uc.js")
+Write-Step "Installed chrome\userChrome.uc.js"
+
 $managed = @{}
 $ourContent = Get-Content -LiteralPath (Join-Path $repoRoot "chrome\user.js")
 foreach ($line in $ourContent) {
   if ($line -match '^user_pref\("([^"]+)"') { $managed[$matches[1]] = $true }
+}
+
+# Install-dir loader (fx-autoconfig-style): lets the profile's userChrome.uc.js run.
+# Lives in the Firefox installation folder, so it needs admin rights once.
+$ff = Find-FirefoxExe
+$ffDir = if ($ff) { Split-Path -Parent $ff } else { "" }
+if ($ffDir) {
+  $needLoader = (-not (Test-Path -LiteralPath (Join-Path $ffDir "config.js"))) -or
+                (-not (Test-Path -LiteralPath (Join-Path $ffDir "defaults\pref\config-prefs.js")))
+  if ($needLoader) {
+    if (-not (Test-IsAdmin)) {
+      Write-Step "Installing the chrome loader into $ffDir requires administrator rights (one-time)."
+      Write-Step "A UAC prompt may appear - accept it to install config.js + config-prefs.js."
+      $args = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -ChromeLoaderOnly -FirefoxDir `"$ffDir`""
+      $p = Start-Process -FilePath "powershell.exe" -ArgumentList $args -Verb RunAs -Wait -PassThru
+      if ($p.ExitCode -ne 0) {
+        Write-Host "WARNING: chrome loader was not installed (admin required). The command center's about: pages and the Ctrl+Alt+O/A/H/D hotkeys will not work. Re-run this installer from an elevated shell to fix."
+      }
+      else {
+        Write-Step "Chrome loader installed."
+      }
+    }
+    else {
+      if (Install-ChromeLoader $ffDir) { Write-Step "Chrome loader installed." }
+    }
+  }
+}
+else {
+  Write-Host "WARNING: could not locate firefox.exe; chrome loader not installed (about: pages from the command center won't work)."
 }
 
 $userJs = Join-Path $profileDir "user.js"

@@ -20,9 +20,24 @@
     }, () => {});
   }
   loadConfig();
+
+  let chromeAlive = false;
+  function loadChromeAlive() {
+    browser.storage.local.get("chromeAlive").then(
+      (r) => {
+        chromeAlive = !!(r && r.chromeAlive);
+      },
+      () => {}
+    );
+  }
+  loadChromeAlive();
+
   browser.storage.onChanged.addListener((changes, area) => {
     if (area === "local" && changes.config) {
       config = Object.assign({}, DEFAULTS, changes.config.newValue || {});
+    }
+    if (area === "local" && changes.chromeAlive) {
+      chromeAlive = !!changes.chromeAlive.newValue;
     }
   });
 
@@ -43,8 +58,11 @@
       t === "INPUT" ||
       t === "TEXTAREA" ||
       t === "SELECT" ||
+      t === "ISINDEX" ||
       el.isContentEditable ||
-      (el.getAttribute && el.getAttribute("role") === "textbox")
+      (el.getAttribute && el.getAttribute("contenteditable") === "true") ||
+      (el.getAttribute && el.getAttribute("role") === "textbox") ||
+      (el.closest && el.closest('[contenteditable="true"]') != null)
     );
   }
 
@@ -196,7 +214,8 @@
     const foot = leaderHost._sh.querySelector(".wk-foot");
     foot.innerHTML =
       "<span>arrows / j k select</span><span>Tab / Shift+Tab page</span>" +
-      "<span>Enter run</span><span>Esc cancel</span>" +
+      "<span>Enter run</span><span>1-9 jump to tab</span>" +
+      "<span>Esc cancel</span>" +
       "<span class='wk-page'>page " + (wkPage + 1) + " / " + total + "</span>";
   }
 
@@ -459,14 +478,60 @@
         return true;
       }
       if (opts.extraKeys) {
-        return (
+        if (
           opts.extraKeys(e, {
             empty: empty,
             index: idx,
             item: shown[idx],
             refresh: refresh
           }) === true
-        );
+        ) {
+          return true;
+        }
+      }
+      if (k === "Backspace" || k === "Delete") {
+        e.preventDefault();
+        const s = inputEl.selectionStart == null ? inputEl.value.length : inputEl.selectionStart;
+        const en = inputEl.selectionEnd == null ? inputEl.value.length : inputEl.selectionEnd;
+        const sel = s !== en;
+        const atEnd = s >= inputEl.value.length;
+        const atStart = s <= 0;
+        if (k === "Backspace") {
+          if (sel) {
+            inputEl.value = inputEl.value.slice(0, s) + inputEl.value.slice(en);
+            try { inputEl.setSelectionRange(s, s); } catch (err) {}
+          } else if (!atStart) {
+            inputEl.value = inputEl.value.slice(0, s - 1) + inputEl.value.slice(en);
+            try { inputEl.setSelectionRange(s - 1, s - 1); } catch (err) {}
+          }
+        } else {
+          if (sel) {
+            inputEl.value = inputEl.value.slice(0, s) + inputEl.value.slice(en);
+            try { inputEl.setSelectionRange(s, s); } catch (err) {}
+          } else if (!atEnd) {
+            inputEl.value = inputEl.value.slice(0, s) + inputEl.value.slice(en + 1);
+            try { inputEl.setSelectionRange(s, s); } catch (err) {}
+          }
+        }
+        inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      }
+      if (k && k.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        const s =
+          inputEl.selectionStart == null
+            ? inputEl.value.length
+            : inputEl.selectionStart;
+        const en =
+          inputEl.selectionEnd == null
+            ? inputEl.value.length
+            : inputEl.selectionEnd;
+        inputEl.value = inputEl.value.slice(0, s) + k + inputEl.value.slice(en);
+        try {
+          inputEl.setSelectionRange(s + 1, s + 1);
+        } catch (err) {}
+        inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
       }
       return false;
     }
@@ -555,6 +620,7 @@
     "<div class='lf-empty' style='display:none'>no tabs</div>" +
     "<input class='lf-input' placeholder='filter tabs' spellcheck='false'>" +
     "<div class='lf-foot'><span class='lf-badge'>j/k</span> or <span class='lf-badge'>arrows</span> navigate " +
+    "<span class='lf-badge'>h/l</span> move tab <span class='lf-badge'>x</span> close " +
     "<span class='lf-badge'>Enter</span> switch <span class='lf-badge'>Esc</span> close</div>" +
     "</div>";
 
@@ -588,6 +654,30 @@
         onEnter: (t) => {
           closePopup();
           send("activateTab", { id: t.id });
+        },
+        extraKeys: (e, ctx) => {
+          if (!ctx.empty || !ctx.item) return false;
+          const k = e.key;
+          if (k === "x") {
+            e.preventDefault();
+            send("closeTab", { id: ctx.item.id }).then(() => ctx.refresh());
+            return true;
+          }
+          if (k === "l" || k === "]") {
+            e.preventDefault();
+            send("moveTab", { id: ctx.item.id, dir: 1 }).then(() =>
+              ctx.refresh()
+            );
+            return true;
+          }
+          if (k === "h" || k === "[") {
+            e.preventDefault();
+            send("moveTab", { id: ctx.item.id, dir: -1 }).then(() =>
+              ctx.refresh()
+            );
+            return true;
+          }
+          return false;
         }
       });
       return { onKey: sel.onKey, focus: () => inputEl.focus() };
@@ -809,6 +899,8 @@
     { key: "l", desc: "Forward" },
     { key: "j", desc: "Next tab" },
     { key: "k", desc: "Previous tab" },
+    { key: "1", desc: "Jump to tab 1 (2\u20138 likewise)" },
+    { key: "9", desc: "Jump to last tab" },
     { key: "y", desc: "Copy URL" },
     { key: "m", desc: "Mute tab" },
     { key: "a", desc: "Pin tab" },
@@ -817,6 +909,7 @@
     { key: "0", desc: "Reset zoom" },
     { key: "/", desc: "Find in page" },
     { key: "z", desc: "Zen mode (fullscreen)" },
+    { key: "e", desc: "Reveal toolbar on hover (toggle)" },
     { key: "?", desc: "Full cheatsheet" },
     { keys: "Ctrl+T", desc: "New tab", native: true },
     { keys: "Ctrl+W", desc: "Close tab", native: true },
@@ -907,9 +1000,31 @@
       };
       return {
         onKey: (e) => {
-          if (e.key === "Enter") {
+          const k = e.key;
+          if (k === "Enter") {
             e.preventDefault();
             doFind(e.shiftKey);
+            return true;
+          }
+          if (k === "Backspace") {
+            e.preventDefault();
+            input.value = input.value.slice(0, -1);
+            return true;
+          }
+          if (k && k.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+            e.preventDefault();
+            const s =
+              input.selectionStart == null
+                ? input.value.length
+                : input.selectionStart;
+            const en =
+              input.selectionEnd == null
+                ? input.value.length
+                : input.selectionEnd;
+            input.value = input.value.slice(0, s) + k + input.value.slice(en);
+            try {
+              input.setSelectionRange(s + 1, s + 1);
+            } catch (err) {}
             return true;
           }
           return false;
@@ -1013,6 +1128,7 @@
     sh.appendChild(box);
     hintHost._box = box;
     document.documentElement.appendChild(hintHost);
+    try { document.documentElement.setAttribute("data-lf-hints", "1"); } catch (e) {}
     renderHints();
   }
 
@@ -1110,6 +1226,7 @@
 
   function exitHints() {
     hintsActive = false;
+    try { document.documentElement.removeAttribute("data-lf-hints"); } catch (e) {}
     if (hintHost) {
       hintHost.remove();
       hintHost = null;
@@ -1225,6 +1342,18 @@
     send("toggleSidebar");
   }
 
+  function toggleReveal() {
+    const cur = config.hoverReveal !== false;
+    config.hoverReveal = !cur;
+    send("setConfig", { config: config });
+    toast("toolbar reveal: " + (config.hoverReveal ? "on" : "off"));
+  }
+
+  function tabJump(n) {
+    if (n === 9) send("activateTabAt", { last: true });
+    else send("activateTabAt", { index: n });
+  }
+
   const leaderActions = {
     f: startHints,
     s: openSearchPopup,
@@ -1249,12 +1378,22 @@
     y: copyUrl,
     m: muteTab,
     a: pinTab,
+    "1": () => tabJump(1),
+    "2": () => tabJump(2),
+    "3": () => tabJump(3),
+    "4": () => tabJump(4),
+    "5": () => tabJump(5),
+    "6": () => tabJump(6),
+    "7": () => tabJump(7),
+    "8": () => tabJump(8),
+    "9": () => tabJump(9),
     "=": () => send("zoom", { delta: 0.2 }),
     "-": () => send("zoom", { delta: -0.2 }),
     "0": () => send("zoom", { factor: 1 }),
     "/": openFindPopup,
     z: zen,
-    "?": openHelpPopup
+    "?": openHelpPopup,
+    e: toggleReveal
   };
 
   function handleLeaderKey(key) {
@@ -1267,27 +1406,70 @@
   function onKeyDown(e) {
     if (e.isComposing) return;
     if (currentPopup) {
-      e.stopPropagation();
+      e.preventDefault();
+      e.stopImmediatePropagation();
       if (e.key === "Escape") {
-        e.preventDefault();
         closePopup();
         return;
       }
-      currentPopup.onKey(e);
+      try {
+        currentPopup.onKey(e);
+      } catch (err) {
+        closePopup();
+      }
       return;
     }
     if (hintsActive) {
-      e.stopPropagation();
-      if (hintOnKey(e)) e.preventDefault();
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      hintOnKey(e);
+      return;
+    }
+    if (chromeAlive) {
+      // Chrome owns the leader key, popups and hotkeys. Content keeps
+      // scroll keys (chrome can't scroll remote content) and Escape-blur.
+      if (e.key === "Escape") {
+        const ae = document.activeElement;
+        if (ae && ae !== document.body && ae !== document.documentElement) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          try {
+            ae.blur();
+          } catch (err) {}
+        }
+        return;
+      }
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (isTypingTarget(e.target)) return;
+      if (handleScrollKeys(e)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
       return;
     }
     if (e.key === "Escape") {
+      const had = hintsActive || leaderActive;
+      if (hintsActive) exitHints();
       if (leaderActive) setLeaderBar(false);
+      if (had) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+      const ae = document.activeElement;
+      if (ae && ae !== document.body && ae !== document.documentElement) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        try {
+          ae.blur();
+        } catch (err) {}
+      }
       return;
     }
     if (leaderActive) {
       e.preventDefault();
-      e.stopPropagation();
+      e.stopImmediatePropagation();
       const k = e.key;
       if (k === "ArrowDown" || k === "ArrowRight") {
         wkNavMove(1);
@@ -1331,19 +1513,42 @@
     if (isTypingTarget(e.target)) return;
     if (handleScrollKeys(e)) {
       e.preventDefault();
-      e.stopPropagation();
+      e.stopImmediatePropagation();
       return;
     }
     if (e.key === config.leader) {
       e.preventDefault();
-      e.stopPropagation();
+      e.stopImmediatePropagation();
       setLeaderBar(true);
     }
   }
 
-  document.addEventListener("keydown", onKeyDown, true);
+  function syncTypingAttr() {
+    const ae = document.activeElement;
+    const typing = isTypingTarget(ae);
+    if (typing) document.documentElement.setAttribute("data-lf-typing", "1");
+    else document.documentElement.removeAttribute("data-lf-typing");
+  }
+
+  window.addEventListener("keydown", onKeyDown, true);
+  window.addEventListener("blur", () => {
+    if (currentPopup) closePopup();
+    if (hintsActive) exitHints();
+    if (leaderActive) setLeaderBar(false);
+  });
+  document.addEventListener("focusin", syncTypingAttr);
+  document.addEventListener("focusout", syncTypingAttr);
+  document.addEventListener("focus", syncTypingAttr);
 
   browser.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.action === "startHints") {
+      startHints();
+      return Promise.resolve({ ok: true });
+    }
+    if (msg && msg.action === "focusFirstInput") {
+      focusFirstInput();
+      return Promise.resolve({ ok: true });
+    }
     if (msg && msg.action === "open") {
       if (msg.which === "search") openSearchPopup();
       else if (msg.which === "url") openUrlPopup();
