@@ -268,9 +268,55 @@ Change extension code, then **Reload** in `about:debugging`.
 
 ## Uninstall
 
-- Delete `<profile>/extensions/lazyfox@lazyfox.dev.xpi`, remove
-  `chrome/userChrome.css`, and delete the `user.js` lines you added.
-- Restart Firefox.
+Run the matching uninstaller — it reverses everything the installer put in place,
+and nothing else. Your profile, bookmarks, history, passwords and other add-ons
+are never touched; every file Lazyfox owned is backed up first as
+`.lazyfox.uninst.bak-*` in your profile so you can roll back by hand if needed.
+
+### Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
+```
+
+To also remove the fx-autoconfig chrome loader from the Firefox install dir
+(useful when no other `userChrome.uc.js`-based add-on will use it):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1 -RemoveChromeLoader
+```
+
+`-RemoveChromeLoader` may trigger a UAC prompt (the Firefox install dir needs
+admin rights to write). Pass `-Profile "C:\path\to\profile"` to target a
+specific profile.
+
+### Linux
+
+```bash
+./scripts/uninstall.sh
+# or:  ./scripts/uninstall.sh "/path/to/profile"
+# also remove the fx-autoconfig loader (sudo prompt):
+./scripts/uninstall.sh -RemoveChromeLoader
+```
+
+### What gets removed
+
+- `chrome/userChrome.css`, `chrome/userChrome.uc.js`, `chrome/frame.js`
+  (the hidden-UI patches and chrome-level helper).
+- The Lazyfox-managed `user_pref(...)` lines from `user.js`. Other prefs are
+  preserved.
+- `extensions/lazyfox@lazyfox.dev.xpi`.
+- The Lazyfox entry is marked inactive in `extensions.json`.
+
+### Manual uninstall (if no shell)
+
+1. Delete `<profile>/extensions/lazyfox@lazyfox.dev.xpi`.
+2. Remove `<profile>/chrome/userChrome.css`, `userChrome.uc.js`, `frame.js`.
+3. From `<profile>/user.js`, delete the lines that match `chrome/user.js`
+   in this repo.
+4. (Optional, only if no other userChrome.uc.js add-on uses it) Delete
+   `<firefox>/config.js` and `<firefox>/defaults/pref/config-prefs.js`.
+5. Restart Firefox.
 
 ## License
 
