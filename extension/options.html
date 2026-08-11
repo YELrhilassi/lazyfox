@@ -44,8 +44,10 @@
     <h1>Lazyfox</h1>
     <a class="back" href="#" id="back">&#8592; back</a>
   </div>
-  <p>Leader-key setup for Firefox. Press the leader key, then a key from the cheatsheet (open with
-  <span class="kbd">;</span><span class="kbd">?</span> on any web page). Changes apply immediately to open pages.</p>
+  <p>Leader-key setup for Firefox. Press the leader key to open the which-key
+  overlay (a paginated list of every Lazyfox binding plus native Firefox
+  shortcuts); Tab / Shift+Tab to flip pages, arrows to select, or just press a
+  binding's key. Changes apply immediately to open pages.</p>
 
   <label for="leader">Leader key</label>
   <input type="text" id="leader" maxlength="2" placeholder=";">
@@ -63,6 +65,10 @@
 
   <label>
     <span class="row"><input type="checkbox" id="hoverReveal"> Reveal toolbar when the mouse touches the top edge (chrome/userChrome.css)</span>
+  </label>
+
+  <label>
+    <span class="row"><input type="checkbox" id="whichKey"> Show the which-key overlay when the leader key is pressed (paginated; Tab / arrows to navigate)</span>
   </label>
 
   <h2 style="margin-top:34px;">Firefox chrome integration</h2>

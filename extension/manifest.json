@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Lazyfox",
-  "version": "0.3.7",
-  "description": "Keyboard-first, UI-free Firefox. Leader-key navigation, telescope-style command palette, centered search, tab switcher and link hints.",
+  "version": "0.4.0",
+  "description": "Keyboard-first, UI-free Firefox. Leader-key navigation, paginated which-key overlay, centered search, tab switcher and link hints.",
   "browser_specific_settings": {
     "gecko": {
       "id": "lazyfox@lazyfox.dev",
@@ -23,10 +23,6 @@
   ],
   "chrome_url_overrides": {
     "newtab": "commandcenter.html"
-  },
-  "sidebar_action": {
-    "default_panel": "commandcenter.html",
-    "default_title": "Lazyfox"
   },
   "background": {
     "scripts": ["background.js"]

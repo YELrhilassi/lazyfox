@@ -6,8 +6,9 @@ style leader key and popups.
 
 ```
 ; f   link hints     ; s   search (Google)    ; o   open URL
-; w   resize window  ; m   move window        ; u   universal menu
-; t   tab switcher   ; p   command palette    ; ?   keybindings cheatsheet
+; w   resize window  ; m   move window        ; t   tab switcher
+; h   history        ; b   bookmarks          ; d   downloads
+; i   focus input    ; /   find in page       ; z   zen mode (fullscreen)
 ```
 
 The UI that's left on screen is just the web page — exactly what you asked for.
@@ -21,10 +22,8 @@ Lazyfox no longer depends on the page being a normal website:
   and window resizing all work from the moment Firefox starts — even before any
   web page is loaded. A background redirect converts any `about:home` /
   `about:newtab` tab into the command center.
-- **`; u`** (or the popup's *Universal menu*) opens the same command center in
-  the **sidebar**, which works on *any* page — `about:*`, blank tabs, error /
-  broken pages — regardless of what's loaded.
-- `Ctrl+Alt+Space` gives you the menu popup everywhere too.
+- `Ctrl+Alt+Space` opens the Lazyfox popup menu everywhere too (works on
+  internal pages as well).
 
 ## How it works
 
@@ -37,10 +36,30 @@ Two pieces work together:
    (with a delay so accidental passes don't pop it up). In fullscreen
    ("zen" mode, `;z`) it never appears.
 2. **WebExtension** (`extension/`) provides the leader-key engine, the
-   lazyvim-style popups rendered on top of the page, and the command center
-   (new tab + sidebar).
+   popups rendered on top of the page (search / URL / tabs / history /
+   bookmarks / downloads), and the command center that replaces the new tab
+   and home page.
+
+On top of that, a chrome-level helper (`chrome/userChrome.uc.js`, installed by
+`scripts/install.ps1`) intercepts the leader key **before** any content script,
+so `;` works on `addons.mozilla.org`, internal pages and any other site where
+content scripts are blocked. A tiny frame script (`chrome/frame.js`) tells the
+chrome helper whether an input is focused in the page, so the leader key keeps
+typing normally inside page inputs instead of opening the which-key bar.
 
 ## Install
+
+One command does everything: finds your Firefox profile (prefers a Developer
+Edition one), installs `chrome/userChrome.css` + `userChrome.uc.js` + `frame.js`
+into the profile, merges `chrome/user.js` prefs (only the ones Lazyfox owns —
+your existing prefs are preserved), builds + installs the WebExtension, enables
+it past Firefox's sideload protection, and installs the fx-autoconfig chrome
+loader into the Firefox install directory so `userChrome.uc.js` can run.
+
+> **Your data is safe.** The installer never deletes profiles, bookmarks,
+> history or settings. Every file it replaces inside the profile is backed up
+> (Windows keeps a filtered copy in `user.js`; Linux keeps `.lazyfox.bak-*`
+> copies). Re-run it any time to upgrade — it only writes Lazyfox's own files.
 
 > Requires **Firefox Developer Edition** or **Nightly** to install the add-on
 > permanently without signing (`xpinstall.signatures.required` is set for you).
@@ -59,6 +78,10 @@ Or with an explicit profile:
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Profile "C:\path\to\profile"
 ```
 
+The chrome loader (`config.js` + `defaults/pref/config-prefs.js`) is installed
+into the Firefox installation folder. This needs admin rights **once**: a UAC
+prompt appears; accept it and the rest is automatic.
+
 ### Linux
 
 ```bash
@@ -66,9 +89,19 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Profile "C:\path
 # or:  ./scripts/install.sh "/path/to/profile"
 ```
 
-The installer finds the default profile (preferring a Developer Edition profile),
-drops in `chrome/userChrome.css`, merges `chrome/user.js` prefs, and builds +
-installs the extension into the profile's `extensions/` folder.
+`chmod +x scripts/install.sh` the first time you run it. The installer copies
+`userChrome.css`, `userChrome.uc.js` and `frame.js` into the profile, builds
+the `.xpi` (using `zip`, `python3`, or `node` — whichever is available), and
+installs the fx-autoconfig chrome loader into the Firefox install directory.
+Installing the chrome loader needs root **once**: the script auto-elevates
+with `sudo` when needed. If `sudo` needs a password it prints the exact command
+to run; everything else still installs.
+
+> **Snap / Flatpak Firefox**: the Firefox install directory is read-only by
+> design, so the chrome loader can't be installed there. The rest of Lazyfox
+> (the content script, popups, command center, `userChrome.css`) still works;
+> only the chrome-level `;`-on-internal-pages helper is unavailable. Use a
+> distro `.deb` / `.rpm` / `.tar.bz2` Firefox build for the full feature set.
 
 Firefox refuses to auto-enable add-ons dropped into the profile folder
 ("sideload protection" — `extensions.autoDisableScopes` no longer bypasses it in
@@ -78,22 +111,36 @@ closes the window. Fully quit and restart Firefox afterwards.
 
 Options:
 
-- `-Profile "path"` — install into a specific profile (or pass it as the first
-  argument to `install.sh`).
-- `-NoLaunch` (`NO_LAUNCH=1` on Linux) — skip the automatic first-import launch.
-- Linux: `FIREFOX_BIN=/path/to/firefox` to point at a non-default binary.
+- `-Profile "path"` (or the first positional arg to `install.sh`) — install into
+  a specific profile.
+- `-NoLaunch` (`-NoLaunch` on Linux too, or `NO_LAUNCH=1`) — skip the automatic
+  first-import launch.
+- `-NoExtension` — only install the chrome pieces, skip the WebExtension.
+- `-ChromeLoaderOnly` (with `-FirefoxDir DIR`) — only (re)install the chrome
+  loader, for when you updated Firefox and lost `config.js`.
+- Linux: `FIREFOX_BIN=/path/to/firefox` to point at a non-default binary, or
+  `-FirefoxDir /path/to/firefox-dir` to pass the install directory directly.
 
 If the add-on ever shows up disabled in `about:addons`, re-run the installer
 (no `-NoLaunch`) and it will re-enable it, or just click **Enable** once.
 
 ### Manual install
 
+If you'd rather do it by hand (e.g. on a locked-down box with no shell access):
+
 1. Open `about:support`, copy the **Profile Folder** path.
-2. In that folder: create `chrome/` and put `chrome/userChrome.css` there.
+2. In that folder: create `chrome/` and copy `chrome/userChrome.css`,
+   `chrome/userChrome.uc.js` and `chrome/frame.js` from this repo into it.
 3. Merge the `user_pref(...)` lines from `chrome/user.js` into the profile's
    `user.js` (or create it). At minimum you need
    `toolkit.legacyUserProfileCustomizations.stylesheets = true`.
-4. Load the add-on:
+4. (Optional, for `;` on `about:*` and `addons.mozilla.org`.) Install the
+   fx-autoconfig loader into the Firefox install dir: copy
+   `chrome/loader/config.js` to `<firefox>/config.js` and
+   `chrome/loader/config-prefs.js` to `<firefox>/defaults/pref/config-prefs.js`.
+   This requires write access to the install dir (root on Linux, admin on
+   Windows); restart Firefox afterwards.
+5. Load the add-on:
    - `about:debugging` → *This Firefox* → **Load Temporary Add-on** → pick
      `extension/manifest.json` (temporary, per session), **or**
    - zip the `extension/` folder and save it as
@@ -102,24 +149,31 @@ If the add-on ever shows up disabled in `about:addons`, re-run the installer
 
 ## Keybindings
 
-Pressing the leader key (`;`) opens a **which-key** overlay in the bottom-right
-corner: a compact grid of every `; key` binding plus a dimmed section of native
-Firefox shortcuts. Navigate it with the arrow keys or `j`/`k` and press `Enter`
-to run the selected item — no scrolling. You can also just press a binding's key
-to run it immediately, or `Esc` to cancel. `; ?` opens the full interactive
-cheatsheet — type to filter, and it shows both Lazyfox bindings and native
-shortcuts (labeled *native*).
+Pressing the leader key (`;`) opens a small **which-key** overlay in the
+bottom-right corner: a paginated list of every `; key` binding plus a dimmed
+section of native Firefox shortcuts. The overlay never scrolls — one page at a
+time, nine rows each — and pages are flipped with `Tab` / `Shift+Tab`
+(or `←`/`→` / `PageUp`/`PageDown`); `↑`/`↓` move the selection. Press `Enter`
+to run the highlighted item, or just press a binding's key to run it
+immediately. `Esc` cancels.
+
+> Any key that is not a navigation key runs its binding **immediately** — the
+> overlay is a reminder, never a blocker. In particular `;j` (next tab) and
+> `;k` (previous tab) work exactly as you'd expect: press `;` then `j` and you
+> switch tabs, the overlay does not swallow `j` / `k`.
+
+You can turn the overlay off in the Lazyfox options (see *Settings* below). With
+it disabled, pressing `;` still arms the leader engine and waits for your
+second key — you just don't see the cheat sheet.
 
 | Keys | Action |
 | --- | --- |
-| `;` | which-key overlay (bottom-right, arrow-key navigable) |
+| `;` | which-key overlay (bottom-right, paginated) |
 | `; f` | link hints (type the letters shown on links/buttons/inputs; a hint only fires once its letters are unambiguous — `a` stays pending when `aa`/`ah` also exist, `Enter` selects the current prefix) |
 | `; s` | search the web — goes straight to your default engine (Google) |
 | `; o` | open a URL — no `http://` or `www` needed; visited sites are fuzzy-matched (opens in a new tab; can be changed in settings) |
 | `; w` | resize window (`arrows` 32px, `Shift+arrows` 8px, `m` maximize, `Esc` done) |
 | `; m` | move window with the arrow keys (32px, `Shift+arrows` 8px, `Esc` done) |
-| `; u` | universal menu — command center in the sidebar, works on any page |
-| `; p` | command palette (list left, preview right, filter bottom) |
 | `; t` | tab switcher (type to filter, `j/k`/arrows navigate, `Enter` switch) |
 | `; h` / `; b` / `; d` | history / bookmarks / downloads popups |
 | `; i` | focus first input on the page |
@@ -130,22 +184,22 @@ shortcuts (labeled *native*).
 | `; y` / `; m` / `; a` | copy URL / mute / pin tab |
 | `; =` / `; -` / `; 0` | zoom in / out / reset |
 | `; z` | zen mode (fullscreen — toolbar never appears) |
-| `; ?` | keybinding cheatsheet (Lazyfox + native) |
+| `; e` | toggle toolbar reveal on hover |
+| `; 1`–`9` | jump to tab 1–8 / last tab |
 | `j` `k` `d` `u` `gg` `G` | scroll (when not typing; disable in options) |
 | `Ctrl+Alt+Space` | open the Lazyfox menu popup (works on internal pages too) |
+| `Ctrl+Alt+K` | open the command center (works on any page) |
 
-### Command center (new tab + sidebar)
+### Command center (new tab)
 
 `Ctrl+T` (and the startup tab) opens a keyboard-first command center instead of
-the default new-tab / home page. The same panel is available as a sidebar
-anywhere via `; u`. It starts in **command mode** (nothing is focused, so your
-keys aren't eaten) with a live command list:
+the default new-tab / home page. It starts in **command mode** (nothing is
+focused, so your keys aren't eaten) with a live command list:
 
 - **`1`–`6` (or `Tab`) switch modes** — 1 Search · 2 URL · 3 Tabs · 4 History ·
   5 Bookmarks · 6 Downloads — the same as the numbered buttons on top
 - **`;` opens the leader menu** — `; s o t h b d` switch modes, `; w` resize,
-  `; m` move the window, `; x n v c z u` = close / new / reopen / duplicate /
-  zen / sidebar
+  `; m` move the window, `; x n v c z` = close / new / reopen / duplicate / zen
 - **`j` `k` / arrows** navigate results, **`Enter`** runs the selection
 - **type any letter** to start typing immediately — the input focuses and the
   letter lands in the box (search / URL / tab filter)
@@ -164,23 +218,37 @@ Window controls from the command center:
   (movement is limited by the screen edges, as expected)
 
 Native shortcuts (tab management, reload, find, zoom, devtools…) keep working
-and are listed in the which-key overlay and cheatsheet.
+and are listed in the which-key overlay.
+
+### Settings
 
 The settings page (**Lazyfox options** in the popup, or the *Lazyfox settings*
-item in the command center's command list) lets you change the leader key, hint
-characters, disable vim scrolling, and choose whether URL / history / bookmark
-opens go to a **new tab** or reuse the current one (default: new tab). Keys work
-on the settings page too: `Esc` (or the **← back** link) returns to the command
-center, `;` opens the leader menu (`n` new tab, `x` close, `w`/`m` resize/move,
-`z` zen, …), and `j`/`k` scroll when you're not typing in a field.
+item in the command center's command list) lets you change:
+
+- the **leader key** and the **link-hint characters**;
+- whether **vim-style scrolling** (`j`/`k`/`d`/`u`/`gg`/`G`) is enabled when not
+  typing;
+- whether URL / history / bookmark opens go to a **new tab** or reuse the
+  current one (default: new tab);
+- whether the **toolbar reveals** when the mouse touches the top edge
+  (`chrome/userChrome.css`);
+- whether the **which-key overlay** is shown when you press `;` (default: on;
+  turn it off for a fully silent leader key).
+
+Keys work on the settings page too: `Esc` (or the **← back** link) returns to
+the command center, `;` opens the leader menu (`n` new tab, `x` close,
+`w`/`m` resize/move, `z` zen, …), and `j`/`k` scroll when you're not typing in
+a field. The Firefox-chrome hotkeys (Firefox settings / Add-ons / History /
+Downloads) are configured at the bottom of the same page and apply live.
 
 ## Known limitations
 
-- **Web content scripts only run on real pages**, so the `;` leader key itself
-  works on `http(s)`/`file` pages. On new tabs and at startup you get the full
-  command center (with its own `;` keys), and on any other internal/blank/broken
-  page use `; u` (sidebar), the `Ctrl+Alt+Space` menu, or reveal the toolbar
-  with the mouse.
+- **Web content scripts only run on real pages**, so the `;` leader key handled
+  by the extension's content script works on `http(s)`/`file` pages. The
+  chrome-level helper (`userChrome.uc.js`) takes over on every page (including
+  `about:*`, `addons.mozilla.org` and error pages), so in practice `;` works
+  everywhere it's installed. On a page where neither runs, use
+  `Ctrl+Alt+Space` (the popup menu) or reveal the toolbar with the mouse.
 - `Ctrl+Tab` can't be intercepted (browser-level shortcut). Use `;t` or
   `;j` / `;k` instead.
 - `userChrome.css` is unofficial but widely used; Firefox may occasionally

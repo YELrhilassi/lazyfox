@@ -6,6 +6,7 @@
   const scrollKeys = document.getElementById("scrollKeys");
   const openInNewTab = document.getElementById("openInNewTab");
   const hoverReveal = document.getElementById("hoverReveal");
+  const whichKey = document.getElementById("whichKey");
   const saveBtn = document.getElementById("save");
   const statusEl = document.getElementById("status");
 
@@ -37,7 +38,8 @@
       hintChars: hintChars.value || "asdfjkl;gh",
       scrollKeys: scrollKeys.checked,
       openInNewTab: openInNewTab.checked,
-      hoverReveal: hoverReveal.checked
+      hoverReveal: hoverReveal.checked,
+      whichKey: whichKey.checked
     };
   }
 
@@ -71,7 +73,7 @@
 
   browser.storage.local.get(["config", "chromeBindings"]).then((r) => {
     const c = Object.assign(
-      { leader: ";", hintChars: "asdfjkl;gh", scrollKeys: true, openInNewTab: true, hoverReveal: true },
+      { leader: ";", hintChars: "asdfjkl;gh", scrollKeys: true, openInNewTab: true, hoverReveal: true, whichKey: true },
       r.config || {}
     );
     leader.value = c.leader;
@@ -79,6 +81,7 @@
     scrollKeys.checked = c.scrollKeys !== false;
     openInNewTab.checked = c.openInNewTab !== false;
     hoverReveal.checked = c.hoverReveal !== false;
+    whichKey.checked = c.whichKey !== false;
     const cb = Object.assign({}, CH_DEFAULTS, r.chromeBindings || {});
     for (const k of CH_KEYS) chEls[k].value = cb[k];
   });
