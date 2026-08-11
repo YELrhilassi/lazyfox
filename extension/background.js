@@ -213,23 +213,6 @@
     return { maximized: !isMax, state: up.state };
   }
 
-  async function toggleSidebar() {
-    try {
-      if (browser.sidebarAction && typeof browser.sidebarAction.toggle === "function") {
-        await browser.sidebarAction.toggle();
-        return { ok: true };
-      }
-      const st = (await browser.storage.local.get("sidebarOpen")) || {};
-      const wantOpen = !st.sidebarOpen;
-      if (wantOpen) await browser.sidebarAction.open();
-      else await browser.sidebarAction.close();
-      await browser.storage.local.set({ sidebarOpen: wantOpen });
-      return { ok: true, open: wantOpen };
-    } catch (e) {
-      return { ok: false, error: String(e) };
-    }
-  }
-
   async function tabsInWindow() {
     const tabs = await browser.tabs.query({ currentWindow: true });
     return {
@@ -548,8 +531,6 @@
         return moveWindow(data.dx || 0, data.dy || 0);
       case "maximize":
         return toggleMaximize();
-      case "toggleSidebar":
-        return toggleSidebar();
       case "history":
         return historySearch(data.q);
       case "bookmarks":
@@ -575,6 +556,17 @@
         return browser.storage.local.get("config");
       case "setConfig":
         await browser.storage.local.set({ config: data.config });
+        return { ok: true };
+      case "syncTyping":
+        if (sender && sender.tab && sender.tab.id != null) {
+          try {
+            await browser.sessions.setTabValue(
+              sender.tab.id,
+              "lfTyping",
+              data.typing ? "1" : "0"
+            );
+          } catch (e) {}
+        }
         return { ok: true };
       case "query":
         return { url: location.href };

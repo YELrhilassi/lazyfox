@@ -25,7 +25,8 @@
       hintChars: "asdfjkl;gh",
       scrollKeys: true,
       openInNewTab: true,
-      hoverReveal: true
+      hoverReveal: true,
+      whichKey: true
     }
   };
   const ABOUT = {
@@ -62,6 +63,41 @@
   const leaderKey = () => cfg.config.leader || ";";
   const openInNewTab = () => cfg.config.openInNewTab !== false;
 
+  /* ============== content typing channel (frame script) ============== */
+
+  // Chrome cannot see which element inside remote content has focus, so a tiny
+  // frame script (chrome/frame.js) reports whether an editable is focused.
+  // Chrome uses this to let the leader key (and only the leader key) type
+  // normally instead of opening the which-key bar.
+  let contentTyping = false;
+
+  function initFrameChannel() {
+    try {
+      // The chrome layer can usually see a focused content input directly via
+      // the forwarded key event (originalTarget / Services.focus.focusedElement
+      // return the content element with a namespaced tag like "html:input").
+      // isTypingTarget() handles those namespaced names, so this frame channel
+      // is only an extra signal on builds where frame scripts still execute.
+      const dir = Services.dirsvc.get("UChrm", Ci.nsIFile);
+      const f = dir.clone();
+      f.append("frame.js");
+      const res = Services.io
+        .getProtocolHandler("resource")
+        .QueryInterface(Ci.nsISubstitutingProtocolHandler);
+      res.setSubstitution("lazyfox", Services.io.newFileURI(f));
+      const mm = Services.mm || window.messageManager;
+      if (mm) {
+        try { mm.loadFrameScript("resource://lazyfox/frame.js", true); } catch (e) {}
+        mm.addMessageListener("lazyfox:editing", (m) => {
+          contentTyping = !!(m && m.data && m.data.typing);
+        });
+      }
+    } catch (e) {
+      try { Services.console.logStringMessage("lazyfox frame channel: " + e); } catch (x) {}
+    }
+  }
+  initFrameChannel();
+
   function sysPrincipal() {
     return Services.scriptSecurityManager.getSystemPrincipal();
   }
@@ -84,7 +120,10 @@
   function isTypingTarget(t) {
     if (!t) return false;
     try {
-      const tag = String(t.tagName || "").toUpperCase();
+      // Content key events forwarded to chrome arrive with namespaced tag
+      // names like "html:input" (lowercase, namespaced), so strip any
+      // "prefix:" and upper-case before comparing.
+      const tag = String(t.tagName || "").replace(/^.*:/, "").toUpperCase();
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "ISINDEX") return true;
       if (t.isContentEditable) return true;
       const ce = t.getAttribute && t.getAttribute("contenteditable");
@@ -95,13 +134,24 @@
   }
 
   function focusedIsTyping(e) {
-    if (isTypingTarget(e.originalTarget)) return true;
+    try {
+      if (isTypingTarget(e.originalTarget)) return true;
+    } catch (err) {}
     try {
       if (isTypingTarget(document.commandDispatcher.focusedElement)) return true;
     } catch (err) {}
     try {
       if (isTypingTarget(Services.focus.focusedElement)) return true;
     } catch (err) {}
+    try {
+      const tab = window.gBrowser && window.gBrowser.selectedTab;
+      if (tab) {
+        if (typeof SessionStore !== "undefined" && SessionStore.getCustomTabValue) {
+          if (SessionStore.getCustomTabValue(tab, "lfTyping") === "1") return true;
+        }
+      }
+    } catch (err) {}
+    if (contentTyping) return true;
     return false;
   }
 
@@ -170,6 +220,7 @@
     currentPopup = Object.assign({ root: root }, ctrl);
     setTimeout(() => {
       if (currentPopup && currentPopup.focus) currentPopup.focus();
+      if (currentPopup && currentPopup.refresh) currentPopup.refresh();
     }, 0);
     return ctrl;
   }
@@ -193,7 +244,10 @@
       listEl.style.display = "";
       shown.forEach((item, i) => {
         const div = el("div");
-        div.className = "lf-item" + (i === idx ? " selected" : "");
+        div.className =
+          "lf-item" +
+          (opts.itemClass ? " " + opts.itemClass : "") +
+          (i === idx ? " selected" : "");
         div.innerHTML = opts.render(item);
         div.addEventListener("mousedown", (ev) => {
           ev.preventDefault();
@@ -358,7 +412,8 @@
   }
 
   function newTab() {
-    window.gBrowser.addTab("about:newtab", { triggeringPrincipal: sysPrincipal() });
+    const tab = window.gBrowser.addTab("about:newtab", { triggeringPrincipal: sysPrincipal() });
+    if (tab) window.gBrowser.selectedTab = tab;
     window.focus();
   }
 
@@ -461,20 +516,17 @@
 
   function findInPage() {
     try {
-      window.gFindBar.open();
-    } catch (e) {
-      toast("find bar unavailable");
-    }
-  }
-
-  function toggleUniversal() {
-    try {
-      if (window.SidebarController && window.SidebarController.toggle) {
-        window.SidebarController.toggle(EXT_ID);
+      const fb = window.gFindBar || document.getElementById("FindToolbar");
+      if (fb) {
+        fb.open();
         return;
       }
     } catch (e) {}
-    loadUrl(ccBaseUrl() + "commandcenter.html", true);
+    try {
+      window.gBrowser.getFindBar().then((b) => b.open()).catch(() => toast("find bar unavailable"));
+    } catch (e) {
+      toast("find bar unavailable");
+    }
   }
 
   /* ==================== request channel (chrome->bg) ==================== */
@@ -520,7 +572,6 @@
     ".lf-panel{width:640px;max-width:92vw;max-height:82vh;display:flex;flex-direction:column;overflow:hidden;" +
     "background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;" +
     "box-shadow:0 24px 70px rgba(0,0,0,.6)}" +
-    ".lf-panel.palette{width:860px;max-width:94vw;height:64vh}" +
     ".lf-title{padding:10px 16px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#7aa2f7;" +
     "border-bottom:1px solid #2a2f45;flex:none}" +
     ".lf-main{display:flex;flex:1;overflow:hidden}" +
@@ -528,6 +579,7 @@
     ".lf-list::-webkit-scrollbar{width:8px}" +
     ".lf-list::-webkit-scrollbar-thumb{background:#3b4261;border-radius:4px}" +
     ".lf-item{padding:8px 16px;cursor:pointer;border-left:3px solid transparent;line-height:1.35}" +
+    ".lf-item.lf-tab{padding:4px 14px}" +
     ".lf-item .t{font-size:13px;color:#c0caf5}" +
     ".lf-item .s{font-size:11px;color:#565f89;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
     ".lf-item.selected{background:#292e42;border-left-color:#7aa2f7}" +
@@ -537,12 +589,6 @@
     "padding:12px 16px;font-family:inherit;font-size:14px;outline:none}" +
     ".lf-foot{flex:none;padding:8px 16px;font-size:11px;color:#565f89;border-top:1px solid #2a2f45;display:flex;gap:6px;align-items:center}" +
     ".lf-badge{color:#7aa2f7}" +
-    ".lf-preview{width:290px;flex:none;border-left:1px solid #2a2f45;padding:16px;display:flex;flex-direction:column;gap:8px;overflow-y:auto}" +
-    ".pv-keys{font-size:12px;color:#7aa2f7}" +
-    ".pv-title{font-size:15px;color:#ffffff}" +
-    ".pv-desc{font-size:12px;color:#9aa5ce;line-height:1.5}" +
-    ".kbd{display:inline-block;min-width:26px;text-align:center;background:#16161e;border:1px solid #414868;" +
-    "border-bottom-width:2px;border-radius:5px;padding:1px 7px;margin-right:8px;color:#7aa2f7;font-size:12px}" +
     ".dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#7aa2f7;margin-right:6px}";
 
   function injectPanelCss(root) {
@@ -637,7 +683,7 @@
             doSearch(it.query);
           }
         });
-        return { onKey: sel.onKey, focus: () => inputEl.focus() };
+        return { onKey: sel.onKey, refresh: sel.refresh, focus: () => inputEl.focus() };
       }
     );
   }
@@ -675,6 +721,28 @@
     return scored.slice(0, 9).map((o) => o.u);
   }
 
+  function histItems(text, maxResults) {
+    const PlacesUtils = ChromeUtils.importESModule(
+      "resource://gre/modules/PlacesUtils.sys.mjs"
+    ).PlacesUtils;
+    const query = PlacesUtils.history.getNewQuery();
+    if (text) query.searchTerms = text;
+    const opts = PlacesUtils.history.getNewQueryOptions();
+    opts.maxResults = maxResults;
+    opts.queryType = opts.QUERY_TYPE_HISTORY;
+    opts.sortingMode = Ci.nsINavHistoryQueryOptions.SORT_BY_DATE_DESCENDING;
+    const root = PlacesUtils.history.executeQuery(query, opts).root;
+    root.containerOpen = true;
+    const out = [];
+    for (let i = 0; i < root.childCount; i++) {
+      const n = root.getChild(i);
+      if (n.type !== n.RESULT_TYPE_URI || !n.uri) continue;
+      out.push({ title: n.title || n.uri, url: n.uri, time: n.time || 0 });
+    }
+    root.containerOpen = false;
+    return out;
+  }
+
   function openUrlPopup() {
     openPopup(
       basePanel("Open URL", "type a URL or a site name", "<span class='lf-badge'>Enter</span> open"),
@@ -685,30 +753,35 @@
         const emptyEl = root.querySelector(".lf-empty");
         const sel = Selector(listEl, inputEl, emptyEl, {
           debounce: 80,
-          getItems: async (q) => {
+          getItems: (q) => {
             const text = (q || "").trim();
             const entries = [];
-            if (!text) return entries;
-            entries.push({ kind: "url", title: "Open URL", subtitle: text, url: text });
             try {
-              const PlacesUtils = ChromeUtils.importESModule(
-                "resource://gre/modules/PlacesUtils.sys.mjs"
-              ).PlacesUtils;
-              const res = await PlacesUtils.history.search({ terms: text, maxResults: 100 });
-              const items = (res.results || []).map((r) => ({
-                url: r.url,
-                title: r.title || r.url,
-                time: r.lastVisitTime || 0
-              }));
-              for (const u of rankVisited(items, text)) {
-                entries.push({
-                  kind: "page",
-                  title: u.title || u.url,
-                  subtitle: u.url,
-                  url: u.url
-                });
+              const visited = histItems(text, 120);
+              if (text) {
+                entries.push({ kind: "url", title: "Open URL", subtitle: text, url: text });
+                for (const u of rankVisited(visited, text)) {
+                  entries.push({
+                    kind: "page",
+                    title: u.title || u.url,
+                    subtitle: u.url,
+                    url: u.url
+                  });
+                }
+              } else {
+                const recent = visited.filter((u) => /^https?:/.test(u.url)).slice(0, 9);
+                for (const u of recent) {
+                  entries.push({
+                    kind: "page",
+                    title: u.title || u.url,
+                    subtitle: u.url,
+                    url: u.url
+                  });
+                }
               }
-            } catch (e) {}
+            } catch (e) {
+              if (text) entries.push({ kind: "url", title: "Open URL", subtitle: text, url: text });
+            }
             return entries;
           },
           render: (it) =>
@@ -720,7 +793,7 @@
             loadUrl(u, false);
           }
         });
-        return { onKey: sel.onKey, focus: () => inputEl.focus() };
+        return { onKey: sel.onKey, refresh: sel.refresh, focus: () => inputEl.focus() };
       }
     );
   }
@@ -737,6 +810,7 @@
         const emptyEl = root.querySelector(".lf-empty");
         const sel = Selector(listEl, inputEl, emptyEl, {
           debounce: 30,
+          itemClass: "lf-tab",
           getItems: (q) => {
             const ql = q.trim().toLowerCase();
             return window.gBrowser.tabs
@@ -753,11 +827,13 @@
                   favIconUrl: (t.getAttribute && t.getAttribute("image")) || ""
                 };
               })
-              .filter((t) => !ql || (t.title + " " + t.url).toLowerCase().indexOf(ql) !== -1);
+              .filter((t) => !ql || (t.title + " " + t.url).toLowerCase().indexOf(ql) !== -1)
+              .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
           },
           render: (t) =>
             "<div class='t'>" +
             (t.active ? "<span class='dot'></span>" : "") +
+            (t.pinned ? "\uD83D\uDCCC " : "") +
             (t.muted ? "\uD83D\uDD07 " : "") +
             esc(t.title) +
             "</div><div class='s'>" + esc(t.url) + "</div>",
@@ -795,96 +871,7 @@
             return false;
           }
         });
-        return { onKey: sel.onKey, focus: () => inputEl.focus() };
-      }
-    );
-  }
-
-  /* ---- commands ---- */
-
-  const COMMANDS = [
-    { id: "settings", title: "Settings", desc: "Open the Firefox preferences page.", keys: ";p", run: () => openTarget("preferences") },
-    { id: "addons", title: "Add-ons", desc: "Manage extensions and themes.", keys: "", run: () => openTarget("addons") },
-    { id: "tabs", title: "Tabs", desc: "Switch between open tabs.", keys: ";t", run: () => openTabsPopup() },
-    { id: "newtab", title: "New Tab", desc: "Open a new tab.", keys: ";n", run: newTab },
-    { id: "closetab", title: "Close Tab", desc: "Close the current tab.", keys: ";x", run: closeTab },
-    { id: "reopen", title: "Reopen Closed Tab", desc: "Restore the most recently closed tab.", keys: ";v", run: reopenTab },
-    { id: "duplicate", title: "Duplicate Tab", desc: "Duplicate the current tab.", keys: ";c", run: duplicateTab },
-    { id: "reload", title: "Reload", desc: "Reload the current page.", keys: ";r", run: reloadTab },
-    { id: "back", title: "Back", desc: "Go back in history.", keys: ";g", run: goBack },
-    { id: "forward", title: "Forward", desc: "Go forward in history.", keys: ";l", run: goForward },
-    { id: "zoomin", title: "Zoom In", desc: "Zoom the current page in.", keys: ";=", run: () => zoom(0.2) },
-    { id: "zoomout", title: "Zoom Out", desc: "Zoom the current page out.", keys: ";-", run: () => zoom(-0.2) },
-    { id: "zoomreset", title: "Reset Zoom", desc: "Reset page zoom to 100%.", keys: ";0", run: () => zoom(1) },
-    { id: "hints", title: "Link Hints", desc: "Show hints over links, buttons and inputs.", keys: ";f", run: () => requestBg("startHints") },
-    { id: "search", title: "Search", desc: "Search the web (default engine, Google).", keys: ";s", run: openSearchPopup },
-    { id: "url", title: "Open URL", desc: "Go to a URL without http:// or www (fuzzy matches visited sites).", keys: ";o", run: openUrlPopup },
-    { id: "resize", title: "Resize Window", desc: "Resize the window with arrow keys.", keys: ";w", run: openResizePopup },
-    { id: "universal", title: "Universal Menu", desc: "Open the sidebar command center \u2014 works on any page, even new tabs and error pages.", keys: ";u", run: toggleUniversal },
-    { id: "focus", title: "Focus First Input", desc: "Focus the first input box on the page.", keys: ";i", run: () => requestBg("focusFirstInput") },
-    { id: "find", title: "Find in Page", desc: "Open the find bar.", keys: ";\/", run: findInPage },
-    { id: "copy", title: "Copy URL", desc: "Copy the current page URL.", keys: ";y", run: copyUrl },
-    { id: "mute", title: "Mute Tab", desc: "Toggle sound on the current tab.", keys: ";m", run: muteTab },
-    { id: "pin", title: "Pin Tab", desc: "Pin or unpin the current tab.", keys: ";a", run: pinTab },
-    { id: "zen", title: "Zen Mode", desc: "Toggle fullscreen (toolbar stays hidden).", keys: ";z", run: zen },
-    { id: "print", title: "Print", desc: "Print the current page.", keys: "", run: () => { try { window.print(); } catch (e) {} } },
-    { id: "reveal", title: "Toggle Toolbar Reveal", desc: "Show or hide the toolbar on hover.", keys: ";e", run: toggleReveal },
-    { id: "options", title: "Lazyfox Options", desc: "Open the extension settings page.", keys: "", run: () => requestBg("openOptions") }
-  ];
-
-  function openCommandsPopup() {
-    openPopup(
-      "<div class='lf-panel palette'><div class='lf-title'>Commands</div>" +
-      "<div class='lf-main'><div class='lf-list'></div>" +
-      "<div class='lf-empty' style='display:none'>no matching commands</div>" +
-      "<div class='lf-preview'>" +
-      "<div class='pv-keys'></div><div class='pv-title'></div><div class='pv-desc'></div>" +
-      "</div></div>" +
-      "<input class='lf-input' spellcheck='false'/>" +
-      "<div class='lf-foot'><span class='lf-badge'>;p</span> commands \u00b7 navigate with j/k or arrows \u00b7 Enter run \u00b7 Esc close</div></div>",
-      (root) => {
-        injectPanelCss(root);
-        const listEl = root.querySelector(".lf-list");
-        const inputEl = root.querySelector(".lf-input");
-        const emptyEl = root.querySelector(".lf-empty");
-        const pvKeys = root.querySelector(".pv-keys");
-        const pvTitle = root.querySelector(".pv-title");
-        const pvDesc = root.querySelector(".pv-desc");
-        const sel = Selector(listEl, inputEl, emptyEl, {
-          debounce: 30,
-          getItems: (q) => {
-            const ql = q.trim().toLowerCase();
-            if (!ql) return COMMANDS.slice();
-            return COMMANDS.filter(
-              (c) =>
-                c.title.toLowerCase().indexOf(ql) !== -1 ||
-                c.desc.toLowerCase().indexOf(ql) !== -1
-            );
-          },
-          render: (c) =>
-            "<div class='t'>" +
-            (c.keys ? "<span class='kbd'>" + esc(c.keys) + "</span>" : "") +
-            esc(c.title) +
-            "</div><div class='s'>" + esc(c.desc) + "</div>",
-          onEnter: (c) => {
-            closePopup();
-            try {
-              c.run();
-            } catch (e) {}
-          },
-          onChange: (i, item) => {
-            if (!item) {
-              pvKeys.textContent = "";
-              pvTitle.textContent = "";
-              pvDesc.textContent = "";
-              return;
-            }
-            pvKeys.textContent = item.keys ? "leader " + item.keys : "";
-            pvTitle.textContent = item.title;
-            pvDesc.textContent = item.desc;
-          }
-        });
-        return { onKey: sel.onKey, focus: () => inputEl.focus() };
+        return { onKey: sel.onKey, refresh: sel.refresh, focus: () => inputEl.focus() };
       }
     );
   }
@@ -893,7 +880,7 @@
 
   function openHistoryPopup() {
     openPopup(
-      basePanel("History", "type to search history", "<span class='lf-badge'>Enter</span> open"),
+      basePanel("History", "no history yet", "<span class='lf-badge'>Enter</span> open"),
       (root) => {
         injectPanelCss(root);
         const listEl = root.querySelector(".lf-list");
@@ -901,19 +888,10 @@
         const emptyEl = root.querySelector(".lf-empty");
         const sel = Selector(listEl, inputEl, emptyEl, {
           debounce: 60,
-          getItems: async (q) => {
+          getItems: (q) => {
             const text = (q || "").trim();
-            if (!text) return [];
             try {
-              const PlacesUtils = ChromeUtils.importESModule(
-                "resource://gre/modules/PlacesUtils.sys.mjs"
-              ).PlacesUtils;
-              const res = await PlacesUtils.history.search({ terms: text, maxResults: 60 });
-              return (res.results || []).map((r) => ({
-                title: r.title || r.url,
-                url: r.url,
-                time: r.lastVisitTime || 0
-              }));
+              return histItems(text, text ? 80 : 30);
             } catch (e) {
               return [];
             }
@@ -926,7 +904,7 @@
             loadUrl(it.url, false);
           }
         });
-        return { onKey: sel.onKey, focus: () => inputEl.focus() };
+        return { onKey: sel.onKey, refresh: sel.refresh, focus: () => inputEl.focus() };
       }
     );
   }
@@ -979,7 +957,7 @@
             loadUrl(it.url, false);
           }
         });
-        return { onKey: sel.onKey, focus: () => inputEl.focus() };
+        return { onKey: sel.onKey, refresh: sel.refresh, focus: () => inputEl.focus() };
       }
     );
   }
@@ -1030,7 +1008,7 @@
             }
           }
         });
-        return { onKey: sel.onKey, focus: () => inputEl.focus() };
+        return { onKey: sel.onKey, refresh: sel.refresh, focus: () => inputEl.focus() };
       }
     );
   }
@@ -1102,56 +1080,101 @@
 
   /* ============================ leader ============================ */
 
+  // Width / height are fixed so the panel never grows large enough to scroll:
+  // it always fits one page (WK_PER_PAGE rows) and is flipped with Tab.
+  const WK_PER_PAGE = 9;
   const WK_CSS =
     ".wk{position:fixed;bottom:24px;right:24px;z-index:2147483646;" +
-    "width:720px;max-width:94vw;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;" +
+    "width:520px;max-width:94vw;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;" +
     "box-shadow:0 24px 70px rgba(0,0,0,.6);display:none;font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden}" +
     ".wk.on{display:block}" +
-    ".wk-head{padding:10px 16px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#7aa2f7;" +
+    ".wk-head{padding:8px 14px;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#7aa2f7;" +
     "border-bottom:1px solid #2a2f45;display:flex;gap:10px;align-items:center}" +
-    ".wk-prompt{color:#2ac3de}" +
-    ".wk-body{padding:6px 0;max-height:62vh;overflow-y:auto}" +
-    ".wk-group{padding:6px 14px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#565f89;display:flex;flex-wrap:wrap;gap:4px 8px}" +
-    ".wk-item{display:flex;align-items:center;gap:10px;padding:7px 16px;border-left:3px solid transparent;font-size:13px}" +
-    ".wk-item.sel{background:#292e42;border-left-color:#7aa2f7}" +
-    ".wk-item.dim{opacity:.45}" +
+    ".wk-prompt{background:#16161e;border:1px solid #414868;border-radius:5px;padding:1px 7px;color:#7aa2f7;font-weight:600}" +
+    ".wk-head .sp{color:#565f89}" +
+    ".wk-head .pg{margin-left:auto;color:#2ac3de}" +
+    ".wk-body{padding:6px 12px;overflow:hidden}" +
+    ".wk-group{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:#565f89;margin:8px 0 3px}" +
+    ".wk-grid{display:grid;grid-template-columns:1fr;gap:1px 10px}" +
+    ".wk-item{display:flex;align-items:center;gap:8px;padding:3px 6px;border-radius:5px;font-size:12px;cursor:default;line-height:1.25}" +
+    ".wk-item.sel{background:#292e42;outline:1px solid #7aa2f7}" +
+    ".wk-item.dim{color:#9aa5ce}" +
     ".wk-kbd{display:inline-block;min-width:24px;text-align:center;background:#16161e;border:1px solid #414868;" +
-    "border-bottom-width:2px;border-radius:5px;padding:1px 7px;color:#7aa2f7;font-size:12px}" +
-    ".wk-foot{padding:8px 16px;font-size:11px;color:#565f89;border-top:1px solid #2a2f45;display:flex;gap:14px}";
+    "border-bottom-width:2px;border-radius:4px;padding:0 6px;color:#7aa2f7;font-size:11px;white-space:nowrap}" +
+    ".wk-item.dim .wk-kbd{color:#9aa5ce}" +
+    ".wk-foot{padding:6px 14px;font-size:10px;color:#565f89;border-top:1px solid #2a2f45;display:flex;gap:12px;flex-wrap:wrap}";
 
-  const WK_HELP = [
-    { key: "f", desc: "Link hints" },
-    { key: "s", desc: "Search the web (Google)" },
-    { key: "o", desc: "Open URL (fuzzy visited)" },
-    { key: "t", desc: "Tab switcher" },
-    { key: "p", desc: "Command palette" },
-    { key: "w", desc: "Resize window" },
-    { key: "u", desc: "Universal menu (sidebar)" },
-    { key: "h", desc: "History" },
-    { key: "b", desc: "Bookmarks" },
-    { key: "d", desc: "Downloads" },
-    { key: "i", desc: "Focus first input" },
-    { key: "n", desc: "New tab" },
-    { key: "x", desc: "Close tab" },
-    { key: "v", desc: "Reopen closed tab" },
-    { key: "c", desc: "Duplicate tab" },
-    { key: "r", desc: "Reload" },
-    { key: "g", desc: "Back" },
-    { key: "l", desc: "Forward" },
-    { key: "j", desc: "Next tab" },
-    { key: "k", desc: "Previous tab" },
-    { key: "1", desc: "Jump to tab 1 (2\u20138 likewise)" },
-    { key: "9", desc: "Jump to last tab" },
-    { key: "y", desc: "Copy URL" },
-    { key: "m", desc: "Mute tab" },
-    { key: "a", desc: "Pin tab" },
-    { key: "=", desc: "Zoom in" },
-    { key: "-", desc: "Zoom out" },
-    { key: "0", desc: "Reset zoom" },
-    { key: "/", desc: "Find in page" },
-    { key: "z", desc: "Zen mode" },
-    { key: "e", desc: "Toggle toolbar reveal" },
-    { key: "?", desc: "Help" }
+  const WK_GROUPS = [
+    {
+      name: "Tabs",
+      items: [
+        { key: "n", desc: "New tab" },
+        { key: "x", desc: "Close tab" },
+        { key: "v", desc: "Reopen closed tab" },
+        { key: "c", desc: "Duplicate tab" },
+        { key: "j", desc: "Next tab" },
+        { key: "k", desc: "Previous tab" },
+        { key: "1", desc: "Jump to tab 1 (2\u20138 likewise)" },
+        { key: "9", desc: "Jump to last tab" }
+      ]
+    },
+    {
+      name: "Navigation",
+      items: [
+        { key: "r", desc: "Reload" },
+        { key: "g", desc: "Back" },
+        { key: "l", desc: "Forward" },
+        { key: "y", desc: "Copy URL" },
+        { key: "m", desc: "Mute tab" },
+        { key: "a", desc: "Pin tab" },
+        { key: "=", desc: "Zoom in" },
+        { key: "-", desc: "Zoom out" },
+        { key: "0", desc: "Reset zoom" }
+      ]
+    },
+    {
+      name: "Open",
+      items: [
+        { key: "o", desc: "Open URL (fuzzy visited)" },
+        { key: "t", desc: "Tab switcher" },
+        { key: "s", desc: "Search the web" },
+        { key: "h", desc: "History" },
+        { key: "b", desc: "Bookmarks" },
+        { key: "d", desc: "Downloads" },
+        { key: "i", desc: "Focus first input" }
+      ]
+    },
+    {
+      name: "Tools",
+      items: [
+        { key: "f", desc: "Link hints" },
+        { key: "w", desc: "Resize window" },
+        { key: "/", desc: "Find in page" },
+        { key: "e", desc: "Toggle toolbar reveal" },
+        { key: "z", desc: "Zen mode (fullscreen)" }
+      ]
+    },
+    {
+      name: "Firefox shortcuts",
+      native: true,
+      items: [
+        { keys: "Ctrl+T", desc: "New tab" },
+        { keys: "Ctrl+W", desc: "Close tab" },
+        { keys: "Ctrl+Shift+T", desc: "Reopen closed tab" },
+        { keys: "Ctrl+Tab", desc: "Next tab" },
+        { keys: "Ctrl+1\u20268", desc: "Jump to tab" },
+        { keys: "Ctrl+R / F5", desc: "Reload" },
+        { keys: "Ctrl+Shift+R", desc: "Hard reload" },
+        { keys: "Alt+\u2190 / \u2192", desc: "Back / forward" },
+        { keys: "Ctrl+L", desc: "Focus address bar" },
+        { keys: "Ctrl+D", desc: "Bookmark page" },
+        { keys: "Ctrl+H", desc: "History" },
+        { keys: "Ctrl+J", desc: "Downloads" },
+        { keys: "Ctrl+F", desc: "Find in page" },
+        { keys: "Ctrl+= / - / 0", desc: "Zoom in / out / reset" },
+        { keys: "F11", desc: "Fullscreen" }
+      ]
+    }
   ];
 
   const leaderActions = {
@@ -1159,9 +1182,7 @@
     s: openSearchPopup,
     o: openUrlPopup,
     t: openTabsPopup,
-    p: openCommandsPopup,
     w: openResizePopup,
-    u: toggleUniversal,
     h: openHistoryPopup,
     b: openBookmarksPopup,
     d: openDownloadsPopup,
@@ -1192,7 +1213,6 @@
     "0": () => zoom(1),
     "/": findInPage,
     z: zen,
-    "?": openCommandsPopup,
     e: toggleReveal
   };
 
@@ -1200,36 +1220,112 @@
   let leaderHost = null;
   let wkSel = 0;
   let wkPage = 0;
-  const PER_PAGE = 12;
 
-  function wkItems() {
-    const start = wkPage * PER_PAGE;
-    return WK_HELP.slice(start, start + PER_PAGE);
+  function wkEnabled() {
+    return cfg.config.whichKey !== false;
   }
 
-  function wkCount() {
-    return Math.max(1, Math.ceil(WK_HELP.length / PER_PAGE));
+  // Build a flat list of items, grouped (Lazyfox first, then native). The
+  // which-key panel shows one page (WK_PER_PAGE rows) at a time — never taller
+  // than the viewport, so there is no scrolling: pages are flipped with
+  // Tab / Shift+Tab (or Left/Right).
+  function wkFlat() {
+    const out = [];
+    for (const g of WK_GROUPS) {
+      for (const it of g.items) out.push({ h: it, laz: !g.native, group: g.name });
+    }
+    return out;
+  }
+
+  // Only Lazyfox bindings are navigable / runnable from the overlay; native
+  // items are listed for reference (dimmed, no selection).
+  function wkLazyItems() {
+    return wkFlat().filter((it) => it.laz).map((it) => it.h);
+  }
+
+  function wkPageCount() {
+    return Math.max(1, Math.ceil(wkFlat().length / WK_PER_PAGE));
+  }
+
+  function wkLazyIndexOf(flatPos) {
+    const flat = wkFlat();
+    if (flatPos < 0 || flatPos >= flat.length) return -1;
+    let c = -1;
+    for (let i = 0; i <= flatPos; i++) if (flat[i].laz) c++;
+    return c;
+  }
+
+  function wkPageLazyRange(page) {
+    const flat = wkFlat();
+    const total = wkPageCount();
+    page = Math.max(0, Math.min(page, total - 1));
+    const start = page * WK_PER_PAGE;
+    const end = Math.min(start + WK_PER_PAGE, flat.length);
+    let first = -1, last = -1;
+    for (let i = start; i < end; i++) {
+      if (!flat[i].laz) continue;
+      const li = wkLazyIndexOf(i);
+      if (first < 0) first = li;
+      last = li;
+    }
+    return { first: first, last: last, start: start, end: end };
+  }
+
+  function wkClampSelToPage() {
+    const r = wkPageLazyRange(wkPage);
+    const items = wkLazyItems();
+    if (items.length === 0) { wkSel = 0; return; }
+    if (r.first < 0) { wkSel = 0; return; }
+    if (wkSel < r.first) wkSel = r.first;
+    if (wkSel > r.last) wkSel = r.last;
   }
 
   function wkRender() {
     if (!leaderHost) return;
-    const items = wkItems();
-    const body = leaderHost._sh.querySelector(".wk-body");
-    let html = "<div class='wk-group'>page " + (wkPage + 1) + " / " + wkCount() + "</div>";
-    items.forEach((it, i) => {
-      html +=
-        "<div class='wk-item" + (i === wkSel ? " sel" : "") + "'>" +
-        "<span class='wk-kbd'>" + esc(it.key) + "</span><span>" + esc(it.desc) + "</span></div>";
-    });
-    body.innerHTML = html;
+    const flat = wkFlat();
+    const total = wkPageCount();
+    wkPage = Math.max(0, Math.min(wkPage, total - 1));
+    const start = wkPage * WK_PER_PAGE;
+    const end = Math.min(start + WK_PER_PAGE, flat.length);
+    let html = "";
+    let group = null;
+    for (let i = start; i < end; i++) {
+      const it = flat[i];
+      if (it.group !== group) {
+        if (group !== null) html += "</div>";
+        html += "<div class='wk-group'>" + esc(it.group) + "</div><div class='wk-grid'>";
+        group = it.group;
+      }
+      if (it.laz) {
+        const li = wkLazyIndexOf(i);
+        html +=
+          "<div class='wk-item" + (li === wkSel ? " sel" : "") + "'>" +
+          "<span class='wk-kbd'>" + esc(it.h.key) + "</span><span>" + esc(it.h.desc) +
+          "</span></div>";
+      } else {
+        html +=
+          "<div class='wk-item dim'><span class='wk-kbd'>" + esc(it.h.keys) +
+          "</span><span>" + esc(it.h.desc) + "</span></div>";
+      }
+    }
+    if (group !== null) html += "</div>";
+    if (!html) html = "<div class='wk-group'>\u2014</div>";
+    leaderHost._sh.querySelector(".wk-body").innerHTML = html;
+    const head = leaderHost._sh.querySelector(".wk-head");
+    if (head) {
+      let pg = head.querySelector(".pg");
+      if (pg) pg.textContent = (wkPage + 1) + "/" + total;
+    }
     const foot = leaderHost._sh.querySelector(".wk-foot");
     foot.innerHTML =
-      "<span>arrows / j k select</span><span>Tab page</span><span>Enter run</span>" +
-      "<span>1-9 jump to tab</span><span>Esc cancel</span>";
+      "<span>\u2190/\u2192 or Tab = page</span><span>\u2191/\u2193 select</span>" +
+      "<span>Enter run</span><span>1-9 jump to tab</span><span>Esc cancel</span>" +
+      "<span class='wk-page'>page " + (wkPage + 1) + " / " + total + "</span>";
   }
 
   function setLeaderBar(active) {
     leaderActive = active;
+    if (!wkEnabled()) return; // overlay disabled — keys are still captured by onLeaderKey
     if (!leaderHost) {
       leaderHost = el("div");
       leaderHost.id = "lazyfox-leader";
@@ -1237,7 +1333,7 @@
       sh.innerHTML =
         "<style>" + WK_CSS + "</style>" +
         "<div class='wk'><div class='wk-head'><span class='wk-prompt'>LZ\u203A</span>" +
-        "<span>press a key or navigate</span></div>" +
+        "<span class='sp'>lazyfox leader</span><span class='pg'>1/1</span></div>" +
         "<div class='wk-body'></div><div class='wk-foot'></div></div>";
       leaderHost._sh = sh;
       document.documentElement.appendChild(leaderHost);
@@ -1250,17 +1346,21 @@
     leaderHost._sh.querySelector(".wk").classList.toggle("on", active);
   }
 
-  function wkNavMove(d) {
-    const items = wkItems();
-    if (!items.length) return;
-    wkSel = (wkSel + d + items.length) % items.length;
+  function wkPageFlip(d) {
+    const total = wkPageCount();
+    wkPage = (wkPage + d + total) % total;
+    wkClampSelToPage();
     wkRender();
   }
 
-  function wkPageFlip(d) {
-    const total = wkCount();
-    wkPage = (wkPage + d + total) % total;
-    wkSel = 0;
+  function wkNavMove(d) {
+    const r = wkPageLazyRange(wkPage);
+    const items = wkLazyItems();
+    if (items.length === 0 || r.first < 0) return;
+    let n = wkSel + d;
+    if (n < r.first) n = r.last;
+    if (n > r.last) n = r.first;
+    wkSel = n;
     wkRender();
   }
 
@@ -1270,33 +1370,23 @@
       setLeaderBar(false);
       return;
     }
-    if (k === "ArrowDown" || k === "ArrowRight" || k === "j") {
-      wkNavMove(1);
-      return;
+    // Tab / Shift+Tab / arrows only navigate the overlay when it is shown.
+    if (leaderHost && wkEnabled()) {
+      if (k === "Tab") { wkPageFlip(e.shiftKey ? -1 : 1); return; }
+      if (k === "ArrowLeft" || k === "PageUp") { wkPageFlip(-1); return; }
+      if (k === "ArrowRight" || k === "PageDown") { wkPageFlip(1); return; }
+      if (k === "ArrowDown") { wkNavMove(1); return; }
+      if (k === "ArrowUp") { wkNavMove(-1); return; }
+      if (k === "Enter") {
+        const items = wkLazyItems();
+        const it = items[wkSel];
+        setLeaderBar(false);
+        if (it && leaderActions[it.key]) leaderActions[it.key]();
+        return;
+      }
     }
-    if (k === "ArrowUp" || k === "ArrowLeft" || k === "k") {
-      wkNavMove(-1);
-      return;
-    }
-    if (k === "Tab") {
-      wkPageFlip(e.shiftKey ? -1 : 1);
-      return;
-    }
-    if (k === "[" || k === "PageUp") {
-      wkPageFlip(-1);
-      return;
-    }
-    if (k === "]" || k === "PageDown") {
-      wkPageFlip(1);
-      return;
-    }
-    if (k === "Enter") {
-      const items = wkItems();
-      const it = items[wkSel];
-      setLeaderBar(false);
-      if (it && leaderActions[it.key]) leaderActions[it.key]();
-      return;
-    }
+    // Every other key (including j, k and all letters) runs its binding
+    // immediately — the overlay is just a reminder, never a blocker.
     setLeaderBar(false);
     const fn = leaderActions[k];
     if (fn) fn();
@@ -1321,7 +1411,6 @@
       search: openSearchPopup,
       url: openUrlPopup,
       tabs: openTabsPopup,
-      commands: openCommandsPopup,
       history: openHistoryPopup,
       bookmarks: openBookmarksPopup,
       downloads: openDownloadsPopup,
@@ -1470,7 +1559,14 @@
   window.addEventListener("blur", () => {
     if (currentPopup) closePopup();
     if (leaderActive) setLeaderBar(false);
+    contentTyping = false;
   });
+
+  try {
+    window.gBrowser.tabContainer.addEventListener("TabSelect", () => {
+      contentTyping = false;
+    });
+  } catch (e) {}
 
   // Announce to the extension background that the chrome helper is alive, so
   // content scripts can hand leader-key handling over to chrome.

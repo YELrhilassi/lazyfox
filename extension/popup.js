@@ -9,20 +9,9 @@
   const handlers = {
     search: () => sendToBackground("search"),
     tabs: () => sendToBackground("tabs"),
-    commands: () => sendToBackground("commands"),
     history: () => sendToBackground("history"),
     bookmarks: () => sendToBackground("bookmarks"),
     downloads: () => sendToBackground("downloads"),
-    universal: () => {
-      if (browser.sidebarAction && browser.sidebarAction.toggle) {
-        browser.sidebarAction.toggle().catch(() => {
-          browser.runtime.sendMessage({ action: "toggleSidebar", data: {} });
-        });
-      } else {
-        browser.runtime.sendMessage({ action: "toggleSidebar", data: {} });
-      }
-      window.close();
-    },
     settings: () => {
       browser.runtime.sendMessage({ action: "openPage", data: { url: "about:preferences" } });
       window.close();

@@ -80,7 +80,6 @@
     { kind: "cmd", title: "Move window", keys: ";m", desc: "move with arrow keys (Shift = fine step)", run: function () { toggleMove(true); } },
     { kind: "cmd", title: "Lazyfox settings", keys: "", desc: "open the extension options page", run: function () { openOptions(); } },
     { kind: "cmd", title: "Switch mode", keys: "1-6", desc: "1 Search \u00b7 2 URL \u00b7 3 Tabs \u00b7 4 History \u00b7 5 Bookmarks \u00b7 6 Downloads (or Tab)", run: function () {} },
-    { kind: "cmd", title: "Universal menu (sidebar)", keys: ";u", desc: "open/close the sidebar command center", run: function () { toggleUniversal(); } },
     { kind: "cmd", title: "Firefox settings", keys: "", desc: "open about:preferences", run: function () { send("openPage", { url: "about:preferences" }); } },
     { kind: "cmd", title: "History", keys: "", desc: "show history in this command center", run: function () { setMode("history"); } },
     { kind: "cmd", title: "Downloads", keys: "", desc: "show downloads in this command center", run: function () { setMode("downloads"); } }
@@ -266,18 +265,6 @@
     } catch (e) {}
   }
 
-  function toggleUniversal() {
-    try {
-      if (browser.sidebarAction && browser.sidebarAction.toggle) {
-        browser.sidebarAction.toggle().catch(function () {
-          send("toggleSidebar");
-        });
-        return;
-      }
-    } catch (e) {}
-    send("toggleSidebar");
-  }
-
   function handleResizeKey(e) {
     var k = e.key;
     var fine = e.shiftKey ? 8 : 32;
@@ -365,7 +352,6 @@
     else if (k === "v") send("reopenTab");
     else if (k === "c") send("duplicateTab");
     else if (k === "z") send("zen");
-    else if (k === "u") toggleUniversal();
     else if (k === "?") toggleHelp();
     modeTag.textContent = mode;
   }

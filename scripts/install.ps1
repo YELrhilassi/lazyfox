@@ -154,6 +154,9 @@ Write-Step "Installed chrome\userChrome.css"
 Copy-Item -Force (Join-Path $repoRoot "chrome\userChrome.uc.js") (Join-Path $chromeDir "userChrome.uc.js")
 Write-Step "Installed chrome\userChrome.uc.js"
 
+Copy-Item -Force (Join-Path $repoRoot "chrome\frame.js") (Join-Path $chromeDir "frame.js")
+Write-Step "Installed chrome\frame.js"
+
 $managed = @{}
 $ourContent = Get-Content -LiteralPath (Join-Path $repoRoot "chrome\user.js")
 foreach ($line in $ourContent) {

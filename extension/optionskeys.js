@@ -55,10 +55,6 @@
     send("closeTab");
   }
 
-  function toggleUniversal() {
-    send("toggleSidebar");
-  }
-
   function updateSize(r) {
     if (r) hud(r.width + " \u00d7 " + r.height);
   }
@@ -99,8 +95,7 @@
     else if (k === "z") send("zen");
     else if (k === "w") { resizeOpen = true; hud("resize: arrows 32px \u00b7 Shift 8px \u00b7 m max \u00b7 Esc done"); }
     else if (k === "m") { moveOpen = true; hud("move: arrows 32px \u00b7 Shift 8px \u00b7 Esc done"); }
-    else if (k === "u") toggleUniversal();
-    else if (k === "?") hud("cheatsheet: \u003B ? on any web page");
+    else if (k === "?") hud("cheatsheet is in the which-key overlay (\u003B on any web page)");
   }
 
   var backEl = document.getElementById("back");
