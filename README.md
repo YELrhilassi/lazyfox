@@ -29,32 +29,34 @@ Lazyfox no longer depends on the page being a normal website:
 
 Two pieces work together:
 
-1. **Profile patch** (`chrome/userChrome.css` + prefs) hides Firefox's own UI.
+1. **Profile patch** (`dist/chrome/userChrome.css` + prefs) hides Firefox's own UI.
    A WebExtension is not allowed to remove the tab bar / URL bar, so this uses
    the classic `userChrome.css` trick. The whole navigation toolbox is lifted
    off-screen; hovering the very top edge of the window slides it back down
    (with a delay so accidental passes don't pop it up). In fullscreen
    ("zen" mode, `;z`) it never appears.
-2. **WebExtension** (`extension/`) provides the leader-key engine, the
+2. **WebExtension** (`dist/extension/`) provides the leader-key engine, the
    popups rendered on top of the page (search / URL / tabs / history /
    bookmarks / downloads), and the command center that replaces the new tab
    and home page.
 
-On top of that, a chrome-level helper (`chrome/userChrome.uc.js`, installed by
-`scripts/install.ps1`) intercepts the leader key **before** any content script,
-so `;` works on `addons.mozilla.org`, internal pages and any other site where
-content scripts are blocked. A tiny frame script (`chrome/frame.js`) tells the
-chrome helper whether an input is focused in the page, so the leader key keeps
-typing normally inside page inputs instead of opening the which-key bar.
+On top of that, a chrome-level helper (`dist/chrome/userChrome.uc.js`, installed
+by `scripts/install.ps1`) intercepts the leader key **before** any content
+script, so `;` works on `addons.mozilla.org`, internal pages and any other site
+where content scripts are blocked. A tiny frame script
+(`dist/chrome/frame.js`) tells the chrome helper whether an input is focused in
+the page, so the leader key keeps typing normally inside page inputs instead of
+opening the which-key bar.
 
 ## Install
 
 One command does everything: finds your Firefox profile (prefers a Developer
-Edition one), installs `chrome/userChrome.css` + `userChrome.uc.js` + `frame.js`
-into the profile, merges `chrome/user.js` prefs (only the ones Lazyfox owns —
-your existing prefs are preserved), builds + installs the WebExtension, enables
-it past Firefox's sideload protection, and installs the fx-autoconfig chrome
-loader into the Firefox install directory so `userChrome.uc.js` can run.
+Edition one), installs `dist/chrome/userChrome.css` + `userChrome.uc.js` +
+`frame.js` into the profile, merges `dist/chrome/user.js` prefs (only the ones
+Lazyfox owns — your existing prefs are preserved), builds + installs the
+WebExtension, enables it past Firefox's sideload protection, and installs the
+fx-autoconfig chrome loader into the Firefox install directory so
+`userChrome.uc.js` can run.
 
 > **Your data is safe.** The installer never deletes profiles, bookmarks,
 > history or settings. Every file it replaces inside the profile is backed up
@@ -129,21 +131,23 @@ If the add-on ever shows up disabled in `about:addons`, re-run the installer
 If you'd rather do it by hand (e.g. on a locked-down box with no shell access):
 
 1. Open `about:support`, copy the **Profile Folder** path.
-2. In that folder: create `chrome/` and copy `chrome/userChrome.css`,
-   `chrome/userChrome.uc.js` and `chrome/frame.js` from this repo into it.
-3. Merge the `user_pref(...)` lines from `chrome/user.js` into the profile's
-   `user.js` (or create it). At minimum you need
+2. In that folder: create `chrome/` and copy `dist/chrome/userChrome.css`,
+   `dist/chrome/userChrome.uc.js` and `dist/chrome/frame.js` from this repo
+   into it.
+3. Merge the `user_pref(...)` lines from `dist/chrome/user.js` into the
+   profile's `user.js` (or create it). At minimum you need
    `toolkit.legacyUserProfileCustomizations.stylesheets = true`.
 4. (Optional, for `;` on `about:*` and `addons.mozilla.org`.) Install the
    fx-autoconfig loader into the Firefox install dir: copy
-   `chrome/loader/config.js` to `<firefox>/config.js` and
-   `chrome/loader/config-prefs.js` to `<firefox>/defaults/pref/config-prefs.js`.
-   This requires write access to the install dir (root on Linux, admin on
-   Windows); restart Firefox afterwards.
+   `dist/chrome/loader/config.js` to `<firefox>/config.js` and
+   `dist/chrome/loader/config-prefs.js` to
+   `<firefox>/defaults/pref/config-prefs.js`. This requires write access to
+   the install dir (root on Linux, admin on Windows); restart Firefox
+   afterwards.
 5. Load the add-on:
    - `about:debugging` → *This Firefox* → **Load Temporary Add-on** → pick
-     `extension/manifest.json` (temporary, per session), **or**
-   - zip the `extension/` folder and save it as
+     `dist/extension/manifest.json` (temporary, per session), **or**
+   - zip the `dist/extension/` folder and save it as
      `<profile>/extensions/lazyfox@lazyfox.dev.xpi` (permanent, unsigned only
      on Developer Edition/Nightly).
 
@@ -231,7 +235,7 @@ item in the command center's command list) lets you change:
 - whether URL / history / bookmark opens go to a **new tab** or reuse the
   current one (default: new tab);
 - whether the **toolbar reveals** when the mouse touches the top edge
-  (`chrome/userChrome.css`);
+  (`dist/chrome/userChrome.css`);
 - whether the **which-key overlay** is shown when you press `;` (default: on;
   turn it off for a fully silent leader key).
 
@@ -258,13 +262,39 @@ Downloads) are configured at the bottom of the same page and apply live.
 
 ## Development
 
-No build step needed for the extension itself — it's plain JS. To try it live:
+Lazyfox is TypeScript on top of a Go/Wasm core. Every context (chrome helper,
+content script, background, command center, options) imports the same pure
+logic — URL parsing, visited-site ranking, hint generation, which-key
+pagination and the `#lfc=` grammar — from a single compiled `core.wasm`, which
+is gzip-compressed and embedded into each bundle so `dist/` is self-contained.
 
 ```bash
-npx web-ext run --source-dir extension --firefox developer-edition
+npm install        # installs esbuild + typescript (also checks the toolchain)
+npm run build      # builds core.wasm, embeds it, bundles src/ -> dist/
+npm run typecheck  # tsc --noEmit over src/
+npm test           # go test ./core/ + verifies dist/ is complete
 ```
 
-Change extension code, then **Reload** in `about:debugging`.
+- `src/shared/` — types, config defaults, the core facade, popup engine,
+  which-key session and DOM helpers shared by every context.
+- `src/chrome/` — the chrome-level helper (`chrome.ts`, loads as
+  `userChrome.uc.js`) and the frame script (`frame.ts`).
+- `src/extension/` — content script, background and command center.
+- `src/options/`, `src/popup/` — the options page and the action popup.
+- `core/` — the Go core (`go test ./core/`), including `core/js/main.go`, the
+  WebAssembly entry point.
+- `src/static/` — manifest, HTML pages, icons and chrome css/loader files,
+  copied verbatim into `dist/` by the build.
+
+`dist/` is committed, so installing (or `scripts/install.ps1` / `install.sh`)
+never needs the toolchain. Only rebuild when you change source:
+
+```bash
+npx web-ext run --source-dir dist/extension --firefox developer-edition
+```
+
+Change code, then **Reload** in `about:debugging` (or re-run `npm run build`
+and reinstall).
 
 ## Uninstall
 
@@ -301,8 +331,8 @@ specific profile.
 
 ### What gets removed
 
-- `chrome/userChrome.css`, `chrome/userChrome.uc.js`, `chrome/frame.js`
-  (the hidden-UI patches and chrome-level helper).
+- `dist/chrome/userChrome.css`, `dist/chrome/userChrome.uc.js`,
+  `dist/chrome/frame.js` (the hidden-UI patches and chrome-level helper).
 - The Lazyfox-managed `user_pref(...)` lines from `user.js`. Other prefs are
   preserved.
 - `extensions/lazyfox@lazyfox.dev.xpi`.
@@ -312,7 +342,7 @@ specific profile.
 
 1. Delete `<profile>/extensions/lazyfox@lazyfox.dev.xpi`.
 2. Remove `<profile>/chrome/userChrome.css`, `userChrome.uc.js`, `frame.js`.
-3. From `<profile>/user.js`, delete the lines that match `chrome/user.js`
+3. From `<profile>/user.js`, delete the lines that match `dist/chrome/user.js`
    in this repo.
 4. (Optional, only if no other userChrome.uc.js add-on uses it) Delete
    `<firefox>/config.js` and `<firefox>/defaults/pref/config-prefs.js`.

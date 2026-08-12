@@ -1,0 +1,65 @@
+/*  Lazyfox - hide all Firefox chrome UI.
+    The whole navigation toolbox (menubar, tab strip, URL bar, bookmarks bar)
+    is lifted off-screen. Move the mouse to the very top edge of the window to
+    reveal it (with a short delay so accidental passes don't pop it up).
+    In fullscreen (zen mode, toggled with ;z) it never appears.                */
+
+:root {
+  --lf-toolbox-hover-px: 3px;
+}
+
+#navigator-toolbox {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  z-index: 1000 !important;
+  background: transparent !important;
+  border: none !important;
+  border-bottom: none !important;
+  box-shadow: none !important;
+  transform: translateY(calc(-100% + var(--lf-toolbox-hover-px))) !important;
+  transition: transform 0.12s ease-in 0s !important;
+}
+
+#navigator-toolbox::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 14px;
+}
+
+#navigator-toolbox:focus-within {
+  transform: translateY(0) !important;
+  transition: transform 0.18s ease-out 0s !important;
+}
+
+@media (-moz-bool-pref: "lazyfox.hoverReveal") {
+  #navigator-toolbox:hover {
+    transform: translateY(0) !important;
+    transition: transform 0.18s ease-out 0.2s !important;
+  }
+}
+
+:root[sizemode="fullscreen"] #navigator-toolbox {
+  transform: translateY(-100%) !important;
+  transition: none !important;
+}
+
+:root[sizemode="fullscreen"] #navigator-toolbox:hover {
+  transform: translateY(-100%) !important;
+}
+
+#browser {
+  height: 100vh !important;
+}
+
+#appcontent {
+  height: 100vh !important;
+}
+
+#toolbar-menubar {
+  visibility: collapse !important;
+}

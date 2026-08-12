@@ -134,7 +134,7 @@ if ($ffRunning) {
 
 # ---------- profile/chrome/* ----------
 $chromeDir = Join-Path $profileDir "chrome"
-foreach ($f in @("userChrome.css", "userChrome.uc.js", "frame.js")) {
+foreach ($f in @("userChrome.css", "userChrome.uc.js", "frame.js", "corebootstrap.js")) {
   $p = Join-Path $chromeDir $f
   if (Test-Path -LiteralPath $p) {
     Backup-ThenRemove $p | Out-Null
@@ -151,7 +151,7 @@ if (Test-Path -LiteralPath $chromeDir) {
 
 # ---------- user.js : drop only our managed prefs ----------
 $managed = @{}
-$ourContent = Get-Content -LiteralPath (Join-Path $repoRoot "chrome\user.js")
+$ourContent = Get-Content -LiteralPath (Join-Path $repoRoot "dist\chrome\user.js")
 foreach ($line in $ourContent) {
   if ($line -match '^user_pref\("([^"]+)"') { $managed[$matches[1]] = $true }
 }

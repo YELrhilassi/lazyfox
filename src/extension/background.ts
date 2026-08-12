@@ -1,62 +1,24 @@
+// Extension background script: browser-API actions (tabs, windows, history,
+// bookmarks, downloads, search), the #lfc=req request channel for the chrome
+// helper, and the command-center home-tab conversion. URL normalization and
+// visited ranking come from the Go core.
+
+import { core, ensureCore } from "../shared/core";
+import { mergeConfig } from "../shared/config";
+import type { BgAction } from "../shared/protocol";
+
 (function () {
   "use strict";
+
+  const CC_URL = browser.runtime.getURL("commandcenter.html");
+  const HOMEISH = /^about:(home|newtab)$/i;
 
   async function getActiveTab() {
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
     return tabs && tabs[0];
   }
 
-  function normalizeUrl(text) {
-    const t = (text || "").trim();
-    if (!t) return "";
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return t;
-    if (/^(about|moz-extension|file):/i.test(t)) return t;
-    if (/^[a-z][a-z0-9+.-]*:/i.test(t)) return t;
-    return "https://" + t;
-  }
-
-  function isLikelyUrl(text) {
-    const t = (text || "").trim();
-    if (!t) return false;
-    if (/\s/.test(t)) return false;
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return true;
-    if (/^[a-z][a-z0-9+.-]*:/i.test(t)) return true;
-    if (/\.\w{2,}/.test(t)) return true;
-    if (/^(localhost|127\.0\.0\.1|\[?::1\]?)/i.test(t)) return true;
-    return false;
-  }
-
-  function rankVisited(visited, q) {
-    const ql = q.toLowerCase();
-    const scored = [];
-    for (const u of visited) {
-      const url = (u.url || "").toLowerCase();
-      const title = (u.title || "").toLowerCase();
-      const host = (url.match(/^[a-z][a-z0-9+.-]*:\/\/([^/]*)/) || [])[1] || "";
-      let score = 0;
-      if (host.indexOf(ql) === 0) score += 120;
-      else if (host.indexOf(ql) !== -1) score += 70;
-      if (url.indexOf(ql) !== -1) score += 45;
-      if (title.indexOf(ql) !== -1) score += 35;
-      if (score > 0) {
-        let p = 0;
-        let sub = true;
-        for (const ch of ql) {
-          const i = url.indexOf(ch, p);
-          if (i < 0) { sub = false; break; }
-          p = i + 1;
-        }
-        if (sub && ql.length >= 3) score += 20;
-      }
-      if (score > 0) scored.push({ score: score, u: u });
-    }
-    scored.sort(
-      (a, b) => b.score - a.score || (b.u.time || 0) - (a.u.time || 0)
-    );
-    return scored.slice(0, 9).map((o) => o.u);
-  }
-
-  let visitedCache = [];
+  let visitedCache: any[] = [];
   let visitedCacheAt = 0;
   async function getVisited() {
     const now = Date.now();
@@ -87,14 +49,14 @@
     return visitedCache;
   }
 
-  async function suggestSearch(q) {
+  async function suggestSearch(q: string) {
     const text = (q || "").trim();
-    const entries = [];
+    const entries: any[] = [];
     if (!text) return { entries };
     let engine = "default search engine";
     try {
       const engines = await browser.search.get();
-      const g = engines.find((e) => /google/i.test(e.name));
+      const g = engines.find((e: any) => /google/i.test(e.name));
       if (g) engine = g.name;
     } catch (e) {}
     entries.push({
@@ -106,18 +68,20 @@
     return { entries };
   }
 
-  async function suggestUrls(q) {
+  async function suggestUrls(q: string) {
     const text = (q || "").trim();
-    const entries = [];
+    const entries: any[] = [];
     if (!text) return { entries };
+    const url = await core.normalizeUrl(text);
     entries.push({
       kind: "url",
       title: "Open URL",
-      subtitle: normalizeUrl(text),
-      url: normalizeUrl(text)
+      subtitle: url,
+      url: url
     });
     const visited = await getVisited();
-    for (const u of rankVisited(visited, text)) {
+    const ranked = await core.rankVisited(visited, text);
+    for (const u of ranked) {
       entries.push({
         kind: "page",
         title: u.title || u.url,
@@ -129,7 +93,7 @@
     return { entries };
   }
 
-  async function doSearch(query) {
+  async function doSearch(query: string) {
     const q = (query || "").trim();
     if (!q) return { ok: false };
     const tab = await getActiveTab();
@@ -137,7 +101,7 @@
       let url = "";
       try {
         const engines = await browser.search.get();
-        const e = engines.find((x) => /google/i.test(x.name)) || engines[0];
+        const e = engines.find((x: any) => /google/i.test(x.name)) || engines[0];
         if (e && e.searchUrl) {
           url = e.searchUrl
             .replace("{searchTerms}", encodeURIComponent(q))
@@ -170,7 +134,7 @@
     };
   }
 
-  async function resizeWindow(dx, dy) {
+  async function resizeWindow(dx: number, dy: number) {
     const win = await browser.windows.getCurrent();
     const w = Math.max(420, (win.width || 1200) + (dx || 0));
     const h = Math.max(300, (win.height || 800) + (dy || 0));
@@ -178,7 +142,7 @@
     return { width: up.width, height: up.height, state: up.state };
   }
 
-  async function moveWindow(dx, dy) {
+  async function moveWindow(dx: number, dy: number) {
     const win = await browser.windows.getCurrent();
     if (win.state === "maximized" || win.state === "fullscreen") {
       return {
@@ -194,7 +158,7 @@
     return { left: up.left, top: up.top, state: up.state };
   }
 
-  async function activateTabByIndex(n) {
+  async function activateTabByIndex(n: number) {
     const tabs = await browser.tabs.query({ currentWindow: true });
     const idx = Math.max(0, (n || 1) - 1);
     const tab = tabs[Math.min(idx, tabs.length - 1)];
@@ -216,7 +180,7 @@
   async function tabsInWindow() {
     const tabs = await browser.tabs.query({ currentWindow: true });
     return {
-      tabs: tabs.map((t) => ({
+      tabs: tabs.map((t: any) => ({
         id: t.id,
         title: t.title || t.url || "about:blank",
         url: t.url || "",
@@ -228,7 +192,7 @@
     };
   }
 
-  async function historySearch(q) {
+  async function historySearch(q: string) {
     const text = (q || "").trim();
     if (!text) return { items: [] };
     const items = await browser.history.search({
@@ -237,7 +201,7 @@
       maxResults: 60
     });
     return {
-      items: items.map((h) => ({
+      items: items.map((h: any) => ({
         title: h.title || h.url,
         url: h.url,
         time: h.lastVisitTime || 0
@@ -245,15 +209,15 @@
     };
   }
 
-  async function bookmarksSearch(q) {
+  async function bookmarksSearch(q: string) {
     const text = (q || "").trim();
-    let items = [];
+    let items: any[] = [];
     if (text.length >= 1) {
       items = await browser.bookmarks.search({ query: text });
     } else {
       const tree = await browser.bookmarks.getTree();
-      const out = [];
-      const walk = (nodes) => {
+      const out: any[] = [];
+      const walk = (nodes: any[]) => {
         for (const n of nodes) {
           if (n.url) out.push(n);
           if (n.children) walk(n.children);
@@ -275,7 +239,7 @@
       orderBy: ["-startTime"]
     });
     return {
-      items: items.map((d) => ({
+      items: items.map((d: any) => ({
         id: d.id,
         filename: (d.filename || "").split(/[\\/]/).pop() || d.url || "",
         url: d.url || "",
@@ -285,7 +249,7 @@
     };
   }
 
-  async function openDownload(id) {
+  async function openDownload(id: number) {
     try {
       await browser.downloads.open(id);
       return { ok: true };
@@ -308,10 +272,10 @@
     return { zen: !isZen };
   }
 
-  async function zoom(delta, factor) {
+  async function zoom(delta: number, factor: number | undefined) {
     const tab = await getActiveTab();
     if (!tab || tab.id === browser.tabs.TAB_ID_NONE) return { factor: 1 };
-    let f = factor != null ? factor : null;
+    let f: number | null = factor != null ? factor : null;
     if (f == null) {
       f = await browser.tabs.getZoom(tab.id);
       f = Math.max(0.3, Math.min(5, Math.round((f + delta) * 100) / 100));
@@ -352,22 +316,22 @@
   async function getConfig() {
     try {
       const r = await browser.storage.local.get("config");
-      return Object.assign({ openInNewTab: true }, r.config || {});
+      return mergeConfig(r.config || {});
     } catch (e) {
-      return { openInNewTab: true };
+      return mergeConfig({});
     }
   }
 
-  function isCommandCenter(tab) {
+  function isCommandCenter(tab: any) {
     return !!(tab && tab.url && tab.url.indexOf(CC_URL) === 0);
   }
 
-  function stripHash(url) {
+  function stripHash(url: string) {
     const i = url ? url.indexOf("#") : -1;
     return i < 0 ? url : url.slice(0, i);
   }
 
-  async function openUrl(url, newTab) {
+  async function openUrl(url: string, newTab: boolean | undefined) {
     if (!url) return { ok: false };
     const tab = await getActiveTab();
     if (isCommandCenter(tab)) {
@@ -386,14 +350,14 @@
     return { ok: true };
   }
 
-  const CHROME_PAGES = {
+  const CHROME_PAGES: { [k: string]: string } = {
     "about:preferences": "preferences",
     "about:addons": "addons",
     "about:history": "history",
     "about:downloads": "downloads"
   };
 
-  async function openPage(url) {
+  async function openPage(url: string) {
     const target = CHROME_PAGES[url];
     const tab = await getActiveTab();
     if (target) {
@@ -427,7 +391,7 @@
   }
 
   // Ask the chrome helper (userChrome.uc.js) to open one of its native popups.
-  async function openUI(which) {
+  async function openUI(which: string) {
     const tab = await getActiveTab();
     const hash = "open." + which + ".c";
     if (isCommandCenter(tab)) {
@@ -448,8 +412,9 @@
     return { ok: true };
   }
 
-  async function handleMessage(msg) {
-    const data = msg.data || {};
+  async function handleMessage(msg: BgAction, sender: any) {
+    // `data` stays loose: each case reads only the fields its action declares.
+    const data: any = msg.data || {};
     switch (msg.action) {
       case "searchSuggest":
         return suggestSearch(data.q);
@@ -475,7 +440,7 @@
         return activateTabByIndex(data.index || 1);
       case "moveTab": {
         const tabs = await browser.tabs.query({ currentWindow: true });
-        const idx = tabs.findIndex((t) => t.id === data.id);
+        const idx = tabs.findIndex((t: any) => t.id === data.id);
         if (idx < 0) return { ok: false };
         const dir = data.dir > 0 ? 1 : -1;
         const ni = Math.max(0, Math.min(tabs.length - 1, idx + dir));
@@ -568,21 +533,19 @@
           } catch (e) {}
         }
         return { ok: true };
-      case "query":
-        return { url: location.href };
       default:
         return { ok: false, error: "unknown action" };
     }
   }
 
-  browser.runtime.onMessage.addListener((msg, sender) => {
-    return handleMessage(msg).catch((err) => ({
+  browser.runtime.onMessage.addListener((msg: BgAction, sender: any) => {
+    return handleMessage(msg, sender).catch((err: any) => ({
       ok: false,
       error: String(err && err.message ? err.message : err)
     }));
   });
 
-  browser.commands.onCommand.addListener((name) => {
+  browser.commands.onCommand.addListener((name: string) => {
     if (name === "open-command-center") {
       browser.tabs
         .create({ url: browser.runtime.getURL("commandcenter.html"), active: true })
@@ -590,23 +553,20 @@
     }
   });
 
-  const CC_URL = browser.runtime.getURL("commandcenter.html");
-  const HOMEISH = /^about:(home|newtab)$/i;
-
-  function maybeConvertHome(tab) {
+  function maybeConvertHome(tab: any) {
     if (tab && tab.url && HOMEISH.test(tab.url)) {
       return browser.tabs.update(tab.id, { url: CC_URL }).catch(() => {});
     }
     return Promise.resolve();
   }
 
-  browser.tabs.onUpdated.addListener((tabId, info, tab) => {
+  browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
     if (info.status === "complete" && tab && tab.active) maybeConvertHome(tab);
   });
 
   // Chrome helper request channel: a background tab whose URL is
   // commandcenter.html#lfc=req.<action>. Handle the request, then remove the tab.
-  async function handleReq(tab, action) {
+  async function handleReq(tab: any, action: string) {
     if (action === "alive") {
       await browser.storage.local.set({ chromeAlive: true });
       return;
@@ -627,7 +587,7 @@
     }
   }
 
-  browser.tabs.onUpdated.addListener((tabId, info, tab) => {
+  browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
     if (info.status !== "complete" || !tab || !tab.url) return;
     if (stripHash(tab.url) !== CC_URL) return;
     const m = /#lfc=req\.([a-zA-Z]+)$/.exec(tab.url);
@@ -637,21 +597,27 @@
       .then(() => browser.tabs.remove(tabId).catch(() => {}));
   });
 
-  browser.tabs.onActivated.addListener((info) => {
+  browser.tabs.onActivated.addListener((info: any) => {
     browser.tabs
       .get(info.tabId)
-      .then((tab) => maybeConvertHome(tab))
+      .then((tab: any) => maybeConvertHome(tab))
       .catch(() => {});
   });
-  browser.tabs.query({}).then((tabs) => {
-    for (const t of tabs || []) {
-      if (t.active) maybeConvertHome(t);
-    }
-  }).catch(() => {});
+  browser.tabs
+    .query({})
+    .then((tabs: any[]) => {
+      for (const t of tabs || []) {
+        if (t.active) maybeConvertHome(t);
+      }
+    })
+    .catch(() => {});
 
   // Chrome helper absent unless it pings "alive" on window startup; clear the
   // gate so a stale flag never permanently disables content-side handling.
   browser.runtime.onStartup.addListener(() => {
     browser.storage.local.set({ chromeAlive: false }).catch(() => {});
   });
+
+  // Warm the wasm core for the first URL suggestion.
+  void ensureCore().catch(() => {});
 })();

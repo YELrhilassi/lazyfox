@@ -1,4 +1,8 @@
 user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
+user_pref("browser.dom.window.dump.enabled", true);
+user_pref("security.csp.wasm-unsafe-eval.enabled", false);
+user_pref("security.allow_eval_with_system_principal", true);
+user_pref("security.allow_eval_in_parent_process", true);
 user_pref("xpinstall.signatures.required", false);
 user_pref("extensions.autoDisableScopes", 0);
 user_pref("extensions.enabledScopes", 15);
