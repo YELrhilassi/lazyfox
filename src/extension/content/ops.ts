@@ -203,7 +203,7 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         if (!tabs.length) return;
         const cur = tabs.findIndex((t) => t.active);
         if (cur < 0) return;
-        const next = tabs[(cur + dir + tabs.length) % tabs.length];
+        const next = tabs[(cur + dir + tabs.length) % tabs.length]!;
         void send("activateTab", { id: next.id });
       });
     },

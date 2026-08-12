@@ -23,7 +23,7 @@ function sysPrincipal() {
 function el(tag: string, attrs?: Record<string, string> | null, text?: string | null): HTMLElement {
   const e = document.createElementNS(XHTML, tag) as HTMLElement;
   if (attrs) {
-    for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]);
+    for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]!);
   }
   if (text != null) e.textContent = text;
   return e;

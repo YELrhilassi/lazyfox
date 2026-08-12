@@ -10,7 +10,7 @@ const ESC_MAP: Record<string, string> = {
 };
 
 export function esc(s: unknown): string {
-  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESC_MAP[c]);
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESC_MAP[c] || c);
 }
 
 // Unified typing-target predicate. Strips any "html:" style namespace prefix
@@ -63,7 +63,7 @@ export async function copyText(text: string): Promise<boolean> {
 
 export function el(tag: string, attrs: Record<string, string> = {}, text = ""): HTMLElement {
   const node = document.createElement(tag);
-  for (const k of Object.keys(attrs)) node.setAttribute(k, attrs[k]);
+  for (const k of Object.keys(attrs)) node.setAttribute(k, attrs[k]!);
   if (text) node.textContent = text;
   return node;
 }

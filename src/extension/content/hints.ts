@@ -47,7 +47,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
       toast("core unavailable");
       return;
     }
-    items = visible.map((el, i) => ({ el: el, key: keys[i] }));
+    items = visible.map((el, i) => ({ el: el, key: keys[i]! }));
     typed = "";
     active = true;
     host = document.createElement("div") as unknown as HTMLElement & { _box: HTMLElement };
@@ -73,7 +73,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     box.textContent = "";
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
-      if (it.key.indexOf(typed) !== 0) continue;
+      if (!it || it.key.indexOf(typed) !== 0) continue;
       const r = it.el.getBoundingClientRect();
       const label = document.createElement("span");
       label.className = "hint";
@@ -97,7 +97,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     }
     if (e.key === "Enter") {
       const found = items.filter((i) => i.key.indexOf(typed) === 0);
-      if (found.length) activate(found[0]);
+      if (found.length) activate(found[0]!);
       else exit();
       return true;
     }
