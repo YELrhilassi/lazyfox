@@ -173,8 +173,8 @@ install_chrome_loader_into() {
   mkdir -p "$prefdir"
   backup_if_exists "$ffdir/config.js"
   backup_if_exists "$prefdir/config-prefs.js"
-  cp -f "$REPO_ROOT/chrome/loader/config.js" "$ffdir/config.js"
-  cp -f "$REPO_ROOT/chrome/loader/config-prefs.js" "$prefdir/config-prefs.js"
+  cp -f "$REPO_ROOT/dist/chrome/loader/config.js" "$ffdir/config.js"
+  cp -f "$REPO_ROOT/dist/chrome/loader/config-prefs.js" "$prefdir/config-prefs.js"
   return 0
 }
 
@@ -192,10 +192,11 @@ fi
 # ---------- Chrome assets (profile-side, no root needed) ----------
 
 mkdir -p "$PROFILE/chrome"
-cp -f "$REPO_ROOT/chrome/userChrome.css"   "$PROFILE/chrome/userChrome.css"
-cp -f "$REPO_ROOT/chrome/userChrome.uc.js" "$PROFILE/chrome/userChrome.uc.js"
-cp -f "$REPO_ROOT/chrome/frame.js"         "$PROFILE/chrome/frame.js"
-step "Installed chrome/userChrome.css, userChrome.uc.js and frame.js"
+cp -f "$REPO_ROOT/dist/chrome/userChrome.css"   "$PROFILE/chrome/userChrome.css"
+cp -f "$REPO_ROOT/dist/chrome/userChrome.uc.js" "$PROFILE/chrome/userChrome.uc.js"
+cp -f "$REPO_ROOT/dist/chrome/frame.js"         "$PROFILE/chrome/frame.js"
+cp -f "$REPO_ROOT/dist/chrome/corebootstrap.js" "$PROFILE/chrome/corebootstrap.js"
+step "Installed chrome/userChrome.css, userChrome.uc.js, frame.js and corebootstrap.js"
 
 # ---------- user.js merge (Lazyfox prefs only) ----------
 
@@ -205,7 +206,7 @@ while IFS= read -r line; do
   if [[ -n "$name" ]]; then
     managed_regex+="user_pref\\(\"$name\"|"
   fi
-done < "$REPO_ROOT/chrome/user.js"
+done < "$REPO_ROOT/dist/chrome/user.js"
 managed_regex="(${managed_regex%|})"
 
 user_js="$PROFILE/user.js"
@@ -214,7 +215,7 @@ prev=""
 if [[ -f "$user_js" ]]; then
   prev="$(grep -vE "$managed_regex" "$user_js" || true)"
 fi
-{ printf '%s\n' "$prev"; cat "$REPO_ROOT/chrome/user.js"; } > "$user_js.tmp"
+{ printf '%s\n' "$prev"; cat "$REPO_ROOT/dist/chrome/user.js"; } > "$user_js.tmp"
 mv "$user_js.tmp" "$user_js"
 step "Merged preferences into user.js (existing prefs preserved)"
 
@@ -235,25 +236,25 @@ if [[ -n "$ffdir" && -d "$ffdir" ]]; then
       if sudo -n true 2>/dev/null; then
         if sudo bash -c "
             set -eu
-            cp -f '$REPO_ROOT/chrome/loader/config.js' '$ffdir/config.js'
+            cp -f '$REPO_ROOT/dist/chrome/loader/config.js' '$ffdir/config.js'
             mkdir -p '$ffdir/defaults/pref'
-            cp -f '$REPO_ROOT/chrome/loader/config-prefs.js' '$ffdir/defaults/pref/config-prefs.js'
+            cp -f '$REPO_ROOT/dist/chrome/loader/config-prefs.js' '$ffdir/defaults/pref/config-prefs.js'
           "; then
           step "Chrome loader installed into $ffdir (sudo)"
         else
           warn "sudo install failed. The command center's about: pages and Ctrl+Alt+O/A/H/D hotkeys will not work."
-          warn "Run:  sudo bash -c 'cp -f \"$REPO_ROOT/chrome/loader/config.js\" \"$ffdir/config.js\" && mkdir -p \"$ffdir/defaults/pref\" && cp -f \"$REPO_ROOT/chrome/loader/config-prefs.js\" \"$ffdir/defaults/pref/config-prefs.js\"'"
+          warn "Run:  sudo bash -c 'cp -f \"$REPO_ROOT/dist/chrome/loader/config.js\" \"$ffdir/config.js\" && mkdir -p \"$ffdir/defaults/pref\" && cp -f \"$REPO_ROOT/dist/chrome/loader/config-prefs.js\" \"$ffdir/defaults/pref/config-prefs.js\"'"
         fi
       else
         warn "sudo requires a password. The chrome loader must be installed once with:"
-        warn "  sudo bash -c 'cp -f \"$REPO_ROOT/chrome/loader/config.js\" \"$ffdir/config.js\" && mkdir -p \"$ffdir/defaults/pref\" && cp -f \"$REPO_ROOT/chrome/loader/config-prefs.js\" \"$ffdir/defaults/pref/config-prefs.js\"'"
+        warn "  sudo bash -c 'cp -f \"$REPO_ROOT/dist/chrome/loader/config.js\" \"$ffdir/config.js\" && mkdir -p \"$ffdir/defaults/pref\" && cp -f \"$REPO_ROOT/dist/chrome/loader/config-prefs.js\" \"$ffdir/defaults/pref/config-prefs.js\"'"
         warn "Continuing without the chrome loader; press ; on internal pages or use Ctrl+Alt+Space."
       fi
     else
       warn "sudo not found. Install the chrome loader manually (one-time):"
-      warn "  cp -f \"$REPO_ROOT/chrome/loader/config.js\" \"$ffdir/config.js\""
+      warn "  cp -f \"$REPO_ROOT/dist/chrome/loader/config.js\" \"$ffdir/config.js\""
       warn "  mkdir -p \"$ffdir/defaults/pref\""
-      warn "  cp -f \"$REPO_ROOT/chrome/loader/config-prefs.js\" \"$ffdir/defaults/pref/config-prefs.js\""
+      warn "  cp -f \"$REPO_ROOT/dist/chrome/loader/config-prefs.js\" \"$ffdir/defaults/pref/config-prefs.js\""
     fi
   fi
 else
@@ -271,7 +272,7 @@ if [[ "$NO_EXTENSION" -eq 0 ]]; then
   # Build the .xpi (zip). Prefer zip, fall back to python3, then node, then
   # tar+gzip-renamed which isn't valid — bail out instead.
   backup_if_exists "$xpi"
-  ext_dir="$REPO_ROOT/extension"
+  ext_dir="$REPO_ROOT/dist/extension"
   if command -v zip >/dev/null 2>&1; then
     ( cd "$ext_dir" && zip -rq "$xpi" . -x '*.DS_Store' )
   elif command -v python3 >/dev/null 2>&1; then
@@ -401,7 +402,7 @@ echo
 echo "Things to check:"
 echo "  1. All chrome UI (tabs, URL bar, menus) should be hidden. Move the mouse to the very top edge to reveal them; ;z toggles fullscreen/zen mode."
 echo "  2. If Lazyfox is not listed in about:addons, load it manually:"
-echo "       about:debugging -> This Firefox -> Load Temporary Add-on -> extension/manifest.json"
+echo "       about:debugging -> This Firefox -> Load Temporary Add-on -> dist/extension/manifest.json"
 echo "  3. The unsigned add-on only persists on Firefox Developer Edition / Nightly"
 echo "     (xpinstall.signatures.required=false is already set for you)."
 echo "  4. Re-run this installer any time you update Lazyfox; it only writes its own"

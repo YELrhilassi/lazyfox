@@ -129,7 +129,7 @@ if ff_running_for_profile; then
 fi
 
 # ---------- chrome/* ----------
-for f in userChrome.css userChrome.uc.js frame.js; do
+for f in userChrome.css userChrome.uc.js frame.js corebootstrap.js; do
   p="$PROFILE/chrome/$f"
   if [[ -e "$p" ]]; then backup_then_remove "$p" && step "Removed chrome/$f"; fi
 done
@@ -137,12 +137,12 @@ done
 # Leave chrome/ in place — other userChrome.uc.js add-ons may share it.
 
 # ---------- user.js : drop only our managed prefs ----------
-if [[ -f "$REPO_ROOT/chrome/user.js" && -f "$PROFILE/user.js" ]]; then
+if [[ -f "$REPO_ROOT/dist/chrome/user.js" && -f "$PROFILE/user.js" ]]; then
   managed_regex=""
   while IFS= read -r line; do
     name="$(printf '%s' "$line" | sed -n 's/^user_pref("\([^"]*\)".*/\1/p')"
     if [[ -n "$name" ]]; then managed_regex+="user_pref\\(\"$name\"|"; fi
-  done < "$REPO_ROOT/chrome/user.js"
+  done < "$REPO_ROOT/dist/chrome/user.js"
   managed_regex="(${managed_regex%|})"
   bak="$PROFILE/user.js.lazyfox.uninst.bak-$(stamp)"
   cp -a "$PROFILE/user.js" "$bak"

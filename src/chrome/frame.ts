@@ -16,8 +16,8 @@
     if (content.top !== content) return;
   } catch (e) {}
 
-  function typingNow() {
-    const ae = document.activeElement;
+  function typingNow(): boolean {
+    const ae = content.document.activeElement;
     if (!ae || !ae.tagName) return false;
     const t = ae.tagName;
     return (
@@ -25,14 +25,14 @@
       t === "TEXTAREA" ||
       t === "SELECT" ||
       t === "ISINDEX" ||
-      ae.isContentEditable ||
+      (ae as HTMLElement).isContentEditable ||
       (ae.getAttribute && ae.getAttribute("contenteditable") === "true") ||
       (ae.closest && ae.closest('[contenteditable="true"]') != null)
     );
   }
 
-  let last = null;
-  function report() {
+  let last: boolean | null = null;
+  function report(): void {
     const typing = !!typingNow();
     if (typing === last) return;
     last = typing;
@@ -41,8 +41,8 @@
     } catch (e) {}
   }
 
-  addEventListener("focusin", report, true);
-  addEventListener("focusout", report, true);
-  addEventListener("blur", report, true);
+  content.addEventListener("focusin", report, true);
+  content.addEventListener("focusout", report, true);
+  content.addEventListener("blur", report, true);
   report();
 })();

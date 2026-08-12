@@ -67,14 +67,14 @@ function Install-ChromeLoader {
   $utf8NoBom = New-Object System.Text.UTF8Encoding $false
   [System.IO.File]::WriteAllText(
     (Join-Path $Dir "config.js"),
-    (Get-Content -Raw -LiteralPath (Join-Path $repoRoot "chrome\loader\config.js")),
+    (Get-Content -Raw -LiteralPath     (Join-Path $repoRoot "dist\chrome\loader\config.js")),
     $utf8NoBom
   )
   $prefDir = Join-Path $Dir "defaults\pref"
   New-Item -ItemType Directory -Force -Path $prefDir | Out-Null
   [System.IO.File]::WriteAllText(
     (Join-Path $prefDir "config-prefs.js"),
-    (Get-Content -Raw -LiteralPath (Join-Path $repoRoot "chrome\loader\config-prefs.js")),
+    (Get-Content -Raw -LiteralPath     (Join-Path $repoRoot "dist\chrome\loader\config-prefs.js")),
     $utf8NoBom
   )
   return $true
@@ -148,17 +148,20 @@ Write-Step "Profile: $profileDir"
 
 $chromeDir = Join-Path $profileDir "chrome"
 New-Item -ItemType Directory -Force -Path $chromeDir | Out-Null
-Copy-Item -Force (Join-Path $repoRoot "chrome\userChrome.css") (Join-Path $chromeDir "userChrome.css")
-Write-Step "Installed chrome\userChrome.css"
+Copy-Item -Force (Join-Path $repoRoot "dist\chrome\userChrome.css") (Join-Path $chromeDir "userChrome.css")
+Write-Step "Installed dist\chrome\userChrome.css"
 
-Copy-Item -Force (Join-Path $repoRoot "chrome\userChrome.uc.js") (Join-Path $chromeDir "userChrome.uc.js")
-Write-Step "Installed chrome\userChrome.uc.js"
+Copy-Item -Force (Join-Path $repoRoot "dist\chrome\userChrome.uc.js") (Join-Path $chromeDir "userChrome.uc.js")
+Write-Step "Installed dist\chrome\userChrome.uc.js"
 
-Copy-Item -Force (Join-Path $repoRoot "chrome\frame.js") (Join-Path $chromeDir "frame.js")
-Write-Step "Installed chrome\frame.js"
+Copy-Item -Force (Join-Path $repoRoot "dist\chrome\frame.js") (Join-Path $chromeDir "frame.js")
+Write-Step "Installed dist\chrome\frame.js"
+
+Copy-Item -Force (Join-Path $repoRoot "dist\chrome\corebootstrap.js") (Join-Path $chromeDir "corebootstrap.js")
+Write-Step "Installed dist\chrome\corebootstrap.js"
 
 $managed = @{}
-$ourContent = Get-Content -LiteralPath (Join-Path $repoRoot "chrome\user.js")
+$ourContent = Get-Content -LiteralPath (Join-Path $repoRoot "dist\chrome\user.js")
 foreach ($line in $ourContent) {
   if ($line -match '^user_pref\("([^"]+)"') { $managed[$matches[1]] = $true }
 }
@@ -208,7 +211,7 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 Write-Step "Merged preferences into user.js"
 
 if (-not $NoExtension) {
-  $extDir = Join-Path $repoRoot "extension"
+  $extDir = Join-Path $repoRoot "dist\extension"
   $extensionsDir = Join-Path $profileDir "extensions"
   New-Item -ItemType Directory -Force -Path $extensionsDir | Out-Null
   $xpi = Join-Path $extensionsDir "lazyfox@lazyfox.dev.xpi"
@@ -270,5 +273,5 @@ Write-Host ""
 Write-Host "Things to check:"
 Write-Host "  1. All chrome UI (tabs, URL bar, menus) should be hidden. Move the mouse to the very top edge to reveal them; ;z toggles fullscreen/zen mode."
 Write-Host "  2. If Lazyfox is not listed in about:addons, load it manually:"
-Write-Host "       about:debugging -> This Firefox -> Load Temporary Add-on -> extension\manifest.json"
+  Write-Host "       about:debugging -> This Firefox -> Load Temporary Add-on -> dist\extension\manifest.json"
 Write-Host "  3. The unsigned add-on only persists on Firefox Developer Edition / Nightly (xpinstall.signatures.required=false is already set)."

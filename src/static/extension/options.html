@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lazyfox options</title>
+<style>
+  body {
+    margin: 0;
+    background: #16161e;
+    color: #c0caf5;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    padding: 32px;
+  }
+  h1 { font-size: 18px; color: #7aa2f7; letter-spacing: .08em; text-transform: uppercase; }
+  p { color: #565f89; font-size: 12px; max-width: 620px; line-height: 1.6; }
+  label { display: block; margin: 18px 0 6px; font-size: 12px; color: #9aa5ce; }
+  input[type="text"] {
+    width: 260px; padding: 8px 10px; background: #1e1e2e; color: #c0caf5;
+    border: 1px solid #414868; border-radius: 6px; font-family: inherit; font-size: 14px; outline: none;
+  }
+  input[type="text"]:focus { border-color: #7aa2f7; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  button {
+    margin-top: 24px; padding: 10px 22px; background: #7aa2f7; color: #16161e;
+    border: none; border-radius: 6px; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { background: #89b0fa; }
+  #status { color: #9ece6a; font-size: 12px; margin-left: 12px; }
+  .kbd {
+    display: inline-block; background: #1e1e2e; border: 1px solid #414868; border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 7px; color: #7aa2f7; font-size: 12px;
+  }
+  .bar { display: flex; justify-content: space-between; align-items: baseline; }
+  .back {
+    color: #7aa2f7; text-decoration: none; font-size: 12px; cursor: pointer;
+    border: 1px solid #414868; border-radius: 6px; padding: 4px 10px; background: #1e1e2e;
+  }
+  .back:hover { border-color: #7aa2f7; }
+  .hint { color: #565f89; font-size: 11px; margin-top: 22px; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <h1>Lazyfox</h1>
+    <a class="back" href="#" id="back">&#8592; back</a>
+  </div>
+  <p>Leader-key setup for Firefox. Press the leader key to open the which-key
+  overlay (a paginated list of every Lazyfox binding plus native Firefox
+  shortcuts); Tab / Shift+Tab to flip pages, arrows to select, or just press a
+  binding's key. Changes apply immediately to open pages.</p>
+
+  <label for="leader">Leader key</label>
+  <input type="text" id="leader" maxlength="2" placeholder=";">
+
+  <label for="hintChars">Link-hint characters (order matters)</label>
+  <input type="text" id="hintChars" maxlength="20" placeholder="asdfjkl;gh">
+
+  <label>
+    <span class="row"><input type="checkbox" id="scrollKeys"> Enable vim-style scrolling (j/k/d/u/gg/G) when not typing</span>
+  </label>
+
+  <label>
+    <span class="row"><input type="checkbox" id="openInNewTab"> Open URLs (URL mode, history, bookmarks) in a new tab</span>
+  </label>
+
+  <label>
+    <span class="row"><input type="checkbox" id="hoverReveal"> Reveal toolbar when the mouse touches the top edge (chrome/userChrome.css)</span>
+  </label>
+
+  <label>
+    <span class="row"><input type="checkbox" id="whichKey"> Show the which-key overlay when the leader key is pressed (paginated; Tab / arrows to navigate)</span>
+  </label>
+
+  <h2 style="margin-top:34px;">Firefox chrome integration</h2>
+  <p>Handled by <span class="kbd">chrome/userChrome.uc.js</span> (installed by
+  <span class="kbd">scripts/install.ps1</span>). These hotkeys open Firefox's built-in pages and work even on
+  <span class="kbd">about:</span> / error pages where the extension can't run. Changes apply live - no restart needed.</p>
+  <label for="chPreferences">Firefox settings</label>
+  <input type="text" id="chPreferences" maxlength="32" placeholder="Ctrl+Alt+O">
+  <label for="chAddons">Add-ons manager</label>
+  <input type="text" id="chAddons" maxlength="32" placeholder="Ctrl+Alt+A">
+  <label for="chHistory">History</label>
+  <input type="text" id="chHistory" maxlength="32" placeholder="Ctrl+Alt+H">
+  <label for="chDownloads">Downloads</label>
+  <input type="text" id="chDownloads" maxlength="32" placeholder="Ctrl+Alt+D">
+  <span id="chStatus" style="color:#9ece6a;font-size:12px;"></span>
+
+  <div class="row">
+    <button id="save">Save</button>
+    <span id="status"></span>
+  </div>
+
+  <p class="hint">Keys work here too: <span class="kbd">Esc</span> back &middot; <span class="kbd">;</span>
+  leader menu &middot; <span class="kbd">j</span>/<span class="kbd">k</span> scroll</p>
+
+<script src="options.js"></script>
+<script src="optionskeys.js"></script>
+</body>
+</html>
