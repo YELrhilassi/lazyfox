@@ -187,7 +187,7 @@ import { send } from "../shared/protocol";
   function markSelected() {
     const kids = resultsEl.children;
     for (let i = 0; i < kids.length; i++) {
-      kids[i].classList.toggle("selected", i === idx);
+      kids[i]?.classList.toggle("selected", i === idx);
     }
     const sel = resultsEl.querySelector(".selected");
     if (sel) sel.scrollIntoView({ block: "nearest" });
@@ -241,7 +241,7 @@ import { send } from "../shared/protocol";
 
   function cycleMode(d: number) {
     const i = MODES.indexOf(mode);
-    setMode(MODES[(i + d + MODES.length) % MODES.length]);
+    setMode(MODES[(i + d + MODES.length) % MODES.length]!);
   }
 
   function openOptions() {
@@ -424,7 +424,7 @@ import { send } from "../shared/protocol";
       }
       if (/^[1-6]$/.test(k)) {
         e.preventDefault();
-        setMode(MODES[Number(k) - 1]);
+        setMode(MODES[Number(k) - 1]!);
         return;
       }
       if (k === ";") {
@@ -506,7 +506,7 @@ import { send } from "../shared/protocol";
   document.querySelectorAll(".mode-btn").forEach((b) => {
     b.addEventListener("click", () => {
       focusInput();
-      setMode((b as HTMLElement).dataset.mode);
+      setMode((b as HTMLElement).dataset.mode!);
     });
   });
 

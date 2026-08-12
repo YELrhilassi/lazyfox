@@ -277,8 +277,7 @@ import type { BgAction } from "../shared/protocol";
     if (!tab || tab.id === browser.tabs.TAB_ID_NONE) return { factor: 1 };
     let f: number | null = factor != null ? factor : null;
     if (f == null) {
-      f = await browser.tabs.getZoom(tab.id);
-      f = Math.max(0.3, Math.min(5, Math.round((f + delta) * 100) / 100));
+      f = Math.max(0.3, Math.min(5, Math.round(((await browser.tabs.getZoom(tab.id)) + delta) * 100) / 100));
     }
     await browser.tabs.setZoom(tab.id, f);
     return { factor: f };
@@ -592,7 +591,7 @@ import type { BgAction } from "../shared/protocol";
     if (stripHash(tab.url) !== CC_URL) return;
     const m = /#lfc=req\.([a-zA-Z]+)$/.exec(tab.url);
     if (!m) return;
-    handleReq(tab, m[1])
+    handleReq(tab, m[1]!)
       .catch(() => {})
       .then(() => browser.tabs.remove(tabId).catch(() => {}));
   });

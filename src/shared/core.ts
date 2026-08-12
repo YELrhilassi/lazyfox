@@ -105,7 +105,7 @@ export function setCoreApi(p: Promise<CoreApi>): void {
 // Default backend: the current realm (content script, extension page).
 export function ensureCore(): Promise<CoreApi> {
   if (!apiPromise) setCoreApi(initCoreIn(globalThis));
-  return apiPromise;
+  return apiPromise!;
 }
 
 export function coreReady(): boolean {

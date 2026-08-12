@@ -34,7 +34,7 @@ import type { ChromeHotkeys, Config } from "../shared/types";
   function el(tag: string, attrs?: Record<string, string> | null, text?: string | null): HTMLElement {
     const e = document.createElementNS(XHTML, tag) as HTMLElement;
     if (attrs) {
-      for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]);
+      for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]!);
     }
     if (text != null) e.textContent = text;
     return e;
@@ -336,7 +336,7 @@ import type { ChromeHotkeys, Config } from "../shared/types";
 
   function handleOpen(target: string, browser: any): void {
     const closeCc = target.indexOf("c") !== -1;
-    const which = target.split(".")[0];
+    const which = target.split(".")[0]!;
     const POPUP_ACTIONS: Record<string, () => void> = {
       search: () => openSearchPopup(ctx),
       url: () => openUrlPopup(ctx),

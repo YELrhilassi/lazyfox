@@ -36,8 +36,9 @@ export function ensureChromeCore(): Promise<CoreApi> {
               () => dbg("wasm probe " + tag + ": OK"),
               (e) => dbg("wasm probe " + tag + " BLOCKED: name=" + (e && e.name) + " msg=" + JSON.stringify(e && e.message))
             );
-          } catch (e) {
-            dbg("wasm probe " + tag + " threw sync: " + (e && e.name) + " " + (e && e.message));
+          } catch (e: unknown) {
+            const err = e as { name?: string; message?: string };
+            dbg("wasm probe " + tag + " threw sync: " + (err && err.name) + " " + (err && err.message));
           }
         };
         probeWasmAsync("window");

@@ -251,7 +251,8 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
     }
     if (k === "Enter") {
       e.preventDefault();
-      if (shown[idx]) opts.onPick(shown[idx]);
+      const item = shown[idx];
+      if (item) opts.onPick(item);
       return true;
     }
     if (opts.extraKeys) {

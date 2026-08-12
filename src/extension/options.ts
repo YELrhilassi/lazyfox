@@ -20,7 +20,7 @@ import { core } from "../shared/core";
   const CH_KEYS = Object.keys(CHROME_HOTKEY_DEFAULTS);
   const chEls: { [k: string]: HTMLInputElement } = {};
   for (const k of CH_KEYS) {
-    chEls[k] = document.getElementById("ch" + k[0].toUpperCase() + k.slice(1)) as HTMLInputElement;
+    chEls[k] = document.getElementById("ch" + k[0]!.toUpperCase() + k.slice(1)) as HTMLInputElement;
   }
   const chStatusEl = document.getElementById("chStatus") as HTMLSpanElement;
   let chTimer: ReturnType<typeof setTimeout> | null = null;
@@ -29,7 +29,7 @@ import { core } from "../shared/core";
     const bindings: { [k: string]: string } = {};
     for (const k of CH_KEYS) {
       bindings[k] =
-        (chEls[k].value || "").trim() || CHROME_HOTKEY_DEFAULTS[k as keyof typeof CHROME_HOTKEY_DEFAULTS];
+        (chEls[k]!.value || "").trim() || CHROME_HOTKEY_DEFAULTS[k as keyof typeof CHROME_HOTKEY_DEFAULTS];
     }
     return bindings;
   }
@@ -83,7 +83,7 @@ import { core } from "../shared/core";
     whichKey.checked = c.whichKey !== false;
     const cb = Object.assign({}, CHROME_HOTKEY_DEFAULTS, r.chromeBindings || {});
     for (const k of CH_KEYS) {
-      chEls[k].value = cb[k];
+      chEls[k]!.value = cb[k];
     }
   });
 
