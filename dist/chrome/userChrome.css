@@ -1,9 +1,11 @@
 /*  Lazyfox chrome theme.
     All vanilla Firefox chrome UI is REMOVED from the window — the tab strip
     is gone for good (tabs are managed with the leader key), and the URL bar
-    is not rendered at all. It is re-rendered on demand: move the mouse to the
-    very top edge of the window and the URL toolbar slides back in; move away
-    and it is removed again. The reveal is gated on the "lazyfox.hoverReveal"
+    is not rendered at all. It is re-rendered on demand as a FIXED OVERLAY:
+    move the mouse to the very top edge of the window and the URL toolbar
+    drops down OVER the page; move away and it is removed again. The overlay
+    takes no layout space, so the page fills the whole window — no empty band
+    and no content push-down. The reveal is gated on the "lazyfox.hoverReveal"
     boolean pref, toggled live with ;e (or from the Lazyfox options page) —
     with the pref off the toolbar never appears. In fullscreen (zen mode, ;z)
     it never appears either.                                                */
@@ -43,13 +45,19 @@
 
 /* ---------- the hover trigger ---------- */
 
-/* The toolbox is an invisible 6px strip at the very top of the window and the
-   only thing the mouse can touch when the UI is hidden. It must stay in the
-   normal flow (NOT position:fixed): the browser content is a native widget
-   that always paints above fixed chrome, so a floating strip can never be
-   hovered. In flow, the page simply starts 6px lower. */
+/* The toolbox is a FIXED, transparent strip at the very top of the window and
+   doubles as the hover detector. position:fixed removes it from layout, so the
+   page fills the whole window (no empty band at the top), and the high z-index
+   lifts it above the native content surface so it can actually be hovered — no
+   dead zone. Collapsed it is only --lf-hover-strip tall; hovering it re-renders
+   the toolbar as an overlay that drops over the page instead of pushing it down. */
 #navigator-toolbox {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
   height: var(--lf-hover-strip) !important;
+  z-index: 2147483000 !important;
   overflow: visible !important;
   background: transparent !important;
   border: none !important;
@@ -85,12 +93,14 @@ html[data-lf-reveal="1"] #navigator-toolbox:hover #nav-bar {
   display: flex !important;
 }
 
-/* zen mode / fullscreen: the toolbar is never re-rendered */
-:root[sizemode="fullscreen"] #navigator-toolbox {
+/* zen mode / fullscreen: the toolbar is never re-rendered. These rules must be
+   more specific than the :hover reveal rules above so hover cannot override
+   them while fullscreen. */
+:root[data-lf-reveal="1"][sizemode="fullscreen"] #navigator-toolbox:hover {
   height: var(--lf-hover-strip) !important;
 }
 
-:root[sizemode="fullscreen"] #navigator-toolbox #nav-bar {
+:root[data-lf-reveal="1"][sizemode="fullscreen"] #navigator-toolbox:hover #nav-bar {
   display: none !important;
 }
 
