@@ -6,12 +6,31 @@ param(
   [string]$FirefoxDir = ""
 )
 
+# Lazyfox one-click installer for Windows.
+#
+# Everything a user needs, in one run:
+#   - finds your Firefox profile (prefers Developer Edition),
+#   - installs dist/chrome/userChrome.css, userChrome.uc.js, frame.js and
+#     corebootstrap.js into the profile's chrome/ folder,
+#   - merges dist/chrome/user.js prefs (only the ones Lazyfox owns; your other
+#     prefs are preserved),
+#   - installs the fx-autoconfig chrome loader (config.js + config-prefs.js)
+#     into the Firefox install directory (one UAC prompt, once),
+#   - builds and installs the WebExtension, then enables it past Firefox's
+#     sideload protection (Firefox is stopped automatically if it is running
+#     with this profile so the enable always succeeds),
+#   - cleans up stale .lazyfox.bak-* backups from previous installs,
+#   - relaunches Firefox so the new UI is live immediately (-NoLaunch skips).
+#
+# Your Firefox data, bookmarks and settings are never touched. Every file we
+# replace is backed up first as <name>.lazyfox.bak-<timestamp>. Re-run any
+# time to upgrade — it only writes Lazyfox's own files.
+
 $ErrorActionPreference = "Stop"
 
-function Write-Step {
-  param([string]$Msg)
-  Write-Host "==> $Msg" -ForegroundColor Cyan
-}
+function Write-Step { param([string]$Msg) Write-Host "==> $Msg" -ForegroundColor Cyan }
+function Write-Warn { param([string]$Msg) Write-Host "WARNING: $Msg" -ForegroundColor Yellow }
+function Write-Note { param([string]$Msg) Write-Host "NOTE: $Msg" -ForegroundColor DarkGray }
 
 function Find-FirefoxExe {
   $candidates = @(
@@ -39,14 +58,73 @@ function Set-LazyfoxEnabled {
   return $true
 }
 
+# Firefox caches an add-on's manifest metadata (including which content scripts
+# to inject) in extensions.json and trusts it on startup. If a newer xpi is
+# installed with the same id+version, that cached metadata is never refreshed,
+# so content scripts silently stop injecting (the extension still loads: the
+# command center works, but ; / ;f / ;i / Esc on web pages do nothing). The
+# reliable fix is to drop the cached entry so Firefox re-imports the add-on
+# fresh from the new xpi on the next launch. Other add-ons are untouched.
+function Remove-LazyfoxEntry {
+  param([string]$JsonPath)
+  if (-not (Test-Path -LiteralPath $JsonPath)) { return $false }
+  try {
+    $bak = "$JsonPath.lazyfox.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    Copy-Item -LiteralPath $JsonPath -Destination $bak -Force
+    Write-Note "backed up extensions.json -> $bak"
+    $json = Get-Content -Raw -LiteralPath $JsonPath | ConvertFrom-Json
+    $before = @($json.addons).Count
+    $json.addons = @($json.addons | Where-Object { $_.id -ne "lazyfox@lazyfox.dev" })
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($JsonPath, ($json | ConvertTo-Json -Depth 20), $utf8NoBom)
+    return ($before -gt @($json.addons).Count)
+  } catch {
+    Write-Warn "could not update extensions.json ($($_.Exception.Message)); the add-on metadata may stay stale."
+    return $false
+  }
+}
+
+# Stop the firefox.exe instances using this profile, and wait for them to
+# actually exit (the .xpi is locked and extensions.json is rewritten by
+# Firefox while it runs). Firefox launched normally (double-click, no
+# -profile argument) still uses this profile via profiles.ini, so match by
+# (1) an explicit -profile path on the command line, (2) the same browser
+# executable as the one we install into, and (3) as a last resort any running
+# Firefox.
 function Stop-FirefoxForProfile {
   param([string]$ProfileDir)
   $escaped = [regex]::Escape($ProfileDir)
-  $procs = Get-CimInstance Win32_Process -Filter "Name = 'firefox.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match $escaped }
+  $all = @(Get-CimInstance Win32_Process -Filter "Name = 'firefox.exe'" -ErrorAction SilentlyContinue)
+  if ($all.Count -eq 0) { return $false }
+  $procs = @($all | Where-Object { $_.CommandLine -and $_.CommandLine -match $escaped })
+  if ($procs.Count -eq 0) {
+    $ff = Find-FirefoxExe
+    if ($ff) {
+      $procs = @($all | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -eq $ff })
+      if ($procs.Count -gt 0) {
+        Write-Note "Firefox is running without an explicit profile argument; stopping the instance of $(Split-Path -Parent $ff)."
+      }
+    }
+  }
+  if ($procs.Count -eq 0) {
+    # Don't kill a different browser installation — the xpi removal below has
+    # its own lock guard and will warn if it cannot replace a locked add-on.
+    return $false
+  }
+  Write-Step "Stopping Firefox using this profile ($($procs.Count) process(es))..."
   foreach ($proc in $procs) {
     Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
   }
+  for ($i = 0; $i -lt 40; $i++) {
+    $alive = @(Get-CimInstance Win32_Process -Filter "Name = 'firefox.exe'" -ErrorAction SilentlyContinue)
+    $still = $false
+    foreach ($a in $alive) {
+      if ($procs | Where-Object { $_.ProcessId -eq $a.ProcessId }) { $still = $true; break }
+    }
+    if (-not $still) { break }
+    Start-Sleep -Milliseconds 500
+  }
+  return $true
 }
 
 function Test-IsAdmin {
@@ -61,7 +139,7 @@ function Test-IsAdmin {
 function Install-ChromeLoader {
   param([string]$Dir)
   if (-not $Dir -or -not (Test-Path -LiteralPath $Dir)) {
-    Write-Host "WARNING: could not find the Firefox installation folder: '$Dir'"
+    Write-Warn "could not find the Firefox installation folder: '$Dir'"
     return $false
   }
   $utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -78,6 +156,21 @@ function Install-ChromeLoader {
     $utf8NoBom
   )
   return $true
+}
+
+# Remove stale Lazyfox backups (from this installer or older versions) that are
+# older than 30 days, so an old install can't pile up cruft. Backups newer than
+# that are kept — they are the rollback safety net.
+function Remove-StaleLazyfoxBackups {
+  param([string]$Dir)
+  if (-not (Test-Path -LiteralPath $Dir)) { return }
+  $cutoff = (Get-Date).AddDays(-30)
+  $stale = Get-ChildItem -LiteralPath $Dir -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '\.lazyfox\.(bak|uninst\.bak)-' -and $_.LastWriteTime -lt $cutoff }
+  foreach ($f in $stale) {
+    Remove-Item -Force -LiteralPath $f.FullName -ErrorAction SilentlyContinue
+    Write-Note "removed stale backup: $($f.Name)"
+  }
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -146,19 +239,20 @@ if (-not $profileDir -or -not (Test-Path -LiteralPath $profileDir)) {
 
 Write-Step "Profile: $profileDir"
 
+# One-click: stop this profile's Firefox so the add-on enable always succeeds,
+# then relaunch at the end (unless -NoLaunch).
+$stoppedFirefox = Stop-FirefoxForProfile $profileDir
+
 $chromeDir = Join-Path $profileDir "chrome"
 New-Item -ItemType Directory -Force -Path $chromeDir | Out-Null
 Copy-Item -Force (Join-Path $repoRoot "dist\chrome\userChrome.css") (Join-Path $chromeDir "userChrome.css")
-Write-Step "Installed dist\chrome\userChrome.css"
-
 Copy-Item -Force (Join-Path $repoRoot "dist\chrome\userChrome.uc.js") (Join-Path $chromeDir "userChrome.uc.js")
-Write-Step "Installed dist\chrome\userChrome.uc.js"
-
 Copy-Item -Force (Join-Path $repoRoot "dist\chrome\frame.js") (Join-Path $chromeDir "frame.js")
-Write-Step "Installed dist\chrome\frame.js"
-
 Copy-Item -Force (Join-Path $repoRoot "dist\chrome\corebootstrap.js") (Join-Path $chromeDir "corebootstrap.js")
-Write-Step "Installed dist\chrome\corebootstrap.js"
+Write-Step "Installed chrome\userChrome.css, userChrome.uc.js, frame.js, corebootstrap.js"
+
+Remove-StaleLazyfoxBackups $chromeDir
+Remove-StaleLazyfoxBackups (Join-Path $profileDir "extensions")
 
 $managed = @{}
 $ourContent = Get-Content -LiteralPath (Join-Path $repoRoot "dist\chrome\user.js")
@@ -180,7 +274,7 @@ if ($ffDir) {
       $args = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -ChromeLoaderOnly -FirefoxDir `"$ffDir`""
       $p = Start-Process -FilePath "powershell.exe" -ArgumentList $args -Verb RunAs -Wait -PassThru
       if ($p.ExitCode -ne 0) {
-        Write-Host "WARNING: chrome loader was not installed (admin required). The command center's about: pages and the Ctrl+Alt+O/A/H/D hotkeys will not work. Re-run this installer from an elevated shell to fix."
+        Write-Warn "chrome loader was not installed (admin required). Internal-page ; keys and the command center's about: pages will not work. Re-run this installer from an elevated shell to fix."
       }
       else {
         Write-Step "Chrome loader installed."
@@ -189,10 +283,22 @@ if ($ffDir) {
     else {
       if (Install-ChromeLoader $ffDir) { Write-Step "Chrome loader installed." }
     }
+    # verify
+    $cfg = Join-Path $ffDir "config.js"
+    $pref = Join-Path $ffDir "defaults\pref\config-prefs.js"
+    if ((Test-Path -LiteralPath $cfg) -and (Test-Path -LiteralPath $pref)) {
+      Write-Step "Chrome loader verified in $ffDir"
+    }
+    else {
+      Write-Warn "Chrome loader files are missing after install. Re-run this installer from an elevated shell."
+    }
+  }
+  else {
+    Write-Note "Chrome loader already installed in $ffDir"
   }
 }
 else {
-  Write-Host "WARNING: could not locate firefox.exe; chrome loader not installed (about: pages from the command center won't work)."
+  Write-Warn "could not locate firefox.exe; chrome loader not installed (internal-page ; keys won't work)."
 }
 
 $userJs = Join-Path $profileDir "user.js"
@@ -218,19 +324,50 @@ if (-not $NoExtension) {
   $tmp = Join-Path $env:TEMP ("lazyfox-build-" + [guid]::NewGuid().ToString("N"))
   Copy-Item -Recurse -Force $extDir $tmp
   Add-Type -AssemblyName System.IO.Compression.FileSystem
-  if (Test-Path -LiteralPath $xpi) { Remove-Item -Force -LiteralPath $xpi }
-  [System.IO.Compression.ZipFile]::CreateFromDirectory($tmp, $xpi, [System.IO.Compression.CompressionLevel]::Optimal, $false)
-  Remove-Item -Recurse -Force $tmp
-  Write-Step "Built and installed extension: $xpi"
+  if (Test-Path -LiteralPath $xpi) {
+    try { Remove-Item -Force -LiteralPath $xpi }
+    catch {
+      Write-Warn ".xpi is locked ($_.Exception.Message). Quit Firefox and re-run this installer to refresh the add-on."
+    }
+  }
+  try {
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($tmp, $xpi, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+    Write-Step "Built and installed extension: $xpi"
+  }
+  catch {
+    Write-Warn "could not write the extension ($_.Exception.Message). Quit Firefox and re-run."
+  }
+  Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 
   $extJson = Join-Path $profileDir "extensions.json"
-  $lockFile = Join-Path $profileDir "lock"
+  # The add-on startup cache (addonStartup.json.lz4) and extensions.json store
+  # the content-script registration Firefox restored at the last boot. If a
+  # newer xpi is installed with the same id+version, that cached metadata is
+  # never refreshed, so content scripts silently stop injecting (the extension
+  # still loads: the command center works, but ; / ;f / ;i / Esc on web pages
+  # do nothing). Delete both while Firefox is stopped so the next launch
+  # re-imports the add-on fresh from the new xpi. Other add-ons are untouched.
+  $addonStartup = Join-Path $profileDir "addonStartup.json.lz4"
+  if (Test-Path -LiteralPath $addonStartup) {
+    try {
+      Remove-Item -Force -LiteralPath $addonStartup -ErrorAction Stop
+      Write-Step "Cleared the add-on startup cache (addonStartup.json.lz4)."
+    } catch {
+      Write-Warn "could not remove addonStartup.json.lz4 ($($_.Exception.Message))."
+    }
+  }
   if (Test-Path -LiteralPath $extJson) {
-    if (Test-Path -LiteralPath $lockFile) {
-      Write-Host "NOTE: this profile is currently in use by Firefox. Quit it, then re-run this installer to auto-enable Lazyfox."
+    # Firefox is stopped (or was never running): the edit sticks. Drop the
+    # cached entry so the freshly built xpi is re-imported with correct
+    # content-script metadata (see Remove-LazyfoxEntry), then re-enable it.
+    if (Remove-LazyfoxEntry $extJson) {
+      Write-Step "Refreshed Lazyfox in extensions.json (re-imported on next launch with fresh metadata)."
     }
     elseif (Set-LazyfoxEnabled $extJson) {
-      Write-Step "Enabled Lazyfox (it was installed but disabled by Firefox's sideload protection)."
+      Write-Step "Enabled Lazyfox (sideload-protection bypass in extensions.json)."
+    }
+    else {
+      Write-Note "Lazyfox is not listed in extensions.json yet; it will be imported on the next launch."
     }
   }
   elseif (-not $NoLaunch) {
@@ -254,24 +391,34 @@ if (-not $NoExtension) {
           Write-Step "Lazyfox imported and enabled. It stays enabled on future launches."
         }
         else {
-          Write-Host "WARNING: Lazyfox was imported but could not be auto-enabled. Enable it once in about:addons."
+          Write-Warn "Lazyfox was imported but could not be auto-enabled. Enable it once in about:addons."
         }
       }
       else {
-        Write-Host "WARNING: Firefox did not finish importing the add-on. Enable Lazyfox once in about:addons after your next launch."
+        Write-Warn "Firefox did not finish importing the add-on. Enable Lazyfox once in about:addons after your next launch."
       }
     }
     else {
-      Write-Host "WARNING: could not locate firefox.exe to trigger the first import. Enable Lazyfox once in about:addons."
+      Write-Warn "could not locate firefox.exe to trigger the first import. Enable Lazyfox once in about:addons."
     }
   }
 }
 
 Write-Host ""
-Write-Host "Done. Fully quit and restart Firefox."
+Write-Host "Done. Lazyfox is installed and enabled."
 Write-Host ""
 Write-Host "Things to check:"
-Write-Host "  1. All chrome UI (tabs, URL bar, menus) should be hidden. Move the mouse to the very top edge to reveal them; ;z toggles fullscreen/zen mode."
-Write-Host "  2. If Lazyfox is not listed in about:addons, load it manually:"
-  Write-Host "       about:debugging -> This Firefox -> Load Temporary Add-on -> dist\extension\manifest.json"
-Write-Host "  3. The unsigned add-on only persists on Firefox Developer Edition / Nightly (xpinstall.signatures.required=false is already set)."
+Write-Host "  1. All chrome UI (tabs, URL bar, menus) is removed. Move the mouse to the very top edge of the window to reveal the URL bar on demand; ;z toggles zen/fullscreen mode."
+Write-Host "  2. Press ; (semicolon) on any page for the which-key overlay: ;o URL, ;s search, ;t tabs, ;n new tab, ;w resize..."
+Write-Host "  3. If Lazyfox is not listed in about:addons, load it manually: about:debugging -> This Firefox -> Load Temporary Add-on -> dist\extension\manifest.json"
+
+if ($stoppedFirefox -and -not $NoLaunch) {
+  $ff = Find-FirefoxExe
+  if ($ff) {
+    Write-Step "Relaunching Firefox with the profile..."
+    Start-Process -FilePath $ff -ArgumentList @('-profile', "`"$profileDir`"") | Out-Null
+  }
+}
+elseif (-not $NoLaunch) {
+  Write-Note "Fully quit and restart Firefox to apply the changes (or re-run with no flags and it will relaunch for you)."
+}

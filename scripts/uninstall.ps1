@@ -121,16 +121,10 @@ if (-not $profileDir -or -not (Test-Path -LiteralPath $profileDir)) {
 
 Write-Step "Profile: $profileDir"
 
-# Firefox locks files when running. We can still edit chrome/* and user.js even
-# with it running, but the .xpi is locked and extensions.json must not be
-# rewritten while Firefox is alive (its in-memory copy would overwrite ours).
-$lockFile = Join-Path $profileDir "lock"
-$ffRunning = Test-Path -LiteralPath $lockFile
-if ($ffRunning) {
-  Write-Note "Firefox appears to be running with this profile. The .xpi and extensions.json"
-  Write-Note "cannot be updated while it runs. Quit Firefox fully and re-run this uninstaller,"
-  Write-Note "or pass nothing and the script will remove what it can now."
-}
+# One-click: stop this profile's Firefox so the .xpi and extensions.json can be
+# removed (both are locked/rewritten while Firefox runs).
+$stopped = Stop-FirefoxForProfile $profileDir
+if ($stopped) { Write-Note "Stopped Firefox for this profile so the uninstall can complete." }
 
 # ---------- profile/chrome/* ----------
 $chromeDir = Join-Path $profileDir "chrome"
@@ -174,22 +168,24 @@ if (Test-Path -LiteralPath $userJs) {
 # ---------- extensions/lazyfox@lazyfox.dev.xpi ----------
 $xpi = Join-Path $profileDir "extensions\lazyfox@lazyfox.dev.xpi"
 if (Test-Path -LiteralPath $xpi) {
-  if ($ffRunning) {
-    Write-Warn ".xpi is locked (Firefox is running). Quit Firefox and re-run to remove it."
-  } else {
-    Backup-ThenRemove $xpi | Out-Null
-    Write-Step "Removed extension lazyfox@lazyfox.dev.xpi"
-  }
+  Backup-ThenRemove $xpi | Out-Null
+  Write-Step "Removed extension lazyfox@lazyfox.dev.xpi"
+}
+
+# ---------- add-on startup cache ----------
+# The startup cache (addonStartup.json.lz4) stores the add-on's registration
+# including content scripts; remove it so a later re-install starts clean.
+$addonStartup = Join-Path $profileDir "addonStartup.json.lz4"
+if (Test-Path -LiteralPath $addonStartup) {
+  Backup-ThenRemove $addonStartup | Out-Null
+  Write-Step "Removed addonStartup.json.lz4 (add-on startup cache)"
 }
 
 # ---------- extensions.json : mark our add-on as removed ----------
 if (-not $KeepExtensionDisabledOnly) {
   $extJson = Join-Path $profileDir "extensions.json"
   if (Test-Path -LiteralPath $extJson) {
-    if ($ffRunning) {
-      Write-Warn "extensions.json not touched (Firefox is running). It will be cleaned on next start anyway."
-    } else {
-      try {
+    try {
         $bak = "$extJson.lazyfox.uninst.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
         Copy-Item -LiteralPath $extJson -Destination $bak -Force
         Write-Note "backed up -> $bak"
@@ -212,7 +208,6 @@ if (-not $KeepExtensionDisabledOnly) {
       } catch {
         Write-Warn "could not edit extensions.json (continuing): $_"
       }
-    }
   }
 }
 

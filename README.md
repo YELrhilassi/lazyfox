@@ -29,12 +29,14 @@ Lazyfox no longer depends on the page being a normal website:
 
 Two pieces work together:
 
-1. **Profile patch** (`dist/chrome/userChrome.css` + prefs) hides Firefox's own UI.
-   A WebExtension is not allowed to remove the tab bar / URL bar, so this uses
-   the classic `userChrome.css` trick. The whole navigation toolbox is lifted
-   off-screen; hovering the very top edge of the window slides it back down
-   (with a delay so accidental passes don't pop it up). In fullscreen
-   ("zen" mode, `;z`) it never appears.
+1. **Profile patch** (`dist/chrome/userChrome.css` + prefs) removes Firefox's
+   own UI. A WebExtension is not allowed to remove the tab bar / URL bar, so
+   this uses the classic `userChrome.css` trick: the tab strip and URL toolbar
+   are `display:none` — truly gone from the window — and the URL bar is
+   **re-rendered on demand**: move the mouse to the very top edge of the window
+   and the toolbar appears; move away and it is removed again. The reveal is
+   gated on the `lazyfox.hoverReveal` pref, toggled live with `;e` (or the
+   options page). In fullscreen ("zen" mode, `;z`) it never appears.
 2. **WebExtension** (`dist/extension/`) provides the leader-key engine, the
    popups rendered on top of the page (search / URL / tabs / history /
    bookmarks / downloads), and the command center that replaces the new tab
@@ -176,8 +178,7 @@ second key — you just don't see the cheat sheet.
 | `; f` | link hints (type the letters shown on links/buttons/inputs; a hint only fires once its letters are unambiguous — `a` stays pending when `aa`/`ah` also exist, `Enter` selects the current prefix) |
 | `; s` | search the web — goes straight to your default engine (Google) |
 | `; o` | open a URL — no `http://` or `www` needed; visited sites are fuzzy-matched (opens in a new tab; can be changed in settings) |
-| `; w` | resize window (`arrows` 32px, `Shift+arrows` 8px, `m` maximize, `Esc` done) |
-| `; m` | move window with the arrow keys (32px, `Shift+arrows` 8px, `Esc` done) |
+| `; w` | resize / move window (arrows resize 20px, `Shift+arrows` move 40px, `Esc` done) |
 | `; t` | tab switcher (type to filter, `j/k`/arrows navigate, `Enter` switch) |
 | `; h` / `; b` / `; d` | history / bookmarks / downloads popups |
 | `; i` | focus first input on the page |
@@ -185,7 +186,7 @@ second key — you just don't see the cheat sheet.
 | `; n` / `; x` / `; v` / `; c` | new tab / close tab / reopen / duplicate |
 | `; r` / `; g` / `; l` | reload / back / forward |
 | `; j` / `; k` | next / previous tab |
-| `; y` / `; m` / `; a` | copy URL / mute / pin tab |
+| `; y` / `; m` / `; a` | copy URL / mute tab / pin tab |
 | `; =` / `; -` / `; 0` | zoom in / out / reset |
 | `; z` | zen mode (fullscreen — toolbar never appears) |
 | `; e` | toggle toolbar reveal on hover |
@@ -202,8 +203,8 @@ focused, so your keys aren't eaten) with a live command list:
 
 - **`1`–`6` (or `Tab`) switch modes** — 1 Search · 2 URL · 3 Tabs · 4 History ·
   5 Bookmarks · 6 Downloads — the same as the numbered buttons on top
-- **`;` opens the leader menu** — `; s o t h b d` switch modes, `; w` resize,
-  `; m` move the window, `; x n v c z` = close / new / reopen / duplicate / zen
+- **`;` opens the leader menu** — `; s o t h b d` switch modes, `; w` resize/move
+  the window, `; m` mute, `; x n v c z` = close / new / reopen / duplicate / zen
 - **`j` `k` / arrows** navigate results, **`Enter`** runs the selection
 - **type any letter** to start typing immediately — the input focuses and the
   letter lands in the box (search / URL / tab filter)
@@ -216,10 +217,8 @@ you can search for anything. Use `Esc` to get back to command mode.
 
 Window controls from the command center:
 
-- **`; w`** resize mode — arrow keys 32px, `Shift+arrows` 8px, `m` maximize,
-  `Esc` done
-- **`; m`** move mode — arrow keys 32px, `Shift+arrows` 8px, `Esc` done
-  (movement is limited by the screen edges, as expected)
+- **`; w`** resize / move mode — arrow keys resize 20px, `Shift+arrows` move
+  40px, `Esc` done
 
 Native shortcuts (tab management, reload, find, zoom, devtools…) keep working
 and are listed in the which-key overlay.

@@ -312,9 +312,13 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
 
 // --- toast ---
 
+// The toast lives in a *closed* shadow root, so the host's .shadowRoot is null
+// even for the creating script — keep a direct reference to the box instead of
+// re-querying through the host.
 let toastHost: {
   host: HTMLElement;
   span: HTMLSpanElement;
+  box: HTMLElement;
   timer: ReturnType<typeof setTimeout> | null;
 } | null = null;
 
@@ -341,11 +345,12 @@ export function toast(msg: string): void {
     sh.appendChild(style);
     sh.appendChild(box);
     document.documentElement.appendChild(host);
-    toastHost = { host, span, timer: null };
+    toastHost = { host, span, box, timer: null };
   }
   toastHost.span.textContent = msg;
-  const box = toastHost.host.shadowRoot!.querySelector(".t")!;
-  box.classList.add("on");
+  toastHost.box.classList.add("on");
   if (toastHost.timer) clearTimeout(toastHost.timer);
-  toastHost.timer = setTimeout(() => box.classList.remove("on"), 1400);
+  toastHost.timer = setTimeout(() => {
+    if (toastHost) toastHost.box.classList.remove("on");
+  }, 1400);
 }

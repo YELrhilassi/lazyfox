@@ -74,7 +74,24 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     return { bindings: mergeHotkeys(bindings), config: mergeConfig(config) };
   }
 
+  // userChrome.css reveals the toolbar when the toolbox is hovered and the
+  // html[data-lf-reveal="1"] gate is set (the -moz-bool-pref media query is
+  // deprecated in current Firefox, so the helper drives the gate). Keep both
+  // the pref (about:config visibility) and the attribute in sync whenever the
+  // config changes.
+  function applyHoverRevealPref(): void {
+    try {
+      const on = cfg.config.hoverReveal !== false;
+      Services.prefs.setBoolPref("lazyfox.hoverReveal", on);
+      const root = document.documentElement;
+      if (root) root.setAttribute("data-lf-reveal", on ? "1" : "0");
+    } catch (e) {
+      // ignore
+    }
+  }
+
   const cfg: ChromeCfg = loadCfg();
+  applyHoverRevealPref();
   const leaderKey = () => cfg.config.leader || ";";
 
   /* ===================== popup shell ===================== */
@@ -87,6 +104,8 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     close?: () => void;
   }
   let currentPopup: PopupState | null = null;
+  let lastPopupError: string | null = null;
+
 
   function closePopup(): void {
     if (currentPopup) {
@@ -106,6 +125,16 @@ import type { ChromeHotkeys, Config } from "../shared/types";
 
   function openChromePopup(html: string, build: (root: HTMLElement) => PopupCtl): PopupCtl {
     closePopup();
+    try {
+      return openChromePopupInner(html, build);
+    } catch (e) {
+      lastPopupError = String(e && (e as Error).message ? (e as Error).message : e);
+      if (__DEV__) dbg("openChromePopup threw: " + lastPopupError);
+      return { onKey: () => false, refresh: () => {}, close: () => {}, focus: () => {} };
+    }
+  }
+
+  function openChromePopupInner(html: string, build: (root: HTMLElement) => PopupCtl): PopupCtl {
     const root = el("div");
     root.style.cssText =
       "position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;" +
@@ -113,6 +142,23 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     const hdoc = document.implementation.createHTMLDocument("");
     hdoc.body.innerHTML = html;
     while (hdoc.body.firstChild) root.appendChild(hdoc.body.firstChild);
+    // Firefox's HTML-fragment parser drops form controls (<input>, <button>,
+    // <select>) when it runs in the privileged chrome document — divs and text
+    // survive, the input is lost. The popup engine needs its .lf-input, so
+    // re-create it from the parsed structure (placeholder from the empty hint).
+    if (!root.querySelector(".lf-input")) {
+      const panel = root.querySelector(".lf-panel");
+      if (panel) {
+        const input = el("input");
+        input.className = "lf-input";
+        input.setAttribute("spellcheck", "false");
+        const empty = panel.querySelector(".lf-empty");
+        if (empty) input.setAttribute("placeholder", (empty.textContent || "").trim());
+        const foot = panel.querySelector(".lf-foot");
+        if (foot) panel.insertBefore(input, foot);
+        else panel.appendChild(input);
+      }
+    }
     const st = el("style");
     st.textContent = PANEL_CSS;
     root.appendChild(st);
@@ -120,7 +166,17 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     root.addEventListener("mousedown", (e) => {
       if (e.target === root) closePopup();
     });
-    const ctl = build(root) || { onKey: () => false, refresh: () => {}, close: () => {}, focus: () => {} };
+    let ctl: PopupCtl;
+    try {
+      ctl = build(root);
+    } catch (e) {
+      lastPopupError = String(e && (e as Error).message ? (e as Error).message : e);
+      if (__DEV__) dbg("popup build threw: " + lastPopupError);
+      ctl = null as unknown as PopupCtl;
+    }
+    if (!ctl) {
+      ctl = { onKey: () => false, refresh: () => {}, close: () => {}, focus: () => {} };
+    }
     // Keys typed into the popup input drive the selector directly.
     const input = root.querySelector(".lf-input") as HTMLInputElement | null;
     if (input && ctl.onKey) {
@@ -260,6 +316,7 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     } catch (e) {
       // ignore
     }
+    applyHoverRevealPref();
     toast("toolbar reveal: " + (cfg.config.hoverReveal ? "on" : "off"));
   };
 
@@ -280,8 +337,12 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     manualText: false,
   };
   const leaderActions = makeLeaderActions(ctx);
+  let lastAction: string | null = null;
   leader = new LeaderController(
-    (k) => runLeaderAction(leaderActions, k),
+    (k) => {
+      lastAction = k;
+      runLeaderAction(leaderActions, k);
+    },
     () => cfg.config.whichKey !== false
   );
 
@@ -370,6 +431,207 @@ import type { ChromeHotkeys, Config } from "../shared/types";
       handleOpen(rest, browser);
       return;
     }
+    if (cmd === "reveal") {
+      // Dev/verification: force the toolbar visible so tests can hover real
+      // chrome buttons.
+      try {
+        const tb = document.getElementById("navigator-toolbox");
+        if (tb) {
+          if (tb.hasAttribute("lf-debug-reveal")) tb.removeAttribute("lf-debug-reveal");
+          else tb.setAttribute("lf-debug-reveal", "1");
+        }
+        setHash(browser, "#lfc=reveal." + rest);
+      } catch (e) {
+        // ignore
+      }
+      return;
+    }
+    if (cmd === "console") {
+      // Debug/verification: dump recent internal-console messages so
+      // content-script exceptions are visible instead of silent.
+      const dot = rest.indexOf(".");
+      const nonce = dot < 0 ? rest : rest.slice(0, dot);
+      let json = "{}";
+      try {
+        const msgs: Array<{ t: string; m: string }> = [];
+        const c = (globalThis as any).Services.console;
+        if (c && typeof c.getMessageCount === "function") {
+          const n = c.getMessageCount();
+          for (let i = Math.max(0, n - 60); i < n; i++) {
+            try {
+              const m = c.getMessageAt(i);
+              const text = m && (m.message || m.errorMessage || "");
+              const flag = m && m.flags;
+              if (text) {
+                const s = String(text);
+                if (/lazyfox|content\.js|moz-extension|error|exception|referenceerror|typeerror|cannot|undefined/i.test(s)) {
+                  msgs.push({ t: String(flag || ""), m: s.slice(0, 400) });
+                }
+              }
+            } catch (e) {
+              // skip
+            }
+          }
+        }
+        json = btoa(JSON.stringify({ count: msgs.length, msgs: msgs.slice(0, 25) }));
+      } catch (e) {
+        json = btoa(JSON.stringify({ error: String(e) }));
+      }
+      setHash(browser, "#lfc=console." + json + "." + nonce);
+      return;
+    }
+    if (cmd === "diag") {
+      // Debug/verification: report the extension's live state inside the
+      // browser — loaded policy, background context, content-script
+      // registration — so install problems are visible instead of silent.
+      const dot = rest.indexOf(".");
+      const nonce = dot < 0 ? rest : rest.slice(0, dot);
+      let json = "{}";
+      try {
+        const p = (globalThis as any).WebExtensionPolicy.getByID(EXT_ID);
+        let cs = null;
+        try {
+          if (p && p.contentScripts) {
+            const arr = Array.from(p.contentScripts as Iterable<any>);
+            cs = {
+              count: arr.length,
+              matches: arr.map((c: any) => (c.matches ? Array.from(c.matches) : [])),
+              js: arr.map((c: any) => (c.jsPaths ? Array.from(c.jsPaths) : [])),
+              props: arr.map((c: any) => Object.getOwnPropertyNames(c).slice(0, 30)),
+              matchesType: arr.map((c: any) => (c.matches ? typeof c.matches + "/" + String(c.matches && c.matches.constructor && c.matches.constructor.name) : "none")),
+              // Does the registered MatchPatternSet actually match web pages?
+              matchesHttp: arr.map((c: any) => {
+                try {
+                  if (!c.matches) return "no-matches";
+                  const urls = [
+                    "http://127.0.0.1/x",
+                    "http://example.com/x",
+                    "https://example.com/x",
+                    "file:///C:/x.html",
+                  ];
+                  const r: Record<string, unknown> = {};
+                  for (const u of urls) {
+                    if (typeof c.matches.matches === "function") r[u] = c.matches.matches(u);
+                    else r[u] = "no-matches-fn";
+                  }
+                  return r;
+                } catch (e) {
+                  return { error: String(e) };
+                }
+              }),
+              manifest: (p.extension && p.extension.manifest && p.extension.manifest.content_scripts) || null,
+            };
+          }
+        } catch (e) {
+          cs = { error: String(e) };
+        }
+        let bg = null;
+        try {
+          bg = p && p.backgroundContext ? true : false;
+        } catch (e) {
+          bg = String(e);
+        }
+        let e10s = null;
+        try {
+          e10s = (globalThis as any).Services.appinfo.browserTabsRemoteAutostart;
+        } catch (e) {
+          e10s = String(e);
+        }
+        let perTab = null;
+        try {
+          const tab = (window as any).gBrowser && (window as any).gBrowser.selectedTab;
+          const lb = tab && tab.linkedBrowser;
+          perTab = lb ? { remote: lb.isRemoteBrowser, currentURI: lb.currentURI && lb.currentURI.spec } : null;
+        } catch (e) {
+          perTab = String(e);
+        }
+        json = btoa(JSON.stringify({
+          exists: !!p,
+          active: p ? p.active : false,
+          bg: bg,
+          e10s: e10s,
+          perTab: perTab,
+          contentScripts: cs,
+          extUrl: p ? p.getURL("") : null,
+        }));
+      } catch (e) {
+        json = btoa(JSON.stringify({ error: String(e) }));
+      }
+      setHash(browser, "#lfc=diag." + json + "." + nonce);
+      return;
+    }
+    if (cmd === "state") {
+      // Debug/verification: report the actual chrome UI state. The URL
+      // toolbar and tab strip are display:none unless the hover-reveal strip
+      // shows them, so tests can assert the vanilla UI is really gone.
+      const dot = rest.indexOf(".");
+      const nonce = dot < 0 ? rest : rest.slice(0, dot);
+      // onLocationChange fires again for our own location.replace: don't
+      // re-answer an already-answered query. The reply is
+      // state.<base64>.<nonce> (two dots); the request state.<nonce> (one).
+      try {
+        const cur = browser.currentURI ? browser.currentURI.spec : "";
+        const after = cur.indexOf("#lfc=state.") !== -1 ? cur.split("#lfc=state.")[1] : "";
+        if (after && after.split(".").length >= 2) return;
+      } catch (e) {
+        // ignore
+      }
+      let json = "{}";
+      try {
+        const nav = document.getElementById("nav-bar");
+        const tabs = document.getElementById("TabsToolbar");
+        const toolbox = document.getElementById("navigator-toolbox");
+        const st = (el: HTMLElement | null) =>
+          el ? getComputedStyle(el).display : "missing";
+        let hover = false;
+        try {
+          hover = toolbox ? toolbox.matches(":hover") : false;
+        } catch (e) {
+          // ignore
+        }
+        const br = toolbox ? toolbox.getBoundingClientRect() : null;
+        let popupInfo = null;
+        try {
+          const panels = Array.from(document.querySelectorAll(".lf-panel"));
+          popupInfo = {
+            current: !!currentPopup,
+            wkOn: document.querySelectorAll(".wk.on").length,
+            rootInputs: document.querySelectorAll(".lf-popup .lf-input").length,
+            panels: panels.map((p) => ({
+              title: (p.querySelector(".lf-title") || {}).textContent || "",
+              hasInput: !!p.querySelector(".lf-input"),
+            })),
+          };
+        } catch (e) {
+          popupInfo = { error: String(e) };
+        }
+        let mutedCount = 0;
+        try {
+          for (const t of Array.from(window.gBrowser.tabs) as Array<{ muted?: boolean }>) {
+            if (t.muted) mutedCount++;
+          }
+        } catch (e) {
+          // ignore
+        }
+        const state = {
+          popup: popupInfo,
+          navDisplay: st(nav),
+          tabsDisplay: st(tabs),
+          toolboxDisplay: st(toolbox),
+          toolboxHeight: br ? Math.round(br.height) : -1,
+          hoverReveal: Services.prefs.getBoolPref("lazyfox.hoverReveal", false),
+          toolboxHover: hover,
+          leaderActive: leader ? leader.active : false,
+          mutedCount: mutedCount,
+          lastAction: lastAction,
+        };
+        json = btoa(JSON.stringify(state));
+      } catch (e) {
+        json = btoa(JSON.stringify({ error: String(e) }));
+      }
+      setHash(browser, "#lfc=state." + json + "." + nonce);
+      return;
+    }
     if (cmd === "cfg") {
       const dot = rest.indexOf(".");
       const nonce = dot < 0 ? rest : rest.slice(0, dot);
@@ -388,6 +650,7 @@ import type { ChromeHotkeys, Config } from "../shared/types";
           if (parsed.config && typeof parsed.config === "object") {
             cfg.config = mergeConfig(parsed.config as Partial<Config>);
             Services.prefs.setStringPref("lazyfox.chrome.config", JSON.stringify(cfg.config));
+            applyHoverRevealPref();
           }
         }
       } catch (e) {
@@ -487,9 +750,19 @@ import type { ChromeHotkeys, Config } from "../shared/types";
   );
 
   window.addEventListener("blur", () => {
-    if (currentPopup) closePopup();
-    if (leader.active) leader.hide();
+    // A blur fires on every tab switch (tabbrowser's _adjustFocusAfterTabSwitch
+    // moves focus through the window), so close only on a real deactivation of
+    // the OS window — checked on the next tick, after the switch settles.
     typing.reset();
+    setTimeout(() => {
+      try {
+        if (Services.focus.activeWindow === window) return;
+      } catch (e) {
+        // fall through and close
+      }
+      if (currentPopup) closePopup();
+      if (leader.active) leader.hide();
+    }, 0);
   });
 
   try {

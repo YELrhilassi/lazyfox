@@ -134,6 +134,18 @@ fi
 
 step "Profile: $PROFILE"
 
+# ---------- stop this profile's Firefox (one-click install) ----------
+
+ff_running_for_profile() {
+  [[ -f "$PROFILE/.parentlock" || -f "$PROFILE/parent.lock" || -f "$PROFILE/lock" ]] || \
+    pgrep -u "$(id -un)" -f "$PROFILE" >/dev/null 2>&1
+}
+if ff_running_for_profile; then
+  notice "Firefox is running with this profile; stopping it so the add-on can be enabled..."
+  pkill -u "$(id -un)" -f "$PROFILE" 2>/dev/null || true
+  sleep 2
+fi
+
 # ---------- Firefox binary / install dir ----------
 
 find_firefox_bin() {
@@ -197,6 +209,21 @@ cp -f "$REPO_ROOT/dist/chrome/userChrome.uc.js" "$PROFILE/chrome/userChrome.uc.j
 cp -f "$REPO_ROOT/dist/chrome/frame.js"         "$PROFILE/chrome/frame.js"
 cp -f "$REPO_ROOT/dist/chrome/corebootstrap.js" "$PROFILE/chrome/corebootstrap.js"
 step "Installed chrome/userChrome.css, userChrome.uc.js, frame.js and corebootstrap.js"
+
+# Clean up stale Lazyfox backups (older than 30 days) from previous installs so
+# an old install can't pile up cruft. Fresh backups are the rollback safety net.
+remove_stale_backups() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return
+  find "$dir" -maxdepth 1 \( -name '*.lazyfox.bak-*' -o -name '*.lazyfox.uninst.bak-*' \) \
+    2>/dev/null | while read -r f; do
+    if [[ -n "$f" ]] && [[ "$(find "$f" -mtime +30 2>/dev/null)" != "" ]]; then
+      rm -f "$f" && notice "removed stale backup: $(basename "$f")"
+    fi
+  done
+}
+remove_stale_backups "$PROFILE/chrome"
+remove_stale_backups "$PROFILE/extensions"
 
 # ---------- user.js merge (Lazyfox prefs only) ----------
 
@@ -306,8 +333,22 @@ JS
   fi
   [[ -f "$xpi" ]] && step "Built and installed extension: $xpi"
 
-  # Enable a sideloaded (disabled-by-default) Lazyfox add-on by editing
-  # extensions.json. Back up first; never touch other entries.
+  # Drop the add-on startup cache AND the cached Lazyfox entry so the add-on
+  # is re-imported fresh from the freshly built xpi on the next launch.
+  #
+  # WHY: Firefox caches an add-on's metadata (including which content scripts
+  # to inject) in extensions.json + addonStartup.json.lz4 and trusts it at
+  # startup. If a newer xpi is installed with the same id+version, that cached
+  # metadata is never refreshed, so content scripts silently stop injecting
+  # (the extension still loads: the command center works, but ; / ;f / ;i /
+  # Esc on web pages do nothing). Dropping both forces a clean re-import.
+  # Other add-ons are untouched, and the re-imported Lazyfox is enabled by
+  # default (extensions.autoDisableScopes=0 in our user.js).
+  addon_startup="$PROFILE/addonStartup.json.lz4"
+  if [[ -f "$addon_startup" ]]; then
+    rm -f "$addon_startup"
+    step "Cleared the add-on startup cache (addonStartup.json.lz4)."
+  fi
   ext_json="$PROFILE/extensions.json"
   ext_json_edit() {
     local jp="$1"
@@ -318,16 +359,11 @@ import json, sys
 p = sys.argv[1]
 with open(p, encoding="utf-8") as f:
     data = json.load(f)
-for a in data.get("addons", []):
-    if a.get("id") == "lazyfox@lazyfox.dev":
-        a["userDisabled"] = False
-        a["active"] = True
-        a["visible"] = True
-        break
-else:
-    sys.exit(1)
+before = len(data.get("addons", []))
+data["addons"] = [a for a in data.get("addons", []) if a.get("id") != "lazyfox@lazyfox.dev"]
 with open(p, "w", encoding="utf-8") as f:
     json.dump(data, f)
+sys.exit(0 if before != len(data["addons"]) else 1)
 PY
       return $?
     elif command -v node >/dev/null 2>&1; then
@@ -336,10 +372,10 @@ PY
 const fs = require("fs");
 const p = process.argv[2];
 const data = JSON.parse(fs.readFileSync(p, "utf8"));
-const a = (data.addons || []).find(x => x.id === "lazyfox@lazyfox.dev");
-if (!a) { process.exit(1); fs.writeFileSync(p, JSON.stringify(data, null, 2)); return; }
-a.userDisabled = false; a.active = true; a.visible = true;
+const before = (data.addons || []).length;
+data.addons = (data.addons || []).filter(x => x.id !== "lazyfox@lazyfox.dev");
 fs.writeFileSync(p, JSON.stringify(data, null, 2));
+process.exit(before === data.addons.length ? 1 : 0);
 JS
       return $?
     fi
@@ -358,7 +394,7 @@ JS
       notice "Firefox is running with this profile. Quit it, then re-run this installer to auto-enable Lazyfox."
     else
       if ext_json_edit "$ext_json"; then
-        step "Enabled Lazyfox (sideload-protection bypass in extensions.json)."
+        step "Refreshed Lazyfox in extensions.json (re-imported on next launch with fresh metadata)."
       else
         warn "Lazyfox not yet listed in extensions.json. It will be imported on the next Firefox launch."
       fi
@@ -397,13 +433,23 @@ JS
 fi
 
 echo
-echo "Done. Fully quit and restart Firefox."
+echo "Done. Lazyfox is installed and enabled."
 echo
 echo "Things to check:"
-echo "  1. All chrome UI (tabs, URL bar, menus) should be hidden. Move the mouse to the very top edge to reveal them; ;z toggles fullscreen/zen mode."
-echo "  2. If Lazyfox is not listed in about:addons, load it manually:"
+echo "  1. All chrome UI (tabs, URL bar, menus) is removed. Move the mouse to the very top edge of the window to reveal the URL bar on demand; ;z toggles fullscreen/zen mode."
+echo "  2. Press ; (semicolon) on any page for the which-key overlay: ;o URL, ;s search, ;t tabs, ;n new tab, ;w resize..."
+echo "  3. If Lazyfox is not listed in about:addons, load it manually:"
 echo "       about:debugging -> This Firefox -> Load Temporary Add-on -> dist/extension/manifest.json"
-echo "  3. The unsigned add-on only persists on Firefox Developer Edition / Nightly"
+echo "  4. The unsigned add-on only persists on Firefox Developer Edition / Nightly"
 echo "     (xpinstall.signatures.required=false is already set for you)."
-echo "  4. Re-run this installer any time you update Lazyfox; it only writes its own"
+echo "  5. Re-run this installer any time you update Lazyfox; it only writes its own"
 echo "     files and never touches your profile data."
+
+if [[ "$NO_LAUNCH" -eq 0 ]]; then
+  ff_bin="$(find_firefox_bin || true)"
+  if [[ -n "$ff_bin" ]]; then
+    step "Launching Firefox with the profile..."
+    "$ff_bin" -profile "$PROFILE" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
+fi

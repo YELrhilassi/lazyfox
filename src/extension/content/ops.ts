@@ -199,6 +199,16 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     activateTab: (id: number) => void send("activateTab", { id: id }),
     tabNav: (dir: number) => {
       void send("tabs").then((r) => {
+        if (__DEV__) {
+          try {
+            document.documentElement.setAttribute(
+              "data-lf-tabs",
+              JSON.stringify(r && r.tabs ? r.tabs.map((t) => ({ id: t.id, a: t.active })) : "NULL")
+            );
+          } catch (x) {
+            // ignore
+          }
+        }
         const tabs: Array<{ id: number; active: boolean }> = (r && r.tabs) || [];
         if (!tabs.length) return;
         const cur = tabs.findIndex((t) => t.active);
