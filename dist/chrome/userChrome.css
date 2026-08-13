@@ -1,65 +1,187 @@
-/*  Lazyfox - hide all Firefox chrome UI.
-    The whole navigation toolbox (menubar, tab strip, URL bar, bookmarks bar)
-    is lifted off-screen. Move the mouse to the very top edge of the window to
-    reveal it (with a short delay so accidental passes don't pop it up).
-    In fullscreen (zen mode, toggled with ;z) it never appears.                */
+/*  Lazyfox chrome theme.
+    All vanilla Firefox chrome UI is REMOVED from the window — the tab strip
+    is gone for good (tabs are managed with the leader key), and the URL bar
+    is not rendered at all. It is re-rendered on demand: move the mouse to the
+    very top edge of the window and the URL toolbar slides back in; move away
+    and it is removed again. The reveal is gated on the "lazyfox.hoverReveal"
+    boolean pref, toggled live with ;e (or from the Lazyfox options page) —
+    with the pref off the toolbar never appears. In fullscreen (zen mode, ;z)
+    it never appears either.                                                */
 
 :root {
-  --lf-toolbox-hover-px: 3px;
+  --lf-bg: #1e1e2e;
+  --lf-bg2: #16161e;
+  --lf-fg: #c0caf5;
+  --lf-muted: #9aa5ce;
+  --lf-dim: #565f89;
+  --lf-border: #414868;
+  --lf-border2: #2a2f45;
+  --lf-accent: #7aa2f7;
+  --lf-sel: #292e42;
+  --lf-hover-strip: 12px;
 }
 
+/* ---------- removed from the window, permanently ---------- */
+
+/* the tab strip (and the OS titlebar row that hosts it) */
+#titlebar,
+#TabsToolbar,
+#tabbrowser-tabs {
+  display: none !important;
+}
+
+/* menubar and bookmarks bar */
+#toolbar-menubar,
+#PersonalToolbar {
+  display: none !important;
+}
+
+/* the URL toolbar — not rendered until it is needed */
+#nav-bar {
+  display: none !important;
+}
+
+/* ---------- the hover trigger ---------- */
+
+/* The toolbox is an invisible 6px strip at the very top of the window and the
+   only thing the mouse can touch when the UI is hidden. It must stay in the
+   normal flow (NOT position:fixed): the browser content is a native widget
+   that always paints above fixed chrome, so a floating strip can never be
+   hovered. In flow, the page simply starts 6px lower. */
 #navigator-toolbox {
-  position: fixed !important;
-  top: 0 !important;
-  left: 0 !important;
-  right: 0 !important;
-  z-index: 1000 !important;
+  height: var(--lf-hover-strip) !important;
+  overflow: visible !important;
   background: transparent !important;
   border: none !important;
   border-bottom: none !important;
   box-shadow: none !important;
-  transform: translateY(calc(-100% + var(--lf-toolbox-hover-px))) !important;
-  transition: transform 0.12s ease-in 0s !important;
+  /* Firefox reserves the top of the toolbox as the window drag region,
+     which swallows hover. Lazyfox moves windows with the ;m resize popup,
+     so the top strip must stay interactive. */
+  -moz-window-dragging: no-drag !important;
 }
 
-#navigator-toolbox::after {
-  content: "";
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  height: 14px;
+/* ---------- reveal on demand ---------- */
+
+/* Hovering the top strip re-renders the toolbar. The reveal is gated on the
+   data-lf-reveal attribute that userChrome.uc.js sets from the
+   lazyfox.hoverReveal pref (the -moz-bool-pref media query is deprecated in
+   current Firefox), so with the pref off the toolbar never appears. */
+html[data-lf-reveal="1"] #navigator-toolbox:hover {
+  height: auto !important;
 }
 
-#navigator-toolbox:focus-within {
-  transform: translateY(0) !important;
-  transition: transform 0.18s ease-out 0s !important;
+html[data-lf-reveal="1"] #navigator-toolbox:hover #nav-bar {
+  display: flex !important;
 }
 
-@media (-moz-bool-pref: "lazyfox.hoverReveal") {
-  #navigator-toolbox:hover {
-    transform: translateY(0) !important;
-    transition: transform 0.18s ease-out 0.2s !important;
-  }
+/* dev/verification: force the toolbar visible (set by the chrome helper's
+   #lfc=reveal command) */
+#navigator-toolbox[lf-debug-reveal] {
+  height: auto !important;
 }
 
+#navigator-toolbox[lf-debug-reveal] #nav-bar {
+  display: flex !important;
+}
+
+/* zen mode / fullscreen: the toolbar is never re-rendered */
 :root[sizemode="fullscreen"] #navigator-toolbox {
-  transform: translateY(-100%) !important;
-  transition: none !important;
+  height: var(--lf-hover-strip) !important;
 }
 
-:root[sizemode="fullscreen"] #navigator-toolbox:hover {
-  transform: translateY(-100%) !important;
+:root[sizemode="fullscreen"] #navigator-toolbox #nav-bar {
+  display: none !important;
 }
 
-#browser {
-  height: 100vh !important;
+/* ---------- theme the (re-rendered) toolbar ---------- */
+
+#nav-bar {
+  background: var(--lf-bg) !important;
+  border: none !important;
+  border-bottom: 1px solid var(--lf-border2) !important;
+  box-shadow: none !important;
 }
 
-#appcontent {
-  height: 100vh !important;
+/* flat dark buttons */
+#nav-bar toolbarbutton,
+#PanelUI-button {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
 }
 
-#toolbar-menubar {
-  visibility: collapse !important;
+#nav-bar toolbarbutton .toolbarbutton-icon,
+#PanelUI-button .toolbarbutton-icon,
+#PanelUI-menu-button .toolbarbutton-icon {
+  fill: var(--lf-fg) !important;
+}
+
+#nav-bar toolbarbutton:hover,
+#nav-bar toolbarbutton:hover:active,
+#PanelUI-button:hover,
+#PanelUI-button[open] {
+  background: var(--lf-sel) !important;
+}
+
+#nav-bar toolbarbutton:hover .toolbarbutton-icon,
+#PanelUI-button:hover .toolbarbutton-icon {
+  fill: #ffffff !important;
+}
+
+#nav-bar toolbarseparator {
+  border-color: var(--lf-border2) !important;
+}
+
+/* the URL bar */
+#urlbar,
+#urlbar-background {
+  background: var(--lf-bg2) !important;
+  border: 1px solid var(--lf-border) !important;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+}
+
+#urlbar[focused],
+#urlbar[open] {
+  border-color: var(--lf-accent) !important;
+}
+
+#urlbar-input,
+.urlbar-input {
+  color: var(--lf-fg) !important;
+}
+
+#urlbar-input::placeholder,
+.urlbar-input::placeholder {
+  color: var(--lf-dim) !important;
+  opacity: 1 !important;
+}
+
+/* the URL-bar dropdown results */
+#urlbar .urlbarView {
+  background: var(--lf-bg) !important;
+  color: var(--lf-fg) !important;
+  border: 1px solid var(--lf-border) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5) !important;
+}
+
+.urlbarView-row {
+  color: var(--lf-fg) !important;
+}
+
+.urlbarView-row:hover,
+.urlbarView-row[selected] {
+  background: var(--lf-sel) !important;
+}
+
+.urlbarView-row .urlbarView-title,
+.urlbarView-row .urlbarView-url,
+.urlbarView-row .urlbarView-action {
+  color: var(--lf-fg) !important;
+}
+
+.urlbarView-row .urlbarView-url {
+  color: var(--lf-dim) !important;
 }

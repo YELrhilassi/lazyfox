@@ -1,5 +1,7 @@
 node_modules/
 web-ext-artifacts/
+.tools/
+.freebuff/
 Thumbs.db
 .DS_Store
 *.log
