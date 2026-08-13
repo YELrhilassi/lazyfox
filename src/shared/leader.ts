@@ -103,7 +103,10 @@ export class LeaderController {
 
   private async runSel(): Promise<void> {
     const items = await this.bindings();
-    const it = items[this.wk.sel];
+    // wk.sel is the lazy index (position among runnable, non-native items);
+    // lazyBindings mirrors that ordering, so index it directly instead of
+    // the full table (which would hit native rows or past the end).
+    const it = items.length ? this.lazyBindings[this.wk.sel] : undefined;
     if (it && !it.native) this.run(it.key);
   }
 

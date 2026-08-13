@@ -344,8 +344,17 @@ export const chromeOps: ActionOps = {
     }
   },
   muteTab: () => {
+    // tab.muted is a getter-only property in current Firefox and the legacy
+    // toggleMute/toggleMuteTab helpers are gone — the muted attribute on the
+    // xul:tab element is the state the getter reflects.
     const tab = window.gBrowser.selectedTab;
-    if (tab && tab.toggleMute) tab.toggleMute();
+    if (!tab) return;
+    try {
+      if (tab.hasAttribute("muted")) tab.removeAttribute("muted");
+      else tab.setAttribute("muted", "true");
+    } catch (e) {
+      // ignore
+    }
   },
   pinTab: () => {
     const tab = window.gBrowser.selectedTab;

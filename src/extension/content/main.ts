@@ -37,23 +37,9 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   }
   loadConfig();
 
-  let chromeAlive = false;
-  function loadChromeAlive() {
-    void browser.storage.local.get("chromeAlive").then(
-      (r: { chromeAlive?: boolean }) => {
-        chromeAlive = !!(r && r.chromeAlive);
-      },
-      () => {}
-    );
-  }
-  loadChromeAlive();
-
-  browser.storage.onChanged.addListener((changes: { config?: { newValue?: Partial<Config> }; chromeAlive?: { newValue?: boolean } }, area: string) => {
+  browser.storage.onChanged.addListener((changes: { config?: { newValue?: Partial<Config> } }, area: string) => {
     if (area === "local" && changes.config) {
       config = mergeConfig(changes.config.newValue || {});
-    }
-    if (area === "local" && changes.chromeAlive) {
-      chromeAlive = !!changes.chromeAlive.newValue;
     }
   });
 
@@ -158,6 +144,18 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   /* ==================== key dispatch ==================== */
 
   function onKeyDown(e: KeyboardEvent) {
+    if (__DEV__) {
+      // Dev-only trace: the last key the content script saw and the state it
+      // dispatched under (page realm reads these attributes in the BiDi suite).
+      try {
+        const d = document.documentElement;
+        d.setAttribute("data-lf-lastkey", e.key);
+        d.setAttribute("data-lf-active", leader ? (leader.active ? "1" : "0") : "?");
+        d.setAttribute("data-lf-popup", currentPopup ? "1" : "0");
+      } catch (x) {
+        // ignore
+      }
+    }
     if (e.isComposing) return;
     if (currentPopup) {
       e.preventDefault();
@@ -179,31 +177,13 @@ import { createContentOps, type ContentPopupShell } from "./ops";
       hints.handleKey(e);
       return;
     }
-    if (chromeAlive) {
-      // Chrome owns the leader key, popups and hotkeys. Content keeps
-      // scroll keys (chrome can't scroll remote content) and Escape-blur.
-      if (e.key === "Escape") {
-        const ae = document.activeElement;
-        if (ae && ae !== document.body && ae !== document.documentElement) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          try {
-            (ae as HTMLElement).blur();
-          } catch (err) {
-            // ignore
-          }
-        }
-        return;
-      }
-      if (e.ctrlKey || e.altKey || e.metaKey) return;
-      if (isTypingTarget(e.target as Element)) return;
-      if (handleScrollKeys(e)) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        return;
-      }
-      return;
-    }
+    // NOTE: the chrome helper announces itself as "alive" and was meant to own
+    // the leader key everywhere, but current Firefox never forwards keys typed
+    // into remote web content to the chrome window's listener (frame scripts
+    // are inert for remote content too). So on web pages the content script
+    // MUST own the leader, popups, hints, Esc and scroll keys itself — the
+    // chrome helper only receives keys on in-process pages (about:, the
+    // command center), where this content script does not run.
     if (e.key === "Escape") {
       const had = hints.active || leader.active;
       if (hints.active) hints.exit();
@@ -229,6 +209,13 @@ import { createContentOps, type ContentPopupShell } from "./ops";
       e.preventDefault();
       e.stopImmediatePropagation();
       leader.handleKey(e);
+      if (__DEV__) {
+        try {
+          document.documentElement.setAttribute("data-lf-dispatched", e.key);
+        } catch (x) {
+          // ignore
+        }
+      }
       return;
     }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
