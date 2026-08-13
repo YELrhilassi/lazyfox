@@ -43,4 +43,11 @@ export interface ActionOps {
   // window resize via chrome window APIs vs background messages).
   openFind(): void;
   openResize(): void;
+
+  // ---- sessions (tmux-style) ----
+  listSessions(q: string): Promise<PopupItem[]>;
+  saveSession(name: string): void;
+  restoreSession(name: string): void;
+  deleteSession(name: string): void;
+  sessionState(): Promise<{ name: string; tabIndex: number; tabCount: number }>;
 }

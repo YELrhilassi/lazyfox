@@ -255,6 +255,42 @@ export function openDownloadsPopup(ctx: PopupCtx): void {
   );
 }
 
+/* ---------------- sessions ---------------- */
+
+export function openSessionsPopup(ctx: PopupCtx): void {
+  ctx.open(
+    basePanel(
+      "Sessions",
+      "no saved sessions",
+      "<span class='lf-badge'>Enter</span> switch &middot; <span class='lf-badge'>x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
+    ),
+    (root) =>
+      makeSelector<PopupItem>(ctx, root, {
+        debounceMs: 40,
+        emptyText: "type a name and press Enter to save the current tabs",
+        search: (q) => ctx.ops.listSessions(q),
+        render: (s) =>
+          "<div class='t'>" +
+          (s.kind === "save" ? "<span class='dot'></span>" : "") +
+          esc(s.title || "") +
+          "</div><div class='s'>" + esc(s.subtitle || "") + "</div>",
+        onPick: (s) => {
+          ctx.close();
+          if (s.kind === "save") ctx.ops.saveSession(s.title || "");
+          else ctx.ops.restoreSession(s.title || "");
+        },
+        extraKeys: (e, sel) => {
+          if (e.key !== "x") return false;
+          if (!sel.empty || sel.item == null || sel.item.kind === "save") return false;
+          e.preventDefault();
+          ctx.ops.deleteSession(sel.item.title || "");
+          sel.refresh();
+          return true;
+        },
+      })
+  );
+}
+
 /* ---------------- help ---------------- */
 
 export function openHelpPopup(ctx: PopupCtx): void {
@@ -317,6 +353,7 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     h: () => openHistoryPopup(ctx),
     b: () => openBookmarksPopup(ctx),
     d: () => openDownloadsPopup(ctx),
+    p: () => openSessionsPopup(ctx),
     i: () => ctx.ops.focusFirstInput(),
     n: () => ctx.ops.newTab(),
     x: () => ctx.ops.closeTab(),

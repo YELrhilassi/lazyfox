@@ -396,6 +396,26 @@ export const chromeOps: ActionOps = {
       return false;
     }
   },
+  // Sessions on chrome-only pages are stubbed: the store lives in the
+  // extension background (browser.storage), which the chrome helper can only
+  // reach through the command-center relay. Wired properly in a follow-up.
+  listSessions: () => Promise.resolve([]),
+  saveSession: () => {
+    toast("sessions work on web pages");
+  },
+  restoreSession: () => {
+    toast("sessions work on web pages");
+  },
+  deleteSession: () => {
+    toast("sessions work on web pages");
+  },
+  sessionState: () => {
+    const tabs = window.gBrowser.tabs;
+    let idx = 1;
+    const sel = tabs.indexOf(window.gBrowser.selectedTab);
+    if (sel >= 0) idx = sel + 1;
+    return Promise.resolve({ name: "default", tabIndex: idx, tabCount: tabs.length });
+  },
   openFind: () => {
     try {
       const fb = window.gFindBar || document.getElementById("FindToolbar");

@@ -40,6 +40,7 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   browser.storage.onChanged.addListener((changes: { config?: { newValue?: Partial<Config> } }, area: string) => {
     if (area === "local" && changes.config) {
       config = mergeConfig(changes.config.newValue || {});
+      ensureStatusBar();
     }
   });
 
@@ -99,6 +100,84 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     (k) => runLeaderAction(leaderActions, k),
     () => config.whichKey !== false
   );
+
+  /* ==================== status bar (tmux-style) ==================== */
+
+  type StatusHost = HTMLElement & { _sh: ShadowRoot };
+  let statusHost: StatusHost | null = null;
+  let statusInfo = { name: "default", tabIndex: 1, tabCount: 0 };
+
+  const STATUS_CSS =
+    ".lf-status{position:fixed;left:0;right:0;bottom:0;height:20px;z-index:2147482000;" +
+    "display:flex;align-items:center;gap:10px;padding:0 10px;" +
+    "background:rgba(20,20,30,.94);color:#9aa5ce;border-top:1px solid #2a2f45;" +
+    "font:11px/1 ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;pointer-events:none}" +
+    ".lf-status .sess{color:#7aa2f7;font-weight:600}" +
+    ".lf-status .tabs{color:#565f89}" +
+    ".lf-status .mode{margin-left:auto;color:#2ac3de;letter-spacing:.14em}" +
+    ".lf-status .mode.lead{color:#7aa2f7}";
+
+  function ensureStatusBar(): void {
+    if (config.statusBar === false) {
+      if (statusHost) {
+        try {
+          statusHost.remove();
+        } catch (e) {
+          // ignore
+        }
+        statusHost = null;
+      }
+      return;
+    }
+    if (statusHost) return;
+    const host = document.createElement("div") as unknown as StatusHost;
+    host.id = "lazyfox-status";
+    const sh = host.attachShadow({ mode: "closed" });
+    sh.innerHTML =
+      "<style>" + STATUS_CSS + "</style>" +
+      "<div class='lf-status'>" +
+      "<span class='sess'>\u27E6default\u27E7</span>" +
+      "<span class='tabs'>1/1</span>" +
+      "<span class='mode'>NORMAL</span>" +
+      "</div>";
+    host._sh = sh;
+    document.documentElement.appendChild(host);
+    statusHost = host;
+  }
+
+  function renderStatus(): void {
+    if (!statusHost) return;
+    const mode = currentPopup
+      ? "POPUP"
+      : hints.active
+        ? "HINTS"
+        : leader.active
+          ? "LEADER"
+          : "NORMAL";
+    const sh = statusHost._sh;
+    const sess = sh.querySelector(".sess");
+    const tabs = sh.querySelector(".tabs");
+    const m = sh.querySelector(".mode");
+    if (sess) sess.textContent = "\u27E6" + statusInfo.name + "\u27E7";
+    if (tabs) tabs.textContent = statusInfo.tabIndex + "/" + statusInfo.tabCount;
+    if (m) {
+      m.textContent = mode;
+      m.className = "mode" + (mode === "LEADER" ? " lead" : "");
+    }
+  }
+
+  function fetchStatus(): void {
+    void send("sessionState").then((r) => {
+      if (r) {
+        statusInfo = {
+          name: r.name || "default",
+          tabIndex: r.tabIndex || 1,
+          tabCount: r.tabCount || 0,
+        };
+        renderStatus();
+      }
+    });
+  }
 
   /* ==================== scroll keys ==================== */
 
@@ -263,6 +342,13 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     });
 
   window.addEventListener("keydown", onKeyDown, true);
+
+  ensureStatusBar();
+  renderStatus();
+  fetchStatus();
+  setInterval(renderStatus, 400);
+  setInterval(fetchStatus, 3000);
+
   window.addEventListener("blur", () => {
     if (currentPopup) closePopup();
     if (hints.active) hints.exit();

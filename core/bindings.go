@@ -54,6 +54,7 @@ var Bindings = []WkItem{
 	{Key: "/", Label: "Find in page", Group: "Tools"},
 	{Key: "?", Label: "Keybindings help", Group: "Tools"},
 	{Key: "e", Label: "Toggle toolbar reveal", Group: "Tools"},
+	{Key: "p", Label: "Sessions", Group: "Tools"},
 	{Key: "z", Label: "Zen mode", Group: "Tools"},
 
 	// ---- Firefox native (display only) ----

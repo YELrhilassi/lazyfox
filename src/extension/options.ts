@@ -14,6 +14,8 @@ import { core } from "../shared/core";
   const openInNewTab = document.getElementById("openInNewTab") as HTMLInputElement;
   const hoverReveal = document.getElementById("hoverReveal") as HTMLInputElement;
   const whichKey = document.getElementById("whichKey") as HTMLInputElement;
+  const statusBar = document.getElementById("statusBar") as HTMLInputElement;
+  const autoRestore = document.getElementById("autoRestore") as HTMLInputElement;
   const saveBtn = document.getElementById("save") as HTMLButtonElement;
   const statusEl = document.getElementById("status") as HTMLSpanElement;
 
@@ -41,7 +43,9 @@ import { core } from "../shared/core";
       scrollKeys: scrollKeys.checked,
       openInNewTab: openInNewTab.checked,
       hoverReveal: hoverReveal.checked,
-      whichKey: whichKey.checked
+      whichKey: whichKey.checked,
+      statusBar: statusBar.checked,
+      autoRestore: autoRestore.checked
     };
   }
 
@@ -81,6 +85,8 @@ import { core } from "../shared/core";
     openInNewTab.checked = c.openInNewTab !== false;
     hoverReveal.checked = c.hoverReveal !== false;
     whichKey.checked = c.whichKey !== false;
+    statusBar.checked = c.statusBar !== false;
+    autoRestore.checked = c.autoRestore !== false;
     const cb = Object.assign({}, CHROME_HOTKEY_DEFAULTS, r.chromeBindings || {});
     for (const k of CH_KEYS) {
       chEls[k]!.value = cb[k];

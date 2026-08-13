@@ -71,6 +71,15 @@
     <span class="row"><input type="checkbox" id="whichKey"> Show the which-key overlay when the leader key is pressed (paginated; Tab / arrows to navigate)</span>
   </label>
 
+  <h2 style="margin-top:34px;">Sessions</h2>
+  <p>tmux-style session manager: press <span class="kbd">;p</span> to save and switch named tab sets.</p>
+  <label>
+    <span class="row"><input type="checkbox" id="statusBar"> Show the status bar (session &middot; tab index &middot; mode)</span>
+  </label>
+  <label>
+    <span class="row"><input type="checkbox" id="autoRestore"> Restore the last session on startup</span>
+  </label>
+
   <h2 style="margin-top:34px;">Firefox chrome integration</h2>
   <p>Handled by <span class="kbd">chrome/userChrome.uc.js</span> (installed by
   <span class="kbd">scripts/install.ps1</span>). These hotkeys open Firefox's built-in pages and work even on
