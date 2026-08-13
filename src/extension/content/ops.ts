@@ -21,6 +21,15 @@ export interface ContentOpsDeps {
   focusFirstInput(): void;
 }
 
+function relTime(ts: number): string {
+  const m = Math.floor((Date.now() - ts) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return m + "m ago";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + "h ago";
+  return Math.floor(h / 24) + "d ago";
+}
+
 /* ---------- content-native popups (find, resize) ---------- */
 
 const FIND_HTML =
@@ -248,6 +257,47 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     },
     focusFirstInput: () => deps.focusFirstInput(),
     startHints: () => deps.startHints(),
+    listSessions: async (q: string) => {
+      const r = await send("sessionList");
+      const sessions: PopupItem[] = ((r && r.sessions) || []).map((s) => ({
+        kind: "session",
+        title: s.name,
+        subtitle:
+          s.tabs.length + " tabs" + (s.updatedAt ? " \u00b7 " + relTime(s.updatedAt) : ""),
+      }));
+      const ql = q.trim();
+      let out = sessions;
+      if (ql) {
+        out = sessions.filter(
+          (s) => (s.title || "").toLowerCase().indexOf(ql.toLowerCase()) !== -1
+        );
+        if (!sessions.some((s) => (s.title || "").toLowerCase() === ql.toLowerCase())) {
+          out.unshift({
+            kind: "save",
+            title: ql,
+            subtitle: "Save current tabs as \u201C" + ql + "\u201D",
+          });
+        }
+      }
+      return out;
+    },
+    saveSession: (name: string) => {
+      void send("sessionSave", { name: name }).then((r) =>
+        toast(r && r.ok ? "saved session \u201C" + name + "\u201D" : "could not save session")
+      );
+    },
+    restoreSession: (name: string) => {
+      void send("sessionRestore", { name: name }).then((r) =>
+        toast(r && r.ok ? "switched to \u201C" + name + "\u201D" : "no session \u201C" + name + "\u201D")
+      );
+    },
+    deleteSession: (name: string) => {
+      void send("sessionDelete", { name: name }).then(() => toast("deleted \u201C" + name + "\u201D"));
+    },
+    sessionState: async () => {
+      const r = await send("sessionState");
+      return r || { name: "default", tabIndex: 1, tabCount: 0 };
+    },
     openFind: () => openFindPopup(deps.shell),
     openResize: () => openResizePopup(deps.shell),
     openTarget: () => {

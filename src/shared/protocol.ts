@@ -5,7 +5,7 @@
 //   - background -> content script (startHints / focusFirstInput)
 // One table, typed request and response per action, so the send() helper and
 // the background handler cannot drift.
-import type { Config, PopupItem, TabInfo } from "./types";
+import type { Config, PopupItem, Session, TabInfo } from "./types";
 
 export interface WindowSize {
   width: number;
@@ -49,6 +49,14 @@ export interface BgApi {
   getConfig: { req: Record<string, never>; res: { config?: Record<string, unknown> } };
   setConfig: { req: { config: Config }; res: { ok: boolean } };
   syncTyping: { req: { typing: boolean }; res: { ok: boolean } };
+  sessionList: { req: Record<string, never>; res: { sessions: Session[] } };
+  sessionSave: { req: { name: string }; res: { ok: boolean; session?: Session } };
+  sessionRestore: { req: { name: string }; res: { ok: boolean } };
+  sessionDelete: { req: { name: string }; res: { ok: boolean } };
+  sessionState: {
+    req: Record<string, never>;
+    res: { name: string; tabIndex: number; tabCount: number };
+  };
 }
 
 export type BgAction = {

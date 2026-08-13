@@ -12,6 +12,8 @@ export const CONFIG_DEFAULTS: Config = {
   openInNewTab: true,
   hoverReveal: true,
   whichKey: true,
+  statusBar: true,
+  autoRestore: true,
 };
 
 export const CHROME_HOTKEY_DEFAULTS: ChromeHotkeys = {

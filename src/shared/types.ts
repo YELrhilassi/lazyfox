@@ -8,6 +8,8 @@ export interface Config {
   openInNewTab: boolean;
   hoverReveal: boolean;
   whichKey: boolean;
+  statusBar: boolean;
+  autoRestore: boolean;
 }
 
 export interface ChromeHotkeys {
@@ -81,4 +83,18 @@ export interface PopupItem {
   query?: string;
   time?: number;
   favIconUrl?: string;
+}
+
+// A saved session: a named snapshot of a window's tabs (tmux-style session).
+export interface SessionTab {
+  url: string;
+  title: string;
+  pinned: boolean;
+}
+
+export interface Session {
+  name: string;
+  tabs: SessionTab[];
+  windowState: string;
+  updatedAt: number;
 }

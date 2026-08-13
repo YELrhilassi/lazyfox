@@ -6,6 +6,7 @@
 import { core, ensureCore } from "../shared/core";
 import { mergeConfig } from "../shared/config";
 import type { BgAction } from "../shared/protocol";
+import type { Session, SessionTab } from "../shared/types";
 
 (function () {
   "use strict";
@@ -190,6 +191,152 @@ import type { BgAction } from "../shared/protocol";
         favIconUrl: t.favIconUrl || ""
       }))
     };
+  }
+
+  /* ===================== sessions (tmux-style) ===================== */
+
+  const SESSIONS_KEY = "lfSessions";
+  const CURRENT_SESSION_KEY = "lfCurrentSession";
+  const LAST_SESSION_KEY = "lfLastSession";
+
+  async function readSessions(): Promise<Record<string, Session>> {
+    try {
+      const r = await browser.storage.local.get(SESSIONS_KEY);
+      const v = r && r[SESSIONS_KEY];
+      if (v && typeof v === "object") return v as Record<string, Session>;
+    } catch (e) {
+      // fall through
+    }
+    return {};
+  }
+
+  async function writeSessions(all: Record<string, Session>): Promise<void> {
+    await browser.storage.local.set({ [SESSIONS_KEY]: all });
+  }
+
+  function isBlankTab(t: any): boolean {
+    return !t || !t.url || t.url === "about:blank" || /^about:(home|newtab)$/i.test(t.url);
+  }
+
+  async function snapshotWindow(): Promise<{ tabs: SessionTab[]; windowState: string }> {
+    const win = await browser.windows.getCurrent();
+    const tabs = await browser.tabs.query({ currentWindow: true });
+    return {
+      tabs: (tabs || []).map((t: any) => ({
+        url: t.url || "",
+        title: t.title || "",
+        pinned: !!t.pinned,
+      })),
+      windowState: win && win.state ? win.state : "normal",
+    };
+  }
+
+  async function openTabsInCurrentWindow(tabs: SessionTab[]): Promise<void> {
+    const win = await browser.windows.getCurrent();
+    const cur = await browser.tabs.query({ currentWindow: true });
+    for (const t of cur || []) {
+      if (!t.pinned) {
+        try {
+          await browser.tabs.remove(t.id);
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+    const urls = (tabs || []).filter((t) => t && t.url).map((t) => t.url);
+    for (let i = 0; i < urls.length; i++) {
+      await browser.tabs.create({ url: urls[i], active: i === 0 });
+    }
+    try {
+      await browser.windows.update(win.id, { focused: true });
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  async function sessionList(): Promise<{ sessions: Session[] }> {
+    const all = await readSessions();
+    const sessions = Object.keys(all)
+      .map((k) => all[k])
+      .filter((s): s is Session => !!s && !!s.tabs)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return { sessions };
+  }
+
+  async function saveSession(name: string): Promise<{ ok: boolean; session?: Session }> {
+    const nm = (name || "").trim();
+    if (!nm) return { ok: false };
+    const snap = await snapshotWindow();
+    const session: Session = {
+      name: nm,
+      tabs: snap.tabs,
+      windowState: snap.windowState,
+      updatedAt: Date.now(),
+    };
+    const all = await readSessions();
+    all[nm] = session;
+    await writeSessions(all);
+    await browser.storage.local.set({
+      [CURRENT_SESSION_KEY]: nm,
+      [LAST_SESSION_KEY]: session,
+    });
+    return { ok: true, session };
+  }
+
+  async function restoreSession(name: string): Promise<{ ok: boolean }> {
+    const all = await readSessions();
+    const s = all[(name || "").trim()];
+    if (!s || !s.tabs || !s.tabs.length) return { ok: false };
+    await openTabsInCurrentWindow(s.tabs);
+    await browser.storage.local.set({ [CURRENT_SESSION_KEY]: s.name });
+    return { ok: true };
+  }
+
+  async function deleteSession(name: string): Promise<{ ok: boolean }> {
+    const all = await readSessions();
+    const nm = (name || "").trim();
+    if (all[nm]) {
+      delete all[nm];
+      await writeSessions(all);
+    }
+    return { ok: true };
+  }
+
+  async function sessionState(): Promise<{ name: string; tabIndex: number; tabCount: number }> {
+    const tabs = await browser.tabs.query({ currentWindow: true });
+    let name = "default";
+    try {
+      const r = await browser.storage.local.get(CURRENT_SESSION_KEY);
+      if (r && r[CURRENT_SESSION_KEY]) name = String(r[CURRENT_SESSION_KEY]);
+    } catch (e) {
+      // ignore
+    }
+    let tabIndex = 1;
+    const active = (tabs || []).findIndex((t: any) => t.active);
+    if (active >= 0) tabIndex = active + 1;
+    return { name: name, tabIndex: tabIndex, tabCount: (tabs || []).length };
+  }
+
+  // Debounced crash-recovery snapshot of the current window ("last" session).
+  let autosaveTimer: number | null = null;
+  function scheduleAutosave(): void {
+    if (autosaveTimer != null) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(async () => {
+      autosaveTimer = null;
+      try {
+        const snap = await snapshotWindow();
+        await browser.storage.local.set({
+          [LAST_SESSION_KEY]: {
+            name: "last",
+            tabs: snap.tabs,
+            windowState: snap.windowState,
+            updatedAt: Date.now(),
+          },
+        });
+      } catch (e) {
+        // ignore
+      }
+    }, 1500);
   }
 
   async function historySearch(q: string) {
@@ -532,6 +679,16 @@ import type { BgAction } from "../shared/protocol";
           } catch (e) {}
         }
         return { ok: true };
+      case "sessionList":
+        return sessionList();
+      case "sessionSave":
+        return saveSession(data.name);
+      case "sessionRestore":
+        return restoreSession(data.name);
+      case "sessionDelete":
+        return deleteSession(data.name);
+      case "sessionState":
+        return sessionState();
       default:
         return { ok: false, error: "unknown action" };
     }
@@ -615,6 +772,37 @@ import type { BgAction } from "../shared/protocol";
   // gate so a stale flag never permanently disables content-side handling.
   browser.runtime.onStartup.addListener(() => {
     browser.storage.local.set({ chromeAlive: false }).catch(() => {});
+  });
+
+  /* ===================== session autosave + restore ===================== */
+
+  const onTabChange = () => scheduleAutosave();
+  browser.tabs.onCreated.addListener(onTabChange);
+  browser.tabs.onRemoved.addListener(onTabChange);
+  browser.tabs.onMoved.addListener(onTabChange);
+  browser.tabs.onAttached.addListener(onTabChange);
+  browser.tabs.onDetached.addListener(onTabChange);
+  browser.tabs.onActivated.addListener(onTabChange);
+  browser.tabs.onUpdated.addListener((tabId: number, info: any) => {
+    if (info.url || info.status === "complete") onTabChange();
+  });
+
+  // On startup, resume the last saved session when autoRestore is on and the
+  // window is still blank (Firefox's own session restore hasn't already run).
+  browser.runtime.onStartup.addListener(async () => {
+    try {
+      const c = await getConfig();
+      if (c.autoRestore === false) return;
+      const tabs = await browser.tabs.query({ currentWindow: true });
+      if (!tabs.length || !tabs.every((t: any) => isBlankTab(t))) return;
+      const r = await browser.storage.local.get(LAST_SESSION_KEY);
+      const last = r && r[LAST_SESSION_KEY];
+      if (last && last.tabs && last.tabs.length) {
+        await openTabsInCurrentWindow(last.tabs);
+      }
+    } catch (e) {
+      // ignore
+    }
   });
 
   // Warm the wasm core for the first URL suggestion.
