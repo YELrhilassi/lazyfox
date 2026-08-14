@@ -9,6 +9,19 @@ import { core } from "./core";
 import type { WkItem } from "./types";
 import { WkSession, wkBodyHtml, wkFootHtml } from "./wk";
 
+// Normalizes a key event into a leader-binding key. Shift is already
+// reflected in e.key for printable characters ("p" vs "P", "|" vs "\\"), so it
+// is deliberately left out of the prefix; Ctrl/Alt/Meta are prepended so a
+// binding can be "leader+Ctrl+key" as well as "leader+key".
+export function leaderCombo(e: KeyboardEvent): string {
+  const mods: string[] = [];
+  if (e.ctrlKey) mods.push("Ctrl");
+  if (e.altKey) mods.push("Alt");
+  if (e.metaKey) mods.push("Meta");
+  const k = e.key;
+  return mods.length ? mods.join("+") + "+" + k : k;
+}
+
 export const WK_CSS =
   ".wk{position:fixed;bottom:24px;right:24px;z-index:2147483646;" +
   "width:520px;max-width:94vw;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;" +
@@ -147,6 +160,21 @@ export class LeaderController {
    */
   handleKey(e: KeyboardEvent): boolean {
     const k = e.key;
+    // Modifier-only keydowns (Shift, Ctrl, Alt, Meta) precede the actual key
+    // on a physical keyboard. They must never consume the leader — otherwise
+    // a shifted binding like `;|` (Shift+\) would dismiss the leader on the
+    // Shift press before the `|` ever arrives. Keep the leader armed and let
+    // the next (character) key drive the dispatch; leaderCombo() folds the
+    // held modifiers back in for `;Ctrl+key` style bindings.
+    if (
+      k === "Shift" ||
+      k === "Control" ||
+      k === "Alt" ||
+      k === "Meta" ||
+      k === "AltGraph"
+    ) {
+      return false;
+    }
     if (k === "Escape") {
       this.hide();
       return true;
@@ -179,7 +207,7 @@ export class LeaderController {
       }
     }
     this.hide();
-    this.run(k);
+    this.run(leaderCombo(e));
     return true;
   }
 

@@ -59,7 +59,8 @@ var Bindings = []WkItem{
 	// ---- Sessions (tmux-style) ----
 	{Key: "p", Label: "Sessions", Group: "Sessions"},
 	{Key: "'", Label: "Switch session 1-9", Group: "Sessions"},
-	{Key: "|", Label: "Split view", Group: "Sessions"},
+	{Key: "|", Label: "Split side-by-side", Group: "Sessions"},
+	{Key: "_", Label: "Split stacked", Group: "Sessions"},
 	{Key: "[", Label: "Split pane left", Group: "Sessions"},
 	{Key: "]", Label: "Split pane right", Group: "Sessions"},
 	{Key: ",", Label: "Move tab left", Group: "Sessions"},

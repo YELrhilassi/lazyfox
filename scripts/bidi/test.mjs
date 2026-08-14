@@ -19,7 +19,7 @@ import {
   startGecko, stopGecko, makeProfile, removeProfile, httpJson,
   subscribe, getTree, createTab, navigate, evalIn, keyTap,
   waitFor, waitForContexts, findContextByUrl, send, setLogs, sleep,
-  startTestServer, activate, focusPage,
+  startTestServer, activate, focusPage, clickPage,
 } from "./lib.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -151,9 +151,9 @@ async function tryArm(tab, timeoutMs) {
   }
 }
 
-async function leaderPress(tab, key) {
+async function leaderPress(tab, key, opts) {
   if (await chromeOwnsLeader(tab)) {
-    await chromeLeaderPress(tab, key);
+    await chromeLeaderPress(tab, key, opts);
     return;
   }
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -161,7 +161,7 @@ async function leaderPress(tab, key) {
     await press(tab, ";");
     const armed = await tryArm(tab, 2500);
     if (armed) {
-      await press(tab, key);
+      await press(tab, key, opts);
       return;
     }
     // clear any leftover state (an open panel / a stray URL-bar focus)
@@ -268,7 +268,7 @@ async function chromeOwnsLeader(tab) {
   }
 }
 
-async function chromeLeaderPress(tab, key) {
+async function chromeLeaderPress(tab, key, opts) {
   // The chrome helper captures the leader key synchronously in the chrome
   // document (no page-side focus involved), so a short settle between the ;
   // and the binding key is enough. Probing chrome state in between would
@@ -277,7 +277,7 @@ async function chromeLeaderPress(tab, key) {
   await focusPage(tab).catch(() => {});
   await press(tab, ";");
   await sleep(300);
-  await press(tab, key);
+  await press(tab, key, opts);
 }
 
 // ---------------- test page ----------------
@@ -1078,6 +1078,127 @@ async function main() {
     const w = await evalIn(probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.work)`);
     assert(w && w.marker === 1, "work marker unchanged at 1, got " + (w && w.marker));
     await press(tabA, "Escape");
+  });
+
+  await runTest("sessions: Ctrl+digit hot-swaps to the marked session", async () => {
+    await gotoPage(tabA, `${base}/`);
+    // Ctrl+9 -> "mail" (marker 9)
+    await press(tabA, "9", { ctrl: true });
+    await sleep(1800);
+    let fresh = await makeProbeTab();
+    let cur = await evalIn(fresh, `browser.storage.local.get("lfCurrentSession").then(r => r.lfCurrentSession)`);
+    assert(cur === "mail", "Ctrl+9 hot-swapped to mail, got " + cur);
+    probe = fresh;
+    tabA = await createTab();
+    await gotoPage(tabA, `${base}/`);
+    // Ctrl+1 -> "work" (marker 1)
+    await press(tabA, "1", { ctrl: true });
+    await sleep(1800);
+    fresh = await makeProbeTab();
+    cur = await evalIn(fresh, `browser.storage.local.get("lfCurrentSession").then(r => r.lfCurrentSession)`);
+    assert(cur === "work", "Ctrl+1 hot-swapped to work, got " + cur);
+    probe = fresh;
+    tabA = await createTab();
+    await gotoPage(tabA, `${base}/`);
+  });
+
+  await runTest("sessions: ;p saves on immediate Enter (no debounce wait)", async () => {
+    // Regression for the Enter race: typing a name and pressing Enter at once
+    // must save, without waiting for the (formerly debounced) search to land.
+    await gotoPage(tabA, `${base}/`);
+    await leaderPress(tabA, "p");
+    await waitFor(async () => (await hasHost(tabA, "lazyfox-popup")) ? true : null, 5000);
+    await typeIn(tabA, "instant");
+    await press(tabA, "Enter"); // no settling sleep
+    await waitFor(async () => {
+      const r = await evalIn(probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.instant)`);
+      return r && r.tabs && r.tabs.length ? r : null;
+    }, 8000);
+    const r = await evalIn(probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions.instant)`);
+    assert(r && r.tabs && r.tabs.length >= 1, "instant saved with tabs");
+    // clean up so later tests are unaffected
+    await evalIn(probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.instant; return browser.storage.local.set({ lfSessions: r.lfSessions }); })`);
+  });
+
+  await runTest("split: ;| splits side-by-side, ;[ / ;] switch panes, ;\\ closes", async () => {
+    await gotoPage(tabA, `${base}/`);
+    // geckodriver cannot synthesize "|" from the bare character, so send the
+    // leader + Shift+\ (which produces the "|" binding) explicitly.
+    await leaderPress(tabA, "\\", { shift: true });
+    try {
+      await waitFor(async () => {
+        const u = await evalIn(tabA, `location.href`);
+        return u && u.includes("splitview.html") ? u : null;
+      }, 10000);
+    } catch (e) {
+      const href = await evalIn(tabA, `location.href`).catch(() => "ERR");
+      const tabs = await tabsInfo().catch(() => "ERR");
+      throw new Error("split did not happen; href=" + href + " tabs=" + JSON.stringify(tabs));
+    }
+    const facts = await evalIn(tabA, `({
+      panes: document.querySelectorAll("#panes iframe").length,
+      orient: document.getElementById("orient").textContent,
+      active: [...document.querySelectorAll(".pane")].findIndex(p => p.classList.contains("active")),
+    })`);
+    assert(facts.panes === 2, "split has 2 panes, got " + facts.panes);
+    assert(facts.orient === "side-by-side", "side-by-side orientation, got " + facts.orient);
+    assert(facts.active === 0, "pane 1 active, got " + facts.active);
+
+    // Focus the split bar so leader keys reach the chrome helper, then switch.
+    await clickPage(tabA, 40, 15);
+    await sleep(250);
+    await press(tabA, ";");
+    await sleep(250);
+    await press(tabA, "]");
+    try {
+      await waitFor(async () => {
+        const idx = await evalIn(tabA, `[...document.querySelectorAll(".pane")].findIndex(p => p.classList.contains("active"))`);
+        return idx === 1 ? idx : null;
+      }, 8000);
+    } catch (e) {
+      throw new Error("pane-switch-to-2 timed out; active=" + await evalIn(tabA, `[...document.querySelectorAll(".pane")].findIndex(p => p.classList.contains("active"))`));
+    }
+    await press(tabA, ";");
+    await sleep(250);
+    await press(tabA, "[");
+    try {
+      await waitFor(async () => {
+        const idx = await evalIn(tabA, `[...document.querySelectorAll(".pane")].findIndex(p => p.classList.contains("active"))`);
+        return idx === 0 ? 1 : null;
+      }, 8000);
+    } catch (e) {
+      throw new Error("pane-switch-to-1 timed out; active=" + await evalIn(tabA, `[...document.querySelectorAll(".pane")].findIndex(p => p.classList.contains("active"))`));
+    }
+
+    // Close the split view; the tab leaves splitview.html.
+    await press(tabA, ";");
+    await sleep(250);
+    await press(tabA, "\\");
+    try {
+      await waitFor(async () => {
+        const u = await evalIn(tabA, `location.href`).catch(() => "");
+        return u && !u.includes("splitview.html") ? u : null;
+      }, 10000);
+    } catch (e) {
+      throw new Error("close-split timed out; href=" + await evalIn(tabA, `location.href`).catch(() => "ERR"));
+    }
+  });
+
+  await runTest("split: ;_ splits stacked", async () => {
+    await gotoPage(tabA, `${base}/`);
+    await leaderPress(tabA, "_");
+    await waitFor(async () => {
+      const orient = await evalIn(tabA, `(document.getElementById("orient")||{}).textContent`).catch(() => "");
+      return orient === "stacked" ? orient : null;
+    }, 10000);
+    const orient = await evalIn(tabA, `document.getElementById("orient").textContent`);
+    assert(orient === "stacked", "stacked orientation, got " + orient);
+    // Clean up via the background (avoid the focus dance).
+    await evalIn(probe, `browser.tabs.query({currentWindow:true, active:true}).then(ts => browser.runtime.sendMessage({ action: "sessionUnsplit", data: {} }))`).catch(() => {});
+    await waitFor(async () => {
+      const u = await evalIn(tabA, `location.href`).catch(() => "");
+      return u && !u.includes("splitview.html") ? u : null;
+    }, 10000);
   });
 
   console.log("\n== Console error audit ==");

@@ -13,7 +13,7 @@ import { LeaderController } from "../shared/leader";
 import { PANEL_CSS, toast, type PopupCtl } from "../shared/overlay";
 import { makeLeaderActions, openBookmarksPopup, openDownloadsPopup, openHistoryPopup, openSearchPopup, openTabsPopup, openUrlPopup, runLeaderAction, type PopupCtx } from "../shared/popups";
 import { StatusBar } from "../shared/statusbar";
-import type { ChromeHotkeys, Config } from "../shared/types";
+import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
 
 (function () {
   "use strict";
@@ -336,9 +336,30 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     sessionAction("switchSessionByMarker", String(marker));
   chromeOps.assignSessionMarker = (name: string, marker: number) =>
     sessionAction("assignSessionMarker", name + "\u0001" + marker);
-  chromeOps.splitTab = () => sessionAction("splitTab");
+  chromeOps.splitTab = (orientation: "horizontal" | "vertical") =>
+    sessionAction("splitTab", orientation);
   chromeOps.unsplitTab = () => sessionAction("unsplitTab");
-  chromeOps.switchSplitPane = () => sessionAction("switchSplitPane");
+  chromeOps.switchSplitPane = (dir: number) =>
+    sessionAction("switchSplitPane", String(dir));
+  // The sessions popup needs the session list on chrome-only pages too. Answer
+  // from the cached status-bar summary (which requestSessionState refreshes)
+  // and kick a background refresh so the next open is current.
+  chromeOps.listSessions = async (q: string) => {
+    requestSessionState();
+    const ql = (q || "").trim().toLowerCase();
+    let items: PopupItem[] = chromeStatusInfo.sessions.map((s) => ({
+      kind: "session",
+      title: s.name,
+      marker: s.marker || 0,
+      subtitle:
+        (s.marker ? "marker " + s.marker + " \u00b7 " : "") +
+        (s.tabCount || 0) +
+        " tabs" +
+        (s.splitCount ? " \u00b7 " + s.splitCount + " split" : ""),
+    }));
+    if (ql) items = items.filter((s) => (s.title || "").toLowerCase().indexOf(ql) !== -1);
+    return items;
+  };
 
   /* ===================== typing channel ===================== */
 
@@ -417,6 +438,7 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     name: "default",
     marker: 0,
     inSplit: false,
+    splitOrientation: undefined as "horizontal" | "vertical" | undefined,
     sessions: [] as { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[],
   };
 
@@ -445,6 +467,7 @@ import type { ChromeHotkeys, Config } from "../shared/types";
       tabIndex: (sel < 0 ? 0 : sel) + 1,
       tabCount: tabs.length,
       inSplit: chromeStatusInfo.inSplit,
+      splitOrientation: chromeStatusInfo.splitOrientation,
       mode: mode,
       sessions: chromeStatusInfo.sessions,
     });
@@ -768,6 +791,8 @@ import type { ChromeHotkeys, Config } from "../shared/types";
           name: state && state.name ? String(state.name) : "default",
           marker: state && state.marker ? Number(state.marker) : 0,
           inSplit: !!(state && state.inSplit),
+          splitOrientation:
+            state && state.splitOrientation === "vertical" ? "vertical" : "horizontal",
           sessions: (state && state.sessions) || [],
         };
         computeChromeStatus();
@@ -889,6 +914,14 @@ import type { ChromeHotkeys, Config } from "../shared/types";
 
       // Typing in a page input (or the URL bar): let the key through.
       if (typing.focusedIsTyping(e)) return;
+
+      // Ctrl+1-9: hot-swap to the session with that marker (tmux-style).
+      if (e.ctrlKey && !e.altKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        chromeOps.switchSessionByMarker(Number(e.key));
+        return;
+      }
 
       if (handleHotkeys(e)) return;
 

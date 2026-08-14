@@ -423,13 +423,13 @@ export const chromeOps: ActionOps = {
   assignSessionMarker: () => {
     toast("sessions work on web pages");
   },
-  splitTab: () => {
+  splitTab: (_orientation: "horizontal" | "vertical") => {
     toast("split view needs a web page");
   },
   unsplitTab: () => {
     toast("split view needs a web page");
   },
-  switchSplitPane: () => {
+  switchSplitPane: (_dir: number) => {
     toast("split view needs a web page");
   },
   sessionState: () => {

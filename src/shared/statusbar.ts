@@ -22,6 +22,7 @@ export interface StatusBarData {
   tabIndex: number;
   tabCount: number;
   inSplit: boolean;
+  splitOrientation?: "horizontal" | "vertical";
   mode: string;
   sessions: StatusBarSessions[];
 }
@@ -156,7 +157,11 @@ export class StatusBar {
     }
     if (split) {
       split.style.display = this.data.inSplit ? "" : "none";
-      split.textContent = this.data.inSplit ? "split" : "";
+      split.textContent = this.data.inSplit
+        ? this.data.splitOrientation === "vertical"
+          ? "split-v"
+          : "split-h"
+        : "";
     }
     if (list) {
       const frag = document.createDocumentFragment();
@@ -205,7 +210,9 @@ export class StatusBar {
           "/" +
           this.data.tabCount +
           "|" +
-          (this.data.inSplit ? "split" : "") +
+          (this.data.inSplit
+            ? "split-" + (this.data.splitOrientation === "vertical" ? "v" : "h")
+            : "") +
           "|" +
           this.data.mode +
           "|" +
