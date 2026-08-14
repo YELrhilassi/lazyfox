@@ -54,8 +54,13 @@ var Bindings = []WkItem{
 	{Key: "/", Label: "Find in page", Group: "Tools"},
 	{Key: "?", Label: "Keybindings help", Group: "Tools"},
 	{Key: "e", Label: "Toggle toolbar reveal", Group: "Tools"},
-	{Key: "p", Label: "Sessions", Group: "Tools"},
 	{Key: "z", Label: "Zen mode", Group: "Tools"},
+
+	// ---- Sessions (tmux-style) ----
+	{Key: "p", Label: "Sessions", Group: "Sessions"},
+	{Key: "'", Label: "Switch session 1-9", Group: "Sessions"},
+	{Key: "|", Label: "Split view", Group: "Sessions"},
+	{Key: "\\", Label: "Close split view", Group: "Sessions"},
 
 	// ---- Firefox native (display only) ----
 	{Key: "Ctrl+T", Label: "New tab", Group: "Firefox native", Native: true},

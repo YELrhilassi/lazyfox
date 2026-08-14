@@ -12,6 +12,7 @@ import { dbg } from "../shared/dev";
 import { LeaderController } from "../shared/leader";
 import { PANEL_CSS, toast, type PopupCtl } from "../shared/overlay";
 import { makeLeaderActions, openBookmarksPopup, openDownloadsPopup, openHistoryPopup, openSearchPopup, openTabsPopup, openUrlPopup, runLeaderAction, type PopupCtx } from "../shared/popups";
+import { StatusBar } from "../shared/statusbar";
 import type { ChromeHotkeys, Config } from "../shared/types";
 
 (function () {
@@ -284,11 +285,13 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     return null;
   }
 
-  function requestBg(action: string): void {
+  function requestBg(action: string, arg?: string): void {
     const base = ccBaseUrl();
     if (!base) return;
+    let frag = "lfc=req." + action;
+    if (arg != null && arg !== "") frag += "." + encodeURIComponent(arg);
     try {
-      const tab = window.gBrowser.addTab(base + "commandcenter.html#lfc=req." + action, {
+      const tab = window.gBrowser.addTab(base + "commandcenter.html#" + frag, {
         inBackground: true,
         skipAnimation: true,
         triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
@@ -319,6 +322,20 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     applyHoverRevealPref();
     toast("toolbar reveal: " + (cfg.config.hoverReveal ? "on" : "off"));
   };
+  // Session + split actions relay to the extension background (which owns
+  // browser.storage) through the #lfc=req channel.
+  const sessionAction = (action: string, arg?: string) => {
+    requestBg(action, arg);
+    // Refresh the status bar's session list after the action lands.
+    setTimeout(requestSessionState, 900);
+  };
+  chromeOps.saveSession = (name: string) => sessionAction("saveSession", name);
+  chromeOps.restoreSession = (name: string) => sessionAction("restoreSession", name);
+  chromeOps.deleteSession = (name: string) => sessionAction("deleteSession", name);
+  chromeOps.switchSessionByMarker = (marker: number) =>
+    sessionAction("switchSessionByMarker", String(marker));
+  chromeOps.splitTab = () => sessionAction("splitTab");
+  chromeOps.unsplitTab = () => sessionAction("unsplitTab");
 
   /* ===================== typing channel ===================== */
 
@@ -345,6 +362,15 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     },
     () => cfg.config.whichKey !== false
   );
+  // ;' = quick switch: capture the next digit and jump to the marked session.
+  leaderActions["'"] = () =>
+    leader.armPending((k) => {
+      if (/^[1-9]$/.test(k)) {
+        chromeOps.switchSessionByMarker(Number(k));
+        return true;
+      }
+      return false;
+    }, 3000);
 
   // Warm the wasm core so the first leader press is already synchronous.
   ensureChromeCore()
@@ -379,6 +405,97 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     if (__DEV__) dbg("alive announced");
   } catch (e) {
     if (__DEV__) dbg("alive announce failed: " + e);
+  }
+
+  /* ==================== status bar (tmux-style) ==================== */
+
+  const chromeStatusBar = new StatusBar();
+  let chromeStatusInfo = {
+    name: "default",
+    marker: 0,
+    sessions: [] as { marker: number; name: string; current: boolean }[],
+  };
+
+  // The content script owns the status bar on web pages; the chrome helper only
+  // shows its own on chrome-only pages (about:, moz-extension:, ...) where the
+  // content script never runs.
+  function chromePageNeedsStatus(): boolean {
+    try {
+      const b = window.gBrowser.selectedBrowser;
+      const uri = b && b.currentURI;
+      if (!uri) return true;
+      const s = uri.scheme || "";
+      return s !== "http" && s !== "https" && s !== "file" && s !== "ftp";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function computeChromeStatus(): void {
+    const tabs = window.gBrowser.tabs;
+    const sel = tabs.indexOf(window.gBrowser.selectedTab);
+    const mode = currentPopup ? "POPUP" : leader.active ? "LEADER" : "NORMAL";
+    chromeStatusBar.setData({
+      name: chromeStatusInfo.name,
+      marker: chromeStatusInfo.marker,
+      tabIndex: (sel < 0 ? 0 : sel) + 1,
+      tabCount: tabs.length,
+      mode: mode,
+      sessions: chromeStatusInfo.sessions,
+    });
+  }
+
+  function updateChromeStatus(): void {
+    if (cfg.config.statusBar === false) {
+      chromeStatusBar.hide();
+      return;
+    }
+    chromeStatusBar.setPosition(cfg.config.statusBarPosition || "bottom");
+    if (chromePageNeedsStatus()) chromeStatusBar.show();
+    else chromeStatusBar.hide();
+  }
+
+  function requestSessionState(): void {
+    const base = ccBaseUrl();
+    if (!base) return;
+    const nonce = "ss" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+    try {
+      const tab = window.gBrowser.addTab(
+        base + "commandcenter.html#lfc=req.sessionState." + nonce,
+        {
+          inBackground: true,
+          skipAnimation: true,
+          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+        }
+      );
+      // Safety net: if the reply never arrives, drop the request tab.
+      setTimeout(() => {
+        try {
+          if (tab && !tab.closing) window.gBrowser.removeTab(tab);
+        } catch (e) {
+          // ignore
+        }
+      }, 5000);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  updateChromeStatus();
+  computeChromeStatus();
+  setInterval(computeChromeStatus, 500);
+  // Fetch the session name + list once at startup and after chrome-triggered
+  // session actions. Deliberately NOT polled on a timer or on TabSelect: the
+  // round-trip creates a transient background tab, and doing that on a timer
+  // would churn tab counts under automation.
+  setTimeout(requestSessionState, 2000);
+  try {
+    window.gBrowser.tabContainer.addEventListener("TabSelect", () => {
+      updateChromeStatus();
+      computeChromeStatus();
+    });
+  } catch (e) {
+    // ignore
   }
 
   /* ==================== open / cfg hash handling ==================== */
@@ -624,12 +741,39 @@ import type { ChromeHotkeys, Config } from "../shared/types";
           leaderActive: leader ? leader.active : false,
           mutedCount: mutedCount,
           lastAction: lastAction,
+          statusMounted: chromeStatusBar ? chromeStatusBar.mounted : false,
+          statusPosition: (cfg.config.statusBarPosition || "bottom"),
+          leaderPending: leader ? leader.hasPending() : false,
         };
         json = btoa(JSON.stringify(state));
       } catch (e) {
         json = btoa(JSON.stringify({ error: String(e) }));
       }
       setHash(browser, "#lfc=state." + json + "." + nonce);
+      return;
+    }
+    if (cmd === "sessionState") {
+      // Status-bar reply from the background: sessionState.<b64>.<nonce>.
+      const dot = rest.indexOf(".");
+      const b64 = dot < 0 ? rest : rest.slice(0, dot);
+      try {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        const state = JSON.parse(new TextDecoder().decode(bytes));
+        chromeStatusInfo = {
+          name: state && state.name ? String(state.name) : "default",
+          marker: state && state.marker ? Number(state.marker) : 0,
+          sessions: (state && state.sessions) || [],
+        };
+        computeChromeStatus();
+      } catch (e) {
+        // ignore
+      }
+      try {
+        const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
+        if (tab) window.gBrowser.removeTab(tab);
+      } catch (e) {
+        // ignore
+      }
       return;
     }
     if (cmd === "cfg") {
@@ -720,6 +864,13 @@ import type { ChromeHotkeys, Config } from "../shared/types";
           e.preventDefault();
           e.stopImmediatePropagation();
         }
+        return;
+      }
+
+      if (leader.hasPending()) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        leader.handlePending(e.key);
         return;
       }
 

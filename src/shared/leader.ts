@@ -38,11 +38,39 @@ export class LeaderController {
   private host: LeaderHost | null = null;
   private lazyBindings: WkItem[] = [];
   private bindingsLoaded: Promise<WkItem[]> | null = null;
+  private pendingFn: ((k: string) => boolean) | null = null;
+  private pendingTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private run: (key: string) => void,
     private enabled: () => boolean
   ) {}
+
+  /** True while a one-shot key capture is armed (e.g. "session 1-9" after ;'). */
+  hasPending(): boolean {
+    return this.pendingFn !== null;
+  }
+
+  /** Arms a one-shot key capture. The next key is handed to fn (which returns
+   * whether it consumed the key); it auto-disarms after timeoutMs. */
+  armPending(fn: (k: string) => boolean, timeoutMs = 3000): void {
+    this.pendingFn = fn;
+    if (this.pendingTimer) clearTimeout(this.pendingTimer);
+    this.pendingTimer = setTimeout(() => {
+      this.pendingFn = null;
+    }, timeoutMs);
+  }
+
+  /** Consumes the pending key, if any. Returns whether it was consumed. */
+  handlePending(k: string): boolean {
+    const fn = this.pendingFn;
+    this.pendingFn = null;
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+    return fn ? fn(k) : false;
+  }
 
   /** The selectable (non-native) bindings in core order; wk.sel indexes into it. */
   bindings(): Promise<WkItem[]> {

@@ -33,6 +33,13 @@ export interface CoreApi {
   lfcReq(action: string, arg: string): string;
   lfcOk(nonce: string): string;
   lfcErr(nonce: string): string;
+  assignSessionMarker(taken: number[]): number;
+  encodeSplits(pairs: [number, number][]): string;
+  decodeSplits(encoded: string): [number, number][];
+  sessionSummary(
+    sessions: { name: string; marker: number }[],
+    current: string
+  ): { marker: number; name: string; current: boolean }[];
 }
 
 declare global {
@@ -86,6 +93,17 @@ export function createCoreFacade(getApi: () => Promise<CoreApi>) {
       call((a) => a.lfcReq(act, arg)),
     lfcOk: (n: string): Promise<string> => call((a) => a.lfcOk(n)),
     lfcErr: (n: string): Promise<string> => call((a) => a.lfcErr(n)),
+    assignSessionMarker: (taken: number[]): Promise<number> =>
+      call((a) => a.assignSessionMarker(taken)),
+    encodeSplits: (pairs: [number, number][]): Promise<string> =>
+      call((a) => a.encodeSplits(pairs)),
+    decodeSplits: (encoded: string): Promise<[number, number][]> =>
+      call((a) => a.decodeSplits(encoded)),
+    sessionSummary: (
+      sessions: { name: string; marker: number }[],
+      current: string
+    ): Promise<{ marker: number; name: string; current: boolean }[]> =>
+      call((a) => a.sessionSummary(sessions, current)),
   };
 }
 export type CoreFacade = ReturnType<typeof createCoreFacade>;

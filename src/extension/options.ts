@@ -15,6 +15,7 @@ import { core } from "../shared/core";
   const hoverReveal = document.getElementById("hoverReveal") as HTMLInputElement;
   const whichKey = document.getElementById("whichKey") as HTMLInputElement;
   const statusBar = document.getElementById("statusBar") as HTMLInputElement;
+  const statusBarPosition = document.getElementById("statusBarPosition") as HTMLSelectElement;
   const autoRestore = document.getElementById("autoRestore") as HTMLInputElement;
   const saveBtn = document.getElementById("save") as HTMLButtonElement;
   const statusEl = document.getElementById("status") as HTMLSpanElement;
@@ -45,6 +46,7 @@ import { core } from "../shared/core";
       hoverReveal: hoverReveal.checked,
       whichKey: whichKey.checked,
       statusBar: statusBar.checked,
+      statusBarPosition: statusBarPosition.value === "top" ? "top" : "bottom",
       autoRestore: autoRestore.checked
     };
   }
@@ -86,6 +88,7 @@ import { core } from "../shared/core";
     hoverReveal.checked = c.hoverReveal !== false;
     whichKey.checked = c.whichKey !== false;
     statusBar.checked = c.statusBar !== false;
+    statusBarPosition.value = c.statusBarPosition === "top" ? "top" : "bottom";
     autoRestore.checked = c.autoRestore !== false;
     const cb = Object.assign({}, CHROME_HOTKEY_DEFAULTS, r.chromeBindings || {});
     for (const k of CH_KEYS) {

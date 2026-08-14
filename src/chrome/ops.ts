@@ -396,9 +396,9 @@ export const chromeOps: ActionOps = {
       return false;
     }
   },
-  // Sessions on chrome-only pages are stubbed: the store lives in the
-  // extension background (browser.storage), which the chrome helper can only
-  // reach through the command-center relay. Wired properly in a follow-up.
+  // Sessions on chrome-only pages are wired by main.ts through the #lfc=req
+  // channel to the extension background (which owns browser.storage). The
+  // stubs here satisfy the interface; main.ts overrides them with the relay.
   listSessions: () => Promise.resolve([]),
   saveSession: () => {
     toast("sessions work on web pages");
@@ -409,12 +409,27 @@ export const chromeOps: ActionOps = {
   deleteSession: () => {
     toast("sessions work on web pages");
   },
+  switchSessionByMarker: () => {
+    toast("sessions work on web pages");
+  },
+  splitTab: () => {
+    toast("split view needs a web page");
+  },
+  unsplitTab: () => {
+    toast("split view needs a web page");
+  },
   sessionState: () => {
     const tabs = window.gBrowser.tabs;
     let idx = 1;
     const sel = tabs.indexOf(window.gBrowser.selectedTab);
     if (sel >= 0) idx = sel + 1;
-    return Promise.resolve({ name: "default", tabIndex: idx, tabCount: tabs.length });
+    return Promise.resolve({
+      name: "default",
+      marker: 0,
+      tabIndex: idx,
+      tabCount: tabs.length,
+      sessions: [],
+    });
   },
   openFind: () => {
     try {

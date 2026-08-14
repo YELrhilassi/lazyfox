@@ -258,29 +258,58 @@ export function openDownloadsPopup(ctx: PopupCtx): void {
 /* ---------------- sessions ---------------- */
 
 export function openSessionsPopup(ctx: PopupCtx): void {
+  // Marker -> name map rebuilt on every search so digit keys can jump straight
+  // to a marked session when the input is empty.
+  let byMarker: Record<number, string> = {};
   ctx.open(
     basePanel(
       "Sessions",
       "no saved sessions",
-      "<span class='lf-badge'>Enter</span> switch &middot; <span class='lf-badge'>x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
+      "<span class='lf-badge'>Enter</span> switch &middot; <span class='lf-badge'>1-9</span> marker &middot; <span class='lf-badge'>x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
     ),
     (root) =>
       makeSelector<PopupItem>(ctx, root, {
         debounceMs: 40,
         emptyText: "type a name and press Enter to save the current tabs",
-        search: (q) => ctx.ops.listSessions(q),
-        render: (s) =>
-          "<div class='t'>" +
-          (s.kind === "save" ? "<span class='dot'></span>" : "") +
-          esc(s.title || "") +
-          "</div><div class='s'>" + esc(s.subtitle || "") + "</div>",
+        search: async (q) => {
+          const items = await ctx.ops.listSessions(q);
+          byMarker = {};
+          for (const it of items) {
+            if (it.kind !== "save" && it.marker) byMarker[it.marker] = it.title || "";
+          }
+          return items;
+        },
+        render: (s) => {
+          if (s.kind === "save") {
+            return (
+              "<div class='t'><span class='dot'></span>" +
+              esc(s.title || "") +
+              "</div><div class='s'>" + esc(s.subtitle || "") + "</div>"
+            );
+          }
+          return (
+            "<div class='t'>" +
+            (s.marker ? "<span class='lf-marker'>" + s.marker + "</span>" : "") +
+            esc(s.title || "") +
+            "</div><div class='s'>" + esc(s.subtitle || "") + "</div>"
+          );
+        },
         onPick: (s) => {
           ctx.close();
           if (s.kind === "save") ctx.ops.saveSession(s.title || "");
           else ctx.ops.restoreSession(s.title || "");
         },
         extraKeys: (e, sel) => {
-          if (e.key !== "x") return false;
+          const k = e.key;
+          if (/^[1-9]$/.test(k) && sel.empty) {
+            const name = byMarker[Number(k)];
+            if (!name) return false;
+            e.preventDefault();
+            ctx.close();
+            ctx.ops.restoreSession(name);
+            return true;
+          }
+          if (k !== "x") return false;
           if (!sel.empty || sel.item == null || sel.item.kind === "save") return false;
           e.preventDefault();
           ctx.ops.deleteSession(sel.item.title || "");
@@ -354,6 +383,9 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     b: () => openBookmarksPopup(ctx),
     d: () => openDownloadsPopup(ctx),
     p: () => openSessionsPopup(ctx),
+    "'": () => openSessionsPopup(ctx),
+    "|": () => ctx.ops.splitTab(),
+    "\\": () => ctx.ops.unsplitTab(),
     i: () => ctx.ops.focusFirstInput(),
     n: () => ctx.ops.newTab(),
     x: () => ctx.ops.closeTab(),

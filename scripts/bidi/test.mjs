@@ -873,6 +873,62 @@ async function main() {
     await activate(tabA);
   });
 
+  console.log("\n== Sessions + status bar ==");
+
+  await runTest("status bar renders on web pages", async () => {
+    await gotoPage(tabA, `${base}/`);
+    await waitFor(async () => {
+      const v = await evalIn(tabA, `document.documentElement.getAttribute("data-lf-status")`);
+      return v ? v : null;
+    }, 8000);
+    const v = await evalIn(tabA, `document.documentElement.getAttribute("data-lf-status")`);
+    assert(v && v.indexOf("default") !== -1, "status bar shows the default session: " + v);
+    assert(await hasHost(tabA, "lazyfox-status"), "status bar host mounted on the page");
+  });
+
+  await runTest("chrome status bar renders on the command center", async () => {
+    await openCC(tabA);
+    await sleep(600);
+    const s = await chromeState();
+    assert(s && s.statusMounted === true, "chrome status bar mounted: " + JSON.stringify(s && { mounted: s.statusMounted, position: s.statusPosition }));
+  });
+
+  await runTest("sessions: ;p saves a session with marker 1", async () => {
+    await gotoPage(tabA, `${base}/`);
+    await leaderPress(tabA, "p");
+    await waitFor(async () => (await hasHost(tabA, "lazyfox-popup")) ? true : null, 5000);
+    await typeIn(tabA, "work");
+    await sleep(700);
+    await press(tabA, "Enter");
+    await waitFor(async () => {
+      const r = await evalIn(probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.work)`);
+      return r && r.marker === 1 ? r : null;
+    }, 8000);
+    const r = await evalIn(probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions.work)`);
+    assert(r && r.marker === 1, "work got marker 1, got " + (r && r.marker));
+    assert(r && r.tabs && r.tabs.length >= 1, "work captured tabs");
+    // The status bar reflects the current session name.
+    await waitFor(async () => {
+      const v = await evalIn(tabA, `document.documentElement.getAttribute("data-lf-status")`);
+      return v && v.indexOf("work") !== -1 ? v : null;
+    }, 8000);
+  });
+
+  await runTest("sessions: ;' + digit consumes the marker binding", async () => {
+    // Switch to a marker with no session: the pending-prefix path must run
+    // without touching the window's tabs (non-destructive verification).
+    await gotoPage(tabA, `${base}/`);
+    const before = await tabsInfo();
+    await press(tabA, ";");
+    await sleep(300);
+    await press(tabA, "'");
+    await sleep(250);
+    await press(tabA, "9");
+    await sleep(700);
+    const after = await tabsInfo();
+    assert(after.length === before.length, "no tabs were changed by an unknown marker");
+  });
+
   console.log("\n== Options and popup pages ==");
 
   await runTest("options page loads and renders the form", async () => {
@@ -901,10 +957,18 @@ async function main() {
   });
 
   await runTest("options page: Esc goes back", async () => {
+    // Re-navigate from a known page so the options page has a clean history
+    // entry to go back to, then move focus into the page before sending the
+    // key (after browsingContext.navigate the URL bar can hold keyboard focus).
+    const u = ccUrl.replace("commandcenter.html", "options.html");
+    await gotoPage(tabA, `${base}/`);
+    await navigate(tabA, u, "complete");
+    await sleep(300);
+    await focusPage(tabA).catch(() => {});
     await press(tabA, "Escape");
     await waitFor(async () => {
-      const u = await evalIn(tabA, `location.href`);
-      return u && !u.includes("options.html") ? u : null;
+      const u2 = await evalIn(tabA, `location.href`).catch(() => null);
+      return u2 && u2.includes(base) ? u2 : null;
     }, 10000);
   });
 
@@ -920,6 +984,35 @@ async function main() {
       };
     })()`);
     assert(f.body.length > 0, "popup body renders: " + f.body);
+  });
+
+  await runTest("sessions: ;' + 1 hot-swaps to the marked session", async () => {
+    // Save a second session from a distinct tab set.
+    await gotoPage(tabA, `${base}/hello`);
+    await leaderPress(tabA, "p");
+    await waitFor(async () => (await hasHost(tabA, "lazyfox-popup")) ? true : null, 5000);
+    await typeIn(tabA, "mail");
+    await sleep(700);
+    await press(tabA, "Enter");
+    await waitFor(async () => {
+      const r = await evalIn(probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.mail)`);
+      return r ? r : null;
+    }, 8000);
+    // Switch to marker 1 ("work") with ;' + 1.
+    await gotoPage(tabA, `${base}/`);
+    await press(tabA, ";");
+    await sleep(300);
+    await press(tabA, "'");
+    await sleep(250);
+    await press(tabA, "1");
+    await sleep(1800);
+    // The switch replaced the window's tabs; verify from a fresh extension tab.
+    const fresh = await makeProbeTab();
+    const cur = await evalIn(fresh, `browser.storage.local.get("lfCurrentSession").then(r => r.lfCurrentSession)`);
+    assert(cur === "work", "hot-swapped to work, got " + cur);
+    probe = fresh;
+    tabA = await createTab();
+    await gotoPage(tabA, `${base}/`);
   });
 
   console.log("\n== Console error audit ==");
