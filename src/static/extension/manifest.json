@@ -17,8 +17,7 @@
     "sessions",
     "search",
     "storage",
-    "webRequest",
-    "webRequestBlocking"
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "<all_urls>"

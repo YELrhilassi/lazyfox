@@ -191,6 +191,14 @@ second key — you just don't see the cheat sheet.
 | `; z` | zen mode (fullscreen — toolbar never appears) |
 | `; e` | toggle toolbar reveal on hover |
 | `; 1`–`9` | jump to tab 1–8 / last tab |
+| `; ,` / `; .` | move the active tab left / right |
+| `; |` / `; _` | split side-by-side / stacked (i3-style) |
+| `; [` / `; ]` | switch to the previous / next split pane |
+| `; \` | close the split view (back to independent tabs) |
+| `; +` | move the selected tab into the current split view |
+| `; p` / `; '` | sessions popup (save / restore / switch / markers) |
+| `; '` then `1`–`9` | jump to the session with that marker |
+| `Ctrl+1`–`9` | hot-swap to the session with that marker |
 | `j` `k` `d` `u` `gg` `G` | scroll (when not typing; disable in options) |
 | `Ctrl+Alt+Space` | open the Lazyfox menu popup (works on internal pages too) |
 | `Ctrl+Alt+K` | open the command center (works on any page) |
@@ -223,6 +231,60 @@ Window controls from the command center:
 Native shortcuts (tab management, reload, find, zoom, devtools…) keep working
 and are listed in the which-key overlay.
 
+### Sessions (tmux-style)
+
+Lazyfox keeps a set of named **sessions** — snapshots of a window's tabs
+*and* their split layout. One session is current at a time; switching swaps
+the whole window, exactly like `tmux`/`screen`.
+
+- **`;p`** (or **`;'`**) opens the sessions popup: type to filter, `Enter`
+  restores, and it offers *save current tabs as…* for a name that doesn't
+  exist yet.
+- **`;'` then `1`–`9`** jumps straight to the session marked `1`–`9`.
+- **`Ctrl+1`–`9`** hot-swaps to the marked session from anywhere — no leader
+  key needed. Every session can be assigned a marker from the popup
+  (`m 1` while a session is selected).
+- **`;x`** etc. work inside any session, and sessions stay saved until you
+  delete them. A debounced **"last" snapshot** of the current window is kept
+  automatically (`autoRestore`, default on), so a crash or accidental close
+  restores your window on the next launch.
+
+### Status bar (tmux/nvim-style)
+
+A slim, pointer-transparent status strip is rendered at the bottom (or top,
+`statusBarPosition`) of every page — the web page, the command center and
+internal pages alike. It shows, left to right:
+
+- the **current session** name and its marker (`[1] work`);
+- the **tab index / count** (`3/7`);
+- a **split indicator** while a split view is focused — orientation
+  (`|` side-by-side, `-` stacked) plus the active pane (`1/2`);
+- the **session list** as dim chips (marker + name + tab count, current one
+  highlighted) — informational only, it never loads other sessions' tabs;
+- the current **mode** on the right (`NORMAL` / `LEADER` / `POPUP` / `HINTS`).
+
+The strip lives in a closed shadow root so page CSS can't restyle it. Disable
+it with `statusBar: false` in the options (`Settings` → *Show the status bar*).
+
+### Split view (i3-style)
+
+Two panes, keyboard-only — no window manager needed:
+
+- **`;|`** splits the current tab side-by-side, **`;_`** stacks it
+  vertically, and the two panes act as a pair: **`;[` / `;]`** switch the
+  active pane, **`;+`** moves the *selected* tab (e.g. the command center of
+  a fresh tab) into the split, and **`;\`** closes the split, dissolving the
+  panes back into independent tabs.
+- On **Firefox 149+** the split uses Firefox's **native split view**: each
+  pane is a real top-level tab, so *any* website loads in it unchanged — no
+  header-stripping or iframe tricks (the old iframe container remains as the
+  fallback for stacked views and older Firefox). Closing one pane keeps the
+  other open and auto-unsplits it.
+- The status bar shows the split (orientation + active pane) while focused.
+
+Splits are part of sessions: save a session while split and restore brings
+the split layout back.
+
 ### Settings
 
 The settings page (**Lazyfox options** in the popup, or the *Lazyfox settings*
@@ -236,7 +298,10 @@ item in the command center's command list) lets you change:
 - whether the **toolbar reveals** when the mouse touches the top edge
   (`dist/chrome/userChrome.css`);
 - whether the **which-key overlay** is shown when you press `;` (default: on;
-  turn it off for a fully silent leader key).
+  turn it off for a fully silent leader key);
+- whether the **status bar** is shown and on which edge (default: bottom,
+  tmux-style);
+- whether the **last-session auto-restore** runs on startup (default: on).
 
 Keys work on the settings page too: `Esc` (or the **← back** link) returns to
 the command center, `;` opens the leader menu (`n` new tab, `x` close,
@@ -294,6 +359,34 @@ npx web-ext run --source-dir dist/extension --firefox developer-edition
 
 Change code, then **Reload** in `about:debugging` (or re-run `npm run build`
 and reinstall).
+
+### Testing
+
+The end-to-end suite drives a real Firefox over **WebDriver BiDi**
+(`scripts/bidi/`): it boots a fresh profile, installs `dist/extension`, and
+exercises the command center, content-script leader keys, sessions + status
+bar, split view and options. It needs `geckodriver` on `PATH` (or
+`GECKODRIVER`) and a Developer Edition / Nightly Firefox
+(`FIREFOX_BIN`).
+
+```bash
+npm run build          # always rebuild dist/ first
+node scripts/bidi/test.mjs            # full run (every suite)
+node scripts/bidi/test.mjs --suite quick    # fast checkup subset
+node scripts/bidi/test.mjs --group split    # one feature area
+node scripts/bidi/test.mjs --only "unsplits" # a single test by name
+node scripts/bidi/test.mjs --list           # show all suites/groups/tests
+```
+
+Suites, groups and tests are configured in `scripts/bidi/suites.json`
+(JSON, one `group` → one `suites/*.mjs` module). The `full` suite runs
+everything; `quick` is the common fast checkup. Per-run selection is
+orthogonal (`--suite` + `--group` + `--only`, `SKIP=a,b` env to exclude
+exact test names), so you can iterate on one test without waiting for the
+whole suite. Test code lives in small modules — `lib.mjs` (BiDi driver),
+`harness.mjs` (runner/config), `helpers.mjs` (shared context helpers),
+`pages.mjs` (local test pages) and one `suites/*.mjs` per feature — and
+`go test ./core/` plus `npm run typecheck` cover the non-browser layers.
 
 ## Uninstall
 

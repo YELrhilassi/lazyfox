@@ -342,6 +342,22 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     });
 
   window.addEventListener("keydown", onKeyDown, true);
+  // Firefox's native typeahead quick-find is bound to the `keypress` of `/`
+  // and `'`, so it fires even after the leader has consumed the `keydown`
+  // (the keydown preventDefault does not cancel the keypress). Suppress it
+  // outside text fields so `;/` opens the Lazyfox find popup, not the native
+  // find bar.
+  window.addEventListener(
+    "keypress",
+    (e) => {
+      if (e.key !== "/" && e.key !== "'") return;
+      if (!isTypingTarget(e.target as Element)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+    true
+  );
 
   ensureStatusBar();
   fetchStatus();

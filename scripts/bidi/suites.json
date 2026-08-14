@@ -1,0 +1,50 @@
+{
+  "default": "full",
+  "suites": {
+    "full": {
+      "description": "Every test in order — the complete regression.",
+      "groups": ["commandcenter", "content", "sessions", "split", "options"]
+    },
+    "quick": {
+      "description": "Fast checkup: command center, sessions, status bar and split.",
+      "groups": ["commandcenter", "sessions", "split"]
+    },
+    "commandcenter": {
+      "description": "Command center (new tab page) only.",
+      "groups": ["commandcenter"]
+    },
+    "content": {
+      "description": "Content-script leader keys and popups only.",
+      "groups": ["content"]
+    },
+    "sessions": {
+      "description": "Session manager and status bar only.",
+      "groups": ["sessions"]
+    },
+    "split": {
+      "description": "i3-style split view only.",
+      "groups": ["split"]
+    },
+    "options": {
+      "description": "Options and popup pages only.",
+      "groups": ["options"]
+    }
+  },
+  "groups": {
+    "commandcenter": {
+      "description": "Command center modes, keys, chrome popups and tab commands."
+    },
+    "content": {
+      "description": "Content script: leader keys, popups, scroll, hints, zoom on real pages."
+    },
+    "sessions": {
+      "description": "Sessions (save/restore/marker/switch) and the shared status bar."
+    },
+    "split": {
+      "description": "i3-style split view: create, switch pane, navigate, unsplit."
+    },
+    "options": {
+      "description": "Options page form and the action popup."
+    }
+  }
+}

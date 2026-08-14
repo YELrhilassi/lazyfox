@@ -14,3 +14,4 @@ user_pref("browser.urlbar.suggest.topsites", false);
 user_pref("browser.urlbar.suggest.quickactions", false);
 user_pref("browser.newtabpage.activity-stream.improvesearch.handoffToAwesomebar", false);
 user_pref("lazyfox.hoverReveal", true);
+user_pref("browser.tabs.splitView.enabled", true);
