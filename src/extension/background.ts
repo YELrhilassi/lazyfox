@@ -763,6 +763,15 @@ import type { Session, SessionTab } from "../shared/types";
         if (ni !== idx) await browser.tabs.move(data.id, { index: ni });
         return { ok: true };
       }
+      case "moveActiveTab": {
+        const tabs = await browser.tabs.query({ currentWindow: true });
+        const idx = tabs.findIndex((t: any) => t.active);
+        if (idx < 0) return { ok: false };
+        const dir = data.dir > 0 ? 1 : -1;
+        const ni = Math.max(0, Math.min(tabs.length - 1, idx + dir));
+        if (ni !== idx) await browser.tabs.move(tabs[idx]!.id, { index: ni });
+        return { ok: true };
+      }
       case "closeTab":
         if (data.id != null) {
           await browser.tabs.remove(data.id);

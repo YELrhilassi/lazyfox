@@ -22,6 +22,7 @@ export interface BgApi {
   activateTab: { req: { id: number }; res: { ok: boolean } };
   activateTabAt: { req: { index?: number; last?: boolean }; res: { ok: boolean; title?: string } };
   moveTab: { req: { id: number; dir: number }; res: { ok: boolean } };
+  moveActiveTab: { req: { dir: number }; res: { ok: boolean } };
   closeTab: { req: { id?: number }; res: { ok: boolean } };
   newTab: { req: Record<string, never>; res: { ok: boolean } };
   reopenTab: { req: Record<string, never>; res: { ok: boolean } };

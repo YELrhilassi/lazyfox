@@ -150,6 +150,36 @@ func TestSplitPairOf(t *testing.T) {
 	}
 }
 
+// TestSessionBindings pins the tmux-style session leader keys in the
+// which-key table so the shortcut surface can't silently drift (split, switch
+// pane, move, close, save, quick-switch).
+func TestSessionBindings(t *testing.T) {
+	want := map[string]bool{
+		"p": true, // sessions popup
+		"'": true, // switch session 1-9
+		"|": true, // split view
+		"[": true, // split pane left
+		"]": true, // split pane right
+		",": true, // move tab left
+		".": true, // move tab right
+		"\\": true,
+	}
+	seen := map[string]bool{}
+	for _, b := range Bindings {
+		if b.Group == "Sessions" {
+			seen[b.Key] = true
+		}
+	}
+	for k := range want {
+		if !seen[k] {
+			t.Errorf("Sessions group missing binding %q (have %v)", k, seen)
+		}
+	}
+	if len(seen) != len(want) {
+		t.Errorf("Sessions group has unexpected keys: %v", seen)
+	}
+}
+
 func TestSplitPartnerOf(t *testing.T) {
 	splits := []SplitPair{{0, 1}, {2, 5}}
 	if got := SplitPartnerOf(splits, 0); got != 1 {
