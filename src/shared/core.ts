@@ -36,10 +36,11 @@ export interface CoreApi {
   assignSessionMarker(taken: number[]): number;
   encodeSplits(pairs: [number, number][]): string;
   decodeSplits(encoded: string): [number, number][];
+  splitPartnerOf(pairs: [number, number][], i: number): number;
   sessionSummary(
-    sessions: { name: string; marker: number }[],
+    sessions: { name: string; marker: number; tabCount: number; splitCount: number }[],
     current: string
-  ): { marker: number; name: string; current: boolean }[];
+  ): { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
 }
 
 declare global {
@@ -99,11 +100,14 @@ export function createCoreFacade(getApi: () => Promise<CoreApi>) {
       call((a) => a.encodeSplits(pairs)),
     decodeSplits: (encoded: string): Promise<[number, number][]> =>
       call((a) => a.decodeSplits(encoded)),
+    splitPartnerOf: (pairs: [number, number][], i: number): Promise<number> =>
+      call((a) => a.splitPartnerOf(pairs, i)),
     sessionSummary: (
-      sessions: { name: string; marker: number }[],
+      sessions: { name: string; marker: number; tabCount: number; splitCount: number }[],
       current: string
-    ): Promise<{ marker: number; name: string; current: boolean }[]> =>
-      call((a) => a.sessionSummary(sessions, current)),
+    ): Promise<
+      { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[]
+    > => call((a) => a.sessionSummary(sessions, current)),
   };
 }
 export type CoreFacade = ReturnType<typeof createCoreFacade>;

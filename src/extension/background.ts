@@ -415,12 +415,34 @@ import type { Session, SessionTab } from "../shared/types";
     }
   }
 
+  // Switch keyboard focus to the other pane of the active tab's split view.
+  // Uses only the read-only splitViewId (Firefox 149+), so it works even
+  // before the extension-facing split-creation API ships.
+  async function switchSplitPane(): Promise<{ ok: boolean; note?: string }> {
+    const all = await browser.tabs.query({ currentWindow: true });
+    const activeIdx = all.findIndex((t: any) => t.active);
+    if (activeIdx < 0) return { ok: false, note: "no active tab" };
+    const sv = splitViewIdOf(all[activeIdx]);
+    if (sv == null) return { ok: false, note: "not in a split view" };
+    const partner = all.find(
+      (t: any, i: number) => i !== activeIdx && splitViewIdOf(t) === sv
+    );
+    if (!partner) return { ok: false, note: "split partner not found" };
+    try {
+      await browser.tabs.update(partner.id, { active: true });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, note: "could not switch split pane" };
+    }
+  }
+
   async function sessionState(): Promise<{
     name: string;
     marker: number;
     tabIndex: number;
     tabCount: number;
-    sessions: { marker: number; name: string; current: boolean }[];
+    inSplit: boolean;
+    sessions: { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
   }> {
     const tabs = await browser.tabs.query({ currentWindow: true });
     const all = await readSessions();
@@ -433,16 +455,31 @@ import type { Session, SessionTab } from "../shared/types";
     }
     const cur = all[name];
     const marker = cur ? cur.marker || 0 : 0;
-    const active = (tabs || []).findIndex((t: any) => t.active);
+    const list = tabs || [];
+    const active = list.findIndex((t: any) => t.active);
+    // Split indicator: the active tab shares a splitViewId with a partner.
+    let inSplit = false;
+    if (active >= 0) {
+      const sv = splitViewIdOf(list[active]);
+      if (sv != null) {
+        inSplit = list.some((t: any, i: number) => i !== active && splitViewIdOf(t) === sv);
+      }
+    }
     const summary = await core.sessionSummary(
-      Object.values(all).map((s) => ({ name: s.name, marker: s.marker || 0 })),
+      Object.values(all).map((s) => ({
+        name: s.name,
+        marker: s.marker || 0,
+        tabCount: (s.tabs || []).length,
+        splitCount: (s.splits || []).length,
+      })),
       name
     );
     return {
       name: name,
       marker: marker,
       tabIndex: active >= 0 ? active + 1 : 1,
-      tabCount: (tabs || []).length,
+      tabCount: list.length,
+      inSplit: inSplit,
       sessions: summary,
     };
   }
@@ -826,6 +863,8 @@ import type { Session, SessionTab } from "../shared/types";
         return splitCurrentTab();
       case "sessionUnsplit":
         return unsplitCurrentTab();
+      case "sessionSwitchPane":
+        return switchSplitPane();
       case "sessionState":
         return sessionState();
       default:
@@ -918,6 +957,10 @@ import type { Session, SessionTab } from "../shared/types";
     }
     if (action === "unsplitTab") {
       await unsplitCurrentTab();
+      return;
+    }
+    if (action === "switchSplitPane") {
+      await switchSplitPane();
       return;
     }
   }

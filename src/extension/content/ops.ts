@@ -316,6 +316,12 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         else toast(r && r.note ? r.note : "not in a split view");
       });
     },
+    switchSplitPane: () => {
+      void send("sessionSwitchPane").then((r) => {
+        if (r && r.ok) toast("switched split pane");
+        else toast(r && r.note ? r.note : "not in a split view");
+      });
+    },
     sessionState: async () => {
       const r = await send("sessionState");
       return (
@@ -324,6 +330,7 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
           marker: 0,
           tabIndex: 1,
           tabCount: 0,
+          inSplit: false,
           sessions: [],
         }
       );

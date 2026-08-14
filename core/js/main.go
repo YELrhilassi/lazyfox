@@ -133,8 +133,10 @@ func sessionSummaryInput(v js.Value) []core.Session {
 	for i := 0; i < n; i++ {
 		it := v.Index(i)
 		out = append(out, core.Session{
-			Name:   it.Get("name").String(),
-			Marker: it.Get("marker").Int(),
+			Name:    it.Get("name").String(),
+			Marker:  it.Get("marker").Int(),
+			Tabs:    make([]core.SessionTab, it.Get("tabCount").Int()),
+			Splits:  make([]core.SplitPair, it.Get("splitCount").Int()),
 		})
 	}
 	return out
@@ -147,6 +149,8 @@ func sessionSummaryArray(items []core.SessionSummaryItem) js.Value {
 		o.Set("marker", it.Marker)
 		o.Set("name", it.Name)
 		o.Set("current", it.Current)
+		o.Set("tabCount", it.TabCount)
+		o.Set("splitCount", it.SplitCount)
 		a.SetIndex(i, o)
 	}
 	return a
@@ -338,6 +342,18 @@ func main() {
 			current = args[1].String()
 		}
 		return sessionSummaryArray(core.SessionSummary(sessions, current))
+	})
+
+	set("splitPartnerOf", func(this js.Value, args []js.Value) interface{} {
+		splits := []core.SplitPair(nil)
+		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
+			splits = splitPairs(args[0])
+		}
+		i := 0
+		if len(args) > 1 {
+			i = args[1].Int()
+		}
+		return core.SplitPartnerOf(splits, i)
 	})
 
 	js.Global().Set("LazyfoxCore", api)

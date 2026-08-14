@@ -56,6 +56,7 @@ export interface BgApi {
   sessionSwitchByMarker: { req: { marker: number }; res: { ok: boolean; name?: string } };
   sessionSplit: { req: Record<string, never>; res: { ok: boolean; note?: string } };
   sessionUnsplit: { req: Record<string, never>; res: { ok: boolean; note?: string } };
+  sessionSwitchPane: { req: Record<string, never>; res: { ok: boolean; note?: string } };
   sessionState: {
     req: Record<string, never>;
     res: {
@@ -63,6 +64,7 @@ export interface BgApi {
       marker: number;
       tabIndex: number;
       tabCount: number;
+      inSplit: boolean;
       sessions: SessionSummaryItem[];
     };
   };

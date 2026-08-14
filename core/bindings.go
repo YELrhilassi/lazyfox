@@ -60,6 +60,8 @@ var Bindings = []WkItem{
 	{Key: "p", Label: "Sessions", Group: "Sessions"},
 	{Key: "'", Label: "Switch session 1-9", Group: "Sessions"},
 	{Key: "|", Label: "Split view", Group: "Sessions"},
+	{Key: "[", Label: "Split pane left", Group: "Sessions"},
+	{Key: "]", Label: "Split pane right", Group: "Sessions"},
 	{Key: "\\", Label: "Close split view", Group: "Sessions"},
 
 	// ---- Firefox native (display only) ----

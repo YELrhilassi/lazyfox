@@ -152,25 +152,32 @@ func DecodeSplits(s string) ([]SplitPair, error) {
 }
 
 // SessionSummaryItem is one row of the status bar's session list: a marker,
-// a name and whether it is the currently loaded session.
+// a name, whether it is the currently loaded session, and cheap per-session
+// metadata (tab count + split count) so the list can be informative without
+// loading any session's tabs.
 type SessionSummaryItem struct {
-	Marker  int
-	Name    string
-	Current bool
+	Marker     int
+	Name       string
+	Current    bool
+	TabCount   int
+	SplitCount int
 }
 
 // SessionSummary returns the session list for the status bar, ordered by
 // marker ascending (unmarked sessions last, sorted by name). It carries only
-// names and markers — the status bar must be able to render the list without
-// loading every session's tabs, per the "only load the current one" rule.
+// names, markers and counts — the status bar must be able to render the list
+// without loading every session's tabs, per the "only load the current one"
+// rule.
 func SessionSummary(sessions []Session, current string) []SessionSummaryItem {
 	marked := make([]SessionSummaryItem, 0, len(sessions))
 	unmarked := make([]SessionSummaryItem, 0, len(sessions))
 	for _, s := range sessions {
 		item := SessionSummaryItem{
-			Marker:  clampMarker(s.Marker),
-			Name:    s.Name,
-			Current: s.Name == current,
+			Marker:     clampMarker(s.Marker),
+			Name:       s.Name,
+			Current:    s.Name == current,
+			TabCount:   len(s.Tabs),
+			SplitCount: len(s.Splits),
 		}
 		if item.Marker == 0 {
 			unmarked = append(unmarked, item)
@@ -191,4 +198,18 @@ func SplitPairOf(splits []SplitPair, i int) *SplitPair {
 		}
 	}
 	return nil
+}
+
+// SplitPartnerOf returns the index of tab i's split partner (the other tab in
+// the same split view), or -1 when i is not part of a split. Used to switch
+// keyboard focus between the two panes of a split view.
+func SplitPartnerOf(splits []SplitPair, i int) int {
+	p := SplitPairOf(splits, i)
+	if p == nil {
+		return -1
+	}
+	if p.A == i {
+		return p.B
+	}
+	return p.A
 }
