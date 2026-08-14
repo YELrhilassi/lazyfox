@@ -247,11 +247,13 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     return {
       tabs: list.slice(0, MAX_SESSION_TABS).map((t: any) => {
         const split = splitViewOf(t);
+        const svId = typeof t.splitViewId === "number" && t.splitViewId >= 0 ? t.splitViewId : undefined;
         return {
           url: t.url || "",
           title: t.title || "",
           pinned: !!t.pinned,
           split: split || undefined,
+          splitViewId: svId,
         };
       }),
       active: active < MAX_SESSION_TABS ? active : 0,
@@ -262,23 +264,40 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
   async function openTabsInCurrentWindow(tabs: SessionTab[]): Promise<number[]> {
     const win = await browser.windows.getCurrent();
     const cur = await browser.tabs.query({ currentWindow: true });
-    for (const t of cur || []) {
-      // Never remove the transient chrome-helper request tab (commandcenter
-      // #lfc=req...) from inside its own onUpdated handler — doing so while
-      // it is still being processed can crash Firefox. It is cleaned up by
-      // the request handler itself after the restore completes.
-      if (!t.pinned && !(t.url && t.url.indexOf("#lfc=req") !== -1)) {
+    const urls = (tabs || []).filter((t) => t && t.url).map((t) => t.url);
+    // Tabs we may remove: unpinned and not the transient chrome-helper
+    // request tab (commandcenter #lfc=req...). Removing that tab from inside
+    // its own onUpdated handler while it is still being processed can crash
+    // Firefox; the request handler cleans it up itself after the restore.
+    const removable = (cur || []).filter(
+      (t: any) => !t.pinned && !(t.url && t.url.indexOf("#lfc=req") !== -1)
+    );
+    // Never remove the window's last tab: closing it closes the whole window
+    // (default browser.tabs.closeWindowWithLastTab), which flashes/relaunches
+    // the window for the user and orphans the WebDriver BiDi session. Keep
+    // one removable tab and host the first restored URL on it instead.
+    const keepOne = removable.length > 0 && removable.length === (cur || []).length;
+    for (const t of keepOne ? removable.slice(0, -1) : removable) {
+      try {
+        await browser.tabs.remove(t.id);
+      } catch (e) {
+        // ignore
+      }
+    }
+    const created: number[] = [];
+    if (keepOne) {
+      const keeper = removable[removable.length - 1];
+      const first = urls.shift();
+      if (first) {
         try {
-          await browser.tabs.remove(t.id);
+          await browser.tabs.update(keeper.id, { url: first, active: true });
         } catch (e) {
-          // ignore
+          // fall through — the tab may already be gone
         }
       }
     }
-    const urls = (tabs || []).filter((t) => t && t.url).map((t) => t.url);
-    const created: number[] = [];
     for (let i = 0; i < urls.length; i++) {
-      const t = await browser.tabs.create({ url: urls[i], active: i === 0 });
+      const t = await browser.tabs.create({ url: urls[i], active: i === 0 && !keepOne });
       if (t && t.id != null) created.push(t.id);
     }
     try {
@@ -437,6 +456,25 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     }
   }
 
+  // Navigate the active pane of the active split view (the `;o` leader action
+  // is rerouted here when the focused tab is a split container, so the split
+  // itself is never navigated away from).
+  async function navigateSplitPane(url: string): Promise<{ ok: boolean; note?: string }> {
+    const tab = await getActiveTab();
+    const id = tab && tab.url ? splitPayload(tab.url) : null;
+    if (!id) return { ok: false, note: "not in a split view" };
+    try {
+      await browser.runtime.sendMessage({
+        action: "lfSplitNavigate",
+        splitId: id,
+        url: url,
+      });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, note: "could not navigate split pane" };
+    }
+  }
+
   async function sessionState(): Promise<{
     name: string;
     marker: number;
@@ -444,6 +482,8 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     tabCount: number;
     inSplit: boolean;
     splitOrientation?: "horizontal" | "vertical";
+    splitActive: number;
+    splitPanes: number;
     sessions: { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
   }> {
     const tabs = await browser.tabs.query({ currentWindow: true });
@@ -461,11 +501,27 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     const active = list.findIndex((t: any) => t.active);
     let inSplit = false;
     let splitOrientation: "horizontal" | "vertical" | undefined;
+    let splitActive = 0;
+    let splitPanes = 0;
     if (active >= 0) {
       const sv = splitViewOf(list[active]);
       if (sv) {
         inSplit = true;
         splitOrientation = sv.orientation;
+        splitActive = sv.activePane || 0;
+        splitPanes = sv.panes.length;
+      } else {
+        // Firefox 149+ native split view: tabs in the same split share a
+        // splitViewId (read-only on the tabs API). Detect it so the status bar
+        // reflects native splits created by the chrome helper.
+        const id = list[active] && (list[active] as any).splitViewId;
+        if (typeof id === "number" && id >= 0) {
+          const pair = list.filter((t: any) => t.splitViewId === id);
+          inSplit = true;
+          splitOrientation = "horizontal";
+          splitPanes = pair.length || 2;
+          splitActive = Math.max(0, pair.indexOf(list[active]));
+        }
       }
     }
     const summary = await core.sessionSummary(
@@ -484,6 +540,8 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
       tabCount: list.length,
       inSplit: inSplit,
       splitOrientation: splitOrientation,
+      splitActive: splitActive,
+      splitPanes: splitPanes,
       sessions: summary,
     };
   }
@@ -879,6 +937,14 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
         return unsplitCurrentTab();
       case "sessionSwitchPane":
         return switchSplitPane(data.dir || 1);
+      case "sessionNavigatePane":
+        return navigateSplitPane(data.url);
+      case "sessionSplitAddTab":
+        // Moving a tab into a split view is a native-split capability owned by
+        // the chrome helper (gBrowser.addTabSplitView); the background has no
+        // chrome access and cannot do it for iframe splits either (each pane
+        // would need a fresh <iframe> + a config rewrite).
+        return { ok: false, note: "move to split: use the chrome helper (Firefox native split)" };
       case "sessionState":
         return sessionState();
       default:
@@ -995,6 +1061,14 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
       await switchSplitPane(parseInt(arg || "1", 10) || 1);
       return;
     }
+    if (action === "navigateSplitPane") {
+      await navigateSplitPane(decodeURIComponent(arg || ""));
+      return;
+    }
+    if (action === "splitAddTab") {
+      // No chrome access here; native splits are the chrome helper's domain.
+      return;
+    }
   }
 
   browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
@@ -1066,44 +1140,52 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
 
   // The custom split view renders arbitrary pages as <iframe>; most sites send
   // X-Frame-Options or a CSP frame-ancestors directive that would blank them.
-  // Strip those for subframes whose parent is our splitview page so any site
-  // embeds. Firefox MV3 keeps the blocking webRequest API.
-  function stripFrameAncestors(headers: any[]): any[] {
-    return headers
-      .map((h: any) => {
-        const name = ((h && h.name) || "").toLowerCase();
-        if (name === "x-frame-options") return null;
-        if (
-          name === "content-security-policy" ||
-          name === "content-security-policy-report-only"
-        ) {
-          const value = (h && h.value) || "";
-          const stripped = value
-            .split(";")
-            .map((d: string) => d.trim())
-            .filter((d: string) => !!d && !/^frame-ancestors\b/i.test(d))
-            .join("; ");
-          if (!stripped) return null;
-          return Object.assign({}, h, { value: stripped });
-        }
-        return h;
-      })
-      .filter((h) => h != null);
+  // Strip those headers for subframe requests initiated by our own extension
+  // pages (only the splitview page embeds iframes), so any site embeds while
+  // normal browsing is untouched.
+  //
+  // Firefox's blocking webRequest no longer applies response-header edits to
+  // subframes reliably, so this uses a scoped declarativeNetRequest dynamic
+  // rule instead. `initiatorDomains` is the extension's own moz-extension
+  // origin, so the strip only ever affects the split view's panes (never the
+  // user's normal tabs). DNR can only drop whole headers, so the page's CSP is
+  // removed outright rather than just its frame-ancestors directive — an
+  // acceptable trade-off for a locally-scoped, opt-in split view.
+  async function installSplitHeaderRule(): Promise<void> {
+    try {
+      const uuid = browser.runtime
+        .getURL("")
+        .split("/")
+        .filter((s: string) => s !== "")
+        .pop();
+      if (!uuid) return;
+      await browser.declarativeNetRequest.updateDynamicRules({
+        removeRuleIds: [1],
+        addRules: [
+          {
+            id: 1,
+            priority: 1,
+            action: {
+              type: "modifyHeaders",
+              responseHeaders: [
+                { header: "x-frame-options", operation: "remove" },
+                { header: "content-security-policy", operation: "remove" },
+                { header: "content-security-policy-report-only", operation: "remove" },
+              ],
+            },
+            condition: {
+              resourceTypes: ["sub_frame"],
+              initiatorDomains: [uuid],
+            },
+          },
+        ],
+      });
+    } catch (e) {
+      // ignore — declarativeNetRequest unavailable on this Firefox
+    }
   }
+  void installSplitHeaderRule();
 
-  try {
-    browser.webRequest.onHeadersReceived.addListener(
-      (details: any) => {
-        const parent = details.documentUrl || details.originUrl || "";
-        if (parent.indexOf(SPLITVIEW_BASE + "splitview.html") !== 0) return {};
-        return { responseHeaders: stripFrameAncestors(details.responseHeaders || []) };
-      },
-      { urls: ["<all_urls>"], types: ["sub_frame"] },
-      ["blocking", "responseHeaders"]
-    );
-  } catch (e) {
-    // ignore — blocking webRequest unavailable on this Firefox
-  }
 
   // Warm the wasm core for the first URL suggestion.
   void ensureCore().catch(() => {});

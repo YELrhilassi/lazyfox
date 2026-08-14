@@ -454,6 +454,7 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     ",": () => ctx.ops.moveActiveTab(-1),
     ".": () => ctx.ops.moveActiveTab(1),
     "\\": () => ctx.ops.unsplitTab(),
+    "+": () => ctx.ops.splitAddTab(),
     i: () => ctx.ops.focusFirstInput(),
     n: () => ctx.ops.newTab(),
     x: () => ctx.ops.closeTab(),

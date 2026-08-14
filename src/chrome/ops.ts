@@ -432,6 +432,9 @@ export const chromeOps: ActionOps = {
   switchSplitPane: (_dir: number) => {
     toast("split view needs a web page");
   },
+  splitAddTab: () => {
+    toast("split view needs a web page");
+  },
   sessionState: () => {
     const tabs = window.gBrowser.tabs;
     let idx = 1;

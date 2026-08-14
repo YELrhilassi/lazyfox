@@ -1,21 +1,15 @@
 // The custom split-view page: renders the panes (from the URL hash config) as
-// iframes side by side or stacked, with a slim split bar (pane tabs, a URL
-// input to navigate the active pane) and draggable dividers. Pane-focus
-// switching is driven by the background over runtime messaging (the leader
-// `;[` / `;]` on the chrome helper relays to the background, which broadcasts
-// a focus request here).
+// iframes side by side or stacked, separated by 1px draggable dividers. The
+// chrome helper owns the status bar and the leader keys on this page, so the
+// only page-side responsibilities are the panes, focus switching (driven by
+// the background over runtime messaging) and pane navigation.
 
-import { core } from "../shared/core";
 import { parseSplitUrl, SPLIT_HASH_PREFIX, splitPayload } from "../shared/split";
 import type { SplitView } from "../shared/types";
 
 (function () {
   "use strict";
 
-  const bar = document.getElementById("bar") as HTMLElement;
-  const orientEl = document.getElementById("orient") as HTMLElement;
-  const tabsEl = document.getElementById("tabs") as HTMLElement;
-  const addrInput = document.getElementById("addrInput") as HTMLInputElement;
   const panesEl = document.getElementById("panes") as HTMLElement;
 
   let cfg: SplitView | null = parseSplitUrl(location.href);
@@ -56,40 +50,21 @@ import type { SplitView } from "../shared/types";
     }
   }
 
-  function renderTabs(): void {
-    tabsEl.textContent = "";
-    if (!cfg) return;
-    cfg.panes.forEach((p, i) => {
-      const tab = document.createElement("span");
-      tab.className = "pane-tab" + (i === activePane() ? " on" : "");
-      const n = document.createElement("span");
-      n.className = "n";
-      n.textContent = String(i + 1);
-      const label = document.createElement("span");
-      label.textContent = p.title || p.url || "about:blank";
-      tab.appendChild(n);
-      tab.appendChild(label);
-      tab.addEventListener("click", () => focusPane(i));
-      tabsEl.appendChild(tab);
-    });
-  }
-
   function renderPanes(): void {
     panesEl.textContent = "";
     iframes.length = 0;
     paneEls.length = 0;
     if (!cfg) return;
     panesEl.classList.toggle("vertical", cfg.orientation === "vertical");
-    orientEl.textContent = cfg.orientation === "vertical" ? "stacked" : "side-by-side";
     cfg.panes.forEach((p, i) => {
       const pane = document.createElement("div");
       pane.className = "pane" + (i === activePane() ? " active" : "");
       const iframe = document.createElement("iframe");
       iframe.setAttribute("data-lf-split-pane", String(i));
+      // Assign src while the iframe is still detached, then append: Firefox
+      // navigates the iframe from this initial src, whereas assigning src
+      // after insertion can leave the frame stuck on about:blank.
       iframe.src = p.url || "about:blank";
-      iframe.addEventListener("load", () => {
-        // The parent cannot read cross-origin titles; keep the label stable.
-      });
       pane.appendChild(iframe);
       pane.addEventListener("click", () => focusPane(i));
       panesEl.appendChild(pane);
@@ -103,8 +78,6 @@ import type { SplitView } from "../shared/types";
         panesEl.appendChild(div);
       }
     });
-    renderTabs();
-    addrInput.value = cfg.panes[activePane()] ? cfg.panes[activePane()]!.url : "";
   }
 
   function focusPane(i: number): void {
@@ -119,8 +92,6 @@ import type { SplitView } from "../shared/types";
     // cross-origin, so once it has focus the splitview page no longer sees
     // leader keys (and no content script runs inside it). Keep keyboard focus
     // in the split chrome; the user clicks into a pane when they want to type.
-    renderTabs();
-    addrInput.value = cfg.panes[idx] ? cfg.panes[idx]!.url : "";
     persist();
   }
 
@@ -129,7 +100,15 @@ import type { SplitView } from "../shared/types";
     if (!cfg) return;
     cfg.orientation = orientation;
     panesEl.classList.toggle("vertical", orientation === "vertical");
-    orientEl.textContent = orientation === "vertical" ? "stacked" : "side-by-side";
+    persist();
+  }
+
+  function navigateActive(url: string): void {
+    if (!cfg) return;
+    const i = activePane();
+    cfg.panes[i]!.url = url;
+    cfg.panes[i]!.title = url;
+    iframes[i]!.src = url;
     persist();
   }
 
@@ -153,42 +132,28 @@ import type { SplitView } from "../shared/types";
     window.addEventListener("mouseup", up);
   }
 
-  function navigateActive(url: string): void {
-    if (!cfg) return;
-    const i = activePane();
-    cfg.panes[i]!.url = url;
-    cfg.panes[i]!.title = url;
-    iframes[i]!.src = url;
-    renderTabs();
-    persist();
-  }
+  // Background-driven messages: pane focus (leader ;[ / ;] from the chrome
+  // helper) and pane navigation (leader ;o routed to the active pane).
+  browser.runtime.onMessage.addListener(
+    (msg: { action?: string; splitId?: string; dir?: number; url?: string }) => {
+      if (!msg || !cfg) return undefined;
+      if (myId && msg.splitId && msg.splitId !== myId) return undefined;
+      if (msg.action === "lfSplitFocus") {
+        const dir = msg.dir || 1;
+        focusPane(activePane() + dir);
+        return Promise.resolve({ ok: true });
+      }
+      if (msg.action === "lfSplitNavigate" && msg.url) {
+        navigateActive(msg.url);
+        return Promise.resolve({ ok: true });
+      }
+      return undefined;
+    }
+  );
 
-  addrInput.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    const v = addrInput.value.trim();
-    if (!v) return;
-    void core.normalizeUrl(v).then((u) => {
-      navigateActive(u);
-      addrInput.blur();
-    });
-  });
-
-  // Background-driven pane focus (leader `;[` / `;]` from the chrome helper
-  // or the content scripts inside panes).
-  browser.runtime.onMessage.addListener((msg: { action?: string; splitId?: string; dir?: number }) => {
-    if (!msg || msg.action !== "lfSplitFocus") return undefined;
-    if (myId && msg.splitId && msg.splitId !== myId) return undefined;
-    if (!cfg) return undefined;
-    const dir = msg.dir || 1;
-    focusPane(activePane() + dir);
-    return Promise.resolve({ ok: true });
-  });
-
-  // Direct leader-key handling (the split view is an extension page: no content
-  // script runs here, and the chrome helper cannot reliably see keys typed into
-  // this document). Mirrors optionskeys.ts: `;` arms a one-shot leader, then
-  // `[`/`]` cycle panes, `|`/`_` toggle orientation and `\\` closes the view.
+  // Direct leader-key fallback (in case the chrome helper is absent and no
+  // content script runs here): `;` arms a one-shot leader, then `[`/`]` cycle
+  // panes, `|`/`_` toggle orientation and `\` closes the view.
   let leaderPending = false;
   function runLeader(k: string): void {
     if (k === "[") focusPane(activePane() - 1);
@@ -211,8 +176,6 @@ import type { SplitView } from "../shared/types";
         runLeader(e.key);
         return;
       }
-      // Let the address input keep normal typing (it has its own Enter handler).
-      if (e.target === addrInput) return;
       if (e.key === ";") {
         e.preventDefault();
         e.stopPropagation();
@@ -222,11 +185,8 @@ import type { SplitView } from "../shared/types";
     true
   );
 
-  window.addEventListener("load", () => {
-    renderPanes();
-  });
-
+  // Single render only: the script runs at the end of <body>, so the DOM is
+  // ready. A second render on window.load would destroy the iframes mid-
+  // navigation (cancelling their loads) and recreate them.
   renderPanes();
-  void core.normalizeUrl("").catch(() => {}); // warm the wasm core
-  void bar; // keep referenced for clarity
 })();

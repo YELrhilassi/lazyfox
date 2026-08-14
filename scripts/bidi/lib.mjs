@@ -169,7 +169,7 @@ export function startGecko({ profile } = {}) {
           if (!p) return;
           pending.delete(msg.id);
           if (msg.type === "success") p.resolvePromise(msg.result);
-          else p.reject(new Error(`${msg.method} failed: ${JSON.stringify(msg.error)}`));
+          else p.reject(new Error(`${msg.method || "?"} failed: ${JSON.stringify(msg.error)} ${msg.message || ""}`));
         } else if (msg.type === "event") {
           if (msg.method === "log.entryAdded") {
             logs.push(msg.params);
@@ -487,7 +487,10 @@ export function startTestServer(pages) {
         res.end("not found");
         return;
       }
-      res.writeHead(200, { "Content-Type": page.type || "text/html; charset=utf-8" });
+      res.writeHead(200, Object.assign(
+        { "Content-Type": page.type || "text/html; charset=utf-8" },
+        page.headers || {}
+      ));
       res.end(page.body);
     });
     server.listen(0, "127.0.0.1", () => {

@@ -336,11 +336,146 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     sessionAction("switchSessionByMarker", String(marker));
   chromeOps.assignSessionMarker = (name: string, marker: number) =>
     sessionAction("assignSessionMarker", name + "\u0001" + marker);
-  chromeOps.splitTab = (orientation: "horizontal" | "vertical") =>
-    sessionAction("splitTab", orientation);
-  chromeOps.unsplitTab = () => sessionAction("unsplitTab");
-  chromeOps.switchSplitPane = (dir: number) =>
-    sessionAction("switchSplitPane", String(dir));
+  /* ============ native split view (Firefox 149+) ============ */
+
+  // Firefox 149+ ships a native split view (two real tabs side-by-side). It has
+  // no extension API yet (bug 2016928 — only a WECG proposal), but this chrome
+  // helper runs privileged and can drive it through gBrowser.addTabSplitView.
+  // When available it is strictly better than the iframe split: each pane is a
+  // real top-level tab, so no site can block embedding and both panes keep full
+  // focus/history/zoom state. The iframe split remains the fallback (and the
+  // only way to stack vertically, which native split cannot do).
+  function nativeSplitAvailable(): boolean {
+    try {
+      return (
+        typeof window.gBrowser.addTabSplitView === "function" &&
+        Services.prefs.getBoolPref("browser.tabs.splitView.enabled", false)
+      );
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // The split view wrapper the user last interacted with, so `;+` (move the
+  // selected tab into the split) works even while the selected tab itself is
+  // outside the split. gBrowser.activeSplitView covers the same case on newer
+  // Firefox; this fallback guards older 149/150 builds where it was not yet
+  // exposed. The wrapper is a DOM element, so isConnected detects unsplits.
+  let lastNativeSplit: any = null;
+
+  function rememberSplit(): void {
+    try {
+      const sv = activeSplitView();
+      if (sv) lastNativeSplit = sv;
+      else if (lastNativeSplit && lastNativeSplit.isConnected === false) lastNativeSplit = null;
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function activeSplitView(): any {
+    try {
+      const tab = window.gBrowser.selectedTab;
+      if (tab && tab.splitview) return tab.splitview;
+      try {
+        if (window.gBrowser.activeSplitView) return window.gBrowser.activeSplitView;
+      } catch (e) {
+        // not exposed on this build
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function nativeSplitCurrentTab(
+    orientation: "horizontal" | "vertical"
+  ): boolean {
+    if (orientation !== "horizontal") return false; // native is side-by-side only
+    try {
+      if (!nativeSplitAvailable()) return false;
+      const active = window.gBrowser.selectedTab;
+      if (!active || active.pinned) return false;
+      if (active.splitview) return true; // already split: treat as handled
+      const blank = window.gBrowser.addTab("about:blank", {
+        // Keep the original tab selected: the pane the user was looking at
+        // stays the active pane of the new split view.
+        inBackground: true,
+        skipAnimation: true,
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      });
+      window.gBrowser.addTabSplitView([active, blank]);
+      rememberSplit();
+      return true;
+    } catch (e) {
+      if (__DEV__) dbg("native split failed: " + String(e));
+      return false;
+    }
+  }
+
+  function nativeAddTabToSplit(): boolean {
+    try {
+      if (!nativeSplitAvailable()) return false;
+      let sv = activeSplitView();
+      if (!sv && lastNativeSplit && lastNativeSplit.isConnected) sv = lastNativeSplit;
+      if (!sv) return false;
+      const tab = window.gBrowser.selectedTab;
+      if (!tab || tab.pinned) return false;
+      if (tab.splitview === sv) return true; // already in this split
+      if (typeof sv.addTabs !== "function") return false;
+      sv.addTabs([tab]);
+      rememberSplit();
+      return true;
+    } catch (e) {
+      if (__DEV__) dbg("native add-to-split failed: " + String(e));
+      return false;
+    }
+  }
+
+  function nativeUnsplit(): boolean {
+    try {
+      const sv = activeSplitView();
+      if (sv && typeof sv.unsplitTabs === "function") {
+        sv.unsplitTabs();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function nativeSwitchPane(dir: number): boolean {
+    try {
+      const sv = activeSplitView();
+      if (sv && Array.isArray(sv.tabs) && sv.tabs.length > 1) {
+        const active = window.gBrowser.selectedTab;
+        const idx = sv.tabs.indexOf(active);
+        const next =
+          sv.tabs[(idx + (dir > 0 ? 1 : -1) + sv.tabs.length) % sv.tabs.length];
+        if (next) {
+          window.gBrowser.selectedTab = next;
+          return true;
+        }
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  chromeOps.splitTab = (orientation: "horizontal" | "vertical") => {
+    if (!nativeSplitCurrentTab(orientation)) sessionAction("splitTab", orientation);
+  };
+  chromeOps.unsplitTab = () => {
+    if (!nativeUnsplit()) sessionAction("unsplitTab");
+  };
+  chromeOps.switchSplitPane = (dir: number) => {
+    if (!nativeSwitchPane(dir)) sessionAction("switchSplitPane", String(dir));
+  };
+  chromeOps.splitAddTab = () => {
+    if (!nativeAddTabToSplit()) sessionAction("splitAddTab");
+  };
   // The sessions popup needs the session list on chrome-only pages too. Answer
   // from the cached status-bar summary (which requestSessionState refreshes)
   // and kick a background refresh so the next open is current.
@@ -359,6 +494,26 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     }));
     if (ql) items = items.filter((s) => (s.title || "").toLowerCase().indexOf(ql) !== -1);
     return items;
+  };
+  // When the focused tab is an iframe split container, `;o` navigates the
+  // active pane (so the split is never navigated away from) instead of the tab
+  // itself. A native split needs no special case: each pane is a real tab, so
+  // navigating the selected tab IS navigating the active pane (and splitting
+  // a pane in half would only confuse).
+  const origOpenUrl = chromeOps.openUrl;
+  chromeOps.openUrl = (url: string, newTab?: boolean) => {
+    let focused = "";
+    try {
+      const b = window.gBrowser.selectedBrowser;
+      focused = b && b.currentURI ? b.currentURI.spec : "";
+    } catch (e) {
+      // ignore
+    }
+    if (focused.indexOf("splitview.html") !== -1) {
+      sessionAction("navigateSplitPane", url);
+    } else {
+      origOpenUrl(url, newTab);
+    }
   };
 
   /* ===================== typing channel ===================== */
@@ -439,6 +594,8 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     marker: 0,
     inSplit: false,
     splitOrientation: undefined as "horizontal" | "vertical" | undefined,
+    splitActive: 0,
+    splitPanes: 0,
     sessions: [] as { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[],
   };
 
@@ -468,6 +625,8 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       tabCount: tabs.length,
       inSplit: chromeStatusInfo.inSplit,
       splitOrientation: chromeStatusInfo.splitOrientation,
+      splitActive: chromeStatusInfo.splitActive,
+      splitPanes: chromeStatusInfo.splitPanes,
       mode: mode,
       sessions: chromeStatusInfo.sessions,
     });
@@ -519,6 +678,7 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   setTimeout(requestSessionState, 2000);
   try {
     window.gBrowser.tabContainer.addEventListener("TabSelect", () => {
+      rememberSplit();
       updateChromeStatus();
       computeChromeStatus();
     });
@@ -772,6 +932,28 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
           statusMounted: chromeStatusBar ? chromeStatusBar.mounted : false,
           statusPosition: (cfg.config.statusBarPosition || "bottom"),
           leaderPending: leader ? leader.hasPending() : false,
+          nativeSplit: (() => {
+            try {
+              const sv = activeSplitView();
+              const sel = window.gBrowser.selectedTab;
+              return {
+                fn: typeof window.gBrowser.addTabSplitView,
+                pref: Services.prefs.getBoolPref("browser.tabs.splitView.enabled", false),
+                selSplitview: sv
+                  ? {
+                      id: sv.splitViewId,
+                      tabs: Array.isArray(sv.tabs) ? sv.tabs.length : -1,
+                    }
+                  : null,
+                selHasSplitview: sel ? !!sel.splitview : false,
+                selUrl: sel && sel.linkedBrowser && sel.linkedBrowser.currentURI
+                  ? sel.linkedBrowser.currentURI.spec
+                  : null,
+              };
+            } catch (e) {
+              return { error: String(e) };
+            }
+          })(),
         };
         json = btoa(JSON.stringify(state));
       } catch (e) {
@@ -793,6 +975,8 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
           inSplit: !!(state && state.inSplit),
           splitOrientation:
             state && state.splitOrientation === "vertical" ? "vertical" : "horizontal",
+          splitActive: state && typeof state.splitActive === "number" ? state.splitActive : 0,
+          splitPanes: state && typeof state.splitPanes === "number" ? state.splitPanes : 0,
           sessions: (state && state.sessions) || [],
         };
         computeChromeStatus();
@@ -839,6 +1023,12 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener"]),
     onLocationChange(browser: any, webProgress: any, request: any, location: any) {
       if (!location) return;
+      // The selected tab may have crossed the web/chrome boundary (e.g. a web
+      // page navigated to about:preferences): remount the chrome status bar
+      // accordingly. updateChromeStatus is cheap and idempotent, and
+      // chromePageNeedsStatus() reads the *selected* browser, so location
+      // changes in background tabs are harmless here.
+      updateChromeStatus();
       if (location.scheme !== "moz-extension") return;
       const spec = location.spec;
       const h = spec.indexOf("#");
@@ -934,6 +1124,22 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
         e.stopImmediatePropagation();
         leader.show();
         return;
+      }
+    },
+    true
+  );
+
+  // Firefox's native typeahead quick-find is bound to the `keypress` of `/`
+  // and `'`, so it fires even after the leader has consumed the `keydown`.
+  // Suppress it outside text fields so `;/` opens the find bar deliberately
+  // rather than the native bar stealing the key.
+  window.addEventListener(
+    "keypress",
+    (e) => {
+      if (e.key !== "/" && e.key !== "'") return;
+      if (!typing.focusedIsTyping(e)) {
+        e.preventDefault();
+        e.stopPropagation();
       }
     },
     true

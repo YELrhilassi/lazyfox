@@ -97,6 +97,11 @@ export interface SessionTab {
   // the splitview page (which encodes the pane URLs); this mirrors the layout
   // so capture/restore and the status bar never have to re-parse the URL.
   split?: SplitView;
+  // Native (Firefox 149+) split view: tabs sharing a splitViewId are shown
+  // side by side. Read-only on the tabs API today (bug 2016928), so capture
+  // records it and the chrome helper is expected to recreate the pairing on
+  // restore once the extension API lands.
+  splitViewId?: number;
 }
 
 // A custom i3-style split view: a tab that shows two (or more) pages at once.

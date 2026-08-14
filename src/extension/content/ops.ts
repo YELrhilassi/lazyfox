@@ -331,6 +331,14 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         else toast(r && r.note ? r.note : "not in a split view");
       });
     },
+    splitAddTab: () => {
+      // Moving a tab into a split view is a native-split (chrome helper)
+      // capability; content scripts relay and surface whatever the background
+      // reports (usually that the chrome helper owns it).
+      void send("sessionSplitAddTab", {}).then((r) =>
+        toast(r && r.note ? r.note : "moved tab into split")
+      );
+    },
     sessionState: async () => {
       const r = await send("sessionState");
       return (
