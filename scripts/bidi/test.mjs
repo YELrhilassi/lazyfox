@@ -917,6 +917,22 @@ async function main() {
     assert(after.length === before.length, "split-pane switch without a split view changed no tabs");
   });
 
+  await runTest("sessions: ;. and ;, move bindings dispatch cleanly", async () => {
+    await gotoPage(tabA, `${base}/`);
+    const before = await tabsInfo();
+    await leaderPress(tabA, ".");
+    await sleep(500);
+    await leaderPress(tabA, ",");
+    await sleep(500);
+    const after = await tabsInfo();
+    // tabs.move is a no-op for WebDriver-created tabs on this Firefox beta, so
+    // assert the dispatch is safe (no tab created/destroyed, no popup left
+    // open) rather than the reorder itself — the reorder is exercised by the
+    // background's moveTab path and the binding keys are pinned in Go tests.
+    assert(after.length === before.length, "move bindings create/destroy no tabs");
+    assert(!(await hasHost(tabA, "lazyfox-popup")), "move bindings open no popup");
+  });
+
   await runTest("sessions: ;p saves a session with marker 1", async () => {
     await gotoPage(tabA, `${base}/`);
     await leaderPress(tabA, "p");

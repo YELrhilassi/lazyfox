@@ -267,6 +267,14 @@ export const chromeOps: ActionOps = {
     const ni = i + (dir > 0 ? 1 : -1);
     if (ni >= 0 && ni < window.gBrowser.tabs.length) window.gBrowser.moveTabTo(t, ni);
   },
+  moveActiveTab: (dir: number) => {
+    const tabs = window.gBrowser.tabs;
+    const i = tabs.indexOf(window.gBrowser.selectedTab);
+    if (i < 0) return;
+    const ni = i + (dir > 0 ? 1 : -1);
+    if (ni >= 0 && ni < tabs.length) window.gBrowser.moveTabTo(window.gBrowser.selectedTab, ni);
+    window.focus();
+  },
   reopenTab: () => {
     try {
       window.undoCloseTab();

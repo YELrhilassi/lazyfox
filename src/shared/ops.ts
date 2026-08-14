@@ -20,6 +20,7 @@ export interface ActionOps {
   newTab(): void;
   closeTab(id?: number): void;
   moveTab(id: number, dir: number): void;
+  moveActiveTab(dir: number): void;
   reopenTab(): void;
   duplicateTab(): void;
   reload(): void;

@@ -200,6 +200,7 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     newTab: () => void send("newTab"),
     closeTab: (id?: number) => void send("closeTab", { id: id }),
     moveTab: (id: number, dir: number) => void send("moveTab", { id: id, dir: dir }),
+    moveActiveTab: (dir: number) => void send("moveActiveTab", { dir: dir }),
     reopenTab: () => void send("reopenTab"),
     duplicateTab: () => void send("duplicateTab"),
     reload: () => void send("reload"),
