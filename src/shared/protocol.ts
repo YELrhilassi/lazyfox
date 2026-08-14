@@ -55,6 +55,7 @@ export interface BgApi {
   sessionRestore: { req: { name: string }; res: { ok: boolean } };
   sessionDelete: { req: { name: string }; res: { ok: boolean } };
   sessionSwitchByMarker: { req: { marker: number }; res: { ok: boolean; name?: string } };
+  sessionAssignMarker: { req: { name: string; marker: number }; res: { ok: boolean; note?: string } };
   sessionSplit: { req: Record<string, never>; res: { ok: boolean; note?: string } };
   sessionUnsplit: { req: Record<string, never>; res: { ok: boolean; note?: string } };
   sessionSwitchPane: { req: Record<string, never>; res: { ok: boolean; note?: string } };

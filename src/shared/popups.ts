@@ -265,7 +265,7 @@ export function openSessionsPopup(ctx: PopupCtx): void {
     basePanel(
       "Sessions",
       "no saved sessions",
-      "<span class='lf-badge'>Enter</span> switch &middot; <span class='lf-badge'>1-9</span> marker &middot; <span class='lf-badge'>x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
+      "<span class='lf-badge'>Enter</span> switch &middot; <span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Ctrl+1-9</span> mark &middot; <span class='lf-badge'>x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
     ),
     (root) =>
       makeSelector<PopupItem>(ctx, root, {
@@ -301,6 +301,16 @@ export function openSessionsPopup(ctx: PopupCtx): void {
         },
         extraKeys: (e, sel) => {
           const k = e.key;
+          // Ctrl+1-9 assigns that marker to the highlighted session.
+          if (e.ctrlKey && /^[1-9]$/.test(k)) {
+            if (sel.item && sel.item.kind !== "save" && sel.item.title) {
+              e.preventDefault();
+              ctx.ops.assignSessionMarker(sel.item.title, Number(k));
+              sel.refresh();
+              return true;
+            }
+            return false;
+          }
           if (/^[1-9]$/.test(k) && sel.empty) {
             const name = byMarker[Number(k)];
             if (!name) return false;

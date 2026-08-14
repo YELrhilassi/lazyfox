@@ -375,6 +375,31 @@ import type { Session, SessionTab } from "../shared/types";
     return { ok: true };
   }
 
+  // Explicitly (re)assign a session's marker. If another session already holds
+  // the marker, it is unmarked so each marker stays unique. The clamping and
+  // auto-assignment live in the Go core; this is the storage mutation around
+  // them.
+  async function assignSessionMarker(
+    name: string,
+    marker: number
+  ): Promise<{ ok: boolean; note?: string }> {
+    const all = await readSessions();
+    const nm = (name || "").trim();
+    const m = Number(marker);
+    if (!all[nm]) return { ok: false, note: "no such session" };
+    if (!(m >= 1 && m <= MAX_SESSION_TABS)) {
+      return { ok: false, note: "marker must be 1-9" };
+    }
+    for (const k of Object.keys(all)) {
+      if (k !== nm && all[k] && (all[k]!.marker || 0) === m) {
+        all[k]!.marker = 0;
+      }
+    }
+    all[nm]!.marker = m;
+    await writeSessions(all);
+    return { ok: true };
+  }
+
   async function splitCurrentTab(): Promise<{ ok: boolean; note?: string }> {
     const all = await browser.tabs.query({ currentWindow: true });
     const idx = all.findIndex((t: any) => t.active);
@@ -868,6 +893,8 @@ import type { Session, SessionTab } from "../shared/types";
         return deleteSession(data.name);
       case "sessionSwitchByMarker":
         return switchSessionByMarker(data.marker);
+      case "sessionAssignMarker":
+        return assignSessionMarker(data.name, data.marker);
       case "sessionSplit":
         return splitCurrentTab();
       case "sessionUnsplit":
@@ -958,6 +985,14 @@ import type { Session, SessionTab } from "../shared/types";
     }
     if (action === "switchSessionByMarker") {
       await switchSessionByMarker(parseInt(arg || "0", 10));
+      return;
+    }
+    if (action === "assignSessionMarker") {
+      const raw = decodeURIComponent(arg || "");
+      const sep = raw.indexOf("\u0001");
+      const nm = sep < 0 ? raw : raw.slice(0, sep);
+      const mk = sep < 0 ? 0 : parseInt(raw.slice(sep + 1), 10);
+      await assignSessionMarker(nm, mk);
       return;
     }
     if (action === "splitTab") {

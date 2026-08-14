@@ -51,6 +51,7 @@ export interface ActionOps {
   restoreSession(name: string): void;
   deleteSession(name: string): void;
   switchSessionByMarker(marker: number): void;
+  assignSessionMarker(name: string, marker: number): void;
   splitTab(): void;
   unsplitTab(): void;
   switchSplitPane(): void;

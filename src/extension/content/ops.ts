@@ -305,6 +305,11 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         toast(r && r.ok ? "session \u201C" + r.name + "\u201D" : "no session at marker " + marker)
       );
     },
+    assignSessionMarker: (name: string, marker: number) => {
+      void send("sessionAssignMarker", { name: name, marker: marker }).then((r) =>
+        toast(r && r.ok ? "\u201C" + name + "\u201D \u2192 marker " + marker : (r && r.note) || "could not set marker")
+      );
+    },
     splitTab: () => {
       void send("sessionSplit").then((r) => {
         if (r && r.ok) toast("split view");
