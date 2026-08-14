@@ -128,27 +128,26 @@ export async function run(ctx) {
 
   await t(";s search popup: type query, Enter searches", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const beforeIds = new Set((await ctx.tabsInfo()).map((t) => t.id));
     await ctx.leaderPress(ctx.tabA, "s");
     await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
     await ctx.typeIn(ctx.tabA, "hello world");
     await sleep(600);
     await ctx.press(ctx.tabA, "Enter");
     await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    // Firefox's default search engine opens a new tab. Assert only that a new
+    // tab appeared — don't depend on the engine's URL (Google serves a captcha
+    // wall on some networks, and the test must not depend on an external site).
+    let searchTab = null;
     await waitFor(async () => {
-      const t = await getTree();
-      const cs = contextsOf(t);
-      for (const c of cs) {
-        if (c.url && c.url.includes("google.com")) return c.context;
-      }
-      return null;
+      const now = await ctx.tabsInfo();
+      const t = now.find((x) => !beforeIds.has(x.id));
+      return t || null;
     }, 20000);
-    // The search tab opened in the background; close it so its subframes
-    // (Google's captcha wall here renders recaptcha iframes) don't linger in
-    // the context tree and pollute later tests.
-    await evalIn(
-      ctx.probe,
-      `browser.tabs.query({}).then(ts => { const t = ts.find(x => x.url && x.url.indexOf("google.com") !== -1); return t ? browser.tabs.remove(t.id) : null; })`
-    ).catch(() => {});
+    searchTab = (await ctx.tabsInfo()).find((t) => !beforeIds.has(t.id));
+    assert(searchTab, "a search tab opened");
+    // Close the search tab so its subframes don't pollute later tests.
+    await evalIn(ctx.probe, `browser.tabs.remove(${searchTab.id})`).catch(() => {});
     await activate(ctx.tabA);
   });
 

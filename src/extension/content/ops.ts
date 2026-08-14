@@ -315,7 +315,7 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     },
     splitTab: (orientation: "horizontal" | "vertical") => {
       void send("sessionSplit", { orientation: orientation }).then((r) => {
-        if (r && r.ok) toast(orientation === "vertical" ? "split stacked" : "split side-by-side");
+        if (r && r.ok) toast("split side-by-side");
         else toast(r && r.note ? r.note : "could not split");
       });
     },
@@ -331,12 +331,17 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         else toast(r && r.note ? r.note : "not in a split view");
       });
     },
-    splitAddTab: () => {
+    splitAddTabByIndex: (n: number) => {
       // Moving a tab into a split view is a native-split (chrome helper)
-      // capability; content scripts relay and surface whatever the background
-      // reports (usually that the chrome helper owns it).
-      void send("sessionSplitAddTab", {}).then((r) =>
-        toast(r && r.note ? r.note : "moved tab into split")
+      // capability; the background relays the request to the chrome helper.
+      void send("sessionSplitAddTabByIndex", { index: n }).then((r) => {
+        if (r && r.ok) toast("moved tab " + n + " into split");
+        else toast(r && r.note ? r.note : "could not move tab into split");
+      });
+    },
+    toggleWhichKey: () => {
+      void send("toggleWhichKey", {}).then((r) =>
+        toast(r && r.whichKey ? "which-key on" : "which-key off")
       );
     },
     sessionState: async () => {

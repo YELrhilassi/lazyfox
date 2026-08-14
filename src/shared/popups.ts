@@ -448,13 +448,13 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     p: () => openSessionsPopup(ctx),
     "'": () => openSessionsPopup(ctx),
     "|": () => ctx.ops.splitTab("horizontal"),
-    "_": () => ctx.ops.splitTab("vertical"),
     "[": () => ctx.ops.switchSplitPane(-1),
     "]": () => ctx.ops.switchSplitPane(1),
     ",": () => ctx.ops.moveActiveTab(-1),
     ".": () => ctx.ops.moveActiveTab(1),
     "\\": () => ctx.ops.unsplitTab(),
-    "+": () => ctx.ops.splitAddTab(),
+    // `;+1-9` (move a specific tab into the split) needs the leader's one-shot
+    // digit capture, so it is wired by each context after makeLeaderActions.
     i: () => ctx.ops.focusFirstInput(),
     n: () => ctx.ops.newTab(),
     x: () => ctx.ops.closeTab(),
@@ -484,5 +484,6 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     z: () => ctx.ops.zen(),
     "?": () => openHelpPopup(ctx),
     e: () => ctx.ops.toggleReveal(),
+    q: () => ctx.ops.toggleWhichKey(),
   };
 }

@@ -72,12 +72,6 @@
       },
       "description": "Split the current tab side-by-side"
     },
-    "split-vertical": {
-      "suggested_key": {
-        "default": "Ctrl+Alt+V"
-      },
-      "description": "Split the current tab stacked"
-    },
     "split-next-pane": {
       "suggested_key": {
         "default": "Ctrl+Alt+Right"

@@ -18,7 +18,7 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
   "use strict";
 
   const CC_URL = browser.runtime.getURL("commandcenter.html");
-  const HOMEISH = /^about:(home|newtab)$/i;
+  const HOMEISH = /^about:(home|newtab|blank)$/i;
 
   async function getActiveTab() {
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
@@ -100,23 +100,27 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     return { entries };
   }
 
+  async function searchUrlFor(q: string): Promise<string> {
+    let url = "";
+    try {
+      const engines = await browser.search.get();
+      const e = engines.find((x: any) => /google/i.test(x.name)) || engines[0];
+      if (e && e.searchUrl) {
+        url = e.searchUrl
+          .replace("{searchTerms}", encodeURIComponent(q))
+          .replace("{inputEncoding}", "UTF-8");
+      }
+    } catch (e) {}
+    if (!url) url = "https://www.google.com/search?q=" + encodeURIComponent(q);
+    return url;
+  }
+
   async function doSearch(query: string) {
     const q = (query || "").trim();
     if (!q) return { ok: false };
     const tab = await getActiveTab();
     if (isCommandCenter(tab)) {
-      let url = "";
-      try {
-        const engines = await browser.search.get();
-        const e = engines.find((x: any) => /google/i.test(x.name)) || engines[0];
-        if (e && e.searchUrl) {
-          url = e.searchUrl
-            .replace("{searchTerms}", encodeURIComponent(q))
-            .replace("{inputEncoding}", "UTF-8");
-        }
-      } catch (e) {}
-      if (!url) url = "https://www.google.com/search?q=" + encodeURIComponent(q);
-      await browser.tabs.update(tab.id, { url, active: true });
+      await browser.tabs.update(tab.id, { url: await searchUrlFor(q), active: true });
       return { ok: true, engine: "default", reused: true };
     }
     try {
@@ -842,7 +846,8 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
         }
         return { ok: true };
       case "newTab":
-        await browser.tabs.create({});
+        // A new tab is the command center, never a stray about:blank.
+        await browser.tabs.create({ url: CC_URL, active: true });
         return { ok: true };
       case "reopenTab":
         return reopenTab();
@@ -874,6 +879,13 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
         return openUI(data.which);
       case "search":
         return doSearch(data.query || "");
+      case "searchInPlace": {
+        const q = (data.query || "").trim();
+        if (!q) return { ok: false };
+        const tab = await getActiveTab();
+        if (tab) await browser.tabs.update(tab.id, { url: await searchUrlFor(q), active: true });
+        return { ok: true };
+      }
       case "windowSize":
         return getWindowSize();
       case "resizeWindow":
@@ -939,12 +951,40 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
         return switchSplitPane(data.dir || 1);
       case "sessionNavigatePane":
         return navigateSplitPane(data.url);
-      case "sessionSplitAddTab":
+      case "sessionSplitAddTabByIndex": {
         // Moving a tab into a split view is a native-split capability owned by
-        // the chrome helper (gBrowser.addTabSplitView); the background has no
-        // chrome access and cannot do it for iframe splits either (each pane
-        // would need a fresh <iframe> + a config rewrite).
-        return { ok: false, note: "move to split: use the chrome helper (Firefox native split)" };
+        // the chrome helper (gBrowser.addTabSplitView). Relay via a transient
+        // request tab the chrome helper handles and removes.
+        const n = Number(data && data.index);
+        if (!(n >= 1 && n <= 9)) return { ok: false, note: "tab number must be 1-9" };
+        requestChrome("moveToSplit", String(n));
+        return { ok: true };
+      }
+      case "splitPanelTabs": {
+        const tabs = await browser.tabs.query({ currentWindow: true });
+        return {
+          tabs: (tabs || []).map((t: any, i: number) => ({
+            index: i + 1,
+            id: t.id,
+            url: t.url || "",
+            title: t.title || "",
+            active: !!t.active,
+            inSplit: typeof t.splitViewId === "number" && t.splitViewId >= 0,
+          })),
+        };
+      }
+      case "moveTabToSplit": {
+        const n = Number(data && data.index);
+        if (!(n >= 1 && n <= 9)) return { ok: false };
+        requestChrome("moveToSplit", String(n));
+        return { ok: true };
+      }
+      case "toggleWhichKey": {
+        const c = await getConfig();
+        c.whichKey = !c.whichKey;
+        await browser.storage.local.set({ config: c });
+        return { whichKey: !!c.whichKey };
+      }
       case "sessionState":
         return sessionState();
       default:
@@ -966,8 +1006,6 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
         .catch(() => {});
     } else if (name === "split-horizontal") {
       void splitCurrentTab("horizontal");
-    } else if (name === "split-vertical") {
-      void splitCurrentTab("vertical");
     } else if (name === "split-next-pane") {
       void switchSplitPane(1);
     } else if (name === "split-prev-pane") {
@@ -978,10 +1016,28 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
   });
 
   function maybeConvertHome(tab: any) {
-    if (tab && tab.url && HOMEISH.test(tab.url)) {
-      return browser.tabs.update(tab.id, { url: CC_URL }).catch(() => {});
+    if (!tab || !tab.url || !HOMEISH.test(tab.url)) return Promise.resolve();
+    // A blank/home tab that is already navigating somewhere (e.g.
+    // browser.search.search opening a results tab) must be left alone — only
+    // idle blank/home tabs are converted.
+    if (tab.pendingUrl && tab.pendingUrl !== tab.url) return Promise.resolve();
+    if (tab.url === "about:blank") {
+      // about:blank is frequently a transient placeholder (search results,
+      // in-flight navigations); convert it only once it has been idle briefly.
+      const id = tab.id;
+      setTimeout(() => {
+        browser.tabs
+          .get(id)
+          .then((t: any) => {
+            if (t && t.url === "about:blank" && !(t.pendingUrl && t.pendingUrl !== t.url)) {
+              return browser.tabs.update(id, { url: CC_URL });
+            }
+          })
+          .catch(() => {});
+      }, 500);
+      return Promise.resolve();
     }
-    return Promise.resolve();
+    return browser.tabs.update(tab.id, { url: CC_URL }).catch(() => {});
   }
 
   browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
@@ -997,9 +1053,36 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     return btoa(String.fromCharCode(...new TextEncoder().encode(s)));
   }
 
+  // Ask the chrome helper to do something only it can (native split view):
+  // open a transient background tab whose #lfc= fragment the chrome helper's
+  // progress listener handles; the chrome helper removes the tab itself. A
+  // safety timeout drops it if the chrome helper never answers.
+  function requestChrome(action: string, arg?: string): void {
+    let frag = "lfc=" + action;
+    if (arg != null && arg !== "") frag += "." + encodeURIComponent(arg);
+    browser.tabs
+      .create({ url: CC_URL + "#" + frag, active: false })
+      .then((tab: any) => {
+        setTimeout(() => {
+          browser.tabs
+            .remove(tab.id)
+            .catch(() => {});
+        }, 5000);
+      })
+      .catch(() => {});
+  }
+
   async function handleReq(tab: any, action: string, arg: string) {
     if (action === "alive") {
       await browser.storage.local.set({ chromeAlive: true });
+      return;
+    }
+    if (action === "toggleWhichKey") {
+      // The chrome helper flipped its own cached copy; flip storage to match
+      // so content scripts, the command center and options agree.
+      const c = await getConfig();
+      c.whichKey = !c.whichKey;
+      await browser.storage.local.set({ config: c });
       return;
     }
     if (action === "startHints" || action === "focusFirstInput") {
@@ -1065,8 +1148,9 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
       await navigateSplitPane(decodeURIComponent(arg || ""));
       return;
     }
-    if (action === "splitAddTab") {
-      // No chrome access here; native splits are the chrome helper's domain.
+    if (action === "splitAddTabByIndex") {
+      // Legacy relay no longer used: the chrome helper drives native splits
+      // directly now.
       return;
     }
   }

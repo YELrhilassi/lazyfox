@@ -94,6 +94,8 @@ func TestWhichKeyPagination(t *testing.T) {
 	if lazyCount == 0 || nativeCount == 0 {
 		t.Fatalf("bindings table must contain both lazy and native items: %d / %d", lazyCount, nativeCount)
 	}
+	// The overlay pages over lazy bindings only (native rows are omitted).
+	overlay := lazyBindings()
 	pages := WkPageCount()
 	if pages < 2 {
 		t.Fatalf("expected multiple pages, got %d", pages)
@@ -106,8 +108,8 @@ func TestWhichKeyPagination(t *testing.T) {
 		}
 		seen += len(pg.Items)
 	}
-	if seen != len(flat) {
-		t.Fatalf("pages cover %d rows, want %d", seen, len(flat))
+	if seen != len(overlay) {
+		t.Fatalf("pages cover %d rows, want %d", seen, len(overlay))
 	}
 	// first page selection range must exist and be clamped
 	clamped := WkClampSel(999, 0)
