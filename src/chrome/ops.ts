@@ -418,6 +418,9 @@ export const chromeOps: ActionOps = {
   unsplitTab: () => {
     toast("split view needs a web page");
   },
+  switchSplitPane: () => {
+    toast("split view needs a web page");
+  },
   sessionState: () => {
     const tabs = window.gBrowser.tabs;
     let idx = 1;
@@ -428,6 +431,7 @@ export const chromeOps: ActionOps = {
       marker: 0,
       tabIndex: idx,
       tabCount: tabs.length,
+      inSplit: false,
       sessions: [],
     });
   },

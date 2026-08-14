@@ -119,7 +119,8 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     marker: 0,
     tabIndex: 1,
     tabCount: 0,
-    sessions: [] as { marker: number; name: string; current: boolean }[],
+    inSplit: false,
+    sessions: [] as { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[],
   };
 
   function ensureStatusBar(): void {
@@ -150,6 +151,7 @@ import { createContentOps, type ContentPopupShell } from "./ops";
           marker: r.marker || 0,
           tabIndex: r.tabIndex || 1,
           tabCount: r.tabCount || 0,
+          inSplit: !!r.inSplit,
           sessions: r.sessions || [],
         };
         statusBar.setData(statusInfo);

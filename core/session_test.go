@@ -95,12 +95,19 @@ func TestSplitsCodec(t *testing.T) {
 }
 
 func TestSessionSummary(t *testing.T) {
+	tabs := func(n int) []SessionTab {
+		out := make([]SessionTab, n)
+		for i := range out {
+			out[i] = SessionTab{URL: "u", Title: "t"}
+		}
+		return out
+	}
 	sessions := []Session{
-		{Name: "mail", Marker: 2},
-		{Name: "work", Marker: 1},
-		{Name: "dev", Marker: 9},
-		{Name: "scratch", Marker: 0},
-		{Name: "other", Marker: 0},
+		{Name: "mail", Marker: 2, Tabs: tabs(3), Splits: []SplitPair{{0, 1}}},
+		{Name: "work", Marker: 1, Tabs: tabs(5)},
+		{Name: "dev", Marker: 9, Tabs: tabs(2), Splits: []SplitPair{{0, 1}}},
+		{Name: "scratch", Marker: 0, Tabs: tabs(4)},
+		{Name: "other", Marker: 0, Tabs: tabs(1)},
 	}
 	got := SessionSummary(sessions, "dev")
 	// markers ascending first, unmarked (by name) last
@@ -113,10 +120,16 @@ func TestSessionSummary(t *testing.T) {
 		t.Fatalf("summary order = %v, want %v", order, want)
 	}
 	// current flag set exactly on the current session
+	counts := map[string][2]int{}
 	for _, it := range got {
 		if it.Current != (it.Name == "dev") {
 			t.Fatalf("item %q current = %v", it.Name, it.Current)
 		}
+		counts[it.Name] = [2]int{it.TabCount, it.SplitCount}
+	}
+	// tab + split counts travel with the summary (cheap metadata, no tab load).
+	if counts["mail"] != [2]int{3, 1} || counts["dev"] != [2]int{2, 1} || counts["work"] != [2]int{5, 0} {
+		t.Fatalf("summary counts = %v", counts)
 	}
 	// empty input -> empty output
 	if got := SessionSummary(nil, ""); len(got) != 0 {
@@ -134,5 +147,24 @@ func TestSplitPairOf(t *testing.T) {
 	}
 	if p := SplitPairOf(splits, 9); p != nil {
 		t.Fatalf("SplitPairOf(9) = %+v, want nil", p)
+	}
+}
+
+func TestSplitPartnerOf(t *testing.T) {
+	splits := []SplitPair{{0, 1}, {2, 5}}
+	if got := SplitPartnerOf(splits, 0); got != 1 {
+		t.Fatalf("SplitPartnerOf(0) = %d, want 1", got)
+	}
+	if got := SplitPartnerOf(splits, 1); got != 0 {
+		t.Fatalf("SplitPartnerOf(1) = %d, want 0", got)
+	}
+	if got := SplitPartnerOf(splits, 5); got != 2 {
+		t.Fatalf("SplitPartnerOf(5) = %d, want 2", got)
+	}
+	if got := SplitPartnerOf(splits, 4); got != -1 {
+		t.Fatalf("SplitPartnerOf(4) = %d, want -1", got)
+	}
+	if got := SplitPartnerOf(nil, 0); got != -1 {
+		t.Fatalf("SplitPartnerOf(nil,0) = %d, want -1", got)
 	}
 }

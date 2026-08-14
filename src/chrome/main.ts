@@ -336,6 +336,7 @@ import type { ChromeHotkeys, Config } from "../shared/types";
     sessionAction("switchSessionByMarker", String(marker));
   chromeOps.splitTab = () => sessionAction("splitTab");
   chromeOps.unsplitTab = () => sessionAction("unsplitTab");
+  chromeOps.switchSplitPane = () => sessionAction("switchSplitPane");
 
   /* ===================== typing channel ===================== */
 
@@ -413,7 +414,8 @@ import type { ChromeHotkeys, Config } from "../shared/types";
   let chromeStatusInfo = {
     name: "default",
     marker: 0,
-    sessions: [] as { marker: number; name: string; current: boolean }[],
+    inSplit: false,
+    sessions: [] as { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[],
   };
 
   // The content script owns the status bar on web pages; the chrome helper only
@@ -440,6 +442,7 @@ import type { ChromeHotkeys, Config } from "../shared/types";
       marker: chromeStatusInfo.marker,
       tabIndex: (sel < 0 ? 0 : sel) + 1,
       tabCount: tabs.length,
+      inSplit: chromeStatusInfo.inSplit,
       mode: mode,
       sessions: chromeStatusInfo.sessions,
     });
@@ -762,6 +765,7 @@ import type { ChromeHotkeys, Config } from "../shared/types";
         chromeStatusInfo = {
           name: state && state.name ? String(state.name) : "default",
           marker: state && state.marker ? Number(state.marker) : 0,
+          inSplit: !!(state && state.inSplit),
           sessions: (state && state.sessions) || [],
         };
         computeChromeStatus();

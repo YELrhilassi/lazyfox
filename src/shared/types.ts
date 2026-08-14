@@ -111,10 +111,12 @@ export interface Session {
   updatedAt: number;
 }
 
-// One row of the status bar's session list (names only — the bar never loads
-// every session's tabs).
+// One row of the status bar's session list. Carries only names, markers and
+// cheap counts — the bar never loads every session's tabs.
 export interface SessionSummaryItem {
   marker: number;
   name: string;
   current: boolean;
+  tabCount: number;
+  splitCount: number;
 }

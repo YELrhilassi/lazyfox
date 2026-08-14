@@ -52,11 +52,13 @@ export interface ActionOps {
   switchSessionByMarker(marker: number): void;
   splitTab(): void;
   unsplitTab(): void;
+  switchSplitPane(): void;
   sessionState(): Promise<{
     name: string;
     marker: number;
     tabIndex: number;
     tabCount: number;
-    sessions: { marker: number; name: string; current: boolean }[];
+    inSplit: boolean;
+    sessions: { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
   }>;
 }

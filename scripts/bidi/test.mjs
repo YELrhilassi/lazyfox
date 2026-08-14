@@ -893,6 +893,30 @@ async function main() {
     assert(s && s.statusMounted === true, "chrome status bar mounted: " + JSON.stringify(s && { mounted: s.statusMounted, position: s.statusPosition }));
   });
 
+  await runTest("status bar position: top setting moves the bar", async () => {
+    await gotoPage(tabA, `${base}/`);
+    await evalIn(probe, `browser.storage.local.get("config").then(r => browser.storage.local.set({ config: Object.assign({}, r.config || {}, { statusBarPosition: "top" }) }))`).catch(() => {});
+    await waitFor(async () => {
+      const v = await evalIn(tabA, `document.documentElement.getAttribute("data-lf-status")`);
+      return v && v.indexOf("|top") !== -1 ? v : null;
+    }, 8000);
+    // restore bottom
+    await evalIn(probe, `browser.storage.local.get("config").then(r => browser.storage.local.set({ config: Object.assign({}, r.config || {}, { statusBarPosition: "bottom" }) }))`).catch(() => {});
+    await waitFor(async () => {
+      const v = await evalIn(tabA, `document.documentElement.getAttribute("data-lf-status")`);
+      return v && v.indexOf("|bottom") !== -1 ? v : null;
+    }, 8000);
+  });
+
+  await runTest("sessions: ;[ split-pane switch is a no-op without a split", async () => {
+    await gotoPage(tabA, `${base}/`);
+    const before = await tabsInfo();
+    await leaderPress(tabA, "[");
+    await sleep(700);
+    const after = await tabsInfo();
+    assert(after.length === before.length, "split-pane switch without a split view changed no tabs");
+  });
+
   await runTest("sessions: ;p saves a session with marker 1", async () => {
     await gotoPage(tabA, `${base}/`);
     await leaderPress(tabA, "p");
@@ -944,6 +968,9 @@ async function main() {
         openInNewTab: q("#openInNewTab") ? q("#openInNewTab").checked : null,
         whichKey: q("#whichKey") ? q("#whichKey").checked : null,
         hoverReveal: q("#hoverReveal") ? q("#hoverReveal").checked : null,
+        statusBar: q("#statusBar") ? q("#statusBar").checked : null,
+        statusBarPosition: q("#statusBarPosition") ? q("#statusBarPosition").value : null,
+        autoRestore: q("#autoRestore") ? q("#autoRestore").checked : null,
         save: !!q("#save"),
         title: document.title,
       };
@@ -953,6 +980,9 @@ async function main() {
     assert(f.scrollKeys === true, "scrollKeys checked");
     assert(f.openInNewTab === true, "openInNewTab checked");
     assert(f.whichKey === true, "whichKey checked");
+    assert(f.statusBar === true, "statusBar checked");
+    assert(f.statusBarPosition === "bottom" || f.statusBarPosition === "top", "status bar position select present: " + f.statusBarPosition);
+    assert(f.autoRestore === true, "autoRestore checked");
     assert(f.save === true, "save button present");
   });
 

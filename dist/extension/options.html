@@ -77,10 +77,15 @@
   </label>
 
   <h2 style="margin-top:34px;">Sessions</h2>
-  <p>tmux-style session manager: press <span class="kbd">;p</span> to save and switch named tab sets.</p>
+  <p>tmux-style session manager: press <span class="kbd">;p</span> to save and switch named tab sets, <span class="kbd">;'</span> + 1-9 to jump to a marked session, <span class="kbd">;|</span> to split, <span class="kbd">;\</span> to close the split view.</p>
   <label>
     <span class="row"><input type="checkbox" id="statusBar"> Show the status bar (session &middot; tabs &middot; session list &middot; mode)</span>
   </label>
+  <label for="statusBarPosition">Status bar position</label>
+  <select id="statusBarPosition">
+    <option value="bottom">Bottom</option>
+    <option value="top">Top</option>
+  </select>
   <label>
     <span class="row"><input type="checkbox" id="autoRestore"> Restore the last session on startup</span>
   </label>
