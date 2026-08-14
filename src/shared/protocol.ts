@@ -34,6 +34,7 @@ export interface BgApi {
   openPage: { req: { url: string }; res: { ok: boolean } };
   openUI: { req: { which: string }; res: { ok: boolean } };
   search: { req: { query: string }; res: { ok: boolean; engine?: string; reused?: boolean } };
+  searchInPlace: { req: { query: string }; res: { ok: boolean } };
   windowSize: { req: Record<string, never>; res: WindowSize };
   resizeWindow: { req: { dx: number; dy: number }; res: { width: number; height: number; state: string } };
   moveWindow: { req: { dx: number; dy: number }; res: { left: number; top: number; state: string } };
@@ -49,6 +50,7 @@ export interface BgApi {
   zoom: { req: { delta: number; factor?: number }; res: { factor?: number } };
   getConfig: { req: Record<string, never>; res: { config?: Record<string, unknown> } };
   setConfig: { req: { config: Config }; res: { ok: boolean } };
+  toggleWhichKey: { req: Record<string, never>; res: { whichKey: boolean } };
   syncTyping: { req: { typing: boolean }; res: { ok: boolean } };
   sessionList: { req: Record<string, never>; res: { sessions: Session[] } };
   sessionSave: { req: { name: string }; res: { ok: boolean; session?: Session } };
@@ -59,7 +61,12 @@ export interface BgApi {
   sessionSplit: { req: { orientation: "horizontal" | "vertical" }; res: { ok: boolean; note?: string } };
   sessionUnsplit: { req: Record<string, never>; res: { ok: boolean; note?: string } };
   sessionSwitchPane: { req: { dir: number }; res: { ok: boolean; note?: string } };
-  sessionSplitAddTab: { req: Record<string, never>; res: { ok: boolean; note?: string } };
+  sessionSplitAddTabByIndex: { req: { index: number }; res: { ok: boolean; note?: string } };
+  splitPanelTabs: {
+    req: Record<string, never>;
+    res: { tabs: { index: number; id: number; url: string; title: string; active: boolean; inSplit: boolean }[] };
+  };
+  moveTabToSplit: { req: { index: number }; res: { ok: boolean } };
   sessionNavigatePane: { req: { url: string }; res: { ok: boolean; note?: string } };
   sessionState: {
     req: Record<string, never>;

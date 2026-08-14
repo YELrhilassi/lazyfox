@@ -192,10 +192,11 @@ second key — you just don't see the cheat sheet.
 | `; e` | toggle toolbar reveal on hover |
 | `; 1`–`9` | jump to tab 1–8 / last tab |
 | `; ,` / `; .` | move the active tab left / right |
-| `; |` / `; _` | split side-by-side / stacked (i3-style) |
+| `; |` | split side-by-side (i3-style) |
 | `; [` / `; ]` | switch to the previous / next split pane |
 | `; \` | close the split view (back to independent tabs) |
-| `; +` | move the selected tab into the current split view |
+| `; +` then `1`–`9` | move that tab into the current split view |
+| `; q` | toggle the which-key overlay on / off |
 | `; p` / `; '` | sessions popup (save / restore / switch / markers) |
 | `; '` then `1`–`9` | jump to the session with that marker |
 | `Ctrl+1`–`9` | hot-swap to the session with that marker |
@@ -268,19 +269,22 @@ it with `statusBar: false` in the options (`Settings` → *Show the status bar*)
 
 ### Split view (i3-style)
 
-Two panes, keyboard-only — no window manager needed:
+Two panes side-by-side, keyboard-only — no window manager needed:
 
-- **`;|`** splits the current tab side-by-side, **`;_`** stacks it
-  vertically, and the two panes act as a pair: **`;[` / `;]`** switch the
-  active pane, **`;+`** moves the *selected* tab (e.g. the command center of
-  a fresh tab) into the split, and **`;\`** closes the split, dissolving the
-  panes back into independent tabs.
+- **`;|`** splits the current tab side-by-side. The two panes act as a pair:
+  **`;[` / `;]`** switch the active pane, **`;+` then `1`–`9`** moves that tab
+  into the split, and **`;\`** closes the split, dissolving the panes back
+  into independent tabs.
 - On **Firefox 149+** the split uses Firefox's **native split view**: each
   pane is a real top-level tab, so *any* website loads in it unchanged — no
-  header-stripping or iframe tricks (the old iframe container remains as the
-  fallback for stacked views and older Firefox). Closing one pane keeps the
-  other open and auto-unsplits it.
-- The status bar shows the split (orientation + active pane) while focused.
+  header-stripping or iframe tricks (the iframe container remains only as a
+  side-by-side fallback for older Firefox). Closing one pane keeps the other
+  open and auto-unsplits it.
+- The **new pane** opens the **split panel** rather than a blank page: a
+  search / URL input on top and, below it, the list of your other tabs to
+  move into the split (press the tab's number, or click it).
+- The status bar hides while a split is active so it never covers the panes;
+  each web pane shows its own bar.
 
 Splits are part of sessions: save a session while split and restore brings
 the split layout back.

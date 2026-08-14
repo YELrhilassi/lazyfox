@@ -110,6 +110,15 @@ import { createContentOps, type ContentPopupShell } from "./ops";
       }
       return false;
     }, 3000);
+  // ;+1-9 = move tab N into the current split view.
+  leaderActions["+"] = () =>
+    leader.armPending((k) => {
+      if (/^[1-9]$/.test(k)) {
+        contentOps.splitAddTabByIndex(Number(k));
+        return true;
+      }
+      return false;
+    }, 3000);
 
   /* ==================== status bar (tmux-style) ==================== */
 

@@ -1,8 +1,10 @@
 // The custom split-view page: renders the panes (from the URL hash config) as
-// iframes side by side or stacked, separated by 1px draggable dividers. The
-// chrome helper owns the status bar and the leader keys on this page, so the
-// only page-side responsibilities are the panes, focus switching (driven by
-// the background over runtime messaging) and pane navigation.
+// iframes side by side, separated by 1px draggable dividers. This is the
+// fallback for Firefox without the native split view (the native view is the
+// primary path; stacked/vertical splits were removed). The chrome helper owns
+// the status bar and the leader keys on this page, so the only page-side
+// responsibilities are the panes, focus switching (driven by the background
+// over runtime messaging) and pane navigation.
 
 import { parseSplitUrl, SPLIT_HASH_PREFIX, splitPayload } from "../shared/split";
 import type { SplitView } from "../shared/types";
@@ -55,7 +57,6 @@ import type { SplitView } from "../shared/types";
     iframes.length = 0;
     paneEls.length = 0;
     if (!cfg) return;
-    panesEl.classList.toggle("vertical", cfg.orientation === "vertical");
     cfg.panes.forEach((p, i) => {
       const pane = document.createElement("div");
       pane.className = "pane" + (i === activePane() ? " active" : "");
@@ -95,14 +96,6 @@ import type { SplitView } from "../shared/types";
     persist();
   }
 
-  // Toggle between side-by-side and stacked without recreating iframes.
-  function changeOrientation(orientation: "horizontal" | "vertical"): void {
-    if (!cfg) return;
-    cfg.orientation = orientation;
-    panesEl.classList.toggle("vertical", orientation === "vertical");
-    persist();
-  }
-
   function navigateActive(url: string): void {
     if (!cfg) return;
     const i = activePane();
@@ -115,12 +108,11 @@ import type { SplitView } from "../shared/types";
   // Draggable divider: adjust the flex-basis of the pane left of the divider.
   function startDrag(ev: MouseEvent, i: number): void {
     ev.preventDefault();
-    const horizontal = cfg && cfg.orientation !== "vertical";
     const containerRect = panesEl.getBoundingClientRect();
     const move = (e: MouseEvent) => {
       if (!cfg || !paneEls[i]) return;
-      const total = horizontal ? containerRect.width : containerRect.height;
-      const pos = horizontal ? e.clientX - containerRect.left : e.clientY - containerRect.top;
+      const total = containerRect.width;
+      const pos = e.clientX - containerRect.left;
       const pct = Math.max(0.1, Math.min(0.9, pos / total));
       paneEls[i]!.style.flex = pct + " 1 0";
     };
@@ -153,13 +145,11 @@ import type { SplitView } from "../shared/types";
 
   // Direct leader-key fallback (in case the chrome helper is absent and no
   // content script runs here): `;` arms a one-shot leader, then `[`/`]` cycle
-  // panes, `|`/`_` toggle orientation and `\` closes the view.
+  // panes and `\` closes the view.
   let leaderPending = false;
   function runLeader(k: string): void {
     if (k === "[") focusPane(activePane() - 1);
     else if (k === "]") focusPane(activePane() + 1);
-    else if (k === "|") changeOrientation("horizontal");
-    else if (k === "_") changeOrientation("vertical");
     else if (k === "\\") {
       void browser.runtime.sendMessage({ action: "sessionUnsplit" }).catch(() => {});
     }

@@ -432,8 +432,11 @@ export const chromeOps: ActionOps = {
   switchSplitPane: (_dir: number) => {
     toast("split view needs a web page");
   },
-  splitAddTab: () => {
+  splitAddTabByIndex: (_n: number) => {
     toast("split view needs a web page");
+  },
+  toggleWhichKey: () => {
+    toast("toggle which-key is handled by the chrome helper");
   },
   sessionState: () => {
     const tabs = window.gBrowser.tabs;

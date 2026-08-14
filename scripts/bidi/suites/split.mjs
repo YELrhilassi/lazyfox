@@ -1,16 +1,15 @@
 // i3-style split view tests.
 //
-// Two split mechanisms exist: the legacy iframe container (splitview.html, the
-// fallback and the only way to stack vertically) and the native Firefox split
-// view (two real tabs sharing a splitViewId, created by the chrome helper via
-// gBrowser.addTabSplitView). The native split is the primary path — each pane
-// is a real top-level tab, so real websites load in them with no header
-// stripping tricks — so most of the coverage here exercises it. The iframe
-// tests only assert the container structure (its panes cannot host remote
-// content while extension pages run in-process, which the chrome helper
-// requires; see the NOTE below).
+// Two horizontal split mechanisms exist: the legacy iframe container
+// (splitview.html, the fallback for Firefox without native split) and the
+// native Firefox split view (two real tabs sharing a splitViewId, created by
+// the chrome helper via gBrowser.addTabSplitView). The native split is the
+// primary path — each pane is a real top-level tab, so real websites load in
+// them with no header stripping tricks — so most of the coverage here
+// exercises it. Vertical/stacked splits were removed (Firefox's native view
+// is side-by-side only).
 
-import { evalIn, waitFor, sleep, clickPage, createTab, navigate } from "../lib.mjs";
+import { evalIn, waitFor, sleep, clickPage, navigate } from "../lib.mjs";
 import { assert } from "../harness.mjs";
 
 export const group = "split";
@@ -18,17 +17,9 @@ export const group = "split";
 export async function run(ctx) {
   const t = (name, fn) => ctx.runTest(group, name, fn);
 
-  const unsplitViaBackground = async () => {
-    await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true, active:true}).then(ts => browser.runtime.sendMessage({ action: "sessionUnsplit", data: {} }))`).catch(() => {});
-    await waitFor(async () => {
-      const u = await evalIn(ctx.tabA, `location.href`).catch(() => "");
-      return u && !u.includes("splitview.html") ? u : null;
-    }, 10000);
-  };
-
-  // Create a native split of the command center + a fresh blank tab and wait
-  // until two tabs share a splitViewId. Returns the tab pair (extension tab
-  // ids/urls/active + splitViewId). Dissolves any split left over from a
+  // Create a native split of the command center + a fresh split-panel tab and
+  // wait until two tabs share a splitViewId. Returns the tab pair (extension
+  // tab ids/urls/active + splitViewId). Dissolves any split left over from a
   // previous test first (a pane may be a remote web page the chrome helper
   // cannot unsplit, so closing its partner panes auto-unsplits it).
   const nativeSplit = async () => {
@@ -128,19 +119,6 @@ export async function run(ctx) {
     }
   });
 
-  await t("split: ;_ splits stacked", async () => {
-    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    await ctx.leaderPress(ctx.tabA, "_");
-    await waitFor(async () => {
-      const vertical = await evalIn(ctx.tabA, `document.getElementById("panes").classList.contains("vertical")`).catch(() => null);
-      return vertical === true ? vertical : null;
-    }, 10000);
-    const vertical = await evalIn(ctx.tabA, `document.getElementById("panes").classList.contains("vertical")`);
-    assert(vertical === true, "stacked orientation (vertical), got " + vertical);
-    // Clean up via the background (avoid the focus dance).
-    await unsplitViaBackground();
-  });
-
   // NOTE: the iframe container's panes cannot be asserted to load real
   // websites here — the chrome helper requires extension pages to run
   // in-process (extensions.webextensions.remote=false), and in-process
@@ -148,19 +126,28 @@ export async function run(ctx) {
   // about:blank). The native split tests below have no such limitation: each
   // pane is a real top-level tab, so real sites load in them directly.
 
+  await t("split: native split companion pane shows the split panel", async () => {
+    const pair = await nativeSplit();
+    const companion = pair.find((t) => !t.active) || pair[1];
+    assert(companion && (companion.url || "").includes("splitpanel.html"), "companion pane is the split panel: " + JSON.stringify(pair));
+    // Clean up.
+    await ctx.leaderPress(ctx.tabA, "\\");
+    await waitNoSplit();
+  });
+
   await t("split: native split loads real pages in both panes", async () => {
     const pair = await nativeSplit();
     assert(pair.length === 2, "native split paired two tabs: " + JSON.stringify(pair));
     assert(new Set(pair.map((t) => t.splitViewId)).size === 1, "panes share one splitViewId");
 
-    // Pane 2 is the fresh blank tab; pane 1 is the command center (ctx.tabA).
-    // Address the pane by its tab id from the pair (never by scanning the
-    // context tree for "about:blank" — leftover tabs/iframes from earlier
-    // tests can match first, and navigating a stale iframe to a real site
-    // trips COEP). tabs.update is unambiguous and survives the pane being in
-    // a native split view.
-    const blankPane = pair.find((t) => (t.url || "") === "about:blank") || pair.find((t) => !t.active);
-    assert(blankPane, "found the blank pane in the split pair: " + JSON.stringify(pair));
+    // Pane 2 is the fresh split panel; pane 1 is the command center
+    // (ctx.tabA). Address the pane by its tab id from the pair (never by
+    // scanning the context tree — leftover tabs/iframes from earlier tests
+    // can match first, and navigating a stale iframe to a real site trips
+    // COEP). tabs.update is unambiguous and survives the pane being in a
+    // native split view.
+    const blankPane = pair.find((t) => (t.url || "").includes("splitpanel.html")) || pair.find((t) => !t.active);
+    assert(blankPane, "found the split panel pane in the split pair: " + JSON.stringify(pair));
     // Real websites with no captcha: IETF example domains are static and safe.
     await evalIn(ctx.probe, `browser.tabs.update(${blankPane.id}, { url: "https://example.org" })`);
     await navigate(ctx.tabA, "https://example.com", "complete");
@@ -238,34 +225,48 @@ export async function run(ctx) {
     assert(ts.every((t) => !(typeof t.splitViewId === "number" && t.splitViewId >= 0)), "remaining tab auto-unsplit: " + JSON.stringify(ts));
   });
 
-  await t("split: native split ;+ moves the selected tab into the split", async () => {
-    const pair = await nativeSplit();
-    const svId = pair[0].splitViewId;
-    // Open a third tab and let it become the command center (the new-tab
-    // redirect) — it becomes the selected tab outside the split, and keys on
-    // it reach the chrome helper. `;+` then moves it into the split view.
-    const tab3 = await createTab();
-    await navigate(tab3, "about:newtab", "complete");
-    await waitFor(async () => {
-      const u = await evalIn(tab3, `location.href`).catch(() => "");
-      return u && u.includes("commandcenter.html") ? u : null;
-    }, 15000);
-    await ctx.leaderPress(tab3, "=", { shift: true }); // ;+ -> shift+=
-    await waitFor(async () => {
-      const ts = await ctx.tabsInfo();
-      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
-      return sv.length === 3 && sv.every((t) => t.splitViewId === svId) ? sv : null;
-    }, 10000);
+  await t("split: native split ;+N moves tab N into the split", async () => {
+    await nativeSplit();
+    // Pick a tab currently outside the split and derive its 1-based strip
+    // position for ;+N (the suite accumulates tabs, so use whatever non-split
+    // tab is earliest rather than assuming a fresh tab lands within 1-9).
     const ts = await ctx.tabsInfo();
-    const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
-    assert(sv.length === 3, "third tab joined the split: " + JSON.stringify(ts));
+    const ci = ts.findIndex(
+      (t) => !t.pinned && !(typeof t.splitViewId === "number" && t.splitViewId >= 0)
+    );
+    assert(ci >= 0, "found a movable tab to move in: " + JSON.stringify(ts));
+    const targetIndex = ci + 1;
+    assert(targetIndex <= 9, "tab index stays within 1-9 for ;+N: " + targetIndex + " of " + ts.length);
+    const targetId = ts[ci].id;
+
+    await ctx.leaderPress(ctx.tabA, "=", { shift: true }); // ;+ -> shift+=
+    await sleep(250);
+    await ctx.press(ctx.tabA, String(targetIndex)); // ;+N
+    try {
+      await waitFor(async () => {
+        const now = await ctx.tabsInfo();
+        const sv = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+        return sv.length === 3 && sv.some((t) => t.id === targetId) ? sv : null;
+      }, 10000);
+    } catch (e) {
+      const st = await ctx.chromeState().catch(() => "ERR");
+      const now = await ctx.tabsInfo().catch(() => "ERR");
+      throw new Error(
+        ";+N move failed for index " + targetIndex + " (id " + targetId + "): state=" +
+          JSON.stringify(st) + " tabs=" + JSON.stringify(now)
+      );
+    }
+    const now = await ctx.tabsInfo();
+    const sv = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+    assert(sv.length === 3, "moved tab joined the split: " + JSON.stringify(now));
+    assert(sv.some((t) => t.id === targetId), "tab " + targetIndex + " is now in the split");
     assert(new Set(sv.map((t) => t.splitViewId)).size === 1, "all three panes share one splitViewId");
-    // Clean up: unsplit, then close the leftover blank pane.
-    await ctx.leaderPress(tab3, "\\"); // ;\ (tab3 is the selected pane)
+    // Clean up: unsplit, then close the leftover split-panel pane.
+    await ctx.leaderPress(ctx.tabA, "\\"); // ;\
     await waitNoSplit();
     const leftovers = await ctx.tabsInfo();
-    const blank = leftovers.find((t) => (t.url || "") === "about:blank");
-    if (blank) await evalIn(ctx.probe, `browser.tabs.remove(${blank.id})`).catch(() => {});
+    const panel = leftovers.find((t) => (t.url || "").includes("splitpanel.html"));
+    if (panel) await evalIn(ctx.probe, `browser.tabs.remove(${panel.id})`).catch(() => {});
     await sleep(300);
   });
 }

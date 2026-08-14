@@ -158,9 +158,9 @@ func TestSessionBindings(t *testing.T) {
 		"p": true, // sessions popup
 		"'": true, // switch session 1-9
 		"|": true, // split side-by-side
-		"_": true, // split stacked
 		"[": true, // split pane left
 		"]": true, // split pane right
+		"+": true, // move tab 1-9 into split
 		",": true, // move tab left
 		".": true, // move tab right
 		"\\": true,

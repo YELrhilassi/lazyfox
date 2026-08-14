@@ -36,6 +36,7 @@ export interface ActionOps {
   pinTab(): void;
   zen(): void;
   toggleReveal(): void;
+  toggleWhichKey(): void;
   focusFirstInput(): void;
   startHints(): void;
   openTarget(which: string): void;
@@ -55,7 +56,7 @@ export interface ActionOps {
   splitTab(orientation: "horizontal" | "vertical"): void;
   unsplitTab(): void;
   switchSplitPane(dir: number): void;
-  splitAddTab(): void;
+  splitAddTabByIndex(n: number): void;
   sessionState(): Promise<{
     name: string;
     marker: number;

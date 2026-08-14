@@ -24,18 +24,33 @@ type WkPage struct {
 // WkPerPage exposes the row budget (kept in Go so every consumer agrees).
 func WkPerPage() int { return wkPerPage }
 
+// lazyBindings is the overlay's actual content: the Lazyfox leader bindings
+// only. The Firefox-native shortcut rows (Ctrl+T, F11, ...) stay in Bindings
+// so the `?` help popup can still list them, but the which-key overlay omits
+// them — they were noise that made the overlay tall and wide.
+func lazyBindings() []WkItem {
+	out := make([]WkItem, 0, len(Bindings))
+	for _, b := range Bindings {
+		if !b.Native {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 func WkPageCount() int {
-	n := len(Bindings)
+	n := len(lazyBindings())
 	if n == 0 {
 		return 1
 	}
 	return (n + wkPerPage - 1) / wkPerPage
 }
 
-// WkPageSlice renders one page of the overlay. GroupStart marks rows that open
-// a new group heading. LazyIndex is the global index among runnable items.
+// WkPageSlice renders one page of the overlay (lazy bindings only). GroupStart
+// marks rows that open a new group heading. LazyIndex is the global index
+// among runnable items (identical to the row index, since flat is lazy-only).
 func WkPageSlice(page int) WkPage {
-	flat := Bindings
+	flat := lazyBindings()
 	n := len(flat)
 	total := WkPageCount()
 	if page < 0 {
@@ -49,32 +64,22 @@ func WkPageSlice(page int) WkPage {
 	if end > n {
 		end = n
 	}
-	lazy := 0
-	for i := 0; i < start; i++ {
-		if !flat[i].Native {
-			lazy++
-		}
-	}
 	var rows []WkRow
 	first, last := -1, -1
 	for i := start; i < end; i++ {
 		it := flat[i]
-		li := -1
-		if !it.Native {
-			li = lazy
-			lazy++
-			if first < 0 {
-				first = li
-			}
-			last = li
+		li := i
+		if first < 0 {
+			first = li
 		}
+		last = li
 		groupStart := i == start || flat[i-1].Group != it.Group
 		rows = append(rows, WkRow{
 			Key:        it.Key,
 			Label:      it.Label,
 			Group:      it.Group,
 			GroupStart: groupStart,
-			Native:     it.Native,
+			Native:     false,
 			LazyIndex:  li,
 		})
 	}

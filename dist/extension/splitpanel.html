@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<title>Lazyfox split</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --bg2: #16161e;
+    --fg: #c0caf5;
+    --muted: #565f89;
+    --sub: #9aa5ce;
+    --accent: #7aa2f7;
+    --border: #2a2f45;
+    --border2: #414868;
+    --sel: #292e42;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  #wrap {
+    width: min(520px, 100%);
+    max-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    padding: 22px 20px 14px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .logo {
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    color: var(--accent);
+    font-weight: 700;
+    letter-spacing: .05em;
+    padding: 2px 8px;
+    font-size: 13px;
+  }
+  .brand { font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+  #state {
+    margin-left: auto;
+    font-size: 10px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    padding: 2px 8px;
+  }
+  #input {
+    width: 100%;
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 8px;
+    color: var(--fg);
+    font: inherit;
+    padding: 12px 14px;
+    outline: none;
+  }
+  #input:focus { border-color: var(--accent); }
+  .section {
+    margin-top: 12px;
+    font-size: 10px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #tabs {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    overflow-y: auto;
+    min-height: 0;
+    flex: 1 1 0;
+  }
+  #tabs::-webkit-scrollbar { width: 8px; }
+  #tabs::-webkit-scrollbar-thumb { background: #3b4261; border-radius: 4px; }
+  #tabs li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #tabs li:hover { background: var(--sel); }
+  #tabs li.empty {
+    color: var(--muted);
+    cursor: default;
+    font-size: 12px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .kbd {
+    flex: none;
+    min-width: 22px;
+    text-align: center;
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 0 6px;
+    color: var(--accent);
+    font-size: 11px;
+  }
+  .txt { min-width: 0; }
+  .t {
+    font-size: 13px;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 18px;
+  }
+  .s {
+    font-size: 11px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 17px;
+  }
+  footer {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-size: 10px;
+    color: var(--muted);
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  footer b { color: var(--sub); font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <span class="logo">LZ</span>
+    <span class="brand">split pane</span>
+    <span id="state">split</span>
+  </header>
+
+  <input id="input" autocomplete="off" autocapitalize="off" spellcheck="false"
+    placeholder="search or enter a URL…">
+
+  <div class="section">Move a tab into this split</div>
+  <ul id="tabs"></ul>
+
+  <footer>
+    <span><b>1-9</b> move that tab</span>
+    <span><b>i</b> type</span>
+    <span><b>Enter</b> open / search</span>
+    <span><b>Esc</b> back to list</span>
+  </footer>
+</div>
+
+<script src="splitpanel.js"></script>
+</body>
+</html>

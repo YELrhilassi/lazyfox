@@ -53,6 +53,7 @@ var Bindings = []WkItem{
 	{Key: "w", Label: "Resize window", Group: "Tools"},
 	{Key: "/", Label: "Find in page", Group: "Tools"},
 	{Key: "?", Label: "Keybindings help", Group: "Tools"},
+	{Key: "q", Label: "Toggle which-key overlay", Group: "Tools"},
 	{Key: "e", Label: "Toggle toolbar reveal", Group: "Tools"},
 	{Key: "z", Label: "Zen mode", Group: "Tools"},
 
@@ -60,9 +61,9 @@ var Bindings = []WkItem{
 	{Key: "p", Label: "Sessions", Group: "Sessions"},
 	{Key: "'", Label: "Switch session 1-9", Group: "Sessions"},
 	{Key: "|", Label: "Split side-by-side", Group: "Sessions"},
-	{Key: "_", Label: "Split stacked", Group: "Sessions"},
 	{Key: "[", Label: "Split pane left", Group: "Sessions"},
 	{Key: "]", Label: "Split pane right", Group: "Sessions"},
+	{Key: "+", Label: "Move tab 1-9 into split", Group: "Sessions"},
 	{Key: ",", Label: "Move tab left", Group: "Sessions"},
 	{Key: ".", Label: "Move tab right", Group: "Sessions"},
 	{Key: "\\", Label: "Close split view", Group: "Sessions"},

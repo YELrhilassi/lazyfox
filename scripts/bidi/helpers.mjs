@@ -89,7 +89,7 @@ export function createCtx(runtime) {
   ctx.tabsInfo = async function tabsInfo() {
     return evalIn(
       ctx.probe,
-      `browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => ({id: t.id, url: t.url, active: t.active, title: t.title, splitViewId: t.splitViewId})))`
+      `browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => ({id: t.id, url: t.url, active: t.active, title: t.title, pinned: t.pinned, splitViewId: t.splitViewId})))`
     );
   };
 

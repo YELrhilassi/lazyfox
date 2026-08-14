@@ -24,7 +24,7 @@ export function leaderCombo(e: KeyboardEvent): string {
 
 export const WK_CSS =
   ".wk{position:fixed;bottom:24px;right:24px;z-index:2147483646;" +
-  "width:520px;max-width:94vw;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;" +
+  "width:360px;max-width:94vw;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;" +
   "box-shadow:0 24px 70px rgba(0,0,0,.6);display:none;font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden}" +
   ".wk.on{display:block}" +
   ".wk-head{padding:8px 14px;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#7aa2f7;" +

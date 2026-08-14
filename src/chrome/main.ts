@@ -343,8 +343,8 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   // helper runs privileged and can drive it through gBrowser.addTabSplitView.
   // When available it is strictly better than the iframe split: each pane is a
   // real top-level tab, so no site can block embedding and both panes keep full
-  // focus/history/zoom state. The iframe split remains the fallback (and the
-  // only way to stack vertically, which native split cannot do).
+  // focus/history/zoom state. The iframe split remains a side-by-side
+  // fallback for older Firefox.
   function nativeSplitAvailable(): boolean {
     try {
       return (
@@ -397,9 +397,13 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       const active = window.gBrowser.selectedTab;
       if (!active || active.pinned) return false;
       if (active.splitview) return true; // already split: treat as handled
-      const blank = window.gBrowser.addTab("about:blank", {
+      const base = ccBaseUrl();
+      const splitPanelUrl = base ? base + "splitpanel.html" : "about:blank";
+      const blank = window.gBrowser.addTab(splitPanelUrl, {
         // Keep the original tab selected: the pane the user was looking at
-        // stays the active pane of the new split view.
+        // stays the active pane of the new split view. The new pane lands on
+        // the split panel (search/URL + move-a-tab list) instead of a blank
+        // page.
         inBackground: true,
         skipAnimation: true,
         triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
@@ -428,6 +432,29 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       return true;
     } catch (e) {
       if (__DEV__) dbg("native add-to-split failed: " + String(e));
+      return false;
+    }
+  }
+
+  // Move tab number `n` (1-based position in the strip, ;+1-9) into the
+  // active split view. Unlike nativeAddTabToSplit (which moves the *selected*
+  // tab), this addresses the tab by its position and leaves the selection
+  // untouched.
+  function nativeAddTabToSplitByIndex(n: number): boolean {
+    try {
+      if (!nativeSplitAvailable()) return false;
+      let sv = activeSplitView();
+      if (!sv && lastNativeSplit && lastNativeSplit.isConnected) sv = lastNativeSplit;
+      if (!sv) return false;
+      const tab = window.gBrowser.tabs[n - 1];
+      if (!tab || tab.pinned) return false;
+      if (tab.splitview === sv) return true; // already in this split
+      if (typeof sv.addTabs !== "function") return false;
+      sv.addTabs([tab]);
+      rememberSplit();
+      return true;
+    } catch (e) {
+      if (__DEV__) dbg("native add-to-split-by-index failed: " + String(e));
       return false;
     }
   }
@@ -473,8 +500,20 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   chromeOps.switchSplitPane = (dir: number) => {
     if (!nativeSwitchPane(dir)) sessionAction("switchSplitPane", String(dir));
   };
-  chromeOps.splitAddTab = () => {
-    if (!nativeAddTabToSplit()) sessionAction("splitAddTab");
+  chromeOps.splitAddTabByIndex = (n: number) => {
+    if (!nativeAddTabToSplitByIndex(n)) toast("no split view to move into");
+  };
+  chromeOps.toggleWhichKey = () => {
+    cfg.config.whichKey = cfg.config.whichKey === false;
+    try {
+      Services.prefs.setStringPref("lazyfox.chrome.config", JSON.stringify(cfg.config));
+    } catch (e) {
+      // ignore
+    }
+    // Keep the background's stored config in step (the chrome helper only
+    // caches a copy).
+    requestBg("toggleWhichKey");
+    toast("which-key: " + (cfg.config.whichKey !== false ? "on" : "off"));
   };
   // The sessions popup needs the session list on chrome-only pages too. Answer
   // from the cached status-bar summary (which requestSessionState refreshes)
@@ -550,6 +589,15 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       }
       return false;
     }, 3000);
+  // ;+1-9 = move tab N into the current split view.
+  leaderActions["+"] = () =>
+    leader.armPending((k) => {
+      if (/^[1-9]$/.test(k)) {
+        chromeOps.splitAddTabByIndex(Number(k));
+        return true;
+      }
+      return false;
+    }, 3000);
 
   // Warm the wasm core so the first leader press is already synchronous.
   ensureChromeCore()
@@ -604,6 +652,11 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   // content script never runs.
   function chromePageNeedsStatus(): boolean {
     try {
+      // While a native split is active the panes fill the window and a
+      // window-level bar would sit on top of their content. Each web pane
+      // renders its own bar and the split panel renders inline, so the chrome
+      // helper stays out of the way.
+      if (activeSplitView()) return false;
       const b = window.gBrowser.selectedBrowser;
       const uri = b && b.currentURI;
       if (!uri) return true;
@@ -960,6 +1013,22 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
         json = btoa(JSON.stringify({ error: String(e) }));
       }
       setHash(browser, "#lfc=state." + json + "." + nonce);
+      return;
+    }
+    if (cmd === "moveToSplit") {
+      // ;+1-9 relayed from the background (or the split panel): move tab N
+      // into the active split view, then remove the request tab.
+      try {
+        nativeAddTabToSplitByIndex(parseInt(rest, 10) || 0);
+      } catch (e) {
+        // ignore
+      }
+      try {
+        const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
+        if (tab) window.gBrowser.removeTab(tab);
+      } catch (e) {
+        // ignore
+      }
       return;
     }
     if (cmd === "sessionState") {

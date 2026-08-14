@@ -36,6 +36,7 @@ const BUNDLES = [
   { in: "src/extension/content/main.ts", out: "dist/extension/content.js" },
   { in: "src/extension/background.ts", out: "dist/extension/background.js" },
   { in: "src/extension/commandcenter.ts", out: "dist/extension/commandcenter.js" },
+  { in: "src/extension/splitpanel.ts", out: "dist/extension/splitpanel.js" },
   { in: "src/extension/options.ts", out: "dist/extension/options.js" },
   { in: "src/extension/optionskeys.ts", out: "dist/extension/optionskeys.js" },
   { in: "src/extension/popup.ts", out: "dist/extension/popup.js" },
