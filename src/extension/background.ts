@@ -198,6 +198,7 @@ import type { Session, SessionTab } from "../shared/types";
   const SESSIONS_KEY = "lfSessions";
   const CURRENT_SESSION_KEY = "lfCurrentSession";
   const LAST_SESSION_KEY = "lfLastSession";
+  const MAX_SESSION_TABS = 9;
 
   async function readSessions(): Promise<Record<string, Session>> {
     try {
@@ -218,20 +219,52 @@ import type { Session, SessionTab } from "../shared/types";
     return !t || !t.url || t.url === "about:blank" || /^about:(home|newtab)$/i.test(t.url);
   }
 
-  async function snapshotWindow(): Promise<{ tabs: SessionTab[]; windowState: string }> {
+  // Firefox 149+ exposes a read-only splitViewId on tabs.Tab; the two tabs of
+  // a split view share it. Older Firefox returns undefined; treat that as "no
+  // split" so capture stays backward compatible.
+  function splitViewIdOf(t: any): number | undefined {
+    if (!t || t.splitViewId == null) return undefined;
+    const none = (browser.tabs && browser.tabs.SPLIT_VIEW_ID_NONE) || -1;
+    return t.splitViewId === none ? undefined : t.splitViewId;
+  }
+
+  async function snapshotWindow(): Promise<{
+    tabs: SessionTab[];
+    splits: { a: number; b: number }[];
+    active: number;
+    windowState: string;
+  }> {
     const win = await browser.windows.getCurrent();
     const tabs = await browser.tabs.query({ currentWindow: true });
+    const list = tabs || [];
+    // Group tabs by splitViewId; a split view is exactly two tabs.
+    const bySplit = new Map<number, number[]>();
+    for (let i = 0; i < list.length; i++) {
+      const sv = splitViewIdOf(list[i]);
+      if (sv == null) continue;
+      if (!bySplit.has(sv)) bySplit.set(sv, []);
+      bySplit.get(sv)!.push(i);
+    }
+    const splits: { a: number; b: number }[] = [];
+    for (const idxs of bySplit.values()) {
+      if (idxs.length === 2) splits.push({ a: idxs[0]!, b: idxs[1]! });
+    }
+    splits.sort((x, y) => x.a - y.a);
+    let active = list.findIndex((t: any) => t.active);
+    if (active < 0) active = 0;
     return {
-      tabs: (tabs || []).map((t: any) => ({
+      tabs: list.slice(0, MAX_SESSION_TABS).map((t: any) => ({
         url: t.url || "",
         title: t.title || "",
         pinned: !!t.pinned,
       })),
+      splits: splits.filter((s) => s.a < MAX_SESSION_TABS && s.b < MAX_SESSION_TABS),
+      active: active < MAX_SESSION_TABS ? active : 0,
       windowState: win && win.state ? win.state : "normal",
     };
   }
 
-  async function openTabsInCurrentWindow(tabs: SessionTab[]): Promise<void> {
+  async function openTabsInCurrentWindow(tabs: SessionTab[]): Promise<number[]> {
     const win = await browser.windows.getCurrent();
     const cur = await browser.tabs.query({ currentWindow: true });
     for (const t of cur || []) {
@@ -244,13 +277,37 @@ import type { Session, SessionTab } from "../shared/types";
       }
     }
     const urls = (tabs || []).filter((t) => t && t.url).map((t) => t.url);
+    const created: number[] = [];
     for (let i = 0; i < urls.length; i++) {
-      await browser.tabs.create({ url: urls[i], active: i === 0 });
+      const t = await browser.tabs.create({ url: urls[i], active: i === 0 });
+      if (t && t.id != null) created.push(t.id);
     }
     try {
       await browser.windows.update(win.id, { focused: true });
     } catch (e) {
       // ignore
+    }
+    return created;
+  }
+
+  // Split creation is not yet exposed to extensions (bug 2016928, expected in
+  // Firefox 152). Feature-detect the future API so re-splitting a restored
+  // session starts working the moment Firefox ships it, and degrades to a
+  // plain (ordered) restore today.
+  async function reapplySplits(ids: number[], splits: { a: number; b: number }[]): Promise<void> {
+    if (!splits || !splits.length) return;
+    const splitFn = browser.tabs && (browser.tabs.split as any);
+    if (typeof splitFn !== "function") return;
+    for (const sp of splits) {
+      const a = ids[sp.a];
+      const b = ids[sp.b];
+      if (a != null && b != null) {
+        try {
+          await splitFn([a, b]);
+        } catch (e) {
+          // ignore
+        }
+      }
     }
   }
 
@@ -259,7 +316,7 @@ import type { Session, SessionTab } from "../shared/types";
     const sessions = Object.keys(all)
       .map((k) => all[k])
       .filter((s): s is Session => !!s && !!s.tabs)
-      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      .sort((a, b) => (a.marker || 99) - (b.marker || 99));
     return { sessions };
   }
 
@@ -267,13 +324,20 @@ import type { Session, SessionTab } from "../shared/types";
     const nm = (name || "").trim();
     if (!nm) return { ok: false };
     const snap = await snapshotWindow();
+    const all = await readSessions();
+    const existing = all[nm];
+    const marker =
+      (existing && existing.marker) ||
+      (await core.assignSessionMarker(Object.values(all).map((s) => s.marker || 0)));
     const session: Session = {
       name: nm,
+      marker: marker,
       tabs: snap.tabs,
+      splits: snap.splits,
+      active: snap.active,
       windowState: snap.windowState,
       updatedAt: Date.now(),
     };
-    const all = await readSessions();
     all[nm] = session;
     await writeSessions(all);
     await browser.storage.local.set({
@@ -287,9 +351,18 @@ import type { Session, SessionTab } from "../shared/types";
     const all = await readSessions();
     const s = all[(name || "").trim()];
     if (!s || !s.tabs || !s.tabs.length) return { ok: false };
-    await openTabsInCurrentWindow(s.tabs);
+    const ids = await openTabsInCurrentWindow(s.tabs);
+    await reapplySplits(ids, s.splits || []);
     await browser.storage.local.set({ [CURRENT_SESSION_KEY]: s.name });
     return { ok: true };
+  }
+
+  async function switchSessionByMarker(marker: number): Promise<{ ok: boolean; name?: string }> {
+    const all = await readSessions();
+    const s = Object.values(all).find((x) => (x.marker || 0) === marker && x.tabs && x.tabs.length);
+    if (!s) return { ok: false };
+    await restoreSession(s.name);
+    return { ok: true, name: s.name };
   }
 
   async function deleteSession(name: string): Promise<{ ok: boolean }> {
@@ -302,8 +375,55 @@ import type { Session, SessionTab } from "../shared/types";
     return { ok: true };
   }
 
-  async function sessionState(): Promise<{ name: string; tabIndex: number; tabCount: number }> {
+  async function splitCurrentTab(): Promise<{ ok: boolean; note?: string }> {
+    const all = await browser.tabs.query({ currentWindow: true });
+    const idx = all.findIndex((t: any) => t.active);
+    if (idx < 0 || idx + 1 >= all.length) {
+      return { ok: false, note: "no adjacent tab to split with" };
+    }
+    const splitFn = browser.tabs && (browser.tabs.split as any);
+    if (typeof splitFn !== "function") {
+      return { ok: false, note: "split view creation needs Firefox 152+ (coming soon)" };
+    }
+    try {
+      await splitFn([all[idx].id, all[idx + 1].id]);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, note: "could not split: " + String(e) };
+    }
+  }
+
+  async function unsplitCurrentTab(): Promise<{ ok: boolean; note?: string }> {
+    const tab = await getActiveTab();
+    const sv = splitViewIdOf(tab);
+    if (sv == null) return { ok: false, note: "not in a split view" };
+    // Firefox 150+: moving a split-view tab away from its partner removes the
+    // split view. Send the partner to the opposite end of the tab strip.
+    const all = await browser.tabs.query({ currentWindow: true });
+    const activeIdx = all.findIndex((t: any) => t.active);
+    const partner = all.find(
+      (t: any) => t.id !== tab.id && splitViewIdOf(t) === sv
+    );
+    if (!partner) return { ok: false, note: "split partner not found" };
+    const partnerIdx = all.indexOf(partner);
+    const target = partnerIdx < activeIdx ? all.length - 1 : 0;
+    try {
+      await browser.tabs.move(partner.id, { index: target });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, note: "could not close split view" };
+    }
+  }
+
+  async function sessionState(): Promise<{
+    name: string;
+    marker: number;
+    tabIndex: number;
+    tabCount: number;
+    sessions: { marker: number; name: string; current: boolean }[];
+  }> {
     const tabs = await browser.tabs.query({ currentWindow: true });
+    const all = await readSessions();
     let name = "default";
     try {
       const r = await browser.storage.local.get(CURRENT_SESSION_KEY);
@@ -311,10 +431,20 @@ import type { Session, SessionTab } from "../shared/types";
     } catch (e) {
       // ignore
     }
-    let tabIndex = 1;
+    const cur = all[name];
+    const marker = cur ? cur.marker || 0 : 0;
     const active = (tabs || []).findIndex((t: any) => t.active);
-    if (active >= 0) tabIndex = active + 1;
-    return { name: name, tabIndex: tabIndex, tabCount: (tabs || []).length };
+    const summary = await core.sessionSummary(
+      Object.values(all).map((s) => ({ name: s.name, marker: s.marker || 0 })),
+      name
+    );
+    return {
+      name: name,
+      marker: marker,
+      tabIndex: active >= 0 ? active + 1 : 1,
+      tabCount: (tabs || []).length,
+      sessions: summary,
+    };
   }
 
   // Debounced crash-recovery snapshot of the current window ("last" session).
@@ -328,7 +458,10 @@ import type { Session, SessionTab } from "../shared/types";
         await browser.storage.local.set({
           [LAST_SESSION_KEY]: {
             name: "last",
+            marker: 0,
             tabs: snap.tabs,
+            splits: snap.splits,
+            active: snap.active,
             windowState: snap.windowState,
             updatedAt: Date.now(),
           },
@@ -687,6 +820,12 @@ import type { Session, SessionTab } from "../shared/types";
         return restoreSession(data.name);
       case "sessionDelete":
         return deleteSession(data.name);
+      case "sessionSwitchByMarker":
+        return switchSessionByMarker(data.marker);
+      case "sessionSplit":
+        return splitCurrentTab();
+      case "sessionUnsplit":
+        return unsplitCurrentTab();
       case "sessionState":
         return sessionState();
       default:
@@ -721,8 +860,15 @@ import type { Session, SessionTab } from "../shared/types";
   });
 
   // Chrome helper request channel: a background tab whose URL is
-  // commandcenter.html#lfc=req.<action>. Handle the request, then remove the tab.
-  async function handleReq(tab: any, action: string) {
+  // commandcenter.html#lfc=req.<action>[.<arg>]. Handle the request, then
+  // remove the tab. The `sessionState` request is the one exception: its reply
+  // is written back into the tab's hash and the chrome helper removes the tab
+  // itself after reading it (otherwise it would race the removal).
+  function b64utf8(s: string): string {
+    return btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+  }
+
+  async function handleReq(tab: any, action: string, arg: string) {
     if (action === "alive") {
       await browser.storage.local.set({ chromeAlive: true });
       return;
@@ -741,16 +887,52 @@ import type { Session, SessionTab } from "../shared/types";
       } catch (e) {}
       return;
     }
+    if (action === "sessionState") {
+      // Round-trip for the chrome helper's status bar: reply into the hash so
+      // the helper can read the current session name + the session list.
+      const state = await sessionState();
+      await browser.tabs.update(tab.id, {
+        url: CC_URL + "#lfc=sessionState." + b64utf8(JSON.stringify(state)) + "." + (arg || "")
+      });
+      return;
+    }
+    if (action === "saveSession") {
+      await saveSession(decodeURIComponent(arg || ""));
+      return;
+    }
+    if (action === "restoreSession") {
+      await restoreSession(decodeURIComponent(arg || ""));
+      return;
+    }
+    if (action === "deleteSession") {
+      await deleteSession(decodeURIComponent(arg || ""));
+      return;
+    }
+    if (action === "switchSessionByMarker") {
+      await switchSessionByMarker(parseInt(arg || "0", 10));
+      return;
+    }
+    if (action === "splitTab") {
+      await splitCurrentTab();
+      return;
+    }
+    if (action === "unsplitTab") {
+      await unsplitCurrentTab();
+      return;
+    }
   }
 
   browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
     if (info.status !== "complete" || !tab || !tab.url) return;
     if (stripHash(tab.url) !== CC_URL) return;
-    const m = /#lfc=req\.([a-zA-Z]+)$/.exec(tab.url);
+    const m = /#lfc=req\.([a-zA-Z]+)(?:\.([^#]*))?$/.exec(tab.url);
     if (!m) return;
-    handleReq(tab, m[1]!)
+    const keepOpen = m[1] === "sessionState";
+    handleReq(tab, m[1]!, m[2] || "")
       .catch(() => {})
-      .then(() => browser.tabs.remove(tabId).catch(() => {}));
+      .then(() => {
+        if (!keepOpen) return browser.tabs.remove(tabId).catch(() => {});
+      });
   });
 
   browser.tabs.onActivated.addListener((info: any) => {

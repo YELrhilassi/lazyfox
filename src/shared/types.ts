@@ -9,6 +9,7 @@ export interface Config {
   hoverReveal: boolean;
   whichKey: boolean;
   statusBar: boolean;
+  statusBarPosition: "top" | "bottom";
   autoRestore: boolean;
 }
 
@@ -83,18 +84,37 @@ export interface PopupItem {
   query?: string;
   time?: number;
   favIconUrl?: string;
+  marker?: number;
 }
 
-// A saved session: a named snapshot of a window's tabs (tmux-style session).
+// A saved session: a named, marker-addressed snapshot of a window's tabs and
+// their split layout (tmux-style session).
 export interface SessionTab {
   url: string;
   title: string;
   pinned: boolean;
 }
 
+// A Firefox split view: two tabs (indices into Session.tabs) side by side.
+export interface SplitPair {
+  a: number;
+  b: number;
+}
+
 export interface Session {
   name: string;
+  marker: number; // 1-9, 0 = unassigned
   tabs: SessionTab[];
+  splits: SplitPair[];
+  active: number;
   windowState: string;
   updatedAt: number;
+}
+
+// One row of the status bar's session list (names only — the bar never loads
+// every session's tabs).
+export interface SessionSummaryItem {
+  marker: number;
+  name: string;
+  current: boolean;
 }

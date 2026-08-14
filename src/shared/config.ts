@@ -13,6 +13,7 @@ export const CONFIG_DEFAULTS: Config = {
   hoverReveal: true,
   whichKey: true,
   statusBar: true,
+  statusBarPosition: "bottom",
   autoRestore: true,
 };
 

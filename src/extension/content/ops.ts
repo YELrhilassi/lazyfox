@@ -262,8 +262,13 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
       const sessions: PopupItem[] = ((r && r.sessions) || []).map((s) => ({
         kind: "session",
         title: s.name,
+        marker: s.marker || 0,
         subtitle:
-          s.tabs.length + " tabs" + (s.updatedAt ? " \u00b7 " + relTime(s.updatedAt) : ""),
+          (s.marker ? "marker " + s.marker + " \u00b7 " : "") +
+          s.tabs.length +
+          " tabs" +
+          (s.splits && s.splits.length ? " \u00b7 " + s.splits.length + " split" : "") +
+          (s.updatedAt ? " \u00b7 " + relTime(s.updatedAt) : ""),
       }));
       const ql = q.trim();
       let out = sessions;
@@ -294,9 +299,34 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     deleteSession: (name: string) => {
       void send("sessionDelete", { name: name }).then(() => toast("deleted \u201C" + name + "\u201D"));
     },
+    switchSessionByMarker: (marker: number) => {
+      void send("sessionSwitchByMarker", { marker: marker }).then((r) =>
+        toast(r && r.ok ? "session \u201C" + r.name + "\u201D" : "no session at marker " + marker)
+      );
+    },
+    splitTab: () => {
+      void send("sessionSplit").then((r) => {
+        if (r && r.ok) toast("split view");
+        else toast(r && r.note ? r.note : "could not split");
+      });
+    },
+    unsplitTab: () => {
+      void send("sessionUnsplit").then((r) => {
+        if (r && r.ok) toast("split view closed");
+        else toast(r && r.note ? r.note : "not in a split view");
+      });
+    },
     sessionState: async () => {
       const r = await send("sessionState");
-      return r || { name: "default", tabIndex: 1, tabCount: 0 };
+      return (
+        r || {
+          name: "default",
+          marker: 0,
+          tabIndex: 1,
+          tabCount: 0,
+          sessions: [],
+        }
+      );
     },
     openFind: () => openFindPopup(deps.shell),
     openResize: () => openResizePopup(deps.shell),

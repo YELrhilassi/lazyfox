@@ -19,6 +19,11 @@
     border: 1px solid #414868; border-radius: 6px; font-family: inherit; font-size: 14px; outline: none;
   }
   input[type="text"]:focus { border-color: #7aa2f7; }
+  select {
+    width: 160px; padding: 8px 10px; background: #1e1e2e; color: #c0caf5;
+    border: 1px solid #414868; border-radius: 6px; font-family: inherit; font-size: 14px; outline: none;
+  }
+  select:focus { border-color: #7aa2f7; }
   .row { display: flex; align-items: center; gap: 10px; }
   button {
     margin-top: 24px; padding: 10px 22px; background: #7aa2f7; color: #16161e;
@@ -74,7 +79,7 @@
   <h2 style="margin-top:34px;">Sessions</h2>
   <p>tmux-style session manager: press <span class="kbd">;p</span> to save and switch named tab sets.</p>
   <label>
-    <span class="row"><input type="checkbox" id="statusBar"> Show the status bar (session &middot; tab index &middot; mode)</span>
+    <span class="row"><input type="checkbox" id="statusBar"> Show the status bar (session &middot; tabs &middot; session list &middot; mode)</span>
   </label>
   <label>
     <span class="row"><input type="checkbox" id="autoRestore"> Restore the last session on startup</span>

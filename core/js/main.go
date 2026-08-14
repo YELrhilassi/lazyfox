@@ -97,6 +97,61 @@ func lfcObj(l core.Lfc) js.Value {
 	return o
 }
 
+func intSlice(v js.Value) []int {
+	n := v.Length()
+	out := make([]int, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, v.Index(i).Int())
+	}
+	return out
+}
+
+func splitPairs(v js.Value) []core.SplitPair {
+	n := v.Length()
+	out := make([]core.SplitPair, 0, n)
+	for i := 0; i < n; i++ {
+		pair := v.Index(i)
+		out = append(out, core.SplitPair{A: pair.Index(0).Int(), B: pair.Index(1).Int()})
+	}
+	return out
+}
+
+func splitPairsArray(splits []core.SplitPair) js.Value {
+	a := js.Global().Get("Array").New(len(splits))
+	for i, p := range splits {
+		pair := js.Global().Get("Array").New(2)
+		pair.SetIndex(0, p.A)
+		pair.SetIndex(1, p.B)
+		a.SetIndex(i, pair)
+	}
+	return a
+}
+
+func sessionSummaryInput(v js.Value) []core.Session {
+	n := v.Length()
+	out := make([]core.Session, 0, n)
+	for i := 0; i < n; i++ {
+		it := v.Index(i)
+		out = append(out, core.Session{
+			Name:   it.Get("name").String(),
+			Marker: it.Get("marker").Int(),
+		})
+	}
+	return out
+}
+
+func sessionSummaryArray(items []core.SessionSummaryItem) js.Value {
+	a := js.Global().Get("Array").New(len(items))
+	for i, it := range items {
+		o := obj()
+		o.Set("marker", it.Marker)
+		o.Set("name", it.Name)
+		o.Set("current", it.Current)
+		a.SetIndex(i, o)
+	}
+	return a
+}
+
 func main() {
 	api := obj()
 	set := func(name string, fn func(js.Value, []js.Value) interface{}) {
@@ -242,6 +297,47 @@ func main() {
 			nonce = args[0].String()
 		}
 		return core.LfcErr(nonce)
+	})
+
+	// ---- session manager (tmux-style) ----
+
+	set("assignSessionMarker", func(this js.Value, args []js.Value) interface{} {
+		taken := []int(nil)
+		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
+			taken = intSlice(args[0])
+		}
+		return core.AssignSessionMarker(taken)
+	})
+
+	set("encodeSplits", func(this js.Value, args []js.Value) interface{} {
+		if len(args) == 0 || args[0].IsUndefined() || args[0].IsNull() {
+			return ""
+		}
+		return core.EncodeSplits(splitPairs(args[0]))
+	})
+
+	set("decodeSplits", func(this js.Value, args []js.Value) interface{} {
+		s := ""
+		if len(args) > 0 {
+			s = args[0].String()
+		}
+		splits, err := core.DecodeSplits(s)
+		if err != nil {
+			return splitPairsArray(nil)
+		}
+		return splitPairsArray(splits)
+	})
+
+	set("sessionSummary", func(this js.Value, args []js.Value) interface{} {
+		sessions := []core.Session(nil)
+		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
+			sessions = sessionSummaryInput(args[0])
+		}
+		current := ""
+		if len(args) > 1 {
+			current = args[1].String()
+		}
+		return sessionSummaryArray(core.SessionSummary(sessions, current))
 	})
 
 	js.Global().Set("LazyfoxCore", api)

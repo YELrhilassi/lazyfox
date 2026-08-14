@@ -49,5 +49,14 @@ export interface ActionOps {
   saveSession(name: string): void;
   restoreSession(name: string): void;
   deleteSession(name: string): void;
-  sessionState(): Promise<{ name: string; tabIndex: number; tabCount: number }>;
+  switchSessionByMarker(marker: number): void;
+  splitTab(): void;
+  unsplitTab(): void;
+  sessionState(): Promise<{
+    name: string;
+    marker: number;
+    tabIndex: number;
+    tabCount: number;
+    sessions: { marker: number; name: string; current: boolean }[];
+  }>;
 }

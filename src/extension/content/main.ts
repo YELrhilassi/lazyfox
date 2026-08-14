@@ -12,6 +12,7 @@ import { LeaderController } from "../../shared/leader";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/popups";
 import { send } from "../../shared/protocol";
+import { StatusBar } from "../../shared/statusbar";
 import type { Config } from "../../shared/types";
 import { createLinkHints, focusFirstInput } from "./hints";
 import { createContentOps, type ContentPopupShell } from "./ops";
@@ -100,53 +101,37 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     (k) => runLeaderAction(leaderActions, k),
     () => config.whichKey !== false
   );
+  // ;' = quick switch: capture the next digit and jump to the marked session.
+  leaderActions["'"] = () =>
+    leader.armPending((k) => {
+      if (/^[1-9]$/.test(k)) {
+        contentOps.switchSessionByMarker(Number(k));
+        return true;
+      }
+      return false;
+    }, 3000);
 
   /* ==================== status bar (tmux-style) ==================== */
 
-  type StatusHost = HTMLElement & { _sh: ShadowRoot };
-  let statusHost: StatusHost | null = null;
-  let statusInfo = { name: "default", tabIndex: 1, tabCount: 0 };
-
-  const STATUS_CSS =
-    ".lf-status{position:fixed;left:0;right:0;bottom:0;height:20px;z-index:2147482000;" +
-    "display:flex;align-items:center;gap:10px;padding:0 10px;" +
-    "background:rgba(20,20,30,.94);color:#9aa5ce;border-top:1px solid #2a2f45;" +
-    "font:11px/1 ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;pointer-events:none}" +
-    ".lf-status .sess{color:#7aa2f7;font-weight:600}" +
-    ".lf-status .tabs{color:#565f89}" +
-    ".lf-status .mode{margin-left:auto;color:#2ac3de;letter-spacing:.14em}" +
-    ".lf-status .mode.lead{color:#7aa2f7}";
+  const statusBar = new StatusBar();
+  let statusInfo = {
+    name: "default",
+    marker: 0,
+    tabIndex: 1,
+    tabCount: 0,
+    sessions: [] as { marker: number; name: string; current: boolean }[],
+  };
 
   function ensureStatusBar(): void {
     if (config.statusBar === false) {
-      if (statusHost) {
-        try {
-          statusHost.remove();
-        } catch (e) {
-          // ignore
-        }
-        statusHost = null;
-      }
+      statusBar.hide();
       return;
     }
-    if (statusHost) return;
-    const host = document.createElement("div") as unknown as StatusHost;
-    host.id = "lazyfox-status";
-    const sh = host.attachShadow({ mode: "closed" });
-    sh.innerHTML =
-      "<style>" + STATUS_CSS + "</style>" +
-      "<div class='lf-status'>" +
-      "<span class='sess'>\u27E6default\u27E7</span>" +
-      "<span class='tabs'>1/1</span>" +
-      "<span class='mode'>NORMAL</span>" +
-      "</div>";
-    host._sh = sh;
-    document.documentElement.appendChild(host);
-    statusHost = host;
+    statusBar.setPosition(config.statusBarPosition || "bottom");
+    statusBar.show();
   }
 
   function renderStatus(): void {
-    if (!statusHost) return;
     const mode = currentPopup
       ? "POPUP"
       : hints.active
@@ -154,16 +139,7 @@ import { createContentOps, type ContentPopupShell } from "./ops";
         : leader.active
           ? "LEADER"
           : "NORMAL";
-    const sh = statusHost._sh;
-    const sess = sh.querySelector(".sess");
-    const tabs = sh.querySelector(".tabs");
-    const m = sh.querySelector(".mode");
-    if (sess) sess.textContent = "\u27E6" + statusInfo.name + "\u27E7";
-    if (tabs) tabs.textContent = statusInfo.tabIndex + "/" + statusInfo.tabCount;
-    if (m) {
-      m.textContent = mode;
-      m.className = "mode" + (mode === "LEADER" ? " lead" : "");
-    }
+    statusBar.setData({ mode: mode });
   }
 
   function fetchStatus(): void {
@@ -171,9 +147,12 @@ import { createContentOps, type ContentPopupShell } from "./ops";
       if (r) {
         statusInfo = {
           name: r.name || "default",
+          marker: r.marker || 0,
           tabIndex: r.tabIndex || 1,
           tabCount: r.tabCount || 0,
+          sessions: r.sessions || [],
         };
+        statusBar.setData(statusInfo);
         renderStatus();
       }
     });
@@ -264,9 +243,10 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     // chrome helper only receives keys on in-process pages (about:, the
     // command center), where this content script does not run.
     if (e.key === "Escape") {
-      const had = hints.active || leader.active;
+      const had = hints.active || leader.active || leader.hasPending();
       if (hints.active) hints.exit();
       if (leader.active) leader.hide();
+      if (leader.hasPending()) leader.handlePending("Escape");
       if (had) {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -282,6 +262,12 @@ import { createContentOps, type ContentPopupShell } from "./ops";
           // ignore
         }
       }
+      return;
+    }
+    if (leader.hasPending()) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      leader.handlePending(e.key);
       return;
     }
     if (leader.active) {
@@ -344,7 +330,6 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   window.addEventListener("keydown", onKeyDown, true);
 
   ensureStatusBar();
-  renderStatus();
   fetchStatus();
   setInterval(renderStatus, 400);
   setInterval(fetchStatus, 3000);

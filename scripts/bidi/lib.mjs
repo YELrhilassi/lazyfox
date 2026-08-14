@@ -388,8 +388,10 @@ export async function focusPage(context) {
     }
     return [Math.floor(window.innerWidth / 2), 60];
   })()`);
-  // Click up to three times: the first click on an unfocused window is often
-  // eaten just to (re)gain OS focus.
+  // Click three times: the first click on an unfocused window is often eaten
+  // just to (re)gain OS focus, and document.hasFocus() reports true even while
+  // the (hidden) URL bar still holds keyboard focus, so we cannot trust it to
+  // stop early. A non-interactive spot means extra clicks are harmless.
   for (let i = 0; i < 3; i++) {
     try {
       await clickPage(context, pt[0], pt[1]);
@@ -397,11 +399,6 @@ export async function focusPage(context) {
       // ignore
     }
     await sleep(120);
-    try {
-      if (await evalIn(context, `document.hasFocus()`)) break;
-    } catch (e) {
-      break;
-    }
   }
 }
 

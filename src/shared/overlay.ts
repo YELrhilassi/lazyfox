@@ -36,6 +36,8 @@ export const PANEL_CSS = `
 .lf-native-tag{display:inline-block;font-size:9px;letter-spacing:.1em;text-transform:uppercase;
   background:#292e42;color:#9aa5ce;border-radius:4px;padding:1px 6px;margin-right:8px;vertical-align:1px;}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#7aa2f7;margin-right:6px;}
+.lf-marker{display:inline-block;min-width:16px;text-align:center;background:#16161e;border:1px solid #414868;
+  border-radius:4px;padding:0 4px;margin-right:8px;color:#2ac3de;font-size:11px;}
 .hint{position:fixed;z-index:2147483646;background:#2ac3de;color:#16161e;font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;
   padding:2px 5px;border-radius:4px;pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4);}
 `;
