@@ -420,6 +420,9 @@ export const chromeOps: ActionOps = {
   switchSessionByMarker: () => {
     toast("sessions work on web pages");
   },
+  assignSessionMarker: () => {
+    toast("sessions work on web pages");
+  },
   splitTab: () => {
     toast("split view needs a web page");
   },

@@ -334,6 +334,8 @@ import type { ChromeHotkeys, Config } from "../shared/types";
   chromeOps.deleteSession = (name: string) => sessionAction("deleteSession", name);
   chromeOps.switchSessionByMarker = (marker: number) =>
     sessionAction("switchSessionByMarker", String(marker));
+  chromeOps.assignSessionMarker = (name: string, marker: number) =>
+    sessionAction("assignSessionMarker", name + "\u0001" + marker);
   chromeOps.splitTab = () => sessionAction("splitTab");
   chromeOps.unsplitTab = () => sessionAction("unsplitTab");
   chromeOps.switchSplitPane = () => sessionAction("switchSplitPane");

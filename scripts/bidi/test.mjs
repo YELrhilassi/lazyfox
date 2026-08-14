@@ -1061,6 +1061,25 @@ async function main() {
     await gotoPage(tabA, `${base}/`);
   });
 
+  await runTest("sessions: Ctrl+digit assigns a marker", async () => {
+    await gotoPage(tabA, `${base}/`);
+    await leaderPress(tabA, "p");
+    await waitFor(async () => (await hasHost(tabA, "lazyfox-popup")) ? true : null, 5000);
+    // Highlight the second session (mail) and mark it 9 with Ctrl+9.
+    await press(tabA, "ArrowDown");
+    await sleep(250);
+    await press(tabA, "9", { ctrl: true });
+    await waitFor(async () => {
+      const r = await evalIn(probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.mail)`);
+      return r && r.marker === 9 ? r : null;
+    }, 8000);
+    const r = await evalIn(probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions.mail)`);
+    assert(r && r.marker === 9, "mail marker reassigned to 9, got " + (r && r.marker));
+    const w = await evalIn(probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.work)`);
+    assert(w && w.marker === 1, "work marker unchanged at 1, got " + (w && w.marker));
+    await press(tabA, "Escape");
+  });
+
   console.log("\n== Console error audit ==");
 
   const errors = consoleLog.filter((l) => l.level === "error");
