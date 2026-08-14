@@ -16,7 +16,9 @@
     "downloads",
     "sessions",
     "search",
-    "storage"
+    "storage",
+    "webRequest",
+    "webRequestBlocking"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -64,6 +66,36 @@
         "default": "Ctrl+Alt+K"
       },
       "description": "Open the Lazyfox command center (works on any page)"
+    },
+    "split-horizontal": {
+      "suggested_key": {
+        "default": "Ctrl+Alt+H"
+      },
+      "description": "Split the current tab side-by-side"
+    },
+    "split-vertical": {
+      "suggested_key": {
+        "default": "Ctrl+Alt+V"
+      },
+      "description": "Split the current tab stacked"
+    },
+    "split-next-pane": {
+      "suggested_key": {
+        "default": "Ctrl+Alt+Right"
+      },
+      "description": "Focus the next split pane"
+    },
+    "split-prev-pane": {
+      "suggested_key": {
+        "default": "Ctrl+Alt+Left"
+      },
+      "description": "Focus the previous split pane"
+    },
+    "unsplit": {
+      "suggested_key": {
+        "default": "Ctrl+Alt+U"
+      },
+      "description": "Close the split view"
     }
   },
   "icons": {

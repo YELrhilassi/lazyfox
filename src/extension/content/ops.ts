@@ -260,17 +260,20 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     startHints: () => deps.startHints(),
     listSessions: async (q: string) => {
       const r = await send("sessionList");
-      const sessions: PopupItem[] = ((r && r.sessions) || []).map((s) => ({
-        kind: "session",
-        title: s.name,
-        marker: s.marker || 0,
-        subtitle:
-          (s.marker ? "marker " + s.marker + " \u00b7 " : "") +
-          s.tabs.length +
-          " tabs" +
-          (s.splits && s.splits.length ? " \u00b7 " + s.splits.length + " split" : "") +
-          (s.updatedAt ? " \u00b7 " + relTime(s.updatedAt) : ""),
-      }));
+      const sessions: PopupItem[] = ((r && r.sessions) || []).map((s) => {
+        const splitCount = (s.tabs || []).filter((t: any) => !!t.split).length;
+        return {
+          kind: "session",
+          title: s.name,
+          marker: s.marker || 0,
+          subtitle:
+            (s.marker ? "marker " + s.marker + " \u00b7 " : "") +
+            s.tabs.length +
+            " tabs" +
+            (splitCount ? " \u00b7 " + splitCount + " split" : "") +
+            (s.updatedAt ? " \u00b7 " + relTime(s.updatedAt) : ""),
+        };
+      });
       const ql = q.trim();
       let out = sessions;
       if (ql) {
@@ -310,9 +313,9 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         toast(r && r.ok ? "\u201C" + name + "\u201D \u2192 marker " + marker : (r && r.note) || "could not set marker")
       );
     },
-    splitTab: () => {
-      void send("sessionSplit").then((r) => {
-        if (r && r.ok) toast("split view");
+    splitTab: (orientation: "horizontal" | "vertical") => {
+      void send("sessionSplit", { orientation: orientation }).then((r) => {
+        if (r && r.ok) toast(orientation === "vertical" ? "split stacked" : "split side-by-side");
         else toast(r && r.note ? r.note : "could not split");
       });
     },
@@ -322,8 +325,8 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         else toast(r && r.note ? r.note : "not in a split view");
       });
     },
-    switchSplitPane: () => {
-      void send("sessionSwitchPane").then((r) => {
+    switchSplitPane: (dir: number) => {
+      void send("sessionSwitchPane", { dir: dir }).then((r) => {
         if (r && r.ok) toast("switched split pane");
         else toast(r && r.note ? r.note : "not in a split view");
       });

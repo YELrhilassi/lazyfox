@@ -50,6 +50,7 @@ function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
   itemClass?: string;
   vimNav?: boolean;
   extraKeys?: (e: KeyboardEvent, sel: { empty: boolean; item: T | null; refresh(): void }) => boolean;
+  onEnter?: (value: string, item: T | null) => boolean;
 }): PopupCtl {
   const listEl = root.querySelector(".lf-list") as HTMLElement;
   const inputEl = root.querySelector(".lf-input") as HTMLInputElement;
@@ -67,6 +68,7 @@ function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
     render: opts.render,
     onPick: opts.onPick,
     extraKeys: opts.extraKeys,
+    onEnter: opts.onEnter,
   });
   return { onKey: sel.onKey, refresh: sel.refresh, close: sel.close, focus: () => inputEl.focus() };
 }
@@ -258,26 +260,62 @@ export function openDownloadsPopup(ctx: PopupCtx): void {
 /* ---------------- sessions ---------------- */
 
 export function openSessionsPopup(ctx: PopupCtx): void {
-  // Marker -> name map rebuilt on every search so digit keys can jump straight
-  // to a marked session when the input is empty.
+  // The session list is fetched once and cached, then filtered synchronously,
+  // so Enter save / digit jump / Ctrl+digit mark never race the in-flight
+  // background round-trip (the old debounced search did, which is why saving
+  // and marking appeared broken).
+  let sessions: PopupItem[] = [];
   let byMarker: Record<number, string> = {};
+  let loaded: Promise<void> | null = null;
+
+  const ensureLoaded = () => {
+    if (!loaded) {
+      loaded = ctx.ops.listSessions("").then((items) => {
+        sessions = items.filter((it) => it.kind !== "save");
+        byMarker = {};
+        for (const it of sessions) {
+          if (it.marker) byMarker[it.marker] = it.title || "";
+        }
+      });
+    }
+    return loaded;
+  };
+
+  const reload = () => {
+    loaded = null;
+    return ensureLoaded();
+  };
+
+  const results = (q: string): PopupItem[] => {
+    const ql = q.trim();
+    if (!ql) return sessions.slice();
+    const lower = ql.toLowerCase();
+    const out = sessions.filter(
+      (s) => (s.title || "").toLowerCase().indexOf(lower) !== -1
+    );
+    if (!sessions.some((s) => (s.title || "").toLowerCase() === lower)) {
+      out.unshift({
+        kind: "save",
+        title: ql,
+        subtitle: "Save current tabs as \u201C" + ql + "\u201D",
+      });
+    }
+    return out;
+  };
+
   ctx.open(
     basePanel(
       "Sessions",
       "no saved sessions",
-      "<span class='lf-badge'>Enter</span> switch &middot; <span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Ctrl+1-9</span> mark &middot; <span class='lf-badge'>x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
+      "<span class='lf-badge'>Enter</span> save/switch &middot; <span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Ctrl+1-9</span> mark &middot; <span class='lf-badge'>x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
     ),
     (root) =>
       makeSelector<PopupItem>(ctx, root, {
-        debounceMs: 40,
+        debounceMs: 0,
         emptyText: "type a name and press Enter to save the current tabs",
         search: async (q) => {
-          const items = await ctx.ops.listSessions(q);
-          byMarker = {};
-          for (const it of items) {
-            if (it.kind !== "save" && it.marker) byMarker[it.marker] = it.title || "";
-          }
-          return items;
+          await ensureLoaded();
+          return results(q);
         },
         render: (s) => {
           if (s.kind === "save") {
@@ -299,18 +337,31 @@ export function openSessionsPopup(ctx: PopupCtx): void {
           if (s.kind === "save") ctx.ops.saveSession(s.title || "");
           else ctx.ops.restoreSession(s.title || "");
         },
+        onEnter: (value) => {
+          const name = value.trim();
+          if (!name) return false;
+          ctx.close();
+          const exact = sessions.find(
+            (s) => (s.title || "").toLowerCase() === name.toLowerCase()
+          );
+          if (exact) ctx.ops.restoreSession(exact.title || name);
+          else ctx.ops.saveSession(name);
+          return true;
+        },
         extraKeys: (e, sel) => {
           const k = e.key;
           // Ctrl+1-9 assigns that marker to the highlighted session.
           if (e.ctrlKey && /^[1-9]$/.test(k)) {
-            if (sel.item && sel.item.kind !== "save" && sel.item.title) {
+            const item = sel.item;
+            if (item && item.kind !== "save" && item.title) {
               e.preventDefault();
-              ctx.ops.assignSessionMarker(sel.item.title, Number(k));
-              sel.refresh();
+              ctx.ops.assignSessionMarker(item.title, Number(k));
+              void reload().then(() => sel.refresh());
               return true;
             }
             return false;
           }
+          // 1-9 (empty input) jumps to the marked session.
           if (/^[1-9]$/.test(k) && sel.empty) {
             const name = byMarker[Number(k)];
             if (!name) return false;
@@ -319,12 +370,14 @@ export function openSessionsPopup(ctx: PopupCtx): void {
             ctx.ops.restoreSession(name);
             return true;
           }
-          if (k !== "x") return false;
-          if (!sel.empty || sel.item == null || sel.item.kind === "save") return false;
-          e.preventDefault();
-          ctx.ops.deleteSession(sel.item.title || "");
-          sel.refresh();
-          return true;
+          // x deletes the highlighted session.
+          if (k === "x" && !sel.empty && sel.item && sel.item.kind !== "save") {
+            e.preventDefault();
+            ctx.ops.deleteSession(sel.item.title || "");
+            void reload().then(() => sel.refresh());
+            return true;
+          }
+          return false;
         },
       })
   );
@@ -394,9 +447,10 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     d: () => openDownloadsPopup(ctx),
     p: () => openSessionsPopup(ctx),
     "'": () => openSessionsPopup(ctx),
-    "|": () => ctx.ops.splitTab(),
-    "[": () => ctx.ops.switchSplitPane(),
-    "]": () => ctx.ops.switchSplitPane(),
+    "|": () => ctx.ops.splitTab("horizontal"),
+    "_": () => ctx.ops.splitTab("vertical"),
+    "[": () => ctx.ops.switchSplitPane(-1),
+    "]": () => ctx.ops.switchSplitPane(1),
     ",": () => ctx.ops.moveActiveTab(-1),
     ".": () => ctx.ops.moveActiveTab(1),
     "\\": () => ctx.ops.unsplitTab(),

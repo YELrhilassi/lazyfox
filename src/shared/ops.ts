@@ -52,15 +52,16 @@ export interface ActionOps {
   deleteSession(name: string): void;
   switchSessionByMarker(marker: number): void;
   assignSessionMarker(name: string, marker: number): void;
-  splitTab(): void;
+  splitTab(orientation: "horizontal" | "vertical"): void;
   unsplitTab(): void;
-  switchSplitPane(): void;
+  switchSplitPane(dir: number): void;
   sessionState(): Promise<{
     name: string;
     marker: number;
     tabIndex: number;
     tabCount: number;
     inSplit: boolean;
+    splitOrientation?: "horizontal" | "vertical";
     sessions: { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
   }>;
 }

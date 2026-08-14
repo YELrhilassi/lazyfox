@@ -62,6 +62,11 @@ export interface SelectorOpts<T> {
   // keydown handler preventDefaults every key before the selector sees it.
   manualText?: boolean;
   extraKeys?: (e: KeyboardEvent, ctx: { empty: boolean; index: number; item: T | null; refresh(): void }) => boolean;
+  // Called when Enter is pressed. When it returns true the key is consumed
+  // (the default "pick the highlighted item" is skipped). Lets popups whose
+  // data source is debounced/async handle Enter deterministically from the
+  // raw input value instead of racing the in-flight search.
+  onEnter?: (value: string, item: T | null) => boolean;
   onChange?: (idx: number, item: T | null, count: number) => void;
 }
 
@@ -253,6 +258,9 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
     }
     if (k === "Enter") {
       e.preventDefault();
+      if (opts.onEnter && opts.onEnter(opts.inputEl.value || "", shown[idx] || null)) {
+        return true;
+      }
       const item = shown[idx];
       if (item) opts.onPick(item);
       return true;

@@ -6,7 +6,13 @@
 import { core, ensureCore } from "../shared/core";
 import { mergeConfig } from "../shared/config";
 import type { BgAction } from "../shared/protocol";
-import type { Session, SessionTab } from "../shared/types";
+import {
+  buildSplitUrl,
+  isSplitUrl,
+  parseSplitUrl,
+  splitPayload,
+} from "../shared/split";
+import type { Session, SessionTab, SplitView } from "../shared/types";
 
 (function () {
   "use strict";
@@ -219,46 +225,35 @@ import type { Session, SessionTab } from "../shared/types";
     return !t || !t.url || t.url === "about:blank" || /^about:(home|newtab)$/i.test(t.url);
   }
 
-  // Firefox 149+ exposes a read-only splitViewId on tabs.Tab; the two tabs of
-  // a split view share it. Older Firefox returns undefined; treat that as "no
-  // split" so capture stays backward compatible.
-  function splitViewIdOf(t: any): number | undefined {
-    if (!t || t.splitViewId == null) return undefined;
-    const none = (browser.tabs && browser.tabs.SPLIT_VIEW_ID_NONE) || -1;
-    return t.splitViewId === none ? undefined : t.splitViewId;
+  // A tab is a custom split container iff its URL points at the splitview page
+  // (which encodes the pane layout). Returns the decoded layout, or null.
+  function splitViewOf(t: any): SplitView | null {
+    if (!t || !t.url) return null;
+    return parseSplitUrl(t.url);
   }
+
+  const SPLITVIEW_BASE = browser.runtime.getURL("");
 
   async function snapshotWindow(): Promise<{
     tabs: SessionTab[];
-    splits: { a: number; b: number }[];
     active: number;
     windowState: string;
   }> {
     const win = await browser.windows.getCurrent();
     const tabs = await browser.tabs.query({ currentWindow: true });
     const list = tabs || [];
-    // Group tabs by splitViewId; a split view is exactly two tabs.
-    const bySplit = new Map<number, number[]>();
-    for (let i = 0; i < list.length; i++) {
-      const sv = splitViewIdOf(list[i]);
-      if (sv == null) continue;
-      if (!bySplit.has(sv)) bySplit.set(sv, []);
-      bySplit.get(sv)!.push(i);
-    }
-    const splits: { a: number; b: number }[] = [];
-    for (const idxs of bySplit.values()) {
-      if (idxs.length === 2) splits.push({ a: idxs[0]!, b: idxs[1]! });
-    }
-    splits.sort((x, y) => x.a - y.a);
     let active = list.findIndex((t: any) => t.active);
     if (active < 0) active = 0;
     return {
-      tabs: list.slice(0, MAX_SESSION_TABS).map((t: any) => ({
-        url: t.url || "",
-        title: t.title || "",
-        pinned: !!t.pinned,
-      })),
-      splits: splits.filter((s) => s.a < MAX_SESSION_TABS && s.b < MAX_SESSION_TABS),
+      tabs: list.slice(0, MAX_SESSION_TABS).map((t: any) => {
+        const split = splitViewOf(t);
+        return {
+          url: t.url || "",
+          title: t.title || "",
+          pinned: !!t.pinned,
+          split: split || undefined,
+        };
+      }),
       active: active < MAX_SESSION_TABS ? active : 0,
       windowState: win && win.state ? win.state : "normal",
     };
@@ -268,7 +263,11 @@ import type { Session, SessionTab } from "../shared/types";
     const win = await browser.windows.getCurrent();
     const cur = await browser.tabs.query({ currentWindow: true });
     for (const t of cur || []) {
-      if (!t.pinned) {
+      // Never remove the transient chrome-helper request tab (commandcenter
+      // #lfc=req...) from inside its own onUpdated handler — doing so while
+      // it is still being processed can crash Firefox. It is cleaned up by
+      // the request handler itself after the restore completes.
+      if (!t.pinned && !(t.url && t.url.indexOf("#lfc=req") !== -1)) {
         try {
           await browser.tabs.remove(t.id);
         } catch (e) {
@@ -288,27 +287,6 @@ import type { Session, SessionTab } from "../shared/types";
       // ignore
     }
     return created;
-  }
-
-  // Split creation is not yet exposed to extensions (bug 2016928, expected in
-  // Firefox 152). Feature-detect the future API so re-splitting a restored
-  // session starts working the moment Firefox ships it, and degrades to a
-  // plain (ordered) restore today.
-  async function reapplySplits(ids: number[], splits: { a: number; b: number }[]): Promise<void> {
-    if (!splits || !splits.length) return;
-    const splitFn = browser.tabs && (browser.tabs.split as any);
-    if (typeof splitFn !== "function") return;
-    for (const sp of splits) {
-      const a = ids[sp.a];
-      const b = ids[sp.b];
-      if (a != null && b != null) {
-        try {
-          await splitFn([a, b]);
-        } catch (e) {
-          // ignore
-        }
-      }
-    }
   }
 
   async function sessionList(): Promise<{ sessions: Session[] }> {
@@ -333,7 +311,6 @@ import type { Session, SessionTab } from "../shared/types";
       name: nm,
       marker: marker,
       tabs: snap.tabs,
-      splits: snap.splits,
       active: snap.active,
       windowState: snap.windowState,
       updatedAt: Date.now(),
@@ -351,8 +328,7 @@ import type { Session, SessionTab } from "../shared/types";
     const all = await readSessions();
     const s = all[(name || "").trim()];
     if (!s || !s.tabs || !s.tabs.length) return { ok: false };
-    const ids = await openTabsInCurrentWindow(s.tabs);
-    await reapplySplits(ids, s.splits || []);
+    await openTabsInCurrentWindow(s.tabs);
     await browser.storage.local.set({ [CURRENT_SESSION_KEY]: s.name });
     return { ok: true };
   }
@@ -400,61 +376,61 @@ import type { Session, SessionTab } from "../shared/types";
     return { ok: true };
   }
 
-  async function splitCurrentTab(): Promise<{ ok: boolean; note?: string }> {
+  // Split the active tab into a two-pane split view. The active tab's page
+  // becomes the first pane and a fresh blank pane is added alongside it (the
+  // user navigates a pane through the split bar's URL input). This is the
+  // "split into a new tab" behaviour and never removes an existing tab.
+  async function splitCurrentTab(
+    orientation: "horizontal" | "vertical"
+  ): Promise<{ ok: boolean; note?: string }> {
     const all = await browser.tabs.query({ currentWindow: true });
     const idx = all.findIndex((t: any) => t.active);
-    if (idx < 0 || idx + 1 >= all.length) {
-      return { ok: false, note: "no adjacent tab to split with" };
+    if (idx < 0) return { ok: false, note: "no active tab" };
+    const active = all[idx]!;
+    if (isSplitUrl(active.url || "", SPLITVIEW_BASE)) {
+      return { ok: false, note: "already a split view" };
     }
-    const splitFn = browser.tabs && (browser.tabs.split as any);
-    if (typeof splitFn !== "function") {
-      return { ok: false, note: "split view creation needs Firefox 152+ (coming soon)" };
-    }
-    try {
-      await splitFn([all[idx].id, all[idx + 1].id]);
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, note: "could not split: " + String(e) };
-    }
+    const firstUrl = active.url && active.url !== "about:blank" ? active.url : "about:blank";
+    const cfg: SplitView = {
+      orientation: orientation,
+      panes: [
+        { url: firstUrl, title: active.title || "" },
+        { url: "about:blank", title: "new tab" },
+      ],
+      activePane: 0,
+    };
+    await browser.tabs.update(active.id, { url: buildSplitUrl(SPLITVIEW_BASE, cfg) });
+    return { ok: true };
   }
 
+  // Tear the active split view apart: the first pane replaces the splitview
+  // tab and every remaining pane is restored as its own tab.
   async function unsplitCurrentTab(): Promise<{ ok: boolean; note?: string }> {
     const tab = await getActiveTab();
-    const sv = splitViewIdOf(tab);
-    if (sv == null) return { ok: false, note: "not in a split view" };
-    // Firefox 150+: moving a split-view tab away from its partner removes the
-    // split view. Send the partner to the opposite end of the tab strip.
-    const all = await browser.tabs.query({ currentWindow: true });
-    const activeIdx = all.findIndex((t: any) => t.active);
-    const partner = all.find(
-      (t: any) => t.id !== tab.id && splitViewIdOf(t) === sv
-    );
-    if (!partner) return { ok: false, note: "split partner not found" };
-    const partnerIdx = all.indexOf(partner);
-    const target = partnerIdx < activeIdx ? all.length - 1 : 0;
-    try {
-      await browser.tabs.move(partner.id, { index: target });
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, note: "could not close split view" };
+    const cfg = splitViewOf(tab);
+    if (!cfg) return { ok: false, note: "not in a split view" };
+    const panes = cfg.panes.filter((p) => p.url && p.url !== "about:blank");
+    if (!panes.length) return { ok: false, note: "nothing to restore" };
+    await browser.tabs.update(tab.id, { url: panes[0]!.url, active: true });
+    for (let i = 1; i < panes.length; i++) {
+      await browser.tabs.create({ url: panes[i]!.url, active: false });
     }
+    return { ok: true };
   }
 
-  // Switch keyboard focus to the other pane of the active tab's split view.
-  // Uses only the read-only splitViewId (Firefox 149+), so it works even
-  // before the extension-facing split-creation API ships.
-  async function switchSplitPane(): Promise<{ ok: boolean; note?: string }> {
-    const all = await browser.tabs.query({ currentWindow: true });
-    const activeIdx = all.findIndex((t: any) => t.active);
-    if (activeIdx < 0) return { ok: false, note: "no active tab" };
-    const sv = splitViewIdOf(all[activeIdx]);
-    if (sv == null) return { ok: false, note: "not in a split view" };
-    const partner = all.find(
-      (t: any, i: number) => i !== activeIdx && splitViewIdOf(t) === sv
-    );
-    if (!partner) return { ok: false, note: "split partner not found" };
+  // Move focus to the previous/next pane of the active split view. The
+  // splitview page owns the iframes; broadcast a focus request keyed by the
+  // split payload so exactly the right page responds.
+  async function switchSplitPane(dir: number): Promise<{ ok: boolean; note?: string }> {
+    const tab = await getActiveTab();
+    const id = tab && tab.url ? splitPayload(tab.url) : null;
+    if (!id) return { ok: false, note: "not in a split view" };
     try {
-      await browser.tabs.update(partner.id, { active: true });
+      await browser.runtime.sendMessage({
+        action: "lfSplitFocus",
+        splitId: id,
+        dir: dir > 0 ? 1 : -1,
+      });
       return { ok: true };
     } catch (e) {
       return { ok: false, note: "could not switch split pane" };
@@ -467,6 +443,7 @@ import type { Session, SessionTab } from "../shared/types";
     tabIndex: number;
     tabCount: number;
     inSplit: boolean;
+    splitOrientation?: "horizontal" | "vertical";
     sessions: { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
   }> {
     const tabs = await browser.tabs.query({ currentWindow: true });
@@ -482,12 +459,13 @@ import type { Session, SessionTab } from "../shared/types";
     const marker = cur ? cur.marker || 0 : 0;
     const list = tabs || [];
     const active = list.findIndex((t: any) => t.active);
-    // Split indicator: the active tab shares a splitViewId with a partner.
     let inSplit = false;
+    let splitOrientation: "horizontal" | "vertical" | undefined;
     if (active >= 0) {
-      const sv = splitViewIdOf(list[active]);
-      if (sv != null) {
-        inSplit = list.some((t: any, i: number) => i !== active && splitViewIdOf(t) === sv);
+      const sv = splitViewOf(list[active]);
+      if (sv) {
+        inSplit = true;
+        splitOrientation = sv.orientation;
       }
     }
     const summary = await core.sessionSummary(
@@ -495,7 +473,7 @@ import type { Session, SessionTab } from "../shared/types";
         name: s.name,
         marker: s.marker || 0,
         tabCount: (s.tabs || []).length,
-        splitCount: (s.splits || []).length,
+        splitCount: (s.tabs || []).filter((t: any) => !!t.split).length,
       })),
       name
     );
@@ -505,6 +483,7 @@ import type { Session, SessionTab } from "../shared/types";
       tabIndex: active >= 0 ? active + 1 : 1,
       tabCount: list.length,
       inSplit: inSplit,
+      splitOrientation: splitOrientation,
       sessions: summary,
     };
   }
@@ -522,7 +501,6 @@ import type { Session, SessionTab } from "../shared/types";
             name: "last",
             marker: 0,
             tabs: snap.tabs,
-            splits: snap.splits,
             active: snap.active,
             windowState: snap.windowState,
             updatedAt: Date.now(),
@@ -896,11 +874,11 @@ import type { Session, SessionTab } from "../shared/types";
       case "sessionAssignMarker":
         return assignSessionMarker(data.name, data.marker);
       case "sessionSplit":
-        return splitCurrentTab();
+        return splitCurrentTab(data.orientation === "vertical" ? "vertical" : "horizontal");
       case "sessionUnsplit":
         return unsplitCurrentTab();
       case "sessionSwitchPane":
-        return switchSplitPane();
+        return switchSplitPane(data.dir || 1);
       case "sessionState":
         return sessionState();
       default:
@@ -920,6 +898,16 @@ import type { Session, SessionTab } from "../shared/types";
       browser.tabs
         .create({ url: browser.runtime.getURL("commandcenter.html"), active: true })
         .catch(() => {});
+    } else if (name === "split-horizontal") {
+      void splitCurrentTab("horizontal");
+    } else if (name === "split-vertical") {
+      void splitCurrentTab("vertical");
+    } else if (name === "split-next-pane") {
+      void switchSplitPane(1);
+    } else if (name === "split-prev-pane") {
+      void switchSplitPane(-1);
+    } else if (name === "unsplit") {
+      void unsplitCurrentTab();
     }
   });
 
@@ -996,7 +984,7 @@ import type { Session, SessionTab } from "../shared/types";
       return;
     }
     if (action === "splitTab") {
-      await splitCurrentTab();
+      await splitCurrentTab(arg === "vertical" ? "vertical" : "horizontal");
       return;
     }
     if (action === "unsplitTab") {
@@ -1004,7 +992,7 @@ import type { Session, SessionTab } from "../shared/types";
       return;
     }
     if (action === "switchSplitPane") {
-      await switchSplitPane();
+      await switchSplitPane(parseInt(arg || "1", 10) || 1);
       return;
     }
   }
@@ -1073,6 +1061,49 @@ import type { Session, SessionTab } from "../shared/types";
       // ignore
     }
   });
+
+  /* ===================== split-view header stripping ===================== */
+
+  // The custom split view renders arbitrary pages as <iframe>; most sites send
+  // X-Frame-Options or a CSP frame-ancestors directive that would blank them.
+  // Strip those for subframes whose parent is our splitview page so any site
+  // embeds. Firefox MV3 keeps the blocking webRequest API.
+  function stripFrameAncestors(headers: any[]): any[] {
+    return headers
+      .map((h: any) => {
+        const name = ((h && h.name) || "").toLowerCase();
+        if (name === "x-frame-options") return null;
+        if (
+          name === "content-security-policy" ||
+          name === "content-security-policy-report-only"
+        ) {
+          const value = (h && h.value) || "";
+          const stripped = value
+            .split(";")
+            .map((d: string) => d.trim())
+            .filter((d: string) => !!d && !/^frame-ancestors\b/i.test(d))
+            .join("; ");
+          if (!stripped) return null;
+          return Object.assign({}, h, { value: stripped });
+        }
+        return h;
+      })
+      .filter((h) => h != null);
+  }
+
+  try {
+    browser.webRequest.onHeadersReceived.addListener(
+      (details: any) => {
+        const parent = details.documentUrl || details.originUrl || "";
+        if (parent.indexOf(SPLITVIEW_BASE + "splitview.html") !== 0) return {};
+        return { responseHeaders: stripFrameAncestors(details.responseHeaders || []) };
+      },
+      { urls: ["<all_urls>"], types: ["sub_frame"] },
+      ["blocking", "responseHeaders"]
+    );
+  } catch (e) {
+    // ignore — blocking webRequest unavailable on this Firefox
+  }
 
   // Warm the wasm core for the first URL suggestion.
   void ensureCore().catch(() => {});

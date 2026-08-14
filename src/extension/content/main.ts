@@ -120,6 +120,7 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     tabIndex: 1,
     tabCount: 0,
     inSplit: false,
+    splitOrientation: undefined as "horizontal" | "vertical" | undefined,
     sessions: [] as { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[],
   };
 
@@ -152,6 +153,7 @@ import { createContentOps, type ContentPopupShell } from "./ops";
           tabIndex: r.tabIndex || 1,
           tabCount: r.tabCount || 0,
           inSplit: !!r.inSplit,
+          splitOrientation: r.splitOrientation,
           sessions: r.sessions || [],
         };
         statusBar.setData(statusInfo);
@@ -282,6 +284,16 @@ import { createContentOps, type ContentPopupShell } from "./ops";
         } catch (x) {
           // ignore
         }
+      }
+      return;
+    }
+    // Ctrl+1-9: hot-swap to the session with that marker (tmux-style). Skips
+    // text fields so Ctrl+1 inside an input is untouched.
+    if (e.ctrlKey && !e.altKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
+      if (!isTypingTarget(e.target as Element)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        contentOps.switchSessionByMarker(Number(e.key));
       }
       return;
     }
