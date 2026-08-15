@@ -197,7 +197,7 @@ func main() {
 		if len(args) > 0 {
 			n = args[0].Int()
 		}
-		chars := "asdfjkl;gh"
+		chars := "asdfjklgh"
 		if len(args) > 1 {
 			chars = args[1].String()
 		}

@@ -1,10 +1,12 @@
-// Shared status bar (tmux/nvim style), rendered identically by the content
-// script (web pages) and the chrome helper (about:/moz-extension pages). It is
-// a fixed, pointer-transparent strip whose position (top/bottom) is config.
-// It carries the current session, tab index/count, a split-view indicator
-// (orientation + active pane) and the session list (names, markers and cheap
-// counts only — the list is informative without loading any session's tabs;
-// only the current session's tabs are ever loaded).
+// Shared status bar (lualine-style, nvim flavor), rendered identically by the
+// content script (web pages) and the chrome helper (about:/moz-extension
+// pages). It is a fixed, pointer-transparent strip whose position (top/bottom)
+// is config. Colored chevron blocks read left-to-right like lualine:
+//
+//   [◈ 3 · work][▤ 3/12][⧉ 1/2]  ...other sessions (dim, right-aligned)
+//
+// The palette is tokyonight; icons carry the meaning so labels stay short.
+// The bar is thin (20px) so it never gets in the way of content.
 //
 // Rendered in a closed shadow root so page CSS cannot restyle it.
 
@@ -32,39 +34,62 @@ export interface StatusBarData {
 
 const CSS = `
 :host{all:initial;}
-.lf-status{position:fixed;left:0;right:0;height:22px;z-index:2147482000;
-  display:flex;align-items:center;gap:10px;padding:0 12px;
-  background:#1a1b26;color:#565f89;
-  font:10px/22px ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
+.lf-status{position:fixed;left:0;right:0;height:18px;z-index:2147482000;
+  display:flex;align-items:stretch;
+  background:#1a1b26;color:#c0caf5;
+  font:600 11px/18px ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
   pointer-events:none;user-select:none;}
 .lf-status.top{top:0;border-bottom:1px solid #24283b;}
 .lf-status.bottom{bottom:0;border-top:1px solid #24283b;}
-.lf-status .sep{color:#3b4261;}
-.lf-status .seg{display:flex;align-items:center;gap:6px;white-space:nowrap;}
-.lf-status .sess{color:#7aa2f7;font-weight:600;}
-.lf-status .marker{display:inline-block;min-width:14px;text-align:center;color:#2ac3de;font-weight:600;}
-.lf-status .tabs{color:#565f89;}
-.lf-status .tabs b{color:#c0caf5;font-weight:600;}
-.lf-status .split{display:inline-flex;align-items:center;gap:5px;color:#e0af68;font-weight:600;}
-.lf-status .split .o{color:#565f89;font-weight:400;}
-.lf-status .list{display:flex;align-items:center;gap:6px;overflow:hidden;flex:1;color:#414868;}
-.lf-status .chip{display:inline-flex;align-items:center;gap:5px;color:#565f89;}
-.lf-status .chip .m{color:#2ac3de;font-weight:600;}
-.lf-status .chip .n{color:#565f89;}
-.lf-status .chip .c{color:#3b4261;}
-.lf-status .chip.cur .n{color:#c0caf5;}
-.lf-status .chip.cur .m{color:#7aa2f7;}
-.lf-status .mode{margin-left:auto;color:#3b4261;letter-spacing:.14em;font-weight:600;}
-.lf-status .mode.lead{color:#7aa2f7;}
-.lf-status .mode.popup{color:#e0af68;}
-.lf-status .mode.hints{color:#9ece6a;}
+.seg{display:flex;align-items:center;gap:6px;white-space:nowrap;
+  padding:0 12px 0 10px;
+  clip-path:polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%);}
+.seg.linked{margin-left:-8px;padding-left:18px;}
+.seg .ic{opacity:.95;font-weight:700;}
+.seg.sess{background:#7aa2f7;color:#1a1b26;font-weight:800;}
+.seg.sess .marker{font-weight:800;}
+.seg.tabs{background:#24283b;color:#c0caf5;font-weight:600;}
+.seg.tabs b{color:#7aa2f7;font-weight:800;}
+.seg.tabs .cnt{color:#9aa5ce;font-weight:600;}
+.seg.split{background:#e0af68;color:#1a1b26;font-weight:800;}
+.seg.chips{background:none;clip-path:none;margin-left:6px;gap:6px;
+  overflow:hidden;padding:0 6px;align-items:center;}
+.pill{display:inline-flex;align-items:center;gap:5px;height:14px;border-radius:7px;
+  padding:0 9px 0 7px;color:#16161e;font-weight:700;font-size:10px;line-height:14px;
+  letter-spacing:.03em;white-space:nowrap;box-shadow:inset 0 1px 0 rgba(255,255,255,.3);}
+.pill.cur{outline:1px solid rgba(255,255,255,.85);outline-offset:-1px;}
+.pill .n::before,.pill .c::before{content:"|";opacity:.55;margin-right:5px;}
+.pill .m{font-weight:800;}
+.pill .c{opacity:.9;font-weight:600;}
 `;
 
 type StatusHost = HTMLElement & { _sh: ShadowRoot };
 
+const BAR_HEIGHT = 18;
+
 export class StatusBar {
   private host: StatusHost | null = null;
   private position: "top" | "bottom" = "bottom";
+  // Whether to reserve real layout space so the bar never covers page content.
+  // Web content scripts opt in (the bar reflows the page out of the way); the
+  // chrome helper reserves on the XUL document too, so the window-level bar
+  // never covers the bottom of the command center / split panel / options
+  // pages.
+  private readonly reserveSpace: boolean;
+  // The scrolling element we pushed padding onto (html OR body, whichever the
+  // page actually scrolls) and the class that does the pushing, so hide() can
+  // restore it exactly.
+  private reservedEl: Element | null = null;
+  private reservedCls: string | null = null;
+  private reserveStyle: HTMLStyleElement | null = null;
+  // document.body can be null when a content script first runs at
+  // document_start; once the body exists we must re-apply the class (the
+  // element that actually scrolls is often body). Self-heal in render().
+  private bodyReserved = false;
+
+  constructor(reserveSpace = true) {
+    this.reserveSpace = reserveSpace;
+  }
   private data: StatusBarData = {
     name: "default",
     marker: 0,
@@ -89,16 +114,15 @@ export class StatusBar {
     sh.innerHTML =
       "<style>" + CSS + "</style>" +
       "<div class='lf-status " + this.position + "'>" +
-      "<span class='seg'><span class='sess'></span><span class='marker'></span></span>" +
-      "<span class='sep'>│</span>" +
-      "<span class='seg tabs'></span>" +
-      "<span class='split'></span>" +
-      "<span class='list'></span>" +
-      "<span class='mode'>NORMAL</span>" +
+      "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
+      "<span class='seg tabs linked'><span class='ic'>▤</span><b></b><span class='cnt'></span></span>" +
+      "<span class='seg split linked'><span class='ic'>⧉</span><span class='p'></span></span>" +
+      "<span class='seg chips'></span>" +
       "</div>";
     host._sh = sh;
     document.documentElement.appendChild(host);
     this.host = host;
+    this.reserve();
     this.render();
   }
 
@@ -111,6 +135,7 @@ export class StatusBar {
       }
       this.host = null;
     }
+    this.unreserve();
   }
 
   setPosition(pos: "top" | "bottom"): void {
@@ -122,8 +147,85 @@ export class StatusBar {
         bar.classList.remove("top", "bottom");
         bar.classList.add(pos);
       }
+      this.reserve();
       this.render();
     }
+  }
+
+  // One injected stylesheet with !important rules so page CSS can never defeat
+  // the reservation (inline style would lose to a page's own !important). The
+  // class goes on the element the page actually scrolls — html in standards
+  // mode, but body when a page makes body the scroll container — so content
+  // reflows out from under the fixed bar instead of rendering behind it.
+  private ensureReserveStyle(): void {
+    if (this.reserveStyle) return;
+    try {
+      const st = document.createElement("style");
+      st.id = "lazyfox-status-reserve";
+      st.textContent =
+        ":root.lf-status-reserve-bottom{padding-bottom:" + BAR_HEIGHT + "px !important;}" +
+        ":root.lf-status-reserve-top{padding-top:" + BAR_HEIGHT + "px !important;}" +
+        "body.lf-status-reserve-bottom{padding-bottom:" + BAR_HEIGHT + "px !important;}" +
+        "body.lf-status-reserve-top{padding-top:" + BAR_HEIGHT + "px !important;}";
+      (document.head || document.documentElement).appendChild(st);
+      this.reserveStyle = st;
+    } catch (e) {
+      this.reserveStyle = null;
+    }
+  }
+
+  // Push the page's content out from under the bar so the bar never hides
+  // content behind it. The bar itself stays pointer-transparent, but reserving
+  // real layout space means the page reflows instead of being overlapped.
+  // The class goes on BOTH the scrolling element and body: some pages scroll
+  // inside body (html overflow hidden, nested scrollers) where
+  // document.scrollingElement still reports the root — extra padding is
+  // harmless, missing padding hides the page's last rows behind the bar.
+  private reserve(): void {
+    if (!this.reserveSpace) return;
+    // In a XUL chrome document document.scrollingElement is null; fall back to
+    // the <window> root, which :root padding rules also match.
+    const el = document.scrollingElement || document.documentElement;
+    if (!el) return;
+    this.unreserve();
+    this.ensureReserveStyle();
+    const cls =
+      this.position === "top" ? "lf-status-reserve-top" : "lf-status-reserve-bottom";
+    el.classList.add(cls);
+    this.reservedEl = el;
+    this.reservedCls = cls;
+    this.bodyReserved = false;
+    this.reserveBody();
+  }
+
+  // Add the reservation class to body once it exists. The content script runs
+  // at document_start, when document.body is still null — without this the
+  // last rows of body-scrolling pages sit behind the fixed bar.
+  private reserveBody(): void {
+    if (!this.reservedEl || !this.reservedCls) return;
+    if (this.bodyReserved) return;
+    const body = document.body;
+    if (!body || body === this.reservedEl) return;
+    try {
+      body.classList.add(this.reservedCls);
+      this.bodyReserved = true;
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  private unreserve(): void {
+    if (!this.reservedEl || !this.reservedCls) return;
+    try {
+      this.reservedEl.classList.remove(this.reservedCls);
+      const body = document.body;
+      if (body && body !== this.reservedEl) body.classList.remove(this.reservedCls);
+    } catch (e) {
+      // ignore
+    }
+    this.reservedEl = null;
+    this.reservedCls = null;
+    this.bodyReserved = false;
   }
 
   setData(d: Partial<StatusBarData>): void {
@@ -132,74 +234,88 @@ export class StatusBar {
   }
 
   setMode(mode: string): void {
+    // Mode (NORMAL/LEADER) is intentionally not rendered — it was noise.
+    // Kept as a no-op so callers can keep invoking it.
     if (this.data.mode === mode) return;
     this.data.mode = mode;
-    this.render();
   }
 
   private render(): void {
     if (!this.host) return;
+    // Self-heal: if the body appeared after we first reserved (content script
+    // ran at document_start), push the padding onto it now.
+    this.reserveBody();
     const sh = this.host._sh;
-    const sess = sh.querySelector(".sess");
-    const marker = sh.querySelector(".marker") as HTMLElement | null;
-    const tabs = sh.querySelector(".tabs");
+    const sess = sh.querySelector(".sess") as HTMLElement | null;
+    const marker = sh.querySelector(".sess .marker") as HTMLElement | null;
+    const name = sh.querySelector(".sess .name") as HTMLElement | null;
+    const tabs = sh.querySelector(".tabs") as HTMLElement | null;
+    const tabIdx = tabs ? (tabs.querySelector("b") as HTMLElement | null) : null;
+    const tabCnt = tabs ? (tabs.querySelector(".cnt") as HTMLElement | null) : null;
     const split = sh.querySelector(".split") as HTMLElement | null;
-    const list = sh.querySelector(".list");
-    const mode = sh.querySelector(".mode");
-    if (sess) sess.textContent = this.data.name;
+    const splitP = split ? (split.querySelector(".p") as HTMLElement | null) : null;
+    const chips = sh.querySelector(".chips");
+
+    if (name) name.textContent = this.data.name;
     if (marker) {
-      marker.textContent = this.data.marker ? String(this.data.marker) : "\u00B7";
+      marker.textContent = this.data.marker ? String(this.data.marker) : "";
       marker.style.display = this.data.marker ? "" : "none";
     }
-    if (tabs) {
-      tabs.innerHTML = "<b>" + this.data.tabIndex + "</b>/" + this.data.tabCount;
-    }
-    if (split) {
+    if (sess) sess.style.display = this.data.name ? "" : "none";
+    if (tabIdx) tabIdx.textContent = String(this.data.tabIndex);
+    if (tabCnt) tabCnt.textContent = "/" + this.data.tabCount;
+    if (tabs) tabs.style.display = this.data.tabCount > 0 ? "" : "none";
+
+    if (split && splitP) {
       split.style.display = this.data.inSplit ? "" : "none";
       if (this.data.inSplit) {
         const panes = this.data.splitPanes > 0 ? this.data.splitPanes : 1;
         const active = Math.min(Math.max(0, this.data.splitActive), panes - 1) + 1;
-        split.innerHTML =
-          "<span>⧉ " + active + "/" + panes + "</span>" +
-          "<span class='o'>" +
-          (this.data.splitOrientation === "vertical" ? "v" : "h") +
-          "</span>";
+        splitP.textContent =
+          active + "/" + panes +
+          (this.data.splitOrientation === "vertical" ? " · v" : " · h");
       }
     }
-    if (list) {
+
+    if (chips) {
+      // Session list as colored pills on the LEFT of the bar (after the
+      // session / tabs / split segments): marker|name|count, each pill a
+      // gradient of its own color, dark text so it stays readable.
+      const PILL_COLORS = [
+        ["#7aa2f7", "#5d89ea"], // blue
+        ["#9ece6a", "#7fae49"], // green
+        ["#e0af68", "#cd9445"], // amber
+        ["#bb9af7", "#9e77ef"], // purple
+        ["#7dcfff", "#4fb6ea"], // cyan
+        ["#f7768e", "#e75f79"], // red
+        ["#ff9e64", "#f58541"], // orange
+        ["#2ac3de", "#14a9c6"], // teal
+        ["#c0caf5", "#a3aee4"], // lavender
+      ];
       const frag = document.createDocumentFragment();
-      for (const s of this.data.sessions.slice(0, 12)) {
-        const chip = document.createElement("span");
-        chip.className = "chip" + (s.current ? " cur" : "");
+      this.data.sessions.slice(0, 12).forEach((s, i) => {
+        const pill = document.createElement("span");
+        pill.className = "pill" + (s.current ? " cur" : "");
+        const c = PILL_COLORS[i % PILL_COLORS.length]!;
+        pill.style.background = "linear-gradient(180deg," + c[0] + "," + c[1] + ")";
         const m = document.createElement("span");
         m.className = "m";
         m.textContent = s.marker ? String(s.marker) : "\u00B7";
         const n = document.createElement("span");
         n.className = "n";
         n.textContent = s.name;
-        const c = document.createElement("span");
-        c.className = "c";
-        c.textContent = s.tabCount + (s.splitCount ? "⧉" + s.splitCount : "");
-        chip.appendChild(m);
-        chip.appendChild(n);
-        chip.appendChild(c);
-        frag.appendChild(chip);
-      }
-      list.textContent = "";
-      list.appendChild(frag);
+        const cnt = document.createElement("span");
+        cnt.className = "c";
+        cnt.textContent = s.tabCount + (s.splitCount ? "\u29C9" + s.splitCount : "");
+        pill.appendChild(m);
+        pill.appendChild(n);
+        pill.appendChild(cnt);
+        frag.appendChild(pill);
+      });
+      chips.textContent = "";
+      chips.appendChild(frag);
     }
-    if (mode) {
-      mode.textContent = this.data.mode;
-      mode.className =
-        "mode" +
-        (this.data.mode === "LEADER"
-          ? " lead"
-          : this.data.mode === "POPUP"
-            ? " popup"
-            : this.data.mode === "HINTS"
-              ? " hints"
-              : "");
-    }
+
     // Testability/debug hook: mirror the state onto the document root (the
     // shadow root is closed, so suites read this attribute instead).
     try {

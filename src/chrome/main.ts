@@ -347,13 +347,72 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   // fallback for older Firefox.
   function nativeSplitAvailable(): boolean {
     try {
-      return (
-        typeof window.gBrowser.addTabSplitView === "function" &&
-        Services.prefs.getBoolPref("browser.tabs.splitView.enabled", false)
-      );
+      if (typeof window.gBrowser.addTabSplitView !== "function") return false;
+      let on = false;
+      try {
+        on = Services.prefs.getBoolPref("browser.tabs.splitView.enabled", false);
+      } catch (e) {
+        on = false;
+      }
+      if (!on) {
+        // The feature flag is not set in this profile (only the test profile
+        // sets it via user.js). The chrome helper is privileged: enable it so
+        // the split view works everywhere Firefox ships it.
+        try {
+          Services.prefs.setBoolPref("browser.tabs.splitView.enabled", true);
+          on = true;
+        } catch (e) {
+          return false;
+        }
+      }
+      return on;
     } catch (e) {
       return false;
     }
+  }
+
+  // The split-panel companion pane (search/URL + move-a-tab list) is pure UI:
+  // it must never accumulate as stray tabs or be offered as a move target.
+  // Tabs we created as panels are tracked by reference because the panel's
+  // currentURI is still about:blank for a moment after creation (the
+  // splitpanel.html document has not committed yet).
+  const createdPanelTabs = new Set<any>();
+  function isSplitPanelTab(tab: any): boolean {
+    if (tab && createdPanelTabs.has(tab)) return true;
+    try {
+      const spec =
+        tab && tab.linkedBrowser && tab.linkedBrowser.currentURI
+          ? tab.linkedBrowser.currentURI.spec
+          : "";
+      return spec.indexOf("splitpanel.html") !== -1;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Transient tabs (the split panel + the #lfc= request channel) are not
+  // user tabs: they are hidden from numbering so a tab's 1-9 identity never
+  // changes just because a split/unsplit added or removed a companion pane.
+  function isTransientTab(tab: any): boolean {
+    try {
+      if (isSplitPanelTab(tab)) return true;
+      const spec =
+        tab && tab.linkedBrowser && tab.linkedBrowser.currentURI
+          ? tab.linkedBrowser.currentURI.spec
+          : "";
+      return spec.indexOf("#lfc=") !== -1;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Real (user) tabs in strip order — the stable 1-9 identity space.
+  function realTabs(): any[] {
+    const out: any[] = [];
+    for (const t of window.gBrowser.tabs) {
+      if (t && !isTransientTab(t)) out.push(t);
+    }
+    return out;
   }
 
   // The split view wrapper the user last interacted with, so `;+` (move the
@@ -396,19 +455,77 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       if (!nativeSplitAvailable()) return false;
       const active = window.gBrowser.selectedTab;
       if (!active || active.pinned) return false;
-      if (active.splitview) return true; // already split: treat as handled
+      // A stale .splitview reference can linger after an unsplit on some
+      // builds; dissolve it first so ;| on the very same tab works again
+      // instead of failing with a spurious "needs Firefox 149+" toast.
+      if (active.splitview && typeof active.splitview.unsplitTabs === "function") {
+        try {
+          active.splitview.unsplitTabs();
+        } catch (e) {
+          // ignore
+        }
+      }
       const base = ccBaseUrl();
       const splitPanelUrl = base ? base + "splitpanel.html" : "about:blank";
-      const blank = window.gBrowser.addTab(splitPanelUrl, {
-        // Keep the original tab selected: the pane the user was looking at
-        // stays the active pane of the new split view. The new pane lands on
-        // the split panel (search/URL + move-a-tab list) instead of a blank
-        // page.
-        inBackground: true,
-        skipAnimation: true,
-        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-      });
-      window.gBrowser.addTabSplitView([active, blank]);
+      const activePos = window.gBrowser.tabs.indexOf(active);
+      // Reuse a leftover split-panel tab (not in a split) instead of always
+      // creating a new pane: it keeps the strip from accumulating panels.
+      let blank: any = null;
+      for (const t of window.gBrowser.tabs) {
+        if (t && !t.pinned && !t.splitview && isSplitPanelTab(t)) {
+          blank = t;
+          break;
+        }
+      }
+      if (!blank) {
+        blank = window.gBrowser.addTab(splitPanelUrl, {
+          // Keep the original tab selected: the pane the user was looking at
+          // stays the active pane of the new split view. The new pane lands on
+          // the split panel (search/URL + move-a-tab list) instead of a blank
+          // page.
+          inBackground: true,
+          skipAnimation: true,
+          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+        });
+        createdPanelTabs.add(blank);
+      } else {
+        createdPanelTabs.add(blank);
+      }
+      // Park the panel immediately after the active tab so the pair is already
+      // adjacent: gBrowser.addTabSplitView otherwise regroups the two tabs
+      // (moving the pair to the end) and reshuffles every tab between them.
+      try {
+        const want = window.gBrowser.tabs.indexOf(active) + 1;
+        const at = window.gBrowser.tabs.indexOf(blank);
+        if (at !== want) window.gBrowser.moveTabTo(blank, { tabIndex: want });
+      } catch (e) {
+        // ignore
+      }
+      try {
+        window.gBrowser.addTabSplitView([active, blank]);
+      } catch (e) {
+        // First attempt can fail with stale internal split state; dissolve the
+        // active tab's split group and retry once.
+        try {
+          if (active.splitview && typeof active.splitview.unsplitTabs === "function") {
+            active.splitview.unsplitTabs();
+          }
+        } catch (e2) {
+          // ignore
+        }
+        window.gBrowser.addTabSplitView([active, blank]);
+      }
+      // addTabSplitView may still regroup the pair (moving it to the end); pin
+      // the active tab — and its partner, which travels with it — back to its
+      // original slot so the strip order stays stable.
+      try {
+        const now = window.gBrowser.tabs.indexOf(active);
+        if (now !== activePos && activePos >= 0) {
+          window.gBrowser.moveTabTo(active, { tabIndex: activePos });
+        }
+      } catch (e) {
+        // ignore
+      }
       rememberSplit();
       return true;
     } catch (e) {
@@ -436,21 +553,61 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     }
   }
 
-  // Move tab number `n` (1-based position in the strip, ;+1-9) into the
-  // active split view. Unlike nativeAddTabToSplit (which moves the *selected*
-  // tab), this addresses the tab by its position and leaves the selection
-  // untouched.
+  // Drop the split-panel companion pane(s) from a split view — they are pure
+  // UI ("move a tab into this split") and must not pile up as panes once a
+  // real tab has been moved in or the split is dissolved.
+  function removePanelPanes(sv: any): void {
+    const panes = Array.isArray(sv.tabs) ? sv.tabs.slice() : [];
+    for (const p of panes) {
+      try {
+        if (!p || p.closing) continue;
+        if (isSplitPanelTab(p)) {
+          createdPanelTabs.delete(p);
+          window.gBrowser.removeTab(p);
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+  }
+
+  // Move tab number `n` (1-based position among REAL tabs, ;+1-9) into the
+  // active split view. Numbering skips the split-panel companion, so a tab's
+  // number is stable: splitting/unsplitting never shifts it.
+  //
+  // When no split exists yet, the active tab is split DIRECTLY with tab n —
+  // no companion panel pane, so auto-splitting never leaves an empty pane
+  // behind. When a split exists with a panel companion, the moved tab
+  // REPLACES the panel instead of stacking a third pane (the panel is added
+  // first, so the split never drops below two panes and auto-unsplits).
   function nativeAddTabToSplitByIndex(n: number): boolean {
     try {
       if (!nativeSplitAvailable()) return false;
       let sv = activeSplitView();
       if (!sv && lastNativeSplit && lastNativeSplit.isConnected) sv = lastNativeSplit;
-      if (!sv) return false;
-      const tab = window.gBrowser.tabs[n - 1];
+      const tab = realTabs()[n - 1];
       if (!tab || tab.pinned) return false;
+      if (!sv) {
+        // Auto-split: pair the active tab with tab N directly.
+        const active = window.gBrowser.selectedTab;
+        if (!active || active.pinned || active === tab) return false;
+        // A stale .splitview reference can linger after an unsplit; dissolve
+        // it first so the auto-split succeeds instead of failing.
+        if (active.splitview && typeof active.splitview.unsplitTabs === "function") {
+          try {
+            active.splitview.unsplitTabs();
+          } catch (e) {
+            // ignore
+          }
+        }
+        window.gBrowser.addTabSplitView([active, tab]);
+        rememberSplit();
+        return true;
+      }
       if (tab.splitview === sv) return true; // already in this split
       if (typeof sv.addTabs !== "function") return false;
       sv.addTabs([tab]);
+      removePanelPanes(sv);
       rememberSplit();
       return true;
     } catch (e) {
@@ -462,11 +619,24 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   function nativeUnsplit(): boolean {
     try {
       const sv = activeSplitView();
-      if (sv && typeof sv.unsplitTabs === "function") {
-        sv.unsplitTabs();
-        return true;
+      if (!sv || typeof sv.unsplitTabs !== "function") return false;
+      const panes = Array.isArray(sv.tabs) ? sv.tabs.slice() : [];
+      sv.unsplitTabs();
+      // The companion split-panel pane is pure UI: close it once the split
+      // dissolves so it never piles up as a stray tab. A pane the user
+      // navigated to real content is kept.
+      for (const p of panes) {
+        try {
+          if (!p || p.closing) continue;
+          if (isSplitPanelTab(p)) {
+            createdPanelTabs.delete(p);
+            window.gBrowser.removeTab(p);
+          }
+        } catch (e) {
+          // ignore
+        }
       }
-      return false;
+      return true;
     } catch (e) {
       return false;
     }
@@ -492,13 +662,16 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   }
 
   chromeOps.splitTab = (orientation: "horizontal" | "vertical") => {
-    if (!nativeSplitCurrentTab(orientation)) sessionAction("splitTab", orientation);
+    if (!nativeSplitCurrentTab(orientation)) {
+      const api = typeof window.gBrowser.addTabSplitView === "function";
+      toast(api ? "could not split (pinned tab or stale split state)" : "native split needs Firefox 149+");
+    }
   };
   chromeOps.unsplitTab = () => {
-    if (!nativeUnsplit()) sessionAction("unsplitTab");
+    if (!nativeUnsplit()) toast("not in a split view");
   };
   chromeOps.switchSplitPane = (dir: number) => {
-    if (!nativeSwitchPane(dir)) sessionAction("switchSplitPane", String(dir));
+    if (!nativeSwitchPane(dir)) toast("not in a split view");
   };
   chromeOps.splitAddTabByIndex = (n: number) => {
     if (!nativeAddTabToSplitByIndex(n)) toast("no split view to move into");
@@ -519,7 +692,10 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   // from the cached status-bar summary (which requestSessionState refreshes)
   // and kick a background refresh so the next open is current.
   chromeOps.listSessions = async (q: string) => {
-    requestSessionState();
+    // Await a fresh status-bar refresh so the list reflects a just-completed
+    // save/delete instead of the stale cache (the sessions popup reads this
+    // list right after a mutation).
+    await requestSessionState();
     const ql = (q || "").trim().toLowerCase();
     let items: PopupItem[] = chromeStatusInfo.sessions.map((s) => ({
       kind: "session",
@@ -534,27 +710,6 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     if (ql) items = items.filter((s) => (s.title || "").toLowerCase().indexOf(ql) !== -1);
     return items;
   };
-  // When the focused tab is an iframe split container, `;o` navigates the
-  // active pane (so the split is never navigated away from) instead of the tab
-  // itself. A native split needs no special case: each pane is a real tab, so
-  // navigating the selected tab IS navigating the active pane (and splitting
-  // a pane in half would only confuse).
-  const origOpenUrl = chromeOps.openUrl;
-  chromeOps.openUrl = (url: string, newTab?: boolean) => {
-    let focused = "";
-    try {
-      const b = window.gBrowser.selectedBrowser;
-      focused = b && b.currentURI ? b.currentURI.spec : "";
-    } catch (e) {
-      // ignore
-    }
-    if (focused.indexOf("splitview.html") !== -1) {
-      sessionAction("navigateSplitPane", url);
-    } else {
-      origOpenUrl(url, newTab);
-    }
-  };
-
   /* ===================== typing channel ===================== */
 
   const typing = createTypingChannel();
@@ -636,7 +791,13 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
 
   /* ==================== status bar (tmux-style) ==================== */
 
-  const chromeStatusBar = new StatusBar();
+  // The chrome helper draws into the browser XUL document, so it must not
+  // reserve page layout space (that would shift the whole UI); web content
+  // scripts reserve space with their own StatusBar instances instead.
+  // Reserve real space on the chrome (XUL) document too, so the window-level
+  // bar never covers the bottom of the command center / split panel / options
+  // pages. Reservation targets :root, which matches the XUL <window> element.
+  const chromeStatusBar = new StatusBar(true);
   let chromeStatusInfo = {
     name: "default",
     marker: 0,
@@ -695,35 +856,62 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     else chromeStatusBar.hide();
   }
 
-  function requestSessionState(): void {
+  // One-shot waiters for requestSessionState, keyed by nonce, resolved by the
+  // handleLfc "sessionState" reply. Lets the sessions popup await a FRESH
+  // list after a delete/save instead of reading the stale cache (which made a
+  // deleted session keep showing until the next Firefox restart).
+  let sessionStateWaiters: Record<string, () => void> = {};
+
+  function requestSessionState(): Promise<void> {
     const base = ccBaseUrl();
-    if (!base) return;
+    if (!base) return Promise.resolve();
     const nonce = "ss" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
-    try {
-      const tab = window.gBrowser.addTab(
-        base + "commandcenter.html#lfc=req.sessionState." + nonce,
-        {
-          inBackground: true,
-          skipAnimation: true,
-          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+    return new Promise((resolve) => {
+      sessionStateWaiters[nonce] = resolve;
+      try {
+        const tab = window.gBrowser.addTab(
+          base + "commandcenter.html#lfc=req.sessionState." + nonce,
+          {
+            inBackground: true,
+            skipAnimation: true,
+            triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+          }
+        );
+        // Safety net: if the reply never arrives, drop the request tab.
+        setTimeout(() => {
+          try {
+            if (tab && !tab.closing) window.gBrowser.removeTab(tab);
+          } catch (e) {
+            // ignore
+          }
+          if (sessionStateWaiters[nonce]) {
+            delete sessionStateWaiters[nonce];
+            resolve();
+          }
+        }, 5000);
+      } catch (e) {
+        if (sessionStateWaiters[nonce]) {
+          delete sessionStateWaiters[nonce];
+          resolve();
         }
-      );
-      // Safety net: if the reply never arrives, drop the request tab.
-      setTimeout(() => {
-        try {
-          if (tab && !tab.closing) window.gBrowser.removeTab(tab);
-        } catch (e) {
-          // ignore
-        }
-      }, 5000);
-    } catch (e) {
-      // ignore
-    }
+      }
+    });
   }
 
   updateChromeStatus();
   computeChromeStatus();
   setInterval(computeChromeStatus, 500);
+  // In fullscreen (zen mode, or a full-screen video on a chrome-only page)
+  // the window-level bar would sit over the content — hide it and re-show
+  // when fullscreen exits.
+  try {
+    window.addEventListener("fullscreenchange", () => {
+      if (window.fullScreen || document.fullscreenElement) chromeStatusBar.hide();
+      else updateChromeStatus();
+    });
+  } catch (e) {
+    // ignore
+  }
   // Fetch the session name + list once at startup and after chrome-triggered
   // session actions. Deliberately NOT polled on a timer or on TabSelect: the
   // round-trip creates a transient background tab, and doing that on a timer
@@ -778,6 +966,16 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       } catch (e) {
         // ignore
       }
+    }
+  }
+
+  // Drop the transient #lfc request tab after the chrome helper handles it.
+  function removeReqTab(browser: any): void {
+    try {
+      const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
+      if (tab) window.gBrowser.removeTab(tab);
+    } catch (e) {
+      // ignore
     }
   }
 
@@ -985,6 +1183,26 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
           statusMounted: chromeStatusBar ? chromeStatusBar.mounted : false,
           statusPosition: (cfg.config.statusBarPosition || "bottom"),
           leaderPending: leader ? leader.hasPending() : false,
+          strip: (() => {
+            try {
+              return Array.from(window.gBrowser.tabs).map((t: any, i: number) => {
+                let spec = "";
+                try {
+                  spec = t.linkedBrowser && t.linkedBrowser.currentURI
+                    ? t.linkedBrowser.currentURI.spec : "";
+                } catch (e) {}
+                return {
+                  i: i,
+                  u: (spec.split("?")[0] || "").replace(/^moz-extension:\/\/[^/]+\//, "ext:").slice(-40),
+                  sv: t.splitview ? t.splitview.splitViewId : (t.splitViewId ?? -1),
+                  panel: spec.indexOf("splitpanel.html") !== -1,
+                  req: spec.indexOf("#lfc=") !== -1,
+                };
+              });
+            } catch (e) {
+              return { error: String(e) };
+            }
+          })(),
           nativeSplit: (() => {
             try {
               const sv = activeSplitView();
@@ -1023,18 +1241,65 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       } catch (e) {
         // ignore
       }
+      removeReqTab(browser);
+      return;
+    }
+    if (cmd === "splitTab") {
+      // ;| relayed from the background (content-script context).
       try {
-        const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
-        if (tab) window.gBrowser.removeTab(tab);
+        nativeSplitCurrentTab("horizontal");
       } catch (e) {
         // ignore
       }
+      removeReqTab(browser);
+      return;
+    }
+    if (cmd === "unsplit") {
+      // ;\ relayed from the background.
+      try {
+        nativeUnsplit();
+      } catch (e) {
+        // ignore
+      }
+      removeReqTab(browser);
+      return;
+    }
+    if (cmd === "switchPane") {
+      // ;[ / ;] relayed from the background.
+      try {
+        nativeSwitchPane(parseInt(rest, 10) || 1);
+      } catch (e) {
+        // ignore
+      }
+      removeReqTab(browser);
+      return;
+    }
+    if (cmd === "restoreSplits") {
+      // Session restore finished opening tabs; re-create the native split
+      // groupings (rest is base64url JSON of [[index, ...], ...], 1-based tab
+      // positions).
+      try {
+        const json = decodeURIComponent(rest);
+        const groups = JSON.parse(json) as number[][];
+        for (const g of groups) {
+          const tabs = (g || [])
+            .map((i) => window.gBrowser.tabs[i - 1])
+            .filter((t: any) => !!t && !t.pinned);
+          if (tabs.length > 1 && typeof window.gBrowser.addTabSplitView === "function") {
+            window.gBrowser.addTabSplitView(tabs);
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+      removeReqTab(browser);
       return;
     }
     if (cmd === "sessionState") {
       // Status-bar reply from the background: sessionState.<b64>.<nonce>.
       const dot = rest.indexOf(".");
       const b64 = dot < 0 ? rest : rest.slice(0, dot);
+      const nonce = dot < 0 ? "" : rest.slice(dot + 1);
       try {
         const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
         const state = JSON.parse(new TextDecoder().decode(bytes));
@@ -1051,6 +1316,11 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
         computeChromeStatus();
       } catch (e) {
         // ignore
+      }
+      const w = sessionStateWaiters[nonce];
+      if (w) {
+        delete sessionStateWaiters[nonce];
+        w();
       }
       try {
         const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);

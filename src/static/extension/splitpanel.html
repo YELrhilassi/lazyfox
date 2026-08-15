@@ -100,6 +100,15 @@
     cursor: pointer;
   }
   #tabs li:hover { background: var(--sel); }
+  #tabs li.insplit { opacity: .45; cursor: default; }
+  #tabs li.insplit:hover { background: transparent; }
+  #tabs li .st {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+  }
   #tabs li.empty {
     color: var(--muted);
     cursor: default;

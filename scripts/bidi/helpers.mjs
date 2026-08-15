@@ -279,25 +279,6 @@ export function createCtx(runtime) {
     );
   };
 
-  ctx.iframePaneTitle = async function iframePaneTitle() {
-    const tree = await getTree();
-    const cs = contextsOf(tree);
-    const splitCtx = cs.find((c) => (c.url || "").includes("splitview.html"));
-    if (!splitCtx) return { title: null, children: [], splitUrl: null };
-    const children = (splitCtx.children || []).map((c) => ({ url: c.url, id: c.context }));
-    // The first child context of the splitview page is pane 1's iframe.
-    const pane = splitCtx.children && splitCtx.children[0];
-    let title = null;
-    let href = null;
-    let body = null;
-    if (pane) {
-      title = await evalIn(pane.context, `document.title`).catch((e) => "ERR:" + String(e && e.message ? e.message : e));
-      href = await evalIn(pane.context, `location.href`).catch((e) => "ERR:" + String(e && e.message ? e.message : e));
-      body = await evalIn(pane.context, `document.body ? document.body.innerText.replace(/\\s+/g, " ").trim().slice(0, 200) : ""`).catch((e) => "ERR:" + String(e && e.message ? e.message : e));
-    }
-    return { title, href, body, children, splitUrl: splitCtx.url };
-  };
-
   // Establish the prerequisites every subset needs: the command-center base
   // URL (ccUrl/ccBase) and the probe tab. Runs once at suite start; the
   // "new tab opens the command center" test then re-verifies the CC itself.

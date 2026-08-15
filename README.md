@@ -175,7 +175,7 @@ second key — you just don't see the cheat sheet.
 | Keys | Action |
 | --- | --- |
 | `;` | which-key overlay (bottom-right, paginated) |
-| `; f` | link hints (type the letters shown on links/buttons/inputs; a hint only fires once its letters are unambiguous — `a` stays pending when `aa`/`ah` also exist, `Enter` selects the current prefix) |
+| `; f` | link hints (only links in the current viewport are hinted, so keys stay short; a hint only fires once its letters are unambiguous — `a` stays pending when `aa`/`ah` also exist, `Enter` selects the current prefix; `]`/`[` or `Tab`/`Shift+Tab` page to the next/previous batch of links) |
 | `; s` | search the web — goes straight to your default engine (Google) |
 | `; o` | open a URL — no `http://` or `www` needed; visited sites are fuzzy-matched (opens in a new tab; can be changed in settings) |
 | `; w` | resize / move window (arrows resize 20px, `Shift+arrows` move 40px, `Esc` done) |
@@ -186,7 +186,7 @@ second key — you just don't see the cheat sheet.
 | `; n` / `; x` / `; v` / `; c` | new tab / close tab / reopen / duplicate |
 | `; r` / `; g` / `; l` | reload / back / forward |
 | `; j` / `; k` | next / previous tab |
-| `; y` / `; m` / `; a` | copy URL / mute tab / pin tab |
+| `; y` / `; m` | copy URL / mute tab |
 | `; =` / `; -` / `; 0` | zoom in / out / reset |
 | `; z` | zen mode (fullscreen — toolbar never appears) |
 | `; e` | toggle toolbar reveal on hover |
@@ -241,6 +241,10 @@ the whole window, exactly like `tmux`/`screen`.
 - **`;p`** (or **`;'`**) opens the sessions popup: type to filter, `Enter`
   restores, and it offers *save current tabs as…* for a name that doesn't
   exist yet.
+- **`x x`** deletes the highlighted session — the first `x` arms the delete
+  (the row turns red and the footer asks for confirmation), the second `x`
+  within 2.5s confirms it, so a stray keypress can never lose a session.
+  Deleting the current session drops it back to *default* immediately.
 - **`;'` then `1`–`9`** jumps straight to the session marked `1`–`9`.
 - **`Ctrl+1`–`9`** hot-swaps to the marked session from anywhere — no leader
   key needed. Every session can be assigned a marker from the popup
@@ -260,8 +264,9 @@ internal pages alike. It shows, left to right:
 - the **tab index / count** (`3/7`);
 - a **split indicator** while a split view is focused — orientation
   (`|` side-by-side, `-` stacked) plus the active pane (`1/2`);
-- the **session list** as dim chips (marker + name + tab count, current one
-  highlighted) — informational only, it never loads other sessions' tabs;
+- the **session list** on the left as colored pills (`marker|name|count`,
+  each pill a gradient of its own color, the current one ringed) —
+  informational only, it never loads other sessions' tabs;
 - the current **mode** on the right (`NORMAL` / `LEADER` / `POPUP` / `HINTS`).
 
 The strip lives in a closed shadow root so page CSS can't restyle it. Disable
@@ -281,8 +286,11 @@ Two panes side-by-side, keyboard-only — no window manager needed:
   side-by-side fallback for older Firefox). Closing one pane keeps the other
   open and auto-unsplits it.
 - The **new pane** opens the **split panel** rather than a blank page: a
-  search / URL input on top and, below it, the list of your other tabs to
-  move into the split (press the tab's number, or click it).
+  search / URL input on top and, below it, the live list of your other tabs
+  to move into the split (press the tab's number, or click it). Moving a tab
+  in **replaces the panel** with that tab (the split stays two panes, no
+  empty pane is left behind); `;+N` with no split yet pairs the active tab
+  with tab N directly.
 - The status bar hides while a split is active so it never covers the panes;
   each web pane shows its own bar.
 

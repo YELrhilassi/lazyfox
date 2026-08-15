@@ -93,35 +93,11 @@ export interface SessionTab {
   url: string;
   title: string;
   pinned: boolean;
-  // Present iff this tab is a custom split-view container. The tab's `url` is
-  // the splitview page (which encodes the pane URLs); this mirrors the layout
-  // so capture/restore and the status bar never have to re-parse the URL.
-  split?: SplitView;
   // Native (Firefox 149+) split view: tabs sharing a splitViewId are shown
   // side by side. Read-only on the tabs API today (bug 2016928), so capture
-  // records it and the chrome helper is expected to recreate the pairing on
-  // restore once the extension API lands.
+  // records it and the chrome helper is asked to recreate the pairing on
+  // restore.
   splitViewId?: number;
-}
-
-// A custom i3-style split view: a tab that shows two (or more) pages at once.
-// "horizontal" = side by side; "vertical" = stacked top/bottom.
-export type SplitOrientation = "horizontal" | "vertical";
-
-export interface SplitPane {
-  url: string;
-  title: string;
-}
-
-export interface SplitView {
-  // Stable identity of this split container. Generated once at creation and
-  // preserved through every URL-hash persist, so pane-focus messages can be
-  // routed to exactly the right splitview page even after the active pane (and
-  // therefore the hash) changes.
-  id?: string;
-  orientation: SplitOrientation;
-  panes: SplitPane[];
-  activePane: number;
 }
 
 export interface Session {

@@ -12,15 +12,13 @@ import (
 // every context through the wasm core: marker assignment, tab/split clamping,
 // the compact split-layout codec, and the status-bar session summary.
 //
-// Constraints (kept small on purpose — "more than 9 later"):
-//   - a session holds 1..MaxSessionTabs tabs
+// Constraints:
+//   - a session holds every tab in the window (no cap — switching sessions
+//     must never drop tabs)
 //   - a session is addressed by a marker in 1..MaxSessionMarker
 //   - a split is a pair of adjacent tabs shown side by side (Firefox split view)
 
-const (
-	MaxSessionTabs   = 9
-	MaxSessionMarker = 9
-)
+const MaxSessionMarker = 9
 
 // SessionTab is one tab in a saved session. Only what's needed to restore it.
 type SessionTab struct {
@@ -64,23 +62,17 @@ func AssignSessionMarker(taken []int) int {
 }
 
 // ClampSession returns a copy of s with every constraint enforced:
-// tabs capped at MaxSessionTabs, marker clamped into 1..MaxSessionMarker (0
-// stays 0), the active index clamped into range, and split pairs that point
-// outside the surviving tabs dropped. Order is preserved.
+// every tab kept (switching sessions must never drop tabs), marker clamped
+// into 1..MaxSessionMarker (0 stays 0), the active index clamped into range,
+// and split pairs that point outside the surviving tabs dropped. Order is
+// preserved.
 func ClampSession(s Session) Session {
 	out := Session{
 		Name:    s.Name,
 		Marker:  clampMarker(s.Marker),
 		Updated: s.Updated,
 	}
-	n := len(s.Tabs)
-	if n > MaxSessionTabs {
-		n = MaxSessionTabs
-	}
-	out.Tabs = make([]SessionTab, 0, n)
-	for i := 0; i < n; i++ {
-		out.Tabs = append(out.Tabs, s.Tabs[i])
-	}
+	out.Tabs = append([]SessionTab(nil), s.Tabs...)
 	if len(out.Tabs) == 0 {
 		out.Active = 0
 		return out

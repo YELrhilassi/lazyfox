@@ -307,10 +307,36 @@ export function openSessionsPopup(ctx: PopupCtx): void {
     basePanel(
       "Sessions",
       "no saved sessions",
-      "<span class='lf-badge'>Enter</span> save/switch &middot; <span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Ctrl+1-9</span> mark &middot; <span class='lf-badge'>x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
+      "<span class='lf-badge'>Enter</span> save/switch &middot; <span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Ctrl+1-9</span> mark &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
     ),
-    (root) =>
-      makeSelector<PopupItem>(ctx, root, {
+    (root) => {
+      // Two-step delete confirmation: the first x arms the delete (red
+      // highlight on the row + footer hint + toast), the second x on the same
+      // row within 2.5s actually deletes — a stray x can never lose a
+      // session. The armed row is highlighted via a DOM class (not a
+      // re-render) so the selection never jumps to row 0 between the two x's.
+      let armDelete: { name: string; timer: ReturnType<typeof setTimeout> | null } | null = null;
+      const armEl = document.createElement("span");
+      armEl.className = "lf-arm";
+      armEl.style.marginLeft = "auto";
+      const foot = root.querySelector(".lf-foot");
+      if (foot) foot.appendChild(armEl);
+
+      const markArmed = (on: boolean) => {
+        const rows = root.querySelectorAll(".lf-item");
+        for (const it of Array.from(rows)) {
+          it.classList.toggle("lf-armed", on && it.classList.contains("selected"));
+        }
+      };
+
+      const disarm = () => {
+        if (armDelete && armDelete.timer) clearTimeout(armDelete.timer);
+        armDelete = null;
+        armEl.textContent = "";
+        markArmed(false);
+      };
+
+      return makeSelector<PopupItem>(ctx, root, {
         debounceMs: 0,
         emptyText: "type a name and press Enter to save the current tabs",
         search: async (q) => {
@@ -350,6 +376,34 @@ export function openSessionsPopup(ctx: PopupCtx): void {
         },
         extraKeys: (e, sel) => {
           const k = e.key;
+          // x (empty input, so it isn't being typed as a filter): first press
+          // arms the delete, second press on the same row confirms it.
+          if (k === "x" && sel.empty && sel.item && sel.item.kind !== "save") {
+            e.preventDefault();
+            const name = sel.item.title || "";
+            if (armDelete && armDelete.name === name) {
+              disarm();
+              ctx.ops.deleteSession(name);
+              ctx.toast("deleted \u201C" + name + "\u201D");
+              void reload().then(() => sel.refresh());
+            } else {
+              if (armDelete) disarm();
+              armDelete = {
+                name: name,
+                timer: setTimeout(() => {
+                  armDelete = null;
+                  armEl.textContent = "";
+                  markArmed(false);
+                }, 2500),
+              };
+              armEl.textContent = "press x again to delete \u201C" + name + "\u201D";
+              ctx.toast("press x again to delete \u201C" + name + "\u201D");
+              markArmed(true);
+            }
+            return true;
+          }
+          // Any other key cancels an armed delete.
+          if (armDelete) disarm();
           // Ctrl+1-9 assigns that marker to the highlighted session.
           if (e.ctrlKey && /^[1-9]$/.test(k)) {
             const item = sel.item;
@@ -370,16 +424,10 @@ export function openSessionsPopup(ctx: PopupCtx): void {
             ctx.ops.restoreSession(name);
             return true;
           }
-          // x deletes the highlighted session.
-          if (k === "x" && !sel.empty && sel.item && sel.item.kind !== "save") {
-            e.preventDefault();
-            ctx.ops.deleteSession(sel.item.title || "");
-            void reload().then(() => sel.refresh());
-            return true;
-          }
           return false;
         },
-      })
+      });
+    }
   );
 }
 
@@ -467,7 +515,6 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     k: () => ctx.ops.tabNav(-1),
     y: () => ctx.ops.copyUrl(),
     m: () => ctx.ops.muteTab(),
-    a: () => ctx.ops.pinTab(),
     "1": () => ctx.ops.tabJump(1),
     "2": () => ctx.ops.tabJump(2),
     "3": () => ctx.ops.tabJump(3),

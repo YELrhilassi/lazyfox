@@ -244,9 +244,6 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     muteTab: () => {
       void send("mute").then((r) => toast(r && r.muted ? "muted" : "unmuted"));
     },
-    pinTab: () => {
-      void send("pin").then((r) => toast(r && r.pinned ? "pinned" : "unpinned"));
-    },
     zen: () => {
       void send("zen").then((r) => toast(r && r.zen ? "zen mode on" : "zen mode off"));
     },

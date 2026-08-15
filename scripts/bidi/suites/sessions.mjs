@@ -21,6 +21,31 @@ export async function run(ctx) {
     const v = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-status")`);
     assert(v && v.indexOf("default") !== -1, "status bar shows the default session: " + v);
     assert(await ctx.hasHost(ctx.tabA, "lazyfox-status"), "status bar host mounted on the page");
+    // The bottom bar reserves real layout space (html padding-bottom) so it
+    // never covers the page content behind it.
+    const pb = await evalIn(ctx.tabA, `getComputedStyle(document.documentElement).paddingBottom`);
+    assert(pb && parseFloat(pb) >= 18, "status bar reserves bottom space: " + pb);
+  });
+
+  await t("status bar reserves space on a body-scrolling page", async () => {
+    // Pages that scroll via BODY (not html) used to hide their last rows
+    // behind the fixed bar; the reservation must land on the scrolling
+    // element, which is body here.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/bodyscroll`);
+    await waitFor(async () => {
+      const v = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-status")`);
+      return v ? v : null;
+    }, 8000);
+    const info = await evalIn(ctx.tabA, `JSON.stringify({
+      htmlPb: getComputedStyle(document.documentElement).paddingBottom,
+      bodyPb: getComputedStyle(document.body).paddingBottom,
+    })`);
+    const d = JSON.parse(info);
+    // Firefox reports documentElement as scrollingElement even when body is the
+    // real scroll container, so assert the reservation landed on BODY (the
+    // element that actually scrolls here) — html padding alone would leave the
+    // page's last rows behind the fixed bar.
+    assert(parseFloat(d.bodyPb) >= 18, "body padding reserved so content is not hidden: " + info);
   });
 
   await t("chrome status bar renders on the command center", async () => {
@@ -192,5 +217,152 @@ export async function run(ctx) {
     assert(r && r.tabs && r.tabs.length >= 1, "instant saved with tabs");
     // clean up so later tests are unaffected
     await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.instant; return browser.storage.local.set({ lfSessions: r.lfSessions }); })`);
+  });
+
+  await t("sessions: x x on empty input deletes the highlighted session", async () => {
+    // Regression: `x` used to fall through into the popup input (filtering the
+    // list) instead of deleting the highlighted session, and a single x
+    // deleted with no confirmation. Now the first x arms the delete and the
+    // second confirms. Save a throwaway session, reopen the popup (empty
+    // input), highlight it and delete it.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const before = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions || {})`);
+    await ctx.leaderPress(ctx.tabA, "p");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "delme");
+    await sleep(700);
+    await ctx.press(ctx.tabA, "Enter");
+    await waitFor(async () => {
+      const r = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.delme)`);
+      return r ? r : null;
+    }, 8000);
+    // Reopen the popup: the input starts empty and sessions are sorted by
+    // marker, so work(1) is first and delme(2) second.
+    await ctx.leaderPress(ctx.tabA, "p");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.press(ctx.tabA, "ArrowDown");
+    await sleep(300);
+    // x is two-step: first press arms the delete, second confirms it.
+    await ctx.press(ctx.tabA, "x");
+    await ctx.press(ctx.tabA, "x");
+    await waitFor(async () => {
+      const r = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions)`);
+      return r && !r.delme ? r : null;
+    }, 8000);
+    const all = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions || {})`);
+    assert(!all.delme, "delme session was deleted by x");
+    // Every session that existed before the delete must be untouched — x must
+    // have removed exactly the highlighted delme row, not some other session.
+    for (const n of Object.keys(before)) {
+      assert(all[n], `session "${n}" untouched by the delete`);
+    }
+    // saveSession set the current-session pointer to delme; point it back so
+    // later tests see a consistent current session.
+    await evalIn(ctx.probe, `browser.storage.local.set({ lfCurrentSession: "work" })`);
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
+  await t("sessions: split layout is saved and restored with the session", async () => {
+    // Collapse the window to just the probe (exact tab id via getCurrent), so
+    // the split pair we create is the window's only pair (deterministic
+    // assertions). Use a fresh probe for the trim so we never depend on a
+    // possibly-stale harness context.
+    const probe = await ctx.makeProbeTab();
+    const probeId = await evalIn(probe, `browser.tabs.getCurrent().then(t => t ? t.id : null)`);
+    await evalIn(probe, `(async () => {
+      const ts = await browser.tabs.query({ currentWindow: true });
+      for (const t of ts) {
+        if (t.id !== ${probeId} && !t.pinned) { try { await browser.tabs.remove(t.id); } catch (e) {} }
+      }
+      return true;
+    })()`);
+    await sleep(500);
+    ctx.probe = probe;
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.openCC(ctx.tabA);
+    await ctx.leaderPress(ctx.tabA, "\\", { shift: true }); // ;| via chrome helper
+    const pair = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 ? sv : null;
+    }, 8000).catch(async () => {
+      const ts = await ctx.tabsInfo().catch(() => "ERR");
+      throw new Error("split not created; tabs=" + JSON.stringify(ts));
+    });
+    assert(pair && pair.length === 2, "split created for the session test: " + JSON.stringify(pair));
+
+    // Save the session. The command center is a chrome page, so the save
+    // popup mounts at window level (not in the page DOM the test can drive);
+    // save directly through the background instead.
+    const saveRes = await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "splitws" } })`);
+    assert(saveRes && saveRes.ok, "saveSession message ok: " + JSON.stringify(saveRes));
+    const saved = await waitFor(async () => {
+      const r = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.splitws)`);
+      return r && r.tabs && r.tabs.length ? r : null;
+    }, 8000).catch(() => { throw new Error("splitws session was not saved"); });
+    const svSaved = (saved.tabs || []).filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+    assert(svSaved.length === 2, "saved session captured the split pair: " + JSON.stringify(saved.tabs.map((t) => ({ u: t.url, s: t.splitViewId }))));
+
+    // Build a flat "away" session (unsplit first) to switch to: the window's
+    // tabs get replaced by restore, so the split must vanish.
+    await ctx.leaderPress(ctx.tabA, "\\"); // ;\ unsplit (chrome helper)
+    await sleep(600);
+    const awayRes = await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lfaway" } })`);
+    assert(awayRes && awayRes.ok, "away session saved: " + JSON.stringify(awayRes));
+    const away = await waitFor(async () => {
+      const r = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.lfaway)`);
+      return r && r.tabs && r.tabs.length ? r : null;
+    }, 8000).catch(() => { throw new Error("lfaway session was not saved"); });
+    assert(away.tabs.every((t) => !(typeof t.splitViewId === "number" && t.splitViewId >= 0)), "away session has no split: " + JSON.stringify(away.tabs.map((t) => t.splitViewId)));
+
+    // Switch away by restoring lfaway; the window's tabs are replaced. Send
+    // fire-and-forget: awaiting the reply would race the tab teardown.
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionRestore", data: { name: "lfaway" } }); true`);
+    await sleep(2000);
+    let fresh = await ctx.makeProbeTab();
+    let cur = await evalIn(fresh, `browser.storage.local.get("lfCurrentSession").then(r => r.lfCurrentSession)`);
+    assert(cur === "lfaway", "switched away to lfaway, got " + cur);
+    ctx.probe = fresh;
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const flat = await ctx.tabsInfo();
+    assert(flat.every((t) => !(typeof t.splitViewId === "number" && t.splitViewId >= 0)), "switched-away window has no split: " + JSON.stringify(flat.map((t) => t.url)));
+
+    // Switch back to splitws; restore must re-pair the panes from the saved
+    // splitViewIds.
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionRestore", data: { name: "splitws" } }); true`);
+    await sleep(2500);
+    fresh = await ctx.makeProbeTab();
+    cur = await evalIn(fresh, `browser.storage.local.get("lfCurrentSession").then(r => r.lfCurrentSession)`);
+    assert(cur === "splitws", "switched back to splitws, got " + cur);
+    ctx.probe = fresh;
+    const restored = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 ? sv : null;
+    }, 10000).catch(async () => {
+      const ts = await ctx.tabsInfo().catch(() => "ERR");
+      const cur = await evalIn(ctx.probe, `browser.storage.local.get("lfCurrentSession").then(r => r.lfCurrentSession)`).catch(() => "ERR");
+      throw new Error("restore did not re-pair; cur=" + cur + " tabs=" + JSON.stringify(ts));
+    });
+    assert(restored && restored.length === 2, "restore re-paired the split panes: " + JSON.stringify(restored.map((t) => ({ u: t.url, s: t.splitViewId }))));
+    assert(new Set(restored.map((t) => t.splitViewId)).size === 1, "restored panes share one splitViewId");
+
+    // Clean up: dissolve EVERY remaining split view (the ;\ unsplit only
+    // handles the active one, and later suites assume a flat window). Closing
+    // any pane of a native split auto-unsplits its partner.
+    const rem = await ctx.tabsInfo();
+    const splitTabs = rem.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+    for (const p of splitTabs) {
+      await evalIn(ctx.probe, `browser.tabs.remove(${p.id})`).catch(() => {});
+    }
+    await sleep(600);
+    const post = await ctx.tabsInfo();
+    assert(post.every((t) => !(typeof t.splitViewId === "number" && t.splitViewId >= 0)), "cleanup left a split: " + JSON.stringify(post.map((t) => ({ u: t.url, s: t.splitViewId }))));
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    // Drop the splitws session so the suite is repeatable.
+    await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.splitws; delete r.lfSessions.lfaway; return browser.storage.local.set({ lfSessions: r.lfSessions }); })`);
   });
 }

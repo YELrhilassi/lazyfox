@@ -103,6 +103,29 @@ export async function run(ctx) {
     assert((await evalIn(ctx.tabA, `document.title`)) === "TARGET ONE", "navigated to target1");
   });
 
+  await t("link hints: ] pages down to links below the fold", async () => {
+    // Hints are viewport-only; ] must page through the document and re-hint
+    // the next batch (here: the second input, hidden below a 3000px spacer).
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "f");
+    await waitFor(async () => {
+      const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+      return on === "1" ? true : null;
+    }, 5000);
+    await ctx.press(ctx.tabA, "]");
+    await sleep(900); // scroll + re-hint settle
+    // inp2 is now the (only) hinted element -> its key is "a".
+    await ctx.press(ctx.tabA, "a");
+    await waitFor(async () => {
+      const id = await evalIn(ctx.tabA, `document.activeElement && document.activeElement.id`);
+      return id === "inp2" ? id : null;
+    }, 8000);
+    assert((await evalIn(ctx.tabA, `document.activeElement && document.activeElement.id`)) === "inp2", "paged hint activated inp2");
+    // Leave the tab on /target1 like the plain hints test does: the next test
+    // (;g back) starts from that history entry.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/target1`);
+  });
+
   await t(";g back and ;l forward", async () => {
     // tabA is on /target1 from the hints test; ;g must go back to the base page
     await ctx.leaderPress(ctx.tabA, "g");
@@ -305,11 +328,9 @@ export async function run(ctx) {
     await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
   });
 
-  await t(";m mute and ;a pin run without errors", async () => {
+  await t(";m mute runs without errors", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await ctx.leaderPress(ctx.tabA, "m");
-    await sleep(300);
-    await ctx.leaderPress(ctx.tabA, "a");
     await sleep(300);
   });
 

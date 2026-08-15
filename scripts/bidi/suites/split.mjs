@@ -9,7 +9,7 @@
 // exercises it. Vertical/stacked splits were removed (Firefox's native view
 // is side-by-side only).
 
-import { evalIn, waitFor, sleep, clickPage, navigate } from "../lib.mjs";
+import { evalIn, waitFor, sleep, clickPage, navigate, getTree, createTab } from "../lib.mjs";
 import { assert } from "../harness.mjs";
 
 export const group = "split";
@@ -55,68 +55,28 @@ export async function run(ctx) {
 
   console.log("\n== Split view (i3-style) ==");
 
-  await t("split: ;| splits side-by-side, ;[ / ;] switch panes, ;\\ closes", async () => {
+  await t("split: ;| splits side-by-side via the native split view", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     // geckodriver cannot synthesize "|" from the bare character, so send the
-    // leader + Shift+\\ (which produces the "|" binding) explicitly.
+    // leader + Shift+\\ (which produces the "|" binding) explicitly. The native
+    // split pairs the current tab with a fresh split-panel pane (two real tabs
+    // sharing one splitViewId).
     await ctx.leaderPress(ctx.tabA, "\\", { shift: true });
-    try {
-      await waitFor(async () => {
-        const u = await evalIn(ctx.tabA, `location.href`);
-        return u && u.includes("splitview.html") ? u : null;
-      }, 10000);
-    } catch (e) {
-      const href = await evalIn(ctx.tabA, `location.href`).catch(() => "ERR");
+    const pair = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 ? sv : null;
+    }, 10000).catch(async () => {
       const tabs = await ctx.tabsInfo().catch(() => "ERR");
-      throw new Error("split did not happen; href=" + href + " tabs=" + JSON.stringify(tabs));
-    }
-    const facts = await evalIn(ctx.tabA, `({
-      panes: document.querySelectorAll("#panes iframe").length,
-      vertical: document.getElementById("panes").classList.contains("vertical"),
-      active: [...document.querySelectorAll(".pane")].findIndex(p => p.classList.contains("active")),
-    })`);
-    assert(facts.panes === 2, "split has 2 panes, got " + facts.panes);
-    assert(facts.vertical === false, "side-by-side orientation, got vertical=" + facts.vertical);
-    assert(facts.active === 0, "pane 1 active, got " + facts.active);
+      throw new Error("split did not happen; tabs=" + JSON.stringify(tabs));
+    });
+    assert(new Set(pair.map((t) => t.splitViewId)).size === 1, "the two panes share one splitViewId: " + JSON.stringify(pair));
+    const companion = pair.find((t) => !t.active) || pair[1];
+    assert((companion.url || "").includes("splitpanel.html"), "companion pane is the split panel: " + JSON.stringify(pair));
 
-    // Focus the split bar so leader keys reach the chrome helper, then switch.
-    await clickPage(ctx.tabA, 40, 15);
-    await sleep(250);
-    await ctx.press(ctx.tabA, ";");
-    await sleep(250);
-    await ctx.press(ctx.tabA, "]");
-    try {
-      await waitFor(async () => {
-        const idx = await evalIn(ctx.tabA, `[...document.querySelectorAll(".pane")].findIndex(p => p.classList.contains("active"))`);
-        return idx === 1 ? idx : null;
-      }, 8000);
-    } catch (e) {
-      throw new Error("pane-switch-to-2 timed out; active=" + await evalIn(ctx.tabA, `[...document.querySelectorAll(".pane")].findIndex(p => p.classList.contains("active"))`));
-    }
-    await ctx.press(ctx.tabA, ";");
-    await sleep(250);
-    await ctx.press(ctx.tabA, "[");
-    try {
-      await waitFor(async () => {
-        const idx = await evalIn(ctx.tabA, `[...document.querySelectorAll(".pane")].findIndex(p => p.classList.contains("active"))`);
-        return idx === 0 ? 1 : null;
-      }, 8000);
-    } catch (e) {
-      throw new Error("pane-switch-to-1 timed out; active=" + await evalIn(ctx.tabA, `[...document.querySelectorAll(".pane")].findIndex(p => p.classList.contains("active"))`));
-    }
-
-    // Close the split view; the tab leaves splitview.html.
-    await ctx.press(ctx.tabA, ";");
-    await sleep(250);
-    await ctx.press(ctx.tabA, "\\");
-    try {
-      await waitFor(async () => {
-        const u = await evalIn(ctx.tabA, `location.href`).catch(() => "");
-        return u && !u.includes("splitview.html") ? u : null;
-      }, 10000);
-    } catch (e) {
-      throw new Error("close-split timed out; href=" + await evalIn(ctx.tabA, `location.href`).catch(() => "ERR"));
-    }
+    // Close one pane; the remaining tab auto-unsplits back to an independent tab.
+    await evalIn(ctx.probe, `browser.tabs.remove(${companion.id})`).catch(() => {});
+    await waitNoSplit();
   });
 
   // NOTE: the iframe container's panes cannot be asserted to load real
@@ -130,6 +90,23 @@ export async function run(ctx) {
     const pair = await nativeSplit();
     const companion = pair.find((t) => !t.active) || pair[1];
     assert(companion && (companion.url || "").includes("splitpanel.html"), "companion pane is the split panel: " + JSON.stringify(pair));
+    // The panel's tab list must list the other (non-split) tabs.
+    const tree = await getTree();
+    const all = [];
+    const walk = (cs) => { for (const c of cs) { all.push(c); if (c.children) walk(c.children); } };
+    walk(tree);
+    const panelCtx = all.find((c) => (c.url || "").includes("splitpanel.html"));
+    assert(panelCtx, "found the split panel's browsing context");
+    const raw = await evalIn(panelCtx.context, `(async () => {
+      const r = await browser.runtime.sendMessage({ action: "splitPanelTabs", data: {} }).catch((e) => ({ err: String(e) }));
+      return JSON.stringify({
+        href: location.href,
+        listHTML: (document.getElementById("tabs") || {}).innerHTML || null,
+        resp: r && r.tabs ? r.tabs.map((t) => ({ i: t.index, u: t.url, s: t.inSplit })) : r,
+      });
+    })()`);
+    const dump = JSON.parse(raw);
+    assert(dump && (dump.listHTML || "").includes("data-index"), "split panel lists other tabs: " + String(raw));
     // Clean up.
     await ctx.leaderPress(ctx.tabA, "\\");
     await waitNoSplit();
@@ -212,6 +189,43 @@ export async function run(ctx) {
     await waitNoSplit();
     const ts = await ctx.tabsInfo();
     assert(ts.every((t) => !(typeof t.splitViewId === "number" && t.splitViewId >= 0)), "all tabs independent after unsplit: " + JSON.stringify(ts));
+    // The split-panel companion pane is pure UI: unsplitting must close it
+    // instead of leaving it behind to accumulate (a pane the user navigated
+    // to real content is kept — the companion here is still splitpanel.html).
+    const panels = ts.filter((t) => (t.url || "").includes("splitpanel.html"));
+    assert(panels.length === 0, "unsplit closes the split-panel pane: " + JSON.stringify(ts.map((t) => t.url)));
+  });
+
+  await t("split: re-splitting the same tab right after an unsplit works", async () => {
+    // Regression for the "need firefox 149+" toast after an unsplit: a stale
+    // split-view reference on the just-unsplit tab used to make the next ;|
+    // on that same tab fail. ;| must work immediately after ;\.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "\\", { shift: true }); // ;| split
+    const p1 = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 ? sv : null;
+    }, 8000).catch(async () => {
+      const ts = await ctx.tabsInfo().catch(() => "ERR");
+      throw new Error("first split did not happen: " + JSON.stringify(ts));
+    });
+    assert(p1 && p1.length === 2, "first split created: " + JSON.stringify(p1));
+    await ctx.leaderPress(ctx.tabA, "\\"); // ;\ unsplit
+    await waitNoSplit();
+    // Immediately re-split the SAME tab.
+    await ctx.leaderPress(ctx.tabA, "\\", { shift: true });
+    const p2 = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 ? sv : null;
+    }, 8000).catch(async () => {
+      const ts = await ctx.tabsInfo().catch(() => "ERR");
+      throw new Error("re-split after unsplit failed: " + JSON.stringify(ts));
+    });
+    assert(p2 && p2.length === 2, "re-split on the same tab works: " + JSON.stringify(p2));
+    await ctx.leaderPress(ctx.tabA, "\\"); // cleanup
+    await waitNoSplit();
   });
 
   await t("split: native split closing one pane auto-unsplits the other", async () => {
@@ -227,17 +241,23 @@ export async function run(ctx) {
 
   await t("split: native split ;+N moves tab N into the split", async () => {
     await nativeSplit();
-    // Pick a tab currently outside the split and derive its 1-based strip
-    // position for ;+N (the suite accumulates tabs, so use whatever non-split
-    // tab is earliest rather than assuming a fresh tab lands within 1-9).
+    // Pick a tab currently outside the split and derive its 1-based REAL-tab
+    // index for ;+N. Numbering skips the split panel and the #lfc= request
+    // channel, so the test must too (the suite accumulates tabs, so use the
+    // earliest movable real tab rather than assuming a fresh tab lands in 1-9).
     const ts = await ctx.tabsInfo();
-    const ci = ts.findIndex(
+    const real = ts.filter(
+      (t) =>
+        !(t.url || "").includes("splitpanel.html") &&
+        !(t.url || "").includes("#lfc=")
+    );
+    const ci = real.findIndex(
       (t) => !t.pinned && !(typeof t.splitViewId === "number" && t.splitViewId >= 0)
     );
     assert(ci >= 0, "found a movable tab to move in: " + JSON.stringify(ts));
     const targetIndex = ci + 1;
-    assert(targetIndex <= 9, "tab index stays within 1-9 for ;+N: " + targetIndex + " of " + ts.length);
-    const targetId = ts[ci].id;
+    assert(targetIndex <= 9, "tab index stays within 1-9 for ;+N: " + targetIndex + " of " + real.length);
+    const targetId = real[ci].id;
 
     await ctx.leaderPress(ctx.tabA, "=", { shift: true }); // ;+ -> shift+=
     await sleep(250);
@@ -246,7 +266,7 @@ export async function run(ctx) {
       await waitFor(async () => {
         const now = await ctx.tabsInfo();
         const sv = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
-        return sv.length === 3 && sv.some((t) => t.id === targetId) ? sv : null;
+        return sv.length === 2 && sv.some((t) => t.id === targetId) ? sv : null;
       }, 10000);
     } catch (e) {
       const st = await ctx.chromeState().catch(() => "ERR");
@@ -258,15 +278,103 @@ export async function run(ctx) {
     }
     const now = await ctx.tabsInfo();
     const sv = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
-    assert(sv.length === 3, "moved tab joined the split: " + JSON.stringify(now));
+    assert(sv.length === 2, "moved tab REPLACED the split panel (2 panes): " + JSON.stringify(now));
     assert(sv.some((t) => t.id === targetId), "tab " + targetIndex + " is now in the split");
-    assert(new Set(sv.map((t) => t.splitViewId)).size === 1, "all three panes share one splitViewId");
-    // Clean up: unsplit, then close the leftover split-panel pane.
+    assert(new Set(sv.map((t) => t.splitViewId)).size === 1, "both panes share one splitViewId");
+    assert(
+      !now.some((t) => (t.url || "").includes("splitpanel.html")),
+      "the split-panel pane is gone after the move: " + JSON.stringify(now.map((t) => t.url))
+    );
+    // Clean up: unsplit (no panel pane is left to close).
     await ctx.leaderPress(ctx.tabA, "\\"); // ;\
     await waitNoSplit();
+  });
+
+  await t("split: ;+N auto-splits when no split exists", async () => {
+    // Ensure a flat window: no split view active.
+    await waitNoSplit();
+    const before = await ctx.tabsInfo();
+    // Pick the first non-active real tab as the move target (real-tab index).
+    const real = before.filter(
+      (t) =>
+        !(t.url || "").includes("splitpanel.html") &&
+        !(t.url || "").includes("#lfc=")
+    );
+    const target = real.find((t) => !t.active && !t.pinned);
+    assert(target, "found a non-active tab to move: " + JSON.stringify(before));
+    const targetIndex = real.indexOf(target) + 1;
+    // ;+N with NO split must pair the active tab DIRECTLY with tab N — no
+    // empty companion panel pane.
+    await ctx.leaderPress(ctx.tabA, "=", { shift: true }); // ;+
+    await sleep(250);
+    await ctx.press(ctx.tabA, String(targetIndex));
+    const sv = await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      const split = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return split.length === 2 && split.some((t) => t.id === target.id) ? split : null;
+    }, 10000).catch(async () => {
+      const now = await ctx.tabsInfo().catch(() => "ERR");
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error(";+N auto-split failed; tabs=" + JSON.stringify(now) + " moveDebug=" + JSON.stringify(st && st.lastMoveDebug));
+    });
+    assert(sv && sv.length === 2, "auto-split paired the active tab with tab N directly: " + JSON.stringify(sv));
+    assert(new Set(sv.map((t) => t.splitViewId)).size === 1, "both panes share one splitViewId");
+    const after = await ctx.tabsInfo();
+    assert(
+      !after.some((t) => (t.url || "").includes("splitpanel.html")),
+      "auto-split created no panel pane: " + JSON.stringify(after.map((t) => t.url))
+    );
+    // Clean up.
+    await ctx.leaderPress(ctx.tabA, "\\"); // ;\
+    await waitNoSplit();
+  });
+
+  await t("split: splitting a middle tab keeps the other tabs' order", async () => {
+    // Regression for the shuffle: gBrowser.addTabSplitView used to move the
+    // pair to the end, reordering every tab between the split root and the
+    // panel. Three fresh tabs with distinct URLs; splitting the middle one
+    // must leave the real tabs in their relative order.
+    await waitNoSplit();
+    const a = await createTab();
+    await navigate(a, `${ctx.base}/`, "complete");
+    const b = await createTab();
+    await navigate(b, `${ctx.base}/hello`, "complete");
+    const c = await createTab();
+    await navigate(c, `${ctx.base}/target1`, "complete");
+    await sleep(400);
+    const ids = await ctx.tabsInfo();
+    const urlOf = (t) => (t.url || "").split("?")[0].split("#")[0];
+    const aId = ids.find((t) => urlOf(t) === `${ctx.base}/`)?.id;
+    const bId = ids.find((t) => urlOf(t) === `${ctx.base}/hello`)?.id;
+    const cId = ids.find((t) => urlOf(t) === `${ctx.base}/target1`)?.id;
+    assert(aId != null && bId != null && cId != null, "found the three fresh tabs: " + JSON.stringify(ids));
+    // Split the middle tab (B) via its content-script leader.
+    await evalIn(ctx.probe, `browser.tabs.update(${bId}, { active: true })`).catch(() => {});
+    await sleep(300);
+    await ctx.leaderPress(b, "\\", { shift: true }); // ;| on B
+    await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      const sv = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 ? sv : null;
+    }, 8000);
+    const after = await ctx.tabsInfo();
+    const realOrder = after
+      .filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc="))
+      .map((t) => t.id)
+      .filter((id) => id === aId || id === bId || id === cId);
+    assert(
+      realOrder.join(",") === [aId, bId, cId].join(","),
+      "real tabs kept their order after a middle split: want=" + JSON.stringify([aId, bId, cId]) + " got=" + JSON.stringify(realOrder)
+    );
+    // Clean up: unsplit and close the fresh tabs + panel.
+    await ctx.leaderPress(b, "\\"); // ;\
+    await waitNoSplit();
     const leftovers = await ctx.tabsInfo();
+    for (const id of [aId, bId, cId]) {
+      await evalIn(ctx.probe, `browser.tabs.remove(${id})`).catch(() => {});
+    }
     const panel = leftovers.find((t) => (t.url || "").includes("splitpanel.html"));
     if (panel) await evalIn(ctx.probe, `browser.tabs.remove(${panel.id})`).catch(() => {});
-    await sleep(300);
+    await sleep(400);
   });
 }
