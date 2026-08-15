@@ -53,6 +53,7 @@ export interface BgApi {
   syncTyping: { req: { typing: boolean }; res: { ok: boolean } };
   sessionList: { req: Record<string, never>; res: { sessions: Session[] } };
   sessionSave: { req: { name: string }; res: { ok: boolean; session?: Session } };
+  sessionNew: { req: { name: string }; res: { ok: boolean; note?: string } };
   sessionRestore: { req: { name: string }; res: { ok: boolean } };
   sessionDelete: { req: { name: string }; res: { ok: boolean } };
   sessionSwitchByMarker: { req: { marker: number }; res: { ok: boolean; name?: string } };

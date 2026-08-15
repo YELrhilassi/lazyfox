@@ -81,16 +81,22 @@ async function main() {
   await ctx.press(tabA, "1");
   await sleep(500);
 
-  // --- Status bar + session pills on a web page ----------------------------
+  // --- Status bar + session pills ------------------------------------------
+  // The bar is now a single window-level strip rendered in the chrome
+  // document (outside the web content), so it cannot be captured by a page
+  // screenshot. Capture the command center instead: the window bar sits along
+  // its bottom edge and the session pills read left-to-right.
+  await ctx.openCC(ctx.tabA);
+  await sleep(1200);
+  await captureScreenshot(ctx.tabA, out("statusbar.png"));
+  console.log("captured statusbar.png (command center + window bar)");
   const newsTab = await createTab();
   await ctx.gotoPage(newsTab, `${base}/news`);
   await waitFor(async () => {
-    const v = await evalIn(newsTab, `document.documentElement.getAttribute("data-lf-status")`);
-    return v && v.indexOf("work") !== -1 ? v : null;
+    const v = await evalIn(newsTab, `!!document.querySelector("h1")`);
+    return v ? v : null;
   }, 8000);
   await sleep(800);
-  await captureScreenshot(newsTab, out("statusbar.png"));
-  console.log("captured statusbar.png");
 
   // --- Link hints on the same page -----------------------------------------
   await ctx.leaderPress(newsTab, "f");

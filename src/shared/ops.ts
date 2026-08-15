@@ -48,6 +48,7 @@ export interface ActionOps {
   // ---- sessions (tmux-style) ----
   listSessions(q: string): Promise<PopupItem[]>;
   saveSession(name: string): void;
+  newSession(name: string): void;
   restoreSession(name: string): void;
   deleteSession(name: string): void;
   switchSessionByMarker(marker: number): void;

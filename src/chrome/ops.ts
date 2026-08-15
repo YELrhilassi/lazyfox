@@ -425,6 +425,9 @@ export const chromeOps: ActionOps = {
   saveSession: () => {
     toast("sessions work on web pages");
   },
+  newSession: () => {
+    toast("sessions work on web pages");
+  },
   restoreSession: () => {
     toast("sessions work on web pages");
   },

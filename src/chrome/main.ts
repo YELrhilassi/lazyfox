@@ -330,6 +330,7 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     setTimeout(requestSessionState, 900);
   };
   chromeOps.saveSession = (name: string) => sessionAction("saveSession", name);
+  chromeOps.newSession = (name: string) => sessionAction("newSession", name);
   chromeOps.restoreSession = (name: string) => sessionAction("restoreSession", name);
   chromeOps.deleteSession = (name: string) => sessionAction("deleteSession", name);
   chromeOps.switchSessionByMarker = (marker: number) =>
@@ -430,6 +431,10 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     } catch (e) {
       // ignore
     }
+    // A split appearing or dissolving flips whether the window-level status
+    // bar owns the bottom of the window, so re-evaluate it right away instead
+    // of waiting for the next TabSelect / location change.
+    updateChromeStatus();
   }
 
   function activeSplitView(): any {
@@ -879,24 +884,32 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     .catch((e) => { if (__DEV__) dbg("loadBindings FAILED: " + String(e)); });
 
   // Announce to the extension background that the chrome helper is alive, so
-  // content scripts can hand leader-key handling over to chrome.
-  try {
-    if (__DEV__) dbg("announcing alive");
-    requestBg("alive");
-    if (__DEV__) dbg("alive announced");
-  } catch (e) {
-    if (__DEV__) dbg("alive announce failed: " + e);
+  // content scripts can hand leader-key handling over to chrome and hide their
+  // own status bar (the chrome helper owns the single window-level bar). The
+  // announce is fire-and-forget and needs the extension's moz-extension URL,
+  // so it can miss when the window opened before the add-on finished loading
+  // (fresh test profiles, slow first run). announceChromeAlive() retries from
+  // the 500ms poll until the extension URL is resolvable, then stops.
+  let announcedAlive = false;
+  function announceChromeAlive(): void {
+    if (announcedAlive) return;
+    if (!ccBaseUrl()) return; // extension not ready yet; poll retries
+    announcedAlive = true;
+    try {
+      requestBg("alive");
+    } catch (e) {
+      announcedAlive = false; // allow one more try
+    }
   }
+  announceChromeAlive();
 
   /* ==================== status bar (tmux-style) ==================== */
 
-  // The chrome helper draws into the browser XUL document, so it must not
-  // reserve page layout space (that would shift the whole UI); web content
-  // scripts reserve space with their own StatusBar instances instead.
-  // Reserve real space on the chrome (XUL) document too, so the window-level
-  // bar never covers the bottom of the command center / split panel / options
-  // pages. Reservation targets :root, which matches the XUL <window> element.
-  const chromeStatusBar = new StatusBar(true);
+  // The chrome helper draws the window-level bar into the browser XUL
+  // document and reserves space by shrinking the #browser content area
+  // (margin on #browser), so the fixed bar sits in reserved space instead of
+  // overlapping the page — for a single tab and for split panes alike.
+  const chromeStatusBar = new StatusBar(true, "#browser");
   let chromeStatusInfo = {
     name: "default",
     marker: 0,
@@ -923,21 +936,26 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     }
   }
 
-  // The content script owns the status bar on web pages; the chrome helper only
-  // shows its own on chrome-only pages (about:, moz-extension:, ...) where the
-  // content script never runs.
+  // ONE window-level bar owns the bottom of the window for EVERY tab — plain
+  // web pages, chrome-only pages, and split panes alike. The bar lives in the
+  // chrome document (outside the web content) and reserves its 18px by
+  // shrinking the #browser content area, so the page reflows above it instead
+  // of rendering underneath it — the fix for the old per-page fixed bar, which
+  // always overlapped the bottom of the viewport while scrolling. The content
+  // script hides its own bar whenever the chrome helper is alive (see
+  // content/main.ts) so there is exactly one bar, single tab or split.
   function chromePageNeedsStatus(): boolean {
+    return true;
+  }
+
+  // True while a page element is in DOM fullscreen (an HTML5 video, a gallery
+  // lightbox, ...) — Firefox sets the `inDOMFullscreen` attribute on the
+  // chrome document root. Only then does the bar hide: browser-level
+  // fullscreen (zen mode, F11) keeps the bar visible, because there the bar
+  // still owns the bottom of the window and the page fills the rest.
+  function isFullscreen(): boolean {
     try {
-      // While a native split is active the panes fill the window and a
-      // window-level bar would sit on top of their content. Each web pane
-      // renders its own bar and the split panel renders inline, so the chrome
-      // helper stays out of the way.
-      if (activeSplitView()) return false;
-      const b = window.gBrowser.selectedBrowser;
-      const uri = b && b.currentURI;
-      if (!uri) return true;
-      const s = uri.scheme || "";
-      return s !== "http" && s !== "https" && s !== "file" && s !== "ftp";
+      return document.documentElement.hasAttribute("inDOMFullscreen");
     } catch (e) {
       return false;
     }
@@ -962,7 +980,7 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   }
 
   function updateChromeStatus(): void {
-    if (cfg.config.statusBar === false) {
+    if (cfg.config.statusBar === false || isFullscreen()) {
       chromeStatusBar.hide();
       return;
     }
@@ -1015,15 +1033,24 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
 
   updateChromeStatus();
   computeChromeStatus();
-  setInterval(computeChromeStatus, 500);
-  // In fullscreen (zen mode, or a full-screen video on a chrome-only page)
-  // the window-level bar would sit over the content — hide it and re-show
-  // when fullscreen exits.
+  // Poll every 500ms so the bar hides the moment content enters DOM fullscreen
+  // (video) — only a poll catches that attribute transition reliably.
+  // updateChromeStatus is idempotent and cheap.
+  setInterval(() => {
+    announceChromeAlive(); // once the extension URL resolves, tell it we're here
+    updateChromeStatus();
+    computeChromeStatus();
+  }, 500);
+  // When a page element goes fullscreen (a video), the window-level bar would
+  // sit over the full-screen content — hide it and re-show when it exits.
   try {
-    window.addEventListener("fullscreenchange", () => {
-      if (window.fullScreen || document.fullscreenElement) chromeStatusBar.hide();
+    const onFullscreen = () => {
+      if (isFullscreen()) chromeStatusBar.hide();
       else updateChromeStatus();
-    });
+    };
+    window.addEventListener("fullscreenchange", onFullscreen);
+    window.addEventListener("willenterfullscreen", onFullscreen);
+    window.addEventListener("willexitfullscreen", onFullscreen);
   } catch (e) {
     // ignore
   }
@@ -1297,6 +1324,34 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
           lastAction: lastAction,
           statusMounted: chromeStatusBar ? chromeStatusBar.mounted : false,
           statusPosition: (cfg.config.statusBarPosition || "bottom"),
+          // The window bar's rendered strip, as the StatusBar mirrors it onto
+          // the chrome document root (name|marker|tabIdx/tabCount|split|mode|pos).
+          statusAttr: (() => {
+            try {
+              return document.documentElement.getAttribute("data-lf-status");
+            } catch (e) {
+              return null;
+            }
+          })(),
+          fullscreen: isFullscreen(),
+          inDOMFullscreen: (() => {
+            try {
+              return document.documentElement.hasAttribute("inDOMFullscreen");
+            } catch (e) {
+              return false;
+            }
+          })(),
+          browserReserve: (() => {
+            try {
+              const el = document.getElementById("browser");
+              if (!el) return null;
+              const cs = getComputedStyle(el);
+              return { mb: cs.marginBottom, mt: cs.marginTop, h: Math.round(el.getBoundingClientRect().height) };
+            } catch (e) {
+              return null;
+            }
+          })(),
+
           leaderPending: leader ? leader.hasPending() : false,
           strip: (() => {
             try {

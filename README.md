@@ -228,7 +228,11 @@ session is current at a time; switching swaps the whole window, like
 ![The sessions popup](docs/img/sessions.png)
 
 - **`;p`** opens the sessions popup. Type to filter, `Enter` restores. Type a
-  name that doesn't exist yet and the popup offers *save current tabs as…*.
+  name that doesn't exist yet and the popup offers *save current tabs as…*
+  and *new clean session…* (an empty session under that name). Arrow down to
+  the clean-session row and `Enter` to create it — your current tabs stay
+  exactly as they are, and switching to the new session later opens a blank
+  home page.
 - **`x x`** deletes the highlighted session. The first `x` arms the delete —
   the row turns red and asks for confirmation — the second `x` within 2.5s
   confirms. A stray keypress can never lose a session.
@@ -241,8 +245,9 @@ session is current at a time; switching swaps the whole window, like
 
 ### The status bar
 
-A slim strip sits at the bottom of every page (top if you prefer,
-`statusBarPosition`). Left to right:
+One slim strip sits at the bottom of the window (top if you prefer,
+`statusBarPosition`) and serves every tab — a plain page, the command center,
+and split panes alike. Left to right:
 
 - the **current session** and its marker;
 - your **place in the tab list** (`3/7`);
@@ -256,6 +261,12 @@ A slim strip sits at the bottom of every page (top if you prefer,
 
 The strip lives in a closed shadow root, so page CSS can't restyle it. Hide
 it in settings (`statusBar: false`).
+
+The bar is always drawn **once at window level** (never one bar per page or
+per split pane), and it reserves its height out of the window's content area —
+so page content, in a single tab or in split panes, reflows above the bar
+instead of rendering behind it. It also hides itself the moment a page goes
+fullscreen (a video, for example) and comes back when fullscreen exits.
 
 ### Split view
 
@@ -272,7 +283,9 @@ Two panes side by side, keyboard-only — no window manager needed.
   real id; press the number or click). Moving a tab in **replaces** the
   panel; `;+N` with no split yet pairs the active tab with tab N directly.
   No empty panes are left behind.
-- The status bar hides while a split is active so it never covers the panes.
+- While split, the window shows a **single** status bar (rendered at window
+  level), not one per pane; the panes reflow above it so nothing renders
+  behind the bar.
 
 Splits are part of sessions: save a session while split and restoring brings
 the whole layout back — same tabs, same split, same side of the split. The

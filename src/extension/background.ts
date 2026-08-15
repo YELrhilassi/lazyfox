@@ -318,6 +318,14 @@ import type { Session, SessionTab } from "../shared/types";
         } catch (e) {
           // fall through — the tab may already be gone
         }
+      } else {
+        // Empty session (clean slate): park the host on the command center so
+        // a fresh session opens on the home page instead of a leftover tab.
+        try {
+          await browser.tabs.update(host.id, { url: CC_URL, active: true });
+        } catch (e) {
+          // ignore
+        }
       }
       created.push(host.id);
     }
@@ -408,7 +416,7 @@ import type { Session, SessionTab } from "../shared/types";
     const all = await readSessions();
     const sessions = Object.keys(all)
       .map((k) => all[k])
-      .filter((s): s is Session => !!s && !!s.tabs)
+      .filter((s): s is Session => !!s && Array.isArray(s.tabs))
       .sort((a, b) => (a.marker || 99) - (b.marker || 99));
     return { sessions };
   }
@@ -437,7 +445,32 @@ import type { Session, SessionTab } from "../shared/types";
       [CURRENT_SESSION_KEY]: nm,
       [LAST_SESSION_KEY]: session,
     });
+    void pushSessionStateToChrome();
     return { ok: true, session };
+  }
+
+  // Create a clean, named session WITHOUT touching the current window: the
+  // new session starts empty (no tabs), so switching to it later gives a
+  // fresh slate and switching back restores whatever was left behind. The
+  // caller autosaves the current window only when it actually switches.
+  async function newSession(name: string): Promise<{ ok: boolean; note?: string }> {
+    const nm = (name || "").trim();
+    if (!nm) return { ok: false, note: "no name" };
+    const all = await readSessions();
+    if (all[nm]) return { ok: false, note: "session already exists" };
+    const session: Session = {
+      name: nm,
+      marker: await core.assignSessionMarker(Object.values(all).map((s) => s.marker || 0)),
+      tabs: [],
+      active: 0,
+      windowState: "normal",
+      updatedAt: Date.now(),
+      splits: "",
+    };
+    all[nm] = session;
+    await writeSessions(all);
+    void pushSessionStateToChrome();
+    return { ok: true };
   }
 
   async function restoreSession(name: string): Promise<{ ok: boolean; note?: string }> {
@@ -447,7 +480,9 @@ import type { Session, SessionTab } from "../shared/types";
     if (restoring) return { ok: false, note: "restore already in progress" };
     const all = await readSessions();
     const s = all[(name || "").trim()];
-    if (!s || !s.tabs || !s.tabs.length) return { ok: false };
+    // A clean (empty) session is valid: it restores to a single blank home
+    // tab. Only a missing session is an error.
+    if (!s) return { ok: false };
     // Checkpoint before switching so the current window is never lost.
     await autosaveCurrentSession(all);
     // Suppress tab-change side effects (home-tab conversion, debounced
@@ -470,6 +505,7 @@ import type { Session, SessionTab } from "../shared/types";
         await browser.tabs.update(ids[active], { active: true }).catch(() => {});
       }
       await browser.storage.local.set({ [CURRENT_SESSION_KEY]: s.name });
+      void pushSessionStateToChrome();
       return { ok: true };
     } finally {
       restoring = false;
@@ -481,7 +517,7 @@ import type { Session, SessionTab } from "../shared/types";
 
   async function switchSessionByMarker(marker: number): Promise<{ ok: boolean; name?: string }> {
     const all = await readSessions();
-    const s = Object.values(all).find((x) => (x.marker || 0) === marker && x.tabs && x.tabs.length);
+    const s = Object.values(all).find((x) => (x.marker || 0) === marker && Array.isArray(x.tabs));
     if (!s) return { ok: false };
     await restoreSession(s.name);
     return { ok: true, name: s.name };
@@ -504,6 +540,7 @@ import type { Session, SessionTab } from "../shared/types";
       } catch (e) {
         // ignore
       }
+      void pushSessionStateToChrome();
       return { ok: true, note: "deleted" };
     }
     return { ok: false, note: "no such session" };
@@ -531,6 +568,7 @@ import type { Session, SessionTab } from "../shared/types";
     }
     all[nm]!.marker = m;
     await writeSessions(all);
+    void pushSessionStateToChrome();
     return { ok: true };
   }
 
@@ -999,6 +1037,8 @@ import type { Session, SessionTab } from "../shared/types";
         return sessionList();
       case "sessionSave":
         return saveSession(data.name);
+      case "sessionNew":
+        return newSession(data.name);
       case "sessionRestore":
         return restoreSession(data.name);
       case "sessionDelete":
@@ -1147,6 +1187,22 @@ import type { Session, SessionTab } from "../shared/types";
       .catch(() => {});
   }
 
+  // Push the fresh session summary to the chrome helper's status bar after a
+  // session mutation that did NOT originate from the chrome helper itself (the
+  // helper refreshes on its own actions; content-script and options actions
+  // would otherwise leave its bar pointing at a stale session name). The push
+  // rides the same #lfc=sessionState channel the helper's own requestSessionState
+  // uses, so the helper updates its bar and removes the transient tab.
+  async function pushSessionStateToChrome(): Promise<void> {
+    try {
+      const state = await sessionState();
+      const nonce = "push" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+      requestChrome("sessionState." + b64utf8(JSON.stringify(state)), nonce);
+    } catch (e) {
+      // ignore
+    }
+  }
+
   async function handleReq(tab: any, action: string, arg: string) {
     if (action === "alive") {
       await browser.storage.local.set({ chromeAlive: true });
@@ -1185,6 +1241,10 @@ import type { Session, SessionTab } from "../shared/types";
     }
     if (action === "saveSession") {
       await saveSession(decodeURIComponent(arg || ""));
+      return;
+    }
+    if (action === "newSession") {
+      await newSession(decodeURIComponent(arg || ""));
       return;
     }
     if (action === "restoreSession") {

@@ -297,6 +297,11 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         toast(r && r.ok ? "saved session \u201C" + name + "\u201D" : "could not save session")
       );
     },
+    newSession: (name: string) => {
+      void send("sessionNew", { name: name }).then((r) =>
+        toast(r && r.ok ? "created clean session \u201C" + name + "\u201D" : (r && r.note) || "could not create session")
+      );
+    },
     restoreSession: (name: string) => {
       void send("sessionRestore", { name: name }).then((r) =>
         toast(r && r.ok ? "switched to \u201C" + name + "\u201D" : "no session \u201C" + name + "\u201D")
