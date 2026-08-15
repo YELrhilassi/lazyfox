@@ -46,21 +46,33 @@ import { send } from "../shared/protocol";
   let moveOpen = false;
   let leaderPending = false;
   let inInsert = false;
+  let quickView = true;
 
-  const QUICK = [
-    { kind: "cmd", title: "New tab", keys: ";n", desc: "open a fresh new tab", run: () => void send("newTab") },
-    { kind: "cmd", title: "Reopen closed tab", keys: ";v", desc: "restore the most recently closed tab", run: () => void send("reopenTab") },
-    { kind: "cmd", title: "Duplicate tab", keys: ";c", desc: "duplicate the current tab", run: () => void send("duplicateTab") },
-    { kind: "cmd", title: "Close current tab", keys: ";x", desc: "close this tab", run: () => void send("closeTab", {}) },
-    { kind: "cmd", title: "Zen mode", keys: ";z", desc: "toggle fullscreen (toolbar stays hidden)", run: () => void send("zen") },
-    { kind: "cmd", title: "Resize window", keys: ";w", desc: "resize with arrow keys or buttons", run: () => toggleResize(true) },
-    { kind: "cmd", title: "Move window", keys: ";m", desc: "move with arrow keys (Shift = fine step)", run: () => toggleMove(true) },
-    { kind: "cmd", title: "Lazyfox settings", keys: "", desc: "open the extension options page", run: () => openOptions() },
-    { kind: "cmd", title: "Switch mode", keys: "1-6", desc: "1 Search \u00b7 2 URL \u00b7 3 Tabs \u00b7 4 History \u00b7 5 Bookmarks \u00b7 6 Downloads (or Tab)", run: () => {} },
-    { kind: "cmd", title: "Firefox settings", keys: "", desc: "open about:preferences", run: () => void send("openPage", { url: "about:preferences" }) },
-    { kind: "cmd", title: "History", keys: "", desc: "show history in this command center", run: () => setMode("history") },
-    { kind: "cmd", title: "Downloads", keys: "", desc: "show downloads in this command center", run: () => setMode("downloads") }
+  // The home screen command grid, grouped into sections. `group` drives the
+  // section headers; items are rendered in order within each section.
+  const QUICK: Array<{
+    group: string;
+    ic: string;
+    title: string;
+    keys: string;
+    desc: string;
+    run: () => void;
+  }> = [
+    { group: "Tabs", ic: "\u229e", title: "New tab", keys: ";n", desc: "open a fresh tab", run: () => void send("newTab") },
+    { group: "Tabs", ic: "\u21b6", title: "Reopen closed tab", keys: ";v", desc: "restore the last one you closed", run: () => void send("reopenTab") },
+    { group: "Tabs", ic: "\u29c9", title: "Duplicate tab", keys: ";c", desc: "copy the current tab", run: () => void send("duplicateTab") },
+    { group: "Tabs", ic: "\u2715", title: "Close current tab", keys: ";x", desc: "close this tab", run: () => void send("closeTab", {}) },
+    { group: "Tabs", ic: "\u21c4", title: "Switch mode", keys: "1-6", desc: "Search \u00b7 URL \u00b7 Tabs \u00b7 History \u00b7 Bookmarks \u00b7 Downloads", run: () => {} },
+    { group: "Window", ic: "\u25c9", title: "Zen mode", keys: ";z", desc: "fullscreen \u2014 the toolbar stays hidden", run: () => void send("zen") },
+    { group: "Window", ic: "\u21f2", title: "Resize window", keys: ";w", desc: "resize with arrow keys or buttons", run: () => toggleResize(true) },
+    { group: "Window", ic: "\u2726", title: "Move window", keys: ";m", desc: "move with arrow keys (Shift = fine step)", run: () => toggleMove(true) },
+    { group: "Browser", ic: "\u2699", title: "Lazyfox settings", keys: "", desc: "open the extension options page", run: () => openOptions() },
+    { group: "Browser", ic: "\u{1F98A}", title: "Firefox settings", keys: "", desc: "open about:preferences", run: () => void send("openPage", { url: "about:preferences" }) },
+    { group: "Browser", ic: "\u21ba", title: "History", keys: "", desc: "show history in this command center", run: () => setMode("history") },
+    { group: "Browser", ic: "\u2913", title: "Downloads", keys: "", desc: "show downloads in this command center", run: () => setMode("downloads") }
   ];
+
+  const GRID_COLS = 3;
 
   function getItems(m: string, q: string): Promise<any[]> {
     if (m === "search") {
@@ -113,11 +125,13 @@ import { send } from "../shared/protocol";
   function refresh() {
     const v = input.value.trim();
     if (!v && mode === "search") {
+      quickView = true;
       all = QUICK.map((q) => Object.assign({}, q));
       idx = 0;
       render();
       return;
     }
+    quickView = false;
     renderMode(v);
   }
 
@@ -132,6 +146,7 @@ import { send } from "../shared/protocol";
 
   function render() {
     resultsEl.textContent = "";
+    resultsEl.classList.toggle("quick", quickView);
     if (!all.length) {
       emptyEl.style.display = "block";
       emptyEl.textContent = EMPTY_TEXTS[mode] || "";
@@ -139,9 +154,19 @@ import { send } from "../shared/protocol";
     }
     emptyEl.style.display = "none";
     const frag = document.createDocumentFragment();
+    // Home screen: insert a section header whenever the group changes.
+    let lastGroup = "";
     all.slice(0, 60).forEach((item, i) => {
+      if (quickView && item.group && item.group !== lastGroup) {
+        const hd = document.createElement("li");
+        hd.className = "sec";
+        hd.textContent = item.group;
+        frag.appendChild(hd);
+        lastGroup = item.group;
+      }
       const li = document.createElement("li");
       li.className = "result" + (i === idx ? " selected" : "");
+      li.dataset.i = String(i);
       li.innerHTML = renderItem(item);
       li.addEventListener("mousedown", (ev) => {
         ev.preventDefault();
@@ -161,6 +186,13 @@ import { send } from "../shared/protocol";
 
   function renderItem(it: any) {
     if (it.kind === "cmd") {
+      if (quickView) {
+        return (
+          "<div class='ic'>" + esc(it.ic || "\u25b8") + "</div>" +
+          "<div class='tx'><div class='t'>" + (it.keys ? "<span class='k'>" + esc(it.keys) + "</span>" : "") +
+          esc(it.title) + "</div><div class='s'>" + esc(it.desc || "") + "</div></div>"
+        );
+      }
       return (
         "<div class='t'>" + (it.keys ? "<span class='kbd'>" + esc(it.keys) + "</span>" : "") +
         esc(it.title) + "</div><div class='s'>" + esc(it.desc || "") + "</div>"
@@ -187,15 +219,36 @@ import { send } from "../shared/protocol";
   function markSelected() {
     const kids = resultsEl.children;
     for (let i = 0; i < kids.length; i++) {
-      kids[i]?.classList.toggle("selected", i === idx);
+      kids[i]?.classList.toggle("selected", Number((kids[i] as HTMLElement).dataset.i) === idx);
     }
     const sel = resultsEl.querySelector(".selected");
     if (sel) sel.scrollIntoView({ block: "nearest" });
   }
 
-  function move(d: number) {
+  // Grid-aware navigation. In the home grid, j/k move between rows (three
+  // columns wide) and h/l move between columns; in the flat list views j/k
+  // step one row at a time and h/l do nothing.
+  function move(dx: number, dy: number) {
     if (!all.length) return;
-    idx = (idx + d + all.length) % all.length;
+    if (quickView) {
+      const col = idx % GRID_COLS;
+      const row = Math.floor(idx / GRID_COLS);
+      let ncol = col + dx;
+      let nrow = row + dy;
+      if (dx !== 0) {
+        nrow = Math.min(nrow, Math.floor((all.length - 1) / GRID_COLS));
+        if (ncol < 0 || ncol >= GRID_COLS) {
+          nrow = (nrow + dy + Math.floor((all.length - 1) / GRID_COLS) + 1) % (Math.floor((all.length - 1) / GRID_COLS) + 1);
+          ncol = (ncol + GRID_COLS) % GRID_COLS;
+        }
+        idx = Math.min(nrow * GRID_COLS + ncol, all.length - 1);
+      } else {
+        idx = Math.min(Math.max(nrow, 0), Math.floor((all.length - 1) / GRID_COLS)) * GRID_COLS + col;
+        idx = Math.min(idx, all.length - 1);
+      }
+    } else {
+      idx = (idx + dy + all.length) % all.length;
+    }
     markSelected();
   }
 
@@ -403,10 +456,10 @@ import { send } from "../shared/protocol";
           onEnter();
         } else if (k === "ArrowDown") {
           e.preventDefault();
-          move(1);
+          move(0, 1);
         } else if (k === "ArrowUp") {
           e.preventDefault();
-          move(-1);
+          move(0, -1);
         }
         return;
       }
@@ -418,12 +471,22 @@ import { send } from "../shared/protocol";
       }
       if (k === "ArrowDown" || k === "j") {
         e.preventDefault();
-        move(1);
+        move(0, 1);
         return;
       }
       if (k === "ArrowUp" || k === "k") {
         e.preventDefault();
-        move(-1);
+        move(0, -1);
+        return;
+      }
+      if (k === "ArrowRight" || k === "l") {
+        e.preventDefault();
+        move(1, 0);
+        return;
+      }
+      if (k === "ArrowLeft" || k === "h") {
+        e.preventDefault();
+        move(-1, 0);
         return;
       }
       if (/^[1-6]$/.test(k)) {

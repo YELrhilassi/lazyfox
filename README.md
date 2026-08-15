@@ -1,74 +1,53 @@
 # Lazyfox
 
-A keyboard-first, chrome-free Firefox: every bit of browser UI (tab strip, URL
-bar, menus, bookmarks bar) is gone. Navigation happens through a vim/lazyvim
-style leader key and popups.
+Lazyfox is Firefox without the browser chrome. No tab strip, no URL bar, no
+menus. Just the page, a status bar, and a keyboard.
 
-```
-; f   link hints     ; s   search (Google)    ; o   open URL
-; w   resize window  ; m   move window        ; t   tab switcher
-; h   history        ; b   bookmarks          ; d   downloads
-; i   focus input    ; /   find in page       ; z   zen mode (fullscreen)
-```
+Everything is controlled with the leader key: `;`. Press `;`, then one more
+key, and the thing happens — open a link, switch tabs, search, jump to a
+session. The whole layout is on one page so you never have to remember where
+things live.
 
-The UI that's left on screen is just the web page — exactly what you asked for.
+![The command center — Lazyfox's home page](docs/img/command-center.png)
 
-## Works everywhere
+## What you get
 
-Lazyfox no longer depends on the page being a normal website:
+- **A command center instead of a new-tab page.** Open a new tab and you get a
+  search box with your recent actions, instead of Firefox's tiles. Type and it
+  searches Google; switch modes and it filters your tabs, history, bookmarks
+  or downloads instead.
+- **Link hints.** Every visible link gets a short label. Type the label and
+  the link opens. No mouse, no tabbing through focus rings. Labels only cover
+  what you can see, and pages with more links page through like a book.
+- **Sessions, like tmux.** Save the current window under a name, switch
+  between named sessions, and the whole layout comes back — tabs and split
+  panes included.
+- **A split view.** Put two tabs side by side without a window manager, move
+  tabs into the split, and dissolve it back into normal tabs when you're done.
+- **A status bar** at the bottom of every page. It shows your current session,
+  your place in the tab list, and your saved sessions as colored pills.
+- **Zen mode.** Real fullscreen — the page fills the screen and the toolbar
+  never peeks in.
 
-- **New tabs** and the **startup page** open the built-in **command center**
-  (an extension page), so search / URL / tabs / history / bookmarks / downloads
-  and window resizing all work from the moment Firefox starts — even before any
-  web page is loaded. A background redirect converts any `about:home` /
-  `about:newtab` tab into the command center.
-- `Ctrl+Alt+Space` opens the Lazyfox popup menu everywhere too (works on
-  internal pages as well).
+It works on internal pages too: `about:*`, `addons.mozilla.org`, error pages.
+There's always a way in.
 
 ## How it works
 
-Two pieces work together:
+Two pieces, one install:
 
-1. **Profile patch** (`dist/chrome/userChrome.css` + prefs) removes Firefox's
-   own UI. A WebExtension is not allowed to remove the tab bar / URL bar, so
-   this uses the classic `userChrome.css` trick: the tab strip and URL toolbar
-   are `display:none` — truly gone from the window — and the URL bar is
-   **re-rendered on demand**: move the mouse to the very top edge of the window
-   and the toolbar appears; move away and it is removed again. The reveal is
-   gated on the `lazyfox.hoverReveal` pref, toggled live with `;e` (or the
-   options page). In fullscreen ("zen" mode, `;z`) it never appears.
-2. **WebExtension** (`dist/extension/`) provides the leader-key engine, the
-   popups rendered on top of the page (search / URL / tabs / history /
-   bookmarks / downloads), and the command center that replaces the new tab
-   and home page.
+1. **A profile patch** that removes Firefox's own UI. Firefox won't let an
+   add-on hide the tab strip or URL bar, so this uses the classic
+   `userChrome.css` trick. The toolbar is truly gone from the window — but
+   move the mouse to the very top edge and it slides back in (toggle this
+   with `;e`).
+2. **A WebExtension** that provides the leader key, the popups, the link
+   hints, the status bar and the command center.
 
-On top of that, a chrome-level helper (`dist/chrome/userChrome.uc.js`, installed
-by `scripts/install.ps1`) intercepts the leader key **before** any content
-script, so `;` works on `addons.mozilla.org`, internal pages and any other site
-where content scripts are blocked. A tiny frame script
-(`dist/chrome/frame.js`) tells the chrome helper whether an input is focused in
-the page, so the leader key keeps typing normally inside page inputs instead of
-opening the which-key bar.
+The installer wires these together, including a small chrome-level helper so
+the leader key works even on pages where add-ons aren't allowed to run.
 
 ## Install
-
-One command does everything: finds your Firefox profile (prefers a Developer
-Edition one), installs `dist/chrome/userChrome.css` + `userChrome.uc.js` +
-`frame.js` into the profile, merges `dist/chrome/user.js` prefs (only the ones
-Lazyfox owns — your existing prefs are preserved), builds + installs the
-WebExtension, enables it past Firefox's sideload protection, and installs the
-fx-autoconfig chrome loader into the Firefox install directory so
-`userChrome.uc.js` can run.
-
-> **Your data is safe.** The installer never deletes profiles, bookmarks,
-> history or settings. Every file it replaces inside the profile is backed up
-> (Windows keeps a filtered copy in `user.js`; Linux keeps `.lazyfox.bak-*`
-> copies). Re-run it any time to upgrade — it only writes Lazyfox's own files.
-
-> Requires **Firefox Developer Edition** or **Nightly** to install the add-on
-> permanently without signing (`xpinstall.signatures.required` is set for you).
-> On regular Release Firefox the profile patch works, but the add-on must be
-> loaded temporarily each session (see *Manual* below).
 
 ### Windows
 
@@ -76,15 +55,11 @@ fx-autoconfig chrome loader into the Firefox install directory so
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-Or with an explicit profile:
+To install into a specific profile:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Profile "C:\path\to\profile"
 ```
-
-The chrome loader (`config.js` + `defaults/pref/config-prefs.js`) is installed
-into the Firefox installation folder. This needs admin rights **once**: a UAC
-prompt appears; accept it and the rest is automatic.
 
 ### Linux
 
@@ -93,256 +68,247 @@ prompt appears; accept it and the rest is automatic.
 # or:  ./scripts/install.sh "/path/to/profile"
 ```
 
-`chmod +x scripts/install.sh` the first time you run it. The installer copies
-`userChrome.css`, `userChrome.uc.js` and `frame.js` into the profile, builds
-the `.xpi` (using `zip`, `python3`, or `node` — whichever is available), and
-installs the fx-autoconfig chrome loader into the Firefox install directory.
-Installing the chrome loader needs root **once**: the script auto-elevates
-with `sudo` when needed. If `sudo` needs a password it prints the exact command
-to run; everything else still installs.
+(`chmod +x scripts/install.sh` the first time.)
 
-> **Snap / Flatpak Firefox**: the Firefox install directory is read-only by
-> design, so the chrome loader can't be installed there. The rest of Lazyfox
-> (the content script, popups, command center, `userChrome.css`) still works;
-> only the chrome-level `;`-on-internal-pages helper is unavailable. Use a
-> distro `.deb` / `.rpm` / `.tar.bz2` Firefox build for the full feature set.
+The installer:
 
-Firefox refuses to auto-enable add-ons dropped into the profile folder
-("sideload protection" — `extensions.autoDisableScopes` no longer bypasses it in
-current versions). The installer handles this: on first run it launches Firefox
-once to import the add-on, then flips it to enabled in `extensions.json` and
-closes the window. Fully quit and restart Firefox afterwards.
+1. finds your Firefox profile (it prefers a Developer Edition one),
+2. copies the chrome files into the profile's `chrome/` folder,
+3. merges only the prefs Lazyfox owns into `user.js` — your existing settings
+   are left alone,
+4. builds and installs the extension as a permanent add-on,
+5. installs the fx-autoconfig chrome loader into the Firefox install folder so
+   the chrome-level helper can run.
 
-Options:
+The chrome loader install needs admin rights **once** (a UAC prompt on
+Windows, `sudo` on Linux). Everything else is automatic.
 
-- `-Profile "path"` (or the first positional arg to `install.sh`) — install into
-  a specific profile.
-- `-NoLaunch` (`-NoLaunch` on Linux too, or `NO_LAUNCH=1`) — skip the automatic
-  first-import launch.
+> **Your data is safe.** The installer never deletes profiles, bookmarks,
+> history or settings. Every file it replaces is backed up first, and you can
+> re-run it any time to upgrade — it only touches its own files.
+
+> **Firefox Developer Edition or Nightly required.** Lazyfox sets
+> `xpinstall.signatures.required` for you so the add-on installs permanently
+> without Mozilla's signing. On regular Release Firefox the profile patch
+> still works, but the add-on must be loaded temporarily each session (see
+> the manual install below).
+
+### Options
+
+- `-Profile "path"` — install into a specific profile.
+- `-NoLaunch` — skip the one-time Firefox launch the installer uses to import
+  the add-on (Firefox refuses to auto-enable add-ons dropped into the profile
+  folder).
 - `-NoExtension` — only install the chrome pieces, skip the WebExtension.
-- `-ChromeLoaderOnly` (with `-FirefoxDir DIR`) — only (re)install the chrome
-  loader, for when you updated Firefox and lost `config.js`.
-- Linux: `FIREFOX_BIN=/path/to/firefox` to point at a non-default binary, or
-  `-FirefoxDir /path/to/firefox-dir` to pass the install directory directly.
+- `-ChromeLoaderOnly -FirefoxDir DIR` — reinstall just the chrome loader
+  (useful after a Firefox update replaced `config.js`).
+- Linux: `FIREFOX_BIN=/path/to/firefox` to point at a non-default binary.
 
 If the add-on ever shows up disabled in `about:addons`, re-run the installer
-(no `-NoLaunch`) and it will re-enable it, or just click **Enable** once.
+or just click **Enable** once.
 
 ### Manual install
 
-If you'd rather do it by hand (e.g. on a locked-down box with no shell access):
-
-1. Open `about:support`, copy the **Profile Folder** path.
-2. In that folder: create `chrome/` and copy `dist/chrome/userChrome.css`,
-   `dist/chrome/userChrome.uc.js` and `dist/chrome/frame.js` from this repo
-   into it.
+1. Open `about:support` and copy the **Profile Folder** path.
+2. Create `chrome/` inside it and copy `dist/chrome/userChrome.css`,
+   `dist/chrome/userChrome.uc.js` and `dist/chrome/frame.js` in.
 3. Merge the `user_pref(...)` lines from `dist/chrome/user.js` into the
-   profile's `user.js` (or create it). At minimum you need
+   profile's `user.js` (create it if needed). At minimum you need
    `toolkit.legacyUserProfileCustomizations.stylesheets = true`.
-4. (Optional, for `;` on `about:*` and `addons.mozilla.org`.) Install the
-   fx-autoconfig loader into the Firefox install dir: copy
+4. Optional, for `;` on `about:*` and `addons.mozilla.org`: copy
    `dist/chrome/loader/config.js` to `<firefox>/config.js` and
    `dist/chrome/loader/config-prefs.js` to
-   `<firefox>/defaults/pref/config-prefs.js`. This requires write access to
-   the install dir (root on Linux, admin on Windows); restart Firefox
-   afterwards.
+   `<firefox>/defaults/pref/config-prefs.js`. This needs write access to the
+   Firefox install folder; restart Firefox afterwards.
 5. Load the add-on:
    - `about:debugging` → *This Firefox* → **Load Temporary Add-on** → pick
-     `dist/extension/manifest.json` (temporary, per session), **or**
-   - zip the `dist/extension/` folder and save it as
-     `<profile>/extensions/lazyfox@lazyfox.dev.xpi` (permanent, unsigned only
-     on Developer Edition/Nightly).
+     `dist/extension/manifest.json` (temporary, per session), or
+   - zip the `dist/extension/` folder as
+     `<profile>/extensions/lazyfox@lazyfox.dev.xpi` (permanent — unsigned
+     add-ons only load on Developer Edition/Nightly).
 
-## Keybindings
+> **Snap / Flatpak Firefox**: the Firefox install folder is read-only, so the
+> chrome loader can't be installed there. Everything else — the content
+> script, popups, command center, `userChrome.css` — still works; only the
+> `;`-on-internal-pages helper is unavailable. Use a distro `.deb` / `.rpm` /
+> `.tar.bz2` build for the full feature set.
 
-Pressing the leader key (`;`) opens a small **which-key** overlay in the
-bottom-right corner: a paginated list of every `; key` binding plus a dimmed
-section of native Firefox shortcuts. The overlay never scrolls — one page at a
-time, nine rows each — and pages are flipped with `Tab` / `Shift+Tab`
-(or `←`/`→` / `PageUp`/`PageDown`); `↑`/`↓` move the selection. Press `Enter`
-to run the highlighted item, or just press a binding's key to run it
-immediately. `Esc` cancels.
+## Daily use
 
-> Any key that is not a navigation key runs its binding **immediately** — the
-> overlay is a reminder, never a blocker. In particular `;j` (next tab) and
-> `;k` (previous tab) work exactly as you'd expect: press `;` then `j` and you
-> switch tabs, the overlay does not swallow `j` / `k`.
+### The leader key
 
-You can turn the overlay off in the Lazyfox options (see *Settings* below). With
-it disabled, pressing `;` still arms the leader engine and waits for your
-second key — you just don't see the cheat sheet.
+`;` arms the leader. A small overlay in the bottom-right corner shows your
+bindings — it's a reminder, not a gatekeeper: press the key you want and the
+action runs immediately, no `Enter` needed. `Esc` cancels.
+
+The most useful ones:
 
 | Keys | Action |
 | --- | --- |
-| `;` | which-key overlay (bottom-right, paginated) |
-| `; f` | link hints (only links in the current viewport are hinted, so keys stay short; a hint only fires once its letters are unambiguous — `a` stays pending when `aa`/`ah` also exist, `Enter` selects the current prefix; `]`/`[` or `Tab`/`Shift+Tab` page to the next/previous batch of links) |
-| `; s` | search the web — goes straight to your default engine (Google) |
-| `; o` | open a URL — no `http://` or `www` needed; visited sites are fuzzy-matched (opens in a new tab; can be changed in settings) |
-| `; w` | resize / move window (arrows resize 20px, `Shift+arrows` move 40px, `Esc` done) |
-| `; t` | tab switcher (type to filter, `j/k`/arrows navigate, `Enter` switch) |
-| `; h` / `; b` / `; d` | history / bookmarks / downloads popups |
-| `; i` | focus first input on the page |
-| `; /` | find in page (`Enter` next, `Shift+Enter` previous) |
+| `; f` | link hints |
+| `; s` | search the web |
+| `; o` | open a URL (no `http://` needed) |
+| `; t` | tab switcher (type to filter) |
+| `; p` | sessions popup (save, restore, switch) |
+| `; w` / `; m` | resize / move the window |
 | `; n` / `; x` / `; v` / `; c` | new tab / close tab / reopen / duplicate |
-| `; r` / `; g` / `; l` | reload / back / forward |
 | `; j` / `; k` | next / previous tab |
+| `; r` / `; g` / `; l` | reload / back / forward |
 | `; y` / `; m` | copy URL / mute tab |
-| `; =` / `; -` / `; 0` | zoom in / out / reset |
-| `; z` | zen mode (fullscreen — toolbar never appears) |
-| `; e` | toggle toolbar reveal on hover |
-| `; 1`–`9` | jump to tab 1–8 / last tab |
-| `; ,` / `; .` | move the active tab left / right |
-| `; |` | split side-by-side (i3-style) |
-| `; [` / `; ]` | switch to the previous / next split pane |
-| `; \` | close the split view (back to independent tabs) |
-| `; +` then `1`–`9` | move that tab into the current split view |
+| `; z` | zen mode (fullscreen) |
+| `; e` | toggle the toolbar reveal on hover |
+| `; \|` | split side-by-side |
+| `; +` then `1`–`9` | move that tab into the current split |
 | `; q` | toggle the which-key overlay on / off |
-| `; p` / `; '` | sessions popup (save / restore / switch / markers) |
-| `; '` then `1`–`9` | jump to the session with that marker |
-| `Ctrl+1`–`9` | hot-swap to the session with that marker |
-| `j` `k` `d` `u` `gg` `G` | scroll (when not typing; disable in options) |
-| `Ctrl+Alt+Space` | open the Lazyfox menu popup (works on internal pages too) |
-| `Ctrl+Alt+K` | open the command center (works on any page) |
+| `j` `k` `d` `u` `gg` `G` | scroll the page (when not typing) |
+| `Ctrl+Alt+Space` | open the Lazyfox menu (works on internal pages too) |
+| `Ctrl+Alt+K` | open the command center from anywhere |
 
-### Command center (new tab)
+You can turn the overlay off in settings; `;` still works, you just don't see
+the cheat sheet.
 
-`Ctrl+T` (and the startup tab) opens a keyboard-first command center instead of
-the default new-tab / home page. It starts in **command mode** (nothing is
-focused, so your keys aren't eaten) with a live command list:
+### Link hints
 
-- **`1`–`6` (or `Tab`) switch modes** — 1 Search · 2 URL · 3 Tabs · 4 History ·
-  5 Bookmarks · 6 Downloads — the same as the numbered buttons on top
-- **`;` opens the leader menu** — `; s o t h b d` switch modes, `; w` resize/move
-  the window, `; m` mute, `; x n v c z` = close / new / reopen / duplicate / zen
-- **`j` `k` / arrows** navigate results, **`Enter`** runs the selection
-- **type any letter** to start typing immediately — the input focuses and the
-  letter lands in the box (search / URL / tab filter)
-- **`i`** focuses the input without typing
-- **`Esc`** clears the input and returns to command mode, so `1`–`6` and `;`
-  work again
+`;f` labels every visible link with a short key. Type the key and the link
+opens. Details that matter:
 
-While the input is focused, **every key types**, including `;` and digits — so
-you can search for anything. Use `Esc` to get back to command mode.
+- Only links in the **current viewport** get labels, so keys stay short —
+  never longer than three characters, no matter how many links the page has.
+- A hint fires only once its letters are unambiguous. Typing `a` stays
+  pending while `aa` / `ah` also exist; `Enter` picks the current prefix.
+- `]` / `[` (or `Tab` / `Shift+Tab`) page to the next / previous batch of
+  links.
+- Typing a prefix that matches links below the fold scrolls them into view
+  and re-labels them with fresh short keys.
+- Hints work on buttons and custom widgets too, not just links — activation
+  is a real click sequence, so unusual page elements respond.
 
-Window controls from the command center:
+![Link hints on a busy page](docs/img/hints.png)
 
-- **`; w`** resize / move mode — arrow keys resize 20px, `Shift+arrows` move
-  40px, `Esc` done
+### The command center
 
-Native shortcuts (tab management, reload, find, zoom, devtools…) keep working
-and are listed in the which-key overlay.
+`Ctrl+T` (and the startup tab) opens the command center instead of the default
+new-tab page. It starts in command mode — nothing is focused, so your keys  aren't eaten — with a list of your most-used actions. Type any letter and you
+  start typing immediately.
 
-### Sessions (tmux-style)
+![The command center, tabs mode](docs/img/command-center-tabs.png)
 
-Lazyfox keeps a set of named **sessions** — snapshots of a window's tabs
-*and* their split layout. One session is current at a time; switching swaps
-the whole window, exactly like `tmux`/`screen`.
+- **`1`–`6` (or `Tab`)** switch modes — Search · URL · Tabs · History ·
+  Bookmarks · Downloads. The numbered buttons on top do the same.
+- **`h` `j` `k` `l` / arrows** move through the list — on the home grid,
+  `j`/`k` move between rows and `h`/`l` between columns; in the flat list views
+  `j`/`k` step one at a time. **`Enter`** runs the selection.
+- **`;`** opens the leader menu from here too: `;s` `;o` `;t` switch modes,
+  `;n` new tab, `;x` close, `;w` resize/move, `;z` zen, and so on.
+- **type any other letter** to start typing immediately — the input focuses
+  and the letter lands in the box (search / URL / tab filter)
+- **`i`** focuses the input without typing.
+- **`Esc`** clears the input and returns to command mode.
 
-- **`;p`** (or **`;'`**) opens the sessions popup: type to filter, `Enter`
-  restores, and it offers *save current tabs as…* for a name that doesn't
-  exist yet.
-- **`x x`** deletes the highlighted session — the first `x` arms the delete
-  (the row turns red and the footer asks for confirmation), the second `x`
-  within 2.5s confirms it, so a stray keypress can never lose a session.
-  Deleting the current session drops it back to *default* immediately.
+While the input is focused, **every key types** — including `h`/`j`/`k`/`l`,
+`;` and digits — so you can search for anything. `h`/`j`/`k`/`l` only navigate
+the list when the input is not focused. `Esc` gets you back to command mode.
+
+The command center also runs your window: `;w` enters resize/move mode (arrow
+keys resize, `Shift+arrows` move, `Esc` to finish).
+
+### Sessions
+
+Sessions are named snapshots of a window — its tabs and split layout. One
+session is current at a time; switching swaps the whole window, like
+`tmux`/`screen`.
+
+![The sessions popup](docs/img/sessions.png)
+
+- **`;p`** opens the sessions popup. Type to filter, `Enter` restores. Type a
+  name that doesn't exist yet and the popup offers *save current tabs as…*.
+- **`x x`** deletes the highlighted session. The first `x` arms the delete —
+  the row turns red and asks for confirmation — the second `x` within 2.5s
+  confirms. A stray keypress can never lose a session.
 - **`;'` then `1`–`9`** jumps straight to the session marked `1`–`9`.
-- **`Ctrl+1`–`9`** hot-swaps to the marked session from anywhere — no leader
-  key needed. Every session can be assigned a marker from the popup
-  (`m 1` while a session is selected).
-- **`;x`** etc. work inside any session, and sessions stay saved until you
-  delete them. A debounced **"last" snapshot** of the current window is kept
-  automatically (`autoRestore`, default on), so a crash or accidental close
-  restores your window on the next launch.
+- **`Ctrl+1`–`9`** hot-swaps to a marked session from anywhere. Assign a
+  marker with `m 1` in the popup.
+- A **"last" snapshot** of the current window is kept automatically, so a
+  crash or accidental close restores your window on the next launch (turn
+  this off in settings).
 
-### Status bar (tmux/nvim-style)
+### The status bar
 
-A slim, pointer-transparent status strip is rendered at the bottom (or top,
-`statusBarPosition`) of every page — the web page, the command center and
-internal pages alike. It shows, left to right:
+A slim strip sits at the bottom of every page (top if you prefer,
+`statusBarPosition`). Left to right:
 
-- the **current session** name and its marker (`[1] work`);
-- the **tab index / count** (`3/7`);
-- a **split indicator** while a split view is focused — orientation
-  (`|` side-by-side, `-` stacked) plus the active pane (`1/2`);
-- the **session list** on the left as colored pills (`marker|name|count`,
-  each pill a gradient of its own color, the current one ringed) —
-  informational only, it never loads other sessions' tabs;
-- the current **mode** on the right (`NORMAL` / `LEADER` / `POPUP` / `HINTS`).
+- the **current session** and its marker;
+- your **place in the tab list** (`3/7`);
+- a **split indicator** while a split is active;
+- your **saved sessions** as colored pills (`marker | name | count`) — each
+  pill is a gradient of its own color, the current one is ringed, and it's
+  informational only: it never loads another session's tabs;
+- the current **mode** on the right.
 
-The strip lives in a closed shadow root so page CSS can't restyle it. Disable
-it with `statusBar: false` in the options (`Settings` → *Show the status bar*).
+![The status bar with session pills](docs/img/statusbar.png)
 
-### Split view (i3-style)
+The strip lives in a closed shadow root, so page CSS can't restyle it. Hide
+it in settings (`statusBar: false`).
 
-Two panes side-by-side, keyboard-only — no window manager needed:
+### Split view
 
-- **`;|`** splits the current tab side-by-side. The two panes act as a pair:
-  **`;[` / `;]`** switch the active pane, **`;+` then `1`–`9`** moves that tab
-  into the split, and **`;\`** closes the split, dissolving the panes back
-  into independent tabs.
-- On **Firefox 149+** the split uses Firefox's **native split view**: each
-  pane is a real top-level tab, so *any* website loads in it unchanged — no
-  header-stripping or iframe tricks (the iframe container remains only as a
-  side-by-side fallback for older Firefox). Closing one pane keeps the other
-  open and auto-unsplits it.
-- The **new pane** opens the **split panel** rather than a blank page: a
-  search / URL input on top and, below it, the live list of your other tabs
-  to move into the split (press the tab's number, or click it). Moving a tab
-  in **replaces the panel** with that tab (the split stays two panes, no
-  empty pane is left behind); `;+N` with no split yet pairs the active tab
-  with tab N directly.
-- The status bar hides while a split is active so it never covers the panes;
-  each web pane shows its own bar.
+Two panes side by side, keyboard-only — no window manager needed.
 
-Splits are part of sessions: save a session while split and restore brings
-the split layout back.
+- **`;|`** splits the current tab. **`;[` / `;]`** switch the active pane,
+  **`;+` then `1`–`9`** moves that tab into the split, **`;\`** dissolves it
+  back into independent tabs.
+- On **Firefox 149+** the split uses Firefox's native split view: each pane
+  is a real top-level tab, so any website loads in it unchanged.
+- The new pane opens the **split panel** — a search / URL box plus the live
+  list of your other tabs (each with its `;+N` number; press the number or
+  click). Moving a tab in **replaces** the panel; `;+N` with no split yet
+  pairs the active tab with tab N directly. No empty panes are left behind.
+- The status bar hides while a split is active so it never covers the panes.
+
+Splits are part of sessions: save a session while split and restoring brings
+the whole layout back.
 
 ### Settings
 
-The settings page (**Lazyfox options** in the popup, or the *Lazyfox settings*
-item in the command center's command list) lets you change:
+The settings page (*Lazyfox options* in the popup, or *Lazyfox settings* in
+the command center's command list) lets you change:
 
-- the **leader key** and the **link-hint characters**;
-- whether **vim-style scrolling** (`j`/`k`/`d`/`u`/`gg`/`G`) is enabled when not
-  typing;
+- the **leader key** and **link-hint characters**;
+- whether **vim-style scrolling** (`j`/`k`/`d`/`u`/`gg`/`G`) is enabled;
 - whether URL / history / bookmark opens go to a **new tab** or reuse the
-  current one (default: new tab);
-- whether the **toolbar reveals** when the mouse touches the top edge
-  (`dist/chrome/userChrome.css`);
-- whether the **which-key overlay** is shown when you press `;` (default: on;
-  turn it off for a fully silent leader key);
-- whether the **status bar** is shown and on which edge (default: bottom,
-  tmux-style);
-- whether the **last-session auto-restore** runs on startup (default: on).
+  current one;
+- whether the **toolbar reveals** when the mouse touches the top edge;
+- whether the **which-key overlay** is shown when you press `;`;
+- whether the **status bar** is shown and on which edge;
+- whether the **last-session auto-restore** runs on startup.
 
 Keys work on the settings page too: `Esc` (or the **← back** link) returns to
-the command center, `;` opens the leader menu (`n` new tab, `x` close,
-`w`/`m` resize/move, `z` zen, …), and `j`/`k` scroll when you're not typing in
-a field. The Firefox-chrome hotkeys (Firefox settings / Add-ons / History /
-Downloads) are configured at the bottom of the same page and apply live.
+the command center, `;` opens the leader menu, and `j`/`k` scroll when you're
+not typing in a field. The Firefox-chrome hotkeys (Firefox settings /
+Add-ons / History / Downloads) are configured at the bottom of the same page.
 
 ## Known limitations
 
-- **Web content scripts only run on real pages**, so the `;` leader key handled
-  by the extension's content script works on `http(s)`/`file` pages. The
-  chrome-level helper (`userChrome.uc.js`) takes over on every page (including
-  `about:*`, `addons.mozilla.org` and error pages), so in practice `;` works
-  everywhere it's installed. On a page where neither runs, use
-  `Ctrl+Alt+Space` (the popup menu) or reveal the toolbar with the mouse.
-- `Ctrl+Tab` can't be intercepted (browser-level shortcut). Use `;t` or
+- **Add-on content scripts only run on real pages**, so the `;` leader key
+  handled by the content script works on `http(s)` / `file` pages. The
+  chrome-level helper takes over everywhere else (including `about:*` and
+  error pages), so in practice `;` works everywhere it's installed. On a page
+  where neither runs, use `Ctrl+Alt+Space` or reveal the toolbar with the
+  mouse.
+- `Ctrl+Tab` can't be intercepted (it's a browser-level shortcut). Use `;t` or
   `;j` / `;k` instead.
 - `userChrome.css` is unofficial but widely used; Firefox may occasionally
   change internal IDs between versions. It's a few lines — easy to adjust.
-- Link hints cover the most common interactive elements; if a page uses exotic
-  widgets, `;i` will get you to the first input.
+- Link hints cover the most common interactive elements; if a page uses
+  exotic widgets, `;i` will get you to the first input.
 
 ## Development
 
 Lazyfox is TypeScript on top of a Go/Wasm core. Every context (chrome helper,
 content script, background, command center, options) imports the same pure
 logic — URL parsing, visited-site ranking, hint generation, which-key
-pagination and the `#lfc=` grammar — from a single compiled `core.wasm`, which
-is gzip-compressed and embedded into each bundle so `dist/` is self-contained.
+pagination — from a single compiled `core.wasm`, which is gzip-compressed and
+embedded into each bundle so `dist/` is self-contained.
 
 ```bash
 npm install        # installs esbuild + typescript (also checks the toolchain)
@@ -362,8 +328,8 @@ npm test           # go test ./core/ + verifies dist/ is complete
 - `src/static/` — manifest, HTML pages, icons and chrome css/loader files,
   copied verbatim into `dist/` by the build.
 
-`dist/` is committed, so installing (or `scripts/install.ps1` / `install.sh`)
-never needs the toolchain. Only rebuild when you change source:
+`dist/` is committed, so installing never needs the toolchain. Only rebuild
+when you change source:
 
 ```bash
 npx web-ext run --source-dir dist/extension --firefox developer-edition
@@ -374,12 +340,11 @@ and reinstall).
 
 ### Testing
 
-The end-to-end suite drives a real Firefox over **WebDriver BiDi**
+The end-to-end suite drives a real Firefox over WebDriver BiDi
 (`scripts/bidi/`): it boots a fresh profile, installs `dist/extension`, and
 exercises the command center, content-script leader keys, sessions + status
 bar, split view and options. It needs `geckodriver` on `PATH` (or
-`GECKODRIVER`) and a Developer Edition / Nightly Firefox
-(`FIREFOX_BIN`).
+`GECKODRIVER`) and a Developer Edition / Nightly Firefox (`FIREFOX_BIN`).
 
 ```bash
 npm run build          # always rebuild dist/ first
@@ -390,22 +355,27 @@ node scripts/bidi/test.mjs --only "unsplits" # a single test by name
 node scripts/bidi/test.mjs --list           # show all suites/groups/tests
 ```
 
-Suites, groups and tests are configured in `scripts/bidi/suites.json`
-(JSON, one `group` → one `suites/*.mjs` module). The `full` suite runs
-everything; `quick` is the common fast checkup. Per-run selection is
-orthogonal (`--suite` + `--group` + `--only`, `SKIP=a,b` env to exclude
-exact test names), so you can iterate on one test without waiting for the
-whole suite. Test code lives in small modules — `lib.mjs` (BiDi driver),
-`harness.mjs` (runner/config), `helpers.mjs` (shared context helpers),
-`pages.mjs` (local test pages) and one `suites/*.mjs` per feature — and
-`go test ./core/` plus `npm run typecheck` cover the non-browser layers.
+Suites, groups and tests are configured in `scripts/bidi/suites.json` (one
+`group` → one `suites/*.mjs` module). `quick` is the common fast checkup;
+per-run selection is orthogonal (`--suite` + `--group` + `--only`, `SKIP=a,b`
+to exclude exact test names), so you can iterate on one test without waiting
+for the whole suite. Test code lives in small modules — `lib.mjs` (BiDi
+driver), `harness.mjs` (runner/config), `helpers.mjs` (shared context
+helpers), `pages.mjs` (local test pages) and one `suites/*.mjs` per feature —
+and `go test ./core/` plus `npm run typecheck` cover the non-browser layers.
+
+The README screenshots are captured the same way:
+
+```bash
+node scripts/bidi/screenshots.mjs   # writes docs/img/*.png
+```
 
 ## Uninstall
 
-Run the matching uninstaller — it reverses everything the installer put in place,
-and nothing else. Your profile, bookmarks, history, passwords and other add-ons
-are never touched; every file Lazyfox owned is backed up first as
-`.lazyfox.uninst.bak-*` in your profile so you can roll back by hand if needed.
+Run the matching uninstaller — it reverses exactly what the installer put in
+place, and nothing else. Your profile, bookmarks, history, passwords and
+other add-ons are never touched; every file Lazyfox owned is backed up as
+`.lazyfox.uninst.bak-*` in your profile so you can roll back by hand.
 
 ### Windows
 
@@ -413,42 +383,36 @@ are never touched; every file Lazyfox owned is backed up first as
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
 ```
 
-To also remove the fx-autoconfig chrome loader from the Firefox install dir
-(useful when no other `userChrome.uc.js`-based add-on will use it):
+Also remove the fx-autoconfig chrome loader (only if no other
+`userChrome.uc.js`-based add-on uses it; may trigger a UAC prompt):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1 -RemoveChromeLoader
 ```
 
-`-RemoveChromeLoader` may trigger a UAC prompt (the Firefox install dir needs
-admin rights to write). Pass `-Profile "C:\path\to\profile"` to target a
-specific profile.
-
 ### Linux
 
 ```bash
 ./scripts/uninstall.sh
-# or:  ./scripts/uninstall.sh "/path/to/profile"
 # also remove the fx-autoconfig loader (sudo prompt):
 ./scripts/uninstall.sh -RemoveChromeLoader
 ```
 
 ### What gets removed
 
-- `dist/chrome/userChrome.css`, `dist/chrome/userChrome.uc.js`,
-  `dist/chrome/frame.js` (the hidden-UI patches and chrome-level helper).
-- The Lazyfox-managed `user_pref(...)` lines from `user.js`. Other prefs are
-  preserved.
+- `dist/chrome/userChrome.css`, `userChrome.uc.js`, `frame.js`.
+- The Lazyfox-managed `user_pref(...)` lines from `user.js` (other prefs are
+  preserved).
 - `extensions/lazyfox@lazyfox.dev.xpi`.
 - The Lazyfox entry is marked inactive in `extensions.json`.
 
-### Manual uninstall (if no shell)
+### Manual uninstall
 
 1. Delete `<profile>/extensions/lazyfox@lazyfox.dev.xpi`.
 2. Remove `<profile>/chrome/userChrome.css`, `userChrome.uc.js`, `frame.js`.
 3. From `<profile>/user.js`, delete the lines that match `dist/chrome/user.js`
    in this repo.
-4. (Optional, only if no other userChrome.uc.js add-on uses it) Delete
+4. Optional, only if no other `userChrome.uc.js` add-on uses it: delete
    `<firefox>/config.js` and `<firefox>/defaults/pref/config-prefs.js`.
 5. Restart Firefox.
 

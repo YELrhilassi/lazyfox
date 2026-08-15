@@ -84,15 +84,40 @@ export async function run(ctx) {
 
   await t("command center typing starts insert mode, Esc returns to cmd", async () => {
     await ctx.openCC(ctx.tabA);
-    await ctx.typeIn(ctx.tabA, "h");
+    await ctx.typeIn(ctx.tabA, "w");
     let f = await ctx.ccFacts(ctx.tabA);
     assert(f.state === "insert", "state insert after typing, got " + f.state);
-    assert(f.inputVal === "h", "input value h, got " + f.inputVal);
+    assert(f.inputVal === "w", "input value w, got " + f.inputVal);
     await ctx.press(ctx.tabA, "Escape");
     f = await ctx.ccFacts(ctx.tabA);
     assert(f.state === "cmd", "state cmd after Esc");
     assert(f.inputVal === "", "input cleared after Esc");
     assert(!f.focused, "input blurred after Esc");
+  });
+
+  await t("command center hjkl navigate the home grid from command mode", async () => {
+    // Regression: h/j/k/l are navigation keys in command mode (like the
+    // arrows), not typing keys — j/k move between rows, h/l between columns.
+    await ctx.openCC(ctx.tabA);
+    let f = await ctx.ccFacts(ctx.tabA);
+    assert(f.state === "cmd", "starts in command mode");
+    const sel = () =>
+      evalIn(ctx.tabA, `(() => {
+        const s = document.querySelector("#results .selected");
+        return s ? [...document.querySelectorAll("#results .result")].indexOf(s) : -1;
+      })()`);
+    assert((await sel()) === 0, "selection starts on the first command");
+    await ctx.press(ctx.tabA, "j"); // down one row (grid is 3 columns)
+    assert((await sel()) === 3, "j moves down a row, got " + (await sel()));
+    await ctx.press(ctx.tabA, "l"); // right one column
+    assert((await sel()) === 4, "l moves right a column, got " + (await sel()));
+    await ctx.press(ctx.tabA, "h"); // back left
+    assert((await sel()) === 3, "h moves left a column, got " + (await sel()));
+    await ctx.press(ctx.tabA, "k"); // back up
+    assert((await sel()) === 0, "k moves up a row, got " + (await sel()));
+    f = await ctx.ccFacts(ctx.tabA);
+    assert(f.state === "cmd", "still in command mode after hjkl");
+    assert(f.inputVal === "", "hjkl did not type into the input");
   });
 
   await t("command center insert mode: j/k/x type into the input", async () => {
@@ -114,6 +139,9 @@ export async function run(ctx) {
 
   await t("command center search: suggestions + Enter runs a web search", async () => {
     await ctx.openCC(ctx.tabA);
+    // h/j/k/l are navigation keys in command mode, so focus the input first
+    // (i) before typing a query that starts with one.
+    await ctx.press(ctx.tabA, "i");
     await ctx.typeIn(ctx.tabA, "lazyfox rocks");
     await waitFor(async () => {
       const f = await ctx.ccFacts(ctx.tabA);
@@ -131,6 +159,9 @@ export async function run(ctx) {
   await t("command center url mode: normalize + Enter opens URL", async () => {
     await ctx.openCC(ctx.tabA);
     await ctx.press(ctx.tabA, "2");
+    // Focus the input first so the leading "h" of http:// is not taken as
+    // the left-navigation key.
+    await ctx.press(ctx.tabA, "i");
     await ctx.typeIn(ctx.tabA, `http://127.0.0.1:${ctx.port}/hello`);
     await waitFor(async () => {
       const f = await ctx.ccFacts(ctx.tabA);

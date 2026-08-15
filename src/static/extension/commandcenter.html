@@ -6,21 +6,32 @@
 <title>Lazyfox</title>
 <style>
   :root {
-    --bg: #1e1e2e;
+    --bg: #1a1b26;
     --bg2: #16161e;
+    --panel: #1f2233;
     --fg: #c0caf5;
     --muted: #565f89;
     --sub: #9aa5ce;
     --accent: #7aa2f7;
+    --green: #9ece6a;
+    --yellow: #e0af68;
+    --red: #f7768e;
+    --cyan: #7dcfff;
+    --magenta: #bb9af7;
+    --teal: #2ac3de;
     --border: #2a2f45;
     --border2: #414868;
     --sel: #292e42;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
+  html, body { overflow-x: hidden; }
   body {
     margin: 0;
-    background: var(--bg);
+    background:
+      radial-gradient(1200px 500px at 70% -10%, rgba(122,162,247,.10), transparent 60%),
+      radial-gradient(900px 420px at 15% 110%, rgba(42,195,222,.08), transparent 60%),
+      var(--bg);
     color: var(--fg);
     font: 14px/1.5 ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace;
     display: flex;
@@ -29,67 +40,117 @@
     overflow: hidden;
   }
   #wrap {
-    width: min(720px, 100%);
+    width: min(760px, 100%);
     height: 100vh;
     display: flex;
     flex-direction: column;
-    padding: 26px 20px 16px;
+    padding: 9vh 24px 18px;
+    position: relative;
   }
   header {
     display: flex;
     align-items: center;
+    margin-bottom: 22px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
     gap: 10px;
-    margin-bottom: 14px;
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: .04em;
+    color: var(--fg);
   }
-  .logo {
-    background: var(--bg2);
-    border: 1px solid var(--border2);
-    border-radius: 6px;
-    color: var(--accent);
-    font-weight: 700;
-    letter-spacing: .05em;
-    padding: 2px 8px;
-    font-size: 13px;
+  .brand .dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    background: linear-gradient(135deg, var(--accent), var(--teal));
+    box-shadow: 0 0 14px rgba(122,162,247,.55);
   }
-  .brand { font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
-  #modeTag {
-    margin-left: auto;
-    font-size: 10px;
+  .brand small {
+    font-size: 11px;
+    font-weight: 600;
     letter-spacing: .18em;
     text-transform: uppercase;
-    color: var(--accent);
+    color: var(--muted);
+    margin-left: 2px;
+  }
+  .chips { margin-left: auto; display: flex; gap: 8px; }
+  .chips span {
+    font-size: 10px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--sub);
     background: var(--bg2);
     border: 1px solid var(--border2);
-    border-radius: 4px;
-    padding: 2px 8px;
+    border-radius: 999px;
+    padding: 3px 10px;
+  }
+  .chips #state { color: var(--muted); }
+  .chips #state.bright { color: var(--green); border-color: var(--green); }
+  .chips #modeTag { color: var(--accent); }
+
+  .inputrow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 12px;
+    padding: 0 16px;
+    transition: border-color .12s ease, box-shadow .12s ease;
+  }
+  .inputrow:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(122,162,247,.15);
+  }
+  #inputIcon {
+    font-size: 16px;
+    color: var(--accent);
+    flex: none;
+    line-height: 1;
   }
   #input {
-    width: 100%;
-    background: var(--bg2);
-    border: 1px solid var(--border2);
-    border-radius: 8px;
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
     color: var(--fg);
     font: inherit;
-    padding: 13px 16px;
-    outline: none;
+    font-size: 15px;
+    padding: 15px 0;
   }
-  #input:focus { border-color: var(--accent); }
-  .modes { display: flex; gap: 6px; margin: 12px 0 6px; flex-wrap: wrap; }
+  #input::placeholder { color: var(--muted); }
+
+  .modes { display: flex; gap: 6px; margin: 16px 0 10px; flex-wrap: wrap; }
   .mode-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     background: transparent;
     border: 1px solid var(--border2);
     color: var(--muted);
     font: 11px/1 ui-monospace, Menlo, Consolas, monospace;
-    letter-spacing: .08em;
-    padding: 4px 10px;
-    border-radius: 6px;
+    letter-spacing: .06em;
+    padding: 6px 12px;
+    border-radius: 999px;
     cursor: pointer;
+    transition: all .1s ease;
   }
-  .mode-btn.on { background: var(--sel); color: var(--accent); border-color: var(--accent); }
+  .mode-btn:hover { color: var(--sub); border-color: var(--border2); background: var(--sel); }
+  .mode-btn.on {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #16161e;
+    font-weight: 700;
+  }
+  .mode-btn .mi { font-size: 12px; }
+
   #results {
     list-style: none;
     margin: 0;
-    padding: 0;
+    padding: 4px 0 0;
     flex: 1 1 0;
     min-height: 0;
     overflow-y: auto;
@@ -97,15 +158,91 @@
   }
   #results::-webkit-scrollbar { width: 8px; }
   #results::-webkit-scrollbar-thumb { background: #3b4261; border-radius: 4px; }
+  #results.quick {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    align-content: start;
+    padding-top: 12px;
+  }
   .result {
     height: 49px;
     padding: 7px 12px;
     border-left: 3px solid transparent;
     cursor: pointer;
     border-radius: 6px;
-    box-sizing: border-box;
   }
   .result.selected { background: var(--sel); border-left-color: var(--accent); }
+  #results.quick .result {
+    height: auto;
+    min-width: 0;
+    border-left: none;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 13px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 62px;
+  }
+  #results.quick .result.selected {
+    background: var(--sel);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(122,162,247,.35);
+  }
+  #results.quick .result .ic {
+    flex: none;
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+  }
+  #results.quick .result .tx { min-width: 0; flex: 1; overflow: hidden; }
+  #results.quick .sec {
+    grid-column: 1 / -1;
+    margin-top: 6px;
+    font-size: 10px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 2px 2px 0;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+  }
+  #results.quick .sec:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+  #results.quick .result .t {
+    font-size: 13px;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 600;
+  }
+  #results.quick .result.selected .t { color: #fff; }
+  #results.quick .result .k {
+    display: inline-block;
+    font-size: 10px;
+    color: var(--accent);
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 5px;
+    padding: 1px 6px;
+    margin-top: 4px;
+    letter-spacing: .04em;
+  }
+  #results.quick .result .s {
+    font-size: 11px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .result .t {
     font-size: 13px;
     color: var(--fg);
@@ -152,78 +289,88 @@
     padding-top: 40px;
   }
   footer {
-    margin-top: 10px;
-    padding-top: 10px;
+    margin-top: 14px;
+    padding-top: 12px;
     border-top: 1px solid var(--border);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--muted);
     display: flex;
-    gap: 14px;
+    gap: 16px;
     flex-wrap: wrap;
+    align-items: center;
   }
   footer b { color: var(--sub); font-weight: 600; }
-  #resizePanel {
+  footer .lead { margin-left: auto; color: var(--accent); }
+  footer .lead b { color: var(--accent); }
+
+  #resizePanel, #movePanel {
     display: none;
-    margin-top: 10px;
-    background: var(--bg2);
+    position: absolute;
+    right: 24px;
+    bottom: 64px;
+    width: 320px;
+    background: var(--panel);
     border: 1px solid var(--border2);
-    border-radius: 8px;
-    padding: 10px 12px;
+    border-radius: 12px;
+    padding: 14px 16px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.45);
+    z-index: 5;
   }
-  #resizePanel.on { display: block; }
-  #movePanel {
-    display: none;
-    margin-top: 10px;
-    background: var(--bg2);
-    border: 1px solid var(--border2);
-    border-radius: 8px;
-    padding: 10px 12px;
-  }
-  #movePanel.on { display: block; }
-  .rp-head { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
-  #resizeSize { color: var(--accent); font-weight: 600; font-size: 13px; }
-  .rp-btns { display: flex; gap: 6px; margin-bottom: 8px; }
+  #resizePanel.on, #movePanel.on { display: block; }
+  .rp-head { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  #resizeSize, #movePos { color: var(--accent); font-weight: 600; font-size: 13px; }
+  .rp-btns { display: flex; gap: 6px; margin-bottom: 10px; }
   .rp-btns button, #rpMax {
-    background: var(--bg);
+    background: var(--bg2);
     border: 1px solid var(--border2);
     color: var(--fg);
     font: inherit;
-    border-radius: 6px;
-    padding: 5px 12px;
+    border-radius: 8px;
+    padding: 7px 14px;
     cursor: pointer;
   }
   .rp-btns button:hover, #rpMax:hover { border-color: var(--accent); color: var(--accent); }
-  #state {
-    font-size: 10px;
-    letter-spacing: .1em;
-    color: var(--muted);
-  }
-  #state.bright { color: var(--accent); }
 </style>
 </head>
 <body>
 <div id="wrap">
   <header>
-    <span class="logo">LZ</span>
-    <span class="brand">Lazyfox</span>
-    <span id="state">command</span>
-    <span id="modeTag">search</span>
+    <div class="brand"><span class="dot"></span>Lazyfox<small>home</small></div>
+    <div class="chips">
+      <span id="state">command</span>
+      <span id="modeTag">search</span>
+    </div>
   </header>
 
-  <input id="input" autocomplete="off" autocapitalize="off" spellcheck="false"
-    placeholder="search the web (Google)…">
-
-  <div class="modes" id="modes">
-    <button class="mode-btn on" data-mode="search">1 Search</button>
-    <button class="mode-btn" data-mode="url">2 URL</button>
-    <button class="mode-btn" data-mode="tabs">3 Tabs</button>
-    <button class="mode-btn" data-mode="history">4 History</button>
-    <button class="mode-btn" data-mode="bookmarks">5 Bookmarks</button>
-    <button class="mode-btn" data-mode="downloads">6 Downloads</button>
+  <div class="inputrow">
+    <span id="inputIcon">&#x2315;</span>
+    <input id="input" autocomplete="off" autocapitalize="off" spellcheck="false"
+      placeholder="search the web (Google)&#x2026;">
   </div>
 
+  <div class="modes" id="modes">
+    <button class="mode-btn on" data-mode="search"><span class="mi">&#x2315;</span>Search</button>
+    <button class="mode-btn" data-mode="url"><span class="mi">&#x2197;</span>URL</button>
+    <button class="mode-btn" data-mode="tabs"><span class="mi">&#x25A4;</span>Tabs</button>
+    <button class="mode-btn" data-mode="history"><span class="mi">&#x21BA;</span>History</button>
+    <button class="mode-btn" data-mode="bookmarks"><span class="mi">&#x2605;</span>Bookmarks</button>
+    <button class="mode-btn" data-mode="downloads"><span class="mi">&#x21E3;</span>Downloads</button>
+  </div>
+
+  <ul id="results"></ul>
+  <div id="empty" style="display:none"></div>
+
+  <footer>
+    <span><b>1-6 / Tab</b> mode</span>
+    <span><b>i</b> type</span>
+    <span><b>&#8595;&#8593;</b> navigate</span>
+    <span><b>Enter</b> open</span>
+    <span><b>Esc</b> clear</span>
+    <span class="lead"><b>;</b> leader menu</span>
+  </footer>
+
   <div id="resizePanel">
-    <div class="rp-head">Resize window · <span id="resizeSize"></span></div>
+    <div class="rp-head">Resize window &#183; <span id="resizeSize"></span></div>
     <div class="rp-btns">
       <button data-dx="0" data-dy="-32" title="up">&#8593;</button>
       <button data-dx="-32" data-dy="0" title="left">&#8592;</button>
@@ -234,7 +381,7 @@
   </div>
 
   <div id="movePanel">
-    <div class="rp-head">Move window · <span id="movePos"></span></div>
+    <div class="rp-head">Move window &#183; <span id="movePos"></span></div>
     <div class="rp-btns">
       <button data-mx="0" data-my="-32" title="up">&#8593;</button>
       <button data-mx="-32" data-my="0" title="left">&#8592;</button>
@@ -242,21 +389,6 @@
       <button data-mx="0" data-my="32" title="down">&#8595;</button>
     </div>
   </div>
-
-  <ul id="results"></ul>
-  <div id="empty" style="display:none"></div>
-
-  <footer>
-    <span><b>1-6 / Tab</b> switch mode</span>
-    <span><b>i</b> type</span>
-    <span><b>;</b> menu</span>
-    <span><b>arrows / j k</b> navigate</span>
-    <span><b>Enter</b> open</span>
-    <span><b>; w</b> resize</span>
-    <span><b>; m</b> move</span>
-    <span><b>; x n v c z</b> actions</span>
-    <span><b>Esc</b> back</span>
-  </footer>
 </div>
 
 <script src="commandcenter.js"></script>
