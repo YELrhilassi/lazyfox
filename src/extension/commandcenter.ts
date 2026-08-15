@@ -51,6 +51,7 @@ import { send } from "../shared/protocol";
   // The home screen command grid, grouped into sections. `group` drives the
   // section headers; items are rendered in order within each section.
   const QUICK: Array<{
+    kind: string;
     group: string;
     ic: string;
     title: string;
@@ -58,18 +59,18 @@ import { send } from "../shared/protocol";
     desc: string;
     run: () => void;
   }> = [
-    { group: "Tabs", ic: "\u229e", title: "New tab", keys: ";n", desc: "open a fresh tab", run: () => void send("newTab") },
-    { group: "Tabs", ic: "\u21b6", title: "Reopen closed tab", keys: ";v", desc: "restore the last one you closed", run: () => void send("reopenTab") },
-    { group: "Tabs", ic: "\u29c9", title: "Duplicate tab", keys: ";c", desc: "copy the current tab", run: () => void send("duplicateTab") },
-    { group: "Tabs", ic: "\u2715", title: "Close current tab", keys: ";x", desc: "close this tab", run: () => void send("closeTab", {}) },
-    { group: "Tabs", ic: "\u21c4", title: "Switch mode", keys: "1-6", desc: "Search \u00b7 URL \u00b7 Tabs \u00b7 History \u00b7 Bookmarks \u00b7 Downloads", run: () => {} },
-    { group: "Window", ic: "\u25c9", title: "Zen mode", keys: ";z", desc: "fullscreen \u2014 the toolbar stays hidden", run: () => void send("zen") },
-    { group: "Window", ic: "\u21f2", title: "Resize window", keys: ";w", desc: "resize with arrow keys or buttons", run: () => toggleResize(true) },
-    { group: "Window", ic: "\u2726", title: "Move window", keys: ";m", desc: "move with arrow keys (Shift = fine step)", run: () => toggleMove(true) },
-    { group: "Browser", ic: "\u2699", title: "Lazyfox settings", keys: "", desc: "open the extension options page", run: () => openOptions() },
-    { group: "Browser", ic: "\u{1F98A}", title: "Firefox settings", keys: "", desc: "open about:preferences", run: () => void send("openPage", { url: "about:preferences" }) },
-    { group: "Browser", ic: "\u21ba", title: "History", keys: "", desc: "show history in this command center", run: () => setMode("history") },
-    { group: "Browser", ic: "\u2913", title: "Downloads", keys: "", desc: "show downloads in this command center", run: () => setMode("downloads") }
+    { kind: "cmd", group: "Tabs", ic: "\u229e", title: "New tab", keys: ";n", desc: "open a fresh tab", run: () => void send("newTab") },
+    { kind: "cmd", group: "Tabs", ic: "\u21b6", title: "Reopen closed tab", keys: ";v", desc: "restore the last one you closed", run: () => void send("reopenTab") },
+    { kind: "cmd", group: "Tabs", ic: "\u29c9", title: "Duplicate tab", keys: ";c", desc: "copy the current tab", run: () => void send("duplicateTab") },
+    { kind: "cmd", group: "Tabs", ic: "\u2715", title: "Close current tab", keys: ";x", desc: "close this tab", run: () => void send("closeTab", {}) },
+    { kind: "cmd", group: "Tabs", ic: "\u21c4", title: "Switch mode", keys: "1-6", desc: "Search \u00b7 URL \u00b7 Tabs \u00b7 History \u00b7 Bookmarks \u00b7 Downloads", run: () => {} },
+    { kind: "cmd", group: "Window", ic: "\u25c9", title: "Zen mode", keys: ";z", desc: "fullscreen \u2014 the toolbar stays hidden", run: () => void send("zen") },
+    { kind: "cmd", group: "Window", ic: "\u21f2", title: "Resize window", keys: ";w", desc: "resize with arrow keys or buttons", run: () => toggleResize(true) },
+    { kind: "cmd", group: "Window", ic: "\u2726", title: "Move window", keys: ";m", desc: "move with arrow keys (Shift = fine step)", run: () => toggleMove(true) },
+    { kind: "cmd", group: "Browser", ic: "\u2699", title: "Lazyfox settings", keys: "", desc: "open the extension options page", run: () => openOptions() },
+    { kind: "cmd", group: "Browser", ic: "\u{1F98A}", title: "Firefox settings", keys: "", desc: "open about:preferences", run: () => void send("openPage", { url: "about:preferences" }) },
+    { kind: "cmd", group: "Browser", ic: "\u21ba", title: "History", keys: "", desc: "show history in this command center", run: () => setMode("history") },
+    { kind: "cmd", group: "Browser", ic: "\u2913", title: "Downloads", keys: "", desc: "show downloads in this command center", run: () => setMode("downloads") }
   ];
 
   const GRID_COLS = 3;
@@ -628,10 +629,12 @@ import { send } from "../shared/protocol";
 
   setMode("search");
   updateResizeSize();
-  setState("cmd");
-  input.blur();
+  // Start with the input focused (insert mode): typing works for every key,
+  // including h/j/k/l — hjkl only navigate the grid in command mode (Esc).
+  setState("insert");
+  focusInput();
   window.addEventListener("load", () => {
-    input.blur();
-    setState("cmd");
+    focusInput();
+    setState("insert");
   });
 })();

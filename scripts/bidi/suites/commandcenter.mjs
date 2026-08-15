@@ -1,7 +1,7 @@
 // Command center (new tab page) tests: modes, keys, popups driven through the
 // chrome helper's #lfc=state channel, and the tab commands.
 
-import { evalIn, keyTap, waitFor, sleep, activate } from "../lib.mjs";
+import { evalIn, keyTap, waitFor, sleep, activate, navigate } from "../lib.mjs";
 import { assert } from "../harness.mjs";
 
 export const group = "commandcenter";
@@ -80,6 +80,32 @@ export async function run(ctx) {
     assert((s.popup.panels[0] || {}).title === "Search", "search popup title");
     await ctx.press(ctx.tabA, "Escape");
     await waitFor(async () => !(await ctx.chromeState()).popup.current, 8000);
+  });
+
+  await t("home page opens with the input focused; typing works for h/l", async () => {
+    // Regression: the home page must start with the input focused so every
+    // key (including h/j/k/l, which navigate the grid in command mode) types.
+    await activate(ctx.tabA);
+    await navigate(ctx.tabA, "about:newtab", "complete");
+    await waitFor(async () => {
+      const u = await evalIn(ctx.tabA, `location.href`);
+      return u && u.includes("commandcenter.html") ? u : null;
+    }, 15000);
+    await waitFor(async () => {
+      const n = await evalIn(ctx.tabA, `document.querySelectorAll("#results .result").length`);
+      return n > 0 ? n : null;
+    }, 15000);
+    const f0 = await ctx.ccFacts(ctx.tabA);
+    assert(f0.focused, "input is focused when the home page opens");
+    assert(f0.state === "insert", "insert mode on open, got " + f0.state);
+    // h and l must TYPE (not navigate the grid) while the input is focused.
+    await ctx.typeIn(ctx.tabA, "h");
+    let f = await ctx.ccFacts(ctx.tabA);
+    assert(f.inputVal === "h", "h typed into the input, got " + JSON.stringify(f.inputVal));
+    await ctx.typeIn(ctx.tabA, "l");
+    f = await ctx.ccFacts(ctx.tabA);
+    assert(f.inputVal === "hl", "l typed into the input, got " + JSON.stringify(f.inputVal));
+    await ctx.press(ctx.tabA, "Escape");
   });
 
   await t("command center typing starts insert mode, Esc returns to cmd", async () => {
