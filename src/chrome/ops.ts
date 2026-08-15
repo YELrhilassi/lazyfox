@@ -49,7 +49,20 @@ function el(tag: string, attrs?: Record<string, string> | null, text?: string | 
   return e;
 }
 
+// Mirrors the Go core's NormalizeUrl (scheme-less input gets https://). Any
+// caller can hand loadUrl raw user text (the URL popup's onEnter fallback, a
+// history item, etc.); a scheme-less string would otherwise make addTab/loadURI
+// fail, leaving an about:blank tab that the background then converts to the
+// lazyfox home page.
+function loadableUrl(url: string): string {
+  const t = (url || "").trim();
+  if (!t) return t;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t)) return t;
+  return "https://" + t;
+}
+
 function loadUrl(url: string, newTab: boolean | undefined): void {
+  url = loadableUrl(url);
   if (!url) return;
   const openInNewTab = () => {
     try {
@@ -168,7 +181,18 @@ export const chromeOps: ActionOps = {
     const text = (q || "").trim();
     const entries: PopupItem[] = [];
     if (!text) return entries;
-    entries.push({ kind: "url", title: "Open URL", subtitle: text, url: text });
+    // Normalize exactly like the background path (core.normalizeUrl) so the
+    // picked row always carries a loadable URL. Passing raw scheme-less text
+    // to gBrowser.addTab/loadURI fails (e.g. a bare word like a session name),
+    // which leaves an about:blank tab that the background then converts to the
+    // lazyfox home page.
+    let url = text;
+    try {
+      url = await core.normalizeUrl(text);
+    } catch (e) {
+      // keep raw text on core failure
+    }
+    entries.push({ kind: "url", title: "Open URL", subtitle: url, url: url });
     try {
       const visited = histItems(text, 120);
       const ranked = await core.rankVisited(visited, text);

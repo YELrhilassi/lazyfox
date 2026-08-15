@@ -8,6 +8,7 @@
 // Search functions are async (Promise-returning) by contract: createSelector
 // requires it, which is exactly the bug that broke the chrome `;t`/`;h` popups
 // before unification.
+import { core } from "./core";
 import { esc } from "./dom";
 import { createSelector, type PopupCtl } from "./overlay";
 import type { ActionOps } from "./ops";
@@ -135,6 +136,24 @@ export function openUrlPopup(ctx: PopupCtx): void {
         onPick: (it) => {
           ctx.close();
           ctx.ops.openUrl(it.url || "", false);
+        },
+        // Enter must work even when the debounced suggestions haven't loaded
+        // yet (empty list): fall back to opening the typed value, normalized
+        // exactly like the command-center input. Otherwise a fast Enter does
+        // nothing, and a scheme-less word that fails to load leaves a blank tab
+        // that the background converts to the lazyfox home page. A highlighted
+        // row (e.g. a history entry the user navigated to) still wins via the
+        // default pick.
+        onEnter: (value, item) => {
+          if (item) return false;
+          const v = (value || "").trim();
+          if (!v) return false;
+          ctx.close();
+          core
+            .normalizeUrl(v)
+            .then((u) => ctx.ops.openUrl(u, false))
+            .catch(() => ctx.ops.openUrl(v, false));
+          return true;
         },
       })
   );
