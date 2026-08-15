@@ -114,4 +114,26 @@ export const pages = {
 </footer>
 </body></html>`,
   },
+  // A page that can enter DOM fullscreen (like an HTML5 video would) — the
+  // status bar must hide the moment it does, and re-show on exit. The `f` key
+  // triggers it so tests can send a real (trusted) key event, which Firefox
+  // accepts for requestFullscreen() where a synthetic .click() is denied.
+  "/fullscreen": {
+    body: `<!DOCTYPE html><html><head><title>FULLSCREEN TEST</title></head>
+<body>
+<h1>Fullscreen</h1>
+<div id="vid" style="width:100%;height:100%;background:#0a0"></div>
+<button id="fs" onclick="document.getElementById('vid').requestFullscreen()">fullscreen</button>
+<button id="exit" onclick="document.exitFullscreen()">exit</button>
+<script>
+document.addEventListener("keydown", function (e) {
+  if (e.key === "f" && !document.fullscreenElement) {
+    try { document.getElementById("vid").requestFullscreen(); } catch (err) { document.title = "FS-DENIED"; }
+  } else if (e.key === "x" && document.fullscreenElement) {
+    document.exitFullscreen();
+  }
+});
+</script>
+</body></html>`,
+  },
 };

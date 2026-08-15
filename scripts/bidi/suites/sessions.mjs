@@ -12,40 +12,25 @@ export async function run(ctx) {
 
   console.log("\n== Sessions + status bar ==");
 
-  await t("status bar renders on web pages", async () => {
+  await t("status bar renders on web pages (single window bar)", async () => {
+    // The chrome helper owns ONE window-level bar for every tab. A web page
+    // must NOT carry its own fixed bar (that one overlapped content while
+    // scrolling) — only the window bar exists, and it shrinks the content
+    // area so the page never renders underneath it.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    await waitFor(async () => {
-      const v = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-status")`);
-      return v ? v : null;
-    }, 8000);
-    const v = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-status")`);
-    assert(v && v.indexOf("default") !== -1, "status bar shows the default session: " + v);
-    assert(await ctx.hasHost(ctx.tabA, "lazyfox-status"), "status bar host mounted on the page");
-    // The bottom bar reserves real layout space (html padding-bottom) so it
-    // never covers the page content behind it.
-    const pb = await evalIn(ctx.tabA, `getComputedStyle(document.documentElement).paddingBottom`);
-    assert(pb && parseFloat(pb) >= 18, "status bar reserves bottom space: " + pb);
+    const s = await ctx.chromeState();
+    assert(s && s.statusMounted === true, "window bar mounted on a web page");
+    assert(s && s.statusAttr && s.statusAttr.indexOf("default") !== -1, "window bar shows the default session: " + (s && s.statusAttr));
+    assert(!(await ctx.hasHost(ctx.tabA, "lazyfox-status")), "no per-page fixed bar (it would overlap content while scrolling)");
   });
 
-  await t("status bar reserves space on a body-scrolling page", async () => {
-    // Pages that scroll via BODY (not html) used to hide their last rows
-    // behind the fixed bar; the reservation must land on the scrolling
-    // element, which is body here.
+  await t("window bar shrinks content so a web page never renders under it", async () => {
+    // The reservation lives in the chrome document (#browser margin), so even
+    // a body-scrolling page reflows above the bar instead of hiding its last
+    // rows behind a fixed overlay.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/bodyscroll`);
-    await waitFor(async () => {
-      const v = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-status")`);
-      return v ? v : null;
-    }, 8000);
-    const info = await evalIn(ctx.tabA, `JSON.stringify({
-      htmlPb: getComputedStyle(document.documentElement).paddingBottom,
-      bodyPb: getComputedStyle(document.body).paddingBottom,
-    })`);
-    const d = JSON.parse(info);
-    // Firefox reports documentElement as scrollingElement even when body is the
-    // real scroll container, so assert the reservation landed on BODY (the
-    // element that actually scrolls here) — html padding alone would leave the
-    // page's last rows behind the fixed bar.
-    assert(parseFloat(d.bodyPb) >= 18, "body padding reserved so content is not hidden: " + info);
+    const s = await ctx.chromeState();
+    assert(s && s.browserReserve && s.browserReserve.mb === "18px", "#browser reserved 18px for the bar: " + JSON.stringify(s && s.browserReserve));
   });
 
   await t("chrome status bar renders on the command center", async () => {
@@ -56,17 +41,25 @@ export async function run(ctx) {
   });
 
   await t("status bar position: top setting moves the bar", async () => {
+    // Config reaches the chrome helper through the #lfc=cfg channel (the same
+    // path the options page uses), then the bar re-renders on its 500ms poll.
+    const pushCfg = async (partial) => {
+      const nonce = "cfgt" + Date.now() + Math.floor(Math.random() * 1e6);
+      const payload = encodeURIComponent(JSON.stringify({ config: partial }));
+      await evalIn(ctx.probe, `location.hash = "#lfc=cfg.${nonce}.${payload}"`).catch(() => {});
+      await sleep(900);
+    };
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    await evalIn(ctx.probe, `browser.storage.local.get("config").then(r => browser.storage.local.set({ config: Object.assign({}, r.config || {}, { statusBarPosition: "top" }) }))`).catch(() => {});
+    await pushCfg({ statusBarPosition: "top" });
     await waitFor(async () => {
-      const v = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-status")`);
-      return v && v.indexOf("|top") !== -1 ? v : null;
+      const s = await ctx.chromeState();
+      return s && s.statusAttr && s.statusAttr.indexOf("|top") !== -1 ? true : null;
     }, 8000);
     // restore bottom
-    await evalIn(ctx.probe, `browser.storage.local.get("config").then(r => browser.storage.local.set({ config: Object.assign({}, r.config || {}, { statusBarPosition: "bottom" }) }))`).catch(() => {});
+    await pushCfg({ statusBarPosition: "bottom" });
     await waitFor(async () => {
-      const v = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-status")`);
-      return v && v.indexOf("|bottom") !== -1 ? v : null;
+      const s = await ctx.chromeState();
+      return s && s.statusAttr && s.statusAttr.indexOf("|bottom") !== -1 ? true : null;
     }, 8000);
   });
 
@@ -111,8 +104,8 @@ export async function run(ctx) {
     assert(r && r.tabs && r.tabs.length >= 1, "work captured tabs");
     // The status bar reflects the current session name.
     await waitFor(async () => {
-      const v = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-status")`);
-      return v && v.indexOf("work") !== -1 ? v : null;
+      const s = await ctx.chromeState();
+      return s && s.statusAttr && s.statusAttr.indexOf("work") !== -1 ? true : null;
     }, 8000);
   });
 
@@ -217,6 +210,31 @@ export async function run(ctx) {
     assert(r && r.tabs && r.tabs.length >= 1, "instant saved with tabs");
     // clean up so later tests are unaffected
     await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.instant; return browser.storage.local.set({ lfSessions: r.lfSessions }); })`);
+  });
+
+  await t("sessions: new clean session creates an empty session without touching the window", async () => {
+    // A brand-new name offers a "new clean session" row (arrow down from the
+    // save row); picking it creates an EMPTY session under that name and must
+    // leave the current window's tabs exactly as they were.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const before = await ctx.tabsInfo();
+    await ctx.leaderPress(ctx.tabA, "p");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "clean");
+    await sleep(700);
+    await ctx.press(ctx.tabA, "ArrowDown"); // save row -> new-clean-session row
+    await sleep(200);
+    await ctx.press(ctx.tabA, "Enter");
+    await waitFor(async () => {
+      const r = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.clean)`);
+      return r ? r : null;
+    }, 8000);
+    const clean = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.clean)`);
+    assert(clean && Array.isArray(clean.tabs) && clean.tabs.length === 0, "clean session saved with zero tabs: " + JSON.stringify(clean && clean.tabs));
+    const after = await ctx.tabsInfo();
+    assert(after.length === before.length, "creating a clean session did not change the window's tabs");
+    // Clean up the throwaway session.
+    await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.clean; return browser.storage.local.set({ lfSessions: r.lfSessions }); })`);
   });
 
   await t("sessions: x x on empty input deletes the highlighted session", async () => {

@@ -38,12 +38,42 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   }
   loadConfig();
 
-  browser.storage.onChanged.addListener((changes: { config?: { newValue?: Partial<Config> } }, area: string) => {
-    if (area === "local" && changes.config) {
-      config = mergeConfig(changes.config.newValue || {});
-      ensureStatusBar();
+  // The chrome helper (userChrome.uc.js) draws the ONE window-level status bar
+  // and shrinks the content area so pages never render under it. When it is
+  // alive this per-page fixed bar must stay hidden, or the two would double up
+  // and the fixed bar would overlap content while scrolling. Only in standalone
+  // mode (chrome helper absent) does the content script draw its own bar.
+  let chromeAlive = false;
+  function refreshChromeAlive() {
+    void browser.storage.local.get("chromeAlive").then(
+      (r: { chromeAlive?: boolean }) => {
+        const next = !!(r && r.chromeAlive);
+        if (next !== chromeAlive) {
+          chromeAlive = next;
+          ensureStatusBar();
+        }
+      },
+      () => {}
+    );
+  }
+  refreshChromeAlive();
+
+  browser.storage.onChanged.addListener(
+    (
+      changes: { config?: { newValue?: Partial<Config> }; chromeAlive?: { newValue?: boolean } },
+      area: string
+    ) => {
+      if (area !== "local") return;
+      if (changes.config) {
+        config = mergeConfig(changes.config.newValue || {});
+        ensureStatusBar();
+      }
+      if (changes.chromeAlive) {
+        chromeAlive = !!changes.chromeAlive.newValue;
+        ensureStatusBar();
+      }
     }
-  });
+  );
 
   /* ===================== link hints ===================== */
 
@@ -134,7 +164,10 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   };
 
   function ensureStatusBar(): void {
-    if (config.statusBar === false) {
+    // The chrome helper owns the single window-level bar whenever it is alive
+    // (web pages, chrome pages, and split panes). This per-page fixed bar only
+    // appears in standalone mode, where it pads the page to reserve its space.
+    if (config.statusBar === false || chromeAlive || statusInfo.inSplit) {
       statusBar.hide();
       return;
     }
@@ -165,6 +198,7 @@ import { createContentOps, type ContentPopupShell } from "./ops";
           splitOrientation: r.splitOrientation,
           sessions: r.sessions || [],
         };
+        ensureStatusBar();
         statusBar.setData(statusInfo);
         renderStatus();
       }

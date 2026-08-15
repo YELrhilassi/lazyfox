@@ -9,7 +9,7 @@
 // exercises it. Vertical/stacked splits were removed (Firefox's native view
 // is side-by-side only).
 
-import { evalIn, waitFor, sleep, clickPage, navigate, getTree, createTab } from "../lib.mjs";
+import { evalIn, waitFor, sleep, clickPage, navigate, getTree, createTab, closeContext } from "../lib.mjs";
 import { assert } from "../harness.mjs";
 
 export const group = "split";
@@ -459,6 +459,47 @@ export async function run(ctx) {
     }
     const panel = leftovers.find((t) => (t.url || "").includes("splitpanel.html"));
     if (panel) await evalIn(ctx.probe, `browser.tabs.remove(${panel.id})`).catch(() => {});
+    await sleep(400);
+  });
+
+  await t("split: one window-level status bar (not one per pane)", async () => {
+    // During a native split the chrome helper shows the single window bar and
+    // the web panes hide their per-tab bars, so there is exactly ONE bar for
+    // the whole window instead of one rendered in each pane.
+    await waitNoSplit();
+    const a = await createTab();
+    await ctx.openCC(a);
+    const b = await createTab();
+    await navigate(b, `${ctx.base}/hello`, "complete");
+    await sleep(400);
+    await ctx.openCC(a); // re-activate the CC tab
+    await ctx.leaderPress(a, "\\", { shift: true }); // ;| -> CC + panel
+    await sleep(800);
+    const real = (await ctx.tabsInfo()).filter(
+      (t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=")
+    );
+    const helloIdx = real.findIndex((t) => (t.url || "").includes("/hello")) + 1;
+    await ctx.leaderPress(a, "=", { shift: true }); // ;+
+    await sleep(250);
+    await ctx.press(a, String(Math.min(Math.max(helloIdx, 1), 9)));
+    await sleep(4000); // let the 3s content poll hide the pane's bar
+    const st = await ctx.chromeState();
+    assert(st && st.statusMounted === true, "chrome window bar mounted during the split");
+    // The window bar must reserve its height out of the browser content area
+    // (margin-bottom on #browser), so the panes reflow above it instead of
+    // rendering behind it.
+    assert(
+      st && st.browserReserve && st.browserReserve.mb === "18px",
+      "#browser reserved 18px for the bar during the split: " + JSON.stringify(st && st.browserReserve)
+    );
+    // The hello pane (b) must have hidden its per-tab bar.
+    const host = await evalIn(b, `!!document.getElementById("lazyfox-status")`).catch(() => null);
+    assert(host === false, "web pane has no per-tab bar during the split (got " + host + ")");
+    // Clean up: unsplit and drop the two fresh tabs.
+    await ctx.leaderPress(a, "\\");
+    await waitNoSplit();
+    await closeContext(b).catch(() => {});
+    await closeContext(a).catch(() => {});
     await sleep(400);
   });
 }

@@ -297,11 +297,20 @@ export function openSessionsPopup(ctx: PopupCtx): void {
       (s) => (s.title || "").toLowerCase().indexOf(lower) !== -1
     );
     if (!sessions.some((s) => (s.title || "").toLowerCase() === lower)) {
-      out.unshift({
-        kind: "save",
-        title: ql,
-        subtitle: "Save current tabs as \u201C" + ql + "\u201D",
-      });
+      // A brand-new name offers two actions: save the current tabs, or create
+      // a clean (empty) session under that name without touching the window.
+      out.unshift(
+        {
+          kind: "save",
+          title: ql,
+          subtitle: "Save current tabs as \u201C" + ql + "\u201D",
+        },
+        {
+          kind: "new",
+          title: ql,
+          subtitle: "New clean session \u201C" + ql + "\u201D (empty)",
+        }
+      );
     }
     return out;
   };
@@ -354,6 +363,13 @@ export function openSessionsPopup(ctx: PopupCtx): void {
               "</div><div class='s'>" + esc(s.subtitle || "") + "</div>"
             );
           }
+          if (s.kind === "new") {
+            return (
+              "<div class='t'><span class='dot new'></span>" +
+              esc(s.title || "") +
+              "</div><div class='s'>" + esc(s.subtitle || "") + "</div>"
+            );
+          }
           return (
             "<div class='t'>" +
             (s.marker ? "<span class='lf-marker'>" + s.marker + "</span>" : "") +
@@ -364,12 +380,19 @@ export function openSessionsPopup(ctx: PopupCtx): void {
         onPick: (s) => {
           ctx.close();
           if (s.kind === "save") ctx.ops.saveSession(s.title || "");
+          else if (s.kind === "new") ctx.ops.newSession(s.title || "");
           else ctx.ops.restoreSession(s.title || "");
         },
-        onEnter: (value) => {
+        onEnter: (value, item) => {
           const name = value.trim();
           if (!name) return false;
           ctx.close();
+          // Enter on the highlighted "new clean session" row creates an empty
+          // session; any other Enter keeps the existing save/switch behavior.
+          if (item && item.kind === "new") {
+            ctx.ops.newSession(name);
+            return true;
+          }
           const exact = sessions.find(
             (s) => (s.title || "").toLowerCase() === name.toLowerCase()
           );

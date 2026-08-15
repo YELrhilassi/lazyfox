@@ -86,9 +86,16 @@ export class StatusBar {
   // document_start; once the body exists we must re-apply the class (the
   // element that actually scrolls is often body). Self-heal in render().
   private bodyReserved = false;
+  // When set, the bar reserves space by adding a margin to this element (a
+  // CSS selector) instead of padding the page's scrolling element. The chrome
+  // helper uses this to shrink the browser content area (#browser) so the
+  // window-level bar never overlaps web content — XUL padding on :root does
+  // not reflow the tab strip.
+  private readonly reserveSelector: string | null;
 
-  constructor(reserveSpace = true) {
+  constructor(reserveSpace = true, reserveSelector: string | null = null) {
     this.reserveSpace = reserveSpace;
+    this.reserveSelector = reserveSelector;
   }
   private data: StatusBarData = {
     name: "default",
@@ -166,7 +173,11 @@ export class StatusBar {
         ":root.lf-status-reserve-bottom{padding-bottom:" + BAR_HEIGHT + "px !important;}" +
         ":root.lf-status-reserve-top{padding-top:" + BAR_HEIGHT + "px !important;}" +
         "body.lf-status-reserve-bottom{padding-bottom:" + BAR_HEIGHT + "px !important;}" +
-        "body.lf-status-reserve-top{padding-top:" + BAR_HEIGHT + "px !important;}";
+        "body.lf-status-reserve-top{padding-top:" + BAR_HEIGHT + "px !important;}" +
+        (this.reserveSelector
+          ? this.reserveSelector + ".lf-status-reserve-bottom{margin-bottom:" + BAR_HEIGHT + "px !important;}" +
+            this.reserveSelector + ".lf-status-reserve-top{margin-top:" + BAR_HEIGHT + "px !important;}"
+          : "");
       (document.head || document.documentElement).appendChild(st);
       this.reserveStyle = st;
     } catch (e) {
@@ -183,14 +194,25 @@ export class StatusBar {
   // harmless, missing padding hides the page's last rows behind the bar.
   private reserve(): void {
     if (!this.reserveSpace) return;
-    // In a XUL chrome document document.scrollingElement is null; fall back to
-    // the <window> root, which :root padding rules also match.
-    const el = document.scrollingElement || document.documentElement;
-    if (!el) return;
     this.unreserve();
     this.ensureReserveStyle();
     const cls =
       this.position === "top" ? "lf-status-reserve-top" : "lf-status-reserve-bottom";
+    if (this.reserveSelector) {
+      // Chrome helper: shrink the browser content area so the fixed window
+      // bar sits in reserved space instead of over the page.
+      const el = document.querySelector(this.reserveSelector);
+      if (el) {
+        el.classList.add(cls);
+        this.reservedEl = el;
+        this.reservedCls = cls;
+      }
+      return;
+    }
+    // In a XUL chrome document document.scrollingElement is null; fall back to
+    // the <window> root, which :root padding rules also match.
+    const el = document.scrollingElement || document.documentElement;
+    if (!el) return;
     el.classList.add(cls);
     this.reservedEl = el;
     this.reservedCls = cls;
