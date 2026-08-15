@@ -218,6 +218,16 @@ export async function navigate(context, url, wait = "complete") {
   return send("browsingContext.navigate", { context, url, wait });
 }
 
+// Capture a PNG of a browsing context and write it to disk.
+// Returns the file path.
+export async function captureScreenshot(context, filePath) {
+  const r = await send("browsingContext.captureScreenshot", { context });
+  const data = r && r.data;
+  if (!data) throw new Error("no screenshot data for " + context);
+  writeFileSync(filePath, Buffer.from(data, "base64"));
+  return filePath;
+}
+
 export async function getTree() {
   const r = await send("browsingContext.getTree", {});
   // geckodriver names the field `context` (newer spec drafts); normalize to
