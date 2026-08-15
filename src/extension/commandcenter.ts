@@ -206,9 +206,16 @@ import { send } from "../shared/protocol";
       );
     }
     if (mode === "downloads") {
+      const prog =
+        typeof it.progress === "number" && it.progress >= 0
+          ? "<span class='dl-state'>" + it.progress + "%</span>"
+          : "";
       return (
-        "<div class='t'>" + esc(it.filename) + "</div><div class='s'>" +
-        esc(it.url || "") + " \u00b7 " + esc(it.state || "") + "</div>"
+        "<div class='t'>" +
+        esc(it.filename || "") +
+        " <span class='dl-state'>" + esc(it.state || "") + "</span>" +
+        prog +
+        "</div><div class='s'>" + esc(it.path || it.url || "") + "</div>"
       );
     }
     return (
@@ -276,7 +283,7 @@ import { send } from "../shared/protocol";
       return;
     }
     if (mode === "downloads") {
-      void send("openDownload", { id: item.id });
+      void send("openDownload", { id: item.key });
     }
   }
 
@@ -488,6 +495,15 @@ import { send } from "../shared/protocol";
       if (k === "ArrowLeft" || k === "h") {
         e.preventDefault();
         move(-1, 0);
+        return;
+      }
+      if (mode === "downloads" && (k === "x" || k === "o")) {
+        const item = all[idx];
+        if (item && item.key) {
+          e.preventDefault();
+          if (k === "x") void send("removeDownload", { id: item.key });
+          else void send("openDownloadLocation", { id: item.key });
+        }
         return;
       }
       if (/^[1-6]$/.test(k)) {

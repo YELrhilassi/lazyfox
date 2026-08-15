@@ -190,6 +190,7 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         items = items.filter(
           (d) =>
             (d.filename || "").toLowerCase().indexOf(ql) !== -1 ||
+            (d.path || "").toLowerCase().indexOf(ql) !== -1 ||
             (d.url || "").toLowerCase().indexOf(ql) !== -1
         );
       }
@@ -237,7 +238,13 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
       else void send("activateTabAt", { index: n });
     },
     zoom: (delta: number, factor?: number) => void send("zoom", { delta: delta, factor: factor }),
-    openDownload: (id: number) => void send("openDownload", { id: id }),
+    openDownload: (key: string) => void send("openDownload", { id: key }),
+    openDownloadLocation: (key: string) => void send("openDownloadLocation", { id: key }),
+    removeDownload: (key: string) => void send("removeDownload", { id: key }),
+    dismissDownload: (_key?: string) => {
+      // The content-script bar does not render download progress (the chrome
+      // helper's window bar owns that); nothing to dismiss here.
+    },
     copyUrl: () => {
       void send("copyUrl").then((r) => {
         if (r && r.url) {

@@ -18,6 +18,12 @@ export interface StatusBarSessions {
   splitCount: number;
 }
 
+export interface StatusBarDownload {
+  filename: string;
+  percent: number; // 0..100, -1 when total is unknown
+  speed: string; // pre-formatted "2.4 MB/s" or ""
+}
+
 export interface StatusBarData {
   name: string;
   marker: number;
@@ -30,6 +36,8 @@ export interface StatusBarData {
   splitPanes: number;
   mode: string;
   sessions: StatusBarSessions[];
+  // Active (un-dismissed) downloads whose progress belongs on the bar.
+  downloads: StatusBarDownload[];
 }
 
 const CSS = `
@@ -52,6 +60,10 @@ const CSS = `
 .seg.tabs b{color:#7aa2f7;font-weight:800;}
 .seg.tabs .cnt{color:#9aa5ce;font-weight:600;}
 .seg.split{background:#e0af68;color:#1a1b26;font-weight:800;}
+.seg.dl{background:#2ac3de;color:#16161e;font-weight:800;}
+.seg.dl .dlitem{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;}
+.seg.dl .dlitem+.dlitem{margin-left:10px;padding-left:10px;border-left:1px solid rgba(22,22,30,.25);}
+.seg.dl .pct{opacity:.85;font-weight:700;}
 .seg.chips{background:none;clip-path:none;margin-left:6px;gap:6px;
   overflow:hidden;padding:0 6px;align-items:center;}
 .pill{display:inline-flex;align-items:center;gap:5px;height:14px;border-radius:7px;
@@ -107,6 +119,7 @@ export class StatusBar {
     splitPanes: 0,
     mode: "NORMAL",
     sessions: [],
+    downloads: [],
   };
 
   get mounted(): boolean {
@@ -124,6 +137,7 @@ export class StatusBar {
       "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
       "<span class='seg tabs linked'><span class='ic'>▤</span><b></b><span class='cnt'></span></span>" +
       "<span class='seg split linked'><span class='ic'>⧉</span><span class='p'></span></span>" +
+      "<span class='seg dl linked'><span class='ic'>⭳</span><span class='items'></span></span>" +
       "<span class='seg chips'></span>" +
       "</div>";
     host._sh = sh;
@@ -276,6 +290,8 @@ export class StatusBar {
     const tabCnt = tabs ? (tabs.querySelector(".cnt") as HTMLElement | null) : null;
     const split = sh.querySelector(".split") as HTMLElement | null;
     const splitP = split ? (split.querySelector(".p") as HTMLElement | null) : null;
+    const dl = sh.querySelector(".dl") as HTMLElement | null;
+    const dlItems = dl ? (dl.querySelector(".items") as HTMLElement | null) : null;
     const chips = sh.querySelector(".chips");
 
     if (name) name.textContent = this.data.name;
@@ -296,6 +312,32 @@ export class StatusBar {
         splitP.textContent =
           active + "/" + panes +
           (this.data.splitOrientation === "vertical" ? " · v" : " · h");
+      }
+    }
+
+    if (dl && dlItems) {
+      dl.style.display = this.data.downloads.length > 0 ? "" : "none";
+      dlItems.textContent = "";
+      for (const d of this.data.downloads) {
+        const item = document.createElement("span");
+        item.className = "dlitem";
+        const name = document.createElement("span");
+        name.className = "n";
+        name.textContent = d.filename;
+        item.appendChild(name);
+        if (d.percent >= 0) {
+          const pct = document.createElement("span");
+          pct.className = "pct";
+          pct.textContent = d.percent + "%";
+          item.appendChild(pct);
+        }
+        if (d.speed) {
+          const spd = document.createElement("span");
+          spd.className = "pct";
+          spd.textContent = d.speed;
+          item.appendChild(spd);
+        }
+        dlItems.appendChild(item);
       }
     }
 

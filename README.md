@@ -256,6 +256,8 @@ and split panes alike. Left to right:
   pill is a gradient of its own color, the current one is ringed, and it's
   informational only: it never loads another session's tabs;
 - the current **mode** on the right.
+- a **download segment** (`⭳ file 42% 2.4 MB/s`) while something is
+  downloading — one segment per active download, updated live.
 
 ![The status bar with session pills](docs/img/statusbar.png)
 
@@ -267,6 +269,25 @@ per split pane), and it reserves its height out of the window's content area —
 so page content, in a single tab or in split panes, reflows above the bar
 instead of rendering behind it. It also hides itself the moment a page goes
 fullscreen (a video, for example) and comes back when fullscreen exits.
+
+A download's progress notification can be dismissed with **`;D`** — the file
+keeps downloading and stays in the Downloads list, it just leaves the bar.
+
+### Downloads
+
+Press **`;d`** to open the download list. It is prepopulated — no search
+needed — and every row shows the file name, its full location, its state
+(downloading / done / failed / paused), live size and progress. The list
+refreshes as downloads advance. Keyboard actions on the highlighted row:
+
+- **`Enter`** opens the file;
+- **`o`** opens the file's folder (and selects it);
+- **`x x`** deletes the file and its history entry (the second `x` confirms,
+  so a stray keypress can't remove a file).
+
+The same list lives in the command center's Downloads mode. Active download
+progress is mirrored on the status bar (see above) and is driven by the Go
+core, which reconciles snapshots, computes progress and formats byte counts.
 
 ### Split view
 

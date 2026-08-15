@@ -55,6 +55,7 @@ var Bindings = []WkItem{
 	{Key: "q", Label: "Toggle which-key overlay", Group: "Tools"},
 	{Key: "e", Label: "Toggle toolbar reveal", Group: "Tools"},
 	{Key: "z", Label: "Zen mode", Group: "Tools"},
+	{Key: "D", Label: "Dismiss download notification", Group: "Tools"},
 
 	// ---- Sessions (tmux-style) ----
 	{Key: "p", Label: "Sessions", Group: "Sessions"},

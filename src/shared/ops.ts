@@ -30,7 +30,10 @@ export interface ActionOps {
   tabNav(dir: number): void;
   tabJump(n: number): void;
   zoom(delta: number, factor?: number): void;
-  openDownload(id: number): void;
+  openDownload(key: string): void;
+  removeDownload(key: string): void;
+  openDownloadLocation(key: string): void;
+  dismissDownload(key?: string): void;
   copyUrl(): void;
   muteTab(): void;
   zen(): void;

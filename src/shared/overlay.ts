@@ -42,6 +42,13 @@ export const PANEL_CSS = `
 .lf-item.selected.lf-armed{background:#3a1f2a;border-left-color:#f7768e;}
 .lf-item.selected.lf-armed .t{color:#f7768e;}
 .lf-arm{color:#f7768e;font-weight:700;font-size:11px;}
+.dl-state{display:inline-block;font-size:9px;letter-spacing:.08em;text-transform:uppercase;
+  background:#292e42;color:#9aa5ce;border-radius:4px;padding:0 6px;margin-left:8px;vertical-align:1px;}
+.dl-pct{color:#7aa2f7;font-size:12px;margin-left:8px;font-weight:700;}
+.dl-bar{height:3px;background:#16161e;border-radius:2px;margin-top:5px;overflow:hidden;}
+.dl-fill{height:100%;background:#7aa2f7;border-radius:2px;}
+.dl-fill.done{background:#9ece6a;}
+.dl-fill.fail{background:#f7768e;}
 .hint{position:fixed;z-index:2147483646;background:#2ac3de;color:#16161e;font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;
   padding:2px 5px;border-radius:4px;pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4);}
 `;

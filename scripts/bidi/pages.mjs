@@ -4,6 +4,13 @@
 // split-view tests).
 
 export const pages = {
+  // A slow, chunked octet-stream: downloading it keeps the entry in_progress
+  // (~4s at 64KB/250ms) so the status-bar progress segment can be observed.
+  "/slowfile": {
+    type: "application/octet-stream",
+    headers: { "Content-Disposition": "attachment; filename=\"lf-slow.bin\"" },
+    stream: { body: "L".repeat(2 * 1024 * 1024), chunkBytes: 65536, delayMs: 250 },
+  },
   "/": {
     body: `<!DOCTYPE html><html><head><title>LF Test Page</title></head>
 <body>
