@@ -60,6 +60,7 @@ export interface BgApi {
   sessionSplit: { req: { orientation: "horizontal" | "vertical" }; res: { ok: boolean; note?: string } };
   sessionUnsplit: { req: Record<string, never>; res: { ok: boolean; note?: string } };
   sessionSwitchPane: { req: { dir: number }; res: { ok: boolean; note?: string } };
+  sessionSwapPane: { req: { dir: number }; res: { ok: boolean; note?: string } };
   sessionSplitAddTabByIndex: { req: { index: number }; res: { ok: boolean; note?: string } };
   splitPanelTabs: {
     req: Record<string, never>;
@@ -79,6 +80,7 @@ export interface BgApi {
       splitActive: number;
       splitPanes: number;
       sessions: SessionSummaryItem[];
+      tabIds: number[];
     };
   };
 }

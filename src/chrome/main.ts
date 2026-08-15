@@ -605,6 +605,20 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
         return true;
       }
       if (tab.splitview === sv) return true; // already in this split
+      // A dissolved split can leave a stale .splitview reference on the tab
+      // (a known Firefox quirk after unsplit); Firefox's addTabs then refuses
+      // the tab and the move silently fails. Dissolve any leftover reference
+      // first — it is a different (disconnected) view, so this only clears
+      // the stale state.
+      if (tab.splitview && tab.splitview !== sv) {
+        try {
+          const stale = tab.splitview;
+          if (typeof stale.unsplitTabs === "function") stale.unsplitTabs();
+          else if (stale.isConnected === false) stale.unsplitTabs?.();
+        } catch (e) {
+          // ignore — the view is already gone
+        }
+      }
       if (typeof sv.addTabs !== "function") return false;
       sv.addTabs([tab]);
       removePanelPanes(sv);
@@ -661,6 +675,44 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     }
   }
 
+  // Swap the split panes around (tmux swap-pane): ;{ moves the active pane
+  // left, ;} moves it right. Firefox's native split view ships reverseTabs,
+  // but on splits formed via addTabs (the panel path) it leaves the tabs API
+  // in a bad state (splitViewId queries start resolving undefined), and
+  // moveTabTo keeps split pairs glued together — so the swap dissolves the
+  // pair and re-splits it with the pane order flipped. The pane layout
+  // follows the array passed to addTabSplitView, so no tab moves are needed.
+  function nativeSwapPane(dir: number): boolean {
+    try {
+      let sv = activeSplitView();
+      if (!sv && lastNativeSplit && lastNativeSplit.isConnected) sv = lastNativeSplit;
+      if (!sv || !Array.isArray(sv.tabs) || sv.tabs.length < 2) return false;
+      const active = window.gBrowser.selectedTab;
+      const idx = sv.tabs.indexOf(active);
+      if (idx < 0) return false;
+      const panes = Array.isArray(sv.tabs) ? sv.tabs.slice() : [];
+      if (panes.length === 2) {
+        // Two panes: swapping either direction reverses them.
+        panes.reverse();
+      } else {
+        panes.splice(idx, 1);
+        const ni = (idx + (dir > 0 ? 1 : -1) + panes.length) % panes.length;
+        panes.splice(ni, 0, active);
+      }
+      if (typeof sv.unsplitTabs !== "function") return false;
+      sv.unsplitTabs();
+      if (typeof window.gBrowser.addTabSplitView === "function") {
+        window.gBrowser.addTabSplitView(panes);
+      }
+      window.gBrowser.selectedTab = active;
+      rememberSplit();
+      return true;
+    } catch (e) {
+      if (__DEV__) dbg("native swap failed: " + String(e));
+      return false;
+    }
+  }
+
   chromeOps.splitTab = (orientation: "horizontal" | "vertical") => {
     if (!nativeSplitCurrentTab(orientation)) {
       const api = typeof window.gBrowser.addTabSplitView === "function";
@@ -672,6 +724,9 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   };
   chromeOps.switchSplitPane = (dir: number) => {
     if (!nativeSwitchPane(dir)) toast("not in a split view");
+  };
+  chromeOps.swapSplitPane = (dir: number) => {
+    if (!nativeSwapPane(dir)) toast("not in a split view");
   };
   chromeOps.splitAddTabByIndex = (n: number) => {
     if (!nativeAddTabToSplitByIndex(n)) toast("no split view to move into");
@@ -688,6 +743,50 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     requestBg("toggleWhichKey");
     toast("which-key: " + (cfg.config.whichKey !== false ? "on" : "off"));
   };
+  // The tab switcher popup on chrome pages: real tabs only (skip the
+  // split-panel companion and the #lfc= request channel), with each row's
+  // true Firefox id shown in the list. The ids come from a fresh
+  // sessionState round-trip (chromeStatusTabIds), which also keeps the status
+  // bar current while the popup is open.
+  chromeOps.listTabs = async (q: string) => {
+    await requestSessionState();
+    const ql = (q || "").trim().toLowerCase();
+    const out: PopupItem[] = [];
+    const tabs = window.gBrowser.tabs;
+    for (let i = 0; i < tabs.length; i++) {
+      const t = tabs[i];
+      try {
+        const spec =
+          t.linkedBrowser && t.linkedBrowser.currentURI
+            ? t.linkedBrowser.currentURI.spec
+            : "";
+        if (spec.indexOf("splitpanel.html") !== -1 || spec.indexOf("#lfc=") !== -1) continue;
+      } catch (e) {
+        // ignore
+      }
+      let uri = "";
+      try {
+        uri = (t.linkedBrowser && t.linkedBrowser.currentURI && t.linkedBrowser.currentURI.spec) || "";
+      } catch (e) {
+        // ignore
+      }
+      const item: PopupItem = {
+        id: i, // strip index — what the chrome ops address
+        realId: chromeStatusTabIds[i], // true Firefox tab id, for display
+        title: t.label || uri || "",
+        url: uri,
+        active: !!t.selected,
+        pinned: !!t.pinned,
+        muted: !!t.muted,
+        favIconUrl: (t.getAttribute && t.getAttribute("image")) || "",
+      };
+      if (!ql || ((item.title || "") + " " + (item.url || "")).toLowerCase().indexOf(ql) !== -1) {
+        out.push(item);
+      }
+    }
+    return out;
+  };
+
   // The sessions popup needs the session list on chrome-only pages too. Answer
   // from the cached status-bar summary (which requestSessionState refreshes)
   // and kick a background refresh so the next open is current.
@@ -807,6 +906,9 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     splitPanes: 0,
     sessions: [] as { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[],
   };
+  // Real tab ids in strip order from the last sessionState reply, so the tab
+  // switcher popup can show each tab's true Firefox id.
+  let chromeStatusTabIds: number[] = [];
 
   // Is the selected tab the extension's command center page?
   function isCommandCenterTab(): boolean {
@@ -1289,19 +1391,38 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     }
     if (cmd === "restoreSplits") {
       // Session restore finished opening tabs; re-create the native split
-      // groupings (rest is base64url JSON of [[index, ...], ...], 1-based tab
-      // positions).
+      // groupings. `rest` is JSON of [[index, ...], ...] with 1-based
+      // positions over the SAVED tab list — which restore recreates exactly
+      // as the window's real (non-transient) tabs in order. Positions must be
+      // resolved against realTabs() (which skips the splitpanel companion and
+      // the #lfc= request channel): indexing window.gBrowser.tabs directly
+      // would be shifted by those transient tabs (and any pinned tabs the
+      // restore left in front), pairing the wrong tabs or none at all.
       try {
         const json = decodeURIComponent(rest);
         const groups = JSON.parse(json) as number[][];
+        // Resolve the 1-based saved positions against non-pinned real tabs.
+        // A restore re-opens saved tabs in order as unpinned tabs AFTER any
+        // pinned tabs left in front, so pinned tabs must not offset the
+        // positions (split view never involves pinned tabs).
+        const real = realTabs().filter((t: any) => !t.pinned);
         for (const g of groups) {
-          const tabs = (g || [])
-            .map((i) => window.gBrowser.tabs[i - 1])
-            .filter((t: any) => !!t && !t.pinned);
+          const tabs = (g || []).map((i) => real[i - 1]).filter((t: any) => !!t);
           if (tabs.length > 1 && typeof window.gBrowser.addTabSplitView === "function") {
             window.gBrowser.addTabSplitView(tabs);
           }
         }
+      } catch (e) {
+        // ignore
+      }
+      removeReqTab(browser);
+      return;
+    }
+    if (cmd === "swapSplitPanes") {
+      // ;{ / ;} relayed from the background (content-script context): swap
+      // the active pane with its left/right neighbour.
+      try {
+        nativeSwapPane(parseInt(rest, 10) || 1);
       } catch (e) {
         // ignore
       }
@@ -1326,6 +1447,7 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
           splitPanes: state && typeof state.splitPanes === "number" ? state.splitPanes : 0,
           sessions: (state && state.sessions) || [],
         };
+        chromeStatusTabIds = Array.isArray(state && state.tabIds) ? state.tabIds : [];
         computeChromeStatus();
       } catch (e) {
         // ignore

@@ -62,6 +62,8 @@ var Bindings = []WkItem{
 	{Key: "|", Label: "Split side-by-side", Group: "Sessions"},
 	{Key: "[", Label: "Split pane left", Group: "Sessions"},
 	{Key: "]", Label: "Split pane right", Group: "Sessions"},
+	{Key: "{", Label: "Swap pane left", Group: "Sessions"},
+	{Key: "}", Label: "Swap pane right", Group: "Sessions"},
 	{Key: "+", Label: "Move tab 1-9 into split", Group: "Sessions"},
 	{Key: ",", Label: "Move tab left", Group: "Sessions"},
 	{Key: ".", Label: "Move tab right", Group: "Sessions"},

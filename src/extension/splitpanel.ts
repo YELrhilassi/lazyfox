@@ -56,7 +56,7 @@ interface SplitTab {
       const li = list.querySelector<HTMLElement>("[data-index='" + t.index + "']");
       if (!li) continue;
       (li.querySelector(".t") as HTMLElement).textContent = t.title || t.url || "(untitled)";
-      (li.querySelector(".s") as HTMLElement).textContent = t.url || "";
+      (li.querySelector(".s") as HTMLElement).textContent = "id " + t.id + " \u00B7 " + (t.url || "");
       const st = li.querySelector(".st") as HTMLElement;
       st.textContent = t.inSplit ? "\u00B7 in split" : "";
     }

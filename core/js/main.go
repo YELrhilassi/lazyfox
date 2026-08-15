@@ -344,6 +344,14 @@ func main() {
 		return sessionSummaryArray(core.SessionSummary(sessions, current))
 	})
 
+	set("splitPairsOf", func(this js.Value, args []js.Value) interface{} {
+		ids := []int(nil)
+		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
+			ids = intSlice(args[0])
+		}
+		return splitPairsArray(core.SplitPairsOf(ids))
+	})
+
 	set("splitPartnerOf", func(this js.Value, args []js.Value) interface{} {
 		splits := []core.SplitPair(nil)
 		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {

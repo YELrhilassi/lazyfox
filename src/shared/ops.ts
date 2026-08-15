@@ -55,6 +55,7 @@ export interface ActionOps {
   splitTab(orientation: "horizontal" | "vertical"): void;
   unsplitTab(): void;
   switchSplitPane(dir: number): void;
+  swapSplitPane(dir: number): void;
   splitAddTabByIndex(n: number): void;
   sessionState(): Promise<{
     name: string;

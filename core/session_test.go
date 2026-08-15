@@ -137,6 +137,28 @@ func TestSessionSummary(t *testing.T) {
 	}
 }
 
+func TestSplitPairsOf(t *testing.T) {
+	cases := []struct {
+		ids  []int
+		want []SplitPair
+	}{
+		{nil, nil},
+		{[]int{}, nil},
+		{[]int{-1, -1, -1}, nil},
+		{[]int{-1, 1, -1, 1}, []SplitPair{{1, 3}}},
+		{[]int{0, 0, 1, 1}, []SplitPair{{0, 1}, {2, 3}}},
+		{[]int{1, -1, 2, 2, 1}, []SplitPair{{0, 4}, {2, 3}}},
+		// a split view with more than two members keeps the first two only
+		{[]int{1, 1, 1}, []SplitPair{{0, 1}}},
+	}
+	for _, c := range cases {
+		got := SplitPairsOf(c.ids)
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("SplitPairsOf(%v) = %+v, want %+v", c.ids, got, c.want)
+		}
+	}
+}
+
 func TestSplitPairOf(t *testing.T) {
 	splits := []SplitPair{{0, 1}, {2, 3}}
 	if p := SplitPairOf(splits, 0); p == nil || p.B != 1 {
@@ -153,18 +175,19 @@ func TestSplitPairOf(t *testing.T) {
 // TestSessionBindings pins the tmux-style session leader keys in the
 // which-key table so the shortcut surface can't silently drift (split, switch
 // pane, move, close, save, quick-switch).
-func TestSessionBindings(t *testing.T) {
-	want := map[string]bool{
-		"p": true, // sessions popup
-		"'": true, // switch session 1-9
-		"|": true, // split side-by-side
-		"[": true, // split pane left
-		"]": true, // split pane right
-		"+": true, // move tab 1-9 into split
-		",": true, // move tab left
-		".": true, // move tab right
-		"\\": true,
-	}
+func TestSessionBindings(t *testing.T) {    want := map[string]bool{
+        "p": true, // sessions popup
+        "'": true, // switch session 1-9
+        "|": true, // split side-by-side
+        "[": true, // split pane left
+        "]": true, // split pane right
+        "{": true, // swap pane left
+        "}": true, // swap pane right
+        "+": true, // move tab 1-9 into split
+        ",": true, // move tab left
+        ".": true, // move tab right
+        "\\": true,
+    }
 	seen := map[string]bool{}
 	for _, b := range Bindings {
 		if b.Group == "Sessions" {

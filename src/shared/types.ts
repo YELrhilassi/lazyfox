@@ -73,6 +73,10 @@ export interface TabInfo {
 export interface PopupItem {
   kind?: string;
   id?: number;
+  // The true Firefox tab id, for display in the tab switcher (the chrome
+  // helper's `id` is its internal strip index, which is what its actions
+  // address — the real id is carried here so the popup can show it).
+  realId?: number;
   url?: string;
   title?: string;
   subtitle?: string;
@@ -107,6 +111,10 @@ export interface Session {
   active: number;
   windowState: string;
   updatedAt: number;
+  // Compact split layout computed by the Go core (core.EncodeSplits):
+  // "a:b,c:d" pairs of 0-based tab indices. Authoritative for restore; the
+  // per-tab splitViewId remains only as a fallback for pre-encoding sessions.
+  splits?: string;
 }
 
 // One row of the status bar's session list. Carries only names, markers and

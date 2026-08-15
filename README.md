@@ -160,6 +160,8 @@ The most useful ones:
 | `; z` | zen mode (fullscreen) |
 | `; e` | toggle the toolbar reveal on hover |
 | `; \|` | split side-by-side |
+| `; [` / `; ]` | switch to the previous / next pane |
+| `; {` / `; }` | swap the active pane left / right |
 | `; +` then `1`–`9` | move that tab into the current split |
 | `; q` | toggle the which-key overlay on / off |
 | `j` `k` `d` `u` `gg` `G` | scroll the page (when not typing) |
@@ -260,18 +262,28 @@ it in settings (`statusBar: false`).
 Two panes side by side, keyboard-only — no window manager needed.
 
 - **`;|`** splits the current tab. **`;[` / `;]`** switch the active pane,
+  **`;{` / `;}`** swap the panes left / right (the sites trade sides),
   **`;+` then `1`–`9`** moves that tab into the split, **`;\`** dissolves it
   back into independent tabs.
 - On **Firefox 149+** the split uses Firefox's native split view: each pane
   is a real top-level tab, so any website loads in it unchanged.
 - The new pane opens the **split panel** — a search / URL box plus the live
-  list of your other tabs (each with its `;+N` number; press the number or
-  click). Moving a tab in **replaces** the panel; `;+N` with no split yet
-  pairs the active tab with tab N directly. No empty panes are left behind.
+  list of your other tabs (each row shows the tab's `;+N` number and its
+  real id; press the number or click). Moving a tab in **replaces** the
+  panel; `;+N` with no split yet pairs the active tab with tab N directly.
+  No empty panes are left behind.
 - The status bar hides while a split is active so it never covers the panes.
 
 Splits are part of sessions: save a session while split and restoring brings
-the whole layout back.
+the whole layout back — same tabs, same split, same side of the split. The
+split panel itself is a temporary UI, so it is never saved into a session.
+
+The split layout is computed in the **Go core** (compiled to WebAssembly and
+embedded in the extension): when a session is saved, the pairing is turned
+into a compact `"a:b,c:d"` index string, and when it is restored the same core
+decodes it and asks Firefox to rebuild the split views. That keeps the logic
+in one tested place, so the layout is restored exactly as it was left — even
+for splits that sit in the middle of the tab strip.
 
 ### Settings
 
