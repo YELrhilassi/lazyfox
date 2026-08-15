@@ -313,6 +313,7 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
 
   chromeOps.startHints = () => requestBg("startHints");
   chromeOps.focusFirstInput = () => requestBg("focusFirstInput");
+  chromeOps.stealthOpen = () => requestBg("stealthOpen");
   chromeOps.openResize = openResizePopup;
   chromeOps.toggleReveal = () => {
     cfg.config.hoverReveal = !cfg.config.hoverReveal;

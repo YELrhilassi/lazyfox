@@ -126,6 +126,9 @@ export interface SessionTab {
   // records it and the chrome helper is asked to recreate the pairing on
   // restore.
   splitViewId?: number;
+  // A stealth tab lives in its own ephemeral container (isolated cookies /
+  // storage) and is wiped when closed. Restore opens it in a fresh container.
+  stealth?: boolean;
 }
 
 export interface Session {

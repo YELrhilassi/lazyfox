@@ -631,6 +631,7 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     b: () => openBookmarksPopup(ctx),
     d: () => openDownloadsPopup(ctx),
     D: () => ctx.ops.dismissDownload(),
+    S: () => ctx.ops.stealthOpen(),
     p: () => openSessionsPopup(ctx),
     "'": () => openSessionsPopup(ctx),
     "|": () => ctx.ops.splitTab("horizontal"),

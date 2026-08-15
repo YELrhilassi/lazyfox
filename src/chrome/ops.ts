@@ -367,6 +367,7 @@ export const chromeOps: ActionOps = {
   dismissDownload: (key?: string) => {
     dismissDownload(key);
   },
+  stealthOpen: notWired("stealthOpen"),
   copyUrl: () => {
     const url = window.gBrowser.currentURI && window.gBrowser.currentURI.spec;
     if (!url) return;

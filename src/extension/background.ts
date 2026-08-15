@@ -239,12 +239,132 @@ import type { Session, SessionTab } from "../shared/types";
     return (tabs || []).filter((t: any) => !isUITab(t));
   }
 
+  /* ===================== stealth tabs (isolated + self-wiping) ===================== */
+
+  const STEALTH_KEY = "lfStealth";
+  // cookieStoreIds WE own. A tab's cookieStoreId alone can't identify a
+  // stealth tab (a user's own container would look identical), so snapshot /
+  // restore test membership in this set.
+  const stealthContainers = new Set<string>();
+  // Live tabId -> cookieStoreId so tabs.onRemoved wipes the right container.
+  const stealthTabs = new Map<number, string>();
+  let stealthReconcile: Promise<void> | null = null;
+
+  async function readStealth(): Promise<{ containers: string[] }> {
+    try {
+      const r = await browser.storage.local.get(STEALTH_KEY);
+      const v = r && r[STEALTH_KEY];
+      if (v && Array.isArray(v.containers)) return v as { containers: string[] };
+    } catch (e) {
+      // fall through
+    }
+    return { containers: [] };
+  }
+
+  async function writeStealth(st: { containers: string[] }): Promise<void> {
+    await browser.storage.local.set({ [STEALTH_KEY]: st });
+  }
+
+  async function persistStealth(): Promise<void> {
+    await writeStealth({ containers: Array.from(stealthContainers) });
+  }
+
+  async function wipeStealthContainer(cs: string): Promise<void> {
+    stealthContainers.delete(cs);
+    try {
+      // Remove everything the container stored (cookies, storage, cache, ...).
+      await browser.browsingData.remove({ cookieStoreId: cs, since: 0 });
+    } catch (e) {
+      // ignore
+    }
+    try {
+      await browser.contextualIdentities.remove(cs);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // Rebuild the live maps from storage and wipe any container whose tab is
+  // already gone — the "racy cleanup" path: if Firefox quit before the close
+  // handler ran, the orphan is caught here on next launch.
+  async function doReconcileStealth(): Promise<void> {
+    const st = await readStealth();
+    const keep: string[] = [];
+    for (const cs of st.containers || []) {
+      let tabs: any[] = [];
+      try {
+        tabs = await browser.tabs.query({ cookieStoreId: cs });
+      } catch (e) {
+        tabs = [];
+      }
+      if (tabs.length === 0) {
+        await wipeStealthContainer(cs);
+      } else {
+        keep.push(cs);
+        stealthContainers.add(cs);
+        for (const t of tabs) {
+          if (t.id != null) stealthTabs.set(t.id, cs);
+        }
+      }
+    }
+    await writeStealth({ containers: keep });
+  }
+
+  function reconcileStealth(): Promise<void> {
+    if (!stealthReconcile) {
+      stealthReconcile = doReconcileStealth().catch(() => {});
+    }
+    return stealthReconcile;
+  }
+
+  async function createStealthContainer(): Promise<string> {
+    const ci = await browser.contextualIdentities.create({
+      name: "Stealth",
+      color: "purple",
+      icon: "fingerprint",
+    });
+    stealthContainers.add(ci.cookieStoreId);
+    return ci.cookieStoreId;
+  }
+
+  async function stealthCreateTab(url: string, active: boolean): Promise<any> {
+    const cs = await createStealthContainer();
+    const t = await browser.tabs.create({ url, cookieStoreId: cs, active });
+    if (t && t.id != null) stealthTabs.set(t.id, cs);
+    await persistStealth();
+    return t;
+  }
+
+  // Open the current page (or the command center) in a fresh stealth tab.
+  async function stealthOpen(): Promise<{ ok: boolean; error?: string }> {
+    await reconcileStealth();
+    try {
+      const active = await browser.tabs.query({ active: true, currentWindow: true });
+      const t = active && active[0];
+      const url = t && t.url && !isBlankTab(t) && !isUITab(t) ? t.url : CC_URL;
+      await stealthCreateTab(url, true);
+      void pushSessionStateToChrome();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String((e as any) && (e as any).message ? (e as any).message : e) };
+    }
+  }
+
+  async function removeStealthContainerForTab(tabId: number): Promise<void> {
+    const cs = stealthTabs.get(tabId);
+    if (!cs) return;
+    stealthTabs.delete(tabId);
+    await wipeStealthContainer(cs);
+    await persistStealth();
+  }
+
   async function snapshotWindow(): Promise<{
     tabs: SessionTab[];
     active: number;
     windowState: string;
     splits: string;
   }> {
+    await reconcileStealth();
     const win = await browser.windows.getCurrent();
     const tabs = await browser.tabs.query({ currentWindow: true });
     const list = tabs || [];
@@ -272,6 +392,7 @@ import type { Session, SessionTab } from "../shared/types";
           title: t.title || "",
           pinned: !!t.pinned,
           splitViewId: svId,
+          stealth: stealthContainers.has(t.cookieStoreId),
         };
       }),
       active: active,
@@ -281,9 +402,10 @@ import type { Session, SessionTab } from "../shared/types";
   }
 
   async function openTabsInCurrentWindow(tabs: SessionTab[]): Promise<number[]> {
+    await reconcileStealth();
     const win = await browser.windows.getCurrent();
     const cur = await browser.tabs.query({ currentWindow: true });
-    const urls = (tabs || []).filter((t) => t && t.url).map((t) => t.url);
+    const entries = (tabs || []).filter((t) => t && t.url);
     // Tabs we may remove: unpinned and not the transient chrome-helper
     // request tab (commandcenter #lfc=req...). Removing that tab from inside
     // its own onUpdated handler while it is still being processed can crash
@@ -301,37 +423,58 @@ import type { Session, SessionTab } from "../shared/types";
       (cur || []).find((t: any) => t.active) ||
       (cur || [])[0] ||
       null;
-    for (const t of removable) {
-      if (host && t.id === host.id) continue;
-      try {
-        await browser.tabs.remove(t.id);
-      } catch (e) {
-        // ignore
-      }
-    }
+
     const created: number[] = [];
-    if (host) {
-      const first = urls.shift();
-      if (first) {
-        try {
-          await browser.tabs.update(host.id, { url: first, active: true });
-        } catch (e) {
-          // fall through — the tab may already be gone
-        }
-      } else {
-        // Empty session (clean slate): park the host on the command center so
-        // a fresh session opens on the home page instead of a leftover tab.
+    let hostReused = false;
+
+    if (!entries.length) {
+      // Empty session (clean slate): park the host on the command center so
+      // a fresh session opens on the home page instead of a leftover tab.
+      if (host) {
         try {
           await browser.tabs.update(host.id, { url: CC_URL, active: true });
         } catch (e) {
           // ignore
         }
+        created.push(host.id);
+        hostReused = true;
       }
-      created.push(host.id);
+    } else {
+      const first = entries[0]!;
+      if (first.stealth) {
+        // Stealth tabs can't reuse the host (they need their own container);
+        // open a fresh container tab first so the window never drops to zero.
+        const t = await stealthCreateTab(first.url, true);
+        if (t && t.id != null) created.push(t.id);
+      } else if (host) {
+        try {
+          await browser.tabs.update(host.id, { url: first.url, active: true });
+        } catch (e) {
+          // fall through — the tab may already be gone
+        }
+        created.push(host.id);
+        hostReused = true;
+      } else {
+        const t = await browser.tabs.create({ url: first.url, active: true });
+        if (t && t.id != null) created.push(t.id);
+      }
+      for (let i = 1; i < entries.length; i++) {
+        const e = entries[i]!;
+        const t = e.stealth
+          ? await stealthCreateTab(e.url, false)
+          : await browser.tabs.create({ url: e.url, active: false });
+        if (t && t.id != null) created.push(t.id);
+      }
     }
-    for (let i = 0; i < urls.length; i++) {
-      const t = await browser.tabs.create({ url: urls[i], active: i === 0 && !host });
-      if (t && t.id != null) created.push(t.id);
+
+    // Remove the tabs the restore replaced (the reused host stays).
+    for (const t of removable) {
+      if (hostReused && host && t.id === host.id) continue;
+      try {
+        await browser.tabs.remove(t.id);
+      } catch (e) {
+        // ignore
+      }
     }
     try {
       await browser.windows.update(win.id, { focused: true });
@@ -1153,6 +1296,8 @@ import type { Session, SessionTab } from "../shared/types";
         await browser.storage.local.set({ config: c });
         return { whichKey: !!c.whichKey };
       }
+      case "stealthOpen":
+        return stealthOpen();
       case "sessionState":
         return sessionState();
       default:
@@ -1285,6 +1430,10 @@ import type { Session, SessionTab } from "../shared/types";
       } catch (e) {}
       return;
     }
+    if (action === "stealthOpen") {
+      await stealthOpen();
+      return;
+    }
     if (action === "sessionState") {
       // Round-trip for the chrome helper's status bar: reply into the hash so
       // the helper can read the current session name + the session list.
@@ -1362,13 +1511,23 @@ import type { Session, SessionTab } from "../shared/types";
   // gate so a stale flag never permanently disables content-side handling.
   browser.runtime.onStartup.addListener(() => {
     browser.storage.local.set({ chromeAlive: false }).catch(() => {});
+    void reconcileStealth();
   });
+  // Also reconcile on background load (covers install/reload and the very
+  // first launch after enabling the feature) — idempotent.
+  void reconcileStealth();
 
   /* ===================== session autosave + restore ===================== */
 
   const onTabChange = () => scheduleAutosave();
   browser.tabs.onCreated.addListener(onTabChange);
   browser.tabs.onRemoved.addListener(onTabChange);
+  // When a stealth tab closes, wipe its container data + remove the container.
+  // (Racy if the browser dies first — reconcileStealth catches orphans next
+  // launch.)
+  browser.tabs.onRemoved.addListener((tabId: number) => {
+    void removeStealthContainerForTab(tabId);
+  });
   browser.tabs.onMoved.addListener(onTabChange);
   browser.tabs.onAttached.addListener(onTabChange);
   browser.tabs.onDetached.addListener(onTabChange);
