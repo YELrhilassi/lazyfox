@@ -373,6 +373,14 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   setInterval(renderStatus, 400);
   setInterval(fetchStatus, 3000);
 
+  // Hide the status bar (and release its reserved space) while any element
+  // is fullscreen — a full-screen video would otherwise keep the strip, and
+  // the page padding it reserves, on top of the content. Re-show on exit.
+  document.addEventListener("fullscreenchange", () => {
+    if (document.fullscreenElement) statusBar.hide();
+    else ensureStatusBar();
+  });
+
   window.addEventListener("blur", () => {
     if (currentPopup) closePopup();
     if (hints.active) hints.exit();

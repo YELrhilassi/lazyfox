@@ -73,8 +73,27 @@ func TestMakeHints(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("MakeHints(5,\"asdf\") = %v, want %v", got, want)
 	}
-	if len(MakeHints(300, "asdfjkl;gh")) != 300 {
-		t.Errorf("expected 300 hints, got %d", len(MakeHints(300, "asdfjkl;gh")))
+	if len(MakeHints(300, "asdfjklgh")) != 300 {
+		t.Errorf("expected 300 hints, got %d", len(MakeHints(300, "asdfjklgh")))
+	}
+	// Breadth-first: 300 links over 9 chars must stay within 3-char keys
+	// (9 + 81 + 210). The old depth-first generator produced "aaa..." chains.
+	for i, k := range MakeHints(300, "asdfjklgh") {
+		if len(k) > 3 {
+			t.Fatalf("hint %d is %q (%d chars); breadth-first keys must be <= 3", i, k, len(k))
+		}
+		for _, c := range k {
+			if c == ';' {
+				t.Fatalf("hint %d contains ';' which is not a hint char: %q", i, k)
+			}
+		}
+	}
+	// The first 9 hints are the single characters, in order.
+	wantFirst := []string{"a", "s", "d", "f", "j", "k", "l", "g", "h"}
+	for i, w := range wantFirst {
+		if MakeHints(300, "asdfjklgh")[i] != w {
+			t.Errorf("hint %d = %q, want %q", i, MakeHints(300, "asdfjklgh")[i], w)
+		}
 	}
 	if got := MakeHints(0, "a"); len(got) != 0 {
 		t.Errorf("expected no hints for n=0, got %v", got)

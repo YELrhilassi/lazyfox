@@ -95,6 +95,23 @@ export async function run(ctx) {
     assert(!f.focused, "input blurred after Esc");
   });
 
+  await t("command center insert mode: j/k/x type into the input", async () => {
+    // Regression: while the input is focused (insert mode), keys that double as
+    // command-mode shortcuts (j/k/x/...) must land in the input — not move the
+    // selection or run actions.
+    await ctx.openCC(ctx.tabA);
+    await ctx.press(ctx.tabA, "i"); // focus the input without typing
+    let f = await ctx.ccFacts(ctx.tabA);
+    assert(f.state === "insert", "state insert after i, got " + f.state);
+    await ctx.typeIn(ctx.tabA, "jkx");
+    f = await ctx.ccFacts(ctx.tabA);
+    assert(f.inputVal === "jkx", "input value jkx, got " + JSON.stringify(f.inputVal));
+    assert(f.state === "insert", "still insert while typing");
+    await ctx.press(ctx.tabA, "Escape");
+    f = await ctx.ccFacts(ctx.tabA);
+    assert(f.state === "cmd", "back to cmd after Esc");
+  });
+
   await t("command center search: suggestions + Enter runs a web search", async () => {
     await ctx.openCC(ctx.tabA);
     await ctx.typeIn(ctx.tabA, "lazyfox rocks");

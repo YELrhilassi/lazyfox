@@ -19,6 +19,12 @@ export const pages = {
   "/target1": { body: `<!DOCTYPE html><title>TARGET ONE</title><h1>Target One</h1><a href="/">back</a>` },
   "/target2": { body: `<!DOCTYPE html><title>TARGET TWO</title><h1>Target Two</h1><a href="/">back</a>` },
   "/hello": { body: `<!DOCTYPE html><title>HELLO PAGE</title><h1>Hello</h1>` },
+  // A page that scrolls via BODY (html,body { height:100% } + body overflow)
+  // — the status bar must reserve on the body element there, or the bar
+  // covers the page's last rows.
+  "/bodyscroll": {
+    body: `<!DOCTYPE html><html><head><style>html{height:100%;overflow:hidden}body{height:100%;margin:0;overflow:auto}</style></head><body><div style="height:3000px">tall content</div></body></html>`,
+  },
   "/framed": {
     headers: { "X-Frame-Options": "DENY" },
     body: `<!DOCTYPE html><title>FRAMED PAGE</title><h1 id="marker">Framed content</h1>`,

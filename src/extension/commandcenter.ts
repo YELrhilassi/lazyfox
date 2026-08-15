@@ -393,14 +393,18 @@ import { send } from "../shared/protocol";
         return;
       }
 
+      // While the input is focused, every key types — including j/k and other
+      // letters that double as shortcuts in command mode (the README's
+      // contract: "every key types, so you can search for anything"). Only
+      // Enter / the arrows act on the list; Esc leaves insert mode first.
       if (inInput) {
         if (k === "Enter") {
           e.preventDefault();
           onEnter();
-        } else if (k === "ArrowDown" || k === "j") {
+        } else if (k === "ArrowDown") {
           e.preventDefault();
           move(1);
-        } else if (k === "ArrowUp" || k === "k") {
+        } else if (k === "ArrowUp") {
           e.preventDefault();
           move(-1);
         }

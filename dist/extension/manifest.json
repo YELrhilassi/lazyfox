@@ -16,8 +16,7 @@
     "downloads",
     "sessions",
     "search",
-    "storage",
-    "declarativeNetRequest"
+    "storage"
   ],
   "host_permissions": [
     "<all_urls>"

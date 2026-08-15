@@ -32,26 +32,33 @@ interface SplitTab {
   }
 
   function render(): void {
-    const others = tabs.filter((t) => !t.inSplit);
-    if (!others.length) {
-      list.innerHTML = "<li class='empty'>No other tabs &mdash; use ;+N to move one in.</li>";
+    if (!tabs.length) {
+      list.innerHTML = "<li class='empty'>No other tabs to move into this split.</li>";
       return;
     }
-    list.innerHTML = others
+    // Show every real tab (the background already skips splitpanel / #lfc=
+    // UI tabs), so the list is never empty when the window has tabs. Tabs
+    // already in this split are dimmed and disabled; the rest are movable
+    // targets whose number matches ;+N.
+    list.innerHTML = tabs
       .map(
         (t) =>
           "<li data-index='" +
           t.index +
+          "' class='" +
+          (t.inSplit ? "insplit" : "") +
           "'><span class='kbd'>" +
           t.index +
-          "</span><span class='txt'><span class='t'></span><span class='s'></span></span></li>"
+          "</span><span class='txt'><span class='t'></span><span class='s'></span></span><span class='st'></span></li>"
       )
       .join("");
-    for (const t of others) {
+    for (const t of tabs) {
       const li = list.querySelector<HTMLElement>("[data-index='" + t.index + "']");
       if (!li) continue;
       (li.querySelector(".t") as HTMLElement).textContent = t.title || t.url || "(untitled)";
       (li.querySelector(".s") as HTMLElement).textContent = t.url || "";
+      const st = li.querySelector(".st") as HTMLElement;
+      st.textContent = t.inSplit ? "\u00B7 in split" : "";
     }
   }
 
@@ -64,6 +71,8 @@ interface SplitTab {
   }
 
   function move(index: number): void {
+    const t = tabs.find((x) => x.index === index);
+    if (!t || t.inSplit) return; // already in this split — nothing to do
     void send("moveTabToSplit", { index: index });
   }
 
@@ -110,11 +119,23 @@ interface SplitTab {
     if (li) move(Number(li.getAttribute("data-index")));
   });
 
-  // Refresh the tab list whenever the page regains visibility/focus.
+  // Refresh the tab list whenever the page regains visibility/focus AND live
+  // on every tab change AND on a short poll, so a tab opened/closed/moved
+  // elsewhere appears (or disappears) in the list immediately — a stale list
+  // is exactly the "I can't see the tabs" symptom.
   window.addEventListener("focus", () => void refresh());
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) void refresh();
   });
+  try {
+    browser.tabs.onCreated.addListener(() => void refresh());
+    browser.tabs.onRemoved.addListener(() => void refresh());
+    browser.tabs.onUpdated.addListener(() => void refresh());
+    browser.tabs.onActivated.addListener(() => void refresh());
+  } catch (e) {
+    // extension page without tabs permission — ignore
+  }
+  setInterval(() => void refresh(), 1500);
 
   void refresh();
 })();

@@ -38,6 +38,9 @@ export const PANEL_CSS = `
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#7aa2f7;margin-right:6px;}
 .lf-marker{display:inline-block;min-width:16px;text-align:center;background:#16161e;border:1px solid #414868;
   border-radius:4px;padding:0 4px;margin-right:8px;color:#2ac3de;font-size:11px;}
+.lf-item.selected.lf-armed{background:#3a1f2a;border-left-color:#f7768e;}
+.lf-item.selected.lf-armed .t{color:#f7768e;}
+.lf-arm{color:#f7768e;font-weight:700;font-size:11px;}
 .hint{position:fixed;z-index:2147483646;background:#2ac3de;color:#16161e;font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;
   padding:2px 5px;border-radius:4px;pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4);}
 `;

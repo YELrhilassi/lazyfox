@@ -7,7 +7,7 @@ import type { ChromeHotkeys, Config } from "./types";
 // lives in the Go core and is reached through ./core.
 export const CONFIG_DEFAULTS: Config = {
   leader: ";",
-  hintChars: "asdfjkl;gh",
+  hintChars: "asdfjklgh",
   scrollKeys: true,
   openInNewTab: true,
   hoverReveal: true,

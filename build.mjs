@@ -40,7 +40,6 @@ const BUNDLES = [
   { in: "src/extension/options.ts", out: "dist/extension/options.js" },
   { in: "src/extension/optionskeys.ts", out: "dist/extension/optionskeys.js" },
   { in: "src/extension/popup.ts", out: "dist/extension/popup.js" },
-  { in: "src/extension/splitview.ts", out: "dist/extension/splitview.js" },
 ];
 
 /* ---------- 1. wasm core ---------- */

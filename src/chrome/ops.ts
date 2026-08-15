@@ -20,6 +20,25 @@ function sysPrincipal() {
   return Services.scriptSecurityManager.getSystemPrincipal();
 }
 
+// Real (user) tabs in strip order: skip the split-panel companion and the
+// #lfc= request channel so tab numbers stay stable across splits/unsplits.
+function realTabs(): any[] {
+  const out: any[] = [];
+  for (const t of window.gBrowser.tabs) {
+    try {
+      const spec =
+        t && t.linkedBrowser && t.linkedBrowser.currentURI
+          ? t.linkedBrowser.currentURI.spec
+          : "";
+      if (spec.indexOf("splitpanel.html") !== -1 || spec.indexOf("#lfc=") !== -1) continue;
+      out.push(t);
+    } catch (e) {
+      out.push(t);
+    }
+  }
+  return out;
+}
+
 function el(tag: string, attrs?: Record<string, string> | null, text?: string | null): HTMLElement {
   const e = document.createElementNS(XHTML, tag) as HTMLElement;
   if (attrs) {
@@ -303,15 +322,16 @@ export const chromeOps: ActionOps = {
     }
   },
   tabNav: (dir: number) => {
-    const tabs = window.gBrowser.tabs;
-    const cur = window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
-    if (cur < 0 || !tabs.length) return;
+    const tabs = realTabs();
+    if (!tabs.length) return;
+    let cur = tabs.indexOf(window.gBrowser.selectedTab);
+    if (cur < 0) cur = dir > 0 ? -1 : 0;
     const next = (cur + dir + tabs.length) % tabs.length;
     window.gBrowser.selectedTab = tabs[next];
     window.focus();
   },
   tabJump: (n: number) => {
-    const tabs = window.gBrowser.tabs;
+    const tabs = realTabs();
     if (!tabs.length) return;
     const idx = n === 9 ? tabs.length - 1 : Math.min(Math.max(0, n - 1), tabs.length - 1);
     window.gBrowser.selectedTab = tabs[idx];
@@ -363,12 +383,6 @@ export const chromeOps: ActionOps = {
     } catch (e) {
       // ignore
     }
-  },
-  pinTab: () => {
-    const tab = window.gBrowser.selectedTab;
-    if (!tab) return;
-    if (tab.pinned) window.gBrowser.unpinTab(tab);
-    else window.gBrowser.pinTab(tab);
   },
   zen: () => {
     window.fullScreen = !window.fullScreen;

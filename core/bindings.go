@@ -34,7 +34,6 @@ var Bindings = []WkItem{
 	{Key: "l", Label: "Forward", Group: "Navigation"},
 	{Key: "y", Label: "Copy URL", Group: "Navigation"},
 	{Key: "m", Label: "Mute tab", Group: "Navigation"},
-	{Key: "a", Label: "Pin tab", Group: "Navigation"},
 	{Key: "=", Label: "Zoom in", Group: "Navigation"},
 	{Key: "-", Label: "Zoom out", Group: "Navigation"},
 	{Key: "0", Label: "Reset zoom", Group: "Navigation"},

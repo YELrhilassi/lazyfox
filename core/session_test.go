@@ -33,10 +33,10 @@ func TestClampSession(t *testing.T) {
 		return out
 	}
 
-	// Too many tabs are dropped down to MaxSessionTabs.
+	// Every tab is kept — switching sessions must never drop tabs.
 	s := ClampSession(Session{Name: "x", Marker: 1, Tabs: tabs(15), Active: 20})
-	if len(s.Tabs) != MaxSessionTabs {
-		t.Fatalf("tabs clamped to %d, got %d", MaxSessionTabs, len(s.Tabs))
+	if len(s.Tabs) != 15 {
+		t.Fatalf("all 15 tabs kept, got %d", len(s.Tabs))
 	}
 	if s.Active != 0 {
 		t.Fatalf("out-of-range active clamped to 0, got %d", s.Active)

@@ -6,13 +6,7 @@
 import { core, ensureCore } from "../shared/core";
 import { mergeConfig } from "../shared/config";
 import type { BgAction } from "../shared/protocol";
-import {
-  buildSplitUrl,
-  isSplitUrl,
-  parseSplitUrl,
-  splitPayload,
-} from "../shared/split";
-import type { Session, SessionTab, SplitView } from "../shared/types";
+import type { Session, SessionTab } from "../shared/types";
 
 (function () {
   "use strict";
@@ -170,7 +164,7 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
   }
 
   async function activateTabByIndex(n: number) {
-    const tabs = await browser.tabs.query({ currentWindow: true });
+    const tabs = await realTabsInWindow();
     const idx = Math.max(0, (n || 1) - 1);
     const tab = tabs[Math.min(idx, tabs.length - 1)];
     if (!tab) return { ok: false };
@@ -189,7 +183,7 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
   }
 
   async function tabsInWindow() {
-    const tabs = await browser.tabs.query({ currentWindow: true });
+    const tabs = await realTabsInWindow();
     return {
       tabs: tabs.map((t: any) => ({
         id: t.id,
@@ -208,7 +202,9 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
   const SESSIONS_KEY = "lfSessions";
   const CURRENT_SESSION_KEY = "lfCurrentSession";
   const LAST_SESSION_KEY = "lfLastSession";
-  const MAX_SESSION_TABS = 9;
+  // Sessions keep EVERY tab in the window (no cap — switching sessions must
+  // never drop tabs). Markers are the only 1-9 constraint, like tmux windows.
+  const MAX_SESSION_MARKER = 9;
 
   async function readSessions(): Promise<Record<string, Session>> {
     try {
@@ -229,14 +225,19 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     return !t || !t.url || t.url === "about:blank" || /^about:(home|newtab)$/i.test(t.url);
   }
 
-  // A tab is a custom split container iff its URL points at the splitview page
-  // (which encodes the pane layout). Returns the decoded layout, or null.
-  function splitViewOf(t: any): SplitView | null {
-    if (!t || !t.url) return null;
-    return parseSplitUrl(t.url);
+  // Transient UI tabs (the split-panel companion and the #lfc= request
+  // channel) are not user tabs: numbering (tab switcher, ;1-9, ;+N, the
+  // status bar) skips them so a tab's identity never shifts when a
+  // split/unsplit adds or removes a companion pane.
+  function isUITab(t: any): boolean {
+    const u = (t && t.url) || "";
+    return u.indexOf("splitpanel.html") !== -1 || u.indexOf("#lfc=") !== -1;
   }
 
-  const SPLITVIEW_BASE = browser.runtime.getURL("");
+  async function realTabsInWindow(): Promise<any[]> {
+    const tabs = await browser.tabs.query({ currentWindow: true });
+    return (tabs || []).filter((t: any) => !isUITab(t));
+  }
 
   async function snapshotWindow(): Promise<{
     tabs: SessionTab[];
@@ -246,21 +247,26 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     const win = await browser.windows.getCurrent();
     const tabs = await browser.tabs.query({ currentWindow: true });
     const list = tabs || [];
-    let active = list.findIndex((t: any) => t.active);
+    // Transient #lfc= request tabs (the chrome-helper request channel) are
+    // internal plumbing, never user content: exclude them so a checkpoint
+    // never captures one and a restore never re-opens it (they would linger
+    // and compound across switches).
+    const content = list.filter(
+      (t: any) => !(t.url && t.url.indexOf("#lfc=") !== -1)
+    );
+    let active = content.findIndex((t: any) => t.active);
     if (active < 0) active = 0;
     return {
-      tabs: list.slice(0, MAX_SESSION_TABS).map((t: any) => {
-        const split = splitViewOf(t);
+      tabs: content.map((t: any) => {
         const svId = typeof t.splitViewId === "number" && t.splitViewId >= 0 ? t.splitViewId : undefined;
         return {
           url: t.url || "",
           title: t.title || "",
           pinned: !!t.pinned,
-          split: split || undefined,
           splitViewId: svId,
         };
       }),
-      active: active < MAX_SESSION_TABS ? active : 0,
+      active: active,
       windowState: win && win.state ? win.state : "normal",
     };
   }
@@ -276,12 +282,18 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     const removable = (cur || []).filter(
       (t: any) => !t.pinned && !(t.url && t.url.indexOf("#lfc=req") !== -1)
     );
-    // Never remove the window's last tab: closing it closes the whole window
-    // (default browser.tabs.closeWindowWithLastTab), which flashes/relaunches
-    // the window for the user and orphans the WebDriver BiDi session. Keep
-    // one removable tab and host the first restored URL on it instead.
-    const keepOne = removable.length > 0 && removable.length === (cur || []).length;
-    for (const t of keepOne ? removable.slice(0, -1) : removable) {
+    // Host tab for the first restored URL. Prefer a removable tab (never
+    // remove the window's last tab: closing it closes the whole window, which
+    // flashes/relaunches and orphans the WebDriver session). When every tab
+    // is pinned or a transient request tab, fall back to the active tab so a
+    // restore NEVER piles the saved tabs on top of an unremovable strip.
+    const host =
+      removable[removable.length - 1] ||
+      (cur || []).find((t: any) => t.active) ||
+      (cur || [])[0] ||
+      null;
+    for (const t of removable) {
+      if (host && t.id === host.id) continue;
       try {
         await browser.tabs.remove(t.id);
       } catch (e) {
@@ -289,19 +301,19 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
       }
     }
     const created: number[] = [];
-    if (keepOne) {
-      const keeper = removable[removable.length - 1];
+    if (host) {
       const first = urls.shift();
       if (first) {
         try {
-          await browser.tabs.update(keeper.id, { url: first, active: true });
+          await browser.tabs.update(host.id, { url: first, active: true });
         } catch (e) {
           // fall through — the tab may already be gone
         }
       }
+      created.push(host.id);
     }
     for (let i = 0; i < urls.length; i++) {
-      const t = await browser.tabs.create({ url: urls[i], active: i === 0 && !keepOne });
+      const t = await browser.tabs.create({ url: urls[i], active: i === 0 && !host });
       if (t && t.id != null) created.push(t.id);
     }
     try {
@@ -309,7 +321,60 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     } catch (e) {
       // ignore
     }
+    // Ordered ids (host first, then created) matching the saved tab order.
     return created;
+  }
+
+  // 1-based tab positions grouped by native splitViewId, for the chrome helper
+  // to re-create split pairings after a restore (positions match the saved
+  // tab order, which restore reproduces exactly).
+  function splitGroupsOf(tabs: SessionTab[]): number[][] {
+    const byId = new Map<number, number[]>();
+    (tabs || []).forEach((t, i) => {
+      if (t && typeof t.splitViewId === "number" && t.splitViewId >= 0) {
+        const arr = byId.get(t.splitViewId) || [];
+        arr.push(i + 1);
+        byId.set(t.splitViewId, arr);
+      }
+    });
+    return Array.from(byId.values()).filter((g) => g.length > 1);
+  }
+
+  // Checkpoint: persist the current window before switching away so nothing is
+  // ever lost — even when the current session was never given a name. The
+  // snapshot is always written to the crash-recovery "last" slot, and if the
+  // window belongs to a named session, that session is updated in place too.
+  async function autosaveCurrentSession(all: Record<string, Session>): Promise<void> {
+    try {
+      const snap = await snapshotWindow();
+      const recovery: Session = {
+        name: "last",
+        marker: 0,
+        tabs: snap.tabs,
+        active: snap.active,
+        windowState: snap.windowState,
+        updatedAt: Date.now(),
+      };
+      const r = await browser.storage.local.get(CURRENT_SESSION_KEY);
+      const name = r && r[CURRENT_SESSION_KEY];
+      if (name && typeof name === "string" && all[name]) {
+        const existing = all[name];
+        all[name] = {
+          name: name,
+          marker: existing.marker || 0,
+          tabs: snap.tabs,
+          active: snap.active,
+          windowState: snap.windowState,
+          updatedAt: Date.now(),
+        };
+        await writeSessions(all);
+        await browser.storage.local.set({ [LAST_SESSION_KEY]: all[name] });
+      } else {
+        await browser.storage.local.set({ [LAST_SESSION_KEY]: recovery });
+      }
+    } catch (e) {
+      // ignore — checkpoint is best-effort
+    }
   }
 
   async function sessionList(): Promise<{ sessions: Session[] }> {
@@ -347,13 +412,43 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     return { ok: true, session };
   }
 
-  async function restoreSession(name: string): Promise<{ ok: boolean }> {
+  async function restoreSession(name: string): Promise<{ ok: boolean; note?: string }> {
+    // Re-entrancy guard: two overlapping restores (e.g. a double key press
+    // while the window is being rebuilt) would interleave tab teardown and
+    // double-open tabs. Ignore the second request.
+    if (restoring) return { ok: false, note: "restore already in progress" };
     const all = await readSessions();
     const s = all[(name || "").trim()];
     if (!s || !s.tabs || !s.tabs.length) return { ok: false };
-    await openTabsInCurrentWindow(s.tabs);
-    await browser.storage.local.set({ [CURRENT_SESSION_KEY]: s.name });
-    return { ok: true };
+    // Checkpoint before switching so the current window is never lost.
+    await autosaveCurrentSession(all);
+    // Suppress tab-change side effects (home-tab conversion, debounced
+    // autosave, status polling) while the window is being torn down and
+    // rebuilt — otherwise each removed/created tab re-renders the status bar
+    // and flashes the page mid-switch.
+    restoring = true;
+    try {
+      const ids = await openTabsInCurrentWindow(s.tabs);
+      // Re-create native split groupings (groups of 1-based tab positions).
+      const groups = splitGroupsOf(s.tabs);
+      if (groups.length) {
+        // requestChrome already encodeURIComponent's its arg; pre-encoding
+        // here would double-encode and break JSON.parse in the chrome helper.
+        requestChrome("restoreSplits", JSON.stringify(groups));
+      }
+      // Restore the active tab by saved index (deterministic tab order).
+      const active = Math.min(Math.max(0, s.active || 0), ids.length - 1);
+      if (ids[active] != null) {
+        await browser.tabs.update(ids[active], { active: true }).catch(() => {});
+      }
+      await browser.storage.local.set({ [CURRENT_SESSION_KEY]: s.name });
+      return { ok: true };
+    } finally {
+      restoring = false;
+      // Re-arm the crash-recovery snapshot so "last" reflects the newly
+      // restored window (the guard suppressed it during the teardown).
+      scheduleAutosave();
+    }
   }
 
   async function switchSessionByMarker(marker: number): Promise<{ ok: boolean; name?: string }> {
@@ -364,14 +459,26 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     return { ok: true, name: s.name };
   }
 
-  async function deleteSession(name: string): Promise<{ ok: boolean }> {
+  async function deleteSession(name: string): Promise<{ ok: boolean; note?: string }> {
     const all = await readSessions();
     const nm = (name || "").trim();
     if (all[nm]) {
       delete all[nm];
       await writeSessions(all);
+      // Deleting the CURRENT session would otherwise leave the status bar
+      // pointing at a ghost name until the next Firefox restart — drop the
+      // pointer so it falls back to "default" immediately.
+      try {
+        const r = await browser.storage.local.get(CURRENT_SESSION_KEY);
+        if (r && r[CURRENT_SESSION_KEY] === nm) {
+          await browser.storage.local.remove(CURRENT_SESSION_KEY);
+        }
+      } catch (e) {
+        // ignore
+      }
+      return { ok: true, note: "deleted" };
     }
-    return { ok: true };
+    return { ok: false, note: "no such session" };
   }
 
   // Explicitly (re)assign a session's marker. If another session already holds
@@ -386,7 +493,7 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     const nm = (name || "").trim();
     const m = Number(marker);
     if (!all[nm]) return { ok: false, note: "no such session" };
-    if (!(m >= 1 && m <= MAX_SESSION_TABS)) {
+    if (!(m >= 1 && m <= MAX_SESSION_MARKER)) {
       return { ok: false, note: "marker must be 1-9" };
     }
     for (const k of Object.keys(all)) {
@@ -397,86 +504,6 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     all[nm]!.marker = m;
     await writeSessions(all);
     return { ok: true };
-  }
-
-  // Split the active tab into a two-pane split view. The active tab's page
-  // becomes the first pane and a fresh blank pane is added alongside it (the
-  // user navigates a pane through the split bar's URL input). This is the
-  // "split into a new tab" behaviour and never removes an existing tab.
-  async function splitCurrentTab(
-    orientation: "horizontal" | "vertical"
-  ): Promise<{ ok: boolean; note?: string }> {
-    const all = await browser.tabs.query({ currentWindow: true });
-    const idx = all.findIndex((t: any) => t.active);
-    if (idx < 0) return { ok: false, note: "no active tab" };
-    const active = all[idx]!;
-    if (isSplitUrl(active.url || "", SPLITVIEW_BASE)) {
-      return { ok: false, note: "already a split view" };
-    }
-    const firstUrl = active.url && active.url !== "about:blank" ? active.url : "about:blank";
-    const cfg: SplitView = {
-      orientation: orientation,
-      panes: [
-        { url: firstUrl, title: active.title || "" },
-        { url: "about:blank", title: "new tab" },
-      ],
-      activePane: 0,
-    };
-    await browser.tabs.update(active.id, { url: buildSplitUrl(SPLITVIEW_BASE, cfg) });
-    return { ok: true };
-  }
-
-  // Tear the active split view apart: the first pane replaces the splitview
-  // tab and every remaining pane is restored as its own tab.
-  async function unsplitCurrentTab(): Promise<{ ok: boolean; note?: string }> {
-    const tab = await getActiveTab();
-    const cfg = splitViewOf(tab);
-    if (!cfg) return { ok: false, note: "not in a split view" };
-    const panes = cfg.panes.filter((p) => p.url && p.url !== "about:blank");
-    if (!panes.length) return { ok: false, note: "nothing to restore" };
-    await browser.tabs.update(tab.id, { url: panes[0]!.url, active: true });
-    for (let i = 1; i < panes.length; i++) {
-      await browser.tabs.create({ url: panes[i]!.url, active: false });
-    }
-    return { ok: true };
-  }
-
-  // Move focus to the previous/next pane of the active split view. The
-  // splitview page owns the iframes; broadcast a focus request keyed by the
-  // split payload so exactly the right page responds.
-  async function switchSplitPane(dir: number): Promise<{ ok: boolean; note?: string }> {
-    const tab = await getActiveTab();
-    const id = tab && tab.url ? splitPayload(tab.url) : null;
-    if (!id) return { ok: false, note: "not in a split view" };
-    try {
-      await browser.runtime.sendMessage({
-        action: "lfSplitFocus",
-        splitId: id,
-        dir: dir > 0 ? 1 : -1,
-      });
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, note: "could not switch split pane" };
-    }
-  }
-
-  // Navigate the active pane of the active split view (the `;o` leader action
-  // is rerouted here when the focused tab is a split container, so the split
-  // itself is never navigated away from).
-  async function navigateSplitPane(url: string): Promise<{ ok: boolean; note?: string }> {
-    const tab = await getActiveTab();
-    const id = tab && tab.url ? splitPayload(tab.url) : null;
-    if (!id) return { ok: false, note: "not in a split view" };
-    try {
-      await browser.runtime.sendMessage({
-        action: "lfSplitNavigate",
-        splitId: id,
-        url: url,
-      });
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, note: "could not navigate split pane" };
-    }
   }
 
   async function sessionState(): Promise<{
@@ -490,7 +517,7 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     splitPanes: number;
     sessions: { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
   }> {
-    const tabs = await browser.tabs.query({ currentWindow: true });
+    const allTabs = await browser.tabs.query({ currentWindow: true });
     const all = await readSessions();
     let name = "default";
     try {
@@ -501,31 +528,25 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     }
     const cur = all[name];
     const marker = cur ? cur.marker || 0 : 0;
-    const list = tabs || [];
+    // Numbering keys off REAL tabs only, so the status-bar tab index/count
+    // never shifts when a companion split-panel pane is added/removed.
+    const list = (allTabs || []).filter((t: any) => !isUITab(t));
     const active = list.findIndex((t: any) => t.active);
     let inSplit = false;
     let splitOrientation: "horizontal" | "vertical" | undefined;
     let splitActive = 0;
     let splitPanes = 0;
     if (active >= 0) {
-      const sv = splitViewOf(list[active]);
-      if (sv) {
+      // Firefox 149+ native split view: tabs in the same split share a
+      // splitViewId (read-only on the tabs API). Detect it so the status bar
+      // reflects native splits created by the chrome helper.
+      const id = list[active] && (list[active] as any).splitViewId;
+      if (typeof id === "number" && id >= 0) {
+        const pair = (allTabs || []).filter((t: any) => t.splitViewId === id);
         inSplit = true;
-        splitOrientation = sv.orientation;
-        splitActive = sv.activePane || 0;
-        splitPanes = sv.panes.length;
-      } else {
-        // Firefox 149+ native split view: tabs in the same split share a
-        // splitViewId (read-only on the tabs API). Detect it so the status bar
-        // reflects native splits created by the chrome helper.
-        const id = list[active] && (list[active] as any).splitViewId;
-        if (typeof id === "number" && id >= 0) {
-          const pair = list.filter((t: any) => t.splitViewId === id);
-          inSplit = true;
-          splitOrientation = "horizontal";
-          splitPanes = pair.length || 2;
-          splitActive = Math.max(0, pair.indexOf(list[active]));
-        }
+        splitOrientation = "horizontal";
+        splitPanes = pair.length || 2;
+        splitActive = Math.max(0, pair.indexOf(list[active]));
       }
     }
     const summary = await core.sessionSummary(
@@ -552,7 +573,12 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
 
   // Debounced crash-recovery snapshot of the current window ("last" session).
   let autosaveTimer: number | null = null;
+  // True while restoreSession is rebuilding the window; tab-change side effects
+  // (home conversion, autosave, status refresh) are suppressed during it so
+  // the switch does not flash.
+  let restoring = false;
   function scheduleAutosave(): void {
+    if (restoring) return;
     if (autosaveTimer != null) clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(async () => {
       autosaveTimer = null;
@@ -671,14 +697,6 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
     const muted = !(tab.mutedInfo && tab.mutedInfo.muted);
     await browser.tabs.update(tab.id, { muted });
     return { muted };
-  }
-
-  async function togglePin() {
-    const tab = await getActiveTab();
-    if (!tab) return { pinned: false };
-    const pinned = !tab.pinned;
-    await browser.tabs.update(tab.id, { pinned });
-    return { pinned };
   }
 
   async function reopenTab() {
@@ -811,7 +829,7 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
         return { ok: true };
       case "activateTabAt":
         if (data.last) {
-          const tabs = await browser.tabs.query({ currentWindow: true });
+          const tabs = await realTabsInWindow();
           const t = tabs[tabs.length - 1];
           if (!t) return { ok: false };
           await browser.tabs.update(t.id, { active: true });
@@ -908,8 +926,6 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
         return zoom(data.delta || 0, data.factor);
       case "mute":
         return toggleMute();
-      case "pin":
-        return togglePin();
       case "copyUrl": {
         const tab = await getActiveTab();
         if (!tab) return { url: "", title: "" };
@@ -944,13 +960,16 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
       case "sessionAssignMarker":
         return assignSessionMarker(data.name, data.marker);
       case "sessionSplit":
-        return splitCurrentTab(data.orientation === "vertical" ? "vertical" : "horizontal");
+        // Native splits are the chrome helper's domain (gBrowser.addTabSplitView);
+        // relay the request through a transient #lfc= tab.
+        requestChrome("splitTab");
+        return { ok: true };
       case "sessionUnsplit":
-        return unsplitCurrentTab();
+        requestChrome("unsplit");
+        return { ok: true };
       case "sessionSwitchPane":
-        return switchSplitPane(data.dir || 1);
-      case "sessionNavigatePane":
-        return navigateSplitPane(data.url);
+        requestChrome("switchPane", String(data.dir > 0 ? 1 : -1));
+        return { ok: true };
       case "sessionSplitAddTabByIndex": {
         // Moving a tab into a split view is a native-split capability owned by
         // the chrome helper (gBrowser.addTabSplitView). Relay via a transient
@@ -961,9 +980,12 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
         return { ok: true };
       }
       case "splitPanelTabs": {
-        const tabs = await browser.tabs.query({ currentWindow: true });
+        // Number REAL tabs only (skip splitpanel + #lfc=), so the list's
+        // numbers match ;+N and never shift when a companion pane is
+        // added/removed.
+        const tabs = await realTabsInWindow();
         return {
-          tabs: (tabs || []).map((t: any, i: number) => ({
+          tabs: tabs.map((t: any, i: number) => ({
             index: i + 1,
             id: t.id,
             url: t.url || "",
@@ -1005,17 +1027,18 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
         .create({ url: browser.runtime.getURL("commandcenter.html"), active: true })
         .catch(() => {});
     } else if (name === "split-horizontal") {
-      void splitCurrentTab("horizontal");
+      requestChrome("splitTab");
     } else if (name === "split-next-pane") {
-      void switchSplitPane(1);
+      requestChrome("switchPane", "1");
     } else if (name === "split-prev-pane") {
-      void switchSplitPane(-1);
+      requestChrome("switchPane", "-1");
     } else if (name === "unsplit") {
-      void unsplitCurrentTab();
+      requestChrome("unsplit");
     }
   });
 
   function maybeConvertHome(tab: any) {
+    if (restoring) return Promise.resolve();
     if (!tab || !tab.url || !HOMEISH.test(tab.url)) return Promise.resolve();
     // A blank/home tab that is already navigating somewhere (e.g.
     // browser.search.search opening a results tab) must be left alone — only
@@ -1041,6 +1064,7 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
   }
 
   browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
+    if (restoring) return;
     if (info.status === "complete" && tab && tab.active) maybeConvertHome(tab);
   });
 
@@ -1132,22 +1156,6 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
       await assignSessionMarker(nm, mk);
       return;
     }
-    if (action === "splitTab") {
-      await splitCurrentTab(arg === "vertical" ? "vertical" : "horizontal");
-      return;
-    }
-    if (action === "unsplitTab") {
-      await unsplitCurrentTab();
-      return;
-    }
-    if (action === "switchSplitPane") {
-      await switchSplitPane(parseInt(arg || "1", 10) || 1);
-      return;
-    }
-    if (action === "navigateSplitPane") {
-      await navigateSplitPane(decodeURIComponent(arg || ""));
-      return;
-    }
     if (action === "splitAddTabByIndex") {
       // Legacy relay no longer used: the chrome helper drives native splits
       // directly now.
@@ -1169,6 +1177,7 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
   });
 
   browser.tabs.onActivated.addListener((info: any) => {
+    if (restoring) return;
     browser.tabs
       .get(info.tabId)
       .then((tab: any) => maybeConvertHome(tab))
@@ -1219,57 +1228,6 @@ import type { Session, SessionTab, SplitView } from "../shared/types";
       // ignore
     }
   });
-
-  /* ===================== split-view header stripping ===================== */
-
-  // The custom split view renders arbitrary pages as <iframe>; most sites send
-  // X-Frame-Options or a CSP frame-ancestors directive that would blank them.
-  // Strip those headers for subframe requests initiated by our own extension
-  // pages (only the splitview page embeds iframes), so any site embeds while
-  // normal browsing is untouched.
-  //
-  // Firefox's blocking webRequest no longer applies response-header edits to
-  // subframes reliably, so this uses a scoped declarativeNetRequest dynamic
-  // rule instead. `initiatorDomains` is the extension's own moz-extension
-  // origin, so the strip only ever affects the split view's panes (never the
-  // user's normal tabs). DNR can only drop whole headers, so the page's CSP is
-  // removed outright rather than just its frame-ancestors directive — an
-  // acceptable trade-off for a locally-scoped, opt-in split view.
-  async function installSplitHeaderRule(): Promise<void> {
-    try {
-      const uuid = browser.runtime
-        .getURL("")
-        .split("/")
-        .filter((s: string) => s !== "")
-        .pop();
-      if (!uuid) return;
-      await browser.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: [1],
-        addRules: [
-          {
-            id: 1,
-            priority: 1,
-            action: {
-              type: "modifyHeaders",
-              responseHeaders: [
-                { header: "x-frame-options", operation: "remove" },
-                { header: "content-security-policy", operation: "remove" },
-                { header: "content-security-policy-report-only", operation: "remove" },
-              ],
-            },
-            condition: {
-              resourceTypes: ["sub_frame"],
-              initiatorDomains: [uuid],
-            },
-          },
-        ],
-      });
-    } catch (e) {
-      // ignore — declarativeNetRequest unavailable on this Firefox
-    }
-  }
-  void installSplitHeaderRule();
-
 
   // Warm the wasm core for the first URL suggestion.
   void ensureCore().catch(() => {});

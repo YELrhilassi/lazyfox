@@ -45,7 +45,6 @@ export interface BgApi {
   openDownload: { req: { id: number }; res: { ok: boolean } };
   zen: { req: Record<string, never>; res: { zen: boolean } };
   mute: { req: Record<string, never>; res: { muted: boolean } };
-  pin: { req: Record<string, never>; res: { pinned: boolean } };
   copyUrl: { req: Record<string, never>; res: { url: string; title: string } };
   zoom: { req: { delta: number; factor?: number }; res: { factor?: number } };
   getConfig: { req: Record<string, never>; res: { config?: Record<string, unknown> } };
@@ -67,7 +66,7 @@ export interface BgApi {
     res: { tabs: { index: number; id: number; url: string; title: string; active: boolean; inSplit: boolean }[] };
   };
   moveTabToSplit: { req: { index: number }; res: { ok: boolean } };
-  sessionNavigatePane: { req: { url: string }; res: { ok: boolean; note?: string } };
+
   sessionState: {
     req: Record<string, never>;
     res: {

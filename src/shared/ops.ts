@@ -33,7 +33,6 @@ export interface ActionOps {
   openDownload(id: number): void;
   copyUrl(): void;
   muteTab(): void;
-  pinTab(): void;
   zen(): void;
   toggleReveal(): void;
   toggleWhichKey(): void;
