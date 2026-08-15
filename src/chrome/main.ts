@@ -808,6 +808,19 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     sessions: [] as { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[],
   };
 
+  // Is the selected tab the extension's command center page?
+  function isCommandCenterTab(): boolean {
+    try {
+      const b = window.gBrowser.selectedBrowser;
+      const uri = b && b.currentURI;
+      if (!uri) return false;
+      const s = uri.spec || "";
+      return s.indexOf("commandcenter.html") !== -1;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // The content script owns the status bar on web pages; the chrome helper only
   // shows its own on chrome-only pages (about:, moz-extension:, ...) where the
   // content script never runs.
@@ -1441,6 +1454,22 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
         return;
       }
 
+      // The command center is Lazyfox's own page: its input is focused by
+      // default (so h/j/k/l etc. type normally), but the leader key must
+      // still arm there — otherwise the home-screen command shortcuts
+      // (;n, ;z, ;s, 1-6, ...) stop working the moment the input is focused.
+      let k = e.key;
+      if (
+        k === leaderKey() &&
+        !e.ctrlKey && !e.altKey && !e.metaKey &&
+        isCommandCenterTab()
+      ) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        leader.show();
+        return;
+      }
+
       // Typing in a page input (or the URL bar): let the key through.
       if (typing.focusedIsTyping(e)) return;
 
@@ -1457,7 +1486,6 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       // Ctrl/Alt/Meta chords are never the leader key on their own.
       if (e.ctrlKey || e.altKey || e.metaKey) return;
 
-      const k = e.key;
       if (k === leaderKey()) {
         e.preventDefault();
         e.stopImmediatePropagation();

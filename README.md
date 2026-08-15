@@ -1,7 +1,9 @@
 # Lazyfox
 
-Lazyfox is Firefox without the browser chrome. No tab strip, no URL bar, no
-menus. Just the page, a status bar, and a keyboard.
+Lazyfox is Firefox with the browser interface stripped away. No tab strip, no
+URL bar, no menus — just the page, a status bar, and a keyboard. ("Chrome"
+here means the browser's own UI — the toolbars and panels — not the Chrome
+browser.)
 
 Everything is controlled with the leader key: `;`. Press `;`, then one more
 key, and the thing happens — open a link, switch tabs, search, jump to a
@@ -188,26 +190,29 @@ opens. Details that matter:
 ### The command center
 
 `Ctrl+T` (and the startup tab) opens the command center instead of the default
-new-tab page. It starts in command mode — nothing is focused, so your keys  aren't eaten — with a list of your most-used actions. Type any letter and you
-  start typing immediately.
+new-tab page. The input is focused as soon as it opens, so you can start
+typing immediately — every key lands in the box, including `h`/`j`/`k`/`l`
+and digits, so you can search for anything.
 
 ![The command center, tabs mode](docs/img/command-center-tabs.png)
 
-- **`1`–`6` (or `Tab`)** switch modes — Search · URL · Tabs · History ·
-  Bookmarks · Downloads. The numbered buttons on top do the same.
+The command grid above the list holds your most-used actions; each card shows
+its shortcut (`;n` new tab, `;z` zen, …). **`Enter`** (or a click) runs the
+selected one. The leader key works even while the input is focused, so
+`;n`, `;s`, `;z` and the other shortcuts run straight from the home page.
+
+Press **`Esc`** to leave the input (command mode), where the list shortcuts
+come back:
+
 - **`h` `j` `k` `l` / arrows** move through the list — on the home grid,
   `j`/`k` move between rows and `h`/`l` between columns; in the flat list views
   `j`/`k` step one at a time. **`Enter`** runs the selection.
+- **`1`–`6` (or `Tab`)** switch modes — Search · URL · Tabs · History ·
+  Bookmarks · Downloads. The numbered buttons on top do the same.
 - **`;`** opens the leader menu from here too: `;s` `;o` `;t` switch modes,
   `;n` new tab, `;x` close, `;w` resize/move, `;z` zen, and so on.
-- **type any other letter** to start typing immediately — the input focuses
-  and the letter lands in the box (search / URL / tab filter)
-- **`i`** focuses the input without typing.
-- **`Esc`** clears the input and returns to command mode.
-
-While the input is focused, **every key types** — including `h`/`j`/`k`/`l`,
-`;` and digits — so you can search for anything. `h`/`j`/`k`/`l` only navigate
-the list when the input is not focused. `Esc` gets you back to command mode.
+- **type any letter** to start typing again — the input focuses and the
+  letter lands in the box (search / URL / tab filter).
 
 The command center also runs your window: `;w` enters resize/move mode (arrow
 keys resize, `Shift+arrows` move, `Esc` to finish).
