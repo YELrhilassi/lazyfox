@@ -147,7 +147,10 @@ export function openTabsPopup(ctx: PopupCtx): void {
           (t.pinned ? "\uD83D\uDCCC " : "") +
           (t.muted ? "\uD83D\uDD07 " : "") +
           esc(t.title || "") +
-          "</div><div class='s'>" + esc(t.url || "") + "</div>",
+          "</div><div class='s'>" +
+          (t.realId != null ? "id " + t.realId + " \u00b7 " : "") +
+          esc(t.url || "") +
+          "</div>",
         onPick: (t) => {
           ctx.close();
           if (t.id != null) ctx.ops.activateTab(t.id);
@@ -498,6 +501,8 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     "|": () => ctx.ops.splitTab("horizontal"),
     "[": () => ctx.ops.switchSplitPane(-1),
     "]": () => ctx.ops.switchSplitPane(1),
+    "{": () => ctx.ops.swapSplitPane(-1),
+    "}": () => ctx.ops.swapSplitPane(1),
     ",": () => ctx.ops.moveActiveTab(-1),
     ".": () => ctx.ops.moveActiveTab(1),
     "\\": () => ctx.ops.unsplitTab(),

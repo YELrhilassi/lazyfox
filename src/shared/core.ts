@@ -34,6 +34,7 @@ export interface CoreApi {
   lfcOk(nonce: string): string;
   lfcErr(nonce: string): string;
   assignSessionMarker(taken: number[]): number;
+  splitPairsOf(ids: number[]): [number, number][];
   encodeSplits(pairs: [number, number][]): string;
   decodeSplits(encoded: string): [number, number][];
   splitPartnerOf(pairs: [number, number][], i: number): number;
@@ -96,6 +97,8 @@ export function createCoreFacade(getApi: () => Promise<CoreApi>) {
     lfcErr: (n: string): Promise<string> => call((a) => a.lfcErr(n)),
     assignSessionMarker: (taken: number[]): Promise<number> =>
       call((a) => a.assignSessionMarker(taken)),
+    splitPairsOf: (ids: number[]): Promise<[number, number][]> =>
+      call((a) => a.splitPairsOf(ids)),
     encodeSplits: (pairs: [number, number][]): Promise<string> =>
       call((a) => a.encodeSplits(pairs)),
     decodeSplits: (encoded: string): Promise<[number, number][]> =>

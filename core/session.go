@@ -182,6 +182,34 @@ func SessionSummary(sessions []Session, current string) []SessionSummaryItem {
 	return append(marked, unmarked...)
 }
 
+// SplitPairsOf converts per-tab split ids (in tab order) into split pairs.
+// Tabs sharing the same non-negative id belong to one split view; tabs with a
+// negative id (e.g. -1) are not in a split. Each split view yields one pair of
+// its first two members (Firefox split view holds at most two tabs), so a
+// defensive extra member is ignored rather than producing overlapping pairs.
+// Pairs are returned in first-seen order and indices are ascending.
+func SplitPairsOf(ids []int) []SplitPair {
+	order := make([]int, 0)
+	members := make(map[int][]int)
+	for i, id := range ids {
+		if id < 0 {
+			continue
+		}
+		if _, ok := members[id]; !ok {
+			order = append(order, id)
+		}
+		members[id] = append(members[id], i)
+	}
+	var out []SplitPair
+	for _, id := range order {
+		g := members[id]
+		if len(g) >= 2 {
+			out = append(out, SplitPair{A: g[0], B: g[1]})
+		}
+	}
+	return out
+}
+
 // SplitPairOf returns the split pair that contains tab index i, or nil.
 func SplitPairOf(splits []SplitPair, i int) *SplitPair {
 	for k := range splits {

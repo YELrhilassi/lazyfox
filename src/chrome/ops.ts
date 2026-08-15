@@ -446,6 +446,9 @@ export const chromeOps: ActionOps = {
   switchSplitPane: (_dir: number) => {
     toast("split view needs a web page");
   },
+  swapSplitPane: (_dir: number) => {
+    toast("split view needs a web page");
+  },
   splitAddTabByIndex: (_n: number) => {
     toast("split view needs a web page");
   },

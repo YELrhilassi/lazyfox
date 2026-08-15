@@ -2,7 +2,7 @@
 // assignment and quick-switch, the status bar rendering (web + chrome), and
 // the no-op/safe dispatch paths.
 
-import { evalIn, waitFor, sleep, createTab } from "../lib.mjs";
+import { evalIn, waitFor, sleep, createTab, navigate } from "../lib.mjs";
 import { assert } from "../harness.mjs";
 
 export const group = "sessions";
@@ -281,8 +281,16 @@ export async function run(ctx) {
     ctx.tabA = await createTab();
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await ctx.openCC(ctx.tabA);
+    // A split of two REAL tabs (the user's flow): ;| pairs the active CC tab
+    // with the split-panel companion, then ;+N moves a real content tab into
+    // the split, REPLACING the panel (the panel is pure UI and must never be
+    // saved as a session tab).
+    const tabB = await createTab();
+    await navigate(tabB, `${ctx.base}/hello`, "complete");
+    await sleep(400);
+    await ctx.openCC(ctx.tabA); // re-activate the CC tab
     await ctx.leaderPress(ctx.tabA, "\\", { shift: true }); // ;| via chrome helper
-    const pair = await waitFor(async () => {
+    await waitFor(async () => {
       const ts = await ctx.tabsInfo();
       const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
       return sv.length === 2 ? sv : null;
@@ -290,7 +298,28 @@ export async function run(ctx) {
       const ts = await ctx.tabsInfo().catch(() => "ERR");
       throw new Error("split not created; tabs=" + JSON.stringify(ts));
     });
-    assert(pair && pair.length === 2, "split created for the session test: " + JSON.stringify(pair));
+    const realT0 = (await ctx.tabsInfo()).filter(
+      (t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=")
+    );
+    const bIdx = realT0.findIndex((t) => (t.url || "").includes("/hello")) + 1;
+    assert(bIdx >= 1 && bIdx <= 9, ";+N target within 1-9: " + bIdx + " of " + realT0.length);
+    await ctx.leaderPress(ctx.tabA, "=", { shift: true }); // ;+ -> shift+=
+    await sleep(250);
+    await ctx.press(ctx.tabA, String(bIdx)); // ;+N moves tab B into the split
+    const pair = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 && sv.some((t) => (t.url || "").includes("/hello")) ? sv : null;
+    }, 8000).catch(async () => {
+      const ts = await ctx.tabsInfo().catch(() => "ERR");
+      throw new Error(";+N did not move tab into split; tabs=" + JSON.stringify(ts));
+    });
+    assert(pair && pair.length === 2, "split pair is two real tabs: " + JSON.stringify(pair.map((t) => ({ u: t.url, s: t.splitViewId }))));
+    const noPanel = await ctx.tabsInfo();
+    assert(
+      !noPanel.some((t) => (t.url || "").includes("splitpanel.html")),
+      "no split-panel pane left in the split: " + JSON.stringify(noPanel.map((t) => t.url))
+    );
 
     // Save the session. The command center is a chrome page, so the save
     // popup mounts at window level (not in the page DOM the test can drive);

@@ -158,7 +158,12 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     },
     listTabs: async (q: string) => {
       const r = await send("tabs");
-      let tabs: PopupItem[] = (r && r.tabs) || [];
+      let tabs: PopupItem[] = ((r && r.tabs) || []).map((t) => ({
+        ...t,
+        // The background's id IS the real Firefox tab id; carry it as realId
+        // too so the popup can display it (chrome's id is a strip index).
+        realId: t.id,
+      }));
       const ql = q.trim().toLowerCase();
       if (ql) {
         tabs = tabs.filter(
@@ -258,7 +263,7 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     listSessions: async (q: string) => {
       const r = await send("sessionList");
       const sessions: PopupItem[] = ((r && r.sessions) || []).map((s) => {
-        const splitCount = (s.tabs || []).filter((t: any) => !!t.split).length;
+        const splitCount = (s.tabs || []).filter((t: any) => typeof t.splitViewId === "number" && t.splitViewId >= 0).length;
         return {
           kind: "session",
           title: s.name,
@@ -325,6 +330,12 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     switchSplitPane: (dir: number) => {
       void send("sessionSwitchPane", { dir: dir }).then((r) => {
         if (r && r.ok) toast("switched split pane");
+        else toast(r && r.note ? r.note : "not in a split view");
+      });
+    },
+    swapSplitPane: (dir: number) => {
+      void send("sessionSwapPane", { dir: dir }).then((r) => {
+        if (r && r.ok) toast("swapped split panes");
         else toast(r && r.note ? r.note : "not in a split view");
       });
     },

@@ -243,19 +243,27 @@ import type { Session, SessionTab } from "../shared/types";
     tabs: SessionTab[];
     active: number;
     windowState: string;
+    splits: string;
   }> {
     const win = await browser.windows.getCurrent();
     const tabs = await browser.tabs.query({ currentWindow: true });
     const list = tabs || [];
-    // Transient #lfc= request tabs (the chrome-helper request channel) are
-    // internal plumbing, never user content: exclude them so a checkpoint
-    // never captures one and a restore never re-opens it (they would linger
-    // and compound across switches).
-    const content = list.filter(
-      (t: any) => !(t.url && t.url.indexOf("#lfc=") !== -1)
-    );
+    // Transient tabs are internal plumbing, never user content: the #lfc=
+    // request channel (chrome-helper requests) and the splitpanel.html
+    // companion pane (pure UI "move a tab into this split" page). Excluding
+    // them keeps a checkpoint from capturing them and a restore from
+    // re-opening them (they would linger and compound across switches).
+    const content = list.filter((t: any) => !isUITab(t));
     let active = content.findIndex((t: any) => t.active);
     if (active < 0) active = 0;
+    // The split layout is computed once, in the Go core, from the read-only
+    // splitViewId each tab carries (Firefox bug 2016928), and stored as a
+    // compact "a:b,c:d" string. Restore reads it back through the same core,
+    // so the pairing logic lives in exactly one place and is Go-tested.
+    const svIds = content.map((t: any) =>
+      typeof t.splitViewId === "number" && t.splitViewId >= 0 ? t.splitViewId : -1
+    );
+    const splits = await core.encodeSplits(await core.splitPairsOf(svIds));
     return {
       tabs: content.map((t: any) => {
         const svId = typeof t.splitViewId === "number" && t.splitViewId >= 0 ? t.splitViewId : undefined;
@@ -268,6 +276,7 @@ import type { Session, SessionTab } from "../shared/types";
       }),
       active: active,
       windowState: win && win.state ? win.state : "normal",
+      splits: splits,
     };
   }
 
@@ -340,6 +349,22 @@ import type { Session, SessionTab } from "../shared/types";
     return Array.from(byId.values()).filter((g) => g.length > 1);
   }
 
+  // The split layout for a session as 1-based groups for the chrome helper.
+  // Preferred source is the Go-computed `splits` string (decode through the
+  // core so the pairing logic lives in one place); fall back to grouping the
+  // per-tab splitViewId for sessions saved before the encoding existed.
+  async function splitGroupsOfSession(s: Session): Promise<number[][]> {
+    if (s.splits) {
+      try {
+        const pairs = await core.decodeSplits(s.splits);
+        if (pairs && pairs.length) return pairs.map((p) => [p[0] + 1, p[1] + 1]);
+      } catch (e) {
+        // fall through to the splitViewId grouping below
+      }
+    }
+    return splitGroupsOf(s.tabs);
+  }
+
   // Checkpoint: persist the current window before switching away so nothing is
   // ever lost — even when the current session was never given a name. The
   // snapshot is always written to the crash-recovery "last" slot, and if the
@@ -354,6 +379,7 @@ import type { Session, SessionTab } from "../shared/types";
         active: snap.active,
         windowState: snap.windowState,
         updatedAt: Date.now(),
+        splits: snap.splits,
       };
       const r = await browser.storage.local.get(CURRENT_SESSION_KEY);
       const name = r && r[CURRENT_SESSION_KEY];
@@ -366,6 +392,7 @@ import type { Session, SessionTab } from "../shared/types";
           active: snap.active,
           windowState: snap.windowState,
           updatedAt: Date.now(),
+          splits: snap.splits,
         };
         await writeSessions(all);
         await browser.storage.local.set({ [LAST_SESSION_KEY]: all[name] });
@@ -402,6 +429,7 @@ import type { Session, SessionTab } from "../shared/types";
       active: snap.active,
       windowState: snap.windowState,
       updatedAt: Date.now(),
+      splits: snap.splits,
     };
     all[nm] = session;
     await writeSessions(all);
@@ -430,7 +458,7 @@ import type { Session, SessionTab } from "../shared/types";
     try {
       const ids = await openTabsInCurrentWindow(s.tabs);
       // Re-create native split groupings (groups of 1-based tab positions).
-      const groups = splitGroupsOf(s.tabs);
+      const groups = await splitGroupsOfSession(s);
       if (groups.length) {
         // requestChrome already encodeURIComponent's its arg; pre-encoding
         // here would double-encode and break JSON.parse in the chrome helper.
@@ -516,6 +544,7 @@ import type { Session, SessionTab } from "../shared/types";
     splitActive: number;
     splitPanes: number;
     sessions: { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
+    tabIds: number[];
   }> {
     const allTabs = await browser.tabs.query({ currentWindow: true });
     const all = await readSessions();
@@ -549,15 +578,31 @@ import type { Session, SessionTab } from "../shared/types";
         splitActive = Math.max(0, pair.indexOf(list[active]));
       }
     }
-    const summary = await core.sessionSummary(
-      Object.values(all).map((s) => ({
+    const summaryInput: { name: string; marker: number; tabCount: number; splitCount: number }[] = [];
+    for (const s of Object.values(all)) {
+      let splitCount = 0;
+      if (s.splits) {
+        try {
+          splitCount = (await core.decodeSplits(s.splits)).length;
+        } catch (e) {
+          splitCount = 0;
+        }
+      } else {
+        // Pre-encoding sessions: two tabs per split share one splitViewId.
+        splitCount = Math.floor(
+          (s.tabs || []).filter(
+            (t: any) => typeof t.splitViewId === "number" && t.splitViewId >= 0
+          ).length / 2
+        );
+      }
+      summaryInput.push({
         name: s.name,
         marker: s.marker || 0,
         tabCount: (s.tabs || []).length,
-        splitCount: (s.tabs || []).filter((t: any) => !!t.split).length,
-      })),
-      name
-    );
+        splitCount: splitCount,
+      });
+    }
+    const summary = await core.sessionSummary(summaryInput, name);
     return {
       name: name,
       marker: marker,
@@ -568,6 +613,9 @@ import type { Session, SessionTab } from "../shared/types";
       splitActive: splitActive,
       splitPanes: splitPanes,
       sessions: summary,
+      // Real tab ids in strip order (transient tabs included), so the chrome
+      // helper can show each tab's true id in the tab switcher popup.
+      tabIds: (allTabs || []).map((t: any) => t.id),
     };
   }
 
@@ -970,6 +1018,9 @@ import type { Session, SessionTab } from "../shared/types";
       case "sessionSwitchPane":
         requestChrome("switchPane", String(data.dir > 0 ? 1 : -1));
         return { ok: true };
+      case "sessionSwapPane":
+        requestChrome("swapSplitPanes", String(data.dir > 0 ? 1 : -1));
+        return { ok: true };
       case "sessionSplitAddTabByIndex": {
         // Moving a tab into a split view is a native-split capability owned by
         // the chrome helper (gBrowser.addTabSplitView). Relay via a transient
@@ -1223,6 +1274,12 @@ import type { Session, SessionTab } from "../shared/types";
       const last = r && r[LAST_SESSION_KEY];
       if (last && last.tabs && last.tabs.length) {
         await openTabsInCurrentWindow(last.tabs);
+        // Re-create native split pairings exactly like a session switch, so
+        // the restored window looks the way it was left (not flattened).
+        const groups = await splitGroupsOfSession(last);
+        if (groups.length) {
+          requestChrome("restoreSplits", JSON.stringify(groups));
+        }
       }
     } catch (e) {
       // ignore

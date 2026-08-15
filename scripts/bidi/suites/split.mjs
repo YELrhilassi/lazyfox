@@ -107,6 +107,9 @@ export async function run(ctx) {
     })()`);
     const dump = JSON.parse(raw);
     assert(dump && (dump.listHTML || "").includes("data-index"), "split panel lists other tabs: " + String(raw));
+    // Each row must carry the real Firefox tab id so the user can tell tabs
+    // apart in the panel.
+    assert((dump.listHTML || "").includes("id "), "split panel rows show the tab id: " + String(raw));
     // Clean up.
     await ctx.leaderPress(ctx.tabA, "\\");
     await waitNoSplit();
@@ -288,6 +291,87 @@ export async function run(ctx) {
     // Clean up: unsplit (no panel pane is left to close).
     await ctx.leaderPress(ctx.tabA, "\\"); // ;\
     await waitNoSplit();
+  });
+
+  await t("split: ;{ and ;} swap the panes left/right", async () => {
+    // Isolate: collapse the window to just the probe + a fresh CC (tabA) and
+    // a fresh content tab (tabB), so the split pair and its ;+N index are
+    // deterministic (probe=1, tabA=2, tabB=3).
+    const probe = await ctx.makeProbeTab();
+    const probeId = await evalIn(probe, `browser.tabs.getCurrent().then(t => t ? t.id : null)`);
+    await evalIn(probe, `(async () => {
+      const ts = await browser.tabs.query({ currentWindow: true });
+      for (const t of ts) if (t.id !== ${probeId} && !t.pinned) { try { await browser.tabs.remove(t.id); } catch (e) {} }
+      return true;
+    })()`);
+    await sleep(500);
+    ctx.probe = probe;
+    ctx.tabA = await createTab();
+    await ctx.openCC(ctx.tabA);
+    const tabB = await createTab();
+    await navigate(tabB, `${ctx.base}/hello`, "complete");
+    await sleep(400);
+    await ctx.openCC(ctx.tabA); // tabA active
+    // ;| creates [tabA, panel]; ;+3 moves tabB in, replacing the panel.
+    await ctx.leaderPress(ctx.tabA, "\\", { shift: true });
+    await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 ? sv : null;
+    }, 8000);
+    await ctx.leaderPress(ctx.tabA, "=", { shift: true });
+    await sleep(250);
+    await ctx.press(ctx.tabA, "3");
+    await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      const sv = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 && sv.some((t) => (t.url || "").includes("/hello")) ? sv : null;
+    }, 10000);
+    const order = async () => {
+      const now = await ctx.tabsInfo();
+      return now
+        .filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0)
+        .map((t) => t.id)
+        .join(",");
+    };
+    const before = await order();
+    const flipped = before.split(",").reverse().join(",");
+    assert(before.split(",").length === 2, "swap test has a 2-pane split: " + before);
+    // ;} moves the active pane right (order flips).
+    await ctx.leaderPress(ctx.tabA, "}");
+    try {
+      await waitFor(async () => ((await order()) === flipped ? flipped : null), 8000);
+    } catch (e) {
+      const now = await ctx.tabsInfo().catch(() => "ERR");
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error(";} did not flip panes; before=" + before + " now=" + JSON.stringify(now) + " state=" + JSON.stringify(st && { lastAction: st.lastAction, strip: st.strip }));
+    }
+    const after1 = await order();
+    assert(after1 === flipped, ";} swapped the panes: " + before + " -> " + after1);
+    // ;{ moves the active pane back left (order flips again).
+    await ctx.leaderPress(ctx.tabA, "{");
+    await waitFor(async () => ((await order()) === before ? before : null), 8000);
+    const after2 = await order();
+    assert(after2 === before, ";{ swapped the panes back: " + after1 + " -> " + after2);
+    // The pair must still be a live split after swapping.
+    const live = (await ctx.tabsInfo()).filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+    assert(live.length === 2, "split intact after swapping: " + JSON.stringify(live));
+    // Clean up: dissolve every split, close the fresh tabs, drop the probe
+    // pollution so later tests see a flat window with the usual tabA/probe.
+    const rem = await ctx.tabsInfo();
+    const splitTabs = rem.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+    for (const p of splitTabs) {
+      await evalIn(ctx.probe, `browser.tabs.remove(${p.id})`).catch(() => {});
+    }
+    await sleep(500);
+    const post = await ctx.tabsInfo();
+    assert(post.every((t) => !(typeof t.splitViewId === "number" && t.splitViewId >= 0)), "cleanup left a split");
+    for (const id of [tabB]) {
+      await evalIn(ctx.probe, `browser.tabs.remove(${id}).catch(()=>{})`);
+    }
+    await sleep(400);
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
   });
 
   await t("split: ;+N auto-splits when no split exists", async () => {
