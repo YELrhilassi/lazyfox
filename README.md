@@ -319,6 +319,23 @@ decodes it and asks Firefox to rebuild the split views. That keeps the logic
 in one tested place, so the layout is restored exactly as it was left — even
 for splits that sit in the middle of the tab strip.
 
+### Stealth tabs
+
+**`;S`** reopens the current page in a **stealth tab** — an isolated, same-
+window tab that wipes itself when you close it. A stealth tab is a real
+Firefox container, so it has its own cookies and storage: open YouTube there
+and it won't know your account, and nothing it stores leaks back into your
+normal tabs (or into any other stealth tab — each one is its own sandbox).
+
+Close the tab and its data is removed and the container deleted. If Firefox
+quits before that cleanup runs, the orphan is caught and wiped on the next
+launch, so a crash never leaves the data behind.
+
+Stealth tabs are part of sessions too: save a session that mixes normal and
+stealth tabs, and restoring it brings the stealth tabs back in fresh,
+empty containers — they always start clean, exactly like a new private
+window.
+
 ### Settings
 
 The settings page (*Lazyfox options* in the popup, or *Lazyfox settings* in

@@ -2,7 +2,7 @@
 // assignment and quick-switch, the status bar rendering (web + chrome), and
 // the no-op/safe dispatch paths.
 
-import { evalIn, waitFor, sleep, createTab, navigate } from "../lib.mjs";
+import { evalIn, waitFor, sleep, createTab, navigate, activate } from "../lib.mjs";
 import { assert } from "../harness.mjs";
 
 export const group = "sessions";
@@ -461,5 +461,52 @@ export async function run(ctx) {
     // Clean the file + history entry so the suite is repeatable.
     await evalIn(ctx.probe, `browser.downloads.search({ filename: "lf-slow.bin" }).then(rs => Promise.all(rs.map(r => browser.downloads.removeFile(r.id).catch(() => {}).then(() => browser.downloads.erase({ id: r.id }).catch(() => {}))))).then(() => true)`).catch(() => {});
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
+
+  await t("stealth: isolated tab, session round-trip, wiped on close", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+
+    // ;S opens the current page in its own container (isolated cookie jar).
+    await ctx.leaderPress(ctx.tabA, "S");
+    const opened = await waitFor(async () => {
+      const ts = await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => ({id: t.id, url: t.url, cs: t.cookieStoreId})))`);
+      const stealth = ts.find((t) => t.cs && t.cs !== "firefox-default");
+      return stealth ? stealth : null;
+    }, 10000).catch(() => null);
+    assert(opened, "stealth tab opened in its own container");
+    assert(opened.cs !== "firefox-default", "stealth container is not the default jar");
+
+    // Session save records the stealth flag.
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lfstealth" } }); true`);
+    await sleep(700);
+    const saved = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.lfstealth)`);
+    assert(saved && saved.tabs.some((t) => t.stealth === true), "session marks the stealth tab: " + JSON.stringify(saved && saved.tabs.map((t) => t.stealth)));
+
+    // Close it -> the container is wiped + removed.
+    await evalIn(ctx.probe, `browser.tabs.remove(${opened.id})`).catch(() => {});
+    const gone = await waitFor(async () => {
+      const cis = await evalIn(ctx.probe, `browser.contextualIdentities.query({}).then(cs => cs.map(c => c.cookieStoreId))`);
+      return cis && cis.indexOf(opened.cs) === -1 ? true : null;
+    }, 8000).catch(() => null);
+    assert(gone === true, "container removed after closing the stealth tab");
+
+    // Restore the session: the stealth tab returns in a FRESH container.
+    // The restore tears down the window (including the probe tab), so re-make
+    // the probe before querying anything.
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionRestore", data: { name: "lfstealth" } }); true`);
+    await sleep(2500);
+    const fresh = await ctx.makeProbeTab();
+    ctx.probe = fresh;
+    const restored = await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => ({id: t.id, cs: t.cookieStoreId})))`);
+    const stealthTab = restored.find((t) => t.cs && t.cs !== "firefox-default");
+    assert(stealthTab, "restore re-opened a stealth container tab");
+    assert(stealthTab.cs !== opened.cs, "restored stealth tab uses a fresh container");
+
+    // Clean up: remove the stealth tab and the session.
+    await evalIn(ctx.probe, `browser.tabs.remove(${stealthTab.id})`).catch(() => {});
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionDelete", data: { name: "lfstealth" } }); true`);
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await activate(ctx.tabA).catch(() => {});
   });
 }

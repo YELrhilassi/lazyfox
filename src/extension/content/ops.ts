@@ -241,6 +241,7 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     openDownload: (key: string) => void send("openDownload", { id: key }),
     openDownloadLocation: (key: string) => void send("openDownloadLocation", { id: key }),
     removeDownload: (key: string) => void send("removeDownload", { id: key }),
+    stealthOpen: () => void send("stealthOpen"),
     dismissDownload: (_key?: string) => {
       // The content-script bar does not render download progress (the chrome
       // helper's window bar owns that); nothing to dismiss here.

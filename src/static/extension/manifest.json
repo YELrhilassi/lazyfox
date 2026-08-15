@@ -16,7 +16,10 @@
     "downloads",
     "sessions",
     "search",
-    "storage"
+    "storage",
+    "contextualIdentities",
+    "browsingData",
+    "cookies"
   ],
   "host_permissions": [
     "<all_urls>"

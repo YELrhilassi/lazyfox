@@ -400,6 +400,7 @@ import { send } from "../shared/protocol";
     else if (k === "v") void send("reopenTab");
     else if (k === "c") void send("duplicateTab");
     else if (k === "z") void send("zen");
+    else if (k === "S") void send("stealthOpen");
     else if (k === "?") toggleHelp();
     modeTag.textContent = mode;
   }
