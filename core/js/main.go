@@ -127,6 +127,55 @@ func splitPairsArray(splits []core.SplitPair) js.Value {
 	return a
 }
 
+func downloadObj(d core.Download) js.Value {
+	o := obj()
+	o.Set("id", d.ID)
+	o.Set("filename", d.Filename)
+	o.Set("path", d.Path)
+	o.Set("url", d.URL)
+	o.Set("state", d.State)
+	o.Set("received", d.Received)
+	o.Set("total", d.Total)
+	o.Set("speed", d.Speed)
+	o.Set("dismissed", d.Dismissed)
+	o.Set("startTime", d.StartTime)
+	o.Set("endTime", d.EndTime)
+	return o
+}
+
+func downloadsInput(v js.Value) []core.Download {
+	if v.IsUndefined() || v.IsNull() {
+		return nil
+	}
+	n := v.Length()
+	out := make([]core.Download, 0, n)
+	for i := 0; i < n; i++ {
+		it := v.Index(i)
+		out = append(out, core.Download{
+			ID:        it.Get("id").String(),
+			Filename:  it.Get("filename").String(),
+			Path:      it.Get("path").String(),
+			URL:       it.Get("url").String(),
+			State:     it.Get("state").String(),
+			Received:  int64(it.Get("received").Int()),
+			Total:     int64(it.Get("total").Int()),
+			Speed:     int64(it.Get("speed").Int()),
+			Dismissed: it.Get("dismissed").Truthy(),
+			StartTime: int64(it.Get("startTime").Int()),
+			EndTime:   int64(it.Get("endTime").Int()),
+		})
+	}
+	return out
+}
+
+func downloadsArray(downloads []core.Download) js.Value {
+	a := js.Global().Get("Array").New(len(downloads))
+	for i, d := range downloads {
+		a.SetIndex(i, downloadObj(d))
+	}
+	return a
+}
+
 func sessionSummaryInput(v js.Value) []core.Session {
 	n := v.Length()
 	out := make([]core.Session, 0, n)
@@ -350,6 +399,52 @@ func main() {
 			ids = intSlice(args[0])
 		}
 		return splitPairsArray(core.SplitPairsOf(ids))
+	})
+
+	set("formatBytes", func(this js.Value, args []js.Value) interface{} {
+		n := int64(0)
+		if len(args) > 0 {
+			n = int64(args[0].Int())
+		}
+		return core.FormatBytes(n)
+	})
+
+	set("formatSpeed", func(this js.Value, args []js.Value) interface{} {
+		n := int64(0)
+		if len(args) > 0 {
+			n = int64(args[0].Int())
+		}
+		return core.FormatSpeed(n)
+	})
+
+	set("downloadProgress", func(this js.Value, args []js.Value) interface{} {
+		received, total := int64(0), int64(0)
+		if len(args) > 0 {
+			received = int64(args[0].Int())
+		}
+		if len(args) > 1 {
+			total = int64(args[1].Int())
+		}
+		return core.Progress(received, total)
+	})
+
+	set("mergeDownloads", func(this js.Value, args []js.Value) interface{} {
+		prev, fresh := []core.Download(nil), []core.Download(nil)
+		if len(args) > 0 {
+			prev = downloadsInput(args[0])
+		}
+		if len(args) > 1 {
+			fresh = downloadsInput(args[1])
+		}
+		return downloadsArray(core.MergeDownloads(prev, fresh))
+	})
+
+	set("activeDownloads", func(this js.Value, args []js.Value) interface{} {
+		downloads := []core.Download(nil)
+		if len(args) > 0 {
+			downloads = downloadsInput(args[0])
+		}
+		return downloadsArray(core.ActiveDownloads(downloads))
 	})
 
 	set("splitPartnerOf", func(this js.Value, args []js.Value) interface{} {

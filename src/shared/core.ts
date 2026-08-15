@@ -1,6 +1,6 @@
 import "../vendor/wasm_exec.js";
 import { WASM_BASE64 } from "./wasm-embed";
-import type { Lfc, VisitedItem, WkItem, WkPage } from "./types";
+import type { DownloadEntry, Lfc, VisitedItem, WkItem, WkPage } from "./types";
 
 // The Go core (core.wasm) is compiled to a single wasm module and exposed to
 // JS as the "LazyfoxCore" object. Every Lazyfox context uses this facade; the
@@ -38,6 +38,11 @@ export interface CoreApi {
   encodeSplits(pairs: [number, number][]): string;
   decodeSplits(encoded: string): [number, number][];
   splitPartnerOf(pairs: [number, number][], i: number): number;
+  formatBytes(n: number): string;
+  formatSpeed(n: number): string;
+  downloadProgress(received: number, total: number): number;
+  mergeDownloads(prev: DownloadEntry[], fresh: DownloadEntry[]): DownloadEntry[];
+  activeDownloads(downloads: DownloadEntry[]): DownloadEntry[];
   sessionSummary(
     sessions: { name: string; marker: number; tabCount: number; splitCount: number }[],
     current: string
@@ -105,6 +110,14 @@ export function createCoreFacade(getApi: () => Promise<CoreApi>) {
       call((a) => a.decodeSplits(encoded)),
     splitPartnerOf: (pairs: [number, number][], i: number): Promise<number> =>
       call((a) => a.splitPartnerOf(pairs, i)),
+    formatBytes: (n: number): Promise<string> => call((a) => a.formatBytes(n)),
+    formatSpeed: (n: number): Promise<string> => call((a) => a.formatSpeed(n)),
+    downloadProgress: (received: number, total: number): Promise<number> =>
+      call((a) => a.downloadProgress(received, total)),
+    mergeDownloads: (prev: DownloadEntry[], fresh: DownloadEntry[]): Promise<DownloadEntry[]> =>
+      call((a) => a.mergeDownloads(prev, fresh)),
+    activeDownloads: (downloads: DownloadEntry[]): Promise<DownloadEntry[]> =>
+      call((a) => a.activeDownloads(downloads)),
     sessionSummary: (
       sessions: { name: string; marker: number; tabCount: number; splitCount: number }[],
       current: string

@@ -89,6 +89,30 @@ export interface PopupItem {
   time?: number;
   favIconUrl?: string;
   marker?: number;
+  // Downloads: stable identity for actions (open / delete / reveal).
+  key?: string;
+  path?: string;
+  received?: number;
+  total?: number;
+  speed?: number;
+  progress?: number;
+}
+
+// One download as tracked by the Go notification manager. `id` is a stable key
+// (full target path in the chrome helper, numeric id in the background) so a
+// dismissed flag survives across polls and the popup can act on it.
+export interface DownloadEntry {
+  id: string;
+  filename: string;
+  path: string;
+  url: string;
+  state: string; // in_progress | paused | complete | failed | canceled
+  received: number;
+  total: number;
+  speed: number;
+  dismissed: boolean;
+  startTime: number;
+  endTime: number;
 }
 
 // A saved session: a named, marker-addressed snapshot of a window's tabs and

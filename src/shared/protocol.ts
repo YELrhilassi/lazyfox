@@ -42,7 +42,9 @@ export interface BgApi {
   history: { req: { q: string }; res: { items: PopupItem[] } };
   bookmarks: { req: { q: string }; res: { items: PopupItem[] } };
   downloads: { req: Record<string, never>; res: { items: PopupItem[] } };
-  openDownload: { req: { id: number }; res: { ok: boolean } };
+  openDownload: { req: { id: string }; res: { ok: boolean } };
+  removeDownload: { req: { id: string }; res: { ok: boolean } };
+  openDownloadLocation: { req: { id: string }; res: { ok: boolean } };
   zen: { req: Record<string, never>; res: { zen: boolean } };
   mute: { req: Record<string, never>; res: { muted: boolean } };
   copyUrl: { req: Record<string, never>; res: { url: string; title: string } };

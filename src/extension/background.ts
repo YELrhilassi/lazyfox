@@ -729,31 +729,82 @@ import type { Session, SessionTab } from "../shared/types";
 
   async function downloadsList() {
     const items = await browser.downloads.search({
-      limit: 60,
+      limit: 120,
       orderBy: ["-startTime"]
     });
     return {
-      items: items.map((d: any) => ({
-        id: d.id,
-        filename: (d.filename || "").split(/[\\/]/).pop() || d.url || "",
-        url: d.url || "",
-        state: d.state || "",
-        mime: d.mime || ""
-      }))
+      items: items.map((d: any) => {
+        const path = d.filename || "";
+        const state =
+          d.state === "in_progress"
+            ? d.paused
+              ? "paused"
+              : "in_progress"
+            : d.state === "complete"
+              ? "complete"
+              : d.paused
+                ? "paused"
+                : "failed";
+        const total = d.totalBytes || d.fileSize || 0;
+        return {
+          kind: "download",
+          key: String(d.id),
+          filename:
+            (path ? path.split(/[\\/]/).pop() : "") ||
+            (d.url || "").split("/").pop() ||
+            d.url ||
+            "",
+          path: path,
+          url: d.url || "",
+          state: state,
+          received: d.bytesReceived || 0,
+          total: total,
+          speed: 0,
+          progress:
+            total > 0
+              ? Math.max(0, Math.min(100, Math.round(((d.bytesReceived || 0) / total) * 100)))
+              : -1
+        };
+      })
     };
   }
 
-  async function openDownload(id: number) {
+  async function openDownload(id: string) {
+    const n = Number(id);
     try {
-      await browser.downloads.open(id);
+      await browser.downloads.open(n);
       return { ok: true };
     } catch (e) {
       try {
-        await browser.downloads.show(id);
+        await browser.downloads.show(n);
         return { ok: true, revealed: true };
       } catch (e2) {
         return { ok: false, error: String(e2) };
       }
+    }
+  }
+
+  async function removeDownload(id: string) {
+    const n = Number(id);
+    try {
+      await browser.downloads.removeFile(n);
+    } catch (e) {
+      // the file may already be gone — keep going so history is cleared
+    }
+    try {
+      await browser.downloads.erase({ id: n });
+      return { ok: true };
+    } catch (e2) {
+      return { ok: false, error: String(e2) };
+    }
+  }
+
+  async function openDownloadLocation(id: string) {
+    try {
+      await browser.downloads.show(Number(id));
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e) };
     }
   }
 
@@ -1006,6 +1057,10 @@ import type { Session, SessionTab } from "../shared/types";
         return downloadsList();
       case "openDownload":
         return openDownload(data.id);
+      case "removeDownload":
+        return removeDownload(data.id);
+      case "openDownloadLocation":
+        return openDownloadLocation(data.id);
       case "zen":
         return toggleZen();
       case "zoom":

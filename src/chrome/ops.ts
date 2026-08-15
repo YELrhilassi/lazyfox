@@ -4,6 +4,7 @@
 // shared popup engine can consume them uniformly.
 
 import { core } from "../shared/core";
+import { dismissDownload, listDownloads, openDownload as launchDownload, openDownloadLocation as revealDownload, removeDownload as eraseDownload } from "./downloads";
 import { toast } from "../shared/overlay";
 import type { ActionOps } from "../shared/ops";
 import type { Config, PopupItem } from "../shared/types";
@@ -231,33 +232,32 @@ export const chromeOps: ActionOps = {
       return [];
     }
   },
-  downloads: async (q: string) => {
-    try {
-      const Downloads = ChromeUtils.importESModule(
-        "resource://gre/modules/Downloads.sys.mjs"
-      ).Downloads;
-      const list = await Downloads.getList(Downloads.ALL);
-      const items = await list.getAll();
-      const ql = q.trim().toLowerCase();
-      dlSeq = 0;
-      downloadsById.clear();
-      return items
-        .sort((a: any, b: any) => (b.endTime || 0) - (a.endTime || 0))
-        .slice(0, 60)
-        .map((d: any) => {
-          const id = ++dlSeq;
-          downloadsById.set(id, d);
-          return {
-            id: id,
-            filename: (d.target && d.target.path ? d.target.path.split(/[\\/]/).pop() : "") || d.source.url || "",
-            url: d.source.url || "",
-            state: d.succeeded ? "done" : d.error ? "failed" : "active",
-          };
-        })
-        .filter((d: PopupItem) => !ql || ((d.filename || "") + " " + (d.url || "")).toLowerCase().indexOf(ql) !== -1);
-    } catch (e) {
-      return [];
-    }
+  downloads: (q: string) => {
+    const ql = q.trim().toLowerCase();
+    return Promise.resolve(
+      listDownloads()
+        .slice(0, 120)
+        .map((d) => ({
+          kind: "download",
+          key: d.id,
+          filename: d.filename,
+          path: d.path,
+          url: d.url,
+          state: d.state,
+          received: d.received,
+          total: d.total,
+          speed: d.speed,
+          progress:
+            d.total > 0
+              ? Math.max(0, Math.min(100, Math.round((d.received / d.total) * 100)))
+              : -1,
+        }))
+        .filter(
+          (d) =>
+            !ql ||
+            ((d.filename || "") + " " + (d.path || "") + " " + (d.url || "")).toLowerCase().indexOf(ql) !== -1
+        )
+    );
   },
 
   openUrl: (url: string, newTab?: boolean) => loadUrl(url, newTab),
@@ -349,15 +349,23 @@ export const chromeOps: ActionOps = {
       // ignore
     }
   },
-  openDownload: (id: number) => {
-    const d = downloadsById.get(id);
-    if (d) {
-      try {
-        d.launch();
-      } catch (e) {
-        toast("could not open download");
-      }
-    }
+  openDownload: (key: string) => {
+    void launchDownload(key).then((ok) => {
+      if (!ok) toast("could not open download");
+    });
+  },
+  openDownloadLocation: (key: string) => {
+    void revealDownload(key).then((ok) => {
+      if (!ok) toast("could not reveal download");
+    });
+  },
+  removeDownload: (key: string) => {
+    void eraseDownload(key).then((ok) => {
+      toast(ok ? "download removed" : "could not remove download");
+    });
+  },
+  dismissDownload: (key?: string) => {
+    dismissDownload(key);
   },
   copyUrl: () => {
     const url = window.gBrowser.currentURI && window.gBrowser.currentURI.spec;
@@ -491,7 +499,3 @@ export const chromeOps: ActionOps = {
   openResize: notWired("openResize"),
 };
 
-// Download objects by the id handed out by downloads() (the popup hands the
-// id back to openDownload()).
-let dlSeq = 0;
-const downloadsById = new Map<number, { launch(): void }>();

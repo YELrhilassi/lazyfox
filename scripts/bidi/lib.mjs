@@ -501,7 +501,24 @@ export function startTestServer(pages) {
         { "Content-Type": page.type || "text/html; charset=utf-8" },
         page.headers || {}
       ));
-      res.end(page.body);
+      if (page.stream) {
+        // Stream the body in chunks so a download stays in_progress long
+        // enough for the status-bar progress tests to observe it.
+        const { body, chunkBytes = 64 * 1024, delayMs = 100 } = page.stream;
+        let i = 0;
+        const push = () => {
+          if (i >= body.length) {
+            res.end();
+            return;
+          }
+          res.write(body.slice(i, i + chunkBytes));
+          i += chunkBytes;
+          setTimeout(push, delayMs);
+        };
+        push();
+      } else {
+        res.end(page.body);
+      }
     });
     server.listen(0, "127.0.0.1", () => {
       resolvePromise({ server, port: server.address().port });

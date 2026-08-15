@@ -412,4 +412,47 @@ export async function run(ctx) {
     // Drop the splitws session so the suite is repeatable.
     await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.splitws; delete r.lfSessions.lfaway; return browser.storage.local.set({ lfSessions: r.lfSessions }); })`);
   });
+
+  await t("downloads: live status-bar progress, ;D dismiss, popup list", async () => {
+    // Start a slow download (streamed ~8s) so it stays in_progress long
+    // enough for the bar's ⭳ segment to be observed. The extension auto-saves
+    // it (fresh profile, no prompt).
+    const id = await evalIn(ctx.probe, `browser.downloads.download({ url: ${JSON.stringify(ctx.base + "/slowfile")}, filename: "lf-slow.bin", saveAs: false }).then(d => d).catch(e => "ERR:" + e)`);
+    assert(typeof id === "number", "download started: " + id);
+
+    // The chrome helper polls Downloads.sys.mjs each second; the bar shows a
+    // progress segment naming the file.
+    const prog = await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.dlCount >= 1 ? s : null;
+    }, 20000).catch(() => null);
+    assert(prog && prog.dlCount >= 1, "status bar shows download progress: " + JSON.stringify(prog && prog.dlActive));
+    assert(prog.dlActive.some((n) => String(n).indexOf("lf-slow") !== -1), "progress names the file: " + JSON.stringify(prog.dlActive));
+
+    // ;D dismisses the notification from the bar; the download keeps going.
+    await ctx.openCC(ctx.tabA);
+    await sleep(400);
+    await ctx.chromeLeaderPress(ctx.tabA, "D");
+    const gone = await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.dlCount === 0 ? true : null;
+    }, 8000).catch(() => null);
+    assert(gone === true, "dismiss cleared the bar segment");
+
+    // The popup still lists the (now-dismissed) download, prepopulated — no
+    // search needed.
+    await ctx.chromeLeaderPress(ctx.tabA, "d");
+    const pop = await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.popup && s.popup.current && s.popup.items && s.popup.items.length ? s.popup : null;
+    }, 8000).catch(() => null);
+    assert(pop && pop.items.some((txt) => String(txt).indexOf("lf-slow") !== -1), "popup lists the download: " + JSON.stringify(pop && pop.items));
+    await ctx.press(ctx.tabA, "Escape");
+
+    // Wait for the download to finish, then clean it (file + history) so the
+    // suite is repeatable.
+    await sleep(9000);
+    await evalIn(ctx.probe, `browser.downloads.search({ filename: "lf-slow.bin" }).then(rs => Promise.all(rs.map(r => browser.downloads.removeFile(r.id).catch(() => {}).then(() => browser.downloads.erase({ id: r.id }).catch(() => {}))))).then(() => true)`).catch(() => {});
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
 }

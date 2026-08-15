@@ -5,8 +5,10 @@
 // the browser window.
 
 import { mergeConfig, mergeHotkeys } from "../shared/config";
+import { core } from "../shared/core";
 import { ensureChromeCore, initChromeCore } from "./core";
 import { chromeOps } from "./ops";
+import { activeDownloads, updateDownloads } from "./downloads";
 import { createTypingChannel } from "./typing";
 import { dbg } from "../shared/dev";
 import { LeaderController } from "../shared/leader";
@@ -922,6 +924,8 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   // Real tab ids in strip order from the last sessionState reply, so the tab
   // switcher popup can show each tab's true Firefox id.
   let chromeStatusTabIds: number[] = [];
+  // Active (un-dismissed) downloads for the status bar's progress segment.
+  let chromeStatusDownloads: { filename: string; percent: number; speed: string }[] = [];
 
   // Is the selected tab the extension's command center page?
   function isCommandCenterTab(): boolean {
@@ -976,6 +980,7 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       splitPanes: chromeStatusInfo.splitPanes,
       mode: mode,
       sessions: chromeStatusInfo.sessions,
+      downloads: chromeStatusDownloads,
     });
   }
 
@@ -987,6 +992,29 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     chromeStatusBar.setPosition(cfg.config.statusBarPosition || "bottom");
     if (chromePageNeedsStatus()) chromeStatusBar.show();
     else chromeStatusBar.hide();
+  }
+
+  // Recompute the status bar's download segment from the manager cache (the
+  // Go activeDownloads/formatSpeed/progress helpers do the work) and re-render.
+  async function refreshDownloadStatus(): Promise<void> {
+    const active = await activeDownloads();
+    const out: { filename: string; percent: number; speed: string }[] = [];
+    for (const d of active) {
+      const percent = await core.downloadProgress(d.received, d.total);
+      const speed = await core.formatSpeed(d.speed);
+      out.push({ filename: d.filename, percent: percent, speed: speed });
+    }
+    chromeStatusDownloads = out;
+    computeChromeStatus();
+  }
+
+  async function pollDownloads(): Promise<void> {
+    try {
+      await updateDownloads();
+      await refreshDownloadStatus();
+    } catch (e) {
+      // downloads are best-effort; never let a poll break the bar
+    }
   }
 
   // One-shot waiters for requestSessionState, keyed by nonce, resolved by the
@@ -1041,6 +1069,15 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     updateChromeStatus();
     computeChromeStatus();
   }, 500);
+  // Download progress on the bar: poll Downloads.sys.mjs once a second and
+  // refresh the ⭳ segment. The popup reads the same manager cache, so the two
+  // always agree.
+  setInterval(() => {
+    void pollDownloads();
+  }, 1000);
+  setTimeout(() => {
+    void pollDownloads();
+  }, 1500);
   // When a page element goes fullscreen (a video), the window-level bar would
   // sit over the full-screen content — hide it and re-show when it exits.
   try {
@@ -1299,6 +1336,13 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
               title: (p.querySelector(".lf-title") || {}).textContent || "",
               hasInput: !!p.querySelector(".lf-input"),
             })),
+            items: panels
+              .map((p) =>
+                Array.from(p.querySelectorAll(".lf-item"))
+                  .map((it) => (it.textContent || "").trim())
+                  .slice(0, 40)
+              )
+              .reduce((a, b) => a.concat(b), []),
           };
         } catch (e) {
           popupInfo = { error: String(e) };
@@ -1324,6 +1368,8 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
           lastAction: lastAction,
           statusMounted: chromeStatusBar ? chromeStatusBar.mounted : false,
           statusPosition: (cfg.config.statusBarPosition || "bottom"),
+          dlCount: chromeStatusDownloads.length,
+          dlActive: chromeStatusDownloads.map((d) => d.filename + (d.percent >= 0 ? ":" + d.percent : "")),
           // The window bar's rendered strip, as the StatusBar mirrors it onto
           // the chrome document root (name|marker|tabIdx/tabCount|split|mode|pos).
           statusAttr: (() => {
