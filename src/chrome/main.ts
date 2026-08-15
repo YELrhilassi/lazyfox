@@ -912,6 +912,12 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   // (margin on #browser), so the fixed bar sits in reserved space instead of
   // overlapping the page — for a single tab and for split panes alike.
   const chromeStatusBar = new StatusBar(true, "#browser");
+  // Clicking a download notification on the bar dismisses just that one (the
+  // popup list keeps it).
+  chromeStatusBar.setDownloadDismiss((key) => {
+    chromeOps.dismissDownload(key);
+    void refreshDownloadStatus();
+  });
   let chromeStatusInfo = {
     name: "default",
     marker: 0,
@@ -925,7 +931,7 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   // switcher popup can show each tab's true Firefox id.
   let chromeStatusTabIds: number[] = [];
   // Active (un-dismissed) downloads for the status bar's progress segment.
-  let chromeStatusDownloads: { filename: string; percent: number; speed: string }[] = [];
+  let chromeStatusDownloads: { key: string; filename: string; state: string; percent: number; speed: string }[] = [];
 
   // Is the selected tab the extension's command center page?
   function isCommandCenterTab(): boolean {
@@ -998,11 +1004,11 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   // Go activeDownloads/formatSpeed/progress helpers do the work) and re-render.
   async function refreshDownloadStatus(): Promise<void> {
     const active = await activeDownloads();
-    const out: { filename: string; percent: number; speed: string }[] = [];
+    const out: { key: string; filename: string; state: string; percent: number; speed: string }[] = [];
     for (const d of active) {
       const percent = await core.downloadProgress(d.received, d.total);
       const speed = await core.formatSpeed(d.speed);
-      out.push({ filename: d.filename, percent: percent, speed: speed });
+      out.push({ key: d.id, filename: d.filename, state: d.state, percent: percent, speed: speed });
     }
     chromeStatusDownloads = out;
     computeChromeStatus();
@@ -1369,7 +1375,9 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
           statusMounted: chromeStatusBar ? chromeStatusBar.mounted : false,
           statusPosition: (cfg.config.statusBarPosition || "bottom"),
           dlCount: chromeStatusDownloads.length,
-          dlActive: chromeStatusDownloads.map((d) => d.filename + (d.percent >= 0 ? ":" + d.percent : "")),
+          dlActive: chromeStatusDownloads.map(
+            (d) => d.filename + "|" + d.state + (d.percent >= 0 ? "|" + d.percent : "")
+          ),
           // The window bar's rendered strip, as the StatusBar mirrors it onto
           // the chrome document root (name|marker|tabIdx/tabCount|split|mode|pos).
           statusAttr: (() => {

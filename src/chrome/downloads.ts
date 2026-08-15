@@ -32,6 +32,11 @@ const objs = new Map<string, any>();
 // Previous byte counts + timestamps per key, to derive speed across polls.
 const prevBytes = new Map<string, number>();
 const prevAt = new Map<string, number>();
+// True after the first poll. Pre-existing history (downloads that finished or
+// failed before the chrome helper loaded) is seeded as dismissed so it never
+// floods the bar with terminal dots — only downloads observed during THIS
+// session get a done/failed indicator until the user dismisses it.
+let seeded = false;
 
 function stateOf(d: any): string {
   if (d.succeeded) return "complete";
@@ -104,6 +109,14 @@ async function snapshot(): Promise<DownloadEntry[]> {
 // Poll once and reconcile into the live cache (dismissed flags survive).
 export async function updateDownloads(): Promise<void> {
   const fresh = await snapshot();
+  if (!seeded) {
+    for (const d of fresh) {
+      if (d.state === "complete" || d.state === "failed" || d.state === "canceled") {
+        d.dismissed = true;
+      }
+    }
+    seeded = true;
+  }
   const now = Date.now();
   for (const d of fresh) {
     const pb = prevBytes.get(d.id);
@@ -128,7 +141,7 @@ export async function activeDownloads(): Promise<DownloadEntry[]> {
 }
 
 // Dismiss download notification(s) from the status bar (the popup still shows
-// them). With no key, all in-progress notifications are dismissed; with a key,
+// them). With no key, every bar-visible notification is dismissed; with a key,
 // just that one.
 export function dismissDownload(key?: string): void {
   if (key != null) {
@@ -137,17 +150,8 @@ export function dismissDownload(key?: string): void {
     return;
   }
   for (const d of cache) {
-    if (d.state === "in_progress" || d.state === "paused") d.dismissed = true;
+    if (!d.dismissed) d.dismissed = true;
   }
-}
-
-// Whether any in-progress download notification is currently un-dismissed
-// (used by the status bar to decide whether to show a segment).
-export function hasActiveNotification(): boolean {
-  for (const d of cache) {
-    if (!d.dismissed && (d.state === "in_progress" || d.state === "paused")) return true;
-  }
-  return false;
 }
 
 export async function openDownload(key: string): Promise<boolean> {
