@@ -98,13 +98,15 @@ func TestActiveDownloads(t *testing.T) {
 		{ID: "d", State: "failed"},
 		{ID: "e", State: "paused"},
 		{ID: "f", State: "canceled"},
+		{ID: "g", State: "complete", Dismissed: true},
 	}
 	got := ActiveDownloads(in)
 	var ids []string
 	for _, d := range got {
 		ids = append(ids, d.ID)
 	}
-	want := []string{"a", "e"}
+	// done/failed stay as terminal indicators; canceled and dismissed leave.
+	want := []string{"a", "b", "d", "e"}
 	if !reflect.DeepEqual(ids, want) {
 		t.Fatalf("ActiveDownloads = %v, want %v", ids, want)
 	}

@@ -19,7 +19,9 @@ export interface StatusBarSessions {
 }
 
 export interface StatusBarDownload {
+  key: string;
   filename: string;
+  state: string; // in_progress | paused | complete | failed
   percent: number; // 0..100, -1 when total is unknown
   speed: string; // pre-formatted "2.4 MB/s" or ""
 }
@@ -60,10 +62,14 @@ const CSS = `
 .seg.tabs b{color:#7aa2f7;font-weight:800;}
 .seg.tabs .cnt{color:#9aa5ce;font-weight:600;}
 .seg.split{background:#e0af68;color:#1a1b26;font-weight:800;}
-.seg.dl{background:#2ac3de;color:#16161e;font-weight:800;}
-.seg.dl .dlitem{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;}
-.seg.dl .dlitem+.dlitem{margin-left:10px;padding-left:10px;border-left:1px solid rgba(22,22,30,.25);}
-.seg.dl .pct{opacity:.85;font-weight:700;}
+.seg.dl{margin-left:auto;background:#16161e;color:#c0caf5;font-weight:700;clip-path:none;
+  border-left:1px solid #24283b;pointer-events:auto;cursor:pointer;}
+.seg.dl .ic{color:#7dcfff;}
+.seg.dl .dlitem{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;padding:0 10px;}
+.seg.dl .dlitem+.dlitem{padding-left:10px;border-left:1px solid #24283b;}
+.seg.dl .pct{color:#7dcfff;font-weight:700;}
+.seg.dl .ok{color:#9ece6a;font-weight:900;}
+.seg.dl .bad{color:#f7768e;font-weight:900;}
 .seg.chips{background:none;clip-path:none;margin-left:6px;gap:6px;
   overflow:hidden;padding:0 6px;align-items:center;}
 .pill{display:inline-flex;align-items:center;gap:5px;height:14px;border-radius:7px;
@@ -105,9 +111,16 @@ export class StatusBar {
   // not reflow the tab strip.
   private readonly reserveSelector: string | null;
 
+  // Called when a download notification on the bar is clicked (dismiss it).
+  private onDownloadDismiss: ((key: string) => void) | null = null;
+
   constructor(reserveSpace = true, reserveSelector: string | null = null) {
     this.reserveSpace = reserveSpace;
     this.reserveSelector = reserveSelector;
+  }
+
+  setDownloadDismiss(fn: (key: string) => void): void {
+    this.onDownloadDismiss = fn;
   }
   private data: StatusBarData = {
     name: "default",
@@ -137,8 +150,8 @@ export class StatusBar {
       "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
       "<span class='seg tabs linked'><span class='ic'>▤</span><b></b><span class='cnt'></span></span>" +
       "<span class='seg split linked'><span class='ic'>⧉</span><span class='p'></span></span>" +
-      "<span class='seg dl linked'><span class='ic'>⭳</span><span class='items'></span></span>" +
       "<span class='seg chips'></span>" +
+      "<span class='seg dl'><span class='ic'>⭳</span><span class='items'></span></span>" +
       "</div>";
     host._sh = sh;
     document.documentElement.appendChild(host);
@@ -321,22 +334,40 @@ export class StatusBar {
       for (const d of this.data.downloads) {
         const item = document.createElement("span");
         item.className = "dlitem";
+        item.title = "dismiss";
         const name = document.createElement("span");
         name.className = "n";
         name.textContent = d.filename;
         item.appendChild(name);
-        if (d.percent >= 0) {
-          const pct = document.createElement("span");
-          pct.className = "pct";
-          pct.textContent = d.percent + "%";
-          item.appendChild(pct);
+        if (d.state === "complete") {
+          // small green indicator for a finished download
+          const ok = document.createElement("span");
+          ok.className = "ok";
+          ok.textContent = "\u2713";
+          item.appendChild(ok);
+        } else if (d.state === "failed") {
+          // small red indicator for a failed download
+          const bad = document.createElement("span");
+          bad.className = "bad";
+          bad.textContent = "\u2717";
+          item.appendChild(bad);
+        } else {
+          if (d.percent >= 0) {
+            const pct = document.createElement("span");
+            pct.className = "pct";
+            pct.textContent = d.percent + "%";
+            item.appendChild(pct);
+          }
+          if (d.speed) {
+            const spd = document.createElement("span");
+            spd.className = "pct";
+            spd.textContent = d.speed;
+            item.appendChild(spd);
+          }
         }
-        if (d.speed) {
-          const spd = document.createElement("span");
-          spd.className = "pct";
-          spd.textContent = d.speed;
-          item.appendChild(spd);
-        }
+        item.addEventListener("click", () => {
+          if (this.onDownloadDismiss) this.onDownloadDismiss(d.key);
+        });
         dlItems.appendChild(item);
       }
     }

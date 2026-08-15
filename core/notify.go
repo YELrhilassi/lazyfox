@@ -58,16 +58,18 @@ func MergeDownloads(prev, fresh []Download) []Download {
 	return out
 }
 
-// ActiveDownloads returns the downloads whose progress notification belongs on
-// the status bar: still in progress and not dismissed. Completed, failed and
-// canceled downloads stay in the popup list but leave the bar.
+// ActiveDownloads returns the downloads whose notification belongs on the
+// status bar and have not been dismissed: in-progress/paused downloads show
+// live progress, and done/failed downloads show a small terminal indicator
+// (green / red). Canceled downloads leave the bar (the user cancelled them)
+// but stay in the popup list.
 func ActiveDownloads(downloads []Download) []Download {
 	out := make([]Download, 0)
 	for _, d := range downloads {
 		if d.Dismissed {
 			continue
 		}
-		if InProgressState(d.State) {
+		if d.State == "complete" || d.State == "failed" || InProgressState(d.State) {
 			out = append(out, d)
 		}
 	}
