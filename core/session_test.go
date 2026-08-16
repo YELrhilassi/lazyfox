@@ -177,6 +177,7 @@ func TestSplitPairOf(t *testing.T) {
 // pane, move, close, save, quick-switch).
 func TestSessionBindings(t *testing.T) {    want := map[string]bool{
         "p": true, // sessions popup
+        "Q": true, // save session and quit
         "'": true, // switch session 1-9
         "|": true, // split side-by-side
         "[": true, // split pane left

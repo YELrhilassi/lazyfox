@@ -62,11 +62,12 @@ import { send } from "../shared/protocol";
     { kind: "cmd", group: "Tabs", ic: "\u229e", title: "New tab", keys: ";n", desc: "open a fresh tab", run: () => void send("newTab") },
     { kind: "cmd", group: "Tabs", ic: "\u21b6", title: "Reopen closed tab", keys: ";v", desc: "restore the last one you closed", run: () => void send("reopenTab") },
     { kind: "cmd", group: "Tabs", ic: "\u29c9", title: "Duplicate tab", keys: ";c", desc: "copy the current tab", run: () => void send("duplicateTab") },
-    { kind: "cmd", group: "Tabs", ic: "\u2715", title: "Close current tab", keys: ";x", desc: "close this tab", run: () => void send("closeTab", {}) },
+    { kind: "cmd", group: "Tabs", ic: "\u2715", title: "Close current tab", keys: ";x", desc: "close this tab", run: () => closeTabConfirm() },
     { kind: "cmd", group: "Tabs", ic: "\u21c4", title: "Switch mode", keys: "1-6", desc: "Search \u00b7 URL \u00b7 Tabs \u00b7 History \u00b7 Bookmarks \u00b7 Downloads", run: () => {} },
     { kind: "cmd", group: "Window", ic: "\u25c9", title: "Zen mode", keys: ";z", desc: "fullscreen \u2014 the toolbar stays hidden", run: () => void send("zen") },
     { kind: "cmd", group: "Window", ic: "\u21f2", title: "Resize window", keys: ";w", desc: "resize with arrow keys or buttons", run: () => toggleResize(true) },
     { kind: "cmd", group: "Window", ic: "\u2726", title: "Move window", keys: ";m", desc: "move with arrow keys (Shift = fine step)", run: () => toggleMove(true) },
+    { kind: "cmd", group: "Window", ic: "\u23fb", title: "Save and quit", keys: ";Q", desc: "save this session, then quit Firefox", run: () => void send("quit") },
     { kind: "cmd", group: "Browser", ic: "\u2699", title: "Lazyfox settings", keys: "", desc: "open the extension options page", run: () => openOptions() },
     { kind: "cmd", group: "Browser", ic: "\u{1F98A}", title: "Firefox settings", keys: "", desc: "open about:preferences", run: () => void send("openPage", { url: "about:preferences" }) },
     { kind: "cmd", group: "Browser", ic: "\u21ba", title: "History", keys: "", desc: "show history in this command center", run: () => setMode("history") },
@@ -385,6 +386,39 @@ import { send } from "../shared/protocol";
     stateEl.classList.toggle("bright", inInsert);
   }
 
+  // Armed close: ;x on the LAST tab closes the whole window, so the first
+  // press arms a confirmation and a second press within 2.5s actually closes.
+  let closeArmed = false;
+  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  function disarmClose() {
+    closeArmed = false;
+    if (closeTimer) {
+      clearTimeout(closeTimer);
+      closeTimer = null;
+    }
+  }
+  function flashTag(msg: string) {
+    const prev = mode;
+    modeTag.textContent = msg;
+    setTimeout(() => {
+      if (modeTag.textContent === msg) modeTag.textContent = prev;
+    }, 2200);
+  }
+  function closeTabConfirm() {
+    if (closeArmed) {
+      disarmClose();
+      void send("closeTab", { force: true });
+      return;
+    }
+    void send("closeTab", {}).then((r) => {
+      if (r && r.last) {
+        closeArmed = true;
+        closeTimer = setTimeout(disarmClose, 2500);
+        flashTag("last tab — press ;x again to close the window");
+      }
+    });
+  }
+
   function runLeader(k: string) {
     const modeMap: { [k: string]: string } = {
       s: "search", o: "url", t: "tabs", h: "history", b: "bookmarks", d: "downloads",
@@ -397,11 +431,12 @@ import { send } from "../shared/protocol";
     if (k === "w") toggleResize(true);
     else if (k === "m") toggleMove(true);
     else if (k === "n") void send("newTab");
-    else if (k === "x") void send("closeTab", {});
+    else if (k === "x") closeTabConfirm();
     else if (k === "v") void send("reopenTab");
     else if (k === "c") void send("duplicateTab");
     else if (k === "z") void send("zen");
     else if (k === "N") void send("stealthOpen");
+    else if (k === "Q") void send("quit");
     else if (k === "?") toggleHelp();
     modeTag.textContent = mode;
   }

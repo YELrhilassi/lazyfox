@@ -2,7 +2,7 @@
 // assignment and quick-switch, the status bar rendering (web + chrome), and
 // the no-op/safe dispatch paths.
 
-import { evalIn, waitFor, sleep, createTab, navigate, activate, getTree } from "../lib.mjs";
+import { evalIn, waitFor, sleep, createTab, navigate, activate, getTree, closeContext } from "../lib.mjs";
 import { assert } from "../harness.mjs";
 
 export const group = "sessions";
@@ -562,6 +562,93 @@ export async function run(ctx) {
     // Clean up: remove the stealth tab, the session, and the default-jar cookie.
     await evalIn(ctx.probe, `browser.tabs.remove(${stealthTab.id})`).catch(() => {});
     await evalIn(ctx.probe, `browser.cookies.remove({ url: ${origin}, name: "lfiso", storeId: "firefox-default" }).catch(() => true); browser.runtime.sendMessage({ action: "sessionDelete", data: { name: "lfstealth" } }); true`);
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await activate(ctx.tabA).catch(() => {});
+  });
+
+  await t("tabs opened after saving are persisted into the session", async () => {
+    // Regression: tabs opened AFTER a session was saved never reached that
+    // session's stored tab list (only the crash-recovery "last" slot), so the
+    // pill count stayed stale and the tabs vanished on quit. Every tab change
+    // must now re-persist the CURRENT named session.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/hello`);
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lftrack" } }); true`);
+    await sleep(700);
+    const saved = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.lftrack)`);
+    assert(saved && Array.isArray(saved.tabs) && saved.tabs.length >= 1, "session saved with its current tab");
+    const baseline = (saved && saved.tabs && saved.tabs.length) || 0;
+
+    // Open a NEW tab in the same window (like opening youtube/google after
+    // creating the session).
+    const extra = await createTab();
+    await navigate(extra, `${ctx.base}/world`, "complete");
+    await activate(extra).catch(() => {});
+    await sleep(300);
+
+    // The debounced autosave must fold the new tab into the named session.
+    const tracked = await waitFor(async () => {
+      const r = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.lftrack)`);
+      return r && r.tabs && r.tabs.length > baseline ? r : null;
+    }, 8000).catch(() => null);
+    assert(tracked, "new tab was persisted into the session: " + JSON.stringify(tracked && tracked.tabs.map((t) => t.url)));
+    assert(
+      (tracked.tabs || []).some((t) => (t.url || "").indexOf("/world") !== -1),
+      "persisted session includes the newly opened tab: " + JSON.stringify(tracked.tabs.map((t) => t.url))
+    );
+
+    // Clean up: close the extra tab, delete the throwaway session, restore
+    // focus to the main tab.
+    await closeContext(extra).catch(() => {});
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionDelete", data: { name: "lftrack" } }); true`);
+    await activate(ctx.tabA).catch(() => {});
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
+
+  await t("restore replaces a partially-restored window (no blank first tab)", async () => {
+    // Regression: Firefox's OWN session restore can't bring back a tab that
+    // was navigated from the command center, leaving a blank tab where it
+    // used to be. Our restore must REBUILD the window from the saved snapshot
+    // (replacing whatever Firefox natively restored), not skip because some
+    // tabs are already non-blank.
+    await ctx.openCC(ctx.tabA);
+    await sleep(500);
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lfpartial" } }); true`);
+    await sleep(700);
+    // "open a site from the home screen" — the CC tab becomes the first tab.
+    await navigate(ctx.tabA, `${ctx.base}/hello`, "complete");
+    await activate(ctx.tabA).catch(() => {});
+    await sleep(2200);
+    // One more tab via ;o.
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "openUrl", data: { url: ${JSON.stringify(`${ctx.base}/world`)}, newTab: true } }); true`);
+    await sleep(2200);
+
+    // Simulate Firefox's imperfect native restore: a blank first tab plus the
+    // surviving tab (the probe's command-center tab stays out of the way).
+    const ids = await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true}).then(ts => ts.filter(t => (t.url||"").indexOf("commandcenter.html") === -1).map(t => t.id))`);
+    for (const id of ids) {
+      await evalIn(ctx.probe, `browser.tabs.remove(${id}).catch(() => true)`).catch(() => {});
+    }
+    await sleep(400);
+    await evalIn(ctx.probe, `browser.tabs.create({ url: "about:blank", active: true }).then(t => t.id)`);
+    await evalIn(ctx.probe, `browser.tabs.create({ url: ${JSON.stringify(`${ctx.base}/world`)}, active: false }).then(t => t.id)`);
+    await sleep(600);
+
+    // Restore — the blank first tab must be replaced by /hello.
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionRestore", data: { name: "lfpartial" } }); true`);
+    await sleep(2500);
+    const fresh = await ctx.makeProbeTab();
+    ctx.probe = fresh;
+    const urls = await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => t.url))`);
+    const hello = (urls || []).filter((u) => String(u).indexOf("/hello") !== -1).length;
+    const world = (urls || []).filter((u) => String(u).indexOf("/world") !== -1).length;
+    const blank = (urls || []).filter((u) => String(u).indexOf("about:blank") !== -1).length;
+    assert(hello === 1, "first tab (/hello) restored, got " + JSON.stringify(urls));
+    assert(world === 1, "last tab (/world) restored, got " + JSON.stringify(urls));
+    assert(blank === 0, "no leftover blank tab, got " + JSON.stringify(urls));
+
+    // Clean up: delete the throwaway session and restore a content tab.
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionDelete", data: { name: "lfpartial" } }); true`);
     ctx.tabA = await createTab();
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await activate(ctx.tabA).catch(() => {});

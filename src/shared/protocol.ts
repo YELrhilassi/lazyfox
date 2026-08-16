@@ -23,7 +23,7 @@ export interface BgApi {
   activateTabAt: { req: { index?: number; last?: boolean }; res: { ok: boolean; title?: string } };
   moveTab: { req: { id: number; dir: number }; res: { ok: boolean } };
   moveActiveTab: { req: { dir: number }; res: { ok: boolean } };
-  closeTab: { req: { id?: number }; res: { ok: boolean } };
+  closeTab: { req: { id?: number; force?: boolean }; res: { ok: boolean; last?: boolean } };
   newTab: { req: Record<string, never>; res: { ok: boolean } };
   reopenTab: { req: Record<string, never>; res: { ok: boolean } };
   duplicateTab: { req: Record<string, never>; res: { ok: boolean } };
@@ -46,6 +46,7 @@ export interface BgApi {
   removeDownload: { req: { id: string }; res: { ok: boolean } };
   openDownloadLocation: { req: { id: string }; res: { ok: boolean } };
   stealthOpen: { req: Record<string, never>; res: { ok: boolean; error?: string } };
+  quit: { req: Record<string, never>; res: { ok: boolean } };
   zen: { req: Record<string, never>; res: { zen: boolean } };
   mute: { req: Record<string, never>; res: { muted: boolean } };
   copyUrl: { req: Record<string, never>; res: { url: string; title: string } };

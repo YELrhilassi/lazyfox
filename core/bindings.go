@@ -60,6 +60,7 @@ var Bindings = []WkItem{
 
 	// ---- Sessions (tmux-style) ----
 	{Key: "p", Label: "Sessions", Group: "Sessions"},
+	{Key: "Q", Label: "Save session and quit", Group: "Sessions"},
 	{Key: "'", Label: "Switch session 1-9", Group: "Sessions"},
 	{Key: "|", Label: "Split side-by-side", Group: "Sessions"},
 	{Key: "[", Label: "Split pane left", Group: "Sessions"},

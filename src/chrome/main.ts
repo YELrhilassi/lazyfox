@@ -340,6 +340,7 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     sessionAction("switchSessionByMarker", String(marker));
   chromeOps.assignSessionMarker = (name: string, marker: number) =>
     sessionAction("assignSessionMarker", name + "\u0001" + marker);
+  chromeOps.quit = () => requestBg("quit");
   /* ============ native split view (Firefox 149+) ============ */
 
   // Firefox 149+ ships a native split view (two real tabs side-by-side). It has
@@ -981,6 +982,14 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     const tabs = window.gBrowser.tabs;
     const sel = tabs.indexOf(window.gBrowser.selectedTab);
     const mode = currentPopup ? "POPUP" : leader.active ? "LEADER" : "NORMAL";
+    // The CURRENT session's pill count tracks live tabs, so opening/closing a
+    // tab updates the pill immediately — without a sessionState round-trip,
+    // which would create a transient tab and churn counts under automation.
+    // Other sessions' counts are refreshed on session actions/startup as usual.
+    const liveCount = realTabs().length;
+    const sessions = chromeStatusInfo.sessions.map((s) =>
+      s.current ? { ...s, tabCount: liveCount } : s
+    );
     chromeStatusBar.setData({
       name: chromeStatusInfo.name,
       marker: chromeStatusInfo.marker,
@@ -992,7 +1001,7 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       splitPanes: chromeStatusInfo.splitPanes,
       activeStealth: chromeStatusInfo.activeStealth,
       mode: mode,
-      sessions: chromeStatusInfo.sessions,
+      sessions: sessions,
       downloads: chromeStatusDownloads,
     });
   }

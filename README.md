@@ -164,6 +164,8 @@ The most useful ones:
 | `; {` / `; }` | swap the active pane left / right |
 | `; +` then `1`–`9` | move that tab into the current split |
 | `; q` | toggle the which-key overlay on / off |
+| `; Q` | save the current session and quit Firefox |
+| `; N` | open a fresh stealth (isolated, self-wiping) tab |
 | `j` `k` `d` `u` `gg` `G` | scroll the page (when not typing) |
 | `Ctrl+Alt+Space` | open the Lazyfox menu (works on internal pages too) |
 | `Ctrl+Alt+K` | open the command center from anywhere |
@@ -239,9 +241,16 @@ session is current at a time; switching swaps the whole window, like
 - **`;'` then `1`–`9`** jumps straight to the session marked `1`–`9`.
 - **`Ctrl+1`–`9`** hot-swaps to a marked session from anywhere. Assign a
   marker with `m 1` in the popup.
+- **Sessions stay live.** The current session is re-saved automatically as you
+  open, close, or rearrange tabs, so the pill count tracks the window and
+  quitting (or crashing) never loses tabs you added after saving. `;Q` saves
+  and quits in one step.
 - A **"last" snapshot** of the current window is kept automatically, so a
   crash or accidental close restores your window on the next launch (turn
   this off in settings).
+- **`;x` on the last tab** asks before closing — the first press arms a
+  confirmation, a second press within 2.5s actually closes the window, since
+  closing the last tab closes the window (and Firefox).
 
 ### The status bar
 
