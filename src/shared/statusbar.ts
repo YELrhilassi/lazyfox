@@ -437,7 +437,9 @@ export class StatusBar {
           "|" +
           this.data.mode +
           "|" +
-          this.position
+          this.position +
+          "|" +
+          (this.data.activeStealth ? "stealth" : "")
       );
     } catch (e) {
       // ignore

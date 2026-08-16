@@ -321,7 +321,7 @@ for splits that sit in the middle of the tab strip.
 
 ### Stealth tabs
 
-**`;S`** reopens the current page in a **stealth tab** — an isolated, same-
+**`;N`** reopens the current page in a **stealth tab** — an isolated, same-
 window tab that wipes itself when you close it. A stealth tab is a real
 Firefox container, so it has its own cookies and storage: open YouTube there
 and it won't know your account, and nothing it stores leaks back into your
@@ -335,6 +335,12 @@ Stealth tabs are part of sessions too: save a session that mixes normal and
 stealth tabs, and restoring it brings the stealth tabs back in fresh,
 empty containers — they always start clean, exactly like a new private
 window.
+
+You always know which tab is stealth: the status bar shows a small dark-
+glasses badge when the active tab is one, the tab switcher (`;t`) marks
+stealth tabs in its list, and when a stealth tab lands on the command
+center home page it is rendered in a distinct purple look with a
+**stealth** badge in the header.
 
 ### Settings
 
