@@ -786,6 +786,7 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
         active: !!t.selected,
         pinned: !!t.pinned,
         muted: !!t.muted,
+        stealth: !!chromeStatusStealthFlags[i],
         favIconUrl: (t.getAttribute && t.getAttribute("image")) || "",
       };
       if (!ql || ((item.title || "") + " " + (item.url || "")).toLowerCase().indexOf(ql) !== -1) {
@@ -926,11 +927,15 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
     splitOrientation: undefined as "horizontal" | "vertical" | undefined,
     splitActive: 0,
     splitPanes: 0,
+    activeStealth: false,
     sessions: [] as { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[],
   };
   // Real tab ids in strip order from the last sessionState reply, so the tab
   // switcher popup can show each tab's true Firefox id.
   let chromeStatusTabIds: number[] = [];
+  // Stealth flags parallel to chromeStatusTabIds (strip order), so the tab
+  // switcher can badge stealth tabs without re-querying the containers.
+  let chromeStatusStealthFlags: boolean[] = [];
   // Active (un-dismissed) downloads for the status bar's progress segment.
   let chromeStatusDownloads: { key: string; filename: string; state: string; percent: number; speed: string }[] = [];
 
@@ -985,6 +990,7 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       splitOrientation: chromeStatusInfo.splitOrientation,
       splitActive: chromeStatusInfo.splitActive,
       splitPanes: chromeStatusInfo.splitPanes,
+      activeStealth: chromeStatusInfo.activeStealth,
       mode: mode,
       sessions: chromeStatusInfo.sessions,
       downloads: chromeStatusDownloads,
@@ -1555,9 +1561,13 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
             state && state.splitOrientation === "vertical" ? "vertical" : "horizontal",
           splitActive: state && typeof state.splitActive === "number" ? state.splitActive : 0,
           splitPanes: state && typeof state.splitPanes === "number" ? state.splitPanes : 0,
+          activeStealth: !!(state && state.activeStealth),
           sessions: (state && state.sessions) || [],
         };
         chromeStatusTabIds = Array.isArray(state && state.tabIds) ? state.tabIds : [];
+        chromeStatusStealthFlags = Array.isArray(state && state.stealthFlags)
+          ? state.stealthFlags
+          : [];
         computeChromeStatus();
       } catch (e) {
         // ignore

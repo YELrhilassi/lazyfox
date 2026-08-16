@@ -85,6 +85,8 @@ export interface BgApi {
       splitPanes: number;
       sessions: SessionSummaryItem[];
       tabIds: number[];
+      activeStealth: boolean;
+      stealthFlags: boolean[];
     };
   };
 }
