@@ -321,8 +321,8 @@ for splits that sit in the middle of the tab strip.
 
 ### Stealth tabs
 
-**`;N`** reopens the current page in a **stealth tab** — an isolated, same-
-window tab that wipes itself when you close it. A stealth tab is a real
+**`;N`** opens a fresh **stealth tab** — an isolated, same-window tab that
+starts empty and wipes itself when you close it. A stealth tab is a real
 Firefox container, so it has its own cookies and storage: open YouTube there
 and it won't know your account, and nothing it stores leaks back into your
 normal tabs (or into any other stealth tab — each one is its own sandbox).

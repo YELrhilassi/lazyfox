@@ -356,10 +356,10 @@ import type { Session, SessionTab } from "../shared/types";
             "the built dist/ extension so the new permissions apply"
         };
       }
-      const active = await browser.tabs.query({ active: true, currentWindow: true });
-      const t = active && active[0];
-      const url = t && t.url && !isBlankTab(t) && !isUITab(t) ? t.url : CC_URL;
-      await stealthCreateTab(url, true);
+      // Always open a FRESH empty stealth tab (the command center home page,
+      // which renders with the stealth look) rather than cloning the current
+      // page — ;N means "start somewhere new and isolated".
+      await stealthCreateTab(CC_URL, true);
       void pushSessionStateToChrome();
       return { ok: true };
     } catch (e) {

@@ -467,7 +467,9 @@ export async function run(ctx) {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const origin = JSON.stringify(`${ctx.base}/`);
 
-    // ;N opens the current page in its own container (isolated cookie jar).
+    // ;N opens a FRESH empty stealth tab in its own container (isolated
+    // cookie jar) — it starts on the command center, NOT a clone of tabA.
+    const beforeCtxs = (await getTree()).map((c) => c.context);
     await ctx.leaderPress(ctx.tabA, "N");
     const opened = await waitFor(async () => {
       const ts = await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => ({id: t.id, url: t.url, cs: t.cookieStoreId})))`);
@@ -476,6 +478,8 @@ export async function run(ctx) {
     }, 10000).catch(() => null);
     assert(opened, "stealth tab opened in its own container");
     assert(opened.cs !== "firefox-default", "stealth container is not the default jar");
+    assert(opened.url && opened.url.indexOf("commandcenter.html") !== -1 && opened.url.indexOf("#lfc=") === -1,
+      "stealth tab starts empty on the command center, not a duplicate: " + opened.url);
 
     // Status-bar badge: with the stealth tab active, the window bar shows the
     // stealth indicator; a plain tab does not.
@@ -486,16 +490,21 @@ export async function run(ctx) {
     assert(st, "status bar badges the active stealth tab");
 
     // The command center home page renders with a distinct stealth look when
-    // it is shown inside a stealth tab (the lf-stealth class + badge). Move
-    // tabA to a unique URL first so the stealth tab's page URL is unique,
-    // then locate its BiDi context and drive it directly.
-    await navigate(ctx.tabA, ctx.base + "/hello", "complete");
-    const tree = await getTree();
-    const stealthCtx = (tree || []).find(
-      (c) => c && c.url && c.url.replace(/\/$/, "") === ctx.base
-    );
+    // it is shown inside a stealth tab (the lf-stealth class + badge). The
+    // stealth tab already sits on the command center; locate its BiDi context
+    // as the context that appeared since ;N (filtering out the transient
+    // #lfc= request tabs) and inspect it directly.
+    const stealthCtx = await waitFor(async () => {
+      const tree = await getTree();
+      const c = (tree || []).find(
+        (x) =>
+          !beforeCtxs.includes(x.context) &&
+          x.url && x.url.indexOf("commandcenter.html") !== -1 &&
+          x.url.indexOf("#lfc=") === -1
+      );
+      return c ? c : null;
+    }, 8000).catch(() => null);
     assert(stealthCtx && stealthCtx.context, "located the stealth tab's browsing context");
-    await navigate(stealthCtx.context, ctx.ccBase, "complete");
     const stealthHome = await waitFor(async () => {
       const c = await evalIn(stealthCtx.context, `document.documentElement.classList.contains("lf-stealth")`);
       return c === true ? true : null;
@@ -503,9 +512,6 @@ export async function run(ctx) {
     assert(stealthHome === true, "stealth tab's home page carries the lf-stealth look");
     const stealthTag = await evalIn(stealthCtx.context, `(document.getElementById("stealthTag")||{style:{}}).style.display`);
     assert(stealthTag !== "none", "stealth home shows the stealth header badge");
-    // Back to the page so the rest of the test runs on the normal site.
-    await navigate(stealthCtx.context, ctx.base + "/", "complete");
-    await navigate(ctx.tabA, ctx.base + "/", "complete");
 
     // Data isolation — the whole point of the feature: a cookie in the NORMAL
     // jar (the "signed-in YouTube" case) must NOT be visible in the stealth
