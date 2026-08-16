@@ -223,10 +223,6 @@ import type { Session, SessionTab } from "../shared/types";
     await browser.storage.local.set({ [SESSIONS_KEY]: all });
   }
 
-  function isBlankTab(t: any): boolean {
-    return !t || !t.url || t.url === "about:blank" || /^about:(home|newtab)$/i.test(t.url);
-  }
-
   // Transient UI tabs (the split-panel companion and the #lfc= request
   // channel) are not user tabs: numbering (tab switcher, ;1-9, ;+N, the
   // status bar) skips them so a tab's identity never shifts when a
@@ -533,13 +529,23 @@ import type { Session, SessionTab } from "../shared/types";
     return splitGroupsOf(s.tabs);
   }
 
+  // Last successfully-captured window snapshot, so a quit can flush it without
+  // re-querying (the window is already gone by the time windows.onRemoved
+  // fires, and an empty query would clobber the save).
+  let lastSnapshot: Awaited<ReturnType<typeof snapshotWindow>> | null = null;
+
   // Checkpoint: persist the current window before switching away so nothing is
   // ever lost — even when the current session was never given a name. The
   // snapshot is always written to the crash-recovery "last" slot, and if the
   // window belongs to a named session, that session is updated in place too.
-  async function autosaveCurrentSession(all: Record<string, Session>): Promise<void> {
+  // A pre-captured snapshot (used by the quit flush) skips the re-query.
+  async function autosaveCurrentSession(
+    all: Record<string, Session>,
+    preSnap?: Awaited<ReturnType<typeof snapshotWindow>>
+  ): Promise<void> {
     try {
-      const snap = await snapshotWindow();
+      const snap = preSnap || (await snapshotWindow());
+      lastSnapshot = snap;
       const recovery: Session = {
         name: "last",
         marker: 0,
@@ -681,6 +687,26 @@ import type { Session, SessionTab } from "../shared/types";
     if (!s) return { ok: false };
     await restoreSession(s.name);
     return { ok: true, name: s.name };
+  }
+
+  // ;Q (save and quit): persist the current window into its session FIRST
+  // (awaited, so it survives the shutdown), then close every window. Closing
+  // the last window quits Firefox.
+  async function quitBrowser(): Promise<{ ok: boolean }> {
+    try {
+      await autosaveCurrentSession(await readSessions());
+    } catch (e) {
+      // ignore — still quit even if the snapshot fails
+    }
+    try {
+      const wins = await browser.windows.getAll();
+      for (const w of wins) {
+        await browser.windows.remove(w.id).catch(() => {});
+      }
+    } catch (e) {
+      // ignore
+    }
+    return { ok: true };
   }
 
   async function deleteSession(name: string): Promise<{ ok: boolean; note?: string }> {
@@ -838,19 +864,14 @@ import type { Session, SessionTab } from "../shared/types";
     autosaveTimer = setTimeout(async () => {
       autosaveTimer = null;
       try {
-        const snap = await snapshotWindow();
-        await browser.storage.local.set({
-          [LAST_SESSION_KEY]: {
-            name: "last",
-            marker: 0,
-            tabs: snap.tabs,
-            active: snap.active,
-            windowState: snap.windowState,
-            updatedAt: Date.now(),
-          },
-        });
+        // Persist the CURRENT window into BOTH its named session (if it has
+        // one) and the crash-recovery "last" slot. Writing only "last" here
+        // was the data-loss bug: tabs opened after a session was saved never
+        // reached that session's stored tab list, so its pill count stayed
+        // stale and the tabs were gone after a quit/relaunch.
+        await autosaveCurrentSession(await readSessions());
       } catch (e) {
-        // ignore
+        // ignore — autosave is best-effort
       }
     }, 1500);
   }
@@ -1161,14 +1182,20 @@ import type { Session, SessionTab } from "../shared/types";
         if (ni !== idx) await browser.tabs.move(tabs[idx]!.id, { index: ni });
         return { ok: true };
       }
-      case "closeTab":
-        if (data.id != null) {
-          await browser.tabs.remove(data.id);
-        } else {
-          const tab = await getActiveTab();
-          if (tab) await browser.tabs.remove(tab.id);
+      case "closeTab": {
+        // Removing the window's LAST tab closes the whole window (and Firefox,
+        // if it's the only window). Guard it: report `last` so callers can ask
+        // for confirmation, and only actually close on a second press (force).
+        const targetId = data.id != null ? data.id : (await getActiveTab())?.id;
+        const tabs = await realTabsInWindow();
+        const isLast =
+          tabs.length <= 1 && targetId != null && tabs[0] && tabs[0].id === targetId;
+        if (isLast && !data.force) {
+          return { ok: true, last: true };
         }
-        return { ok: true };
+        if (targetId != null) await browser.tabs.remove(targetId);
+        return { ok: true, last: false };
+      }
       case "newTab":
         // A new tab is the command center, never a stray about:blank.
         await browser.tabs.create({ url: CC_URL, active: true });
@@ -1324,6 +1351,8 @@ import type { Session, SessionTab } from "../shared/types";
       }
       case "stealthOpen":
         return stealthOpen();
+      case "quit":
+        return quitBrowser();
       case "sessionState":
         return sessionState();
       default:
@@ -1506,6 +1535,10 @@ import type { Session, SessionTab } from "../shared/types";
       await assignSessionMarker(nm, mk);
       return;
     }
+    if (action === "quit") {
+      await quitBrowser();
+      return;
+    }
     if (action === "splitAddTabByIndex") {
       // Legacy relay no longer used: the chrome helper drives native splits
       // directly now.
@@ -1573,24 +1606,67 @@ import type { Session, SessionTab } from "../shared/types";
     if (info.url || info.status === "complete") onTabChange();
   });
 
-  // On startup, resume the last saved session when autoRestore is on and the
-  // window is still blank (Firefox's own session restore hasn't already run).
+  // On startup, resume the saved session when autoRestore is on. We do this
+  // UNCONDITIONALLY (not just when the window is blank): Firefox's own session
+  // restore runs first and can't faithfully restore a tab that was navigated
+  // from the command center, leaving it blank. Waiting for native restore to
+  // settle, then rebuilding the window from OUR snapshot, fixes that — the
+  // blank tab is replaced and everything else is restored exactly as saved.
   browser.runtime.onStartup.addListener(async () => {
     try {
       const c = await getConfig();
       if (c.autoRestore === false) return;
-      const tabs = await browser.tabs.query({ currentWindow: true });
-      if (!tabs.length || !tabs.every((t: any) => isBlankTab(t))) return;
-      const r = await browser.storage.local.get(LAST_SESSION_KEY);
-      const last = r && r[LAST_SESSION_KEY];
-      if (last && last.tabs && last.tabs.length) {
-        await openTabsInCurrentWindow(last.tabs);
+      // Let Firefox's native session restore (if enabled) finish populating the
+      // window so our rebuild replaces rather than races it.
+      await new Promise((r) => setTimeout(r, 1000));
+      // Prefer the session that was current when we quit, so relaunching puts
+      // you back in the SAME session; fall back to the crash-recovery "last"
+      // snapshot for unnamed windows.
+      const r = await browser.storage.local.get([CURRENT_SESSION_KEY, LAST_SESSION_KEY]);
+      let last = r && r[LAST_SESSION_KEY];
+      const curName = r && r[CURRENT_SESSION_KEY];
+      if (curName && typeof curName === "string") {
+        const all = await readSessions();
+        const cur = all[curName];
+        if (cur && cur.tabs && cur.tabs.length) last = cur;
+      }
+      if (!last || !last.tabs || !last.tabs.length) return;
+      // Rebuild the window from the snapshot, replacing whatever Firefox
+      // natively restored. restoring=true suppresses tab-change side effects
+      // (home conversion, autosave) while the window is rebuilt.
+      restoring = true;
+      try {
+        const ids = await openTabsInCurrentWindow(last.tabs);
         // Re-create native split pairings exactly like a session switch, so
         // the restored window looks the way it was left (not flattened).
         const groups = await splitGroupsOfSession(last);
         if (groups.length) {
           requestChrome("restoreSplits", JSON.stringify(groups));
         }
+        // Restore the active tab by its saved index (deterministic order).
+        const active = Math.min(Math.max(0, last.active || 0), ids.length - 1);
+        if (ids[active] != null) {
+          await browser.tabs.update(ids[active], { active: true }).catch(() => {});
+        }
+      } finally {
+        restoring = false;
+        scheduleAutosave();
+      }
+    } catch (e) {
+      // ignore
+    }
+  });
+
+  // When the last window closes, Firefox is quitting. Flush the last-known
+  // snapshot (captured on the previous tab change) so a tab opened moments
+  // before Alt+F4 isn't lost to the 1.5s autosave debounce. Uses lastSnapshot
+  // rather than re-querying: the window is already gone and an empty query
+  // would overwrite a good session with an empty one.
+  browser.windows.onRemoved.addListener(async (windowId: number) => {
+    try {
+      const remaining = await browser.windows.getAll();
+      if (remaining.length === 0 && lastSnapshot) {
+        await autosaveCurrentSession(await readSessions(), lastSnapshot);
       }
     } catch (e) {
       // ignore

@@ -147,6 +147,17 @@ function openResizePopup(shell: ContentPopupShell): void {
 /* ---------- the ops object ---------- */
 
 export function createContentOps(deps: ContentOpsDeps): ActionOps {
+  // Armed close: when ;x would remove the window's LAST tab, the first press
+  // arms a confirmation and a second press within 2.5s actually closes.
+  let closeArmed = false;
+  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  function disarmClose() {
+    closeArmed = false;
+    if (closeTimer) {
+      clearTimeout(closeTimer);
+      closeTimer = null;
+    }
+  }
   return {
     searchSuggest: async (q: string) => {
       const r = await send("searchSuggest", { q: q });
@@ -204,7 +215,20 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
       void send("search", { query: query });
     },
     newTab: () => void send("newTab"),
-    closeTab: (id?: number) => void send("closeTab", { id: id }),
+    closeTab: (id?: number) => {
+      if (closeArmed) {
+        disarmClose();
+        void send("closeTab", { id: id, force: true });
+        return;
+      }
+      void send("closeTab", { id: id }).then((r) => {
+        if (r && r.last) {
+          closeArmed = true;
+          closeTimer = setTimeout(disarmClose, 2500);
+          toast("last tab — press ;x again to close the window");
+        }
+      });
+    },
     moveTab: (id: number, dir: number) => void send("moveTab", { id: id, dir: dir }),
     moveActiveTab: (dir: number) => void send("moveActiveTab", { dir: dir }),
     reopenTab: () => void send("reopenTab"),
@@ -370,6 +394,11 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
       void send("toggleWhichKey", {}).then((r) =>
         toast(r && r.whichKey ? "which-key on" : "which-key off")
       );
+    },
+    quit: () => {
+      void send("quit").then((r) => {
+        if (!r || r.ok === false) toast("could not quit");
+      });
     },
     sessionState: async () => {
       const r = await send("sessionState");

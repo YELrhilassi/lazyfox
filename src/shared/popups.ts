@@ -654,6 +654,7 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     N: () => ctx.ops.stealthOpen(),
     p: () => openSessionsPopup(ctx),
     "'": () => openSessionsPopup(ctx),
+    Q: () => ctx.ops.quit(),
     "|": () => ctx.ops.splitTab("horizontal"),
     "[": () => ctx.ops.switchSplitPane(-1),
     "]": () => ctx.ops.switchSplitPane(1),

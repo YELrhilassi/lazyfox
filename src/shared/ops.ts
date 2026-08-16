@@ -41,6 +41,8 @@ export interface ActionOps {
   zen(): void;
   toggleReveal(): void;
   toggleWhichKey(): void;
+  // ;Q: persist the current window into its session, then quit Firefox.
+  quit(): void;
   focusFirstInput(): void;
   startHints(): void;
   openTarget(which: string): void;

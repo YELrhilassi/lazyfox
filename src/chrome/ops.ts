@@ -17,6 +17,19 @@ declare const ZoomManager: any;
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 
+// Armed close: when ;x would remove the window's LAST tab (closing the whole
+// window), the first press arms a confirmation and a second press within 2.5s
+// actually closes.
+let closeArmed = false;
+let closeTimer: ReturnType<typeof setTimeout> | null = null;
+function disarmClose() {
+  closeArmed = false;
+  if (closeTimer) {
+    clearTimeout(closeTimer);
+    closeTimer = null;
+  }
+}
+
 function sysPrincipal() {
   return Services.scriptSecurityManager.getSystemPrincipal();
 }
@@ -293,6 +306,18 @@ export const chromeOps: ActionOps = {
   },
   closeTab: (id?: number) => {
     if (id == null) {
+      // Closing the last tab closes the window — confirm before doing it.
+      if (realTabs().length <= 1) {
+        if (closeArmed) {
+          disarmClose();
+          window.gBrowser.removeCurrentTab();
+          return;
+        }
+        closeArmed = true;
+        closeTimer = setTimeout(disarmClose, 2500);
+        toast("last tab — press ;x again to close the window");
+        return;
+      }
       window.gBrowser.removeCurrentTab();
       return;
     }
@@ -490,6 +515,9 @@ export const chromeOps: ActionOps = {
   },
   toggleWhichKey: () => {
     toast("toggle which-key is handled by the chrome helper");
+  },
+  quit: () => {
+    toast("quit is handled by the chrome helper");
   },
   sessionState: () => {
     const tabs = window.gBrowser.tabs;
