@@ -38,7 +38,7 @@ export async function run(ctx) {
       return f.core ? f : null;
     }, 10000);
     const f = await ctx.ccFacts(ctx.tabA);
-    assert(f.core === "0.5.0", "LazyfoxCore.version() = " + f.core);
+    assert(f.core === "0.5.1", "LazyfoxCore.version() = " + f.core);
     await ctx.press(ctx.tabA, "Escape");
   });
 
@@ -318,5 +318,33 @@ export async function run(ctx) {
   await t("probe tab: command center from the background", async () => {
     const a = await ctx.activeTabInfo();
     assert(a && a.url.includes("commandcenter.html"), "probe tab active: " + (a && a.url));
+  });
+
+  await t("stealth ;N from the command center opens a stealth tab", async () => {
+    await ctx.openCC(ctx.tabA);
+    await activate(ctx.tabA);
+    await sleep(400);
+    const before = await ctx.tabCount();
+    // Chrome owns the leader on the command center: ;N goes through the
+    // requestBg -> reqResult round-trip and must still open a container tab.
+    await ctx.leaderPress(ctx.tabA, "N");
+    const opened = await waitFor(async () => {
+      const ts = await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => ({id: t.id, cs: t.cookieStoreId})))`);
+      const stealth = (ts || []).find((t) => t.cs && t.cs !== "firefox-default");
+      return stealth ? stealth : null;
+    }, 10000).catch(() => null);
+    assert(opened, ";N from the command center opened a stealth container tab");
+    assert((await ctx.tabCount()) === before + 1, "one tab added");
+    // With the stealth tab active, the window bar badges it.
+    const st = await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.statusAttr && s.statusAttr.indexOf("stealth") !== -1 ? s : null;
+    }, 8000).catch(() => null);
+    assert(st, "status bar badges the stealth tab opened from the command center");
+    // Clean up: close the stealth tab and return to the command center.
+    await evalIn(ctx.probe, `browser.tabs.remove(${opened.id}).catch(() => true); true`).catch(() => {});
+    await waitFor(async () => (await ctx.tabCount()) === before ? true : null, 10000).catch(() => {});
+    await activate(ctx.tabA);
+    await sleep(300);
   });
 }

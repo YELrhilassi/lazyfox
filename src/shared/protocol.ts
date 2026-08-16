@@ -45,7 +45,7 @@ export interface BgApi {
   openDownload: { req: { id: string }; res: { ok: boolean } };
   removeDownload: { req: { id: string }; res: { ok: boolean } };
   openDownloadLocation: { req: { id: string }; res: { ok: boolean } };
-  stealthOpen: { req: Record<string, never>; res: { ok: boolean } };
+  stealthOpen: { req: Record<string, never>; res: { ok: boolean; error?: string } };
   zen: { req: Record<string, never>; res: { zen: boolean } };
   mute: { req: Record<string, never>; res: { muted: boolean } };
   copyUrl: { req: Record<string, never>; res: { url: string; title: string } };

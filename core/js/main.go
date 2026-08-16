@@ -10,7 +10,7 @@ import (
 	"syscall/js"
 )
 
-const version = "0.5.0"
+const version = "0.5.1"
 
 func obj() js.Value { return js.Global().Get("Object").New() }
 
