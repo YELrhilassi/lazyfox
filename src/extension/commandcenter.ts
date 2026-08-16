@@ -71,7 +71,7 @@ import { send } from "../shared/protocol";
     { kind: "cmd", group: "Browser", ic: "\u{1F98A}", title: "Firefox settings", keys: "", desc: "open about:preferences", run: () => void send("openPage", { url: "about:preferences" }) },
     { kind: "cmd", group: "Browser", ic: "\u21ba", title: "History", keys: "", desc: "show history in this command center", run: () => setMode("history") },
     { kind: "cmd", group: "Browser", ic: "\u2913", title: "Downloads", keys: "", desc: "show downloads in this command center", run: () => setMode("downloads") },
-    { kind: "cmd", group: "Privacy", ic: "\u{1F576}", title: "Stealth tab", keys: ";N", desc: "reopen this page isolated — wiped on close", run: () => void send("stealthOpen") }
+    { kind: "cmd", group: "Privacy", ic: "\u{1F576}", title: "Stealth tab", keys: ";N", desc: "open a fresh isolated tab — wiped on close", run: () => void send("stealthOpen") }
   ];
 
   const GRID_COLS = 3;
