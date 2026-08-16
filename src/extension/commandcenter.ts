@@ -3,7 +3,7 @@
 // helper. URL detection uses the Go core; all window/tab actions are sent to
 // the background script.
 
-import { core } from "../shared/core";
+import { core, ensureCore } from "../shared/core";
 import { esc } from "../shared/dom";
 import { send } from "../shared/protocol";
 
@@ -40,6 +40,10 @@ import { send } from "../shared/protocol";
 
   let mode = "search";
   let all: any[] = [];
+  // The query `all` was built from. Enter must never act on a list that lags
+  // behind the typed text (suggestions are debounced; a fast typist can hit
+  // Enter before they arrive) — a stale row would open the WRONG thing.
+  let allQuery = "";
   let idx = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let resizeOpen = false;
@@ -139,6 +143,7 @@ import { send } from "../shared/protocol";
   }
 
   function renderMode(q: string) {
+    allQuery = q;
     getItems(mode, q).then((items) => {
       if (q !== input.value.trim()) return;
       all = items;
@@ -291,7 +296,11 @@ import { send } from "../shared/protocol";
 
   function onEnter() {
     const v = input.value.trim();
-    if (!all.length) {
+    // Act on the TYPED value whenever the visible list is empty or was built
+    // for an earlier query (the 70ms debounce means it lags a fast typist).
+    // In URL mode that means opening exactly what you typed, normalized —
+    // never a stale row from a previous keystroke.
+    if (!all.length || allQuery !== v) {
       if (mode === "search" && v) {
         void send("search", { query: v });
       } else if (mode === "url" && v) {
@@ -682,6 +691,10 @@ import { send } from "../shared/protocol";
 
   setMode("search");
   updateResizeSize();
+  // Warm the Go core off the critical path so the first keystroke's URL-vs-
+  // search detection and Enter's URL normalization are instant instead of
+  // paying a cold wasm instantiation (the home grid renders regardless).
+  void ensureCore().catch(() => {});
   // Start with the input focused (insert mode): typing works for every key,
   // including h/j/k/l — hjkl only navigate the grid in command mode (Esc).
   setState("insert");

@@ -334,7 +334,11 @@ export async function run(ctx) {
       return stealth ? stealth : null;
     }, 10000).catch(() => null);
     assert(opened, ";N from the command center opened a stealth container tab");
-    assert((await ctx.tabCount()) === before + 1, "one tab added");
+    // The stealth tab and a transient #lfc= request/sessionState tab can
+    // coexist for a moment; give the transients time to self-remove, then
+    // count exactly one added tab.
+    await sleep(1200);
+    assert((await ctx.tabCount()) === before + 1, "one tab added: " + (await ctx.tabCount()));
     // With the stealth tab active, the window bar badges it.
     const st = await waitFor(async () => {
       const s = await ctx.chromeState();
