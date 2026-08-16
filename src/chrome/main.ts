@@ -1112,6 +1112,15 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
   try {
     window.gBrowser.tabContainer.addEventListener("TabSelect", () => {
       rememberSplit();
+      // The stealth badge must track the tab you switched to immediately;
+      // sessionState round-trips are not polled on TabSelect, so derive the
+      // flag locally from the per-tab stealthFlags the last reply carried.
+      try {
+        const sel = window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
+        chromeStatusInfo.activeStealth = !!(chromeStatusStealthFlags[sel] || false);
+      } catch (e) {
+        // ignore
+      }
       updateChromeStatus();
       computeChromeStatus();
     });

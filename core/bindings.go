@@ -56,7 +56,7 @@ var Bindings = []WkItem{
 	{Key: "e", Label: "Toggle toolbar reveal", Group: "Tools"},
 	{Key: "z", Label: "Zen mode", Group: "Tools"},
 	{Key: "D", Label: "Dismiss download notification", Group: "Tools"},
-	{Key: "S", Label: "Stealth tab (isolated, wiped on close)", Group: "Tools"},
+	{Key: "N", Label: "Stealth tab (isolated, wiped on close)", Group: "Tools"},
 
 	// ---- Sessions (tmux-style) ----
 	{Key: "p", Label: "Sessions", Group: "Sessions"},

@@ -70,7 +70,8 @@ import { send } from "../shared/protocol";
     { kind: "cmd", group: "Browser", ic: "\u2699", title: "Lazyfox settings", keys: "", desc: "open the extension options page", run: () => openOptions() },
     { kind: "cmd", group: "Browser", ic: "\u{1F98A}", title: "Firefox settings", keys: "", desc: "open about:preferences", run: () => void send("openPage", { url: "about:preferences" }) },
     { kind: "cmd", group: "Browser", ic: "\u21ba", title: "History", keys: "", desc: "show history in this command center", run: () => setMode("history") },
-    { kind: "cmd", group: "Browser", ic: "\u2913", title: "Downloads", keys: "", desc: "show downloads in this command center", run: () => setMode("downloads") }
+    { kind: "cmd", group: "Browser", ic: "\u2913", title: "Downloads", keys: "", desc: "show downloads in this command center", run: () => setMode("downloads") },
+    { kind: "cmd", group: "Privacy", ic: "\u{1F576}", title: "Stealth tab", keys: ";N", desc: "reopen this page isolated — wiped on close", run: () => void send("stealthOpen") }
   ];
 
   const GRID_COLS = 3;
@@ -400,7 +401,7 @@ import { send } from "../shared/protocol";
     else if (k === "v") void send("reopenTab");
     else if (k === "c") void send("duplicateTab");
     else if (k === "z") void send("zen");
-    else if (k === "S") void send("stealthOpen");
+    else if (k === "N") void send("stealthOpen");
     else if (k === "?") toggleHelp();
     modeTag.textContent = mode;
   }
@@ -654,4 +655,23 @@ import { send } from "../shared/protocol";
     focusInput();
     setState("insert");
   });
+
+  // Stealth home: when this command center is shown inside a stealth tab
+  // (one of our isolated containers, e.g. after `;N` from a blank tab or a
+  // new tab opened inside a stealth tab), render it with a distinct look so
+  // it is obvious at a glance that the tab is sandboxed and wipes on close.
+  (async function detectStealthHome() {
+    try {
+      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+      const t = tabs && tabs[0];
+      if (!t || !t.cookieStoreId || t.cookieStoreId === "firefox-default") return;
+      const r = await browser.storage.local.get("lfStealth");
+      const containers = r && r.lfStealth && r.lfStealth.containers;
+      if (Array.isArray(containers) && containers.indexOf(t.cookieStoreId) !== -1) {
+        document.documentElement.classList.add("lf-stealth");
+      }
+    } catch (e) {
+      // ignore — the page still works without the stealth badge
+    }
+  })();
 })();

@@ -90,6 +90,28 @@
   .chips #state { color: var(--muted); }
   .chips #state.bright { color: var(--green); border-color: var(--green); }
   .chips #modeTag { color: var(--accent); }
+  .chips #stealthTag {
+    display: none;
+    color: var(--magenta);
+    border-color: var(--magenta);
+    background: rgba(187,154,247,.10);
+  }
+  html.lf-stealth #stealthTag { display: inline-block; }
+  html.lf-stealth body {
+    background:
+      radial-gradient(1200px 500px at 70% -10%, rgba(187,154,247,.16), transparent 60%),
+      radial-gradient(900px 420px at 15% 110%, rgba(247,118,142,.07), transparent 60%),
+      #12101c;
+  }
+  html.lf-stealth .brand .dot {
+    background: linear-gradient(135deg, var(--magenta), var(--red));
+    box-shadow: 0 0 14px rgba(187,154,247,.55);
+  }
+  html.lf-stealth #inputIcon { color: var(--magenta); }
+  html.lf-stealth .inputrow:focus-within { border-color: var(--magenta); box-shadow: 0 0 0 3px rgba(187,154,247,.15); }
+  html.lf-stealth #results.quick .result.selected { border-color: var(--magenta); box-shadow: 0 0 0 1px rgba(187,154,247,.35); }
+  html.lf-stealth footer .lead { color: var(--magenta); }
+  html.lf-stealth footer .lead b { color: var(--magenta); }
 
   .inputrow {
     display: flex;
@@ -339,6 +361,7 @@
     <div class="chips">
       <span id="state">command</span>
       <span id="modeTag">search</span>
+      <span id="stealthTag">&#x1F576;&#xFE0F; stealth</span>
     </div>
   </header>
 
@@ -367,7 +390,9 @@
     <span><b>Enter</b> open</span>
     <span><b>Esc</b> clear</span>
     <span class="lead"><b>;</b> leader menu</span>
+    <span id="stealthNote" class="lead" style="display:none">&#x1F576;&#xFE0F; this tab is isolated &mdash; everything here is wiped when it closes</span>
   </footer>
+  <style>html.lf-stealth #stealthNote { display: inline; }</style>
 
   <div id="resizePanel">
     <div class="rp-head">Resize window &#183; <span id="resizeSize"></span></div>
