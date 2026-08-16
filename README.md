@@ -27,7 +27,7 @@ things live.
 - **A split view.** Put two tabs side by side without a window manager, move
   tabs into the split, and dissolve it back into normal tabs when you're done.
 - **A status bar** at the bottom of every page. It shows your current session,
-  your place in the tab list, and your saved sessions as colored pills.
+  your place in the tab list, and your saved sessions as colored blocks.
 - **Zen mode.** Real fullscreen — the page fills the screen and the toolbar
   never peeks in.
 
@@ -261,9 +261,11 @@ and split panes alike. Left to right:
 - the **current session** and its marker;
 - your **place in the tab list** (`3/7`);
 - a **split indicator** while a split is active;
-- your **saved sessions** as colored pills (`marker | name | count`) — each
-  pill is a gradient of its own color, the current one is ringed, and it's
-  informational only: it never loads another session's tabs;
+- your **saved sessions** as angled blocks reading `marker:name count` — each
+  block keeps a gradient color keyed to its marker (so it never changes), the
+  **current** session is marked with a `▸` arrow and an underline, and text is
+  auto-contrasted against its background. Informational only: it never loads
+  another session's tabs;
 - the current **mode** on the right.
 - a **download segment** (`⭳ file 42% 2.4 MB/s`) while something is
   downloading — one segment per active download, updated live.

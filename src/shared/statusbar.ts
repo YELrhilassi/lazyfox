@@ -75,18 +75,36 @@ const CSS = `
 .seg.dl .bad{color:#f7768e;font-weight:900;}
 .seg.chips{background:none;clip-path:none;margin-left:6px;gap:6px;
   overflow:hidden;padding:0 6px;align-items:center;}
-.pill{display:inline-flex;align-items:center;gap:5px;height:14px;border-radius:7px;
-  padding:0 9px 0 7px;color:#16161e;font-weight:700;font-size:10px;line-height:14px;
-  letter-spacing:.03em;white-space:nowrap;box-shadow:inset 0 1px 0 rgba(255,255,255,.3);}
-.pill.cur{outline:1px solid rgba(255,255,255,.85);outline-offset:-1px;}
-.pill .n::before,.pill .c::before{content:"|";opacity:.55;margin-right:5px;}
-.pill .m{font-weight:800;}
-.pill .c{opacity:.9;font-weight:600;}
+.pill{display:inline-flex;align-items:center;height:14px;
+  padding:0 10px;font-weight:700;font-size:10px;line-height:14px;
+  letter-spacing:.02em;white-space:nowrap;opacity:.78;
+  clip-path:polygon(7px 0, calc(100% - 7px) 0, 100% 50%, calc(100% - 7px) 100%, 7px 100%, 0 50%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.14);}
+.pill .lead{font-size:14px;font-weight:900;margin-right:4px;line-height:14px;}
+.pill .lbl{font-weight:800;}
+.pill.cur{opacity:1;font-weight:900;
+  box-shadow:inset 0 -3px 0 rgba(0,0,0,.32), inset 0 1px 0 rgba(255,255,255,.14);}
+.pill.cur .lead{opacity:1;}
 `;
 
 type StatusHost = HTMLElement & { _sh: ShadowRoot };
 
 const BAR_HEIGHT = 18;
+
+// Pick readable text for a hex background: near-black on bright fills,
+// near-white on dark ones (HSL lightness).
+function readableOn(hex: string): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
+  if (!m) return "#16161e";
+  const r = parseInt(m[1]!, 16);
+  const g = parseInt(m[2]!, 16);
+  const b = parseInt(m[3]!, 16);
+  // HSL lightness ((max+min)/2): the palette is pastel, so blue/green/amber
+  // read as bright even though their W3C weighted luminance is low. Use it to
+  // pick dark-vs-light text instead of the weighted luminance.
+  const l = (Math.max(r, g, b) + Math.min(r, g, b)) / 2; // 0..255
+  return l > 150 ? "#16161e" : "#f2f4ff";
+}
 
 export class StatusBar {
   private host: StatusHost | null = null;
@@ -379,9 +397,10 @@ export class StatusBar {
     }
 
     if (chips) {
-      // Session list as colored pills on the LEFT of the bar (after the
-      // session / tabs / split segments): marker|name|count, each pill a
-      // gradient of its own color, dark text so it stays readable.
+      // Session list as angled blocks on the LEFT of the bar (after the
+      // session / tabs / split segments): marker/name/count separated by /
+      // inside a chevron-shaped block. Each block is a gradient of its own
+      // color; text is auto-contrasted against it (dark or light).
       const PILL_COLORS = [
         ["#7aa2f7", "#5d89ea"], // blue
         ["#9ece6a", "#7fae49"], // green
@@ -394,23 +413,30 @@ export class StatusBar {
         ["#c0caf5", "#a3aee4"], // lavender
       ];
       const frag = document.createDocumentFragment();
-      this.data.sessions.slice(0, 12).forEach((s, i) => {
+      this.data.sessions.slice(0, 12).forEach((s) => {
         const pill = document.createElement("span");
         pill.className = "pill" + (s.current ? " cur" : "");
-        const c = PILL_COLORS[i % PILL_COLORS.length]!;
+        // Stable color keyed to the marker (not list position), so switching
+        // sessions never recolors another one. The current session is marked
+        // by the lead arrow + underline, not by a recolor.
+        const idx = s.marker > 0 ? (s.marker - 1) % PILL_COLORS.length : 0;
+        const c = PILL_COLORS[idx]!;
         pill.style.background = "linear-gradient(180deg," + c[0] + "," + c[1] + ")";
-        const m = document.createElement("span");
-        m.className = "m";
-        m.textContent = s.marker ? String(s.marker) : "\u00B7";
-        const n = document.createElement("span");
-        n.className = "n";
-        n.textContent = s.name;
-        const cnt = document.createElement("span");
-        cnt.className = "c";
-        cnt.textContent = s.tabCount + (s.splitCount ? "\u29C9" + s.splitCount : "");
-        pill.appendChild(m);
-        pill.appendChild(n);
-        pill.appendChild(cnt);
+        pill.style.color = readableOn(c[0] || "#7aa2f7");
+        if (s.current) {
+          const lead = document.createElement("span");
+          lead.className = "lead";
+          lead.textContent = "\u25B8";
+          pill.appendChild(lead);
+        }
+        const label = document.createElement("span");
+        label.className = "lbl";
+        const id = s.marker > 0 ? String(s.marker) : "\u00B7";
+        let text = id + ":" + s.name;
+        if (s.tabCount > 0) text += " " + s.tabCount;
+        if (s.splitCount) text += "\u29C9" + s.splitCount;
+        label.textContent = text;
+        pill.appendChild(label);
         frag.appendChild(pill);
       });
       chips.textContent = "";
