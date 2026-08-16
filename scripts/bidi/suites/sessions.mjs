@@ -463,8 +463,9 @@ export async function run(ctx) {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
   });
 
-  await t("stealth: isolated tab, session round-trip, wiped on close", async () => {
+  await t("stealth: isolated jar, session round-trip, wiped on close", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const origin = JSON.stringify(`${ctx.base}/`);
 
     // ;S opens the current page in its own container (isolated cookie jar).
     await ctx.leaderPress(ctx.tabA, "S");
@@ -476,19 +477,39 @@ export async function run(ctx) {
     assert(opened, "stealth tab opened in its own container");
     assert(opened.cs !== "firefox-default", "stealth container is not the default jar");
 
+    // Data isolation — the whole point of the feature: a cookie in the NORMAL
+    // jar (the "signed-in YouTube" case) must NOT be visible in the stealth
+    // jar, even on the same origin.
+    await evalIn(ctx.probe, `browser.cookies.set({ url: ${origin}, name: "lfiso", value: "def", storeId: "firefox-default" }).then(() => true)`);
+    const iso = await evalIn(ctx.probe, `browser.cookies.getAll({ url: ${origin}, storeId: ${JSON.stringify(opened.cs)} }).then(cs => cs.map(c => c.name))`);
+    assert(!(iso || []).includes("lfiso"), "stealth jar does not see the normal jar's cookie (got: " + JSON.stringify(iso) + ")");
+
+    // The tab list marks the stealth tab so the tab switcher can badge it.
+    const listed = await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "tabs" }).then(r => r.tabs.map(t => ({ id: t.id, stealth: t.stealth })))`);
+    const listedStealth = (listed || []).find((x) => x.id === opened.id);
+    assert(listedStealth && listedStealth.stealth === true, "tab list marks the stealth tab");
+
     // Session save records the stealth flag.
     await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lfstealth" } }); true`);
     await sleep(700);
     const saved = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.lfstealth)`);
     assert(saved && saved.tabs.some((t) => t.stealth === true), "session marks the stealth tab: " + JSON.stringify(saved && saved.tabs.map((t) => t.stealth)));
 
-    // Close it -> the container is wiped + removed.
+    // Seed the stealth jar with its OWN cookie so we can prove close wipes the
+    // DATA, not just the container identity.
+    await evalIn(ctx.probe, `browser.cookies.set({ url: ${origin}, name: "lfst", value: "1", storeId: ${JSON.stringify(opened.cs)} }).then(() => true)`);
+    const seeded = await evalIn(ctx.probe, `browser.cookies.getAll({ storeId: ${JSON.stringify(opened.cs)} }).then(cs => cs.map(c => c.name))`);
+    assert((seeded || []).includes("lfst"), "stealth jar accepts its own cookie");
+
+    // Close it -> the container is wiped + removed, data included.
     await evalIn(ctx.probe, `browser.tabs.remove(${opened.id})`).catch(() => {});
     const gone = await waitFor(async () => {
       const cis = await evalIn(ctx.probe, `browser.contextualIdentities.query({}).then(cs => cs.map(c => c.cookieStoreId))`);
       return cis && cis.indexOf(opened.cs) === -1 ? true : null;
     }, 8000).catch(() => null);
     assert(gone === true, "container removed after closing the stealth tab");
+    const wiped = await evalIn(ctx.probe, `browser.cookies.getAll({ storeId: ${JSON.stringify(opened.cs)} }).then(cs => cs.map(c => c.name)).catch(() => [])`);
+    assert(!(wiped || []).includes("lfst"), "closing wiped the stealth jar's data");
 
     // Restore the session: the stealth tab returns in a FRESH container.
     // The restore tears down the window (including the probe tab), so re-make
@@ -502,9 +523,9 @@ export async function run(ctx) {
     assert(stealthTab, "restore re-opened a stealth container tab");
     assert(stealthTab.cs !== opened.cs, "restored stealth tab uses a fresh container");
 
-    // Clean up: remove the stealth tab and the session.
+    // Clean up: remove the stealth tab, the session, and the default-jar cookie.
     await evalIn(ctx.probe, `browser.tabs.remove(${stealthTab.id})`).catch(() => {});
-    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionDelete", data: { name: "lfstealth" } }); true`);
+    await evalIn(ctx.probe, `browser.cookies.remove({ url: ${origin}, name: "lfiso", storeId: "firefox-default" }).catch(() => true); browser.runtime.sendMessage({ action: "sessionDelete", data: { name: "lfstealth" } }); true`);
     ctx.tabA = await createTab();
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await activate(ctx.tabA).catch(() => {});

@@ -40,6 +40,8 @@ export interface StatusBarData {
   sessions: StatusBarSessions[];
   // Active (un-dismissed) downloads whose progress belongs on the bar.
   downloads: StatusBarDownload[];
+  // True when the active tab is a stealth tab — shows a badge on the bar.
+  activeStealth?: boolean;
 }
 
 const CSS = `
@@ -61,6 +63,7 @@ const CSS = `
 .seg.tabs{background:#24283b;color:#c0caf5;font-weight:600;}
 .seg.tabs b{color:#7aa2f7;font-weight:800;}
 .seg.tabs .cnt{color:#9aa5ce;font-weight:600;}
+.seg.tabs .st{color:#bb9af7;font-weight:800;padding-right:4px;}
 .seg.split{background:#e0af68;color:#1a1b26;font-weight:800;}
 .seg.dl{margin-left:auto;background:#16161e;color:#c0caf5;font-weight:700;clip-path:none;
   border-left:1px solid #24283b;pointer-events:auto;cursor:pointer;}
@@ -133,6 +136,7 @@ export class StatusBar {
     mode: "NORMAL",
     sessions: [],
     downloads: [],
+    activeStealth: false,
   };
 
   get mounted(): boolean {
@@ -148,7 +152,7 @@ export class StatusBar {
       "<style>" + CSS + "</style>" +
       "<div class='lf-status " + this.position + "'>" +
       "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
-      "<span class='seg tabs linked'><span class='ic'>▤</span><b></b><span class='cnt'></span></span>" +
+      "<span class='seg tabs linked'><span class='ic'>▤</span><span class='st'>🕶</span><b></b><span class='cnt'></span></span>" +
       "<span class='seg split linked'><span class='ic'>⧉</span><span class='p'></span></span>" +
       "<span class='seg chips'></span>" +
       "<span class='seg dl'><span class='ic'>⭳</span><span class='items'></span></span>" +
@@ -301,6 +305,7 @@ export class StatusBar {
     const tabs = sh.querySelector(".tabs") as HTMLElement | null;
     const tabIdx = tabs ? (tabs.querySelector("b") as HTMLElement | null) : null;
     const tabCnt = tabs ? (tabs.querySelector(".cnt") as HTMLElement | null) : null;
+    const stealth = tabs ? (tabs.querySelector(".st") as HTMLElement | null) : null;
     const split = sh.querySelector(".split") as HTMLElement | null;
     const splitP = split ? (split.querySelector(".p") as HTMLElement | null) : null;
     const dl = sh.querySelector(".dl") as HTMLElement | null;
@@ -316,6 +321,7 @@ export class StatusBar {
     if (tabIdx) tabIdx.textContent = String(this.data.tabIndex);
     if (tabCnt) tabCnt.textContent = "/" + this.data.tabCount;
     if (tabs) tabs.style.display = this.data.tabCount > 0 ? "" : "none";
+    if (stealth) stealth.style.display = this.data.activeStealth ? "" : "none";
 
     if (split && splitP) {
       split.style.display = this.data.inSplit ? "" : "none";

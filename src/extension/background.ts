@@ -183,6 +183,7 @@ import type { Session, SessionTab } from "../shared/types";
   }
 
   async function tabsInWindow() {
+    await reconcileStealth();
     const tabs = await realTabsInWindow();
     return {
       tabs: tabs.map((t: any) => ({
@@ -192,7 +193,8 @@ import type { Session, SessionTab } from "../shared/types";
         active: t.active,
         pinned: t.pinned,
         muted: t.mutedInfo && t.mutedInfo.muted,
-        favIconUrl: t.favIconUrl || ""
+        favIconUrl: t.favIconUrl || "",
+        stealth: stealthContainers.has(t.cookieStoreId)
       }))
     };
   }
@@ -726,7 +728,10 @@ import type { Session, SessionTab } from "../shared/types";
     splitPanes: number;
     sessions: { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
     tabIds: number[];
+    activeStealth: boolean;
+    stealthFlags: boolean[];
   }> {
+    await reconcileStealth();
     const allTabs = await browser.tabs.query({ currentWindow: true });
     const all = await readSessions();
     let name = "default";
@@ -797,6 +802,12 @@ import type { Session, SessionTab } from "../shared/types";
       // Real tab ids in strip order (transient tabs included), so the chrome
       // helper can show each tab's true id in the tab switcher popup.
       tabIds: (allTabs || []).map((t: any) => t.id),
+      // Whether the active tab is stealth (drives the status-bar badge).
+      activeStealth:
+        active >= 0 && !!list[active] && stealthContainers.has(list[active]!.cookieStoreId),
+      // Parallel to tabIds (strip order) so the chrome helper can mark each
+      // tab's stealth state in its own tab switcher without re-deriving it.
+      stealthFlags: (allTabs || []).map((t: any) => stealthContainers.has(t.cookieStoreId)),
     };
   }
 

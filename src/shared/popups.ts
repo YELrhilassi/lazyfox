@@ -180,6 +180,7 @@ export function openTabsPopup(ctx: PopupCtx): void {
           (t.active ? "<span class='dot'></span>" : "") +
           (t.pinned ? "\uD83D\uDCCC " : "") +
           (t.muted ? "\uD83D\uDD07 " : "") +
+          (t.stealth ? "\uD83D\uDD75 " : "") +
           esc(t.title || "") +
           "</div><div class='s'>" +
           (t.realId != null ? "id " + t.realId + " \u00b7 " : "") +

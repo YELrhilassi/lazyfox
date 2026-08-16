@@ -160,6 +160,7 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     tabCount: 0,
     inSplit: false,
     splitOrientation: undefined as "horizontal" | "vertical" | undefined,
+    activeStealth: false,
     sessions: [] as { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[],
   };
 
@@ -196,6 +197,7 @@ import { createContentOps, type ContentPopupShell } from "./ops";
           tabCount: r.tabCount || 0,
           inSplit: !!r.inSplit,
           splitOrientation: r.splitOrientation,
+          activeStealth: !!r.activeStealth,
           sessions: r.sessions || [],
         };
         ensureStatusBar();

@@ -67,6 +67,9 @@ export interface TabInfo {
   pinned: boolean;
   muted: boolean;
   favIconUrl: string;
+  // True when the tab lives in one of our stealth containers (isolated
+  // cookie jar, wiped on close) — drives the tab popup's stealth badge.
+  stealth: boolean;
 }
 
 // A generic selectable row returned by a popup's search function.
@@ -85,6 +88,7 @@ export interface PopupItem {
   active?: boolean;
   pinned?: boolean;
   muted?: boolean;
+  stealth?: boolean;
   query?: string;
   time?: number;
   favIconUrl?: string;
