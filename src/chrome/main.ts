@@ -1594,6 +1594,22 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
       }
       return;
     }
+    if (cmd === "reqResult") {
+      // Async reply to a chrome-helper request (e.g. stealthOpen): toast the
+      // outcome so a failure is never silent, then drop the reply tab.
+      const dot = rest.indexOf(".");
+      const b64 = dot < 0 ? rest : rest.slice(0, dot);
+      try {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        const r = JSON.parse(new TextDecoder().decode(bytes));
+        if (r && r.ok === true) toast("stealth tab opened");
+        else toast("stealth tab failed: " + ((r && r.error) || "unknown"));
+      } catch (e) {
+        // ignore
+      }
+      removeReqTab(browser);
+      return;
+    }
     if (cmd === "cfg") {
       const dot = rest.indexOf(".");
       const nonce = dot < 0 ? rest : rest.slice(0, dot);

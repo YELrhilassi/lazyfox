@@ -341,6 +341,21 @@ import type { Session, SessionTab } from "../shared/types";
   async function stealthOpen(): Promise<{ ok: boolean; error?: string }> {
     await reconcileStealth();
     try {
+      // The contextualIdentities API only exists when the permission was
+      // granted at install time. A stale install (or one updated without
+      // approving the new permission) silently loses it — `browser.
+      // contextualIdentities` becomes undefined and .create throws. Diagnose
+      // that case so the toast says what to do instead of a cryptic error.
+      const ci: any = (browser as any).contextualIdentities;
+      if (!ci || typeof ci.create !== "function") {
+        return {
+          ok: false,
+          error:
+            "contextualIdentities permission missing — reload the extension " +
+            "(about:debugging → This Firefox → Lazyfox → Reload) or reinstall " +
+            "the built dist/ extension so the new permissions apply"
+        };
+      }
       const active = await browser.tabs.query({ active: true, currentWindow: true });
       const t = active && active[0];
       const url = t && t.url && !isBlankTab(t) && !isUITab(t) ? t.url : CC_URL;
@@ -1442,7 +1457,16 @@ import type { Session, SessionTab } from "../shared/types";
       return;
     }
     if (action === "stealthOpen") {
-      await stealthOpen();
+      // Reply through the tab's hash so the chrome helper can toast the
+      // outcome instead of failing silently; the chrome helper removes the
+      // reply tab itself (see the reqResult handler).
+      const r = await stealthOpen();
+      const nonce = "req" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+      await browser.tabs
+        .update(tab.id, {
+          url: CC_URL + "#lfc=reqResult." + b64utf8(JSON.stringify(r)) + "." + nonce
+        })
+        .catch(() => {});
       return;
     }
     if (action === "sessionState") {
@@ -1494,7 +1518,9 @@ import type { Session, SessionTab } from "../shared/types";
     if (stripHash(tab.url) !== CC_URL) return;
     const m = /#lfc=req\.([a-zA-Z]+)(?:\.([^#]*))?$/.exec(tab.url);
     if (!m) return;
-    const keepOpen = m[1] === "sessionState";
+    // sessionState and stealthOpen write their reply into the tab's hash and
+    // let the chrome helper remove the tab after reading it.
+    const keepOpen = m[1] === "sessionState" || m[1] === "stealthOpen";
     handleReq(tab, m[1]!, m[2] || "")
       .catch(() => {})
       .then(() => {

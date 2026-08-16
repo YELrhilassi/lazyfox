@@ -241,7 +241,13 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     openDownload: (key: string) => void send("openDownload", { id: key }),
     openDownloadLocation: (key: string) => void send("openDownloadLocation", { id: key }),
     removeDownload: (key: string) => void send("removeDownload", { id: key }),
-    stealthOpen: () => void send("stealthOpen"),
+    stealthOpen: () => {
+      void send("stealthOpen").then((r) => {
+        if (r && r.ok === true) toast("stealth tab opened");
+        else if (r) toast("stealth tab failed: " + (r.error || "unknown"));
+        else toast("stealth tab failed: extension not reachable");
+      });
+    },
     dismissDownload: (_key?: string) => {
       // The content-script bar does not render download progress (the chrome
       // helper's window bar owns that); nothing to dismiss here.
