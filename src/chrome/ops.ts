@@ -102,15 +102,44 @@ function loadUrl(url: string, newTab: boolean | undefined): void {
   // newTab === true forces a new tab, newTab === false forces the current tab
   // (replace it), undefined defers to the openInNewTab config.
   const forceNew = newTab === undefined ? openInNewTab() : newTab;
-  if (forceNew) {
-    window.gBrowser.selectedTab = window.gBrowser.addTab(url, { triggeringPrincipal: sysPrincipal() });
-  } else {
-    try {
-      window.gBrowser.loadURI(url, { triggeringPrincipal: sysPrincipal() });
-    } catch (e) {
-      window.gBrowser.selectedTab = window.gBrowser.addTab(url, { triggeringPrincipal: sysPrincipal() });
+  const browser = window.gBrowser.selectedBrowser;
+  // The command center (home page) and blank/home tabs navigate in place: an
+  // open there should reuse the tab instead of stacking up extra ones. This
+  // matches the background's openUrl, which replaces the home page in place.
+  let onHome = false;
+  try {
+    const u = browser && browser.currentURI ? browser.currentURI.spec : "";
+    onHome = u.indexOf("commandcenter.html") !== -1 || /^about:(home|newtab|blank)$/i.test(u);
+  } catch (e) {
+    onHome = false;
+  }
+  if (onHome || forceNew === false) {
+    // Navigate the current tab in place. gBrowser.loadURI is long gone, and
+    // the <browser> element's loadURI() now takes an nsIURI — passing a
+    // string throws, which used to fall through to addTab (so ;O / ;S and
+    // opening from the home page wrongly spawned a new tab).
+    // fixupAndLoadURIString is the supported string-loading path; it is a
+    // no-op fixup for our already-normalized URLs.
+    const navInPlace = (): boolean => {
+      try {
+        if (typeof browser.fixupAndLoadURIString === "function") {
+          browser.fixupAndLoadURIString(url, { triggeringPrincipal: sysPrincipal() });
+          return true;
+        }
+        const uri = Services.io.newURI(url);
+        browser.loadURI(uri, { triggeringPrincipal: sysPrincipal() });
+        return true;
+      } catch (e) {
+        console.error("lazyfox in-place load failed", e);
+        return false;
+      }
+    };
+    if (navInPlace()) {
+      window.focus();
+      return;
     }
   }
+  window.gBrowser.selectedTab = window.gBrowser.addTab(url, { triggeringPrincipal: sysPrincipal() });
   window.focus();
 }
 
