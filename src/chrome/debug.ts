@@ -215,6 +215,10 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
                 .slice(0, 40)
             )
             .reduce((a, b) => a.concat(b), []),
+          selIdx: panels.map((p) => {
+            const items = Array.from(p.querySelectorAll(".lf-item"));
+            return items.findIndex((it) => it.classList.contains("selected"));
+          }),
         };
       } catch (e) {
         popupInfo = { error: String(e) };
