@@ -155,21 +155,47 @@ type SessionSummaryItem struct {
 	SplitCount int
 }
 
+// SessionSummaryInput is one row of the status bar's session-list request: a
+// session's name, marker and cheap counts. The split layout is carried as the
+// compact encoded string (core.EncodeSplits) plus a legacy fallback count, so
+// the caller never needs a second wasm round-trip per session to learn the
+// split count.
+type SessionSummaryInput struct {
+	Name            string
+	Marker          int
+	TabCount        int
+	Splits          string // encoded "a:b,c:d" layout ("" = none)
+	LegacySplitTabs int    // pre-encoding fallback: tabs carrying a splitViewId
+}
+
 // SessionSummary returns the session list for the status bar, ordered by
 // marker ascending (unmarked sessions last, sorted by name). It carries only
 // names, markers and counts — the status bar must be able to render the list
 // without loading every session's tabs, per the "only load the current one"
 // rule.
-func SessionSummary(sessions []Session, current string) []SessionSummaryItem {
+//
+// Split count is derived here rather than by the caller: decode the encoded
+// layout when present, otherwise fall back to legacySplitTabs/2 (pre-encoding
+// sessions recorded two tabs per split via a shared splitViewId). A malformed
+// layout contributes zero splits.
+func SessionSummary(sessions []SessionSummaryInput, current string) []SessionSummaryItem {
 	marked := make([]SessionSummaryItem, 0, len(sessions))
 	unmarked := make([]SessionSummaryItem, 0, len(sessions))
 	for _, s := range sessions {
+		splitCount := 0
+		if s.Splits != "" {
+			if pairs, err := DecodeSplits(s.Splits); err == nil {
+				splitCount = len(pairs)
+			}
+		} else {
+			splitCount = s.LegacySplitTabs / 2
+		}
 		item := SessionSummaryItem{
 			Marker:     clampMarker(s.Marker),
 			Name:       s.Name,
 			Current:    s.Name == current,
-			TabCount:   len(s.Tabs),
-			SplitCount: len(s.Splits),
+			TabCount:   s.TabCount,
+			SplitCount: splitCount,
 		}
 		if item.Marker == 0 {
 			unmarked = append(unmarked, item)

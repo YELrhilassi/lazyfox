@@ -218,12 +218,27 @@ export async function run(ctx) {
     // leave the current window's tabs exactly as they were.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const before = await ctx.tabsInfo();
+    // Watch the composed `lazyfox:list` event (the popup's rows live in a
+    // closed shadow root, unreadable from the page) so ArrowDown/Enter never
+    // race the async list render.
+    await evalIn(
+      ctx.tabA,
+      `window.__lfList = null; document.addEventListener("lazyfox:list", (e) => { window.__lfList = e.detail; }, true); true`
+    );
     await ctx.leaderPress(ctx.tabA, "p");
     await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
     await ctx.typeIn(ctx.tabA, "clean");
-    await sleep(700);
+    // Wait for the *filtered* list (q === "clean") to render exactly the two
+    // action rows (save + new clean), then move onto the new-clean row.
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfList`);
+      return d && d.q === "clean" && d.count === 2 ? d : null;
+    }, 5000);
     await ctx.press(ctx.tabA, "ArrowDown"); // save row -> new-clean-session row
-    await sleep(200);
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfList`);
+      return d && d.idx === 1 ? d : null;
+    }, 3000);
     await ctx.press(ctx.tabA, "Enter");
     await waitFor(async () => {
       const r = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.clean)`);
@@ -255,11 +270,31 @@ export async function run(ctx) {
       return r ? r : null;
     }, 8000);
     // Reopen the popup: the input starts empty and sessions are sorted by
-    // marker, so work(1) is first and delme(2) second.
+    // marker, so work(1) is first and delme(2) second. The session list
+    // loads asynchronously — the popup lives in a closed shadow root, so the
+    // rows are unreadable from the page; instead watch the composed
+    // `lazyfox:list` event the selector fires on every render.
+    await evalIn(
+      ctx.tabA,
+      `window.__lfList = null; document.addEventListener("lazyfox:list", (e) => { window.__lfList = e.detail; }, true); true`
+    );
     await ctx.leaderPress(ctx.tabA, "p");
     await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    // Wait for the list to render (>= 2 sessions) before navigating, or
+    // ArrowDown/x would race the fetch (x falling into the input, or arming
+    // on the wrong row).
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfList`);
+      return d && d.count >= 2 ? d : null;
+    }, 5000);
     await ctx.press(ctx.tabA, "ArrowDown");
-    await sleep(300);
+    // The highlight must actually sit on the delme row before x can be
+    // trusted to delete it (idx stays 0 while the list is empty, which would
+    // arm on the wrong session).
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfList`);
+      return d && d.idx === 1 ? d : null;
+    }, 3000);
     // x is two-step: first press arms the delete, second confirms it.
     await ctx.press(ctx.tabA, "x");
     await ctx.press(ctx.tabA, "x");

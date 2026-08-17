@@ -174,18 +174,69 @@ export async function run(ctx) {
     await activate(ctx.tabA);
   });
 
-  await t(";o URL popup: type URL, Enter opens it", async () => {
+  await t(";S search popup: Enter searches in the current tab", async () => {
+    // ;S (shift+s) runs the search in the SAME tab, replacing it — the
+    // opposite of ;s (new tab). Verify via the probe's tabs.query (robust to
+    // the external engine page still loading): the active tab is still tabA's
+    // id, its URL left the test page, and no new tab appeared.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await activate(ctx.tabA);
+    const before = await ctx.tabCount();
+    const tabAId = await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true}).then(ts => { const t = ts.find(x => (x.url||"").indexOf("127.0.0.1") !== -1); return t ? t.id : null; })`);
+    assert(tabAId, "located tabA's id");
+    await ctx.leaderPress(ctx.tabA, "S");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "hello world");
+    await sleep(600);
+    await ctx.press(ctx.tabA, "Enter");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      const active = now.find((t) => t.active);
+      return active && active.id === tabAId && (active.url || "").indexOf(ctx.base) === -1 ? active : null;
+    }, 20000);
+    assert((await ctx.tabCount()) === before, ";S opened no new tab");
+    // Force the tab back to the local test page through the extension API
+    // (a BiDi navigate away from the heavy external page can stall, and later
+    // tests need a clean local context).
+    await evalIn(ctx.probe, `browser.tabs.update(${tabAId}, { url: ${JSON.stringify(`${ctx.base}/`)} }).then(() => true)`).catch(() => {});
+    await sleep(1500);
+  });
+
+  await t(";o URL popup: type URL, Enter opens it in a new tab", async () => {
+    // ;o opens in a NEW tab (openInNewTab config default); ;O is the replace
+    // variant. The current tab must be left untouched.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const beforeIds = new Set((await ctx.tabsInfo()).map((t) => t.id));
     await ctx.leaderPress(ctx.tabA, "o");
     await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
     await ctx.typeIn(ctx.tabA, `http://127.0.0.1:${ctx.port}/hello`);
     await sleep(600);
     await ctx.press(ctx.tabA, "Enter");
-    // content-script ;o reuses the current tab (newTab=false)
+    await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      const t = now.find((x) => !beforeIds.has(x.id));
+      return t && (t.url || "").includes("/hello") ? t : null;
+    }, 15000);
+    // the current tab was NOT navigated
+    const u = await evalIn(ctx.tabA, `location.href`);
+    assert(u && u.includes("/") && !u.includes("/hello"), ";o left the current tab alone: " + u);
+  });
+
+  await t(";O URL popup: Enter replaces the current tab", async () => {
+    // ;O (shift+o) opens the URL in the SAME tab, replacing it.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const before = await ctx.tabCount();
+    await ctx.leaderPress(ctx.tabA, "O");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, `http://127.0.0.1:${ctx.port}/hello`);
+    await sleep(600);
+    await ctx.press(ctx.tabA, "Enter");
     await waitFor(async () => {
       const u = await evalIn(ctx.tabA, `location.href`);
       return u && u.includes("/hello") ? u : null;
     }, 15000);
+    assert((await ctx.tabCount()) === before, ";O opened no new tab");
   });
 
   await t(";t tab switcher popup lists tabs and Enter switches", async () => {
@@ -202,19 +253,24 @@ export async function run(ctx) {
   });
 
   await t(";h history popup filters and opens a result", async () => {
+    // ;h opens the history result in a NEW tab (it follows the openInNewTab
+    // config like ;o); the current tab is left untouched.
     // seed history with the target page first
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/target2`);
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const beforeIds = new Set((await ctx.tabsInfo()).map((t) => t.id));
     await ctx.leaderPress(ctx.tabA, "h");
     await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
     await ctx.typeIn(ctx.tabA, "target two");
     await sleep(900);
     await ctx.press(ctx.tabA, "Enter");
-    // content-script ;h reuses the current tab
     await waitFor(async () => {
-      const u = await evalIn(ctx.tabA, `location.href`);
-      return u && u.includes("/target2") ? u : null;
+      const now = await ctx.tabsInfo();
+      const t = now.find((x) => !beforeIds.has(x.id));
+      return t && (t.url || "").includes("/target2") ? t : null;
     }, 15000);
+    const u = await evalIn(ctx.tabA, `location.href`);
+    assert(u && !u.includes("/target2"), ";h left the current tab alone: " + u);
   });
 
   await t(";b bookmarks popup opens and closes", async () => {

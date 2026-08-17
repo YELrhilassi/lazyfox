@@ -119,11 +119,14 @@ export async function doSearch(query: string) {
 
 export async function historySearch(q: string) {
   const text = (q || "").trim();
-  if (!text) return { items: [] };
+  // An empty query opens the popup PREPOPULATED with the most recent visits
+  // (the browser returns history newest-first when text is empty), so the
+  // popup is never blank until the user types — same as the downloads list.
+  // Typing narrows it to matching entries.
   const items = await browser.history.search({
     text: text,
     startTime: 0,
-    maxResults: 60
+    maxResults: text ? 60 : 30
   });
   return {
     items: items.map((h: any) => ({

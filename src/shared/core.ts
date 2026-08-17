@@ -44,7 +44,7 @@ export interface CoreApi {
   mergeDownloads(prev: DownloadEntry[], fresh: DownloadEntry[]): DownloadEntry[];
   activeDownloads(downloads: DownloadEntry[]): DownloadEntry[];
   sessionSummary(
-    sessions: { name: string; marker: number; tabCount: number; splitCount: number }[],
+    sessions: { name: string; marker: number; tabCount: number; splits: string; legacySplitTabs: number }[],
     current: string
   ): { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
 }
@@ -119,7 +119,7 @@ export function createCoreFacade(getApi: () => Promise<CoreApi>) {
     activeDownloads: (downloads: DownloadEntry[]): Promise<DownloadEntry[]> =>
       call((a) => a.activeDownloads(downloads)),
     sessionSummary: (
-      sessions: { name: string; marker: number; tabCount: number; splitCount: number }[],
+      sessions: { name: string; marker: number; tabCount: number; splits: string; legacySplitTabs: number }[],
       current: string
     ): Promise<
       { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[]

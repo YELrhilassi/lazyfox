@@ -211,8 +211,8 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     openUrl: (url: string, newTab?: boolean) => {
       void send("openUrl", { url: url, newTab: newTab });
     },
-    search: (query: string) => {
-      void send("search", { query: query });
+    search: (query: string, newTab?: boolean) => {
+      void send("search", { query: query, newTab: newTab });
     },
     newTab: () => void send("newTab"),
     closeTab: (id?: number) => {
@@ -329,6 +329,10 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         }
       }
       return out;
+    },
+    listSessionTabs: async (name: string) => {
+      const r = await send("listSessionTabs", { name: name });
+      return (r && r.items) || [];
     },
     saveSession: (name: string) => {
       void send("sessionSave", { name: name }).then((r) =>

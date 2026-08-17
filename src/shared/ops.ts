@@ -15,8 +15,10 @@ export interface ActionOps {
   downloads(q: string): Promise<PopupItem[]>;
 
   // ---- actions ----
+  // newTab: true forces a new tab, false forces the current tab (replace),
+  // undefined defers to the openInNewTab config.
   openUrl(url: string, newTab?: boolean): void;
-  search(query: string): void;
+  search(query: string, newTab?: boolean): void;
   newTab(): void;
   closeTab(id?: number): void;
   moveTab(id: number, dir: number): void;
@@ -54,6 +56,8 @@ export interface ActionOps {
 
   // ---- sessions (tmux-style) ----
   listSessions(q: string): Promise<PopupItem[]>;
+  // The tabs inside one named session (for the sessions popup's right pane).
+  listSessionTabs(name: string): Promise<PopupItem[]>;
   saveSession(name: string): void;
   newSession(name: string): void;
   restoreSession(name: string): void;

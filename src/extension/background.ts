@@ -37,8 +37,10 @@ import {
   resumeOnStartup,
   saveSession,
   scheduleAutosave,
+  scheduleSnapshot,
   sessionList,
   sessionState,
+  sessionTabs,
   switchSessionByMarker
 } from "./sessions";
 
@@ -215,8 +217,17 @@ async function handleMessage(msg: BgAction, sender: any) {
       return openPage(data.url);
     case "openUI":
       return openUI(data.which);
-    case "search":
-      return doSearch(data.query || "");
+    case "search": {
+      const q = (data.query || "").trim();
+      if (!q) return { ok: false };
+      // ;S (newTab === false) replaces the current tab; ;s defers to config.
+      if (data.newTab === false) {
+        const tab = await getActiveTab();
+        if (tab) await browser.tabs.update(tab.id, { url: await searchUrlFor(q), active: true });
+        return { ok: true };
+      }
+      return doSearch(q);
+    }
     case "searchInPlace": {
       const q = (data.query || "").trim();
       if (!q) return { ok: false };
@@ -273,6 +284,8 @@ async function handleMessage(msg: BgAction, sender: any) {
       return { ok: true };
     case "sessionList":
       return sessionList();
+    case "listSessionTabs":
+      return { items: await sessionTabs(data.name || "") };
     case "sessionSave":
       return saveSession(data.name);
     case "sessionNew":
@@ -442,6 +455,14 @@ async function pushSessionStateToChrome(): Promise<void> {
 }
 
 async function handleReq(tab: any, action: string, arg: string) {
+  // Every #lfc=req tab is created by the chrome helper, so handling ANY
+  // request proves it is alive — flip the gate so content scripts stop
+  // drawing their own status bar. The dedicated "alive" announce can race
+  // the extension still loading on a cold start; every other request (e.g.
+  // the startup sessionState poll) covers that window.
+  if (action !== "alive") {
+    browser.storage.local.set({ chromeAlive: true }).catch(() => {});
+  }
   if (action === "alive") {
     await browser.storage.local.set({ chromeAlive: true });
     return;
@@ -490,6 +511,20 @@ async function handleReq(tab: any, action: string, arg: string) {
     });
     return;
   }
+  if (action === "sessionTabs") {
+    // Round-trip for the chrome helper's sessions popup right pane: reply with
+    // the requested session's tabs and let the helper remove the tab.
+    // arg is "<encoded name>.<nonce>" (name may contain dots, so split from
+    // the right on the nonce).
+    const dot = (arg || "").lastIndexOf(".");
+    const name = dot < 0 ? decodeURIComponent(arg || "") : decodeURIComponent((arg || "").slice(0, dot));
+    const nonce = dot < 0 ? "" : (arg || "").slice(dot + 1);
+    const items = await sessionTabs(name);
+    await browser.tabs.update(tab.id, {
+      url: CC_URL + "#lfc=sessionTabs." + b64utf8(JSON.stringify(items)) + "." + nonce
+    });
+    return;
+  }
   if (action === "saveSession") {
     await saveSession(decodeURIComponent(arg || ""));
     return;
@@ -529,9 +564,9 @@ browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
   if (stripHash(tab.url) !== CC_URL) return;
   const m = /#lfc=req[.]([a-zA-Z]+)(?:[.]([^#]*))?$/.exec(tab.url);
   if (!m) return;
-  // sessionState and stealthOpen write their reply into the tab's hash and let
-  // the chrome helper remove the tab after reading it.
-  const keepOpen = m[1] === "sessionState" || m[1] === "stealthOpen";
+  // sessionState, sessionTabs and stealthOpen write their reply into the tab's
+  // hash and let the chrome helper remove the tab after reading it.
+  const keepOpen = m[1] === "sessionState" || m[1] === "sessionTabs" || m[1] === "stealthOpen";
   handleReq(tab, m[1]!, m[2] || "")
     .catch(() => {})
     .then(() => {
@@ -568,7 +603,12 @@ void reconcileStealth();
 
 /* ===================== session autosave + restore ===================== */
 
-const onTabChange = () => scheduleAutosave();
+const onTabChange = () => {
+  scheduleAutosave();
+  // Keep the in-memory quit snapshot current (short debounce, no storage
+  // write) so flushing on quit never persists a stale window.
+  scheduleSnapshot();
+};
 browser.tabs.onCreated.addListener(onTabChange);
 browser.tabs.onRemoved.addListener(onTabChange);
 // When a stealth tab closes, wipe its container data + remove the container.

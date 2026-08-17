@@ -24,7 +24,7 @@ param(
 #
 # Your Firefox data, bookmarks and settings are never touched. Every file we
 # replace is backed up first as <name>.lazyfox.bak-<timestamp>. Re-run any
-# time to upgrade — it only writes Lazyfox's own files.
+# time to upgrade - it only writes Lazyfox's own files.
 
 $ErrorActionPreference = "Stop"
 
@@ -45,17 +45,80 @@ function Find-FirefoxExe {
   return ""
 }
 
+# extensions.json can grow very large (one object per installed add-on), and
+# PowerShell 5.1's ConvertFrom-Json/ConvertTo-Json round-trip is memory-hungry
+# enough to die with an OutOfMemoryException on big profiles. We never need to
+# actually parse the document: every operation here is a surgical edit of one
+# add-on's object, so we work on the raw text instead.
+
+# Match the closing '}' of the object opened at $OpenIdx, skipping string
+# literals (so braces inside "..." values are ignored). Returns the index or -1.
+function Get-MatchingBrace {
+  param([string]$Text, [int]$OpenIdx)
+  $depth = 0
+  $inStr = $false
+  $escaped = $false
+  for ($i = $OpenIdx; $i -lt $Text.Length; $i++) {
+    $c = $Text[$i]
+    if ($inStr) {
+      if ($escaped) { $escaped = $false }
+      elseif ($c -eq '\') { $escaped = $true }
+      elseif ($c -eq '"') { $inStr = $false }
+    }
+    else {
+      if ($c -eq '"') { $inStr = $true }
+      elseif ($c -eq '{') { $depth++ }
+      elseif ($c -eq '}') {
+        $depth--
+        if ($depth -eq 0) { return $i }
+      }
+    }
+  }
+  return -1
+}
+
+# Returns @(openIdx, closeIdx) of the add-on object whose "id" field equals
+# $AddonId, or $null if it isn't in the file. Locates the id field by regex,
+# then walks back over '{' positions - the nearest one whose matched range
+# contains the id value is the add-on's own object (nested objects like
+# "icons": {} close before the id key and are skipped).
+function Get-LazyfoxObjectRange {
+  param([string]$Text, [string]$AddonId)
+  $m = [regex]::Match($Text, '"id"\s*:\s*"' + [regex]::Escape($AddonId) + '"')
+  if (-not $m.Success) { return $null }
+  $idIdx = $m.Index + $m.Length - 1
+  $searchEnd = $idIdx
+  while ($true) {
+    $openIdx = $Text.LastIndexOf([char]'{', $searchEnd)
+    if ($openIdx -lt 0) { return $null }
+    $closeIdx = Get-MatchingBrace -Text $Text -OpenIdx $openIdx
+    if ($closeIdx -gt $idIdx) { return @($openIdx, $closeIdx) }
+    $searchEnd = $openIdx - 1
+  }
+}
+
 function Set-LazyfoxEnabled {
   param([string]$JsonPath)
-  $json = Get-Content -Raw -LiteralPath $JsonPath | ConvertFrom-Json
-  $addon = $json.addons | Where-Object { $_.id -eq "lazyfox@lazyfox.dev" }
-  if (-not $addon) { return $false }
-  $addon.userDisabled = $false
-  $addon.active = $true
-  $addon.visible = $true
-  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-  [System.IO.File]::WriteAllText($JsonPath, ($json | ConvertTo-Json -Depth 20), $utf8NoBom)
-  return $true
+  if (-not (Test-Path -LiteralPath $JsonPath)) { return $false }
+  try {
+    $txt = [System.IO.File]::ReadAllText($JsonPath)
+    $range = Get-LazyfoxObjectRange -Text $txt -AddonId "lazyfox@lazyfox.dev"
+    if (-not $range) { return $false }
+    $open = $range[0]
+    $close = $range[1]
+    $slice = $txt.Substring($open, $close - $open + 1)
+    $slice = $slice -replace '"userDisabled"\s*:\s*true', '"userDisabled": false'
+    $slice = $slice -replace '"active"\s*:\s*false', '"active": true'
+    $slice = $slice -replace '"visible"\s*:\s*false', '"visible": true'
+    $newTxt = $txt.Substring(0, $open) + $slice + $txt.Substring($close + 1)
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($JsonPath, $newTxt, $utf8NoBom)
+    return $true
+  }
+  catch {
+    Write-Warn "could not enable Lazyfox in extensions.json ($($_.Exception.Message))."
+    return $false
+  }
 }
 
 # Firefox caches an add-on's manifest metadata (including which content scripts
@@ -66,18 +129,47 @@ function Set-LazyfoxEnabled {
 # reliable fix is to drop the cached entry so Firefox re-imports the add-on
 # fresh from the new xpi on the next launch. Other add-ons are untouched.
 function Remove-LazyfoxEntry {
-  param([string]$JsonPath)
+  param([string]$JsonPath, [int]$ResetThresholdMb = 100)
   if (-not (Test-Path -LiteralPath $JsonPath)) { return $false }
   try {
+    $sizeMb = (Get-Item -LiteralPath $JsonPath).Length / 1MB
+    if ($sizeMb -gt $ResetThresholdMb) {
+      # A multi-hundred-MB extensions.json is not a legitimate add-on database
+      # (Firefox writes a few MB even for busy profiles): the file is corrupted
+      # or bloated by a broken add-on, and PowerShell can't safely read it. Back
+      # it up and let Firefox rebuild the database from scratch on the next
+      # launch - the add-ons themselves are untouched on disk, and dropping the
+      # bloated file also fixes the slow startup of parsing it.
+      $bak = "$JsonPath.lazyfox.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+      Copy-Item -LiteralPath $JsonPath -Destination $bak -Force
+      Write-Note "backed up extensions.json -> $bak"
+      Remove-Item -Force -LiteralPath $JsonPath
+      Write-Warn "extensions.json is $([math]::Round($sizeMb)) MB - that is not a real add-on database. Deleted it (backed up above); Firefox will rebuild it on the next launch with fresh metadata."
+      return $true
+    }
     $bak = "$JsonPath.lazyfox.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     Copy-Item -LiteralPath $JsonPath -Destination $bak -Force
     Write-Note "backed up extensions.json -> $bak"
-    $json = Get-Content -Raw -LiteralPath $JsonPath | ConvertFrom-Json
-    $before = @($json.addons).Count
-    $json.addons = @($json.addons | Where-Object { $_.id -ne "lazyfox@lazyfox.dev" })
+    $txt = [System.IO.File]::ReadAllText($JsonPath)
+    $range = Get-LazyfoxObjectRange -Text $txt -AddonId "lazyfox@lazyfox.dev"
+    if (-not $range) { return $false }
+    $open = $range[0]
+    $close = $range[1]
+    # Remove the object plus exactly one adjacent comma (prefer the trailing
+    # one) so the surrounding "addons" array stays valid JSON.
+    $cutEnd = $close
+    $j = $close + 1
+    while ($j -lt $txt.Length -and ($txt[$j] -eq ' ' -or $txt[$j] -eq "`t" -or $txt[$j] -eq "`r" -or $txt[$j] -eq "`n")) { $j++ }
+    if ($j -lt $txt.Length -and $txt[$j] -eq ',') { $cutEnd = $j }
+    else {
+      $j = $open - 1
+      while ($j -ge 0 -and ($txt[$j] -eq ' ' -or $txt[$j] -eq "`t" -or $txt[$j] -eq "`r" -or $txt[$j] -eq "`n")) { $j-- }
+      if ($j -ge 0 -and $txt[$j] -eq ',') { $open = $j }
+    }
+    $newTxt = $txt.Substring(0, $open) + $txt.Substring($cutEnd + 1)
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($JsonPath, ($json | ConvertTo-Json -Depth 20), $utf8NoBom)
-    return ($before -gt @($json.addons).Count)
+    [System.IO.File]::WriteAllText($JsonPath, $newTxt, $utf8NoBom)
+    return $true
   } catch {
     Write-Warn "could not update extensions.json ($($_.Exception.Message)); the add-on metadata may stay stale."
     return $false
@@ -107,7 +199,7 @@ function Stop-FirefoxForProfile {
     }
   }
   if ($procs.Count -eq 0) {
-    # Don't kill a different browser installation — the xpi removal below has
+    # Don't kill a different browser installation - the xpi removal below has
     # its own lock guard and will warn if it cannot replace a locked add-on.
     return $false
   }
@@ -160,7 +252,7 @@ function Install-ChromeLoader {
 
 # Remove stale Lazyfox backups (from this installer or older versions) that are
 # older than 30 days, so an old install can't pile up cruft. Backups newer than
-# that are kept — they are the rollback safety net.
+# that are kept - they are the rollback safety net.
 function Remove-StaleLazyfoxBackups {
   param([string]$Dir)
   if (-not (Test-Path -LiteralPath $Dir)) { return }
@@ -380,8 +472,8 @@ if (-not $NoExtension) {
       while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 3
         if (Test-Path -LiteralPath $extJson) {
-          $t = Get-Content -Raw -LiteralPath $extJson
-          if ($t -match 'lazyfox@lazyfox.dev') { $imported = $true; break }
+          $t = [System.IO.File]::ReadAllText($extJson)
+          if ($t.IndexOf('lazyfox@lazyfox.dev') -ge 0) { $imported = $true; break }
         }
       }
       Stop-FirefoxForProfile $profileDir

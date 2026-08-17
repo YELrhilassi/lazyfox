@@ -30,6 +30,15 @@ export const PANEL_CSS = `
   padding:12px 16px;font-family:inherit;font-size:14px;outline:none;}
 .lf-foot{flex:none;padding:8px 16px;font-size:11px;color:#565f89;border-top:1px solid #2a2f45;
   display:flex;gap:6px;align-items:center;}
+.lf-panel.wide{width:820px;max-width:94vw;}
+.lf-split{display:flex;flex:1;overflow:hidden;}
+.lf-col{display:flex;flex-direction:column;flex:1 1 50%;min-width:0;border-right:1px solid #2a2f45;}
+.lf-col:last-child{border-right:none;}
+.lf-col-head{padding:6px 14px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#7aa2f7;
+  border-bottom:1px solid #2a2f45;flex:none;}
+.lf-tabs{flex:1;overflow-y:auto;padding:4px 0;}
+.lf-tabs .lf-item.active{border-left-color:#9ece6a;}
+.lf-tabs-empty{padding:26px 16px;text-align:center;color:#565f89;font-size:12px;}
 .lf-badge{color:#7aa2f7;}
 .kbd{display:inline-block;min-width:26px;text-align:center;background:#16161e;border:1px solid #414868;
   border-bottom-width:2px;border-radius:5px;padding:1px 7px;margin-right:8px;color:#7aa2f7;font-size:12px;}
@@ -189,6 +198,17 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
     const sel = list.querySelector(".selected");
     if (sel) sel.scrollIntoView({ block: "nearest" });
     if (opts.onChange) opts.onChange(idx, shown[idx] || null, shown.length);
+    // The popup lives in a closed shadow root, so nothing outside it can read
+    // the rows directly. Dispatch a composed, bubbling event on the list so
+    // page-level observers (and the e2e harness) can see the current selection
+    // and item count without reaching into the shadow DOM.
+    list.dispatchEvent(
+      new CustomEvent("lazyfox:list", {
+        bubbles: true,
+        composed: true,
+        detail: { count: shown.length, idx, q: opts.inputEl.value || "" },
+      })
+    );
   }
 
   function search(q: string) {

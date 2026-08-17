@@ -176,16 +176,17 @@ func downloadsArray(downloads []core.Download) js.Value {
 	return a
 }
 
-func sessionSummaryInput(v js.Value) []core.Session {
+func sessionSummaryInput(v js.Value) []core.SessionSummaryInput {
 	n := v.Length()
-	out := make([]core.Session, 0, n)
+	out := make([]core.SessionSummaryInput, 0, n)
 	for i := 0; i < n; i++ {
 		it := v.Index(i)
-		out = append(out, core.Session{
-			Name:    it.Get("name").String(),
-			Marker:  it.Get("marker").Int(),
-			Tabs:    make([]core.SessionTab, it.Get("tabCount").Int()),
-			Splits:  make([]core.SplitPair, it.Get("splitCount").Int()),
+		out = append(out, core.SessionSummaryInput{
+			Name:            it.Get("name").String(),
+			Marker:          it.Get("marker").Int(),
+			TabCount:        it.Get("tabCount").Int(),
+			Splits:          it.Get("splits").String(),
+			LegacySplitTabs: it.Get("legacySplitTabs").Int(),
 		})
 	}
 	return out
@@ -382,7 +383,7 @@ func main() {
 	})
 
 	set("sessionSummary", func(this js.Value, args []js.Value) interface{} {
-		sessions := []core.Session(nil)
+		sessions := []core.SessionSummaryInput(nil)
 		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
 			sessions = sessionSummaryInput(args[0])
 		}

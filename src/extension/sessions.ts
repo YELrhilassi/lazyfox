@@ -9,8 +9,8 @@
 // so the module is safe to import before binding.
 
 import { core } from "../shared/core";
-import type { Session, SessionTab } from "../shared/types";
-import { CC_URL, isUITab } from "./tabs";
+import type { PopupItem, Session, SessionTab } from "../shared/types";
+import { CC_URL, isUITab, realTabsInWindow } from "./tabs";
 import { reconcileStealth, stealthContainers, stealthCreateTab } from "./stealth";
 
 const SESSIONS_KEY = "lfSessions";
@@ -261,6 +261,26 @@ export async function sessionList(): Promise<{ sessions: Session[] }> {
   return { sessions };
 }
 
+// The tabs of one named session, as popup rows — for the sessions popup's
+// right-hand pane ("what's inside this session").
+export async function sessionTabs(name: string): Promise<PopupItem[]> {
+  const all = await readSessions();
+  const s = all[(name || "").trim()];
+  if (!s || !Array.isArray(s.tabs)) return [];
+  return s.tabs.map((t, i) => {
+    const badges: string[] = [];
+    if (t.pinned) badges.push("pinned");
+    if (t.stealth) badges.push("stealth");
+    return {
+      kind: "sessionTab",
+      title: t.title || t.url || "",
+      url: t.url || "",
+      subtitle: (badges.length ? badges.join(" \u00b7 ") + " \u00b7 " : "") + (t.url || ""),
+      active: i === (s.active || 0),
+    };
+  });
+}
+
 export async function saveSession(name: string): Promise<{ ok: boolean; session?: Session }> {
   const nm = (name || "").trim();
   if (!nm) return { ok: false };
@@ -348,6 +368,16 @@ export async function restoreSession(name: string): Promise<{ ok: boolean; note?
     return { ok: true };
   } finally {
     restoring = false;
+    // Refresh the in-memory snapshot to the freshly-restored window IMMEDIATELY.
+    // flushOnQuit writes lastSnapshot into the current session on quit; without
+    // this, quitting right after a switch would persist the pre-switch
+    // checkpoint (e.g. the 1-tab window of the session we left) into the new
+    // session, wiping its tabs down to that stale state.
+    try {
+      lastSnapshot = await snapshotWindow();
+    } catch (e) {
+      // ignore — fall back to the debounced autosave below
+    }
     // Re-arm the crash-recovery snapshot so "last" reflects the newly restored
     // window (the guard suppressed it during the teardown).
     scheduleAutosave();
@@ -477,28 +507,26 @@ export async function sessionState(): Promise<{
       splitActive = Math.max(0, pair.indexOf(list[active]));
     }
   }
-  const summaryInput: { name: string; marker: number; tabCount: number; splitCount: number }[] = [];
+  // Split count is derived in the Go core (decode the encoded layout, or fall
+  // back to legacySplitTabs/2 for pre-encoding sessions), so this is a single
+  // wasm call instead of one decode round-trip per session on every poll.
+  const summaryInput: {
+    name: string;
+    marker: number;
+    tabCount: number;
+    splits: string;
+    legacySplitTabs: number;
+  }[] = [];
   for (const s of Object.values(all)) {
-    let splitCount = 0;
-    if (s.splits) {
-      try {
-        splitCount = (await core.decodeSplits(s.splits)).length;
-      } catch (e) {
-        splitCount = 0;
-      }
-    } else {
-      // Pre-encoding sessions: two tabs per split share one splitViewId.
-      splitCount = Math.floor(
-        (s.tabs || []).filter(
-          (t: any) => typeof t.splitViewId === "number" && t.splitViewId >= 0
-        ).length / 2
-      );
-    }
     summaryInput.push({
       name: s.name,
       marker: s.marker || 0,
       tabCount: (s.tabs || []).length,
-      splitCount: splitCount
+      splits: s.splits || "",
+      // Pre-encoding sessions: two tabs per split share one splitViewId.
+      legacySplitTabs: (s.tabs || []).filter(
+        (t: any) => typeof t.splitViewId === "number" && t.splitViewId >= 0
+      ).length
     });
   }
   const summary = await core.sessionSummary(summaryInput, name);
@@ -556,20 +584,74 @@ export function scheduleAutosave(): void {
   }, 1500);
 }
 
+// Keep lastSnapshot current in memory on tab changes (short debounce, no
+// storage write). flushOnQuit persists lastSnapshot into the current session
+// when the last window closes, so without this a quit right after a change —
+// before the 1.5s autosave debounce fires — would flush a stale window and
+// lose the newest tabs. Suppressed while a restore is rebuilding the window
+// (it would capture a partial teardown); restoreSession refreshes lastSnapshot
+// itself when it finishes.
+let snapshotTimer: number | null = null;
+export function scheduleSnapshot(): void {
+  if (restoring) return;
+  if (snapshotTimer != null) clearTimeout(snapshotTimer);
+  snapshotTimer = setTimeout(async () => {
+    snapshotTimer = null;
+    try {
+      lastSnapshot = await snapshotWindow();
+    } catch (e) {
+      // ignore — best-effort
+    }
+  }, 250);
+}
+
 // Resume the saved session on startup when autoRestore is on. This runs
 // UNCONDITIONALLY (not just when the window is blank): Firefox's own session
 // restore runs first and can't faithfully restore a tab that was navigated from
 // the command center, leaving it blank. Waiting for native restore to settle,
 // then rebuilding the window from OUR snapshot, fixes that — the blank tab is
 // replaced and everything else is restored exactly as saved.
+// Whether the window's real tabs already match a saved session (same URLs in
+// the same order, transient UI tabs ignored). True means Firefox's native
+// restore reproduced the session, so a rebuild would only add launch jank.
+function windowMatches(cur: any[], saved: SessionTab[]): boolean {
+  if (cur.length !== (saved || []).length) return false;
+  for (let i = 0; i < cur.length; i++) {
+    const a = cur[i] ? cur[i].url || "" : "";
+    const s = saved[i];
+    const b = s ? s.url || "" : "";
+    if (a !== b) return false;
+  }
+  return true;
+}
+
+// Whether the window is missing split pairings the saved session has. Native
+// restore persists splitViewId on Firefox 149+, but a session saved on an
+// older build (or before the feature) may still need the pairing re-created.
+async function needsSplitRestore(cur: any[], saved: Session): Promise<boolean> {
+  if (!saved.splits) return false;
+  let pairs: [number, number][] = [];
+  try {
+    pairs = await core.decodeSplits(saved.splits);
+  } catch (e) {
+    return false;
+  }
+  for (const [a, b] of pairs) {
+    const ta = cur[a] as any;
+    const tb = cur[b] as any;
+    const ia = ta && typeof ta.splitViewId === "number" ? ta.splitViewId : -1;
+    const ib = tb && typeof tb.splitViewId === "number" ? tb.splitViewId : -1;
+    if (ia < 0 || ia !== ib) return true;
+  }
+  return false;
+}
+
 export async function resumeOnStartup(autoRestore: boolean | undefined): Promise<void> {
   if (autoRestore === false) return;
-  // Let Firefox's native session restore (if enabled) finish populating the
-  // window so our rebuild replaces rather than races it.
-  await new Promise((r) => setTimeout(r, 1000));
   // Prefer the session that was current when we quit, so relaunching puts you
   // back in the SAME session; fall back to the crash-recovery "last" snapshot
-  // for unnamed windows.
+  // for unnamed windows. Reading storage FIRST means a fresh launch (nothing
+  // saved yet) returns immediately instead of paying a fixed startup delay.
   const r = await browser.storage.local.get([CURRENT_SESSION_KEY, LAST_SESSION_KEY]);
   let last = r && r[LAST_SESSION_KEY];
   const curName = r && r[CURRENT_SESSION_KEY];
@@ -579,9 +661,32 @@ export async function resumeOnStartup(autoRestore: boolean | undefined): Promise
     if (cur && cur.tabs && cur.tabs.length) last = cur;
   }
   if (!last || !last.tabs || !last.tabs.length) return;
+  // Let Firefox's native session restore (if enabled) finish populating the
+  // window before we compare or rebuild — the wait only happens when there is
+  // actually a session to resume.
+  await new Promise((r) => setTimeout(r, 1000));
+  const cur = await realTabsInWindow();
+  if (windowMatches(cur, last.tabs)) {
+    // Native restore already reproduced the saved tabs: don't tear the window
+    // down and re-create every tab (the jank users see as a slow, churning
+    // launch). Just re-activate the saved tab and repair any missing split
+    // pairing.
+    const active = Math.min(Math.max(0, last.active || 0), cur.length - 1);
+    if (cur[active] && cur[active].id != null) {
+      await browser.tabs.update(cur[active].id, { active: true }).catch(() => {});
+    }
+    if (await needsSplitRestore(cur, last)) {
+      const groups = await splitGroupsOfSession(last);
+      if (groups.length) {
+        requestChrome("restoreSplits", JSON.stringify(groups));
+      }
+    }
+    return;
+  }
   // Rebuild the window from the snapshot, replacing whatever Firefox natively
-  // restored. restoring=true suppresses tab-change side effects (home
-  // conversion, autosave) while the window is rebuilt.
+  // restored (e.g. a blank tab where a command-center-navigated tab used to
+  // be). restoring=true suppresses tab-change side effects (home conversion,
+  // autosave) while the window is rebuilt.
   restoring = true;
   try {
     const ids = await openTabsInCurrentWindow(last.tabs);
@@ -598,6 +703,14 @@ export async function resumeOnStartup(autoRestore: boolean | undefined): Promise
     }
   } finally {
     restoring = false;
+    // Same as restoreSession: keep lastSnapshot in sync with the restored
+    // window so a fast quit can't flush a stale/partial snapshot into the
+    // session.
+    try {
+      lastSnapshot = await snapshotWindow();
+    } catch (e) {
+      // ignore
+    }
     scheduleAutosave();
   }
 }

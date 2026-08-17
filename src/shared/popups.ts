@@ -67,6 +67,7 @@ function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
   vimNav?: boolean;
   extraKeys?: (e: KeyboardEvent, sel: { empty: boolean; item: T | null; refresh(): void }) => boolean;
   onEnter?: (value: string, item: T | null) => boolean;
+  onChange?: (idx: number, item: T | null, count: number) => void;
 }): PopupCtl {
   const listEl = root.querySelector(".lf-list") as HTMLElement;
   const inputEl = root.querySelector(".lf-input") as HTMLInputElement;
@@ -85,16 +86,17 @@ function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
     onPick: opts.onPick,
     extraKeys: opts.extraKeys,
     onEnter: opts.onEnter,
+    onChange: opts.onChange,
   });
   return { onKey: sel.onKey, refresh: sel.refresh, close: sel.close, focus: () => inputEl.focus() };
 }
 
 /* ---------------- search ---------------- */
 
-export function openSearchPopup(ctx: PopupCtx): void {
+export function openSearchPopup(ctx: PopupCtx, replace = false): void {
   ctx.open(
     basePanel(
-      "Search",
+      replace ? "Search in current tab" : "Search",
       "type to search",
       "<span class='lf-badge'>Enter</span> search &middot; <span class='lf-badge'>Esc</span> close"
     ),
@@ -109,7 +111,9 @@ export function openSearchPopup(ctx: PopupCtx): void {
           "<div class='s'>" + esc(it.subtitle || "search the web") + "</div>",
         onPick: (it) => {
           ctx.close();
-          ctx.ops.search(it.query || "");
+          // ;S (replace) opens the result in the current tab; ;s defers to the
+          // openInNewTab config (new tab by default).
+          ctx.ops.search(it.query || "", replace ? false : undefined);
         },
       })
   );
@@ -117,10 +121,10 @@ export function openSearchPopup(ctx: PopupCtx): void {
 
 /* ---------------- URL ---------------- */
 
-export function openUrlPopup(ctx: PopupCtx): void {
+export function openUrlPopup(ctx: PopupCtx, replace = false): void {
   ctx.open(
     basePanel(
-      "Open URL",
+      replace ? "Open URL in current tab" : "Open URL",
       "type a URL or a site name",
       "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>Esc</span> close"
     ),
@@ -135,7 +139,9 @@ export function openUrlPopup(ctx: PopupCtx): void {
           "<div class='s'>" + esc(it.subtitle || it.url || "") + "</div>",
         onPick: (it) => {
           ctx.close();
-          ctx.ops.openUrl(it.url || "", false);
+          // ;O (replace) opens in the current tab; ;o defers to the
+          // openInNewTab config (new tab by default).
+          ctx.ops.openUrl(it.url || "", replace ? false : undefined);
         },
         // Enter must work even when the debounced suggestions haven't loaded
         // yet (empty list): fall back to opening the typed value, normalized
@@ -151,8 +157,8 @@ export function openUrlPopup(ctx: PopupCtx): void {
           ctx.close();
           core
             .normalizeUrl(v)
-            .then((u) => ctx.ops.openUrl(u, false))
-            .catch(() => ctx.ops.openUrl(v, false));
+            .then((u) => ctx.ops.openUrl(u, replace ? false : undefined))
+            .catch(() => ctx.ops.openUrl(v, replace ? false : undefined));
           return true;
         },
       })
@@ -237,7 +243,7 @@ export function openHistoryPopup(ctx: PopupCtx): void {
           "<div class='s'>" + esc(it.url || "") + "</div>",
         onPick: (it) => {
           ctx.close();
-          ctx.ops.openUrl(it.url || "", false);
+          ctx.ops.openUrl(it.url || "");
         },
       })
   );
@@ -263,7 +269,7 @@ export function openBookmarksPopup(ctx: PopupCtx): void {
           "<div class='s'>" + esc(it.url || "") + "</div>",
         onPick: (it) => {
           ctx.close();
-          ctx.ops.openUrl(it.url || "", false);
+          ctx.ops.openUrl(it.url || "");
         },
       })
   );
@@ -447,11 +453,19 @@ export function openSessionsPopup(ctx: PopupCtx): void {
   };
 
   ctx.open(
-    basePanel(
-      "Sessions",
-      "no saved sessions",
-      "<span class='lf-badge'>Enter</span> save/switch &middot; <span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Ctrl+1-9</span> mark &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
-    ),
+    // Two columns: the session list on the left, the selected session's tabs
+    // on the right. The input lives in the left column (the chrome helper's
+    // popup re-creates it there if Firefox drops the form control).
+    "<div class='lf-panel wide'><div class='lf-title'>Sessions</div>" +
+      "<div class='lf-split'>" +
+      "<div class='lf-col'>" +
+      "<div class='lf-main'><div class='lf-list'></div><div class='lf-empty' style='display:none'>no saved sessions</div></div>" +
+      "<input class='lf-input' placeholder='type a name and press Enter to save the current tabs' spellcheck='false'/>" +
+      "</div>" +
+      "<div class='lf-col'><div class='lf-col-head'>Tabs</div><div class='lf-tabs'><div class='lf-tabs-empty'>select a session to see its tabs</div></div></div>" +
+      "</div>" +
+      "<div class='lf-foot'><span class='lf-badge'>Enter</span> save/switch &middot; <span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Ctrl+1-9</span> mark &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Esc</span> close</div>" +
+      "</div>",
     (root) => {
       // Two-step delete confirmation: the first x arms the delete (red
       // highlight on the row + footer hint + toast), the second x on the same
@@ -477,6 +491,45 @@ export function openSessionsPopup(ctx: PopupCtx): void {
         armDelete = null;
         armEl.textContent = "";
         markArmed(false);
+      };
+
+      // Right-hand pane: the tabs inside the highlighted session. `lastSel`
+      // guards the async fetch so a quick selection change can't let a stale
+      // reply overwrite the pane for the wrong session.
+      let lastSel: string | null = null;
+      const tabsPane = root.querySelector(".lf-tabs") as HTMLElement | null;
+      const renderTabs = (name: string | null) => {
+        if (!tabsPane) return;
+        tabsPane.textContent = "";
+        if (name == null) {
+          const empty = document.createElement("div");
+          empty.className = "lf-tabs-empty";
+          empty.textContent = "select a session to see its tabs";
+          tabsPane.appendChild(empty);
+          return;
+        }
+        void ctx.ops.listSessionTabs(name).then((tabs) => {
+          if (lastSel !== name) return; // selection moved on
+          tabsPane.textContent = "";
+          if (!tabs || !tabs.length) {
+            const empty = document.createElement("div");
+            empty.className = "lf-tabs-empty";
+            empty.textContent = "empty session";
+            tabsPane.appendChild(empty);
+            return;
+          }
+          for (const t of tabs) {
+            const row = document.createElement("div");
+            row.className = "lf-item lf-tab" + (t.active ? " active" : "");
+            row.innerHTML =
+              (t.active ? "<span class='dot'></span>" : "") +
+              (t.pinned ? "\uD83D\uDCCC " : "") +
+              (t.stealth ? "\uD83D\uDD75 " : "") +
+              "<div class='t'>" + esc(t.title || "") + "</div>" +
+              "<div class='s'>" + esc(t.subtitle || t.url || "") + "</div>";
+            tabsPane.appendChild(row);
+          }
+        });
       };
 
       return makeSelector<PopupItem>(ctx, root, {
@@ -530,6 +583,11 @@ export function openSessionsPopup(ctx: PopupCtx): void {
           if (exact) ctx.ops.restoreSession(exact.title || name);
           else ctx.ops.saveSession(name);
           return true;
+        },
+        // Keep the right-hand pane in sync with the highlighted session.
+        onChange: (_idx, item, _count) => {
+          lastSel = item && item.kind === "session" ? item.title || "" : null;
+          renderTabs(lastSel);
         },
         extraKeys: (e, sel) => {
           const k = e.key;
@@ -644,7 +702,9 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
   return {
     f: () => ctx.ops.startHints(),
     s: () => openSearchPopup(ctx),
+    S: () => openSearchPopup(ctx, true),
     o: () => openUrlPopup(ctx),
+    O: () => openUrlPopup(ctx, true),
     t: () => openTabsPopup(ctx),
     w: () => ctx.ops.openResize(),
     h: () => openHistoryPopup(ctx),
