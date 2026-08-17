@@ -254,6 +254,31 @@ export async function run(ctx) {
     await waitFor(async () => !(await ctx.chromeState()).popup.current, 8000);
   });
 
+  await t("popup arrow keys move the highlighted row", async () => {
+    // Regression: the selector's mouseenter handler used to hijack idx on hover,
+    // so every arrow-driven re-render snapped the selection back to the hovered
+    // row and arrow navigation looked dead. Hover feedback is now pure CSS; the
+    // keyboard alone moves the selection. The tabs popup reliably has >1 row
+    // (tabA + probe), so ArrowDown/ArrowUp must actually change the selection.
+    await ctx.openCC(ctx.tabA);
+    await ctx.leaderPress(ctx.tabA, "t");
+    await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.popup && s.popup.current && s.popup.selIdx && s.popup.selIdx[0] >= 0 ? s : null;
+    }, 8000);
+    const first = (await ctx.chromeState()).popup.selIdx[0];
+    await ctx.press(ctx.tabA, "ArrowDown");
+    await sleep(300);
+    const down = (await ctx.chromeState()).popup.selIdx[0];
+    assert(down !== first, `ArrowDown moved selection (${first} -> ${down})`);
+    await ctx.press(ctx.tabA, "ArrowUp");
+    await sleep(300);
+    const up = (await ctx.chromeState()).popup.selIdx[0];
+    assert(up === first, `ArrowUp returned selection to ${first}, got ${up}`);
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.chromeState()).popup.current, 8000);
+  });
+
   await t("leader ;m mutes the active tab", async () => {
     await ctx.openCC(ctx.tabA);
     await activate(ctx.tabA);

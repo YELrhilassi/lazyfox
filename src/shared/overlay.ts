@@ -20,6 +20,7 @@ export const PANEL_CSS = `
 .lf-list::-webkit-scrollbar{width:8px;}
 .lf-list::-webkit-scrollbar-thumb{background:#3b4261;border-radius:4px;}
 .lf-item{padding:8px 16px;cursor:pointer;border-left:3px solid transparent;line-height:1.35;}
+.lf-item:hover{background:#252a3a;}
 .lf-item.lf-tab{padding:4px 14px;}
 .lf-item .t{font-size:13px;color:#c0caf5;}
 .lf-item .s{font-size:11px;color:#565f89;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -161,6 +162,10 @@ export function openPopup(
 export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
   let shown: T[] = [];
   let idx = 0;
+  // True once the user has *chosen* a row (arrow/vim/Home/End/PageUp/Down or a
+  // click). A fresh search resets it, so Enter on a freshly-typed query is
+  // treated as "open what I typed", not "open the first suggestion".
+  let navigated = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const debounce = opts.debounceMs ?? 40;
   const step = opts.pageStep ?? 8;
@@ -186,12 +191,11 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
         ev.preventDefault();
         opts.onPick(item);
       });
-      div.addEventListener("mouseenter", () => {
-        if (i !== idx) {
-          idx = i;
-          render();
-        }
-      });
+      // No mouseenter selection hijack here: moving the highlight on hover
+      // stole the keyboard selection (Enter opened the hovered row instead of
+      // the typed value, and arrow navigation snapped back to the hovered row
+      // on every re-render). Hover feedback is pure CSS; the selected row is
+      // only changed by the keyboard (move/Home/End) or a real click.
       frag.appendChild(div);
     });
     list.appendChild(frag);
@@ -221,6 +225,7 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
           if (current !== (opts.inputEl.value || "")) return;
           shown = (items || []).slice(0, maxItems);
           idx = 0;
+          navigated = false;
           render();
         })
         .catch(() => {});
@@ -234,6 +239,7 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
   function move(d: number) {
     if (!shown.length) return;
     idx = (idx + d + shown.length) % shown.length;
+    navigated = true;
     render();
   }
 
@@ -263,12 +269,14 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
     if (k === "Home") {
       e.preventDefault();
       idx = 0;
+      navigated = true;
       render();
       return true;
     }
     if (k === "End") {
       e.preventDefault();
       idx = shown.length - 1;
+      navigated = true;
       render();
       return true;
     }
@@ -289,11 +297,16 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
     }
     if (k === "Enter") {
       e.preventDefault();
-      if (opts.onEnter && opts.onEnter(opts.inputEl.value || "", shown[idx] || null)) {
+      const value = opts.inputEl.value || "";
+      // Only hand the highlighted row to onEnter when the user actually moved
+      // to it. Right after typing, idx is 0 with no navigation, so onEnter sees
+      // null and can open the typed value instead of the first suggestion.
+      const item = navigated ? (shown[idx] || null) : null;
+      if (opts.onEnter && opts.onEnter(value, item)) {
         return true;
       }
-      const item = shown[idx];
-      if (item) opts.onPick(item);
+      const pick = shown[idx];
+      if (pick) opts.onPick(pick);
       return true;
     }
     if (opts.extraKeys) {
