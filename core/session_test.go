@@ -95,19 +95,12 @@ func TestSplitsCodec(t *testing.T) {
 }
 
 func TestSessionSummary(t *testing.T) {
-	tabs := func(n int) []SessionTab {
-		out := make([]SessionTab, n)
-		for i := range out {
-			out[i] = SessionTab{URL: "u", Title: "t"}
-		}
-		return out
-	}
-	sessions := []Session{
-		{Name: "mail", Marker: 2, Tabs: tabs(3), Splits: []SplitPair{{0, 1}}},
-		{Name: "work", Marker: 1, Tabs: tabs(5)},
-		{Name: "dev", Marker: 9, Tabs: tabs(2), Splits: []SplitPair{{0, 1}}},
-		{Name: "scratch", Marker: 0, Tabs: tabs(4)},
-		{Name: "other", Marker: 0, Tabs: tabs(1)},
+	sessions := []SessionSummaryInput{
+		{Name: "mail", Marker: 2, TabCount: 3, Splits: "0:1"},
+		{Name: "work", Marker: 1, TabCount: 5},
+		{Name: "dev", Marker: 9, TabCount: 2, Splits: "0:1"},
+		{Name: "scratch", Marker: 0, TabCount: 4},
+		{Name: "other", Marker: 0, TabCount: 1},
 	}
 	got := SessionSummary(sessions, "dev")
 	// markers ascending first, unmarked (by name) last
@@ -134,6 +127,33 @@ func TestSessionSummary(t *testing.T) {
 	// empty input -> empty output
 	if got := SessionSummary(nil, ""); len(got) != 0 {
 		t.Fatalf("empty summary, got %v", got)
+	}
+}
+
+// TestSessionSummaryLegacyFallback pins the pre-encoding fallback: sessions
+// saved before the compact split layout existed record two tabs per split via
+// a shared splitViewId, so the split count is legacySplitTabs/2.
+func TestSessionSummaryLegacyFallback(t *testing.T) {
+	got := SessionSummary([]SessionSummaryInput{
+		{Name: "old", Marker: 1, TabCount: 4, LegacySplitTabs: 4},
+		{Name: "none", Marker: 2, TabCount: 3, LegacySplitTabs: 0},
+	}, "old")
+	if got[0].SplitCount != 2 {
+		t.Fatalf("legacy split count = %d, want 2", got[0].SplitCount)
+	}
+	if got[1].SplitCount != 0 {
+		t.Fatalf("no-split legacy count = %d, want 0", got[1].SplitCount)
+	}
+}
+
+// TestSessionSummaryBadSplits pins that a malformed encoded layout contributes
+// zero splits rather than failing the whole list.
+func TestSessionSummaryBadSplits(t *testing.T) {
+	got := SessionSummary([]SessionSummaryInput{
+		{Name: "bad", Marker: 1, TabCount: 2, Splits: "0:1,xx"},
+	}, "bad")
+	if len(got) != 1 || got[0].SplitCount != 0 {
+		t.Fatalf("bad splits summary = %+v, want one row with 0 splits", got)
 	}
 }
 

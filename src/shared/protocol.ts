@@ -33,8 +33,9 @@ export interface BgApi {
   openUrl: { req: { url: string; newTab?: boolean }; res: { ok: boolean } };
   openPage: { req: { url: string }; res: { ok: boolean } };
   openUI: { req: { which: string }; res: { ok: boolean } };
-  search: { req: { query: string }; res: { ok: boolean; engine?: string; reused?: boolean } };
+  search: { req: { query: string; newTab?: boolean }; res: { ok: boolean; engine?: string; reused?: boolean } };
   searchInPlace: { req: { query: string }; res: { ok: boolean } };
+  listSessionTabs: { req: { name: string }; res: { items: PopupItem[] } };
   windowSize: { req: Record<string, never>; res: WindowSize };
   resizeWindow: { req: { dx: number; dy: number }; res: { width: number; height: number; state: string } };
   moveWindow: { req: { dx: number; dy: number }; res: { left: number; top: number; state: string } };

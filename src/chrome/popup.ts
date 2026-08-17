@@ -47,6 +47,10 @@ export function createPopupHost(): PopupHost {
       }
       currentPopup = null;
     }
+    // Closing any popup also ends resize mode: if a resize popup was replaced
+    // by a normal one (or removed some other way), a stale resizeHost must
+    // never keep arrow keys resizing the window.
+    resizeHost = null;
     try {
       window.gBrowser.selectedBrowser.focus();
     } catch (e) {
@@ -161,6 +165,12 @@ export function createPopupHost(): PopupHost {
   }
 
   function resizeOnKey(e: KeyboardEvent): boolean {
+    // Arrow keys only resize while the resize popup is actually open. Without
+    // this guard, any open popup (tabs, sessions, ...) routed arrows through
+    // here from the window's capture-phase keydown listener — before the
+    // popup input ever saw them — resizing the window and swallowing the
+    // popup's own navigation.
+    if (!resizeHost) return false;
     const step = e.shiftKey ? 40 : 20;
     switch (e.key) {
       case "ArrowLeft":

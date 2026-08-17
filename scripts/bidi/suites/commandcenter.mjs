@@ -261,6 +261,29 @@ export async function run(ctx) {
     await waitFor(async () => !(await ctx.chromeState()).popup.current, 8000);
   });
 
+  await t("popup arrows navigate the list, never resize the window", async () => {
+    // Regression: the chrome window's capture-phase keydown handler routed
+    // arrow keys through the resize handler whenever ANY popup was open, so
+    // arrows resized the window (and swallowed the key) instead of reaching
+    // the popup's own navigation. Arrows must only resize while the ;w
+    // resize popup is actually open.
+    await ctx.openCC(ctx.tabA);
+    await ctx.leaderPress(ctx.tabA, "o");
+    await waitFor(async () => (await ctx.chromeState()).popup.current ? true : null, 8000);
+    const before = await ctx.windowRect();
+    await ctx.press(ctx.tabA, "ArrowDown");
+    await sleep(300);
+    const s = await ctx.chromeState();
+    assert(s && s.popup && s.popup.current, "URL popup still open after ArrowDown");
+    const after = await ctx.windowRect();
+    assert(
+      Math.abs(after.width - before.width) < 10 && Math.abs(after.height - before.height) < 10,
+      `window not resized by ArrowDown (${before.width}x${before.height} -> ${after.width}x${after.height})`
+    );
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.chromeState()).popup.current, 8000);
+  });
+
   await t("leader ;m mutes the active tab", async () => {
     await ctx.openCC(ctx.tabA);
     await activate(ctx.tabA);

@@ -43,17 +43,29 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   // alive this per-page fixed bar must stay hidden, or the two would double up
   // and the fixed bar would overlap content while scrolling. Only in standalone
   // mode (chrome helper absent) does the content script draw its own bar.
-  let chromeAlive = false;
+  //
+  // `chromeAlive` is null until the first storage read resolves: a page
+  // restored during startup may load before the chrome helper's announce
+  // lands, and drawing the bar on that guess is exactly the "two status bars
+  // one on top of the other" symptom. The bar appears only once the flag is
+  // known to be false, and the storage listener hides it the moment it flips.
+  let chromeAlive: boolean | null = null;
   function refreshChromeAlive() {
     void browser.storage.local.get("chromeAlive").then(
       (r: { chromeAlive?: boolean }) => {
         const next = !!(r && r.chromeAlive);
-        if (next !== chromeAlive) {
+        if (chromeAlive === null || next !== chromeAlive) {
           chromeAlive = next;
           ensureStatusBar();
         }
       },
-      () => {}
+      () => {
+        // Read failed: assume standalone so the bar still appears.
+        if (chromeAlive === null) {
+          chromeAlive = false;
+          ensureStatusBar();
+        }
+      }
     );
   }
   refreshChromeAlive();
@@ -168,7 +180,8 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     // The chrome helper owns the single window-level bar whenever it is alive
     // (web pages, chrome pages, and split panes). This per-page fixed bar only
     // appears in standalone mode, where it pads the page to reserve its space.
-    if (config.statusBar === false || chromeAlive || statusInfo.inSplit) {
+    // chromeAlive === null means "not known yet": hide until proven standalone.
+    if (config.statusBar === false || chromeAlive !== false || statusInfo.inSplit) {
       statusBar.hide();
       return;
     }
@@ -404,7 +417,10 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     true
   );
 
-  ensureStatusBar();
+  // The bar is decided by refreshChromeAlive's first read (and the storage
+  // listener after that); drawing it here, before the flag is known, is what
+  // produced a second bar on top of the chrome helper's during session
+  // restore. fetchStatus still runs so the standalone bar gets its data.
   fetchStatus();
   setInterval(renderStatus, 400);
   setInterval(fetchStatus, 3000);

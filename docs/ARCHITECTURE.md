@@ -76,7 +76,9 @@ itself — it builds the modules below and wires them together.
 - `debug.ts` — verification commands the test harness uses to inspect the
   browser's live state.
 - `ops.ts` — the chrome implementation of `ActionOps` (gBrowser, Places,
-  Downloads directly).
+  Downloads directly), built by `createChromeOps(deps)` with every dependency
+  injected — the channel, split view, popup host and status bar — so nothing
+  is monkey-patched onto a singleton after the fact.
 - `downloads.ts` — the chrome download manager (polls Downloads.sys.mjs,
   reconciles dismissed flags through the Go core).
 - `typing.ts` — detects whether the user is typing in an input, so the leader

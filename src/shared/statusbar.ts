@@ -73,18 +73,12 @@ const CSS = `
 .seg.dl .pct{color:#7dcfff;font-weight:700;}
 .seg.dl .ok{color:#9ece6a;font-weight:900;}
 .seg.dl .bad{color:#f7768e;font-weight:900;}
-.seg.chips{background:none;clip-path:none;margin-left:6px;gap:6px;
-  overflow:hidden;padding:0 6px;align-items:center;}
-.pill{display:inline-flex;align-items:center;height:14px;
-  padding:0 10px;font-weight:700;font-size:10px;line-height:14px;
-  letter-spacing:.02em;white-space:nowrap;opacity:.78;
-  clip-path:polygon(7px 0, calc(100% - 7px) 0, 100% 50%, calc(100% - 7px) 100%, 7px 100%, 0 50%);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.14);}
-.pill .lead{font-size:14px;font-weight:900;margin-right:4px;line-height:14px;}
-.pill .lbl{font-weight:800;}
-.pill.cur{opacity:1;font-weight:900;
-  box-shadow:inset 0 -3px 0 rgba(0,0,0,.32), inset 0 1px 0 rgba(255,255,255,.14);}
-.pill.cur .lead{opacity:1;}
+.seg.chips{background:none;clip-path:none;margin-left:0;gap:0;
+  overflow:hidden;padding:0;align-items:stretch;}
+.sesspill{display:flex;align-items:center;white-space:nowrap;
+  padding:0 10px 0 8px;font-weight:700;
+  clip-path:polygon(8px 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 8px 100%, 0 50%);}
+.sesspill.linked{margin-left:-8px;padding-left:16px;}
 `;
 
 type StatusHost = HTMLElement & { _sh: ShadowRoot };
@@ -171,7 +165,6 @@ export class StatusBar {
       "<div class='lf-status " + this.position + "'>" +
       "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
       "<span class='seg tabs linked'><span class='ic'>▤</span><span class='st'>🕶</span><b></b><span class='cnt'></span></span>" +
-      "<span class='seg split linked'><span class='ic'>⧉</span><span class='p'></span></span>" +
       "<span class='seg chips'></span>" +
       "<span class='seg dl'><span class='ic'>⭳</span><span class='items'></span></span>" +
       "</div>";
@@ -324,8 +317,6 @@ export class StatusBar {
     const tabIdx = tabs ? (tabs.querySelector("b") as HTMLElement | null) : null;
     const tabCnt = tabs ? (tabs.querySelector(".cnt") as HTMLElement | null) : null;
     const stealth = tabs ? (tabs.querySelector(".st") as HTMLElement | null) : null;
-    const split = sh.querySelector(".split") as HTMLElement | null;
-    const splitP = split ? (split.querySelector(".p") as HTMLElement | null) : null;
     const dl = sh.querySelector(".dl") as HTMLElement | null;
     const dlItems = dl ? (dl.querySelector(".items") as HTMLElement | null) : null;
     const chips = sh.querySelector(".chips");
@@ -340,17 +331,6 @@ export class StatusBar {
     if (tabCnt) tabCnt.textContent = "/" + this.data.tabCount;
     if (tabs) tabs.style.display = this.data.tabCount > 0 ? "" : "none";
     if (stealth) stealth.style.display = this.data.activeStealth ? "" : "none";
-
-    if (split && splitP) {
-      split.style.display = this.data.inSplit ? "" : "none";
-      if (this.data.inSplit) {
-        const panes = this.data.splitPanes > 0 ? this.data.splitPanes : 1;
-        const active = Math.min(Math.max(0, this.data.splitActive), panes - 1) + 1;
-        splitP.textContent =
-          active + "/" + panes +
-          (this.data.splitOrientation === "vertical" ? " · v" : " · h");
-      }
-    }
 
     if (dl && dlItems) {
       dl.style.display = this.data.downloads.length > 0 ? "" : "none";
@@ -397,10 +377,10 @@ export class StatusBar {
     }
 
     if (chips) {
-      // Session list as angled blocks on the LEFT of the bar (after the
-      // session / tabs / split segments): marker/name/count separated by /
-      // inside a chevron-shaped block. Each block is a gradient of its own
-      // color; text is auto-contrasted against it (dark or light).
+      // Session list as connected chevron blocks right after the tabs segment:
+      // each reads `id:name count` and links into the previous one. The active
+      // session is already shown by the first (session-name) segment, so the
+      // list needs no extra current marker; split counts were dropped as noise.
       const PILL_COLORS = [
         ["#7aa2f7", "#5d89ea"], // blue
         ["#9ece6a", "#7fae49"], // green
@@ -413,31 +393,22 @@ export class StatusBar {
         ["#c0caf5", "#a3aee4"], // lavender
       ];
       const frag = document.createDocumentFragment();
-      this.data.sessions.slice(0, 12).forEach((s) => {
-        const pill = document.createElement("span");
-        pill.className = "pill" + (s.current ? " cur" : "");
+      this.data.sessions.slice(0, 12).forEach((s, i) => {
+        // First block is a full chevron (> id:name count); every block after
+        // it links into the previous one's point (> id:name count > ...).
+        const block = document.createElement("span");
+        block.className = "sesspill" + (i > 0 ? " linked" : "");
         // Stable color keyed to the marker (not list position), so switching
-        // sessions never recolors another one. The current session is marked
-        // by the lead arrow + underline, not by a recolor.
+        // sessions never recolors another one.
         const idx = s.marker > 0 ? (s.marker - 1) % PILL_COLORS.length : 0;
         const c = PILL_COLORS[idx]!;
-        pill.style.background = "linear-gradient(180deg," + c[0] + "," + c[1] + ")";
-        pill.style.color = readableOn(c[0] || "#7aa2f7");
-        if (s.current) {
-          const lead = document.createElement("span");
-          lead.className = "lead";
-          lead.textContent = "\u25B8";
-          pill.appendChild(lead);
-        }
-        const label = document.createElement("span");
-        label.className = "lbl";
+        block.style.background = "linear-gradient(180deg," + c[0] + "," + c[1] + ")";
+        block.style.color = readableOn(c[0] || "#7aa2f7");
         const id = s.marker > 0 ? String(s.marker) : "\u00B7";
         let text = id + ":" + s.name;
         if (s.tabCount > 0) text += " " + s.tabCount;
-        if (s.splitCount) text += "\u29C9" + s.splitCount;
-        label.textContent = text;
-        pill.appendChild(label);
-        frag.appendChild(pill);
+        block.textContent = text;
+        frag.appendChild(block);
       });
       chips.textContent = "";
       chips.appendChild(frag);

@@ -12,7 +12,7 @@
 
 import { core } from "../shared/core";
 import { StatusBar } from "../shared/statusbar";
-import { activeDownloads, updateDownloads } from "./downloads";
+import { activeDownloads, dismissDownload, updateDownloads } from "./downloads";
 import type { DownloadEntry } from "../shared/types";
 import type { ChromeCfg } from "./config";
 
@@ -22,7 +22,6 @@ export interface StatusBarDeps {
   getConfig(): ChromeCfg;
   // Rendering mode for the bar: a popup or the leader overlay is open.
   getMode(): "POPUP" | "LEADER" | "NORMAL";
-  dismissDownload(key?: string): void;
 }
 
 export interface StatusBarCtl {
@@ -60,9 +59,10 @@ export interface StatusBarCtl {
 export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   const chromeStatusBar = new StatusBar(true, "#browser");
   // Clicking a download notification on the bar dismisses just that one (the
-  // popup list keeps it).
+  // popup list keeps it). The download manager is this module's direct
+  // dependency, so it is imported rather than threaded through deps.
   chromeStatusBar.setDownloadDismiss((key) => {
-    deps.dismissDownload(key);
+    dismissDownload(key);
     void refreshDownloadStatus();
   });
 

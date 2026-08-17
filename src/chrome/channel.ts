@@ -12,7 +12,7 @@
 
 import { mergeConfig, mergeHotkeys } from "../shared/config";
 import { openBookmarksPopup, openDownloadsPopup, openHistoryPopup, openSearchPopup, openTabsPopup, openUrlPopup, type PopupCtx } from "../shared/popups";
-import type { ChromeHotkeys, Config } from "../shared/types";
+import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
 import { applyHoverRevealPref, type ChromeCfg } from "./config";
 import type { DebugHandlers } from "./debug";
 import type { SplitView } from "./splitview";
@@ -34,8 +34,13 @@ export interface ChannelDeps {
 
 export interface Channel {
   ccBaseUrl(): string | null;
-  requestBg(action: string, arg?: string): void;
+  // Opens a transient #lfc=req tab for the background. Returns whether the
+  // request tab was actually created, so callers (the alive announce) can
+  // retry a failed send instead of assuming it landed.
+  requestBg(action: string, arg?: string): boolean;
   requestSessionState(): Promise<void>;
+  // Fetches one named session's tabs (for the sessions popup's right pane).
+  requestSessionTabs(name: string): Promise<PopupItem[]>;
   setHash(browser: any, hash: string): void;
   handleLfc(browser: any, payload: string): void;
 }
@@ -48,6 +53,9 @@ export function createChannel(deps: ChannelDeps): Channel {
   // list after a delete/save instead of reading the stale cache (which made a
   // deleted session keep showing until the next Firefox restart).
   let sessionStateWaiters: Record<string, () => void> = {};
+  // One-shot waiters for requestSessionTabs, resolved by the handleLfc
+  // "sessionTabs" reply with the session's tab rows.
+  let sessionTabsWaiters: Record<string, (items: PopupItem[]) => void> = {};
 
   function ccBaseUrl(): string | null {
     try {
@@ -70,9 +78,9 @@ export function createChannel(deps: ChannelDeps): Channel {
     return null;
   }
 
-  function requestBg(action: string, arg?: string): void {
+  function requestBg(action: string, arg?: string): boolean {
     const base = ccBaseUrl();
-    if (!base) return;
+    if (!base) return false;
     let frag = "lfc=req." + action;
     if (arg != null && arg !== "") frag += "." + encodeURIComponent(arg);
     try {
@@ -89,8 +97,9 @@ export function createChannel(deps: ChannelDeps): Channel {
           // ignore
         }
       }, 3000);
+      return true;
     } catch (e) {
-      // ignore
+      return false;
     }
   }
 
@@ -125,6 +134,42 @@ export function createChannel(deps: ChannelDeps): Channel {
         if (sessionStateWaiters[nonce]) {
           delete sessionStateWaiters[nonce];
           resolve();
+        }
+      }
+    });
+  }
+
+  function requestSessionTabs(name: string): Promise<PopupItem[]> {
+    const base = ccBaseUrl();
+    if (!base) return Promise.resolve([]);
+    const nonce = "st" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+    return new Promise((resolve) => {
+      sessionTabsWaiters[nonce] = resolve;
+      try {
+        const tab = window.gBrowser.addTab(
+          base + "commandcenter.html#lfc=req.sessionTabs." + encodeURIComponent(name) + "." + nonce,
+          {
+            inBackground: true,
+            skipAnimation: true,
+            triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+          }
+        );
+        // Safety net: if the reply never arrives, drop the request tab.
+        setTimeout(() => {
+          try {
+            if (tab && !tab.closing) window.gBrowser.removeTab(tab);
+          } catch (e) {
+            // ignore
+          }
+          if (sessionTabsWaiters[nonce]) {
+            delete sessionTabsWaiters[nonce];
+            resolve([]);
+          }
+        }, 5000);
+      } catch (e) {
+        if (sessionTabsWaiters[nonce]) {
+          delete sessionTabsWaiters[nonce];
+          resolve([]);
         }
       }
     });
@@ -270,6 +315,26 @@ export function createChannel(deps: ChannelDeps): Channel {
       removeReqTab(browser);
       return;
     }
+    if (cmd === "sessionTabs") {
+      // Reply to requestSessionTabs: sessionTabs.<b64>.<nonce>.
+      const dot = rest.indexOf(".");
+      const b64 = dot < 0 ? rest : rest.slice(0, dot);
+      const nonce = dot < 0 ? "" : rest.slice(dot + 1);
+      let items: PopupItem[] = [];
+      try {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        items = JSON.parse(new TextDecoder().decode(bytes));
+      } catch (e) {
+        items = [];
+      }
+      const w = sessionTabsWaiters[nonce];
+      if (w) {
+        delete sessionTabsWaiters[nonce];
+        w(items || []);
+      }
+      removeReqTab(browser);
+      return;
+    }
     if (cmd === "reqResult") {
       // Async reply to a chrome-helper request (e.g. stealthOpen): toast the
       // outcome so a failure is never silent, then drop the reply tab.
@@ -318,6 +383,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     ccBaseUrl,
     requestBg,
     requestSessionState,
+    requestSessionTabs,
     setHash,
     handleLfc,
   };

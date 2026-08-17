@@ -39,9 +39,11 @@ var Bindings = []WkItem{
 	{Key: "0", Label: "Reset zoom", Group: "Navigation"},
 
 	// ---- Open ----
-	{Key: "o", Label: "Open URL", Group: "Open"},
+	{Key: "o", Label: "Open URL (new tab)", Group: "Open"},
+	{Key: "O", Label: "Open URL in current tab", Group: "Open"},
 	{Key: "t", Label: "Tab switcher", Group: "Open"},
-	{Key: "s", Label: "Search the web", Group: "Open"},
+	{Key: "s", Label: "Search the web (new tab)", Group: "Open"},
+	{Key: "S", Label: "Search in current tab", Group: "Open"},
 	{Key: "h", Label: "History", Group: "Open"},
 	{Key: "b", Label: "Bookmarks", Group: "Open"},
 	{Key: "d", Label: "Downloads", Group: "Open"},
