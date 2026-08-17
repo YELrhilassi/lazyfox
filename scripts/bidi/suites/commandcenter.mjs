@@ -82,36 +82,6 @@ export async function run(ctx) {
     await waitFor(async () => !(await ctx.chromeState()).popup.current, 8000);
   });
 
-  await t("chrome ;o popup: fast Enter opens the typed URL, never the home page", async () => {
-    // Regression: Enter in the ;o popup must open the typed value even when
-    // Enter lands before the debounced suggestions resolve (fast typists) —
-    // previously the empty list swallowed Enter, or a scheme-less value was
-    // passed raw to gBrowser and, failing to load, left an about:blank tab that
-    // the background converted to the lazyfox home page.
-    await ctx.openCC(ctx.tabA);
-    await ctx.leaderPress(ctx.tabA, "o");
-    const s = await ctx.chromeState();
-    assert(s && s.popup && s.popup.current, ";o opens a popup");
-    const target = `http://127.0.0.1:${ctx.port}/hello`;
-    // Type fast (25ms/char) and press Enter immediately, before the 70ms
-    // debounce + async suggestion fetch can populate the list.
-    for (const ch of target) {
-      await keyTap(ctx.tabA, ch);
-      await sleep(25);
-    }
-    await ctx.press(ctx.tabA, "Enter");
-    // The typed URL must open and the active tab must never be the home page.
-    await waitFor(async () => {
-      const a = await ctx.activeTabInfo();
-      return a && a.url.includes("/hello") ? a : null;
-    }, 15000);
-    const a = await ctx.activeTabInfo();
-    assert(a && a.url.includes("/hello"), "active tab is the typed URL, got " + (a && a.url));
-    assert(!a.url.includes("commandcenter.html"), "active tab is not the home page");
-    // Clean up: close the site tab so later tests start on the command center.
-    await evalIn(ctx.probe, `browser.tabs.remove(${a.id})`).catch(() => {});
-  });
-
   await t("home page opens with the input focused; typing works for h/l", async () => {
     // Regression: the home page must start with the input focused so every
     // key (including h/j/k/l, which navigate the grid in command mode) types.
@@ -373,5 +343,89 @@ export async function run(ctx) {
     await waitFor(async () => (await ctx.tabCount()) === before ? true : null, 10000).catch(() => {});
     await activate(ctx.tabA);
     await sleep(300);
+  });
+
+  await t("chrome ;o popup: fast Enter opens the typed URL, never the home page", async () => {
+    // Regression: Enter in the ;o popup must open the typed value even when
+    // Enter lands before the debounced suggestions resolve (fast typists) —
+    // previously the empty list swallowed Enter, or a scheme-less value was
+    // passed raw to gBrowser and, failing to load, left an about:blank tab that
+    // the background converted to the lazyfox home page.
+    await ctx.openCC(ctx.tabA);
+    await ctx.leaderPress(ctx.tabA, "o");
+    const s = await ctx.chromeState();
+    assert(s && s.popup && s.popup.current, ";o opens a popup");
+    const target = `http://127.0.0.1:${ctx.port}/hello`;
+    // Type fast (25ms/char) and press Enter immediately, before the 70ms
+    // debounce + async suggestion fetch can populate the list.
+    for (const ch of target) {
+      await keyTap(ctx.tabA, ch);
+      await sleep(25);
+    }
+    await ctx.press(ctx.tabA, "Enter");
+    // The typed URL must open and the active tab must never be the home page.
+    await waitFor(async () => {
+      const a = await ctx.activeTabInfo();
+      return a && a.url.includes("/hello") ? a : null;
+    }, 15000);
+    const a = await ctx.activeTabInfo();
+    assert(a && a.url.includes("/hello"), "active tab is the typed URL, got " + (a && a.url));
+    assert(!a.url.includes("commandcenter.html"), "active tab is not the home page");
+    // ;o from the home page opens in place (the home tab is reused), so tabA
+    // is now the site — navigate it back to the command center for the tests
+    // that follow.
+    await ctx.openCC(ctx.tabA);
+  });
+
+  await t("chrome ;O replaces the current tab in place", async () => {
+    // Regression: ;O (replace-open) must navigate the current tab, not open a
+    // new one. The <browser> element's loadURI() takes an nsIURI, so a string
+    // used to throw and fall through to addTab.
+    await ctx.openCC(ctx.tabA);
+    const before = (await ctx.tabsInfo()).length;
+    await ctx.leaderPress(ctx.tabA, "O");
+    const s = await ctx.chromeState();
+    const panel = (s && s.popup && s.popup.panels && s.popup.panels[0]) || {};
+    assert(panel.title === "Open URL in current tab", ";O popup title, got " + panel.title);
+    const target = `http://127.0.0.1:${ctx.port}/hello`;
+    for (const ch of target) {
+      await keyTap(ctx.tabA, ch);
+      await sleep(25);
+    }
+    await ctx.press(ctx.tabA, "Enter");
+    await waitFor(async () => {
+      const a = await ctx.activeTabInfo();
+      return a && a.url.includes("/hello") ? a : null;
+    }, 15000);
+    const after = (await ctx.tabsInfo()).length;
+    assert(after === before, "no new tab opened: " + before + " -> " + after);
+    const a = await ctx.activeTabInfo();
+    assert(a.url.includes("/hello"), "active tab replaced with typed URL, got " + a.url);
+    assert(!a.url.includes("commandcenter.html"), "active tab is not the home page");
+    await ctx.openCC(ctx.tabA);
+  });
+
+  await t("chrome ;h from home opens history in place", async () => {
+    // Regression: opening a history row from the home page must reuse the
+    // home tab, not stack a new tab.
+    await ctx.openCC(ctx.tabA);
+    await evalIn(ctx.probe, `browser.history.addUrl({ url: ${JSON.stringify(`http://127.0.0.1:${ctx.port}/hello`)} }).then(() => true)`).catch(() => {});
+    await sleep(300);
+    const before = (await ctx.tabsInfo()).length;
+    await ctx.leaderPress(ctx.tabA, "h");
+    const s = await ctx.chromeState();
+    const panel = (s && s.popup && s.popup.panels && s.popup.panels[0]) || {};
+    assert(panel.title === "History", ";h popup title, got " + panel.title);
+    await sleep(600);
+    await ctx.press(ctx.tabA, "Enter");
+    await waitFor(async () => {
+      const a = await ctx.activeTabInfo();
+      return a && a.url.includes("/hello") ? a : null;
+    }, 15000);
+    const after = (await ctx.tabsInfo()).length;
+    assert(after === before, "no new tab opened: " + before + " -> " + after);
+    const a = await ctx.activeTabInfo();
+    assert(a.url.includes("/hello"), "history row opened in place, got " + a.url);
+    await ctx.openCC(ctx.tabA);
   });
 }

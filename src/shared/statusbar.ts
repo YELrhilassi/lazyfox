@@ -76,7 +76,7 @@ const CSS = `
 .seg.chips{background:none;clip-path:none;margin-left:0;gap:0;
   overflow:hidden;padding:0;align-items:stretch;}
 .sesspill{display:flex;align-items:center;white-space:nowrap;
-  padding:0 10px 0 8px;font-weight:700;
+  padding:0 10px 0 16px;font-weight:700;
   /* Both edges are ">" chevrons pointing right: the right edge is the pin
   (protruding) and the left edge is the socket (cut in). Consecutive pills
   overlap so each pin pierces the next pill's socket, plug-into-socket. */
