@@ -402,16 +402,29 @@ npm run typecheck  # tsc --noEmit over src/
 npm test           # go test ./core/ + verifies dist/ is complete
 ```
 
-- `src/shared/` — types, config defaults, the core facade, popup engine,
-  which-key session and DOM helpers shared by every context.
-- `src/chrome/` — the chrome-level helper (`chrome.ts`, loads as
-  `userChrome.uc.js`) and the frame script (`frame.ts`).
-- `src/extension/` — content script, background and command center.
-- `src/options/`, `src/popup/` — the options page and the action popup.
+- `src/shared/` — types, config defaults, the core facade, the popup engine,
+  the which-key leader, the status-bar renderer and DOM helpers shared by
+  every context.
+- `src/chrome/` — the chrome-level helper, loaded as `userChrome.uc.js`.
+  `main.ts` is the composition root: it wires together the focused modules
+  (`config.ts` prefs, `popup.ts` popup shell, `splitview.ts` native split,
+  `statusbar.ts` window bar, `channel.ts` the `#lfc=` router, `debug.ts`
+  verification commands, `ops.ts` the action adapter, `downloads.ts`,
+  `typing.ts`, `core.ts` the wasm sandbox) and the `frame.ts` frame script.
+- `src/extension/` — the WebExtension: `background.ts` is the composition
+  root that wires `sessions.ts`, `search.ts`, `stealth.ts`, `windowops.ts`,
+  `downloads.ts`, `tabs.ts` and `config.ts`; `commandcenter.ts` wires the
+  command-center UI (`commandcenter/state.ts` store, `data.ts` fetchers,
+  `render.ts` view, `keys.ts` input); plus `content/`, `splitpanel.ts`,
+  `options.ts` and `popup.ts`.
 - `core/` — the Go core (`go test ./core/`), including `core/js/main.go`, the
   WebAssembly entry point.
 - `src/static/` — manifest, HTML pages, icons and chrome css/loader files,
   copied verbatim into `dist/` by the build.
+
+The layout is deliberately small and single-purpose: each module does one
+thing and is wired together by a thin composition root, so the code stays
+easy to read and change. See `docs/ARCHITECTURE.md` for the full map.
 
 `dist/` is committed, so installing never needs the toolchain. Only rebuild
 when you change source:
