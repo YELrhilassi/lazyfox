@@ -121,6 +121,134 @@ export const pages = {
 </footer>
 </body></html>`,
   },
+  // A dense link list (link-aggregator look) so the README's link-hints
+  // screenshot shows a wall of short labels instead of a few scattered ones.
+  "/hints": {
+    body: `<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8"><title>Today's links \u2014 a keyboard-first browser</title>
+<style>
+  body { margin:0; font: 15px/1.5 -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color:#24292f; background:#f6f8fa; }
+  header { background:#0b1220; color:#e6edf3; padding:14px 40px; display:flex; align-items:center; gap:24px; }
+  header .logo { font: 700 18px/1 ui-monospace, Menlo, Consolas, monospace; letter-spacing:.1em; }
+  header .logo b { color:#7aa2f7; }
+  header nav { display:flex; gap:16px; flex:1; }
+  header nav a { color:#9aa5ce; text-decoration:none; font: 11px/1 ui-monospace, Menlo, Consolas, monospace; letter-spacing:.05em; }
+  header nav a:hover { color:#e6edf3; }
+  main { max-width:1060px; margin:0 auto; padding:22px 24px 40px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:#57606a; font-size:13px; margin-bottom:18px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px 22px; }
+  .row { background:#fff; border:1px solid #d8dee4; border-radius:8px; padding:9px 14px; display:flex; gap:10px; align-items:baseline; }
+  .row a { text-decoration:none; color:#0b1220; font-weight:600; font-size:14px; }
+  .row a:hover { text-decoration:underline; }
+  .row .meta { margin-left:auto; flex-shrink:0; font: 11px/1.4 ui-monospace, Menlo, Consolas, monospace; color:#57606a; }
+  .row .score { color:#f7768e; font-weight:700; }
+</style></head><body>
+<header>
+  <span class="logo">THE <b>DAILY FOX</b> \u00b7 LINKS</span>
+  <nav><a href="/hints">Top</a><a href="/hints">Tech</a><a href="/hints">Design</a>
+    <a href="/hints">Science</a><a href="/hints">Tools</a><a href="/hints">Reading</a>
+  </nav>
+</header>
+<main>
+  <h1>What people are reading</h1>
+  <div class="sub">Every link on this page is reachable from the keyboard \u2014 no mouse required \u00b7 updated 18:40 UTC</div>
+  <div class="grid" id="grid"></div>
+</main>
+<script>
+  const titles = [
+    "Why the keyboard beats the mouse for good", "The case for removing every toolbar",
+    "Ten years of tiling window managers on a laptop", "Why your browser needs sessions, not bookmarks",
+    "Split view without a window manager", "Hints, and why they beat point-and-click",
+    "A week without clicking anything", "From Vim to the web: keybindings that stuck",
+    "The command line is a place, not a tool", "Reading at 600 words per minute",
+    "When fullscreen means full screen", "One leader key to rule them all",
+    "The quiet browser: hiding the address bar", "Sessions are the new bookmarks",
+    "Typing beats tabbing: a study", "A status bar for your whole window",
+    "Private tabs that actually wipe themselves", "The browser as a split terminal",
+    "Shortcuts you will use every day", "A home page that does something",
+    "How I stopped using the mouse", "The 12 most useful leader keys",
+    "Your tabs, but named", "Workspaces for the web",
+    "Closing the last tab without fear", "Downloads without the dock",
+    "Zen mode: the page is all there is", "History you can reach in one keypress",
+    "The bookmark bar is dead, long live ;o", "Panic-free session switching",
+  ];
+  const domains = ["keyboard.org","fox.daily","tmux.dev","hints.news","splits.io","vim.ws","zen.page","leaders.xyz"];
+  const grid = document.getElementById("grid");
+  titles.forEach((t, i) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    const a = document.createElement("a");
+    a.href = "/news"; a.textContent = t;
+    const score = document.createElement("span");
+    score.className = "score";
+    const b = document.createElement("b");
+    b.textContent = String(90 + ((i * 137) % 380));
+    score.appendChild(b);
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = ((i + 2) % 30) + "h \u00b7 " + domains[i % domains.length];
+    row.appendChild(a); row.appendChild(score); row.appendChild(meta);
+    grid.appendChild(row);
+  });
+</script>
+</body></html>`,
+  },
+  // A faithful mock of the window-level status bar (same CSS and DOM the
+  // chrome helper renders, seeded like the screenshot script) so README
+  // screenshots can capture the bar as a slim strip.
+  "/statusbar": {
+    body: `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>status bar</title>
+<style>
+  html,body{margin:0;padding:0;background:#1a1b26;}
+  .lf-status{position:fixed;left:0;right:0;bottom:0;height:18px;z-index:2147482000;
+    display:flex;align-items:stretch;
+    background:#1a1b26;color:#c0caf5;
+    font:600 11px/18px ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
+    pointer-events:none;user-select:none;
+    border-top:1px solid #24283b;}
+  .seg{display:flex;align-items:center;gap:6px;white-space:nowrap;
+    padding:0 12px 0 10px;
+    clip-path:polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%);}
+  .seg.linked{margin-left:-8px;padding-left:18px;}
+  .seg .ic{opacity:.95;font-weight:700;}
+  .seg.sess{background:#7aa2f7;color:#1a1b26;font-weight:800;}
+  .seg.sess .marker{font-weight:800;}
+  .seg.tabs{background:#24283b;color:#c0caf5;font-weight:600;}
+  .seg.tabs b{color:#7aa2f7;font-weight:800;}
+  .seg.tabs .cnt{color:#9aa5ce;font-weight:600;}
+  .seg.dl{margin-left:auto;background:#16161e;color:#c0caf5;font-weight:700;clip-path:none;
+    border-left:1px solid #24283b;}
+  .seg.dl .ic{color:#7dcfff;}
+  .seg.dl .dlitem{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;padding:0 10px;}
+  .seg.dl .dlitem+.dlitem{padding-left:10px;border-left:1px solid #24283b;}
+  .seg.dl .pct{color:#7dcfff;font-weight:700;}
+  .seg.dl .ok{color:#9ece6a;font-weight:900;}
+  .seg.chips{background:none;clip-path:none;margin-left:0;gap:0;
+    overflow:hidden;padding:0;align-items:stretch;}
+  .sesspill{display:flex;align-items:center;white-space:nowrap;
+    padding:0 10px 0 16px;font-weight:700;
+    clip-path:polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%, 8px 50%);}
+  .sesspill.linked{margin-left:-8px;padding-left:16px;}
+</style></head><body>
+<div class="lf-status">
+  <span class="seg sess"><span class="ic">\u25C6</span><span class="marker">1</span><span class="name">work</span></span>
+  <span class="seg tabs linked"><span class="ic">\u25A4</span><b>3</b><span class="cnt">/7</span></span>
+  <span class="seg chips">
+    <span class="sesspill" style="background:linear-gradient(180deg,#7aa2f7,#5d89ea);color:#16161e">1:work 5</span>
+    <span class="sesspill linked" style="background:linear-gradient(180deg,#9ece6a,#7fae49);color:#16161e">2:mail 3</span>
+    <span class="sesspill linked" style="background:linear-gradient(180deg,#e0af68,#cd9445);color:#16161e">3:dev 5</span>
+    <span class="sesspill linked" style="background:linear-gradient(180deg,#bb9af7,#9e77ef);color:#16161e">4:news 2</span>
+    <span class="sesspill linked" style="background:linear-gradient(180deg,#7dcfff,#4fb6ea);color:#16161e">5:shop 4</span>
+  </span>
+  <span class="seg dl"><span class="ic">\u2AF3</span>
+    <span class="dlitem"><span class="n">lazyfox-setup.exe</span><span class="pct">64%</span><span class="pct">2.4 MB/s</span></span>
+    <span class="dlitem"><span class="n">notes.md</span><span class="ok">\u2713</span></span>
+  </span>
+</div>
+</body></html>`,
+  },
   // A page that can enter DOM fullscreen (like an HTML5 video would) — the
   // status bar must hide the moment it does, and re-show on exit. The `f` key
   // triggers it so tests can send a real (trusted) key event, which Firefox

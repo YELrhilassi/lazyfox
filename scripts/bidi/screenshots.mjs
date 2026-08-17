@@ -81,15 +81,28 @@ async function main() {
   await ctx.press(tabA, "1");
   await sleep(500);
 
-  // --- Status bar + session pills ------------------------------------------
-  // The bar is now a single window-level strip rendered in the chrome
-  // document (outside the web content), so it cannot be captured by a page
-  // screenshot. Capture the command center instead: the window bar sits along
-  // its bottom edge and the session pills read left-to-right.
-  await ctx.openCC(ctx.tabA);
-  await sleep(1200);
-  await captureScreenshot(ctx.tabA, out("statusbar.png"));
-  console.log("captured statusbar.png (command center + window bar)");
+  // --- Status bar + session pills -----------------------------------------
+  // The bar is a single window-level strip rendered in the chrome document,
+  // outside web content, so a page screenshot can never capture it. Instead
+  // screenshot the bar's own mock page (same CSS/DOM, seeded sessions) in a
+  // short window so the image is a clean bar strip.
+  const barTab = await createTab();
+  await ctx.gotoPage(barTab, `${base}/statusbar`);
+  await waitFor(async () => {
+    const v = await evalIn(barTab, `!!document.querySelector(".lf-status")`);
+    return v ? v : null;
+  }, 8000);
+  await sleep(600);
+  await httpJson("POST", `http://127.0.0.1:${h.port}/session/${h.sessionId}/window/rect`, {
+    x: 20, y: 20, width: 1280, height: 60,
+  }).catch(() => {});
+  await sleep(500);
+  await captureScreenshot(barTab, out("statusbar.png"));
+  console.log("captured statusbar.png (bar strip)");
+  await httpJson("POST", `http://127.0.0.1:${h.port}/session/${h.sessionId}/window/rect`, {
+    x: 20, y: 20, width: 1280, height: 800,
+  }).catch(() => {});
+
   const newsTab = await createTab();
   await ctx.gotoPage(newsTab, `${base}/news`);
   await waitFor(async () => {
@@ -98,16 +111,23 @@ async function main() {
   }, 8000);
   await sleep(800);
 
-  // --- Link hints on the same page -----------------------------------------
-  await ctx.leaderPress(newsTab, "f");
+  // --- Link hints on a dense link list (labels read well there) -----------
+  const hintsTab = await createTab();
+  await ctx.gotoPage(hintsTab, `${base}/hints`);
   await waitFor(async () => {
-    const v = await evalIn(newsTab, `document.documentElement.getAttribute("data-lf-hints")`);
+    const v = await evalIn(hintsTab, `document.querySelectorAll("#grid .row a").length`);
+    return v >= 20 ? v : null;
+  }, 8000);
+  await sleep(700);
+  await ctx.leaderPress(hintsTab, "f");
+  await waitFor(async () => {
+    const v = await evalIn(hintsTab, `document.documentElement.getAttribute("data-lf-hints")`);
     return v ? v : null;
   }, 8000);
   await sleep(700);
-  await captureScreenshot(newsTab, out("hints.png"));
+  await captureScreenshot(hintsTab, out("hints.png"));
   console.log("captured hints.png");
-  await ctx.press(newsTab, "Escape");
+  await ctx.press(hintsTab, "Escape");
 
   // --- Sessions popup -------------------------------------------------------
   await ctx.leaderPress(newsTab, "p");
