@@ -77,7 +77,10 @@ const CSS = `
   overflow:hidden;padding:0;align-items:stretch;}
 .sesspill{display:flex;align-items:center;white-space:nowrap;
   padding:0 10px 0 8px;font-weight:700;
-  clip-path:polygon(8px 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 8px 100%, 0 50%);}
+  /* Both edges are ">" chevrons pointing right: the right edge is the pin
+  (protruding) and the left edge is the socket (cut in). Consecutive pills
+  overlap so each pin pierces the next pill's socket, plug-into-socket. */
+  clip-path:polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%, 8px 50%);}
 .sesspill.linked{margin-left:-8px;padding-left:16px;}
 `;
 
