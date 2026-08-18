@@ -448,7 +448,107 @@ export async function run(ctx) {
     await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.splitws; delete r.lfSessions.lfaway; return browser.storage.local.set({ lfSessions: r.lfSessions }); })`);
   });
 
-  await t("downloads: progress, done indicator, ;D dismiss, popup list", async () => {
+  await t("restore brings back every tab's exact strip position (split included)", async () => {
+    // Regression: switching sessions must not renumber tabs. Firefox's own
+    // split machinery parks a re-formed pair at the strip END, so before the
+    // fix a session with a mid-strip split came back with the pair at the
+    // tail — ;1-9 pointed at different tabs than when the session was saved.
+    await ctx.openCC(ctx.tabA);
+    // Four distinctive tabs in a known order.
+    const names = ["lfw1", "lfw2", "lfw3", "lfw4"];
+    const tabs2 = [];
+    for (const n of names) {
+      const t = await createTab();
+      await navigate(t, `${ctx.base}/${n}`, "complete");
+      tabs2.push(t);
+    }
+    await sleep(400);
+    const ids = await ctx.tabsInfo();
+    const w1Row = ids.find((t) => (t.url || "").includes("/lfw1"));
+    const w2Row = ids.find((t) => (t.url || "").includes("/lfw2"));
+    const w3Row = ids.find((t) => (t.url || "").includes("/lfw3"));
+    const w4Row = ids.find((t) => (t.url || "").includes("/lfw4"));
+    assert(w1Row && w2Row && w3Row && w4Row, "found all four fresh tabs: " + JSON.stringify(ids.map((t) => t.url)));
+    const realIds = ids.filter((t) => !(t.url || "").includes("commandcenter.html"));
+    // Match by URL, not id: restore RECREATES tabs, so ids change across the
+    // session switch — the strip order itself is what must be preserved.
+    const namesOf = (rows) =>
+      rows
+        .map((t) => {
+          const u = t.url || "";
+          if (u.includes("/lfw1")) return "w1";
+          if (u.includes("/lfw2")) return "w2";
+          if (u.includes("/lfw3")) return "w3";
+          if (u.includes("/lfw4")) return "w4";
+          return "?";
+        })
+        .join(",");
+    const beforeOrder = namesOf(realIds);
+    // Split the SECOND tab (w2) with the third (w3) — a mid-strip pair. The
+    // ;+N digit is a position over the chrome's realTabs() (skips only
+    // splitpanel/#lfc transients; commandcenter tabs COUNT), so resolve w3's
+    // index over that same list.
+    const chromeReal = ids.filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc="));
+    const w3ChromeIdx = chromeReal.findIndex((t) => t.id === w3Row.id) + 1;
+    assert(w3ChromeIdx <= 9, "w3 within ;+1-9: " + w3ChromeIdx);
+    await evalIn(ctx.probe, `browser.tabs.update(${w2Row.id}, { active: true })`).catch(() => {});
+    await sleep(300);
+    // ;+ on the w2 WEB page keeps w2 selected (leaderPress only focuses).
+    await ctx.leaderPress(tabs2[1], "=", { shift: true }); // ;+
+    await sleep(250);
+    await ctx.press(tabs2[1], String(w3ChromeIdx)); // digit -> pair (w2, w3)
+    await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const sv2 = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv2.length === 2 ? sv2 : null;
+    }, 10000);
+    // Save this layout, then switch away and back.
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lforder" } }); true`);
+    await sleep(600);
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lfaway2" } }); true`);
+    await sleep(600);
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionRestore", data: { name: "lfaway2" } }); true`);
+    await sleep(2000);
+    ctx.probe = await ctx.makeProbeTab();
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionRestore", data: { name: "lforder" } }); true`);
+    await sleep(2500);
+    ctx.probe = await ctx.makeProbeTab();
+    // The strip settles a moment after restore re-forms the split, so wait
+    // for the pinned layout instead of asserting the first snapshot. Restore
+    // RECREATES tabs (new ids), so re-resolve w2/w3 by URL — never by the
+    // pre-restore ids.
+    const iw2Saved = realIds.findIndex((t) => t.id === w2Row.id);
+    const restored = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const realAfter2 = ts.filter((t) => !(t.url || "").includes("commandcenter.html"));
+      if (namesOf(realAfter2) !== beforeOrder) return null;
+      const sv2 = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      if (sv2.length !== 2) return null;
+      const w2r = realAfter2.find((t) => (t.url || "").includes("/lfw2"));
+      const w3r = realAfter2.find((t) => (t.url || "").includes("/lfw3"));
+      if (!w2r || !w3r) return null;
+      const a2 = realAfter2.indexOf(w2r);
+      const b2 = realAfter2.indexOf(w3r);
+      if (a2 !== iw2Saved || Math.abs(b2 - a2) !== 1) return null;
+      return ts;
+    }, 6000).catch(async () => {
+      const ts = await ctx.tabsInfo().catch(() => "ERR");
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error("restore order never settled; want=" + beforeOrder + " w2SavedIdx=" + iw2Saved + " realAfter=" + JSON.stringify(Array.isArray(ts) ? ts.filter((t) => !(t.url || "").includes("commandcenter.html")).map((t) => ({ u: t.url, s: t.splitViewId })) : ts) + " strip=" + JSON.stringify(st && st.strip));
+    });
+    assert(restored != null, "restore kept every tab's strip slot (want " + beforeOrder + " with w2@" + iw2Saved + "): " + JSON.stringify((await ctx.tabsInfo()).map((t) => ({ u: t.url, s: t.splitViewId }))));
+    const svTabs = restored.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+    // Clean up: dissolve the split and drop the throwaway sessions.
+    for (const p of svTabs) {
+      await evalIn(ctx.probe, `browser.tabs.remove(${p.id}).catch(() => {})`);
+    }
+    await sleep(500);
+    await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.lforder; delete r.lfSessions.lfaway2; return browser.storage.local.set({ lfSessions: r.lfSessions }); })`);
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
+
+  await t("downloads: progress shows done indicator, ;D dismiss, popup list", async () => {
     // Start a slow download (streamed ~8s) so it stays in_progress long
     // enough for the bar's ⭳ segment to be observed. The extension auto-saves
     // it (fresh profile, no prompt).

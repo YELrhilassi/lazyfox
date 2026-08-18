@@ -112,6 +112,191 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     return out;
   }
 
+  // Full strip (every tab element, transient or not) in its current order.
+  // Used as the "desired order" when re-pinning the strip after a split
+  // operation: Firefox's split machinery can regroup pairs (parking them at
+  // the end), which shuffles every tab between the pair and the strip tail.
+  // Snapshotting BEFORE the operation and pinning back to that order AFTER
+  // keeps a tab's 1-9 identity stable across splits, swaps and restores.
+  function stripSnapshot(): any[] {
+    try {
+      return Array.prototype.slice.call(window.gBrowser.tabs);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // Pin the strip back to `order` (an array of tab elements): walk it from
+  // the left and move each tab that is not already at its slot. Tabs that
+  // travel glued inside a split view move as one block; because split panes
+  // are contiguous in any order that contains them, a glued block lands
+  // intact on its first member's move and the rest are skipped as already
+  // correct. Tabs that are already at their slot are never moved, so calling
+  // this after an operation that did not regroup costs nothing.
+  // Is the tab glued into a split view (travels as a unit with its panes)?
+  function inSplitView(t: any): boolean {
+    try {
+      return !!t && !!t.splitview;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Pin the strip back to `order` (an array of tab elements, the desired
+  // order). Split panes are GLUED: they always sit adjacent and travel as one
+  // block. Firefox only lets you move a glued group via its CURRENT lead
+  // (the member first in strip order), so each group is moved as a unit by
+  // moving that lead to its own desired index — the rest of the block rides
+  // along and lands on its adjacent desired slots regardless of the group's
+  // internal order. Singles are pinned afterwards; their desired slots never
+  // fall between panes because `order` keeps every glued block contiguous.
+  // Tabs already at their slot are never moved.
+  function pinToOrder(order: any[]): void {
+    const tabs = window.gBrowser.tabs;
+    // A late repin pass (after an unsplit/cleanup) can outlive tabs that were
+    // removed; drop anything no longer in the strip so a stale `order` never
+    // pins a closing tab or renumbers the tabs that replaced it.
+    const present = new Set<any>();
+    for (const t of tabs) present.add(t);
+    order = order.filter((t) => !!t && !t.closing && present.has(t));
+    // Group members by split view; find each group's current lead (the member
+    // with the smallest strip index) and its desired lead slot.
+    const cur = Array.from(tabs);
+    const seen = new Set<any>();
+    const groups: { lead: any; want: number }[] = [];
+    const placed = new Set<any>();
+    for (const t of cur) {
+      const sv = t && (t as any).splitview;
+      if (!t || !sv || seen.has(sv)) continue;
+      seen.add(sv);
+      const members = (Array.isArray(sv.tabs) ? sv.tabs : []).filter((m: any) => !!m);
+      if (members.length < 2) continue;
+      const lead = members[0];
+      const want = order.indexOf(lead);
+      if (want >= 0) groups.push({ lead, want });
+      for (const m of members) placed.add(m);
+    }
+    // Highest desired slot first so an earlier move never displaces a group
+    // that is already to the left.
+    groups.sort((a, b) => b.want - a.want);
+    for (const g of groups) {
+      try {
+        if (tabs[g.want] === g.lead) continue;
+        window.gBrowser.moveTabTo(g.lead, { tabIndex: g.want });
+      } catch (e) {
+        // Ignore a single failed group move; keep pinning the rest.
+      }
+    }
+    // 2) Pin every single tab left to right.
+    for (let i = 0; i < order.length; i++) {
+      const want = order[i];
+      if (!want || want.closing || placed.has(want)) continue;
+      try {
+        if (tabs[i] === want) continue;
+        window.gBrowser.moveTabTo(want, { tabIndex: i });
+      } catch (e) {
+        // Ignore a single failed move; keep pinning the rest of the strip.
+      }
+    }
+  }
+
+  // addTabSplitView parks the freshly glued pair where it pleases, and it
+  // does so ASYNCHRONOUSLY (the park can land hundreds of ms after the
+  // synchronous call returns, depending on the build). Pin the strip back to
+  // `order` repeatedly until it stops changing: each pass is idempotent and
+  // skips tabs that are already at their slot, so a pass that finds the strip
+  // already correct is free. Stops after the strip is stable (or ~1.2s).
+  function repinAfterSplit(order: any[]): void {
+    let attempts = 0;
+    let lastChanged = true;
+    const tick = () => {
+      attempts++;
+      const key = () =>
+        Array.from(window.gBrowser.tabs)
+          .map((t: any) => (t && t.linkedPanel ? t.linkedPanel : String(t)))
+          .join(",");
+      const before = key();
+      pinToOrder(order);
+      const after = key();
+      const changed = after !== before;
+      const elapsed = attempts * 150;
+      const quiet = !changed && !lastChanged;
+      lastChanged = changed;
+      // Keep re-pinning while the strip is still settling (Firefox can glide
+      // the pair around asynchronously). Stop only after two consecutive
+      // quiet passes AND a minimum settle window, so a late glide is still
+      // corrected before the user's next action reads the strip.
+      if (attempts < 12 && (!quiet || elapsed < 600)) setTimeout(tick, 150);
+    };
+    setTimeout(tick, 0);
+  }
+
+  // The split view a tab belongs to (its .splitview wrapper), or null.
+  function splitOf(tab: any): any {
+    try {
+      return tab && tab.splitview ? tab.splitview : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Desired order for operations that GLUE two tabs that were not adjacent:
+  // the anchor (the tab the user is acting on) keeps its pre-operation slot
+  // and the partner moves next to it, so the anchor's 1-9 number never
+  // changes. The pair keeps the partners' pre-split RELATIVE order (if the
+  // partner was before the anchor, the pair is [partner, anchor]) and is
+  // inserted where the anchor sat. Every other tab keeps its relative order.
+  function coalescePair(pre: any[], anchor: any, partner: any): any[] {
+    const block = new Set<any>([anchor, partner]);
+    const anchorIdx = pre.indexOf(anchor);
+    const partnerIdx = pre.indexOf(partner);
+    const pair = partnerIdx < anchorIdx ? [partner, anchor] : [anchor, partner];
+    // The anchor's slot among NON-block tabs (the partner may sit before it).
+    let insertAt = 0;
+    for (const t of pre) {
+      if (t === anchor) break;
+      if (!block.has(t)) insertAt++;
+    }
+    const out: any[] = [];
+    for (const t of pre) {
+      if (block.has(t)) continue;
+      if (out.length === insertAt) out.push(...pair);
+      out.push(t);
+    }
+    if (out.length === insertAt) out.push(...pair);
+    return out;
+  }
+
+  // Desired order after moving `tab` INTO the split view `sv`: the whole
+  // group (existing panes, then the new member) keeps the group's position
+  // and every other tab keeps its relative order. The group's lead slot is
+  // where its FIRST member sat before the move.
+  function coalesceIntoGroup(pre: any[], sv: any, tab: any): any[] {
+    const members = new Set<any>();
+    const panes = Array.isArray(sv.tabs) ? sv.tabs.slice() : [];
+    for (const p of panes) {
+      if (p && p !== tab) members.add(p);
+    }
+    members.add(tab);
+    let insertAt = 0;
+    for (const t of pre) {
+      if (members.has(t)) break;
+      insertAt++;
+    }
+    const block = panes.filter((p: any) => p && members.has(p));
+    block.push(tab);
+    const out: any[] = [];
+    for (const t of pre) {
+      if (members.has(t)) continue;
+      if (out.length === insertAt) out.push(...block);
+      out.push(t);
+    }
+    // The group was the last thing in the strip: the loop never hit its
+    // insertion point, so the grown block goes at the end.
+    if (out.length === insertAt) out.push(...block);
+    return out;
+  }
+
   function rememberSplit(): void {
     try {
       const sv = activeSplitView();
@@ -183,9 +368,13 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       } else {
         createdPanelTabs.add(blank);
       }
-      // Park the panel immediately after the active tab so the pair is already
-      // adjacent: gBrowser.addTabSplitView otherwise regroups the two tabs
-      // (moving the pair to the end) and reshuffles every tab between them.
+      // Park the split on the tab and the panel, keeping the strip order that
+      // existed before the panel appeared: addTabSplitView otherwise regroups
+      // the two tabs (moving the pair to the end) and shuffles every tab
+      // between the pair and the strip end. The snapshot is taken AFTER the
+      // park so the pair is contiguous in the desired order (the panel sits
+      // right after the active tab) — a desired order with the panes apart
+      // would make the pin treat them as singles and re-glue the pair.
       try {
         const want = window.gBrowser.tabs.indexOf(active) + 1;
         const at = window.gBrowser.tabs.indexOf(blank);
@@ -193,6 +382,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       } catch (e) {
         // ignore
       }
+      const preStrip = stripSnapshot();
       try {
         window.gBrowser.addTabSplitView([active, blank]);
       } catch (e) {
@@ -207,17 +397,10 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         }
         window.gBrowser.addTabSplitView([active, blank]);
       }
-      // addTabSplitView may still regroup the pair (moving it to the end); pin
-      // the active tab — and its partner, which travels with it — back to its
-      // original slot so the strip order stays stable.
-      try {
-        const now = window.gBrowser.tabs.indexOf(active);
-        if (now !== activePos && activePos >= 0) {
-          window.gBrowser.moveTabTo(active, { tabIndex: activePos });
-        }
-      } catch (e) {
-        // ignore
-      }
+      // addTabSplitView may still regroup the pair (moving it to the end);
+      // pin the whole strip back to its pre-split order so the pairing lands
+      // where it was left and nothing else changes its 1-9 numbering.
+      repinAfterSplit(preStrip);
       rememberSplit();
       return true;
     } catch (e) {
@@ -290,7 +473,18 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
             // ignore
           }
         }
-        window.gBrowser.addTabSplitView([active, tab]);
+        const preStrip = stripSnapshot();
+        // Form the pair in the order that keeps the ACTIVE tab at its slot:
+        // if the partner sat before it, split [partner, active] so the anchor
+        // stays put; otherwise [active, partner]. (The pair's internal order
+        // follows the array passed to addTabSplitView and cannot be changed
+        // by moving the glued block.)
+        const pair = preStrip.indexOf(tab) < preStrip.indexOf(active) ? [tab, active] : [active, tab];
+        window.gBrowser.addTabSplitView(pair);
+        // The pair is glued somewhere addTabSplitView decided (usually the
+        // strip end); pin it back so the active tab keeps its number and the
+        // newcomer sits right next to it.
+        repinAfterSplit(coalescePair(preStrip, active, tab));
         rememberSplit();
         return true;
       }
@@ -309,9 +503,14 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
           // ignore — the view is already gone
         }
       }
+      const preStrip = stripSnapshot();
       if (typeof sv.addTabs !== "function") return false;
       sv.addTabs([tab]);
       removePanelPanes(sv);
+      // Keep the strip order stable: the moved tab joins the group AND the
+      // group stays where it was (only the newcomer changes its number, to
+      // sit next to its new panes).
+      repinAfterSplit(coalesceIntoGroup(preStrip, sv, tab));
       rememberSplit();
       return true;
     } catch (e) {
@@ -380,6 +579,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       const idx = sv.tabs.indexOf(active);
       if (idx < 0) return false;
       const panes = Array.isArray(sv.tabs) ? sv.tabs.slice() : [];
+      const preStrip = stripSnapshot();
       if (panes.length === 2) {
         // Two panes: swapping either direction reverses them.
         panes.reverse();
@@ -394,6 +594,9 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         window.gBrowser.addTabSplitView(panes);
       }
       window.gBrowser.selectedTab = active;
+      // The re-formed split may regroup at the strip end; pin the strip back
+      // to its pre-swap order so the pane swap never moves the pair around.
+      repinAfterSplit(preStrip);
       rememberSplit();
       return true;
     } catch (e) {
@@ -412,6 +615,12 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   function restoreSplits(json: string): void {
     try {
       const groups = JSON.parse(json) as number[][];
+      if (!Array.isArray(groups) || !groups.length) return;
+      // The restore re-opened the saved tabs in saved order, so the strip IS
+      // the saved order right now. Snapshot it, form every group, then pin
+      // the strip back — addTabSplitView parks each pair where it pleases
+      // (usually the strip end), which would otherwise renumber every tab.
+      const preStrip = stripSnapshot();
       // Resolve the 1-based saved positions against non-pinned real tabs.
       // A restore re-opens saved tabs in order as unpinned tabs AFTER any
       // pinned tabs left in front, so pinned tabs must not offset the
@@ -423,10 +632,12 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
           window.gBrowser.addTabSplitView(tabs);
         }
       }
+      repinAfterSplit(preStrip);
     } catch (e) {
       // ignore
     }
   }
+
 
   return {
     isSplitPanelTab,
