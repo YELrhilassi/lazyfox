@@ -304,45 +304,52 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       // Refresh the status bar's tab ids + stealth flags first so the rows
       // carry the true Firefox tab id and the stealth badge.
       await deps.getChannel().requestSessionState();
-      const ql = (q || "").trim().toLowerCase();
-      const out: PopupItem[] = [];
-      const tabIds = deps.status.getTabIds();
-      const stealthFlags = deps.status.getStealthFlags();
-      const tabs = window.gBrowser.tabs;
-      for (let i = 0; i < tabs.length; i++) {
-        const t = tabs[i];
-        try {
-          const spec =
-            t.linkedBrowser && t.linkedBrowser.currentURI
-              ? t.linkedBrowser.currentURI.spec
-              : "";
-          if (spec.indexOf("splitpanel.html") !== -1 || spec.indexOf("#lfc=") !== -1) continue;
-        } catch (e) {
-          // ignore
-        }
-        let uri = "";
-        try {
-          uri = (t.linkedBrowser && t.linkedBrowser.currentURI && t.linkedBrowser.currentURI.spec) || "";
-        } catch (e) {
-          // ignore
-        }
-        const item: PopupItem = {
-          id: i, // strip index — what the chrome ops address
-          realId: tabIds[i], // true Firefox tab id, for display
-          title: t.label || uri || "",
-          url: uri,
-          active: !!t.selected,
-          pinned: !!t.pinned,
-          muted: !!t.muted,
-          stealth: !!stealthFlags[i],
-          favIconUrl: (t.getAttribute && t.getAttribute("image")) || "",
-        };
-        if (!ql || ((item.title || "") + " " + (item.url || "")).toLowerCase().indexOf(ql) !== -1) {
-          out.push(item);
-        }
+    const ql = (q || "").trim().toLowerCase();
+    const out: PopupItem[] = [];
+    const tabIds = deps.status.getTabIds();
+    const stealthFlags = deps.status.getStealthFlags();
+    const tabs = window.gBrowser.tabs;
+    // Rows are numbered over REAL tabs only (id = real-tab index), so the
+    // popup's activate/close/move and the ;N jump share one identity space:
+    // a transient tab (split panel, #lfc= channel) never shifts a row's
+    // number relative to ;1-9. tabIds/stealthFlags are keyed by RAW strip
+    // index from the background, so the display fields keep the raw index.
+    let real = 0;
+    for (let i = 0; i < tabs.length; i++) {
+      const t = tabs[i];
+      try {
+        const spec =
+          t.linkedBrowser && t.linkedBrowser.currentURI
+            ? t.linkedBrowser.currentURI.spec
+            : "";
+        if (spec.indexOf("splitpanel.html") !== -1 || spec.indexOf("#lfc=") !== -1) continue;
+      } catch (e) {
+        // ignore
       }
-      return out;
-    },
+      let uri = "";
+      try {
+        uri = (t.linkedBrowser && t.linkedBrowser.currentURI && t.linkedBrowser.currentURI.spec) || "";
+      } catch (e) {
+        // ignore
+      }
+      const item: PopupItem = {
+        id: real, // real-tab index — what the chrome ops address
+        realId: tabIds[i], // true Firefox tab id, for display
+        title: t.label || uri || "",
+        url: uri,
+        active: !!t.selected,
+        pinned: !!t.pinned,
+        muted: !!t.muted,
+        stealth: !!stealthFlags[i],
+        favIconUrl: (t.getAttribute && t.getAttribute("image")) || "",
+      };
+      real++;
+      if (!ql || ((item.title || "") + " " + (item.url || "")).toLowerCase().indexOf(ql) !== -1) {
+        out.push(item);
+      }
+    }
+    return out;
+  },
     history: (q: string) => {
       const text = (q || "").trim();
       return Promise.resolve(histItems(text, text ? 80 : 30));
@@ -427,22 +434,24 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
         window.gBrowser.removeCurrentTab();
         return;
       }
-      const tabs = window.gBrowser.tabs;
-      const t = tabs[id];
+      // id is a REAL-tab index (same space as ;N and the popup rows); skip
+      // transient tabs so a split panel never shifts closing by number.
+      const t = realTabs()[id];
       if (t) {
         if (t.selected) window.gBrowser.removeCurrentTab();
         else window.gBrowser.removeTab(t);
       }
     },
     moveTab: (id: number, dir: number) => {
-      const t = window.gBrowser.tabs[id];
+      const t = realTabs()[id];
       if (!t) return;
-      const i = window.gBrowser.tabs.indexOf(t);
+      const tabs = window.gBrowser.tabs;
+      const i = tabs.indexOf(t);
       const ni = i + (dir > 0 ? 1 : -1);
-      if (ni >= 0 && ni < window.gBrowser.tabs.length) window.gBrowser.moveTabTo(t, ni);
+      if (ni >= 0 && ni < tabs.length) window.gBrowser.moveTabTo(t, ni);
     },
     moveActiveTab: (dir: number) => {
-      const tabs = window.gBrowser.tabs;
+      const tabs = realTabs();
       const i = tabs.indexOf(window.gBrowser.selectedTab);
       if (i < 0) return;
       const ni = i + (dir > 0 ? 1 : -1);
@@ -470,7 +479,9 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     back: () => window.gBrowser.goBack(),
     forward: () => window.gBrowser.goForward(),
     activateTab: (id: number) => {
-      const t = window.gBrowser.tabs[id];
+      // REAL-tab index (the popup rows and ;N use the same space), so a
+      // transient split panel never misaligns the numbers.
+      const t = realTabs()[id];
       if (t) {
         window.gBrowser.selectedTab = t;
         window.focus();

@@ -314,19 +314,45 @@ export async function run(ctx) {
     await ctx.openCC(ctx.tabA); // tabA active
     // ;| creates [tabA, panel]; ;+3 moves tabB in, replacing the panel.
     await ctx.leaderPress(ctx.tabA, "\\", { shift: true });
+    try {
+      await waitFor(async () => {
+        const ts = await ctx.tabsInfo();
+        const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+        return sv.length === 2 ? sv : null;
+      }, 8000);
+    } catch (e) {
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error("swap setup ;| failed; state=" + JSON.stringify(st && { strip: st.strip, nativeSplit: st.nativeSplit }) + " tabs=" + JSON.stringify(await ctx.tabsInfo().catch(() => "ERR")));
+    }
+    // Wait for the strip to settle back to [probe, tabA, tabB] before ;+N —
+    // Firefox glides the freshly glued pair around asynchronously and the
+    // numbering must be stable when the digit is pressed.
+    const settleInfo = await ctx.tabsInfo();
+    const aId = settleInfo.find((t) => t.active)?.id;
+    const bId = settleInfo.find((t) => (t.url || "").includes("/hello"))?.id;
     await waitFor(async () => {
       const ts = await ctx.tabsInfo();
-      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
-      return sv.length === 2 ? sv : null;
-    }, 8000);
+      const real = ts.filter(
+        (t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=")
+      );
+      return real.map((t) => t.id).join(",") === [probeId, aId, bId].join(",") ? real : null;
+    }, 5000).catch(async () => {
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error("swap setup strip did not settle; state=" + JSON.stringify(st && { strip: st.strip }) + " tabs=" + JSON.stringify(await ctx.tabsInfo().catch(() => "ERR")));
+    });
     await ctx.leaderPress(ctx.tabA, "=", { shift: true });
     await sleep(250);
     await ctx.press(ctx.tabA, "3");
-    await waitFor(async () => {
-      const now = await ctx.tabsInfo();
-      const sv = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
-      return sv.length === 2 && sv.some((t) => (t.url || "").includes("/hello")) ? sv : null;
-    }, 10000);
+    try {
+      await waitFor(async () => {
+        const now = await ctx.tabsInfo();
+        const sv = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+        return sv.length === 2 && sv.some((t) => (t.url || "").includes("/hello")) ? sv : null;
+      }, 10000);
+    } catch (e) {
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error("swap setup ;+3 failed; state=" + JSON.stringify(st && { strip: st.strip, lastAction: st.lastAction }) + " tabs=" + JSON.stringify(await ctx.tabsInfo().catch(() => "ERR")));
+    }
     const order = async () => {
       const now = await ctx.tabsInfo();
       return now
@@ -366,12 +392,17 @@ export async function run(ctx) {
     await sleep(500);
     const post = await ctx.tabsInfo();
     assert(post.every((t) => !(typeof t.splitViewId === "number" && t.splitViewId >= 0)), "cleanup left a split");
-    for (const id of [tabB]) {
-      await evalIn(ctx.probe, `browser.tabs.remove(${id}).catch(()=>{})`);
+    // tabB is a BiDi context handle, not a tab id — resolve the id by URL.
+    const rem2 = await ctx.tabsInfo();
+    const helloId = rem2.find((t) => (t.url || "").includes("/hello"))?.id;
+    if (helloId != null) {
+      await evalIn(ctx.probe, `browser.tabs.remove(${helloId}).catch(()=>{})`);
     }
     await sleep(400);
+    // Restore the harness invariant: ctx.tabA is the command-center tab
+    // (other tests filter it out of "web tabs" by URL).
     ctx.tabA = await createTab();
-    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.openCC(ctx.tabA);
   });
 
   await t("split: ;+N auto-splits when no split exists", async () => {
@@ -408,9 +439,109 @@ export async function run(ctx) {
       !after.some((t) => (t.url || "").includes("splitpanel.html")),
       "auto-split created no panel pane: " + JSON.stringify(after.map((t) => t.url))
     );
+    // The pair sits exactly where the active tab was: every tab BEFORE the
+    // anchor keeps its slot, the anchor keeps ITS slot, the partner joins it
+    // right there, and the rest keep their relative order — nothing may jump
+    // to the strip end (the old regroup bug). The strip settles a moment
+    // after the split forms (Firefox glides the pair around), so wait for the
+    // pinned order instead of asserting the first snapshot.
+    const activeRow = real.find((t) => t.active);
+    const preOrder = real.map((t) => t.id);
+    const anchorIdx = preOrder.indexOf(activeRow.id);
+    const pairIds = sv.map((t) => t.id).sort((x, y) => x - y);
+    const partner = pairIds.find((id) => id !== activeRow.id);
+    let settleOrder = null;
+    const settled = await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      const postReal2 = now.filter(
+        (t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=")
+      );
+      const postOrder2 = postReal2.map((t) => t.id);
+      settleOrder = postOrder2;
+      if (postOrder2[anchorIdx] !== activeRow.id) return null;
+      if (partner == null || (postOrder2[anchorIdx + 1] !== partner && postOrder2[anchorIdx - 1] !== partner)) return null;
+      return postOrder2;
+    }, 4000).catch(async () => {
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error("pair did not settle; anchor=" + activeRow.id + "@" + anchorIdx + " partner=" + partner + " pair=" + JSON.stringify(pairIds) + " order=" + JSON.stringify(settleOrder) + " strip=" + JSON.stringify(st && st.strip) + " tabs=" + JSON.stringify(await ctx.tabsInfo().catch(() => "ERR")));
+    });
+    assert(
+      settled != null,
+      "pair pinned next to the anchor: anchor=" + activeRow.id + " partner=" + partner + " pair=" + JSON.stringify(pairIds) + " order=" + JSON.stringify((await ctx.tabsInfo()).filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=")).map((t) => t.id))
+    );
     // Clean up.
     await ctx.leaderPress(ctx.tabA, "\\"); // ;\
     await waitNoSplit();
+  });
+
+  await t("split: ;+N auto-split keeps the other tabs' order", async () => {
+    // Regression: addTabSplitView used to park a freshly glued pair at the
+    // END of the strip, renumbering every tab between the pair and the tail —
+    // so ;1-9 could silently point at a different tab after a split. Splitting
+    // a MIDDLE tab must keep the anchor at its own slot, seat the partner
+    // right next to it, and leave every other tab exactly where it was.
+    await waitNoSplit();
+    const a = await createTab();
+    await navigate(a, `${ctx.base}/orderA`, "complete");
+    const b = await createTab();
+    await navigate(b, `${ctx.base}/hello`, "complete");
+    const c = await createTab();
+    await navigate(c, `${ctx.base}/target1`, "complete");
+    await sleep(400);
+    const ids = await ctx.tabsInfo();
+    const urlOf = (t) => (t.url || "").split("?")[0].split("#")[0];
+    const short = (u) => String(u).replace(ctx.base, "");
+    const realIds = ids.filter((t) => !(t.url || "").includes("commandcenter.html"));
+    const aRow = realIds.find((t) => short(urlOf(t)) === "/orderA");
+    const bRow = realIds.find((t) => short(urlOf(t)) === "/hello");
+    const cRow = realIds.find((t) => short(urlOf(t)) === "/target1");
+    assert(aRow && bRow && cRow, "found the three fresh tabs: " + JSON.stringify(ids));
+    const beforeOrder = realIds.map((t) => t.id).join(",");
+    // Activate A (a MIDDLE tab, not the last) and auto-split A with C.
+    await evalIn(ctx.probe, `browser.tabs.update(${aRow.id}, { active: true })`).catch(() => {});
+    await sleep(300);
+    // ;+N numbers REAL tabs exactly like the chrome helper's realTabs(): skip
+    // only splitpanel/#lfc transients (commandcenter tabs count).
+    const chromeReal = ids.filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc="));
+    const cRealIndex = chromeReal.findIndex((t) => t.id === cRow.id) + 1;
+    assert(cRealIndex <= 9, "C index within 1-9: " + cRealIndex);
+    await ctx.leaderPress(a, "=", { shift: true }); // ;+
+    await sleep(250);
+    await ctx.press(a, String(cRealIndex));
+    try {
+      await waitFor(async () => {
+        const now = await ctx.tabsInfo();
+        const split = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+        return split.length === 2 ? split : null;
+      }, 10000);
+    } catch (e) {
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error("auto-split keeps: pair never formed; state=" + JSON.stringify(st && { strip: st.strip, lastAction: st.lastAction }) + " tabs=" + JSON.stringify(await ctx.tabsInfo().catch(() => "ERR")));
+    }
+    // The achievable invariant: the ANCHOR (A) stays first among the web
+    // tabs, the partner (C) sits right next to it, and B keeps its relative
+    // position — the old bug flung B to the strip end and moved A too. The
+    // strip settles a moment after the split forms, so wait for it.
+    const settled = await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      const realAfter2 = now.filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc="));
+      const webOnly = realAfter2.filter((t) => !(t.url || "").includes("commandcenter.html"));
+      const wA = webOnly.findIndex((t) => t.id === aRow.id);
+      const wC = webOnly.findIndex((t) => t.id === cRow.id);
+      const wB = webOnly.findIndex((t) => t.id === bRow.id);
+      if (wA !== 0 || wC !== 1 || wB !== 2) return null;
+      const sv2 = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      if (sv2.length !== 2 || !sv2.every((t) => [aRow.id, cRow.id].includes(t.id))) return null;
+      return webOnly;
+    }, 4000);
+    assert(settled != null, "pair pinned next to the anchor (A first, then C, then B): web=" + JSON.stringify((await ctx.tabsInfo()).filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=") && !(t.url || "").includes("commandcenter.html")).map((t) => t.id)));
+    // Clean up: unsplit and close the fresh tabs.
+    await ctx.leaderPress(a, "\\");
+    await waitNoSplit();
+    for (const id of [aRow.id, bRow.id, cRow.id]) {
+      await evalIn(ctx.probe, `browser.tabs.remove(${id}).catch(() => {})`);
+    }
+    await sleep(400);
   });
 
   await t("split: splitting a middle tab keeps the other tabs' order", async () => {
