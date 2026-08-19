@@ -399,7 +399,7 @@ export async function run(ctx) {
     const t = await getTree();
     const cs = contextsOf(t);
     const survivor = cs.find((c) => c.url && c.url.includes("commandcenter.html")) || cs[0];
-    await activate(survivor.context);
+    await ctx.activateTab(survivor.context);
     await sleep(300);
     await ctx.leaderPress(survivor.context, "v");
     await waitFor(async () => (await ctx.tabCount()) === before ? true : null, 10000);
@@ -409,6 +409,6 @@ export async function run(ctx) {
     ctx.tabA = cs2.find((c) => c.url && c.url.includes("127.0.0.1"))
       ? cs2.find((c) => c.url && c.url.includes("127.0.0.1")).context
       : survivor.context;
-    await activate(ctx.tabA);
+    await ctx.activateTab(ctx.tabA);
   });
 }

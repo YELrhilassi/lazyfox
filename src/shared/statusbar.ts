@@ -58,6 +58,10 @@ const CSS = `
   clip-path:polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%);}
 .seg.linked{margin-left:-8px;padding-left:18px;}
 .seg .ic{opacity:.95;font-weight:700;}
+.seg.leader{background:transparent;clip-path:none;color:#2ac3de;font-size:14px;
+  font-weight:800;padding:0 6px 0 10px;
+  animation:lfLeadPulse 1.1s ease-in-out infinite;}
+@keyframes lfLeadPulse{0%,100%{opacity:.35}50%{opacity:1}}
 .seg.sess{background:#7aa2f7;color:#1a1b26;font-weight:800;}
 .seg.sess .marker{font-weight:800;}
 .seg.tabs{background:#24283b;color:#c0caf5;font-weight:600;}
@@ -163,9 +167,13 @@ export class StatusBar {
     const host = document.createElement("div") as unknown as StatusHost;
     host.id = "lazyfox-status";
     const sh = host.attachShadow({ mode: "closed" });
+    // The leader segment is a small pulsing chevron shown only while the
+    // leader key is armed — it is the ONLY visible sign when the which-key
+    // overlay is disabled via ;q.
     sh.innerHTML =
       "<style>" + CSS + "</style>" +
       "<div class='lf-status " + this.position + "'>" +
+      "<span class='seg leader'><span class='ic'>»</span></span>" +
       "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
       "<span class='seg tabs linked'><span class='ic'>▤</span><span class='st'>🕶</span><b></b><span class='cnt'></span></span>" +
       "<span class='seg chips'></span>" +
@@ -301,8 +309,8 @@ export class StatusBar {
   }
 
   setMode(mode: string): void {
-    // Mode (NORMAL/LEADER) is intentionally not rendered — it was noise.
-    // Kept as a no-op so callers can keep invoking it.
+    // Mode is rendered only through setData (the LEADER state shows the
+    // pulsing chevron); kept as a thin setter for callers that prefer it.
     if (this.data.mode === mode) return;
     this.data.mode = mode;
   }
@@ -313,6 +321,7 @@ export class StatusBar {
     // ran at document_start), push the padding onto it now.
     this.reserveBody();
     const sh = this.host._sh;
+    const leader = sh.querySelector(".leader") as HTMLElement | null;
     const sess = sh.querySelector(".sess") as HTMLElement | null;
     const marker = sh.querySelector(".sess .marker") as HTMLElement | null;
     const name = sh.querySelector(".sess .name") as HTMLElement | null;
@@ -324,6 +333,7 @@ export class StatusBar {
     const dlItems = dl ? (dl.querySelector(".items") as HTMLElement | null) : null;
     const chips = sh.querySelector(".chips");
 
+    if (leader) leader.style.display = this.data.mode === "LEADER" ? "" : "none";
     if (name) name.textContent = this.data.name;
     if (marker) {
       marker.textContent = this.data.marker ? String(this.data.marker) : "";

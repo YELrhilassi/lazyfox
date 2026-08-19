@@ -56,7 +56,11 @@ export class LeaderController {
 
   constructor(
     private run: (key: string) => void,
-    private enabled: () => boolean
+    private enabled: () => boolean,
+    // Fired whenever the leader arms or disarms, so hosts can reflect the
+    // state immediately (the chrome helper re-renders its status bar the
+    // moment `;` is pressed instead of waiting for the 500ms poll).
+    private onChange?: () => void
   ) {}
 
   /** True while a one-shot key capture is armed (e.g. "session 1-9" after ;'). */
@@ -119,6 +123,7 @@ export class LeaderController {
 
   show(): void {
     this.active = true;
+    if (this.onChange) this.onChange();
     if (!this.enabled()) return; // overlay disabled — keys are still captured below
     if (!this.host) {
       this.host = document.createElement("div") as unknown as LeaderHost;
@@ -139,6 +144,7 @@ export class LeaderController {
 
   hide(): void {
     this.active = false;
+    if (this.onChange) this.onChange();
     if (this.host) this.host._sh.querySelector(".wk")!.classList.remove("on");
   }
 

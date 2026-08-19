@@ -109,11 +109,23 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   }
 
   function isFullscreen(): boolean {
+    // DOM fullscreen (a video, a gallery lightbox) must hide the window
+    // bar. Firefox signals it with the `inDOMFullscreen` attribute on the
+    // chrome document root — an internal detail that has shifted before (a
+    // Firefox update once left the bar on screen during video fullscreen).
+    // Belt and suspenders: also read the selected tab's content document
+    // through the STANDARD Fullscreen API (document.fullscreenElement), which
+    // is stable across versions. Either signal alone hides the bar; the
+    // 500ms poll plus the fullscreenchange events keep both edges fresh.
     try {
-      return document.documentElement.hasAttribute("inDOMFullscreen");
+      if (document.documentElement.hasAttribute("inDOMFullscreen")) return true;
+      const b = window.gBrowser && window.gBrowser.selectedBrowser;
+      const doc = b && b.contentDocument;
+      if (doc && doc.fullscreenElement) return true;
     } catch (e) {
-      return false;
+      // ignore
     }
+    return false;
   }
 
   function computeChromeStatus(): void {

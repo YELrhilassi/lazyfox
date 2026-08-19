@@ -8,3 +8,4 @@ Thumbs.db
 *.log
 core/js/core.wasm
 src/shared/wasm-embed.ts
+.lf-probe-*.mjs

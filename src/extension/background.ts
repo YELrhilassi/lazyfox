@@ -9,7 +9,7 @@
 import { ensureCore } from "../shared/core";
 import type { BgAction } from "../shared/protocol";
 import { getConfig } from "./config";
-import { CC_URL, getActiveTab, isCommandCenter, realTabsInWindow, stripHash } from "./tabs";
+import { CC_URL, getActiveTab, isCommandCenter, isUITab, realTabsInWindow, stripHash } from "./tabs";
 import { bookmarksSearch, doSearch, historySearch, searchUrlFor, suggestSearch, suggestUrls } from "./search";
 import {
   activateTabByIndex,
@@ -44,7 +44,17 @@ import {
   switchSessionByMarker
 } from "./sessions";
 
-const HOMEISH = /^about:(home|newtab|blank)$/i;
+// Only idle placeholders that can NEVER be mid-navigation are converted to
+// the command center. about:blank is deliberately NOT here: a blank tab is
+// always a transient placeholder for an in-flight navigation (a
+// target=_blank link, ;o, a search results tab), and converting it races the
+// navigation — after a Firefox update changed when a new tab reports its
+// pending URL, that race won and every link / ;o / ;s landed on the
+// command-center home instead of the target page ("empty new tab"). The
+// command center for user-opened tabs comes from chrome_url_overrides.newtab
+// (the stable manifest mechanism), so a genuinely blank tab is simply left
+// alone.
+const HOMEISH = /^about:(home|newtab)$/i;
 
 const CHROME_PAGES: { [k: string]: string } = {
   "about:preferences": "preferences",
@@ -379,35 +389,93 @@ browser.commands.onCommand.addListener((name: string) => {
   }
 });
 
+// True while a tab is loading or already navigating somewhere. Converting
+// such a tab would hijack the in-flight navigation, so conversion must
+// never touch it.
+function isNavigating(t: any): boolean {
+  if (!t) return true;
+  if (t.status === "loading") return true;
+  return !!(t.pendingUrl && t.pendingUrl !== t.url);
+}
+
 function maybeConvertHome(tab: any) {
   if (isRestoring()) return Promise.resolve();
-  if (!tab || !tab.url || !HOMEISH.test(tab.url)) return Promise.resolve();
-  // A blank/home tab that is already navigating somewhere (e.g.
-  // browser.search.search opening a results tab) must be left alone — only
-  // idle blank/home tabs are converted.
-  if (tab.pendingUrl && tab.pendingUrl !== tab.url) return Promise.resolve();
-  if (tab.url === "about:blank") {
-    // about:blank is frequently a transient placeholder (search results,
-    // in-flight navigations); convert it only once it has been idle briefly.
-    const id = tab.id;
-    setTimeout(() => {
-      browser.tabs
-        .get(id)
-        .then((t: any) => {
-          if (t && t.url === "about:blank" && !(t.pendingUrl && t.pendingUrl !== t.url)) {
-            return browser.tabs.update(id, { url: CC_URL });
-          }
-        })
-        .catch(() => {});
-    }, 500);
-    return Promise.resolve();
-  }
-  return browser.tabs.update(tab.id, { url: CC_URL }).catch(() => {});
+  if (!tab || !tab.id || !tab.url || !HOMEISH.test(tab.url)) return Promise.resolve();
+  if (isNavigating(tab)) return Promise.resolve();
+  // Defer and re-check: a tab's pendingUrl can appear a beat AFTER the tab
+  // itself (a link click starts its navigation slightly later), so an
+  // immediate conversion can still race it. After the delay the tab is
+  // converted only if it is STILL an idle home/newtab placeholder.
+  const id = tab.id;
+  setTimeout(() => {
+    browser.tabs
+      .get(id)
+      .then((t: any) => {
+        if (!t || !t.url || !HOMEISH.test(t.url) || isNavigating(t)) return;
+        return browser.tabs.update(id, { url: CC_URL });
+      })
+      .catch(() => {});
+  }, 800);
+  return Promise.resolve();
 }
 
 browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
   if (isRestoring()) return;
   if (info.status === "complete" && tab && tab.active) maybeConvertHome(tab);
+});
+
+// A launch tab left on about:blank (a profile whose startup.homepage is
+// about:blank and/or startup.page is 0) is the HOME tab, not a navigation
+// placeholder — but about:blank is deliberately excluded from maybeConvertHome
+// because a blank tab mid-session is always a transient placeholder for an
+// in-flight navigation (target=_blank, ;o, search results). The two cases are
+// told apart by WHEN and WHERE the blank tab sits: this runs once at startup,
+// and converts only when the window has exactly one real tab that is STILL a
+// blank, idle tab after native startup restore has had time to settle. Any
+// other blank tab (a second tab, a pending session-restore tab, a navigation
+// that started) is left alone, so the mid-session hijack regression cannot
+// come back.
+function maybeConvertStartupBlank(): void {
+  const started = Date.now();
+  let done = false;
+  const tick = () => {
+    if (done || Date.now() - started > 12000) return;
+    // Never fight a session-restore rebuild in progress.
+    if (isRestoring()) {
+      setTimeout(tick, 700);
+      return;
+    }
+    browser.tabs
+      .query({ currentWindow: true })
+      .then((tabs: any[]) => {
+        const real = (tabs || []).filter((t: any) => !isUITab(t));
+        const tab = real.length === 1 ? real[0] : null;
+        if (!tab || !tab.active) {
+          // Window not settled yet (or extra tabs appeared): keep waiting only
+          // while there is still a chance this is the untouched home tab.
+          setTimeout(tick, 700);
+          return;
+        }
+        // It left blank (navigated somewhere, or a restore/conversion landed):
+        // nothing to do, and re-checking would only risk a later hijack.
+        if (tab.url !== "about:blank" || isNavigating(tab)) return;
+        done = true;
+        browser.tabs.update(tab.id, { url: CC_URL }).catch(() => {});
+      })
+      .catch(() => setTimeout(tick, 700));
+  };
+  // Give native startup restore (if enabled) time to put real tabs in place
+  // before we decide the sole blank tab is genuinely the home tab.
+  setTimeout(tick, 1000);
+}
+
+// On a real browser launch the background starts with the first window already
+// open; run the check then and again on startup events (install/reload of the
+// add-on mid-session is harmless — the window has real tabs, so nothing
+// converts).
+maybeConvertStartupBlank();
+browser.runtime.onStartup.addListener(() => {
+  maybeConvertStartupBlank();
 });
 
 // Chrome helper request channel: a background tab whose URL is
@@ -461,10 +529,10 @@ async function handleReq(tab: any, action: string, arg: string) {
   // the extension still loading on a cold start; every other request (e.g.
   // the startup sessionState poll) covers that window.
   if (action !== "alive") {
-    browser.storage.local.set({ chromeAlive: true }).catch(() => {});
+    markChromeAlive();
   }
   if (action === "alive") {
-    await browser.storage.local.set({ chromeAlive: true });
+    markChromeAlive();
     return;
   }
   if (action === "toggleWhichKey") {
@@ -595,8 +663,47 @@ browser.tabs
 // so a stale flag never permanently disables content-side handling.
 browser.runtime.onStartup.addListener(() => {
   browser.storage.local.set({ chromeAlive: false }).catch(() => {});
+  checkChromeLayerHealth();
   void reconcileStealth();
 });
+
+// Update-survivability: the chrome helper announces "alive" on every window
+// startup (retrying every 500ms until the extension URL resolves). If it used
+// to announce (chromeEverAlive) but stays silent through the startup window,
+// a Firefox update very likely broke the autoconfig loader — the exact
+// silent-death failure of Firefox 155 (bug 1974213). Tell the user instead of
+// letting every chrome-only feature degrade to standalone mode with no sign.
+function markChromeAlive(): void {
+  browser.storage.local
+    .set({ chromeAlive: true, chromeEverAlive: true })
+    .catch(() => {});
+}
+
+function checkChromeLayerHealth(): void {
+  browser.storage.local
+    .get("chromeEverAlive")
+    .then((r: { chromeEverAlive?: boolean }) => {
+      // Never loaded even once (fresh install, standalone-only user): the
+      // extension alone is the intended state, so stay quiet.
+      if (!r || !r.chromeEverAlive) return;
+      setTimeout(async () => {
+        try {
+          const c = await browser.storage.local.get("chromeAlive");
+          if (c && c.chromeAlive) return; // the helper announced in time
+          await browser.notifications.create({
+            type: "basic",
+            iconUrl: browser.runtime.getURL("icons/icon96.png"),
+            title: "Lazyfox chrome layer didn't load",
+            message:
+              "Firefox may have updated and broken the loader. Re-run the Lazyfox installer to repair it.",
+          });
+        } catch (e) {
+          // never let the check break startup
+        }
+      }, 15000);
+    })
+    .catch(() => {});
+}
 // Also reconcile on background load (covers install/reload and the very first
 // launch after enabling the feature) — idempotent.
 void reconcileStealth();

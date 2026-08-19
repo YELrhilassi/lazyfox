@@ -32,6 +32,7 @@ declare namespace Services {
   const mm: any;
   const search: any;
   const appinfo: any;
+  const obs: any;
 }
 
 declare const Ci: any;

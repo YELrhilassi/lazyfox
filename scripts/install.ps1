@@ -357,8 +357,23 @@ foreach ($line in $ourContent) {
 $ff = Find-FirefoxExe
 $ffDir = if ($ff) { Split-Path -Parent $ff } else { "" }
 if ($ffDir) {
-  $needLoader = (-not (Test-Path -LiteralPath (Join-Path $ffDir "config.js"))) -or
-                (-not (Test-Path -LiteralPath (Join-Path $ffDir "defaults\pref\config-prefs.js")))
+  $cfgPath = Join-Path $ffDir "config.js"
+  $prefPath = Join-Path $ffDir "defaults\pref\config-prefs.js"
+  $needLoader = (-not (Test-Path -LiteralPath $cfgPath)) -or
+                (-not (Test-Path -LiteralPath $prefPath))
+  if (-not $needLoader) {
+    # A Firefox update or an older Lazyfox install can leave a loader that no
+    # longer matches the bundled one (e.g. Firefox 155 stopped trusting
+    # file: URLs in loadSubScript). Re-install on content drift, not only when
+    # the files are missing, so upgrades actually reach the running browser.
+    try {
+      $srcCfg = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "dist\chrome\loader\config.js")
+      $curCfg = Get-Content -Raw -LiteralPath $cfgPath
+      $srcPref = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "dist\chrome\loader\config-prefs.js")
+      $curPref = Get-Content -Raw -LiteralPath $prefPath
+      if (($srcCfg -ne $curCfg) -or ($srcPref -ne $curPref)) { $needLoader = $true }
+    } catch { }
+  }
   if ($needLoader) {
     if (-not (Test-IsAdmin)) {
       Write-Step "Installing the chrome loader into $ffDir requires administrator rights (one-time)."

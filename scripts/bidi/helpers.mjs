@@ -45,8 +45,14 @@ export function createCtx(runtime) {
   /* ===================== page / command-center helpers ===================== */
 
   ctx.openCC = async function openCC(tab) {
-    await activate(tab);
-    await navigate(tab, "about:newtab", "complete");
+    // Select the tab FIRST: navigating a background tab is flaky under this
+    // geckodriver (the about:newtab override redirect sometimes never lands).
+    // moz-extension contexts are "privileged scope", where BiDi activate is
+    // unsupported — activateTab falls back to selecting via the extension.
+    await ctx.activateTab(tab);
+    // Navigate with wait "none" and poll for the redirect instead of waiting
+    // for a "complete" load, which hangs on the override redirect chain.
+    await navigate(tab, "about:newtab", "none");
     await waitFor(async () => {
       const u = await evalIn(tab, `location.href`);
       return u && u.includes("commandcenter.html") ? u : null;
@@ -57,8 +63,11 @@ export function createCtx(runtime) {
       const n = await evalIn(tab, `document.querySelectorAll("#results .result").length`);
       return n > 0 ? n : null;
     }, 15000);
-    // Move keyboard focus out of the (hidden) URL bar into the page.
-    await focusPage(tab);
+    // The CC page opens with its input focused (insert mode). The old harness
+    // moved focus out with a page click, but pointer actions are rejected on
+    // the command center — so blur explicitly. Tests that follow expect
+    // command mode (mode keys 1-6, hjkl navigation, ...).
+    await evalIn(tab, `document.activeElement && document.activeElement.blur ? (document.activeElement.blur(), true) : true`).catch(() => {});
   };
 
   ctx.ccFacts = function ccFacts(tab) {
@@ -168,15 +177,87 @@ export function createCtx(runtime) {
     throw new Error("leader did not arm for key '" + key + "' (3 attempts): " + d);
   };
 
-  ctx.press = async function press(tab, key, opts) {
-    await keyTap(tab, key, opts);
+  // Select a browsing context: BiDi activate works on web pages; on
+  // moz-extension (privileged-scope) contexts it is rejected, so fall back to
+  // selecting the tab through the extension (the probe tab's realm).
+  ctx.activateTab = async function activateTab(tab) {
+    try {
+      await activate(tab);
+      return true;
+    } catch (e) {
+      // privileged scope — select via the extension instead
+    }
+    if (!ctx.probe) return false;
+    try {
+      const tree = await getTree();
+      const idx = tree.findIndex((c) => c.context === tab || c.id === tab);
+      if (idx >= 0) {
+        const r = await evalIn(
+          ctx.probe,
+          `browser.tabs.query({currentWindow:true}).then(ts => ts[${idx}] ? browser.tabs.update(ts[${idx}].id, {active:true}).then(() => true) : false)`
+        );
+        return !!r;
+      }
+    } catch (e) {
+      // ignore
+    }
+    return false;
+  };
+
+  // Send a key sequence to a tab through the chrome helper's #lfc=keys
+  // channel. BiDi input is rejected on moz-extension ("privileged scope")
+  // contexts and Marionette keys never reach the chrome window's listener, so
+  // the helper itself synthesizes the keys: it runs its real capture-phase
+  // dispatch (leader, popups, hotkeys) and forwards unconsumed keys to the
+  // tab's content. `tab` is the BiDi context id; null targets the currently
+  // selected tab.
+  ctx.sendKeys = async function sendKeys(tab, keys) {
+    let idx = -1;
+    if (tab) {
+      const tree = await getTree();
+      idx = tree.findIndex((c) => c.context === tab || c.id === tab);
+      if (idx < 0) throw new Error("sendKeys: tab not in tree");
+    }
+    const nonce = "k" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+    const payload = Buffer.from(JSON.stringify({ idx, keys })).toString("base64");
+    await evalIn(ctx.probe, `location.hash = ${JSON.stringify("lfc=keys." + payload + "." + nonce)}; true`);
+    const ok = await waitFor(async () => {
+      const u = await evalIn(ctx.probe, `location.href`);
+      const m = u && u.match(/#lfc=keys\.(ok|err)\.[^#]*$/);
+      return m ? m[1] === "ok" : null;
+    }, 10000).catch(() => null);
+    // Strip the reply hash so the probe tab no longer looks like an #lfc=
+    // transient: the tabs popup's listTabs skips #lfc= tabs, so a dirty probe
+    // would vanish from the tab list and break arrow navigation (only one row).
+    await evalIn(ctx.probe, `history.replaceState(null, "", location.href.split("#")[0]); true`).catch(() => {});
+    if (ok !== true) throw new Error("sendKeys: no ok reply");
+  };
+
+  ctx.press = async function press(tab, key, opts = {}) {
+    if (await ctx.chromeOwnsLeader(tab)) {
+      await ctx.sendKeys(tab, [{ k: key, shift: opts.shift, ctrl: opts.ctrl, alt: opts.alt, meta: opts.meta }]);
+    } else {
+      await keyTap(tab, key, opts);
+    }
     await sleep(150);
   };
 
+  ctx.keyTap = async function keyTap_(tab, key, opts = {}) {
+    if (await ctx.chromeOwnsLeader(tab)) {
+      await ctx.sendKeys(tab, [{ k: key, shift: opts.shift, ctrl: opts.ctrl, alt: opts.alt, meta: opts.meta }]);
+    } else {
+      await keyTap(tab, key, opts);
+    }
+  };
+
   ctx.typeIn = async function typeIn(tab, text) {
-    for (const ch of text) {
-      await keyTap(tab, ch);
-      await sleep(30);
+    if (await ctx.chromeOwnsLeader(tab)) {
+      await ctx.sendKeys(tab, [...text].map((ch) => ({ k: ch })));
+    } else {
+      for (const ch of text) {
+        await keyTap(tab, ch);
+        await sleep(30);
+      }
     }
     await sleep(250);
   };
@@ -216,7 +297,10 @@ export function createCtx(runtime) {
       `browser.tabs.query({currentWindow:true, active:true}).then(ts => ts[0] ? ts[0].id : null)`
     ).catch(() => null);
     const nonce = "s" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
-    await navigate(ctx.probe, ctx.ccBase + "#lfc=state." + nonce, "complete");
+    // Set the request hash from the page realm: a WebDriver navigate to the
+    // lfc URL re-enters the helper's reply and hangs the command, so drive it
+    // through a plain hash assignment (same pattern as the #lfc=cfg test).
+    await evalIn(ctx.probe, `location.hash = ${JSON.stringify("lfc=state." + nonce)}; true`);
     try {
       return await waitFor(async () => {
         const u = await evalIn(ctx.probe, `location.href`);
@@ -263,14 +347,14 @@ export function createCtx(runtime) {
     await ctx.press(tab, key, opts);
   };
 
-  // Press the leader binding without clicking the page first — used when the
-  // keys must land on whatever tab is currently active (chrome-created tabs
-  // cannot be targeted by browsingContext.activate, and a stray focus click
-  // would switch the active tab underneath the action).
+  // Press the leader binding without selecting a tab first — used when the
+  // keys must land on whatever tab is currently active (e.g. the duplicate
+  // the ;c command just created). sendKeys(null) targets the active tab
+  // directly through the classic session.
   ctx.leaderPressNoFocus = async function leaderPressNoFocus(key) {
-    await ctx.press(ctx.tabA, ";");
+    await ctx.sendKeys(null, [{ k: ";" }]);
     await sleep(300);
-    await ctx.press(ctx.tabA, key);
+    await ctx.sendKeys(null, [{ k: key }]);
   };
 
   ctx.ccTabs = async function ccTabs() {

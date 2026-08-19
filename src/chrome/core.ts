@@ -63,7 +63,13 @@ export function ensureChromeCore(): Promise<CoreApi> {
       const dir = Services.dirsvc.get("UChrm", Ci.nsIFile);
       const f = dir.clone();
       f.append("corebootstrap.js");
-      Services.scriptloader.loadSubScript(Services.io.newFileURI(f).spec, sb);
+      // Firefox 155 (bug 1974213) rejects file:/jar: URLs in loadSubScript
+      // unless the caller opts in; loadSubScriptWithOptions + allowUnsafeURL
+      // works on older Firefox too (the unknown option is ignored there).
+      Services.scriptloader.loadSubScriptWithOptions(Services.io.newFileURI(f).spec, {
+        target: sb,
+        allowUnsafeURL: true,
+      });
       const ready = Cu.waiveXrays(sb).__lfCoreReady;
       return await ready;
     })().catch((e) => {

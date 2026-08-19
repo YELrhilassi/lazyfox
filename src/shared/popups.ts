@@ -146,10 +146,9 @@ export function openUrlPopup(ctx: PopupCtx, replace = false): void {
         // Enter must work even when the debounced suggestions haven't loaded
         // yet (empty list): fall back to opening the typed value, normalized
         // exactly like the command-center input. Otherwise a fast Enter does
-        // nothing, and a scheme-less word that fails to load leaves a blank tab
-        // that the background converts to the lazyfox home page. A highlighted
-        // row (e.g. a history entry the user navigated to) still wins via the
-        // default pick.
+        // nothing, and a scheme-less word would be handed to the browser raw
+        // (which fails to load it). A highlighted row (e.g. a history entry
+        // the user navigated to) still wins via the default pick.
         onEnter: (value, item) => {
           if (item) return false;
           const v = (value || "").trim();

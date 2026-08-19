@@ -1,7 +1,7 @@
 // Command center (new tab page) tests: modes, keys, popups driven through the
 // chrome helper's #lfc=state channel, and the tab commands.
 
-import { evalIn, keyTap, waitFor, sleep, activate, navigate } from "../lib.mjs";
+import { evalIn, waitFor, sleep, navigate } from "../lib.mjs";
 import { assert } from "../harness.mjs";
 
 export const group = "commandcenter";
@@ -54,7 +54,7 @@ export async function run(ctx) {
     await ctx.press(ctx.tabA, "Tab");
     f = await ctx.ccFacts(ctx.tabA);
     assert(f.modeTag === "url", "Tab -> url mode");
-    await keyTap(ctx.tabA, "Tab", { shift: true });
+    await ctx.keyTap(ctx.tabA, "Tab", { shift: true });
     await sleep(150);
     f = await ctx.ccFacts(ctx.tabA);
     assert(f.modeTag === "search", "Shift+Tab -> search mode");
@@ -85,7 +85,7 @@ export async function run(ctx) {
   await t("home page opens with the input focused; typing works for h/l", async () => {
     // Regression: the home page must start with the input focused so every
     // key (including h/j/k/l, which navigate the grid in command mode) types.
-    await activate(ctx.tabA);
+    await ctx.activateTab(ctx.tabA);
     await navigate(ctx.tabA, "about:newtab", "complete");
     await waitFor(async () => {
       const u = await evalIn(ctx.tabA, `location.href`);
@@ -281,7 +281,7 @@ export async function run(ctx) {
 
   await t("leader ;m mutes the active tab", async () => {
     await ctx.openCC(ctx.tabA);
-    await activate(ctx.tabA);
+    await ctx.activateTab(ctx.tabA);
     await sleep(400);
     // The extension-page realm does not expose tabs.Tab.muted, so the chrome
     // helper reports the muted-tab count (the source of truth).
@@ -302,7 +302,7 @@ export async function run(ctx) {
 
   await t("command center tab commands ;n ;x ;v ;c", async () => {
     await ctx.openCC(ctx.tabA);
-    await activate(ctx.tabA);
+    await ctx.activateTab(ctx.tabA);
     await sleep(400);
     // ;n — new tab, redirected to the command center
     const before = await ctx.tabCount();
@@ -312,7 +312,7 @@ export async function run(ctx) {
     await sleep(600);
     assert((await ctx.ccTabs()).length >= 1, "new tab redirected to command center");
     // ;c — duplicate the active tab (tabA after the activate below)
-    await activate(ctx.tabA);
+    await ctx.activateTab(ctx.tabA);
     await sleep(300);
     const before2 = await ctx.tabCount();
     await ctx.leaderPress(ctx.tabA, "c");
@@ -324,13 +324,13 @@ export async function run(ctx) {
     await waitFor(async () => (await ctx.tabCount()) === before3 - 1 ? true : null, 10000);
     assert((await ctx.tabCount()) === before3 - 1, "tab closed");
     // ;v — reopen the closed tab
-    await activate(ctx.tabA);
+    await ctx.activateTab(ctx.tabA);
     await sleep(300);
     const before4 = await ctx.tabCount();
     await ctx.leaderPress(ctx.tabA, "v");
     await waitFor(async () => (await ctx.tabCount()) === before4 + 1 ? true : null, 10000);
     assert((await ctx.tabCount()) === before4 + 1, "reopened closed tab");
-    await activate(ctx.tabA);
+    await ctx.activateTab(ctx.tabA);
   });
 
   await t("probe tab: command center from the background", async () => {
@@ -340,7 +340,7 @@ export async function run(ctx) {
 
   await t("stealth ;N from the command center opens a stealth tab", async () => {
     await ctx.openCC(ctx.tabA);
-    await activate(ctx.tabA);
+    await ctx.activateTab(ctx.tabA);
     await sleep(400);
     const before = await ctx.tabCount();
     // Chrome owns the leader on the command center: ;N goes through the
@@ -366,7 +366,7 @@ export async function run(ctx) {
     // Clean up: close the stealth tab and return to the command center.
     await evalIn(ctx.probe, `browser.tabs.remove(${opened.id}).catch(() => true); true`).catch(() => {});
     await waitFor(async () => (await ctx.tabCount()) === before ? true : null, 10000).catch(() => {});
-    await activate(ctx.tabA);
+    await ctx.activateTab(ctx.tabA);
     await sleep(300);
   });
 
@@ -381,10 +381,10 @@ export async function run(ctx) {
     const s = await ctx.chromeState();
     assert(s && s.popup && s.popup.current, ";o opens a popup");
     const target = `http://127.0.0.1:${ctx.port}/hello`;
-    // Type fast (25ms/char) and press Enter immediately, before the 70ms
-    // debounce + async suggestion fetch can populate the list.
+    // Type fast and press Enter immediately, before the 70ms debounce + async
+    // suggestion fetch can populate the list.
     for (const ch of target) {
-      await keyTap(ctx.tabA, ch);
+      await ctx.keyTap(ctx.tabA, ch);
       await sleep(25);
     }
     await ctx.press(ctx.tabA, "Enter");
@@ -414,7 +414,7 @@ export async function run(ctx) {
     assert(panel.title === "Open URL in current tab", ";O popup title, got " + panel.title);
     const target = `http://127.0.0.1:${ctx.port}/hello`;
     for (const ch of target) {
-      await keyTap(ctx.tabA, ch);
+      await ctx.keyTap(ctx.tabA, ch);
       await sleep(25);
     }
     await ctx.press(ctx.tabA, "Enter");

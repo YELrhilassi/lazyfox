@@ -79,8 +79,7 @@ function el(tag: string, attrs?: Record<string, string> | null, text?: string | 
 // Mirrors the Go core's NormalizeUrl (scheme-less input gets https://). Any
 // caller can hand loadUrl raw user text (the URL popup's onEnter fallback, a
 // history item, etc.); a scheme-less string would otherwise make addTab/loadURI
-// fail, leaving an about:blank tab that the background then converts to the
-// lazyfox home page.
+// fail, leaving a blank tab that never navigates.
 function loadableUrl(url: string): string {
   const t = (url || "").trim();
   if (!t) return t;
@@ -259,6 +258,7 @@ export interface ChromeOpsDeps {
     requestBg(action: string, arg?: string): void;
     requestSessionState(): Promise<void>;
     requestSessionTabs(name: string): Promise<PopupItem[]>;
+    ccBaseUrl(): string | null;
   };
 }
 
@@ -280,8 +280,7 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       // Normalize exactly like the background path (core.normalizeUrl) so the
       // picked row always carries a loadable URL. Passing raw scheme-less text
       // to gBrowser.addTab/loadURI fails (e.g. a bare word like a session name),
-      // which leaves an about:blank tab that the background then converts to the
-      // lazyfox home page.
+      // which leaves a blank tab that never navigates.
       let url = text;
       try {
         url = await core.normalizeUrl(text);
@@ -413,7 +412,16 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     openUrl: (url: string, newTab?: boolean) => loadUrl(url, newTab),
     search: (query: string, newTab?: boolean) => doSearch(query, newTab === false),
     newTab: () => {
-      const tab = window.gBrowser.addTab("about:newtab", { triggeringPrincipal: sysPrincipal() });
+      // Open the command center directly instead of about:newtab + the
+      // chrome_url_overrides redirect: an addTab("about:newtab") carrying the
+      // system principal bypasses the override (and the background's
+      // maybeConvertHome never sees a content-principal newtab load), which
+      // left a dead about:newtab tab after `;n`.
+      const base = deps.getChannel().ccBaseUrl();
+      const url = base ? base + "commandcenter.html" : "about:newtab";
+      const tab = window.gBrowser.addTab(url, {
+        triggeringPrincipal: base ? sysPrincipal() : undefined,
+      });
       if (tab) window.gBrowser.selectedTab = tab;
       window.focus();
     },
