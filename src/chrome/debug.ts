@@ -311,6 +311,28 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
               selUrl: sel && sel.linkedBrowser && sel.linkedBrowser.currentURI
                 ? sel.linkedBrowser.currentURI.spec
                 : null,
+              svMethods: sv ? Object.getOwnPropertyNames(sv).filter((n) => n !== "tabs" && n !== "splitViewId").slice(0, 40) : null,
+              svProto: sv
+                ? (() => {
+                    const names: string[] = [];
+                    let p = Object.getPrototypeOf(sv);
+                    let depth = 0;
+                    while (p && depth < 4) {
+                      for (const n of Object.getOwnPropertyNames(p)) names.push(n);
+                      p = Object.getPrototypeOf(p);
+                      depth++;
+                    }
+                    return names.slice(0, 60);
+                  })()
+                : null,
+              addTabsType: sv ? typeof sv.addTabs : "no-sv",
+              unsplitTabsType: sv ? typeof sv.unsplitTabs : "no-sv",
+              reverseTabsType: sv ? typeof sv.reverseTabs : "no-sv",
+              addTabsSrc: sv && typeof sv.addTabs === "function" ? String(sv.addTabs).slice(0, 800) : null,
+              addTabSplitViewSrc: typeof window.gBrowser.addTabSplitView === "function" ? String(window.gBrowser.addTabSplitView).slice(0, 800) : null,
+              gbSplitFns: typeof window.gBrowser.addTabSplitView === "function"
+                ? Object.getOwnPropertyNames(Object.getPrototypeOf(window.gBrowser) || {}).filter((n) => /split|tab/i.test(n)).slice(0, 40)
+                : null,
             };
           } catch (e) {
             return { error: String(e) };

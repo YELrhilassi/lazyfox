@@ -40,6 +40,70 @@ export async function run(ctx) {
     assert(s && s.statusMounted === true, "chrome status bar mounted: " + JSON.stringify(s && { mounted: s.statusMounted, position: s.statusPosition }));
   });
 
+  await t("status bar hides during DOM fullscreen and returns on exit", async () => {
+    // A video going fullscreen (requestFullscreen) must hide the window-level
+    // bar, and exiting must bring it back. Regression: after a Firefox update
+    // the bar stayed on screen during video fullscreen — the layered check
+    // (the chrome document's inDOMFullscreen attribute OR the selected tab's
+    // standard document.fullscreenElement) must catch both signals.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/fullscreen`);
+    const s0 = await ctx.chromeState();
+    assert(s0 && s0.statusMounted === true, "bar mounted before fullscreen: " + JSON.stringify(s0 && { m: s0.statusMounted, fs: s0.fullscreen }));
+    await ctx.press(ctx.tabA, "f"); // trusted key -> requestFullscreen()
+    await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.statusMounted === false ? true : null;
+    }, 10000).catch(() => {
+      throw new Error("status bar stayed visible during DOM fullscreen");
+    });
+    const fs = await evalIn(ctx.tabA, `!!document.fullscreenElement`);
+    assert(fs, "page really entered DOM fullscreen");
+    await ctx.press(ctx.tabA, "x"); // exit fullscreen
+    await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.statusMounted === true ? true : null;
+    }, 10000).catch(() => {
+      throw new Error("status bar did not return after fullscreen exit");
+    });
+  });
+
+  await t("leader-armed indicator: with the which-key overlay off, the bar shows LEADER", async () => {
+    // ;q toggles the which-key overlay off. With the overlay hidden, pressing
+    // ; arms the leader with NO visible overlay — the status bar's pulsing
+    // chevron (mode LEADER) is the only sign the leader is armed. Regression:
+    // the bar used to render nothing for LEADER mode.
+    await ctx.openCC(ctx.tabA);
+    // Toggle the overlay off through the chrome helper (chrome owns the keys
+    // on the command center).
+    await ctx.chromeLeaderPress(ctx.tabA, "q");
+    await waitFor(async () => {
+      const c = await evalIn(ctx.probe, `browser.storage.local.get("config").then(r => r.config && r.config.whichKey)`);
+      return c === false ? true : null;
+    }, 8000).catch(() => { throw new Error(";q did not flip whichKey off"); });
+    // Press ; alone: the leader arms, the overlay stays hidden.
+    await ctx.press(ctx.tabA, ";");
+    await sleep(300);
+    const armed = await ctx.chromeState();
+    assert(armed && armed.leaderActive === true,
+      "leader armed with the overlay off: " + JSON.stringify(armed && { la: armed.leaderActive, st: armed.statusAttr }));
+    assert(armed && armed.statusAttr && armed.statusAttr.indexOf("|LEADER|") !== -1,
+      "status bar shows LEADER mode while armed: " + JSON.stringify(armed && armed.statusAttr));
+    // Escape disarms; the chevron leaves the bar.
+    await ctx.press(ctx.tabA, "Escape");
+    await sleep(300);
+    const disarmed = await ctx.chromeState();
+    assert(disarmed && disarmed.leaderActive === false, "Escape disarmed the leader");
+    assert(disarmed && disarmed.statusAttr && disarmed.statusAttr.indexOf("|LEADER|") === -1,
+      "status bar left LEADER mode after disarm: " + JSON.stringify(disarmed && disarmed.statusAttr));
+    // Re-enable the overlay so the rest of the suite runs with hints on.
+    await ctx.chromeLeaderPress(ctx.tabA, "q");
+    await waitFor(async () => {
+      const c = await evalIn(ctx.probe, `browser.storage.local.get("config").then(r => r.config && r.config.whichKey)`);
+      return c === true ? true : null;
+    }, 8000).catch(() => { throw new Error(";q did not re-enable whichKey"); });
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
+
   await t("status bar position: top setting moves the bar", async () => {
     // Config reaches the chrome helper through the #lfc=cfg channel (the same
     // path the options page uses), then the bar re-renders on its 500ms poll.
@@ -787,5 +851,24 @@ export async function run(ctx) {
     ctx.tabA = await createTab();
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await activate(ctx.tabA).catch(() => {});
+  });
+
+  await t("an active about:blank tab is never hijacked into the command center", async () => {
+    // Regression: the background converted active about:blank tabs to the
+    // command center after 500ms, racing in-flight navigations (a
+    // target=_blank link, ;o, a search results tab). A Firefox update
+    // changed when a new tab reports its pending URL, the conversion won the
+    // race, and every link / ;s / ;o landed on the command-center home
+    // instead of the target page — the "empty new tab" the user saw. The
+    // command center for user-opened tabs comes from the newtab override, so
+    // a genuinely blank tab must simply stay blank.
+    const id = await evalIn(ctx.probe, `browser.tabs.create({ url: "about:blank", active: true }).then(t => t.id)`);
+    assert(id, "active blank tab created");
+    await sleep(2000); // well past the old 500ms conversion window
+    const u = await evalIn(ctx.probe, `browser.tabs.get(${id}).then(t => t.url).catch(() => "GONE")`);
+    assert(String(u).indexOf("about:blank") !== -1, "blank tab was left alone, got " + u);
+    await evalIn(ctx.probe, `browser.tabs.remove(${id}).catch(() => true)`);
+    await activate(ctx.tabA).catch(() => {});
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
   });
 }

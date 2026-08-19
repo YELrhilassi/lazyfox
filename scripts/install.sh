@@ -253,7 +253,13 @@ step "Merged preferences into user.js (existing prefs preserved)"
 ffdir="$EXPLICIT_FFDIR"
 if [[ -z "$ffdir" ]]; then ffdir="$(resolve_ff_dir || true)"; fi
 if [[ -n "$ffdir" && -d "$ffdir" ]]; then
-  if [[ -f "$ffdir/config.js" && -f "$ffdir/defaults/pref/config-prefs.js" ]]; then
+  # Re-install when the files are missing OR when their content drifted from
+  # the bundled loader (a Firefox update or an older Lazyfox can leave a
+  # loader that no longer matches, e.g. Firefox 155 stopped trusting file:
+  # URLs in loadSubScript). Existence alone is not enough for upgrades.
+  if [[ -f "$ffdir/config.js" && -f "$ffdir/defaults/pref/config-prefs.js" ]] &&
+     cmp -s "$REPO_ROOT/dist/chrome/loader/config.js" "$ffdir/config.js" &&
+     cmp -s "$REPO_ROOT/dist/chrome/loader/config-prefs.js" "$ffdir/defaults/pref/config-prefs.js"; then
     step "Chrome loader already installed in $ffdir"
   else
     if [[ "$(id -u)" -eq 0 ]]; then

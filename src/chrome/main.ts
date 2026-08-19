@@ -112,6 +112,18 @@ import { createTypingChannel } from "./typing";
   };
   leaderActions = makeLeaderActions(ctx);
 
+  // The chrome-level key dispatch (leader/popups/hotkeys/typing guard), set
+  // up below but referenced here so the #lfc=keys channel can drive it. The
+  // closure resolves at call time (after init), so ordering is safe.
+  let chromeKeyDown: (e: {
+    key: string;
+    ctrlKey: boolean;
+    altKey: boolean;
+    shiftKey: boolean;
+    metaKey: boolean;
+    isComposing: boolean;
+  }) => boolean = () => false;
+
   channel = createChannel({
     ctx,
     ops: chromeOps as unknown as { openTarget(which: string): boolean; openResize(): void },
@@ -119,6 +131,7 @@ import { createTypingChannel } from "./typing";
     status,
     cfg,
     debug,
+    keys: { dispatch: (e) => chromeKeyDown(e) },
   });
 
   /* ===================== typing channel ===================== */
@@ -132,7 +145,11 @@ import { createTypingChannel } from "./typing";
       lastAction = k;
       runLeaderAction(leaderActions, k);
     },
-    () => cfg.config.whichKey !== false
+    () => cfg.config.whichKey !== false,
+    // Re-render the status bar the instant the leader arms/disarms so its
+    // pulsing chevron appears immediately (the 500ms poll would lag a fast
+    // ;<key> press).
+    () => status.compute()
   );
   // ;' = quick switch: capture the next digit and jump to the marked session.
   leaderActions["'"] = () =>
@@ -146,6 +163,7 @@ import { createTypingChannel } from "./typing";
   // ;+1-9 = move tab N into the current split view.
   leaderActions["+"] = () =>
     leader!.armPending((k) => {
+      lastAction = "+" + k;
       if (/^[1-9]$/.test(k)) {
         chromeOps.splitAddTabByIndex(Number(k));
         return true;
@@ -221,11 +239,21 @@ import { createTypingChannel } from "./typing";
   // When a page element goes fullscreen (a video), the window-level bar would
   // sit over the full-screen content — hide it and re-show when it exits.
   // status.update() reads isFullscreen() itself, so it handles both edges.
+  // The observer notifications are the same signals Firefox's own UI
+  // listens to: they make the hide/re-show immediate (the 500ms poll is
+  // only a backstop) and survive changes to the chrome document's
+  // inDOMFullscreen attribute handling.
   try {
     const onFullscreen = () => status.update();
     window.addEventListener("fullscreenchange", onFullscreen);
     window.addEventListener("willenterfullscreen", onFullscreen);
     window.addEventListener("willexitfullscreen", onFullscreen);
+    const fsObs = {
+      observe: onFullscreen,
+      QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
+    };
+    Services.obs.addObserver(fsObs, "MozDOMFullscreen:Entered");
+    Services.obs.addObserver(fsObs, "MozDOMFullscreen:Exited");
   } catch (e) {
     // ignore
   }
@@ -305,76 +333,77 @@ import { createTypingChannel } from "./typing";
 
   /* ==================== key handling ==================== */
 
+  // Core chrome-level key dispatch, shared by the window capture listener and
+  // the #lfc=keys test channel (which drives the command center because
+  // geckodriver's BiDi input is rejected on moz-extension contexts). Returns
+  // whether the key was consumed — the capture listener then
+  // preventDefaults/stops propagation, and the channel skips dispatching to
+  // content.
+  chromeKeyDown = (e) => {
+    if (e.isComposing) return false;
+
+    // A chrome popup is open: Esc closes it first (before the page/window).
+    if (popup.isOpen()) {
+      if (e.key === "Escape") {
+        if (popup.resizeOnKey(e as KeyboardEvent)) return true;
+        popup.close();
+        return true;
+      }
+      if (popup.resizeOnKey(e as KeyboardEvent)) return true;
+      return false;
+    }
+
+    if (leader!.hasPending()) {
+      leader!.handlePending(e.key);
+      return true;
+    }
+
+    if (leader!.active) {
+      leader!.handleKey(e as KeyboardEvent);
+      return true;
+    }
+
+    // The command center is Lazyfox's own page: its input is focused by
+    // default (so h/j/k/l etc. type normally), but the leader key must
+    // still arm there — otherwise the home-screen command shortcuts
+    // (;n, ;z, ;s, 1-6, ...) stop working the moment the input is focused.
+    const k = e.key;
+    if (
+      k === leaderKey() &&
+      !e.ctrlKey && !e.altKey && !e.metaKey &&
+      isCommandCenterTab()
+    ) {
+      leader!.show();
+      return true;
+    }
+
+    // Typing in a page input (or the URL bar): let the key through.
+    if (typing.focusedIsTyping(e as KeyboardEvent)) return false;
+
+    // Ctrl+1-9: hot-swap to the session with that marker (tmux-style).
+    if (e.ctrlKey && !e.altKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
+      chromeOps.switchSessionByMarker(Number(e.key));
+      return true;
+    }
+
+    if (handleHotkeys(e as KeyboardEvent)) return true;
+
+    // Ctrl/Alt/Meta chords are never the leader key on their own.
+    if (e.ctrlKey || e.altKey || e.metaKey) return false;
+
+    if (k === leaderKey()) {
+      leader!.show();
+      return true;
+    }
+    return false;
+  };
+
   window.addEventListener(
     "keydown",
     (e) => {
-      if (e.isComposing) return;
-
-      // A chrome popup is open: Esc closes it first (before the page/window).
-      if (popup.isOpen()) {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          if (popup.resizeOnKey(e)) return;
-          popup.close();
-        } else if (popup.resizeOnKey(e)) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-        }
-        return;
-      }
-
-      if (leader!.hasPending()) {
+      if (chromeKeyDown(e)) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        leader!.handlePending(e.key);
-        return;
-      }
-
-      if (leader!.active) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        leader!.handleKey(e);
-        return;
-      }
-
-      // The command center is Lazyfox's own page: its input is focused by
-      // default (so h/j/k/l etc. type normally), but the leader key must
-      // still arm there — otherwise the home-screen command shortcuts
-      // (;n, ;z, ;s, 1-6, ...) stop working the moment the input is focused.
-      let k = e.key;
-      if (
-        k === leaderKey() &&
-        !e.ctrlKey && !e.altKey && !e.metaKey &&
-        isCommandCenterTab()
-      ) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        leader!.show();
-        return;
-      }
-
-      // Typing in a page input (or the URL bar): let the key through.
-      if (typing.focusedIsTyping(e)) return;
-
-      // Ctrl+1-9: hot-swap to the session with that marker (tmux-style).
-      if (e.ctrlKey && !e.altKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        chromeOps.switchSessionByMarker(Number(e.key));
-        return;
-      }
-
-      if (handleHotkeys(e)) return;
-
-      // Ctrl/Alt/Meta chords are never the leader key on their own.
-      if (e.ctrlKey || e.altKey || e.metaKey) return;
-
-      if (k === leaderKey()) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        leader!.show();
-        return;
       }
     },
     true

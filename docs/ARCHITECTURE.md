@@ -134,6 +134,61 @@ pane), `options.ts` and `popup.ts`.
 - **The Go core owns the math.** Anything that's pure computation lives in
   Go; the JS sides just call it.
 
+## Staying alive across Firefox updates
+
+Lazyfox runs half in the stable WebExtension API and half in Firefox's
+private chrome (the `userChrome.uc.js` helper). The private half is what
+breaks when Firefox changes internals, so every fragile surface follows one
+rule: **never let a single internal signal be load-bearing** — layer a
+stable API under it, and re-check on a timer.
+
+Concrete examples of the pattern:
+
+- **The command center is the new-tab page via `chrome_url_overrides.newtab`**
+  (a stable, documented manifest key). The background's "convert home-ish
+  tabs" pass (`maybeConvertHome`) is only a fallback for leftover
+  `about:home`/`about:newtab` tabs, and it never touches mid-session
+  `about:blank` tabs: a blank tab is normally a transient placeholder for an
+  in-flight navigation (a `target=_blank` link, `;o`, a search-results tab),
+  and converting it strands every new-tab navigation on the command center
+  home. The conversion also refuses tabs that are loading or carry a pending
+  URL, and re-checks after a delay so a late-appearing `pendingUrl` can't be
+  missed. The one deliberate exception is the launch tab: a profile whose
+  `browser.startup.homepage` is `about:blank` (and/or `startup.page` is 0)
+  opens a blank first tab that is the HOME tab, not a placeholder. A
+  one-shot startup pass (`maybeConvertStartupBlank`) converts a sole, still-
+  blank, idle tab to the command center once native startup restore has had
+  time to settle — never a second tab or a tab with navigation pending.
+- **DOM fullscreen is detected three ways.** The window-level status bar
+  hides when (1) the chrome document carries Firefox's `inDOMFullscreen`
+  attribute, (2) the selected tab's content document reports a non-null
+  `document.fullscreenElement` (the standard Fullscreen API — the part that
+  survives any internal rename), or (3) the `MozDOMFullscreen:Entered` /
+  `MozDOMFullscreen:Exited` observer notifications fire. A 500ms poll
+  re-checks both edges as a backstop.
+- **The chrome loader uses the opt-in that each Firefox generation wants.**
+  `config.js` → `userChrome.uc.js` and the core sandbox bootstrap both load
+  local scripts with `Services.scriptloader.loadSubScriptWithOptions(..., {
+  allowUnsafeURL: true })`. Firefox 155 (bug 1974213) began rejecting
+  `file:`/`jar:` URLs in `loadSubScript` unless that opt-in is present;
+  older Firefox ignores the unknown option and loads `file:` anyway, so the
+  single call spans every supported version. The installer also re-checks
+  the installed `config.js` against the bundled one and refreshes it on
+  drift — so a Firefox auto-update that changes the rules gets a matching
+  loader on the next `install.ps1`/`install.sh` run.
+- **Prefer documented chrome APIs, keep one fallback per call.**
+  `fixupAndLoadURIString` for in-place navigation, `gBrowser.addTab` for new
+  tabs, PlacesUtils/Downloads.sys.mjs for data. Every XUL-structure touch is
+  wrapped in try/catch and degrades to a message or a no-op.
+
+When a Firefox update breaks something, the fix is usually to add another
+detection layer or drop a fragile mechanism entirely — not to chase the new
+internal name. The e2e suite (see below) pins the behaviors that matter:
+links/search/`;o` must always land on their target, never on the command
+center, and the status bar must vanish the moment content goes fullscreen.
+`docs/UPDATES.md` is the full runbook: the fragile-surface inventory, the
+history of breakages and fixes, and the post-update checklist.
+
 ## Testing
 
 The end-to-end suite drives a real Firefox over WebDriver BiDi

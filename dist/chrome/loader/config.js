@@ -7,7 +7,14 @@ function lfLoad(win) {
     var ucFile = Services.dirsvc.get("UChrm", Ci.nsIFile);
     ucFile.append("userChrome.uc.js");
     var ucUrl = Services.io.newFileURI(ucFile).spec;
-    Services.scriptloader.loadSubScript(ucUrl, win);
+    // Firefox 155 (bug 1974213) stopped trusting file:/jar: URLs in
+    // loadSubScript; the explicit allowUnsafeURL opt-in keeps the profile's
+    // chrome/ scripts loadable on both old and new Firefox (older versions
+    // simply ignore the unknown option).
+    Services.scriptloader.loadSubScriptWithOptions(ucUrl, {
+      target: win,
+      allowUnsafeURL: true,
+    });
     win.__lazyfoxLoaded = true;
   } catch (e) {
     try {

@@ -19,7 +19,8 @@
     "storage",
     "contextualIdentities",
     "browsingData",
-    "cookies"
+    "cookies",
+    "notifications"
   ],
   "host_permissions": [
     "<all_urls>"

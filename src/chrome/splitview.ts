@@ -459,6 +459,9 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       let sv = activeSplitView();
       if (!sv && lastNativeSplit && lastNativeSplit.isConnected) sv = lastNativeSplit;
       const tab = realTabs()[n - 1];
+      try {
+        Services.console.logStringMessage("lazyfox +N: n=" + n + " sv=" + (sv ? "yes" : "no") + " tab=" + (tab ? "yes" : "no") + " tabPinned=" + (tab && tab.pinned) + " addTabsFn=" + (sv ? typeof sv.addTabs : "n/a") + " tabSv=" + (tab && tab.splitview ? "yes" : "no"));
+      } catch (e) {}
       if (!tab || tab.pinned) return false;
       if (!sv) {
         // Auto-split: pair the active tab with tab N directly.
@@ -505,7 +508,13 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       }
       const preStrip = stripSnapshot();
       if (typeof sv.addTabs !== "function") return false;
-      sv.addTabs([tab]);
+      try {
+        Services.console.logStringMessage("lazyfox +N: calling sv.addTabs([tab])");
+        sv.addTabs([tab]);
+        Services.console.logStringMessage("lazyfox +N: addTabs returned ok");
+      } catch (e) {
+        Services.console.logStringMessage("lazyfox +N: addTabs threw " + String(e));
+      }
       removePanelPanes(sv);
       // Keep the strip order stable: the moved tab joins the group AND the
       // group stays where it was (only the newcomer changes its number, to
