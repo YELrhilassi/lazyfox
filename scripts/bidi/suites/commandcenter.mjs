@@ -163,6 +163,60 @@ export async function run(ctx) {
     assert(f.state === "cmd", "back to cmd after Esc");
   });
 
+  await t("command center insert mode: the leader key and apostrophe type into the input", async () => {
+    // Regression: in insert mode with text in the input the leader key (;) and
+    // ' must TYPE — not arm the leader (which swallowed the key and then the
+    // next keystroke too) and not trigger the native quick-find.
+    await ctx.openCC(ctx.tabA);
+    await ctx.press(ctx.tabA, "i");
+    let f = await ctx.ccFacts(ctx.tabA);
+    assert(f.state === "insert", "state insert after i, got " + f.state);
+    await ctx.typeIn(ctx.tabA, "x;don't");
+    f = await ctx.ccFacts(ctx.tabA);
+    assert(f.inputVal === "x;don't", "input typed x;don't, got " + JSON.stringify(f.inputVal));
+    assert(f.state === "insert", "still insert while typing");
+    const s = await ctx.chromeState();
+    assert(s && !s.leaderActive, "chrome leader never armed while composing");
+    assert(s && !s.leaderPending, "no one-shot capture armed while composing");
+    await ctx.press(ctx.tabA, "Escape");
+    f = await ctx.ccFacts(ctx.tabA);
+    assert(f.state === "cmd", "back to cmd after Esc");
+    // Command mode: ; still arms the leader (home-screen shortcuts).
+    await ctx.press(ctx.tabA, ";");
+    await sleep(300);
+    const s2 = await ctx.chromeState();
+    assert(s2 && s2.leaderActive, "; in command mode still arms the leader");
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
+  await t("command center: a fresh tab's empty input still arms the leader", async () => {
+    // Regression: after a command opens a new command-center tab its input
+    // holds focus and is EMPTY. `;` there must arm the leader (so commands
+    // chain without a mouse click), even though it types once text is in it.
+    await ctx.openCC(ctx.tabA);
+    const before = await ctx.tabCount();
+    await ctx.leaderPress(ctx.tabA, "n"); // opens a fresh, focused CC tab
+    await waitFor(async () => (await ctx.tabCount()) === before + 1 ? true : null, 10000);
+    await sleep(600);
+    // The new tab is active with an empty, focused input.
+    const dup = (await ctx.ccTabs())[0] || ctx.tabA;
+    const dupCtx = dup.context || dup;
+    let f = await ctx.ccFacts(dupCtx);
+    assert(f.focused, "fresh tab input is focused");
+    assert(f.inputVal === "", "fresh tab input is empty, got " + JSON.stringify(f.inputVal));
+    // `;` on the empty input arms the leader instead of typing.
+    await ctx.press(dupCtx, ";");
+    await sleep(300);
+    const s = await ctx.chromeState();
+    assert(s && s.leaderActive, "; on the empty home input arms the leader");
+    assert(!(await ctx.ccFacts(dupCtx)).inputVal, "; did not type into the empty input");
+    await ctx.press(dupCtx, "Escape");
+    // Cleanup: close the extra tab.
+    await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true}).then(ts => { const t = ts.find(x => x.active && !x.pinned); if (t && ts.length > 2) return browser.tabs.remove(t.id); return true; })`).catch(() => {});
+    await ctx.activateTab(ctx.tabA);
+    await sleep(300);
+  });
+
   await t("command center search: suggestions + Enter runs a web search", async () => {
     await ctx.openCC(ctx.tabA);
     // h/j/k/l are navigation keys in command mode, so focus the input first

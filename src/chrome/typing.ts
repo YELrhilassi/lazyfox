@@ -26,6 +26,7 @@ function isTypingTarget(t: unknown): boolean {
 
 export interface TypingChannel {
   focusedIsTyping(e: KeyboardEvent): boolean;
+  focusedTypingValue(e: KeyboardEvent): string;
   reset(): void;
 }
 
@@ -61,24 +62,45 @@ export function createTypingChannel(): TypingChannel {
   }
   initFrameChannel();
 
-  function focusedIsTyping(e: KeyboardEvent): boolean {
+  function focusedTypingTarget(e: KeyboardEvent): Element | null {
     try {
-      if (isTypingTarget((e as unknown as { originalTarget?: unknown }).originalTarget)) return true;
+      const t = (e as unknown as { originalTarget?: unknown }).originalTarget;
+      if (isTypingTarget(t as Element)) return t as Element;
     } catch (err) {
       // ignore
     }
     try {
       const fd = (document as unknown as { commandDispatcher?: { focusedElement?: unknown } })
         .commandDispatcher;
-      if (fd && isTypingTarget(fd.focusedElement)) return true;
+      if (fd && isTypingTarget(fd.focusedElement as Element)) return fd.focusedElement as Element;
     } catch (err) {
       // ignore
     }
     try {
-      if (isTypingTarget(Services.focus.focusedElement)) return true;
+      const f = Services.focus.focusedElement;
+      if (isTypingTarget(f)) return f;
     } catch (err) {
       // ignore
     }
+    // In-process pages (the command center): the chrome command dispatcher and
+    // Services.focus see same-process focus, but a process-isolated extension
+    // page is only reported through the (possibly inert) frame script — ask
+    // the page's own document directly. Cross-process accesses throw and are
+    // caught, so remote content falls through to the other signals.
+    try {
+      const tab = window.gBrowser && window.gBrowser.selectedTab;
+      const cw = tab && tab.linkedBrowser && tab.linkedBrowser.contentWindow;
+      if (cw && cw.document && cw.document.activeElement && isTypingTarget(cw.document.activeElement)) {
+        return cw.document.activeElement;
+      }
+    } catch (err) {
+      // ignore
+    }
+    return null;
+  }
+
+  function focusedIsTyping(e: KeyboardEvent): boolean {
+    if (focusedTypingTarget(e)) return true;
     try {
       const tab = window.gBrowser && window.gBrowser.selectedTab;
       if (tab && typeof SessionStore !== "undefined" && SessionStore.getCustomTabValue) {
@@ -91,8 +113,28 @@ export function createTypingChannel(): TypingChannel {
     return false;
   }
 
+  // The text inside the focused typing target ("" when none or empty). Used to
+  // tell "the user is composing text" from "an empty input merely holds focus"
+  // — the command center's empty home input must still let `;` arm the leader.
+  function focusedTypingValue(e: KeyboardEvent): string {
+    const t = focusedTypingTarget(e);
+    if (!t) return "";
+    try {
+      const tag = String(t.tagName || "").replace(/^.*:/, "").toUpperCase();
+      if (tag === "INPUT" || tag === "TEXTAREA") return (t as HTMLInputElement).value || "";
+      const he = t as HTMLElement;
+      if (he.isContentEditable || (t.getAttribute && t.getAttribute("contenteditable") === "true")) {
+        return he.textContent || "";
+      }
+    } catch (err) {
+      // ignore
+    }
+    return "";
+  }
+
   return {
     focusedIsTyping,
+    focusedTypingValue,
     reset: () => {
       contentTyping = false;
     },
