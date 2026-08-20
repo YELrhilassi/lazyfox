@@ -455,4 +455,26 @@ export async function run(ctx) {
       : survivor.context;
     await ctx.activateTab(ctx.tabA);
   });
+
+  await t("a stale leader never eats keys typed into an input", async () => {
+    // Regression: pressing `;` on the page then clicking into a text field used
+    // to leave the leader armed, so the first key typed (; or ') was swallowed
+    // and a stray ' even re-armed the session-marker capture (so the next digit
+    // switched sessions). Focusing a text field must disarm everything and let
+    // every key type.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    // Arm the leader with the input NOT focused (focus on the page body).
+    await evalIn(ctx.tabA, `document.activeElement && document.activeElement.blur(); true`);
+    await sleep(200);
+    await ctx.press(ctx.tabA, ";");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-leader")) ? true : null, 5000);
+    // Focus the page input, then type ; ' 1 — all three must land.
+    await evalIn(ctx.tabA, `document.getElementById("inp1").focus(); true`);
+    await sleep(200);
+    await ctx.typeIn(ctx.tabA, ";'1");
+    const val = await evalIn(ctx.tabA, `document.getElementById("inp1").value`);
+    assert(val === ";'1", "input got ;'1, got " + JSON.stringify(val));
+    // Cleanup: blur so later tests start clean.
+    await evalIn(ctx.tabA, `document.activeElement && document.activeElement.blur(); true`);
+  });
 }

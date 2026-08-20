@@ -89,6 +89,18 @@ export class LeaderController {
     return fn ? fn(k) : false;
   }
 
+  /** Cancels an armed one-shot capture without running it. Used when the user
+   * moves focus into a text field or otherwise stops intending to complete the
+   * capture (e.g. `;'` then typing into a search box must not switch sessions
+   * on the next digit). */
+  cancelPending(): void {
+    this.pendingFn = null;
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+  }
+
   /** The selectable (non-native) bindings in core order; wk.sel indexes into it. */
   bindings(): Promise<WkItem[]> {
     if (!this.bindingsLoaded) {

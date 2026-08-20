@@ -293,10 +293,16 @@ import { createContentOps, type ContentPopupShell } from "./ops";
       return;
     }
     if (hints.active) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      hints.handleKey(e);
-      return;
+      if (isTypingTarget(e.target as Element)) {
+        // The user focused a text field mid-hints: the hint batch must not
+        // eat what they type there. Drop the hints and let the key through.
+        hints.exit();
+      } else {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        hints.handleKey(e);
+        return;
+      }
     }
     // NOTE: the chrome helper announces itself as "alive" and was meant to own
     // the leader key everywhere, but current Firefox never forwards keys typed
@@ -325,6 +331,16 @@ import { createContentOps, type ContentPopupShell } from "./ops";
           // ignore
         }
       }
+      return;
+    }
+    // Focus is in a text field. A stale leader or one-shot capture must never
+    // eat what the user is typing: pressing `;` on the page and then clicking
+    // into a search box used to swallow the first character (and a stray `'`
+    // re-armed the marker capture, so the next digit switched sessions).
+    // Disarm both and let the key reach the field.
+    if (isTypingTarget(e.target as Element)) {
+      if (leader.active) leader.hide();
+      if (leader.hasPending()) leader.cancelPending();
       return;
     }
     if (leader.hasPending()) {
@@ -357,7 +373,6 @@ import { createContentOps, type ContentPopupShell } from "./ops";
       return;
     }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
-    if (isTypingTarget(e.target as Element)) return;
     if (handleScrollKeys(e)) {
       e.preventDefault();
       e.stopImmediatePropagation();

@@ -360,6 +360,46 @@ import { createTypingChannel } from "./typing";
       return false;
     }
 
+    const typingNow = typing.focusedIsTyping(e as KeyboardEvent);
+    const typingValue = typing.focusedTypingValue(e as KeyboardEvent);
+
+    // The leader (or a one-shot capture) is armed: the next key is a binding —
+    // but only while the user isn't composing text in a field. A field holding
+    // text means typing wins: a stale leader/capture (e.g. `;` pressed on a
+    // page, then clicking into a search box) must disarm and the key must type.
+    // An EMPTY input keeps the binding — that's `;n` then `n` on the home tab.
+    if (leader!.active || leader!.hasPending()) {
+      if (typingNow && typingValue !== "") {
+        if (leader!.active) leader!.hide();
+        if (leader!.hasPending()) leader!.cancelPending();
+        return false;
+      }
+      if (leader!.hasPending()) {
+        leader!.handlePending(e.key);
+        return true;
+      }
+      leader!.handleKey(e as KeyboardEvent);
+      return true;
+    }
+
+    // Typing in an editable (a page input, the command center's own input, the
+    // URL bar): never intercept — the leader key types like any other. The one
+    // exception is the command center's EMPTY home input: `;` there arms the
+    // leader so commands chain after a command leaves a fresh tab focused,
+    // instead of making the user click (or Esc) to blur it first.
+    if (typingNow) {
+      if (
+        e.key === leaderKey() &&
+        !e.ctrlKey && !e.altKey && !e.metaKey &&
+        typingValue === "" &&
+        isCommandCenterTab()
+      ) {
+        leader!.show();
+        return true;
+      }
+      return false;
+    }
+
     if (leader!.hasPending()) {
       leader!.handlePending(e.key);
       return true;
@@ -370,10 +410,10 @@ import { createTypingChannel } from "./typing";
       return true;
     }
 
-    // The command center is Lazyfox's own page: its input is focused by
-    // default (so h/j/k/l etc. type normally), but the leader key must
-    // still arm there — otherwise the home-screen command shortcuts
-    // (;n, ;z, ;s, 1-6, ...) stop working the moment the input is focused.
+    // The command center is Lazyfox's own page. In command mode (input
+    // blurred) the leader key must arm here so the home-screen shortcuts
+    // (;n, ;z, ;s, 1-6, ...) work; in insert mode the typing check above
+    // already let `;` through so it types into the input like any other key.
     const k = e.key;
     if (
       k === leaderKey() &&
@@ -383,9 +423,6 @@ import { createTypingChannel } from "./typing";
       leader!.show();
       return true;
     }
-
-    // Typing in a page input (or the URL bar): let the key through.
-    if (typing.focusedIsTyping(e as KeyboardEvent)) return false;
 
     // Ctrl+1-9: hot-swap to the session with that marker (tmux-style).
     if (e.ctrlKey && !e.altKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
