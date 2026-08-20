@@ -38,6 +38,9 @@ export interface CoreApi {
   encodeSplits(pairs: [number, number][]): string;
   decodeSplits(encoded: string): [number, number][];
   splitPartnerOf(pairs: [number, number][], i: number): number;
+  coalescePair(pre: string[], anchor: string, partner: string): string[];
+  coalesceIntoGroup(pre: string[], members: string[], tab: string): string[];
+  planStrip(current: string[], desired: string[], groups: string[][]): [string, number][];
   formatBytes(n: number): string;
   formatSpeed(n: number): string;
   downloadProgress(received: number, total: number): number;
@@ -110,6 +113,12 @@ export function createCoreFacade(getApi: () => Promise<CoreApi>) {
       call((a) => a.decodeSplits(encoded)),
     splitPartnerOf: (pairs: [number, number][], i: number): Promise<number> =>
       call((a) => a.splitPartnerOf(pairs, i)),
+    coalescePair: (pre: string[], anchor: string, partner: string): Promise<string[]> =>
+      call((a) => a.coalescePair(pre, anchor, partner)),
+    coalesceIntoGroup: (pre: string[], members: string[], tab: string): Promise<string[]> =>
+      call((a) => a.coalesceIntoGroup(pre, members, tab)),
+    planStrip: (current: string[], desired: string[], groups: string[][]): Promise<[string, number][]> =>
+      call((a) => a.planStrip(current, desired, groups)),
     formatBytes: (n: number): Promise<string> => call((a) => a.formatBytes(n)),
     formatSpeed: (n: number): Promise<string> => call((a) => a.formatSpeed(n)),
     downloadProgress: (received: number, total: number): Promise<number> =>

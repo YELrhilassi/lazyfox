@@ -5,6 +5,8 @@
 // that would otherwise be duplicated across search, sessions, stealth and the
 // message router live here.
 
+import { isRelayTabUrl } from "../shared/transient";
+
 export const CC_URL = browser.runtime.getURL("commandcenter.html");
 
 export async function getActiveTab(): Promise<any> {
@@ -12,13 +14,13 @@ export async function getActiveTab(): Promise<any> {
   return tabs && tabs[0];
 }
 
-// Transient UI tabs (the split-panel companion and the #lfc= request channel)
-// are not user tabs: numbering (tab switcher, ;1-9, ;+N, the status bar) skips
-// them so a tab's identity never shifts when a split/unsplit adds or removes a
-// companion pane.
+// Transient UI tabs (the split-panel companion and the throwaway #lfc= request
+// relays) are not user tabs: numbering (tab switcher, ;1-9, ;+N, the status
+// bar) skips them so a tab's identity never shifts when a split/unsplit adds
+// or removes a companion pane. A real tab carrying a momentary #lfc=keys/state
+// request hash is NOT transient — it must keep its number.
 export function isUITab(t: any): boolean {
-  const u = (t && t.url) || "";
-  return u.indexOf("splitpanel.html") !== -1 || u.indexOf("#lfc=") !== -1;
+  return isRelayTabUrl((t && t.url) || "");
 }
 
 // The user-visible tabs in the current window, in strip order.

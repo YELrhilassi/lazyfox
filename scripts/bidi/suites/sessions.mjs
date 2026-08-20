@@ -49,7 +49,17 @@ export async function run(ctx) {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/fullscreen`);
     const s0 = await ctx.chromeState();
     assert(s0 && s0.statusMounted === true, "bar mounted before fullscreen: " + JSON.stringify(s0 && { m: s0.statusMounted, fs: s0.fullscreen }));
-    await ctx.press(ctx.tabA, "f"); // trusted key -> requestFullscreen()
+    // A real user pressing `f` grants transient activation, so Firefox accepts
+    // requestFullscreen. WebDriver-synthesized key events do NOT carry that
+    // activation in this geckodriver (the page logs FS-DENIED), so try the
+    // key first (faithful to the real path) and fall back to a script call
+    // with explicit userActivation — same DOM result, same bar hide/show.
+    await ctx.press(ctx.tabA, "f");
+    const entered = await waitFor(async () => evalIn(ctx.tabA, `!!document.fullscreenElement`), 2000).catch(() => null);
+    if (!entered) {
+      await evalIn(ctx.tabA, `(document.getElementById("vid").requestFullscreen(), true)`, false, { userActivation: true });
+      await waitFor(async () => evalIn(ctx.tabA, `!!document.fullscreenElement`), 10000).catch(() => {});
+    }
     await waitFor(async () => {
       const s = await ctx.chromeState();
       return s && s.statusMounted === false ? true : null;
@@ -429,7 +439,8 @@ export async function run(ctx) {
       return sv.length === 2 && sv.some((t) => (t.url || "").includes("/hello")) ? sv : null;
     }, 8000).catch(async () => {
       const ts = await ctx.tabsInfo().catch(() => "ERR");
-      throw new Error(";+N did not move tab into split; tabs=" + JSON.stringify(ts));
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error(";+N did not move tab into split; lastMoveDebug=" + JSON.stringify(st && st.lastMoveDebug) + " tabs=" + JSON.stringify(ts));
     });
     assert(pair && pair.length === 2, "split pair is two real tabs: " + JSON.stringify(pair.map((t) => ({ u: t.url, s: t.splitViewId }))));
     const noPanel = await ctx.tabsInfo();

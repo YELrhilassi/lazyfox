@@ -282,12 +282,13 @@ function unwrap(rv) {
 }
 
 // Evaluate an expression in the page realm. Returns the unserialized value.
-export async function evalIn(context, expression, awaitPromise = true) {
+export async function evalIn(context, expression, awaitPromise = true, opts = {}) {
   const r = await send("script.evaluate", {
     expression,
     target: { context },
     awaitPromise,
     resultOwnership: "root",
+    ...(opts.userActivation ? { userActivation: true } : {}),
   });
   const v = r && r.result;
   if (v && v.type === "exception") {

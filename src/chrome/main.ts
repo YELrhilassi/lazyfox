@@ -52,6 +52,7 @@ import { createTypingChannel } from "./typing";
   let debug!: DebugHandlers;
   let leader: LeaderController | null = null;
   let lastAction: string | null = null;
+  let lastMoveDebug: string | null = null;
 
   const getMode = (): "POPUP" | "LEADER" | "NORMAL" =>
     popup.isOpen() ? "POPUP" : leader && leader.active ? "LEADER" : "NORMAL";
@@ -65,6 +66,7 @@ import { createTypingChannel } from "./typing";
   split = createSplitView({
     ccBaseUrl: () => channel.ccBaseUrl(),
     onSplitChange: () => status.update(),
+    onMove: (msg) => { lastMoveDebug = msg; },
   });
 
   debug = createDebug({
@@ -73,6 +75,7 @@ import { createTypingChannel } from "./typing";
       leaderActive: () => !!(leader && leader.active),
       leaderPending: () => !!(leader && leader.hasPending()),
       lastAction: () => lastAction,
+      lastMoveDebug: () => lastMoveDebug,
       statusMounted: () => status.mounted(),
       statusPosition: () => cfg.config.statusBarPosition || "bottom",
       dlActive: () => status.dlActive(),
