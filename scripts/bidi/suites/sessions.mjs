@@ -1102,4 +1102,149 @@ export async function run(ctx) {
     assert(closed, "Esc on the left pane closed the popup");
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
   });
+
+  await t("sessions: moving the last tab out of the current session sticks (autosave can't resurrect it)", async () => {
+    // The current session's stored tabs track the live window (the autosave
+    // re-snapshots it on every tab change), so a manual move out of it used to
+    // be silently undone moments later when the autosave put the tab back.
+    // The move now closes the tab in the live window too, so the autosave
+    // converges on the edit instead of fighting it.
+    const srcUrl = `${ctx.base}/lf-cur-src`;
+    const dstUrl = `${ctx.base}/lf-cur-dst`;
+    const extra = await createTab();
+    await navigate(extra, srcUrl, "complete");
+    await sleep(400);
+    // Saving snapshots the window and makes the new session current.
+    await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lfCur" } }); true`);
+    await waitFor(async () => {
+      const r = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.lfCur)`);
+      return r && r.tabs && r.tabs.some((t) => t.url === srcUrl) ? r : null;
+    }, 8000).catch(() => { throw new Error("lfCur session was not saved"); });
+    const idx = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => (r.lfSessions.lfCur.tabs || []).findIndex(t => t.url === ${JSON.stringify(srcUrl)}))`);
+    await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => {
+      const all = r.lfSessions || {};
+      all.lfDst = { name: "lfDst", marker: 0, active: 0, windowState: "normal", updatedAt: Date.now(),
+        tabs: [{ url: ${JSON.stringify(dstUrl)}, title: "lf-cur-dst", pinned: false }], splits: "" };
+      return browser.storage.local.set({ lfSessions: all });
+    }); true`);
+    // Await the reply: the move's live side effect closes the moved tab (not
+    // the sender, so awaiting is safe) and we want its result for a clean
+    // failure message.
+    const mvRes = await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionTabMove", data: { from: "lfCur", index: ${idx}, to: "lfDst" } }).then(r => r)`);
+    assert(mvRes && mvRes.ok === true, "move returned ok: " + JSON.stringify(mvRes) + " idx=" + idx);
+    // Give the debounced autosave time to re-snapshot the current session —
+    // the old bug only surfaced after it ran.
+    await sleep(2500);
+    const all = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions || {})`);
+    assert(all.lfDst && all.lfDst.tabs.some((t) => t.url === srcUrl), "destination gained the moved tab: " + JSON.stringify(all.lfDst && all.lfDst.tabs && all.lfDst.tabs.map((t) => t.url)));
+    assert(all.lfCur && !all.lfCur.tabs.some((t) => t.url === srcUrl), "current session did not resurrect the moved tab: " + JSON.stringify(all.lfCur && all.lfCur.tabs && all.lfCur.tabs.map((t) => t.url)));
+    const live = await ctx.tabsInfo();
+    assert(!live.some((t) => (t.url || "").includes("/lf-cur-src")), "moved tab was closed in the live window: " + JSON.stringify(live.map((t) => t.url)));
+    // Cleanup: drop the throwaway sessions and restore the established current.
+    await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { const a = r.lfSessions || {}; delete a.lfCur; delete a.lfDst; return browser.storage.local.set({ lfSessions: a }); }).then(() => browser.storage.local.set({ lfCurrentSession: "work" })); true`);
+    await closeContext(extra).catch(() => {});
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
+
+  await t("sessions: moving a tab into the current session opens it live (autosave can't drop it)", async () => {
+    // The move's target is the current session, whose stored tabs are the live
+    // window. The autosave used to overwrite the target with the window (which
+    // lacked the tab), so the tab vanished from BOTH sessions. The move now
+    // opens the tab in the live window, so the autosave keeps it.
+    const srcUrl = `${ctx.base}/lf-into-src`;
+    const curUrl = `${ctx.base}/lf-into-cur`;
+    await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => {
+      const all = r.lfSessions || {};
+      all.lfSrc = { name: "lfSrc", marker: 0, active: 0, windowState: "normal", updatedAt: Date.now(),
+        tabs: [{ url: ${JSON.stringify(srcUrl)}, title: "lf-into-src", pinned: false }], splits: "" };
+      all.lfCur = { name: "lfCur", marker: 0, active: 0, windowState: "normal", updatedAt: Date.now(),
+        tabs: [{ url: ${JSON.stringify(curUrl)}, title: "lf-into-cur", pinned: false }], splits: "" };
+      return browser.storage.local.set({ lfSessions: all, lfCurrentSession: "lfCur" });
+    }); true`);
+    const mvRes = await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionTabMove", data: { from: "lfSrc", index: 0, to: "lfCur" } }).then(r => r)`);
+    await sleep(2500);
+    const all = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions || {})`);
+    const liveDbg = await ctx.tabsInfo();
+    assert(mvRes && mvRes.ok === true, "move returned ok: " + JSON.stringify(mvRes));
+    assert(all.lfCur && all.lfCur.tabs.some((t) => t.url === srcUrl), "current session kept the moved-in tab: lfSrc=" + JSON.stringify(all.lfSrc && all.lfSrc.tabs && all.lfSrc.tabs.map((t) => t.url)) + " live=" + JSON.stringify(liveDbg.map((t) => t.url)) + " lfCur=" + JSON.stringify(all.lfCur && all.lfCur.tabs && all.lfCur.tabs.map((t) => t.url)));
+    assert(all.lfSrc && !all.lfSrc.tabs.some((t) => t.url === srcUrl), "source no longer has the moved tab");
+    const live = await ctx.tabsInfo();
+    assert(live.some((t) => (t.url || "").includes("/lf-into-src")), "moved-in tab was opened in the live window: " + JSON.stringify(live.map((t) => t.url)));
+    // Cleanup.
+    const movedTab = live.find((t) => (t.url || "").includes("/lf-into-src"));
+    if (movedTab) await evalIn(ctx.probe, `browser.tabs.remove(${movedTab.id}).catch(() => true)`).catch(() => {});
+    await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { const a = r.lfSessions || {}; delete a.lfSrc; delete a.lfCur; return browser.storage.local.set({ lfSessions: a }); }).then(() => browser.storage.local.set({ lfCurrentSession: "work" })); true`);
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
+
+await t("sessions: moving the only tab out of the current session replaces it with a fresh empty tab", async () => {
+    // Closing the last tab in a window would close the window, so the move
+    // replaces it with a fresh about:blank tab instead; the autosave folds the
+    // blank tab back into the session. The moved tab lands in the destination.
+    // The sender is a splitpanel.html tab — a UI tab that realTabsInWindow
+    // skips — so the window has exactly ONE real tab (the moved web tab) at
+    // move time, yet the sender survives the move and the reply can be awaited
+    // (no fire-and-forget raciness).
+    const movedUrl = `${ctx.base}/lf-only-src`;
+    const sender = await createTab();
+    const splitUrl = await evalIn(ctx.probe, `browser.runtime.getURL("splitpanel.html")`);
+    await navigate(sender, splitUrl, "complete");
+    const senderId = await evalIn(sender, `browser.tabs.getCurrent().then(t => t ? t.id : null)`);
+    const movedTab = await createTab();
+    await navigate(movedTab, movedUrl, "complete");
+    // Resolve the moved tab's id from the sender: the moved tab is a WEB page,
+    // where the browser.* tabs API is unavailable.
+    const movedId = await evalIn(sender, `browser.tabs.query({currentWindow:true}).then(ts => { const m = ts.find(t => (t.url || "").indexOf("/lf-only-src") !== -1); return m ? m.id : null; })`);
+    assert(movedId != null, "moved web tab found: " + movedId);
+    // Trim: keep only the sender (UI) and the moved web tab.
+    await evalIn(sender, `(async () => {
+      const ts = await browser.tabs.query({ currentWindow: true });
+      for (const t of ts) {
+        if (t.id !== ${senderId} && t.id !== ${movedId} && !t.pinned) { try { await browser.tabs.remove(t.id); } catch (e) {} }
+      }
+      return true;
+    })()`);
+    await sleep(500);
+    // Saving snapshots the window EXCLUDING the sender (a UI tab), so the
+    // saved session is exactly the single moved tab, and it becomes current.
+    const saveRes = await evalIn(sender, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lfCur" } }).then(r => r)`);
+    assert(saveRes && saveRes.ok === true, "sessionSave returned ok: " + JSON.stringify(saveRes));
+    await waitFor(async () => {
+      const r = await evalIn(sender, `browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.lfCur)`);
+      return r && r.tabs && r.tabs.length === 1 && r.tabs[0].url === movedUrl ? r : null;
+    }, 8000).catch(() => { throw new Error("lfCur did not capture the single web tab"); });
+    await evalIn(sender, `browser.storage.local.get("lfSessions").then(r => {
+      const all = r.lfSessions || {};
+      all.lfDst = { name: "lfDst", marker: 0, active: 0, windowState: "normal", updatedAt: Date.now(),
+        tabs: [{ url: ${JSON.stringify(`${ctx.base}/lf-only-dst`)}, title: "lf-only-dst", pinned: false }], splits: "" };
+      return browser.storage.local.set({ lfSessions: all });
+    }); true`);
+    // The sender survives the move (only the moved web tab is replaced), so
+    // await the reply for a deterministic assertion.
+    const mvRes = await evalIn(sender, `browser.runtime.sendMessage({ action: "sessionTabMove", data: { from: "lfCur", index: 0, to: "lfDst" } }).then(r => r)`);
+    assert(mvRes && mvRes.ok === true, "move returned ok: " + JSON.stringify(mvRes));
+    // Give the debounced autosave time to fold the blank replacement into the
+    // current session.
+    await sleep(2500);
+    const all = await evalIn(sender, `browser.storage.local.get("lfSessions").then(r => r.lfSessions || {})`);
+    assert(all.lfDst && all.lfDst.tabs.some((t) => t.url === movedUrl), "destination gained the only tab: " + JSON.stringify(all.lfDst && all.lfDst.tabs && all.lfDst.tabs.map((t) => t.url)));
+    assert(all.lfCur && all.lfCur.tabs.some((t) => (t.url || "") === "about:blank"), "current session holds a fresh empty replacement tab: " + JSON.stringify(all.lfCur && all.lfCur.tabs && all.lfCur.tabs.map((t) => t.url)));
+    const live = await evalIn(sender, `browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => t.url))`);
+    assert(live.some((u) => String(u).indexOf("about:blank") !== -1), "live window kept an empty tab, not a closed window: " + JSON.stringify(live));
+    // Cleanup: drop the throwaway sessions, trim back to a fresh probe and
+    // restore the established current.
+    await evalIn(sender, `browser.storage.local.get("lfSessions").then(r => { const a = r.lfSessions || {}; delete a.lfCur; delete a.lfDst; return browser.storage.local.set({ lfSessions: a }); }).then(() => browser.storage.local.set({ lfCurrentSession: "work" })); true`);
+    ctx.probe = await ctx.makeProbeTab();
+    const freshId = await evalIn(ctx.probe, `browser.tabs.getCurrent().then(t => t ? t.id : null)`);
+    await evalIn(ctx.probe, `(async () => {
+      const ts = await browser.tabs.query({ currentWindow: true });
+      for (const t of ts) {
+        if (t.id !== ${freshId} && !t.pinned) { try { await browser.tabs.remove(t.id); } catch (e) {} }
+      }
+      return true;
+    })()`);
+    await sleep(400);
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
 }
