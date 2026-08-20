@@ -66,6 +66,15 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // exposed. The wrapper is a DOM element, so isConnected detects unsplits.
   let lastNativeSplit: any = null;
 
+  // Monotonic token for the re-pin loop. Firefox parks a freshly glued pair
+  // ASYNCHRONOUSLY, so every split operation spawns a re-pin loop that keeps
+  // reconciling the strip back to its pre-operation order for up to ~1.2s.
+  // Two operations back-to-back (e.g. ;| then ;+N) would otherwise run two
+  // loops reconciling to DIFFERENT snapshots at the same time. Each loop
+  // captures the token when it starts and stops the moment a newer operation
+  // supersedes it, so only the most recent operation's loop is ever live.
+  let repinSeq = 0;
+
   // Stable id for a tab in the strip-planning id space. linkedPanel is unique
   // and stable for a tab's lifetime; browserId is the fallback for a tab whose
   // panel has not attached yet.
@@ -218,9 +227,11 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // skips tabs that are already at their slot, so a pass that finds the strip
   // already correct is free. Stops after the strip is stable (or ~1.2s).
   function repinAfterSplit(order: any[]): void {
+    const seq = ++repinSeq;
     let attempts = 0;
     let lastChanged = true;
     const tick = () => {
+      if (seq !== repinSeq) return;
       attempts++;
       const before = stripKey();
       const changed = reconcileTo(order);
@@ -233,18 +244,9 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       // the pair around asynchronously). Stop only after two consecutive
       // quiet passes AND a minimum settle window, so a late glide is still
       // corrected before the user's next action reads the strip.
-      if (attempts < 12 && (!quiet || elapsed < 600)) setTimeout(tick, 150);
+      if (seq === repinSeq && attempts < 12 && (!quiet || elapsed < 600)) setTimeout(tick, 150);
     };
     setTimeout(tick, 0);
-  }
-
-  // The split view a tab belongs to (its .splitview wrapper), or null.
-  function splitOf(tab: any): any {
-    try {
-      return tab && tab.splitview ? tab.splitview : null;
-    } catch (e) {
-      return null;
-    }
   }
 
   // Desired order for operations that GLUE two tabs that were not adjacent:
@@ -362,7 +364,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       }
       const preStrip = stripSnapshot();
       try {
-        window.gBrowser.addTabSplitView([active, blank]);
+        window.gBrowser.addTabSplitView([active, blank], splitInsertOpt([active, blank]));
       } catch (e) {
         // First attempt can fail with stale internal split state; dissolve the
         // active tab's split group and retry once.
@@ -373,7 +375,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         } catch (e2) {
           // ignore
         }
-        window.gBrowser.addTabSplitView([active, blank]);
+        window.gBrowser.addTabSplitView([active, blank], splitInsertOpt([active, blank]));
       }
       // addTabSplitView may still regroup the pair (moving it to the end);
       // pin the whole strip back to its pre-split order so the pairing lands
@@ -384,6 +386,31 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     } catch (e) {
       return false;
     }
+  }
+
+  // Options for addTabSplitView that keep a CONTIGUOUS, in-strip-order pair
+  // exactly where it already sits. Firefox's default is to park a new split at
+  // the strip end (and to do so asynchronously), so the re-pin loop would spend
+  // its first ticks hauling the pair back. insertBefore places the wrapper
+  // before the tab that follows the pair, so nothing moves at all; the loop
+  // then only needs to absorb Firefox's async re-park. Builds before 152 that
+  // lack the options arg simply ignore it (JS drops extra args) and the loop
+  // covers the parking shift exactly as before. Only correct for an already
+  // contiguous pair — the auto-split path (pair forming from far-apart tabs)
+  // deliberately does NOT use it and relies on the loop.
+  function splitInsertOpt(pair: any[]): any {
+    try {
+      let lastIdx = -1;
+      for (const t of pair) {
+        const i = window.gBrowser.tabs.indexOf(t);
+        if (i > lastIdx) lastIdx = i;
+      }
+      const after = window.gBrowser.tabs[lastIdx + 1];
+      if (after) return { insertBefore: after };
+    } catch (e) {
+      // ignore
+    }
+    return {};
   }
 
   // Drop the split-panel companion pane(s) from a split view — they are pure
@@ -457,16 +484,15 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         return true;
       }
       if (tab.splitview === sv) { mv("already in this split"); return true; }
-      // A dissolved split can leave a stale .splitview reference on the tab
-      // (a known Firefox quirk after unsplit); Firefox's addTabs then refuses
-      // the tab and the move silently fails. Dissolve any leftover reference
-      // first — it is a different (disconnected) view, so this only clears
-      // the stale state.
+      // A tab can live in exactly one split view. Firefox's addTabs refuses
+      // a tab that still belongs to another view — after an unsplit a stale
+      // .splitview reference lingers on the tab (a known quirk), and a tab
+      // genuinely in another split must leave it to be moved here. Either way
+      // the old view is dissolved first.
       if (tab.splitview && tab.splitview !== sv) {
         try {
           const stale = tab.splitview;
           if (typeof stale.unsplitTabs === "function") stale.unsplitTabs();
-          else if (stale.isConnected === false) stale.unsplitTabs?.();
           mv("dissolved stale tab.splitview");
         } catch (e) {
           // ignore — the view is already gone
@@ -573,7 +599,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       if (typeof sv.unsplitTabs !== "function") return false;
       sv.unsplitTabs();
       if (typeof window.gBrowser.addTabSplitView === "function") {
-        window.gBrowser.addTabSplitView(panes);
+        window.gBrowser.addTabSplitView(panes, splitInsertOpt(panes));
       }
       window.gBrowser.selectedTab = active;
       // The re-formed split may regroup at the strip end; pin the strip back
@@ -611,10 +637,16 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       for (const g of groups) {
         const tabs = (g || []).map((i) => real[i - 1]).filter((t: any) => !!t);
         if (tabs.length > 1 && typeof window.gBrowser.addTabSplitView === "function") {
-          window.gBrowser.addTabSplitView(tabs);
+          // Restored tabs are contiguous and in saved order, so the pair can
+          // be parked exactly where it already sits instead of the strip end.
+          window.gBrowser.addTabSplitView(tabs, splitInsertOpt(tabs));
         }
       }
       repinAfterSplit(preStrip);
+      // Refresh the remembered split so a later ;+N with the selected tab
+      // outside the split still targets a restored group (the selected tab's
+      // own .splitview only covers the case where it sits inside one).
+      rememberSplit();
     } catch (e) {
       // ignore
     }

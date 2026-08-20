@@ -313,8 +313,10 @@ export function createCtx(runtime) {
         }
       }, 8000);
     } finally {
-      // leave the probe on a plain CC page and restore the selected tab
-      await navigate(ctx.probe, ctx.ccBase, "complete").catch(() => {});
+      // Leave the probe on a plain CC page: strip the reply hash in place
+      // (same as sendKeys) instead of full-navigating, which reloads the
+      // extension page and can leave the hash behind if the reload fails.
+      await evalIn(ctx.probe, `history.replaceState(null, "", location.href.split("#")[0]); true`).catch(() => {});
       if (activeId != null) {
         await evalIn(ctx.probe, `browser.tabs.update(${activeId}, {active: true})`).catch(() => {});
       }
