@@ -267,6 +267,57 @@ async function refreshSplits(tabs: SessionTab[]): Promise<string> {
   }
 }
 
+// The current session's stored snapshot is a live view of the window: the
+// autosave re-syncs it from the window on every tab change. So a manual
+// move/copy that involves the current session must take effect on the LIVE
+// window too, or the autosave immediately undoes it — a tab moved OUT of the
+// current session is restored from the window (the move seems to never happen)
+// and one moved/copied IN is dropped because the window lacks it (the tab
+// vanishes from both sessions). Mirroring the edit in the window makes the
+// autosave converge the stored snapshot to the result. Closing the last tab
+// leaves a fresh blank tab, exactly like closing a tab in Firefox.
+async function liveWindowSideEffects(
+  srcName: string,
+  dstName: string,
+  tab: SessionTab,
+  srcIndex: number,
+  mode: "move" | "copy",
+  curName: string | undefined
+): Promise<void> {
+  try {
+    if (mode === "move" && srcName === curName) {
+      const real = await realTabsInWindow();
+      const byIdx = real[srcIndex];
+      // Match by stored index first, falling back to a URL search. Never close
+      // a tab we cannot positively identify: if the window diverged from the
+      // stored snapshot (e.g. a tab opened since the last autosave), the index
+      // may point elsewhere and the URL may be absent — closing that tab would
+      // be worse than letting the autosave keep the snapshot in sync.
+      const pick =
+        byIdx && byIdx.url === tab.url
+          ? byIdx
+          : real.find((t) => t.url === tab.url);
+      if (pick && pick.id != null) {
+        if (real.length <= 1) {
+          // Closing the last tab would close the window; replace it with a
+          // fresh empty tab instead (the user's requested behavior), and the
+          // autosave folds the blank tab back into the session.
+          await browser.tabs.update(pick.id, { url: "about:blank" });
+        } else {
+          await browser.tabs.remove(pick.id);
+        }
+      }
+    }
+    if (dstName === curName) {
+      if (tab.stealth) await stealthCreateTab(tab.url, false);
+      else await browser.tabs.create({ url: tab.url, active: false });
+    }
+  } catch (e) {
+    // Best-effort: the stored edit is already written; a failed side effect
+    // only means the autosave keeps the snapshot in sync with the window.
+  }
+}
+
 // Copy or move one tab (by its index in the source session's saved tabs) into
 // another session. Sessions are stored snapshots, so this edits the saved tab
 // lists — the live window is untouched until the target session is restored.
@@ -304,6 +355,18 @@ export async function moveTabBetweenSessions(
   }
   await writeSessions(all);
   pushSessionState();
+  // If the source or target is the current session, mirror the edit in the
+  // live window (see liveWindowSideEffects) so the autosave converges on the
+  // intended result instead of undoing it.
+  const cur = await browser.storage.local.get(CURRENT_SESSION_KEY);
+  await liveWindowSideEffects(
+    srcName,
+    dstName,
+    tab,
+    i,
+    mode,
+    cur && cur[CURRENT_SESSION_KEY]
+  );
   return { ok: true };
 }
 
