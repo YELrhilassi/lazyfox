@@ -280,15 +280,16 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     if (currentPopup) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      if (e.key === "Escape") {
+      // The popup's own onKey gets first refusal (the sessions popup consumes
+      // Esc to cancel a pending copy/move or step back to the left pane);
+      // only when it declines does Esc close the popup.
+      try {
+        if (currentPopup.onKey && currentPopup.onKey(e)) return;
+      } catch (err) {
         closePopup();
         return;
       }
-      try {
-        if (currentPopup.onKey) currentPopup.onKey(e);
-      } catch (err) {
-        closePopup();
-      }
+      if (e.key === "Escape") closePopup();
       return;
     }
     if (hints.active) {

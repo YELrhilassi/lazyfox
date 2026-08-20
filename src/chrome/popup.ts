@@ -25,6 +25,10 @@ export interface PopupHost {
   openResizePopup(): void;
   closeResize(): void;
   resizeOnKey(e: KeyboardEvent): boolean;
+  // Routes a key to the open popup's selector (used for keys the window
+  // capture listener would otherwise consume first — Esc). Returns whether the
+  // popup consumed it. Popups that don't expose onKey return false.
+  handleKey(e: KeyboardEvent): boolean;
 }
 
 export function createPopupHost(): PopupHost {
@@ -114,7 +118,12 @@ export function createPopupHost(): PopupHost {
     const input = root.querySelector(".lf-input") as HTMLInputElement | null;
     if (input && ctl.onKey) {
       input.addEventListener("keydown", (e) => {
-        if (ctl.onKey(e)) {
+        // Consume EVERY key that reaches the popup input while the selector
+        // owns it (or that the browser would otherwise route to the chrome
+        // UI, e.g. Tab moving focus out of the popup). Printable characters
+        // are let through so the native input still receives them.
+        const handled = ctl.onKey(e);
+        if (handled || e.key === "Tab") {
           e.preventDefault();
           e.stopPropagation();
         }
@@ -204,5 +213,7 @@ export function createPopupHost(): PopupHost {
     openResizePopup,
     closeResize,
     resizeOnKey,
+    handleKey: (e: KeyboardEvent) =>
+      currentPopup && currentPopup.onKey ? currentPopup.onKey(e) : false,
   };
 }

@@ -41,6 +41,7 @@ import {
   sessionList,
   sessionState,
   sessionTabs,
+  moveTabBetweenSessions,
   switchSessionByMarker
 } from "./sessions";
 
@@ -308,6 +309,10 @@ async function handleMessage(msg: BgAction, sender: any) {
       return switchSessionByMarker(data.marker);
     case "sessionAssignMarker":
       return assignSessionMarker(data.name, data.marker);
+    case "sessionTabCopy":
+      return moveTabBetweenSessions(data.from, data.index, data.to, "copy");
+    case "sessionTabMove":
+      return moveTabBetweenSessions(data.from, data.index, data.to, "move");
     case "sessionSplit":
       // Native splits are the chrome helper's domain (gBrowser.addTabSplitView);
       // relay the request through a transient #lfc= tab.
@@ -619,6 +624,16 @@ async function handleReq(tab: any, action: string, arg: string) {
     const nm = sep < 0 ? raw : raw.slice(0, sep);
     const mk = sep < 0 ? 0 : parseInt(raw.slice(sep + 1), 10);
     await assignSessionMarker(nm, mk);
+    return;
+  }
+  if (action === "sessionTabCopy" || action === "sessionTabMove") {
+    const raw = decodeURIComponent(arg || "");
+    const p1 = raw.indexOf("\u0001");
+    const p2 = p1 < 0 ? -1 : raw.indexOf("\u0001", p1 + 1);
+    const from = p1 < 0 ? raw : raw.slice(0, p1);
+    const idx = p1 < 0 ? -1 : p2 < 0 ? parseInt(raw.slice(p1 + 1), 10) : parseInt(raw.slice(p1 + 1, p2), 10);
+    const to = p2 < 0 ? "" : raw.slice(p2 + 1);
+    await moveTabBetweenSessions(from, idx, to, action === "sessionTabCopy" ? "copy" : "move");
     return;
   }
   if (action === "quit") {

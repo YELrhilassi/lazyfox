@@ -643,6 +643,10 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       sessionAction("switchSessionByMarker", String(marker)),
     assignSessionMarker: (name: string, marker: number) =>
       sessionAction("assignSessionMarker", name + "\u0001" + marker),
+    sessionTabCopy: (from: string, index: number, to: string) =>
+      sessionAction("sessionTabCopy", from + "\u0001" + index + "\u0001" + to),
+    sessionTabMove: (from: string, index: number, to: string) =>
+      sessionAction("sessionTabMove", from + "\u0001" + index + "\u0001" + to),
     splitTab: (orientation: "horizontal" | "vertical") => {
       if (!deps.split.splitCurrentTab(orientation)) {
         const api = typeof window.gBrowser.addTabSplitView === "function";

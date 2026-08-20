@@ -362,6 +362,16 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         toast(r && r.ok ? "\u201C" + name + "\u201D \u2192 marker " + marker : (r && r.note) || "could not set marker")
       );
     },
+    sessionTabCopy: (from: string, index: number, to: string) => {
+      void send("sessionTabCopy", { from: from, index: index, to: to }).then((r) =>
+        toast(r && r.ok ? "copied tab \u2192 \u201C" + to + "\u201D" : (r && r.note) || "could not copy tab")
+      );
+    },
+    sessionTabMove: (from: string, index: number, to: string) => {
+      void send("sessionTabMove", { from: from, index: index, to: to }).then((r) =>
+        toast(r && r.ok ? "moved tab \u2192 \u201C" + to + "\u201D" : (r && r.note) || "could not move tab")
+      );
+    },
     splitTab: (orientation: "horizontal" | "vertical") => {
       void send("sessionSplit", { orientation: orientation }).then((r) => {
         if (r && r.ok) toast("split side-by-side");

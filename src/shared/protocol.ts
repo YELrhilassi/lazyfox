@@ -63,6 +63,8 @@ export interface BgApi {
   sessionDelete: { req: { name: string }; res: { ok: boolean } };
   sessionSwitchByMarker: { req: { marker: number }; res: { ok: boolean; name?: string } };
   sessionAssignMarker: { req: { name: string; marker: number }; res: { ok: boolean; note?: string } };
+  sessionTabCopy: { req: { from: string; index: number; to: string }; res: { ok: boolean; note?: string } };
+  sessionTabMove: { req: { from: string; index: number; to: string }; res: { ok: boolean; note?: string } };
   sessionSplit: { req: { orientation: "horizontal" | "vertical" }; res: { ok: boolean; note?: string } };
   sessionUnsplit: { req: Record<string, never>; res: { ok: boolean; note?: string } };
   sessionSwitchPane: { req: { dir: number }; res: { ok: boolean; note?: string } };
