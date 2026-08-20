@@ -13,9 +13,15 @@ import { core } from "../../shared/core";
 import { isVisible } from "../../shared/dom";
 import { toast } from "../../shared/overlay";
 
+interface HintLabel extends HTMLSpanElement {
+  _x?: number;
+  _y?: number;
+}
+
 interface HintItem {
   el: Element;
   key: string;
+  label: HintLabel | null;
 }
 
 const HINT_CSS =
@@ -65,6 +71,20 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   let items: HintItem[] = []; // currently hinted items (viewport subset)
   let typed = "";
   let host: (HTMLElement & { _box: HTMLElement }) | null = null;
+  // rAF loop state: pages can shift under the hints at any moment (a carousel
+  // auto-slide, a lazy image landing, a layout shift, the user's own wheel
+  // scroll), so hints are re-anchored to their elements every frame. Reading
+  // rects forces layout, so the loop runs at full speed only while elements
+  // are actually moving (or the viewport is) and backs off to ~10 sweeps/s
+  // when the page is still.
+  let rafId = 0;
+  let lastSweep = 0;
+  let fastUntil = 0;
+  let moved = false;
+  let lastSx = 0,
+    lastSy = 0,
+    lastW = 0,
+    lastH = 0;
 
   function hintChars(): string {
     // The leader key (';' by default) must never double as a hint char —
@@ -95,6 +115,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     }
     active = true;
     mountHost();
+    rafId = requestAnimationFrame(frame);
     await assign(vis);
     if (!items.length) exit();
   }
@@ -132,7 +153,13 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
       exit();
       return;
     }
-    items = chosen.map((el, i) => ({ el: el, key: keys[i]! }));
+    for (const it of items) {
+      if (it.label) {
+        it.label.remove();
+        it.label = null;
+      }
+    }
+    items = chosen.map((el, i) => ({ el: el, key: keys[i]!, label: null }));
     typed = "";
     render();
   }
@@ -155,21 +182,102 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     }
   }
 
+  // Render the labels for the items whose key matches the typed prefix.
+  // Labels are created once and REUSED: the rAF loop repositions them, so a
+  // page that shifts under the hints never leaves labels floating where the
+  // links used to be.
   function render(): void {
     if (!host) return;
-    const box = host._box;
-    box.textContent = "";
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      if (!it || it.key.indexOf(typed) !== 0) continue;
-      const r = it.el.getBoundingClientRect();
-      const label = document.createElement("span");
-      label.className = "hint";
-      label.textContent = it.key.slice(typed.length);
-      label.style.left = r.left + "px";
-      label.style.top = r.top + "px";
-      box.appendChild(label);
+    for (const it of items) {
+      if (it.key.indexOf(typed) !== 0 && it.label) {
+        it.label.remove();
+        it.label = null;
+      }
     }
+    for (const it of items) {
+      if (it.key.indexOf(typed) !== 0) continue;
+      if (!it.label) {
+        const label = document.createElement("span") as HintLabel;
+        label.className = "hint";
+        label.textContent = it.key.slice(typed.length);
+        host._box.appendChild(label);
+        it.label = label;
+      }
+    }
+    reposition();
+  }
+
+  // Re-anchor every visible label to its element's current position. Sets
+  // `moved` so the rAF loop knows the page is shifting and should keep
+  // tracking at full speed. Labels whose element left the DOM are dropped.
+  // Also broadcasts the current label positions as a composed event (same
+  // pattern as the popup's lazyfox:list) so the e2e harness can assert that
+  // hints actually track a shifting page without reaching into the shadow DOM.
+  function reposition(): void {
+    if (!host || !items.length) {
+      moved = false;
+      return;
+    }
+    let anyMoved = false;
+    const shown = [];
+    for (const it of items) {
+      const label = it.label;
+      if (!label) continue;
+      if (!it.el.isConnected) {
+        label.remove();
+        it.label = null;
+        continue;
+      }
+      const r = it.el.getBoundingClientRect();
+      const x = r.left;
+      const y = r.top;
+      if (label._x !== x || label._y !== y) {
+        label.style.left = x + "px";
+        label.style.top = y + "px";
+        label._x = x;
+        label._y = y;
+        anyMoved = true;
+      }
+      shown.push({ key: it.key, x: Math.round(x), y: Math.round(y) });
+    }
+    moved = anyMoved;
+    try {
+      // Expose the current positions through the host's data attribute, the
+      // same cross-world channel as data-lf-hints: the page main world cannot
+      // read this isolated world's objects (Xray blocks event-detail access),
+      // but it can read a shared DOM attribute. The e2e harness polls it to
+      // assert hints track a shifting page.
+      host.setAttribute("data-lf-pos", JSON.stringify(shown));
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // rAF loop: keep the hints glued to their links while the page moves.
+  function frame(): void {
+    if (!active) {
+      rafId = 0;
+      return;
+    }
+    const now = performance.now();
+    const sx = window.scrollX,
+      sy = window.scrollY;
+    const w = window.innerWidth,
+      h = window.innerHeight;
+    const viewChanged = sx !== lastSx || sy !== lastSy || w !== lastW || h !== lastH;
+    lastSx = sx;
+    lastSy = sy;
+    lastW = w;
+    lastH = h;
+    if (now < fastUntil || viewChanged || now - lastSweep > 100) {
+      lastSweep = now;
+      moved = false;
+      reposition();
+      // The page is animating (carousel slide, scroll, layout shift): keep
+      // tracking every frame for a while so hints glide WITH the links.
+      if (moved) fastUntil = now + 1000;
+    }
+    rafId = requestAnimationFrame(frame);
   }
 
   // Scroll to the next / previous batch of links and re-hint it. Keeps paging
@@ -320,6 +428,10 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
 
   function exit(): void {
     active = false;
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
     try {
       document.documentElement.removeAttribute("data-lf-hints");
     } catch (e) {

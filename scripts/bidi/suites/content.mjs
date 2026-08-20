@@ -103,6 +103,50 @@ export async function run(ctx) {
     assert((await evalIn(ctx.tabA, `document.title`)) === "TARGET ONE", "navigated to target1");
   });
 
+  await t("link hints: hints track a page that shifts under them", async () => {
+    // Pages that auto-slide or shift (carousels, lazy-loads) move the links
+    // under the hints; labels must re-anchor instead of floating where the
+    // links used to be. Scroll the page by 250px while hints are live and
+    // assert the label for link1 moved by the same delta as the link itself.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const hintPos = async (key) =>
+      evalIn(
+        ctx.tabA,
+        `(function(){
+          const raw = document.getElementById("lazyfox-hints") && document.getElementById("lazyfox-hints").getAttribute("data-lf-pos");
+          if (!raw) return null;
+          try {
+            const items = JSON.parse(raw);
+            for (const it of items) if (it.key === ${JSON.stringify(key)}) return { x: it.x, y: it.y };
+          } catch (e) {}
+          return null;
+        })()`
+      );
+    const waitHint = async (key, pred) =>
+      waitFor(async () => {
+        const p = await hintPos(key);
+        return p && (!pred || pred(p)) ? p : null;
+      }, 5000);
+    await ctx.leaderPress(ctx.tabA, "f");
+    await waitFor(async () => {
+      const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+      return on === "1" ? true : null;
+    }, 5000);
+    const before = await waitHint("a");
+    assert(before && before.y > 0, "hint label visible before the shift");
+    const rectBefore = await evalIn(ctx.tabA, `document.getElementById("link1").getBoundingClientRect().top`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 250); true`);
+    const after = await waitHint("a", (p) => p.y !== before.y);
+    const rectAfter = await evalIn(ctx.tabA, `document.getElementById("link1").getBoundingClientRect().top`);
+    const labelDy = after.y - before.y;
+    const linkDy = rectAfter - rectBefore;
+    assert(
+      Math.abs(labelDy - linkDy) <= 2,
+      `hint tracked the shift (label dy=${labelDy}, link dy=${linkDy})`
+    );
+    await ctx.press(ctx.tabA, "Escape"); // leave hints mode
+  });
+
   await t("link hints: ] pages down to links below the fold", async () => {
     // Hints are viewport-only; ] must page through the document and re-hint
     // the next batch (here: the second input, hidden below a 3000px spacer).
