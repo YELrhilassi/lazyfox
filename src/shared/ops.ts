@@ -64,6 +64,11 @@ export interface ActionOps {
   deleteSession(name: string): void;
   switchSessionByMarker(marker: number): void;
   assignSessionMarker(name: string, marker: number): void;
+  // Copy / move a tab (by its index in the source session's saved tabs) into
+  // another session. Edits the stored snapshots; the live window is untouched
+  // until the target session is restored.
+  sessionTabCopy(from: string, index: number, to: string): void;
+  sessionTabMove(from: string, index: number, to: string): void;
   splitTab(orientation: "horizontal" | "vertical"): void;
   unsplitTab(): void;
   switchSplitPane(dir: number): void;

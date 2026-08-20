@@ -882,4 +882,224 @@ export async function run(ctx) {
     await activate(ctx.tabA).catch(() => {});
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
   });
+
+  await t("sessions: Tab + c copies a tab into another session", async () => {
+    // Seed two sessions directly in storage so the test owns the exact tab
+    // lists (no dependency on the window's current tabs). The sessions popup
+    // then drives the whole flow: Tab into the tabs pane, c -> target picker,
+    // type the destination name, Enter confirms — and the popup stays open.
+    const srcUrl = `${ctx.base}/lf-src-a`;
+    const dstUrl = `${ctx.base}/lf-dst-x`;
+    await evalIn(
+      ctx.probe,
+      `browser.storage.local.get("lfSessions").then(r => {
+        const all = r.lfSessions || {};
+        all.lfSrc = { name: "lfSrc", marker: 0, active: 0, windowState: "normal", updatedAt: Date.now(),
+          tabs: [{ url: ${JSON.stringify(srcUrl)}, title: "lf-src-a", pinned: false }], splits: "" };
+        all.lfDst = { name: "lfDst", marker: 0, active: 0, windowState: "normal", updatedAt: Date.now(),
+          tabs: [{ url: ${JSON.stringify(dstUrl)}, title: "lf-dst-x", pinned: false }], splits: "" };
+        return browser.storage.local.set({ lfSessions: all });
+      }); true`
+    );
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    // The popup lives in a closed shadow root; watch the composed list events
+    // (left sessions list + right tabs pane) instead of reading rows directly.
+    await evalIn(
+      ctx.tabA,
+      `window.__lfList = null; window.__lfTabs = null;
+       document.addEventListener("lazyfox:list", (e) => { window.__lfList = e.detail; }, true);
+       document.addEventListener("lazyfox:tabs", (e) => { window.__lfTabs = e.detail; }, true); true`
+    );
+    await ctx.leaderPress(ctx.tabA, "p");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    // Filter to lfSrc so the highlight is deterministic, then Tab into the
+    // tabs pane (the highlighted session's tabs).
+    await ctx.typeIn(ctx.tabA, "lfSrc");
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfList`);
+      return d && d.q === "lfSrc" && d.count === 1 && d.idx === 0 ? d : null;
+    }, 5000);
+    await ctx.press(ctx.tabA, "Tab");
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfTabs`);
+      return d && d.count === 1 ? d : null;
+    }, 5000);
+    await ctx.press(ctx.tabA, "c");
+    await ctx.typeIn(ctx.tabA, "lfDst");
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfList`);
+      return d && d.q === "lfDst" && d.count === 1 ? d : null;
+    }, 5000);
+    await ctx.press(ctx.tabA, "Enter");
+    const all = await waitFor(async () => {
+      const s = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions || {})`);
+      return s.lfDst && s.lfDst.tabs && s.lfDst.tabs.length === 2 ? s : null;
+    }, 8000).catch(() => { throw new Error("copy did not add a tab to lfDst"); });
+    assert(all.lfDst.tabs.some((t) => t.url === srcUrl), "lfDst contains the copied tab: " + JSON.stringify(all.lfDst.tabs.map((t) => t.url)));
+    assert(all.lfDst.tabs.some((t) => t.url === dstUrl), "lfDst kept its original tab");
+    assert(all.lfSrc.tabs.length === 1, "copy left the source session intact: " + JSON.stringify(all.lfSrc.tabs.map((t) => t.url)));
+    assert(all.lfDst.tabs.every((t) => typeof t.splitViewId !== "number" || t.splitViewId < 0), "copied tab carries no split pairing");
+    // The popup stays open after a copy; Escape first leaves the tabs pane,
+    // a second Esc closes (Tab leaks would have moved focus out of the popup).
+    assert(await ctx.hasHost(ctx.tabA, "lazyfox-popup"), "popup stays open after a copy");
+    await ctx.press(ctx.tabA, "Escape");
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.lfSrc; delete r.lfSessions.lfDst; return browser.storage.local.set({ lfSessions: r.lfSessions }); }); true`);
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
+
+  await t("sessions: Tab + m moves a tab into another session", async () => {
+    const srcA = `${ctx.base}/lf-mv-a`;
+    const srcB = `${ctx.base}/lf-mv-b`;
+    const dstX = `${ctx.base}/lf-mv-x`;
+    await evalIn(
+      ctx.probe,
+      `browser.storage.local.get("lfSessions").then(r => {
+        const all = r.lfSessions || {};
+        all.lfSrc = { name: "lfSrc", marker: 0, active: 0, windowState: "normal", updatedAt: Date.now(),
+          tabs: [
+            { url: ${JSON.stringify(srcA)}, title: "lf-mv-a", pinned: false },
+            { url: ${JSON.stringify(srcB)}, title: "lf-mv-b", pinned: false }
+          ], splits: "" };
+        all.lfDst = { name: "lfDst", marker: 0, active: 0, windowState: "normal", updatedAt: Date.now(),
+          tabs: [{ url: ${JSON.stringify(dstX)}, title: "lf-mv-x", pinned: false }], splits: "" };
+        return browser.storage.local.set({ lfSessions: all });
+      }); true`
+    );
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await evalIn(
+      ctx.tabA,
+      `window.__lfList = null; window.__lfTabs = null;
+       document.addEventListener("lazyfox:list", (e) => { window.__lfList = e.detail; }, true);
+       document.addEventListener("lazyfox:tabs", (e) => { window.__lfTabs = e.detail; }, true); true`
+    );
+    await ctx.leaderPress(ctx.tabA, "p");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "lfSrc");
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfList`);
+      return d && d.q === "lfSrc" && d.count === 1 && d.idx === 0 ? d : null;
+    }, 5000);
+    await ctx.press(ctx.tabA, "Tab");
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfTabs`);
+      return d && d.count === 2 ? d : null;
+    }, 5000);
+    await ctx.press(ctx.tabA, "j"); // select the second tab
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfTabs`);
+      return d && d.idx === 1 ? d : null;
+    }, 3000);
+    await ctx.press(ctx.tabA, "m");
+    await ctx.typeIn(ctx.tabA, "lfDst");
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfList`);
+      return d && d.q === "lfDst" && d.count === 1 ? d : null;
+    }, 5000);
+    await ctx.press(ctx.tabA, "Enter");
+    const all = await waitFor(async () => {
+      const s = await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => r.lfSessions || {})`);
+      const src = s.lfSrc;
+      const dst = s.lfDst;
+      return src && dst && src.tabs && dst.tabs && src.tabs.length === 1 && dst.tabs.length === 2 ? s : null;
+    }, 8000).catch(() => { throw new Error("move did not transfer the tab"); });
+    assert(all.lfSrc.tabs.length === 1 && all.lfSrc.tabs[0].url === srcA, "source kept the un-moved tab: " + JSON.stringify(all.lfSrc.tabs.map((t) => t.url)));
+    assert(all.lfDst.tabs.length === 2 && all.lfDst.tabs.some((t) => t.url === srcB), "destination gained the moved tab: " + JSON.stringify(all.lfDst.tabs.map((t) => t.url)));
+    assert(all.lfDst.tabs.some((t) => t.url === dstX), "destination kept its original tab");
+    assert(all.lfDst.tabs.every((t) => typeof t.splitViewId !== "number" || t.splitViewId < 0), "moved tab carries no split pairing");
+    assert(await ctx.hasHost(ctx.tabA, "lazyfox-popup"), "popup stays open after a move");
+    await ctx.press(ctx.tabA, "Escape");
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.lfSrc; delete r.lfSessions.lfDst; return browser.storage.local.set({ lfSessions: r.lfSessions }); }); true`);
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
+
+  await t("sessions: Esc cancels the copy target picker without closing the popup", async () => {
+    await evalIn(
+      ctx.probe,
+      `browser.storage.local.get("lfSessions").then(r => {
+        const all = r.lfSessions || {};
+        all.lfTmp = { name: "lfTmp", marker: 0, active: 0, windowState: "normal", updatedAt: Date.now(),
+          tabs: [{ url: ${JSON.stringify(`${ctx.base}/lf-tmp`)}, title: "lf-tmp", pinned: false }], splits: "" };
+        return browser.storage.local.set({ lfSessions: all });
+      }); true`
+    );
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await evalIn(
+      ctx.tabA,
+      `window.__lfList = null; window.__lfTabs = null;
+       document.addEventListener("lazyfox:list", (e) => { window.__lfList = e.detail; }, true);
+       document.addEventListener("lazyfox:tabs", (e) => { window.__lfTabs = e.detail; }, true); true`
+    );
+    await ctx.leaderPress(ctx.tabA, "p");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "lfTmp");
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfList`);
+      return d && d.q === "lfTmp" && d.count === 1 ? d : null;
+    }, 5000);
+    await ctx.press(ctx.tabA, "Tab");
+    await waitFor(async () => {
+      const d = await evalIn(ctx.tabA, `window.__lfTabs`);
+      return d && d.count === 1 ? d : null;
+    }, 5000);
+    await ctx.press(ctx.tabA, "c"); // enter the target picker
+    // Esc cancels the picker and returns to the tabs pane — the popup must
+    // stay open (Esc is normally the popup's close key, so this pins the
+    // "the popup may consume Esc" override on both the content and chrome
+    // sides). A second Esc leaves the tabs pane, a third closes.
+    await ctx.press(ctx.tabA, "Escape");
+    assert(await ctx.hasHost(ctx.tabA, "lazyfox-popup"), "popup still open after canceling the picker");
+    await ctx.press(ctx.tabA, "Escape");
+    assert(await ctx.hasHost(ctx.tabA, "lazyfox-popup"), "popup still open after leaving the tabs pane");
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.lfTmp; return browser.storage.local.set({ lfSessions: r.lfSessions }); }); true`);
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
+
+  await t("sessions: chrome popup — Tab toggles the tabs pane, Esc steps back (no leak)", async () => {
+    // On the command center the popup mounts at chrome-window level, where a
+    // leaked Tab (returned false from onKey, so not preventDefaulted) moves
+    // focus into the browser chrome and the popup silently stops receiving
+    // keys. The chrome input listener now captures Tab for every popup, and
+    // the window's capture listener lets the popup consume Esc first.
+    await ctx.openCC(ctx.tabA);
+    await sleep(600);
+    await ctx.chromeLeaderPress(ctx.tabA, "p");
+    const opened = await waitFor(async () => {
+      const s = await ctx.chromeState();
+      const p = s && s.popup;
+      return p && p.current && p.panels && p.panels.length && (p.panels[0].title || "").indexOf("Sessions") !== -1 ? s : null;
+    }, 8000).catch(() => null);
+    assert(opened, "sessions popup opened on the command center: " + JSON.stringify(opened && opened.popup));
+    // Tab moves into the tabs pane; the popup must stay open and show the
+    // tabs-pane hint (a leaked Tab would have moved focus out of the popup).
+    await ctx.sendKeys(ctx.tabA, [{ k: "Tab" }]);
+    const afterTab = await waitFor(async () => {
+      const s = await ctx.chromeState();
+      const p = s && s.popup;
+      return p && p.current && p.panels && p.panels[0] && p.panels[0].status && p.panels[0].status.indexOf("j/k select") !== -1 ? s : null;
+    }, 5000).catch(() => null);
+    assert(afterTab, "Tab toggled into the tabs pane, popup stayed open: " + JSON.stringify(afterTab && afterTab.popup && afterTab.popup.panels));
+    // Esc in the tabs pane returns to the left list (the popup consumes it
+    // through handleKey instead of closing).
+    await ctx.sendKeys(ctx.tabA, [{ k: "Escape" }]);
+    const afterEsc = await waitFor(async () => {
+      const s = await ctx.chromeState();
+      const p = s && s.popup;
+      return p && p.current && p.panels && p.panels[0] && p.panels[0].status === "" ? s : null;
+    }, 5000).catch(() => null);
+    assert(afterEsc, "Esc left the tabs pane without closing the popup: " + JSON.stringify(afterEsc && afterEsc.popup && afterEsc.popup.panels));
+    // A final Esc (left pane active) closes the popup normally.
+    await ctx.sendKeys(ctx.tabA, [{ k: "Escape" }]);
+    const closed = await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.popup && s.popup.current === false ? s : null;
+    }, 5000).catch(() => null);
+    assert(closed, "Esc on the left pane closed the popup");
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
 }

@@ -40,6 +40,9 @@ export const PANEL_CSS = `
 .lf-tabs{flex:1;overflow-y:auto;padding:4px 0;}
 .lf-tabs .lf-item.active{border-left-color:#9ece6a;}
 .lf-tabs-empty{padding:26px 16px;text-align:center;color:#565f89;font-size:12px;}
+.lf-col.active{background:rgba(122,162,247,.05);}
+.lf-col.active .lf-col-head{color:#9ece6a;}
+.lf-status{flex:1;color:#7aa2f7;}
 .lf-badge{color:#7aa2f7;}
 .kbd{display:inline-block;min-width:26px;text-align:center;background:#16161e;border:1px solid #414868;
   border-bottom-width:2px;border-radius:5px;padding:1px 7px;margin-right:8px;color:#7aa2f7;font-size:12px;}

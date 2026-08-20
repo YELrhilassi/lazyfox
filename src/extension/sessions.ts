@@ -252,6 +252,61 @@ async function autosaveCurrentSession(
   }
 }
 
+// The split layout of a stored tab list, re-derived from each tab's
+// window-local splitViewId the same way snapshotWindow computes it on save.
+// Used after a tab is moved/copied so the stored "a:b,c:d" splits never
+// reference a tab that left the session.
+async function refreshSplits(tabs: SessionTab[]): Promise<string> {
+  try {
+    const svIds = (tabs || []).map((t) =>
+      typeof t.splitViewId === "number" && t.splitViewId >= 0 ? t.splitViewId : -1
+    );
+    return await core.encodeSplits(await core.splitPairsOf(svIds));
+  } catch (e) {
+    return "";
+  }
+}
+
+// Copy or move one tab (by its index in the source session's saved tabs) into
+// another session. Sessions are stored snapshots, so this edits the saved tab
+// lists — the live window is untouched until the target session is restored.
+// The tab joins the target session WITHOUT its splitViewId: a split pairing is
+// window-local (Firefox's native split views), so a tab transplanted between
+// sessions must arrive as a single tab; both sessions' splits are re-derived
+// afterwards so a moved tab can never leave a stale pair behind.
+export async function moveTabBetweenSessions(
+  from: string,
+  index: number,
+  to: string,
+  mode: "move" | "copy"
+): Promise<{ ok: boolean; note?: string }> {
+  const srcName = (from || "").trim();
+  const dstName = (to || "").trim();
+  const i = Number(index);
+  if (!srcName || !dstName || !(i >= 0)) return { ok: false, note: "bad request" };
+  if (srcName === dstName) return { ok: false, note: "same session" };
+  const all = await readSessions();
+  const src = all[srcName];
+  const dst = all[dstName];
+  if (!src || !Array.isArray(src.tabs)) return { ok: false, note: "no source session" };
+  if (!dst || !Array.isArray(dst.tabs)) return { ok: false, note: "no target session" };
+  const tab = src.tabs[i];
+  if (!tab) return { ok: false, note: "no such tab" };
+  dst.tabs.push({ ...tab, splitViewId: undefined });
+  dst.active = Math.min(Math.max(0, dst.active || 0), dst.tabs.length - 1);
+  dst.splits = await refreshSplits(dst.tabs);
+  dst.updatedAt = Date.now();
+  if (mode === "move") {
+    src.tabs.splice(i, 1);
+    src.active = Math.min(Math.max(0, src.active || 0), Math.max(0, src.tabs.length - 1));
+    src.splits = await refreshSplits(src.tabs);
+    src.updatedAt = Date.now();
+  }
+  await writeSessions(all);
+  pushSessionState();
+  return { ok: true };
+}
+
 export async function sessionList(): Promise<{ sessions: Session[] }> {
   const all = await readSessions();
   const sessions = Object.keys(all)
@@ -273,6 +328,7 @@ export async function sessionTabs(name: string): Promise<PopupItem[]> {
     if (t.stealth) badges.push("stealth");
     return {
       kind: "sessionTab",
+      sessionIndex: i,
       title: t.title || t.url || "",
       url: t.url || "",
       subtitle: (badges.length ? badges.join(" \u00b7 ") + " \u00b7 " : "") + (t.url || ""),

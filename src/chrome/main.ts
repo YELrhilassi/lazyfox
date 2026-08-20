@@ -349,6 +349,10 @@ import { createTypingChannel } from "./typing";
     if (popup.isOpen()) {
       if (e.key === "Escape") {
         if (popup.resizeOnKey(e as KeyboardEvent)) return true;
+        // Let the popup consume Esc itself (e.g. the sessions popup cancels a
+        // pending copy/move target picker or steps back to the left pane)
+        // before closing it.
+        if (popup.handleKey(e as KeyboardEvent)) return true;
         popup.close();
         return true;
       }

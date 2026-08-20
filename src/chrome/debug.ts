@@ -208,6 +208,7 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
           panels: panels.map((p) => ({
             title: (p.querySelector(".lf-title") || {}).textContent || "",
             hasInput: !!p.querySelector(".lf-input"),
+            status: (p.querySelector(".lf-status") || { textContent: "" }).textContent || "",
           })),
           items: panels
             .map((p) =>

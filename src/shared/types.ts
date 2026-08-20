@@ -93,6 +93,9 @@ export interface PopupItem {
   time?: number;
   favIconUrl?: string;
   marker?: number;
+  // The index of a sessionTab row within its session's saved tabs array (the
+  // identity session copy/move actions address).
+  sessionIndex?: number;
   // Downloads: stable identity for actions (open / delete / reveal).
   key?: string;
   path?: string;
