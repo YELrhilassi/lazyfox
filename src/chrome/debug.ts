@@ -17,6 +17,7 @@ export interface DebugState {
   leaderActive(): boolean;
   leaderPending(): boolean;
   lastAction(): string | null;
+  lastMoveDebug(): string | null;
   statusMounted(): boolean;
   statusPosition(): string;
   dlActive(): string[];
@@ -242,6 +243,7 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
         leaderActive: st.leaderActive(),
         mutedCount: mutedCount,
         lastAction: st.lastAction(),
+        lastMoveDebug: st.lastMoveDebug(),
         statusMounted: st.statusMounted(),
         statusPosition: st.statusPosition(),
         dlCount: st.dlActive().length,

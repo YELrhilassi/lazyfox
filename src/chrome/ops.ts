@@ -11,6 +11,7 @@
 // through a getter that only runs at action time.
 
 import { core } from "../shared/core";
+import { isRelayTabUrl } from "../shared/transient";
 import {
   dismissDownload as dismissBarNotifications,
   listDownloads,
@@ -49,7 +50,10 @@ function sysPrincipal() {
 }
 
 // Real (user) tabs in strip order: skip the split-panel companion and the
-// #lfc= request channel so tab numbers stay stable across splits/unsplits.
+// throwaway #lfc= request relays so tab numbers stay stable across
+// splits/unsplits. A real tab carrying a momentary #lfc=keys/state hash is NOT
+// transient — it must keep its number (a shared predicate guarantees the
+// chrome and the extension agree).
 function realTabs(): any[] {
   const out: any[] = [];
   for (const t of window.gBrowser.tabs) {
@@ -58,7 +62,7 @@ function realTabs(): any[] {
         t && t.linkedBrowser && t.linkedBrowser.currentURI
           ? t.linkedBrowser.currentURI.spec
           : "";
-      if (spec.indexOf("splitpanel.html") !== -1 || spec.indexOf("#lfc=") !== -1) continue;
+      if (isRelayTabUrl(spec)) continue;
       out.push(t);
     } catch (e) {
       out.push(t);
@@ -321,7 +325,7 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
           t.linkedBrowser && t.linkedBrowser.currentURI
             ? t.linkedBrowser.currentURI.spec
             : "";
-        if (spec.indexOf("splitpanel.html") !== -1 || spec.indexOf("#lfc=") !== -1) continue;
+        if (isRelayTabUrl(spec)) continue;
       } catch (e) {
         // ignore
       }

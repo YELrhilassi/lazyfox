@@ -106,6 +106,29 @@ func intSlice(v js.Value) []int {
 	return out
 }
 
+func strSlice(v js.Value) []string {
+	if v.IsUndefined() || v.IsNull() {
+		return nil
+	}
+	n := v.Length()
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, v.Index(i).String())
+	}
+	return out
+}
+
+func stripMovesArray(moves []core.StripMove) js.Value {
+	a := js.Global().Get("Array").New(len(moves))
+	for i, m := range moves {
+		mv := js.Global().Get("Array").New(2)
+		mv.SetIndex(0, m.Tab)
+		mv.SetIndex(1, m.To)
+		a.SetIndex(i, mv)
+	}
+	return a
+}
+
 func splitPairs(v js.Value) []core.SplitPair {
 	n := v.Length()
 	out := make([]core.SplitPair, 0, n)
@@ -458,6 +481,36 @@ func main() {
 			i = args[1].Int()
 		}
 		return core.SplitPartnerOf(splits, i)
+	})
+
+	// ---- split-view strip planner (native split view ordering) ----
+
+	set("coalescePair", func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 3 {
+			return strArray(nil)
+		}
+		return strArray(core.CoalescePair(strSlice(args[0]), args[1].String(), args[2].String()))
+	})
+
+	set("coalesceIntoGroup", func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 3 {
+			return strArray(nil)
+		}
+		return strArray(core.CoalesceIntoGroup(strSlice(args[0]), strSlice(args[1]), args[2].String()))
+	})
+
+	set("planStrip", func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 2 {
+			return stripMovesArray(nil)
+		}
+		groups := [][]string(nil)
+		if len(args) > 2 && !args[2].IsUndefined() && !args[2].IsNull() {
+			groups = make([][]string, args[2].Length())
+			for i := 0; i < args[2].Length(); i++ {
+				groups[i] = strSlice(args[2].Index(i))
+			}
+		}
+		return stripMovesArray(core.PlanStrip(strSlice(args[0]), strSlice(args[1]), groups))
 	})
 
 	js.Global().Set("LazyfoxCore", api)

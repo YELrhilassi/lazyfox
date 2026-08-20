@@ -5,10 +5,25 @@
 // the iframe split: each pane is a real top-level tab, so no site can block
 // embedding and both panes keep full focus/history/zoom state.
 //
-// This module owns every split operation (create, add-a-tab, unsplit, switch
-// pane, swap panes, restore) plus the transient-tab helpers (split panel +
-// #lfc= request channel) that keep tab numbering stable. It is pure chrome:
-// it reports results as booleans and lets the caller decide the toast.
+// This module is a thin virtualization layer over the vanilla feature: it owns
+// every split operation (create, add-a-tab, unsplit, switch pane, swap panes,
+// restore), the stable 1-9 tab numbering, and the strip reconciliation that
+// keeps every tab exactly where it was. Firefox's own split machinery parks a
+// freshly glued pair wherever it pleases (usually the strip end) and does so
+// ASYNCHRONOUSLY; rather than trusting it, this module snapshots the strip
+// before each operation, computes the desired order with the Go core, and
+// re-pins the physical strip to it until it stops moving. The ordering math
+// (coalesce + pin plan) lives in the Go core (core/strip.go, Go-tested); here
+// only the browser-driving glue remains.
+//
+// Transient tabs (the split panel + the throwaway #lfc= request relays) are
+// hidden from numbering so a tab's 1-9 identity never changes just because a
+// split/unsplit added or removed a companion pane — but a REAL tab carrying a
+// momentary #lfc=keys/state request hash is never treated as transient, so
+// mid-request numbering never shifts.
+
+import { coalesceIntoGroup, coalescePair, planStrip } from "../shared/order";
+import { isRelayTabUrl } from "../shared/transient";
 
 export interface SplitViewDeps {
   // Resolves the extension's moz-extension:// base URL (for the split panel).
@@ -16,6 +31,9 @@ export interface SplitViewDeps {
   // Called whenever the split state may have changed so the caller can
   // re-evaluate the window-level status bar.
   onSplitChange(): void;
+  // Diagnostic hook for the ;+N move path (surfaced in the #lfc=state reply
+  // so the e2e harness can assert WHY a move failed instead of guessing).
+  onMove?(msg: string): void;
 }
 
 export interface SplitView {
@@ -47,6 +65,21 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // Firefox; this fallback guards older 149/150 builds where it was not yet
   // exposed. The wrapper is a DOM element, so isConnected detects unsplits.
   let lastNativeSplit: any = null;
+
+  // Stable id for a tab in the strip-planning id space. linkedPanel is unique
+  // and stable for a tab's lifetime; browserId is the fallback for a tab whose
+  // panel has not attached yet.
+  function idOf(t: any): string {
+    try {
+      if (t && t.linkedPanel) return String(t.linkedPanel);
+      if (t && t.linkedBrowser && t.linkedBrowser.browserId != null) {
+        return "b" + t.linkedBrowser.browserId;
+      }
+    } catch (e) {
+      // fall through
+    }
+    return "";
+  }
 
   function nativeSplitAvailable(): boolean {
     try {
@@ -87,17 +120,19 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     }
   }
 
-  // Transient tabs (the split panel + the #lfc= request channel) are not
-  // user tabs: they are hidden from numbering so a tab's 1-9 identity never
-  // changes just because a split/unsplit added or removed a companion pane.
+  // Transient tabs (the split panel + the throwaway #lfc= request relays) are
+  // not user tabs: they are hidden from numbering so a tab's 1-9 identity
+  // never changes just because a split/unsplit added or removed a companion
+  // pane. A REAL tab carrying a momentary #lfc=keys/state request hash is not
+  // transient — excluding it is exactly what shifted ;+N targets mid-request.
   function isTransientTab(tab: any): boolean {
+    if (isSplitPanelTab(tab)) return true;
     try {
-      if (isSplitPanelTab(tab)) return true;
       const spec =
         tab && tab.linkedBrowser && tab.linkedBrowser.currentURI
           ? tab.linkedBrowser.currentURI.spec
           : "";
-      return spec.indexOf("#lfc=") !== -1;
+      return isRelayTabUrl(spec);
     } catch (e) {
       return false;
     }
@@ -126,77 +161,53 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     }
   }
 
-  // Pin the strip back to `order` (an array of tab elements): walk it from
-  // the left and move each tab that is not already at its slot. Tabs that
-  // travel glued inside a split view move as one block; because split panes
-  // are contiguous in any order that contains them, a glued block lands
-  // intact on its first member's move and the rest are skipped as already
-  // correct. Tabs that are already at their slot are never moved, so calling
-  // this after an operation that did not regroup costs nothing.
-  // Is the tab glued into a split view (travels as a unit with its panes)?
-  function inSplitView(t: any): boolean {
-    try {
-      return !!t && !!t.splitview;
-    } catch (e) {
-      return false;
-    }
+  function stripKey(): string {
+    return Array.from(window.gBrowser.tabs)
+      .map((t: any) => (t && t.linkedPanel ? t.linkedPanel : idOf(t)))
+      .join(",");
   }
 
-  // Pin the strip back to `order` (an array of tab elements, the desired
-  // order). Split panes are GLUED: they always sit adjacent and travel as one
-  // block. Firefox only lets you move a glued group via its CURRENT lead
-  // (the member first in strip order), so each group is moved as a unit by
-  // moving that lead to its own desired index — the rest of the block rides
-  // along and lands on its adjacent desired slots regardless of the group's
-  // internal order. Singles are pinned afterwards; their desired slots never
-  // fall between panes because `order` keeps every glued block contiguous.
-  // Tabs already at their slot are never moved.
-  function pinToOrder(order: any[]): void {
-    const tabs = window.gBrowser.tabs;
-    // A late repin pass (after an unsplit/cleanup) can outlive tabs that were
-    // removed; drop anything no longer in the strip so a stale `order` never
-    // pins a closing tab or renumbers the tabs that replaced it.
-    const present = new Set<any>();
-    for (const t of tabs) present.add(t);
-    order = order.filter((t) => !!t && !t.closing && present.has(t));
-    // Group members by split view; find each group's current lead (the member
-    // with the smallest strip index) and its desired lead slot.
-    const cur = Array.from(tabs);
-    const seen = new Set<any>();
-    const groups: { lead: any; want: number }[] = [];
-    const placed = new Set<any>();
-    for (const t of cur) {
-      const sv = t && (t as any).splitview;
-      if (!t || !sv || seen.has(sv)) continue;
-      seen.add(sv);
-      const members = (Array.isArray(sv.tabs) ? sv.tabs : []).filter((m: any) => !!m);
-      if (members.length < 2) continue;
-      const lead = members[0];
-      const want = order.indexOf(lead);
-      if (want >= 0) groups.push({ lead, want });
-      for (const m of members) placed.add(m);
-    }
-    // Highest desired slot first so an earlier move never displaces a group
-    // that is already to the left.
-    groups.sort((a, b) => b.want - a.want);
-    for (const g of groups) {
-      try {
-        if (tabs[g.want] === g.lead) continue;
-        window.gBrowser.moveTabTo(g.lead, { tabIndex: g.want });
-      } catch (e) {
-        // Ignore a single failed group move; keep pinning the rest.
+  // Pin the strip back to `order` (tab elements): compute the minimal move
+  // plan with the Go core (respecting glued split groups) and execute it.
+  // Returns whether any move was issued so the repin loop can tell when the
+  // strip has stopped settling. Tabs already at their slot are never moved.
+  function reconcileTo(order: any[]): boolean {
+    try {
+      const tabs = Array.from(window.gBrowser.tabs);
+      const present = new Set(tabs);
+      order = order.filter((t: any) => !!t && !t.closing && present.has(t));
+      const current = tabs.map((t: any) => idOf(t));
+      const desired = order.map((t: any) => idOf(t));
+      // Distinct splitview wrappers -> their panes as groups. The wrapper is
+      // the element, so a wrapper that no longer exists yields no group and
+      // its (now single) tabs are pinned as singles.
+      const seen = new Set<any>();
+      const groups: string[][] = [];
+      for (const t of tabs) {
+        const sv = t && (t as any).splitview;
+        if (!t || !sv || seen.has(sv)) continue;
+        seen.add(sv);
+        const members = (Array.isArray(sv.tabs) ? sv.tabs : []).filter(
+          (m: any) => !!m && present.has(m)
+        );
+        if (members.length > 1) {
+          const ids = members.map((m: any) => idOf(m)).filter((x: string) => x !== "");
+          if (ids.length > 1) groups.push(ids);
+        }
       }
-    }
-    // 2) Pin every single tab left to right.
-    for (let i = 0; i < order.length; i++) {
-      const want = order[i];
-      if (!want || want.closing || placed.has(want)) continue;
-      try {
-        if (tabs[i] === want) continue;
-        window.gBrowser.moveTabTo(want, { tabIndex: i });
-      } catch (e) {
-        // Ignore a single failed move; keep pinning the rest of the strip.
+      const moves = planStrip(current, desired, groups);
+      for (const [id, to] of moves) {
+        const tab = tabs.find((t: any) => idOf(t) === id);
+        if (!tab) continue;
+        try {
+          window.gBrowser.moveTabTo(tab, { tabIndex: to });
+        } catch (e) {
+          // Ignore a single failed move; keep pinning the rest of the strip.
+        }
       }
+      return moves.length > 0;
+    } catch (e) {
+      return false;
     }
   }
 
@@ -211,17 +222,13 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     let lastChanged = true;
     const tick = () => {
       attempts++;
-      const key = () =>
-        Array.from(window.gBrowser.tabs)
-          .map((t: any) => (t && t.linkedPanel ? t.linkedPanel : String(t)))
-          .join(",");
-      const before = key();
-      pinToOrder(order);
-      const after = key();
-      const changed = after !== before;
+      const before = stripKey();
+      const changed = reconcileTo(order);
+      const after = stripKey();
+      const changedKey = after !== before;
+      const quiet = !changed && !changedKey && !lastChanged;
+      lastChanged = changed || changedKey;
       const elapsed = attempts * 150;
-      const quiet = !changed && !lastChanged;
-      lastChanged = changed;
       // Keep re-pinning while the strip is still settling (Firefox can glide
       // the pair around asynchronously). Stop only after two consecutive
       // quiet passes AND a minimum settle window, so a late glide is still
@@ -243,58 +250,30 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // Desired order for operations that GLUE two tabs that were not adjacent:
   // the anchor (the tab the user is acting on) keeps its pre-operation slot
   // and the partner moves next to it, so the anchor's 1-9 number never
-  // changes. The pair keeps the partners' pre-split RELATIVE order (if the
-  // partner was before the anchor, the pair is [partner, anchor]) and is
+  // changes. The pair keeps the partners' pre-split RELATIVE order and is
   // inserted where the anchor sat. Every other tab keeps its relative order.
-  function coalescePair(pre: any[], anchor: any, partner: any): any[] {
-    const block = new Set<any>([anchor, partner]);
-    const anchorIdx = pre.indexOf(anchor);
-    const partnerIdx = pre.indexOf(partner);
-    const pair = partnerIdx < anchorIdx ? [partner, anchor] : [anchor, partner];
-    // The anchor's slot among NON-block tabs (the partner may sit before it).
-    let insertAt = 0;
-    for (const t of pre) {
-      if (t === anchor) break;
-      if (!block.has(t)) insertAt++;
-    }
-    const out: any[] = [];
-    for (const t of pre) {
-      if (block.has(t)) continue;
-      if (out.length === insertAt) out.push(...pair);
-      out.push(t);
-    }
-    if (out.length === insertAt) out.push(...pair);
-    return out;
+  // (Pure math — computed by the Go core.)
+  function coalescePairOrder(pre: any[], anchor: any, partner: any): any[] {
+    const preIds = pre.map((t: any) => idOf(t));
+    const want = coalescePair(preIds, idOf(anchor), idOf(partner));
+    return want
+      .map((id) => pre.find((t: any) => idOf(t) === id))
+      .filter((t: any) => !!t);
   }
 
   // Desired order after moving `tab` INTO the split view `sv`: the whole
   // group (existing panes, then the new member) keeps the group's position
-  // and every other tab keeps its relative order. The group's lead slot is
-  // where its FIRST member sat before the move.
-  function coalesceIntoGroup(pre: any[], sv: any, tab: any): any[] {
-    const members = new Set<any>();
-    const panes = Array.isArray(sv.tabs) ? sv.tabs.slice() : [];
-    for (const p of panes) {
-      if (p && p !== tab) members.add(p);
-    }
-    members.add(tab);
-    let insertAt = 0;
-    for (const t of pre) {
-      if (members.has(t)) break;
-      insertAt++;
-    }
-    const block = panes.filter((p: any) => p && members.has(p));
-    block.push(tab);
-    const out: any[] = [];
-    for (const t of pre) {
-      if (members.has(t)) continue;
-      if (out.length === insertAt) out.push(...block);
-      out.push(t);
-    }
-    // The group was the last thing in the strip: the loop never hit its
-    // insertion point, so the grown block goes at the end.
-    if (out.length === insertAt) out.push(...block);
-    return out;
+  // and every other tab keeps its relative order. (Pure math — Go core.)
+  function coalesceIntoGroupOrder(pre: any[], sv: any, tab: any): any[] {
+    const panes = Array.isArray(sv.tabs) ? sv.tabs : [];
+    const preIds = pre.map((t: any) => idOf(t));
+    const memberIds = panes
+      .map((p: any) => idOf(p))
+      .filter((x: string) => x !== "");
+    const want = coalesceIntoGroup(preIds, memberIds, idOf(tab));
+    return want
+      .map((id) => pre.find((t: any) => idOf(t) === id))
+      .filter((t: any) => !!t);
   }
 
   function rememberSplit(): void {
@@ -344,7 +323,6 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       }
       const base = deps.ccBaseUrl();
       const splitPanelUrl = base ? base + "splitpanel.html" : "about:blank";
-      const activePos = window.gBrowser.tabs.indexOf(active);
       // Reuse a leftover split-panel tab (not in a split) instead of always
       // creating a new pane: it keeps the strip from accumulating panels.
       let blank: any = null;
@@ -408,24 +386,6 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     }
   }
 
-  function addTabToSplit(): boolean {
-    try {
-      if (!nativeSplitAvailable()) return false;
-      let sv = activeSplitView();
-      if (!sv && lastNativeSplit && lastNativeSplit.isConnected) sv = lastNativeSplit;
-      if (!sv) return false;
-      const tab = window.gBrowser.selectedTab;
-      if (!tab || tab.pinned) return false;
-      if (tab.splitview === sv) return true; // already in this split
-      if (typeof sv.addTabs !== "function") return false;
-      sv.addTabs([tab]);
-      rememberSplit();
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
   // Drop the split-panel companion pane(s) from a split view — they are pure
   // UI ("move a tab into this split") and must not pile up as panes once a
   // real tab has been moved in or the split is dissolved.
@@ -454,19 +414,18 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // REPLACES the panel instead of stacking a third pane (the panel is added
   // first, so the split never drops below two panes and auto-unsplits).
   function addTabToSplitByIndex(n: number): boolean {
+    const mv = (msg: string) => { try { deps.onMove && deps.onMove(msg); } catch (e) { /* ignore */ } };
     try {
-      if (!nativeSplitAvailable()) return false;
+      if (!nativeSplitAvailable()) { mv("nativeSplitAvailable=false"); return false; }
       let sv = activeSplitView();
       if (!sv && lastNativeSplit && lastNativeSplit.isConnected) sv = lastNativeSplit;
       const tab = realTabs()[n - 1];
-      try {
-        Services.console.logStringMessage("lazyfox +N: n=" + n + " sv=" + (sv ? "yes" : "no") + " tab=" + (tab ? "yes" : "no") + " tabPinned=" + (tab && tab.pinned) + " addTabsFn=" + (sv ? typeof sv.addTabs : "n/a") + " tabSv=" + (tab && tab.splitview ? "yes" : "no"));
-      } catch (e) {}
-      if (!tab || tab.pinned) return false;
+      mv("n=" + n + " sv=" + (sv ? "yes" : "no") + " tab=" + (tab ? "yes" : "no") + " tabPinned=" + (tab && tab.pinned) + " addTabsFn=" + (sv ? typeof sv.addTabs : "n/a") + " tabSv=" + (tab && tab.splitview ? "yes" : "no") + " activeSv=" + (window.gBrowser.selectedTab && window.gBrowser.selectedTab.splitview ? "yes" : "no"));
+      if (!tab || tab.pinned) { mv("tab missing or pinned"); return false; }
       if (!sv) {
         // Auto-split: pair the active tab with tab N directly.
         const active = window.gBrowser.selectedTab;
-        if (!active || active.pinned || active === tab) return false;
+        if (!active || active.pinned || active === tab) { mv("auto: no active or active===tab"); return false; }
         // A stale .splitview reference can linger after an unsplit; dissolve
         // it first so the auto-split succeeds instead of failing.
         if (active.splitview && typeof active.splitview.unsplitTabs === "function") {
@@ -483,15 +442,21 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         // follows the array passed to addTabSplitView and cannot be changed
         // by moving the glued block.)
         const pair = preStrip.indexOf(tab) < preStrip.indexOf(active) ? [tab, active] : [active, tab];
-        window.gBrowser.addTabSplitView(pair);
+        try {
+          window.gBrowser.addTabSplitView(pair);
+          mv("auto: addTabSplitView ok");
+        } catch (e) {
+          mv("auto: addTabSplitView threw " + String(e));
+          return false;
+        }
         // The pair is glued somewhere addTabSplitView decided (usually the
         // strip end); pin it back so the active tab keeps its number and the
         // newcomer sits right next to it.
-        repinAfterSplit(coalescePair(preStrip, active, tab));
+        repinAfterSplit(coalescePairOrder(preStrip, active, tab));
         rememberSplit();
         return true;
       }
-      if (tab.splitview === sv) return true; // already in this split
+      if (tab.splitview === sv) { mv("already in this split"); return true; }
       // A dissolved split can leave a stale .splitview reference on the tab
       // (a known Firefox quirk after unsplit); Firefox's addTabs then refuses
       // the tab and the move silently fails. Dissolve any leftover reference
@@ -502,27 +467,30 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
           const stale = tab.splitview;
           if (typeof stale.unsplitTabs === "function") stale.unsplitTabs();
           else if (stale.isConnected === false) stale.unsplitTabs?.();
+          mv("dissolved stale tab.splitview");
         } catch (e) {
           // ignore — the view is already gone
         }
       }
       const preStrip = stripSnapshot();
-      if (typeof sv.addTabs !== "function") return false;
+      if (typeof sv.addTabs !== "function") { mv("sv.addTabs missing"); return false; }
       try {
-        Services.console.logStringMessage("lazyfox +N: calling sv.addTabs([tab])");
+        mv("calling sv.addTabs([tab])");
         sv.addTabs([tab]);
-        Services.console.logStringMessage("lazyfox +N: addTabs returned ok");
+        mv("addTabs returned ok; tab.splitview=" + (tab.splitview ? "yes" : "no"));
       } catch (e) {
-        Services.console.logStringMessage("lazyfox +N: addTabs threw " + String(e));
+        mv("addTabs threw " + String(e));
+        return false;
       }
       removePanelPanes(sv);
       // Keep the strip order stable: the moved tab joins the group AND the
       // group stays where it was (only the newcomer changes its number, to
       // sit next to its new panes).
-      repinAfterSplit(coalesceIntoGroup(preStrip, sv, tab));
+      repinAfterSplit(coalesceIntoGroupOrder(preStrip, sv, tab));
       rememberSplit();
       return true;
     } catch (e) {
+      mv("outer catch " + String(e));
       return false;
     }
   }
@@ -532,6 +500,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       const sv = activeSplitView();
       if (!sv || typeof sv.unsplitTabs !== "function") return false;
       const panes = Array.isArray(sv.tabs) ? sv.tabs.slice() : [];
+      const preStrip = stripSnapshot();
       sv.unsplitTabs();
       // The companion split-panel pane is pure UI: close it once the split
       // dissolves so it never piles up as a stray tab. A pane the user
@@ -547,6 +516,10 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
           // ignore
         }
       }
+      // Unsplit releases the panes in place on most builds, but pin the strip
+      // back anyway: every tab must return to the exact slot it had, so the
+      // user's ;1-9 mapping never changes just because a split dissolved.
+      repinAfterSplit(preStrip);
       return true;
     } catch (e) {
       return false;
@@ -617,7 +590,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // of [[index, ...], ...] with 1-based positions over the SAVED tab list —
   // which restore recreates exactly as the window's real (non-transient) tabs
   // in order. Positions must be resolved against realTabs() (which skips the
-  // splitpanel companion and the #lfc= request channel): indexing
+  // splitpanel companion and the throwaway #lfc= request relays): indexing
   // window.gBrowser.tabs directly would be shifted by those transient tabs
   // (and any pinned tabs the restore left in front), pairing the wrong tabs
   // or none at all.
@@ -646,7 +619,6 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       // ignore
     }
   }
-
 
   return {
     isSplitPanelTab,

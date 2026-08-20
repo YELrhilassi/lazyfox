@@ -45,6 +45,30 @@ export function createRenderer(deps: RenderDeps): Renderer {
   const { refs, store } = deps;
   const { input, resultsEl, emptyEl, modeTag, stateEl, resizePanel, resizeSize, movePanel, movePos } = refs;
 
+  // Hover-selection must follow a REAL pointer gesture. On load, the browser
+  // fires a synthetic mouseover/mouseenter on whatever sits under the cursor
+  // (and scrollIntoView during the first render can slide a row under a
+  // stationary cursor), so a stray cursor parked over the grid would hijack
+  // the keyboard selection the moment the command center opens — Enter would
+  // run the hovered command instead of the first one. Arm hover selection
+  // only once the pointer actually moves (movementX/Y != 0) or the user
+  // clicks, and ignore hover events until then.
+  let hoverArmed = false;
+  document.addEventListener(
+    "pointermove",
+    (ev: PointerEvent) => {
+      if (!hoverArmed && (ev.movementX || ev.movementY)) hoverArmed = true;
+    },
+    true
+  );
+  document.addEventListener(
+    "pointerdown",
+    () => {
+      hoverArmed = true;
+    },
+    true
+  );
+
   function setMode(m: string): void {
     store.patch({ mode: m });
     modeTag.textContent = m;
@@ -105,6 +129,7 @@ export function createRenderer(deps: RenderDeps): Renderer {
         deps.openItem(item, state.mode);
       });
       li.addEventListener("mouseenter", () => {
+        if (!hoverArmed) return;
         if (store.get().idx !== i) {
           store.patch({ idx: i });
           markSelected();
