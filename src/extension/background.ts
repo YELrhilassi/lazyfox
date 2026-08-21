@@ -9,7 +9,7 @@
 import { ensureCore } from "../shared/core";
 import type { BgAction } from "../shared/protocol";
 import { getConfig } from "./config";
-import { CC_URL, getActiveTab, isCommandCenter, isUITab, realTabsInWindow, stripHash } from "./tabs";
+import { CC_URL, getActiveTab, isCommandCenter, isUITab, realTabsInWindow, stripHash, transientTabIds } from "./tabs";
 import { bookmarksSearch, doSearch, historySearch, searchUrlFor, suggestSearch, suggestUrls } from "./search";
 import {
   activateTabByIndex,
@@ -293,6 +293,20 @@ async function handleMessage(msg: BgAction, sender: any) {
         } catch (e) {}
       }
       return { ok: true };
+    case "syncLeader":
+      // The chrome helper's window-level status bar needs to know when the
+      // content-script leader is armed on a web page (the chrome helper's
+      // own leader never arms there — the content script owns the keys).
+      // Relay it through the transient #lfc= leaderState push (the same
+      // channel pushSessionStateToChrome uses): the chrome helper caches it
+      // per tab-strip index and shows the LEADER chevron for that tab.
+      if (sender && sender.tab && sender.tab.id != null) {
+        pushLeaderStateToChrome(
+          typeof sender.tab.index === "number" ? sender.tab.index : -1,
+          !!data.active
+        );
+      }
+      return { ok: true };
     case "sessionList":
       return sessionList();
     case "listSessionTabs":
@@ -502,7 +516,11 @@ function requestChrome(action: string, arg?: string): void {
   browser.tabs
     .create({ url: CC_URL + "#" + frag, active: false })
     .then((tab: any) => {
+      // Register the relay tab id immediately so realTabsInWindow filters it
+      // even while its URL is still being applied (see transientTabIds).
+      if (tab && tab.id != null) transientTabIds.add(tab.id);
       setTimeout(() => {
+        transientTabIds.delete(tab.id);
         browser.tabs
           .remove(tab.id)
           .catch(() => {});
@@ -525,6 +543,19 @@ async function pushSessionStateToChrome(): Promise<void> {
   } catch (e) {
     // ignore
   }
+}
+
+// Relay the content script's leader arm/disarm to the chrome helper so its
+// window-level status bar can show the pulsing LEADER chevron on web pages
+// (where the content script owns the leader key). The push carries the tab's
+// strip index + active flag; the chrome helper caches it per index.
+function pushLeaderStateToChrome(index: number, active: boolean): void {
+  if (index < 0) return;
+  const nonce = "ls" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+  requestChrome(
+    "leaderState." + b64utf8(JSON.stringify({ index: index, active: active })),
+    nonce
+  );
 }
 
 async function handleReq(tab: any, action: string, arg: string) {
@@ -733,6 +764,11 @@ const onTabChange = () => {
 };
 browser.tabs.onCreated.addListener(onTabChange);
 browser.tabs.onRemoved.addListener(onTabChange);
+// A relay tab can be removed by the chrome helper itself (removeReqTab) before
+// the safety timeout — drop its id so the set never holds dead tabs.
+browser.tabs.onRemoved.addListener((tabId: number) => {
+  transientTabIds.delete(tabId);
+});
 // When a stealth tab closes, wipe its container data + remove the container.
 // (Racy if the browser dies first — reconcileStealth catches orphans next
 // launch.)

@@ -114,6 +114,44 @@ export async function run(ctx) {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
   });
 
+
+  await t("web page: with the which-key overlay off, the window bar shows LEADER", async () => {
+    // The content script owns the leader key on web pages (the chrome helper
+    // stays hands-off there), but the window-level status bar is the chrome
+    // helper's. The pulsing LEADER chevron must still appear — it is the ONLY
+    // visible sign the leader is armed when the which-key overlay is off.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    // Toggle the overlay off through the content script (it owns the keys on
+    // a web page).
+    await ctx.leaderPress(ctx.tabA, "q");
+    await waitFor(async () => {
+      const c = await evalIn(ctx.probe, `browser.storage.local.get("config").then(r => r.config && r.config.whichKey)`);
+      return c === false ? true : null;
+    }, 8000).catch(() => { throw new Error(";q did not flip whichKey off"); });
+    // Press ; alone: the content leader arms, the overlay stays hidden.
+    await ctx.press(ctx.tabA, ";");
+    // The chrome helper's bar learns of the arm through the per-tab lfLeader
+    // session value; wait for the 500ms status poll to pick it up.
+    const armed = await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.statusAttr && s.statusAttr.indexOf("|LEADER|") !== -1 ? s : null;
+    }, 8000).catch(() => null);
+    assert(armed && armed.statusAttr,
+      "window bar shows LEADER while the content leader is armed: " + JSON.stringify(armed && armed.statusAttr));
+    // Escape disarms; the chevron leaves the bar.
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.statusAttr && s.statusAttr.indexOf("|LEADER|") === -1 ? true : null;
+    }, 8000).catch(() => { throw new Error("bar stayed in LEADER mode after Escape"); });
+    // Re-enable the overlay so the rest of the suite runs with hints on.
+    await ctx.leaderPress(ctx.tabA, "q");
+    await waitFor(async () => {
+      const c = await evalIn(ctx.probe, `browser.storage.local.get("config").then(r => r.config && r.config.whichKey)`);
+      return c === true ? true : null;
+    }, 8000).catch(() => { throw new Error(";q did not re-enable whichKey"); });
+  });
+
   await t("status bar position: top setting moves the bar", async () => {
     // Config reaches the chrome helper through the #lfc=cfg channel (the same
     // path the options page uses), then the bar re-renders on its 500ms poll.

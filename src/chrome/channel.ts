@@ -549,6 +549,26 @@ export function createChannel(deps: ChannelDeps): Channel {
       removeReqTab(browser);
       return;
     }
+    if (cmd === "leaderState") {
+      // Content-script leader arm/disarm relayed from the background
+      // (leaderState.<b64>.<nonce>): cache it per tab-strip index so the
+      // window-level status bar can show the pulsing LEADER chevron on web
+      // pages, then drop the request tab.
+      const dot = rest.indexOf(".");
+      const b64 = dot < 0 ? rest : rest.slice(0, dot);
+      let st: { index?: number; active?: boolean } | null = null;
+      try {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        st = JSON.parse(new TextDecoder().decode(bytes));
+      } catch (e) {
+        st = null;
+      }
+      if (st && typeof st.index === "number" && st.index >= 0) {
+        deps.status.setContentLeader(st.index, !!st.active);
+      }
+      removeReqTab(browser);
+      return;
+    }
     if (cmd === "sessionTabs") {
       // Reply to requestSessionTabs: sessionTabs.<b64>.<nonce>.
       const dot = rest.indexOf(".");

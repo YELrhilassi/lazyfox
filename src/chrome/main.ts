@@ -54,8 +54,15 @@ import { createTypingChannel } from "./typing";
   let lastAction: string | null = null;
   let lastMoveDebug: string | null = null;
 
-  const getMode = (): "POPUP" | "LEADER" | "NORMAL" =>
-    popup.isOpen() ? "POPUP" : leader && leader.active ? "LEADER" : "NORMAL";
+  const getMode = (): "POPUP" | "LEADER" | "NORMAL" => {
+    if (popup.isOpen()) return "POPUP";
+    if (leader && leader.active) return "LEADER";
+    // The content script owns the leader key on web pages; its arm/disarm is
+    // relayed through the background and cached per tab-strip index. Check
+    // the SELECTED tab's index (the bar shows the selected tab's mode).
+    if (contentLeaderActive()) return "LEADER";
+    return "NORMAL";
+  };
 
   status = createStatusBar({
     realTabs: () => split.realTabs(),
@@ -345,6 +352,13 @@ import { createTypingChannel } from "./typing";
   chromeKeyDown = (e) => {
     if (e.isComposing) return false;
 
+    // Web pages are the content script's territory (its own leader, popups,
+    // hints and typing guard). If Firefox forwards their keys to this chrome
+    // window listener (some builds do), never consume them here — the content
+    // script already let them through or handled them. The chrome helper only
+    // owns keys on its own pages (command center, about:, extension pages).
+    if (!chromeOwnsKeys() && !popup.isOpen()) return false;
+
     // A chrome popup is open: Esc closes it first (before the page/window).
     if (popup.isOpen()) {
       if (e.key === "Escape") {
@@ -367,9 +381,9 @@ import { createTypingChannel } from "./typing";
     // but only while the user isn't composing text in a field. A field holding
     // text means typing wins: a stale leader/capture (e.g. `;` pressed on a
     // page, then clicking into a search box) must disarm and the key must type.
-    // An EMPTY input keeps the binding — that's `;n` then `n` on the home tab.
+    // Exception: the command center empty home input keeps the binding —
     if (leader!.active || leader!.hasPending()) {
-      if (typingNow && typingValue !== "") {
+      if (typingNow && !(typingValue === "" && isCommandCenterTab())) {
         if (leader!.active) leader!.hide();
         if (leader!.hasPending()) leader!.cancelPending();
         return false;
@@ -456,12 +470,15 @@ import { createTypingChannel } from "./typing";
   // Firefox's native typeahead quick-find is bound to the `keypress` of `/`
   // and `'`, so it fires even after the leader has consumed the `keydown`.
   // Suppress it outside text fields so `;/` opens the find bar deliberately
-  // rather than the native bar stealing the key.
+  // rather than the native bar stealing the key. Also skip when a popup is
+  // open — the popup input must receive these characters.
   window.addEventListener(
     "keypress",
     (e) => {
       if (e.key !== "/" && e.key !== "'") return;
-      if (!typing.focusedIsTyping(e)) {
+      // Same ownership rule as the keydown handler: never suppress quick-find
+      // on web pages (the content script does that there).
+      if (!typing.focusedIsTyping(e) && !popup.isOpen() && chromeOwnsKeys()) {
         e.preventDefault();
         e.stopPropagation();
       }
@@ -491,6 +508,41 @@ import { createTypingChannel } from "./typing";
     });
   } catch (e) {
     // ignore
+  }
+
+  // Is the CONTENT script's leader armed in the selected tab? On web pages
+  // the content script owns the leader key (chromeOwnsKeys() is false), so
+  // the chrome helper's own leader never arms there — but the window-level
+  // status bar must still show the pulsing LEADER chevron. The content
+  // script reports every arm/disarm to the background, which relays it as a
+  // per-index cache the status bar reads. On chrome-owned pages the content
+  // script never runs, so the cache is empty and the chrome helper's own
+  // leader is the truth.
+  function contentLeaderActive(): boolean {
+    try {
+      const sel = window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
+      return sel >= 0 && status.contentLeaderActive(sel);
+    } catch (e) {
+      // ignore
+    }
+    return false;
+  }
+
+  // Does the CHROME helper own this tab's keys? True for its own pages
+  // (command center, about:, extension URLs) — false for web content, where
+  // the content script owns the leader/popups/hints and the chrome helper
+  // must stay hands-off even if Firefox forwards content keys up here.
+  function chromeOwnsKeys(): boolean {
+    try {
+      const b = window.gBrowser.selectedBrowser;
+      const u = b && b.currentURI;
+      if (!u) return true;
+      const s = u.spec || "";
+      if (/^https?:/i.test(s) || /^file:/i.test(s)) return false;
+      return true;
+    } catch (e) {
+      return true;
+    }
   }
 
   // Is the selected tab the extension's command center page?

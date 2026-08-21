@@ -141,8 +141,18 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   const leaderActions = makeLeaderActions(ctx);
   leader = new LeaderController(
     (k) => runLeaderAction(leaderActions, k),
-    () => config.whichKey !== false
+    () => config.whichKey !== false,
+    // The chrome helper owns the single window-level status bar and draws its
+    // pulsing LEADER chevron from the per-tab leader state it caches from the
+    // background's leaderState push. Report every arm/disarm so the chevron
+    // tracks the content-script leader on web pages (where the content
+    // script owns the leader key and the chrome helper's own leader never
+    // arms).
+    () => void send("syncLeader", { active: leader.active })
   );
+  // Clear any stale leader state this tab carried from a previous page (the
+  // leader starts disarmed on every fresh load).
+  void send("syncLeader", { active: false });
   // ;' = quick switch: capture the next digit and jump to the marked session.
   leaderActions["'"] = () =>
     leader.armPending((k) => {
@@ -297,6 +307,11 @@ import { createContentOps, type ContentPopupShell } from "./ops";
         // The user focused a text field mid-hints: the hint batch must not
         // eat what they type there. Drop the hints and let the key through.
         hints.exit();
+      } else if (e.key === "Escape") {
+        // Esc exits the hints (clearing every hint's state) but is NOT
+        // consumed here — it falls through to the shared Esc handling below,
+        // which also blurs focus and lets the page close its own overlays.
+        hints.exit();
       } else {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -312,25 +327,25 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     // chrome helper only receives keys on in-process pages (about:, the
     // command center), where this content script does not run.
     if (e.key === "Escape") {
-      const had = hints.active || leader.active || leader.hasPending();
+      // Esc is the universal cancel key. Clear every Lazyfox overlay state so
+      // the next invocation starts fresh: link hints (typed prefix, items,
+      // pool), the leader and any one-shot capture.
       if (hints.active) hints.exit();
       if (leader.active) leader.hide();
       if (leader.hasPending()) leader.handlePending("Escape");
-      if (had) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        return;
-      }
+      // Unfocus whatever element holds focus (an input, a button, a link) so
+      // the page returns to its default state.
       const ae = document.activeElement;
       if (ae && ae !== document.body && ae !== document.documentElement) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
         try {
           (ae as HTMLElement).blur();
         } catch (err) {
           // ignore
         }
       }
+      // Deliberately NOT consumed: the page must also receive Esc so it can
+      // close its own popups, info bars, cookie banners and fullscreen video.
+      // preventDefault/stopImmediatePropagation here used to keep those open.
       return;
     }
     // Focus is in a text field. A stale leader or one-shot capture must never
@@ -454,7 +469,16 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     if (hints.active) hints.exit();
     if (leader.active) leader.hide();
   });
-  document.addEventListener("focusin", syncTypingAttr);
+  document.addEventListener("focusin", (e) => {
+    syncTypingAttr();
+    // A stale leader or one-shot capture must never eat what the user types.
+    // Disarm when focus moves to an editable element (e.g. clicking into a
+    // search box after pressing `;` on the page).
+    if (isTypingTarget(e.target as Element)) {
+      if (leader.active) leader.hide();
+      if (leader.hasPending()) leader.cancelPending();
+    }
+  });
   document.addEventListener("focusout", syncTypingAttr);
   document.addEventListener("focus", syncTypingAttr);
 
