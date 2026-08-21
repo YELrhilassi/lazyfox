@@ -56,6 +56,12 @@ export interface BgApi {
   setConfig: { req: { config: Config }; res: { ok: boolean } };
   toggleWhichKey: { req: Record<string, never>; res: { whichKey: boolean } };
   syncTyping: { req: { typing: boolean }; res: { ok: boolean } };
+  // Content script -> background: the content-script leader armed/disarmed.
+  // The background relays it to the chrome helper (whose window-level status
+  // bar shows the pulsing LEADER chevron on web pages, where the content
+  // script owns the leader key and the chrome helper's own leader never
+  // arms).
+  syncLeader: { req: { active: boolean }; res: { ok: boolean } };
   sessionList: { req: Record<string, never>; res: { sessions: Session[] } };
   sessionSave: { req: { name: string }; res: { ok: boolean; session?: Session } };
   sessionNew: { req: { name: string }; res: { ok: boolean; note?: string } };

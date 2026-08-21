@@ -477,4 +477,137 @@ export async function run(ctx) {
     // Cleanup: blur so later tests start clean.
     await evalIn(ctx.tabA, `document.activeElement && document.activeElement.blur(); true`);
   });
+  await t("all special characters type correctly into text inputs", async () => {
+    // Comprehensive test: every character that could be a leader binding or
+    // special key must type normally when an input has focus.
+    await ctx.gotoPage(ctx.tabA, ctx.base + "/");
+    await evalIn(ctx.tabA, 'document.getElementById("inp1").focus(); true');
+    await sleep(200);
+    // Characters that conflict with leader bindings and special browser keys
+    const allChars = ";'\/[]{}|,.`~!@#$%^&*()-_+=<>?0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    await ctx.typeIn(ctx.tabA, allChars);
+    const val = await evalIn(ctx.tabA, 'document.getElementById("inp1").value');
+    assert(val === allChars, "input got all chars, got " + JSON.stringify(val.slice(0, 50)));
+    await evalIn(ctx.tabA, 'document.getElementById("inp1").value = ""; true');
+    await evalIn(ctx.tabA, 'document.activeElement && document.activeElement.blur(); true');
+  });
+
+  await t("all special characters type correctly into textareas", async () => {
+    await ctx.gotoPage(ctx.tabA, ctx.base + "/");
+    await evalIn(ctx.tabA, 'document.getElementById("ta1").focus(); true');
+    await sleep(200);
+    const allChars = ";'\/[]{}|,.`~!@#$%^&*()-_+=<>?0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    await ctx.typeIn(ctx.tabA, allChars);
+    const val = await evalIn(ctx.tabA, 'document.getElementById("ta1").value');
+    assert(val === allChars, "textarea got all chars, got " + JSON.stringify(val.slice(0, 50)));
+    await evalIn(ctx.tabA, 'document.getElementById("ta1").value = ""; true');
+    await evalIn(ctx.tabA, 'document.activeElement && document.activeElement.blur(); true');
+  });
+
+  await t("all special characters type into contenteditable divs", async () => {
+    await ctx.gotoPage(ctx.tabA, ctx.base + "/");
+    await evalIn(ctx.tabA, 'document.getElementById("ce1").textContent = ""; true');
+    await evalIn(ctx.tabA, 'document.getElementById("ce1").focus(); true');
+    await sleep(200);
+    const allChars = ";'\/[]{}|,.`~!@#$%^&*()-_+=<>?0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    await ctx.typeIn(ctx.tabA, allChars);
+    const val = await evalIn(ctx.tabA, 'document.getElementById("ce1").textContent');
+    assert(val === allChars, "contenteditable got all chars, got " + JSON.stringify(val.slice(0, 50)));
+    await evalIn(ctx.tabA, 'document.activeElement && document.activeElement.blur(); true');
+  });
+
+  await t("leader key disarms when focus moves to an input", async () => {
+    await ctx.gotoPage(ctx.tabA, ctx.base + "/");
+    await evalIn(ctx.tabA, 'document.activeElement && document.activeElement.blur(); true');
+    await sleep(200);
+    await ctx.press(ctx.tabA, ";");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-leader")) ? true : null, 5000);
+    await evalIn(ctx.tabA, 'document.getElementById("inp1").focus(); true');
+    await sleep(200);
+    await ctx.typeIn(ctx.tabA, ";'1");
+    const val = await evalIn(ctx.tabA, 'document.getElementById("inp1").value');
+    assert(val === ";'1", "input got ;'1, got " + JSON.stringify(val));
+    await evalIn(ctx.tabA, 'document.activeElement && document.activeElement.blur(); true');
+  });
+
+  await t("Esc blurs the focused input and reaches the page", async () => {
+    // Esc must unfocus whatever element holds focus AND still reach the page:
+    // page-level Esc handlers (modals, cookie banners, info bars) close on the
+    // same keypress. The content script must blur, never consume the key.
+    await ctx.gotoPage(ctx.tabA, ctx.base + "/");
+    await evalIn(
+      ctx.tabA,
+      `window.__lfEscKeys = [];
+       window.addEventListener("keydown", function (ev) { window.__lfEscKeys.push(ev.key); });
+       true`
+    );
+    await evalIn(ctx.tabA, 'document.getElementById("inp1").focus(); true');
+    await sleep(200);
+    await ctx.press(ctx.tabA, "Escape");
+    await sleep(300);
+    const ae = await evalIn(ctx.tabA, `document.activeElement && document.activeElement.id`);
+    assert(ae !== "inp1", "Esc blurred the focused input, activeElement=" + JSON.stringify(ae));
+    const keys = await evalIn(ctx.tabA, `window.__lfEscKeys`);
+    assert(keys && keys.indexOf("Escape") !== -1, "page received Esc, got " + JSON.stringify(keys));
+  });
+
+  await t("Esc during hints clears state so the next ;f re-hints everything", async () => {
+    // Regression: ;f, type one letter of a hint, then Esc — the next ;f used
+    // to remember the stale prefix (or an in-flight hint batch), so the fresh
+    // start showed a filtered/empty set instead of every link. Esc must fully
+    // clear the hints and the next ;f must re-hint everything again.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/hints`);
+    const hintList = () =>
+      evalIn(
+        ctx.tabA,
+        `(function(){
+          const host = document.getElementById("lazyfox-hints");
+          if (!host) return null;
+          const raw = host.getAttribute("data-lf-pos");
+          if (!raw) return null;
+          try { return JSON.parse(raw); } catch (e) { return null; }
+        })()`
+      );
+    const startHints = async () => {
+      await ctx.leaderPress(ctx.tabA, "f");
+      await waitFor(async () => {
+        const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+        return on === "1" ? true : null;
+      }, 5000);
+    };
+    await startHints();
+    const all = await waitFor(async () => {
+      const l = await hintList();
+      return l && l.length > 5 ? l : null;
+    }, 5000);
+    const total = all.length;
+    // The most common first letter is shared by several hint keys, so typing
+    // it narrows the batch instead of activating a single link.
+    const counts = {};
+    for (const it of all) counts[it.key[0]] = (counts[it.key[0]] || 0) + 1;
+    const prefix = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+    await ctx.press(ctx.tabA, prefix);
+    await waitFor(async () => {
+      const l = await hintList();
+      return l && l.length > 0 && l.length < total ? true : null;
+    }, 5000);
+    // Esc cancels: the overlay must be fully gone (attribute removed).
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => {
+      const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+      // evalIn maps null results to undefined, so match both.
+      return on == null ? true : null;
+    }, 5000);
+    // Back to the top so the fresh ;f sees the same viewport as the first one.
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await sleep(300);
+    await startHints();
+    const again = await waitFor(async () => {
+      const l = await hintList();
+      return l && l.length === total ? l : null;
+    }, 5000);
+    assert(again.length === total, "fresh ;f re-hinted everything (" + again.length + " === " + total + ")");
+    await ctx.press(ctx.tabA, "Escape");
+    await sleep(200);
+  });
 }

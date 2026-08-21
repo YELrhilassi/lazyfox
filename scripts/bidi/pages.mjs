@@ -21,6 +21,8 @@ export const pages = {
 <button id="btn1" onclick="document.title='BUTTON-CLICKED'">Button One</button>
 <div style="height:3000px;background:repeating-linear-gradient(45deg,#eee,#eee 10px,#ddd 10px,#ddd 20px)">scroll space</div>
 <input id="inp2" type="text" placeholder="second input">
+<textarea id="ta1" rows="2" cols="30" placeholder="textarea"></textarea>
+<div id="ce1" contenteditable="true" style="border:1px solid #ccc;padding:4px;min-height:1.2em" placeholder="editable div">editable</div>
 </body></html>`,
   },
   "/target1": { body: `<!DOCTYPE html><title>TARGET ONE</title><h1>Target One</h1><a href="/">back</a>` },

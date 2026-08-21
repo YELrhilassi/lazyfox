@@ -24,6 +24,9 @@ export function isRelayTabUrl(url: string | null | undefined): boolean {
     if (frag.startsWith("sessionState.")) return true;
     if (frag.startsWith("sessionTabs.")) return true;
     if (frag.startsWith("open.")) return true;
+    // Content-leader arm/disarm relay (syncLeader -> leaderState): a
+    // throwaway tab like the others — it must never shift ;1-9 numbering.
+    if (frag.startsWith("leaderState.")) return true;
   }
   return u.indexOf("splitpanel.html") !== -1;
 }

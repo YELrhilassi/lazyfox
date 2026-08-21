@@ -42,6 +42,12 @@ export interface StatusBarCtl {
   // The stealth badge must track the tab you switched to immediately (without
   // a sessionState round-trip), so the caller sets the active flag locally.
   setActiveStealth(on: boolean): void;
+  // Content-script leader state by tab-strip index (pushed by the background
+  // on every arm/disarm). The window-level bar shows the LEADER chevron on
+  // web pages — where the content script owns the leader key and the chrome
+  // helper's own leader never arms — by consulting this per-index cache.
+  setContentLeader(index: number, active: boolean): void;
+  contentLeaderActive(index: number): boolean;
   mounted(): boolean;
   dlActive(): string[];
   getInfo(): {
@@ -84,6 +90,9 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   let chromeStatusStealthFlags: boolean[] = [];
   // Active (un-dismissed) downloads for the status bar's progress segment.
   let chromeStatusDownloads: { key: string; filename: string; state: string; percent: number; speed: string }[] = [];
+  // Content-script leader arm state by tab-strip index (the index the
+  // background's sender.tab.index reports — same ordering as gBrowser.tabs).
+  let contentLeaderByIndex: Record<number, boolean> = {};
 
   // Is the selected tab the extension's command center page?
   function isCommandCenterTab(): boolean {
@@ -228,6 +237,11 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     setActiveStealth: (on) => {
       chromeStatusInfo = { ...chromeStatusInfo, activeStealth: on };
     },
+    setContentLeader: (index, active) => {
+      contentLeaderByIndex[index] = active;
+      computeChromeStatus();
+    },
+    contentLeaderActive: (index) => !!contentLeaderByIndex[index],
     mounted: () => chromeStatusBar.mounted,
     dlActive: () =>
       chromeStatusDownloads.map(

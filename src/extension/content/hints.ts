@@ -70,6 +70,10 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   let pool: Element[] = []; // every hintable element, in document order
   let items: HintItem[] = []; // currently hinted items (viewport subset)
   let typed = "";
+  // Incremented on every start()/exit(); async continuations (core.makeHints)
+  // capture it and bail if a newer session took over (e.g. ESC during the
+  // await) so stale state never repopulates after exit.
+  let session = 0;
   let host: (HTMLElement & { _box: HTMLElement }) | null = null;
   // rAF loop state: pages can shift under the hints at any moment (a carousel
   // auto-slide, a lazy image landing, a layout shift, the user's own wheel
@@ -94,6 +98,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
 
   async function start(): Promise<void> {
     if (active) return;
+    const mySession = ++session;
     const all = document.querySelectorAll(HINTABLE_SELECTOR);
     pool = Array.prototype.filter.call(all, basicVisible) as Element[];
     if (!pool.length) {
@@ -117,6 +122,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     mountHost();
     rafId = requestAnimationFrame(frame);
     await assign(vis);
+    if (session !== mySession) return; // exited (ESC) during the await
     if (!items.length) exit();
   }
 
@@ -145,6 +151,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
       render();
       return;
     }
+    const mySession = session;
     let keys: string[];
     try {
       keys = await core.makeHints(chosen.length, hintChars());
@@ -153,6 +160,11 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
       exit();
       return;
     }
+    // The user exited (Esc) while makeHints was in flight: a newer session
+    // owns the overlay now, so never repopulate items with this stale batch
+    // (that used to leave the previous prefix/selection stuck for the next
+    // start).
+    if (session !== mySession) return;
     for (const it of items) {
       if (it.label) {
         it.label.remove();
@@ -199,10 +211,12 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
       if (!it.label) {
         const label = document.createElement("span") as HintLabel;
         label.className = "hint";
-        label.textContent = it.key.slice(typed.length);
         host._box.appendChild(label);
         it.label = label;
       }
+      // Always update the displayed text so the label shrinks as the user
+      // narrows the prefix (e.g. "adk" -> typed "a" -> shows "dk").
+      it.label.textContent = it.key.slice(typed.length);
     }
     reposition();
   }
@@ -316,9 +330,15 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     const top = matches[0]!;
     const r = top.el.getBoundingClientRect();
     const vh = window.innerHeight || document.documentElement.clientHeight || 0;
-    if (r.top < 0 || r.bottom > vh) {
+    // Only scroll when the candidate is ENTIRELY outside the viewport (the
+    // user paged then wheel-scrolled away). Partially visible elements
+    // (r.top < 0 or r.bottom > vh) must NOT trigger a scroll — centering
+    // them yanked the page and lost the user's scroll position.
+    if (r.bottom < 0 || r.top > vh) {
       try {
-        top.el.scrollIntoView({ block: "center", behavior: "auto" });
+        // "nearest" scrolls just enough to bring the candidate on screen;
+        // "center" used to jump the page far past the user's position.
+        top.el.scrollIntoView({ block: "nearest", behavior: "auto" });
       } catch (e) {
         // ignore
       }
@@ -427,6 +447,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   }
 
   function exit(): void {
+    session++;
     active = false;
     if (rafId) {
       cancelAnimationFrame(rafId);

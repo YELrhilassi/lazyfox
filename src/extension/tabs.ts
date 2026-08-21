@@ -23,10 +23,20 @@ export function isUITab(t: any): boolean {
   return isRelayTabUrl((t && t.url) || "");
 }
 
+// Tab IDs of throwaway #lfc= request relays currently being created. URL-based
+// filtering (isRelayTabUrl) misses a relay tab whose URL has not been applied
+// yet (about:blank during first paint), so a tab query racing the create can
+// mistake one for a real user tab — and ;k/;9/;t would target it. The
+// background registers every relay tab id here the moment the create resolves
+// and removes it when the tab closes, so realTabsInWindow can never count one.
+export const transientTabIds = new Set<number>();
+
 // The user-visible tabs in the current window, in strip order.
 export async function realTabsInWindow(): Promise<any[]> {
   const tabs = await browser.tabs.query({ currentWindow: true });
-  return (tabs || []).filter((t: any) => !isUITab(t));
+  return (tabs || []).filter(
+    (t: any) => !isUITab(t) && !transientTabIds.has(t.id)
+  );
 }
 
 export function isCommandCenter(tab: any): boolean {

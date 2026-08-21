@@ -17,6 +17,7 @@ function isTypingTarget(t: unknown): boolean {
     if ((el as HTMLElement).isContentEditable) return true;
     const ce = el.getAttribute && el.getAttribute("contenteditable");
     if (ce === "true" || ce === "") return true;
+    if (el.getAttribute && el.getAttribute("role") === "textbox") return true;
     if (el.closest && el.closest('[contenteditable="true"]')) return true;
   } catch (e) {
     return false;
@@ -95,6 +96,19 @@ export function createTypingChannel(): TypingChannel {
       }
     } catch (err) {
       // ignore
+    }
+    // Direct content-window probe: in-process pages (command center,
+    // about: pages) may have a focused input that the chrome-level signals
+    // (originalTarget, commandDispatcher, Services.focus) report as the
+    // <browser> wrapper rather than the element inside it.
+    try {
+      const b = window.gBrowser && window.gBrowser.selectedBrowser;
+      if (b && b.contentWindow && b.contentWindow.document) {
+        const ae = b.contentWindow.document.activeElement;
+        if (ae && isTypingTarget(ae)) return ae;
+      }
+    } catch (err) {
+      // cross-process: ignore
     }
     return null;
   }
