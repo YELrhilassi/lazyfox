@@ -2,6 +2,7 @@ package core
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -160,6 +161,36 @@ func TestWhichKeyPagination(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The leader/which-key table is the single source of truth for every popup
+// and action; the history/recovery/alternate-tab features all hang off keys
+// in it. Guard their presence and reject key collisions.
+func TestBindingsContainNewActions(t *testing.T) {
+	keys := map[string]string{}
+	for _, b := range Bindings {
+		if b.Native {
+			continue
+		}
+		if prev, dup := keys[b.Key]; dup {
+			t.Fatalf("duplicate lazy key %q (%q and %q)", b.Key, prev, b.Label)
+		}
+		keys[b.Key] = b.Label
+	}
+	require := func(key, want string) {
+		t.Helper()
+		got, ok := keys[key]
+		if !ok {
+			t.Errorf("missing binding %q", key)
+			return
+		}
+		if !strings.Contains(strings.ToLower(got), strings.ToLower(want)) {
+			t.Errorf("binding %q label %q does not contain %q", key, got, want)
+		}
+	}
+	require("a", "Alternate")
+	require("V", "Recently closed")
+	require("h", "History")
 }
 
 func TestLfcGrammar(t *testing.T) {

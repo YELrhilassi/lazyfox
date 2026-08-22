@@ -143,6 +143,7 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
     else if (k === "n") void send("newTab");
     else if (k === "x") closeTabConfirm();
     else if (k === "v") void send("reopenTab");
+    else if (k === "a") void send("alternateTab");
     else if (k === "c") void send("duplicateTab");
     else if (k === "z") void send("zen");
     else if (k === "N") void send("stealthOpen");

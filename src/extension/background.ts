@@ -13,10 +13,18 @@ import { CC_URL, getActiveTab, isCommandCenter, isUITab, realTabsInWindow, strip
 import { bookmarksSearch, doSearch, historySearch, searchUrlFor, suggestSearch, suggestUrls } from "./search";
 import {
   activateTabByIndex,
+  alternateTab as alternateTabOp,
+  clearHistory,
+  forgetTab,
   getWindowSize,
   moveWindow,
+  noteTabActivation,
+  recentlyClosed,
+  removeHistory,
   reopenTab,
   resizeWindow,
+  restoreAllClosedTabs,
+  restoreClosedTab,
   tabsInWindow,
   toggleMaximize,
   toggleMute,
@@ -202,6 +210,18 @@ async function handleMessage(msg: BgAction, sender: any) {
       return { ok: true };
     case "reopenTab":
       return reopenTab();
+    case "alternateTab":
+      return alternateTabOp();
+    case "recentlyClosed":
+      return { items: await recentlyClosed() };
+    case "restoreClosedTab":
+      return restoreClosedTab(data.key);
+    case "restoreAllClosed":
+      return restoreAllClosedTabs();
+    case "removeHistory":
+      return removeHistory(data.url);
+    case "clearHistory":
+      return clearHistory();
     case "duplicateTab": {
       const tab = await getActiveTab();
       if (tab) await browser.tabs.duplicate(tab.id);
@@ -641,6 +661,36 @@ async function handleReq(tab: any, action: string, arg: string) {
     await restoreSession(decodeURIComponent(arg || ""));
     return;
   }
+  if (action === "alternateTab") {
+    await alternateTabOp();
+    return;
+  }
+  if (action === "restoreClosedTab") {
+    await restoreClosedTab(decodeURIComponent(arg || ""));
+    return;
+  }
+  if (action === "restoreAllClosed") {
+    await restoreAllClosedTabs();
+    return;
+  }
+  if (action === "recentlyClosed") {
+    // Reply channel for the chrome helper's recently-closed popup (mirrors
+    // sessionTabs): write the rows into the tab's hash; the chrome helper
+    // removes the tab after reading it.
+    const items = await recentlyClosed();
+    await browser.tabs.update(tab.id, {
+      url: CC_URL + "#lfc=recentlyClosed." + b64utf8(JSON.stringify(items)) + "." + (arg || "")
+    });
+    return;
+  }
+  if (action === "removeHistory") {
+    await removeHistory(decodeURIComponent(arg || ""));
+    return;
+  }
+  if (action === "clearHistory") {
+    await clearHistory();
+    return;
+  }
   if (action === "deleteSession") {
     await deleteSession(decodeURIComponent(arg || ""));
     return;
@@ -680,7 +730,11 @@ browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
   if (!m) return;
   // sessionState, sessionTabs and stealthOpen write their reply into the tab's
   // hash and let the chrome helper remove the tab after reading it.
-  const keepOpen = m[1] === "sessionState" || m[1] === "sessionTabs" || m[1] === "stealthOpen";
+  const keepOpen =
+    m[1] === "sessionState" ||
+    m[1] === "sessionTabs" ||
+    m[1] === "stealthOpen" ||
+    m[1] === "recentlyClosed";
   handleReq(tab, m[1]!, m[2] || "")
     .catch(() => {})
     .then(() => {
@@ -694,6 +748,17 @@ browser.tabs.onActivated.addListener((info: any) => {
     .get(info.tabId)
     .then((tab: any) => maybeConvertHome(tab))
     .catch(() => {});
+});
+
+// Alternate-tab (;a) bookkeeping: remember the previously-active tab per
+// window so the shortcut can toggle back to it. Suppressed during a session
+// restore rebuild (the transient activations would pollute the pair).
+browser.tabs.onActivated.addListener((info: any) => {
+  if (isRestoring()) return;
+  noteTabActivation(info.windowId, info.tabId);
+});
+browser.tabs.onRemoved.addListener((tabId: number, removeInfo: any) => {
+  forgetTab(removeInfo && removeInfo.windowId, tabId);
 });
 
 browser.tabs

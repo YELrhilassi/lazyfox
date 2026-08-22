@@ -68,7 +68,9 @@ gatekeeper. The action runs the moment you press its key; `Esc` just cancels.
 | `; t` | tab switcher — type to filter |
 | `; p` | sessions popup |
 | `; n` / `; x` / `; v` / `; c` | new tab / close / duplicate / reopen |
+| `; V` | recently closed tabs & windows (restore one, or all) |
 | `; j` / `; k` | next / previous tab |
+| `; a` | alternate tab — jump to the last used tab and back |
 | `; r` / `; g` / `; l` | reload / back / forward |
 | `; y` / `; m` | copy URL / mute tab |
 | `; z` | zen mode (fullscreen) |

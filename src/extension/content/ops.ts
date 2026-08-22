@@ -261,6 +261,25 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
       if (n === 9) void send("activateTabAt", { last: true });
       else void send("activateTabAt", { index: n });
     },
+    alternateTab: () => {
+      void send("alternateTab");
+    },
+    recentlyClosed: async () => {
+      const r = await send("recentlyClosed");
+      return (r && r.items) || [];
+    },
+    restoreClosedTab: (key: string) => {
+      void send("restoreClosedTab", { key: key });
+    },
+    restoreAllClosed: () => {
+      void send("restoreAllClosed");
+    },
+    removeHistory: (url: string) => {
+      void send("removeHistory", { url: url });
+    },
+    clearHistory: () => {
+      void send("clearHistory");
+    },
     zoom: (delta: number, factor?: number) => void send("zoom", { delta: delta, factor: factor }),
     openDownload: (key: string) => void send("openDownload", { id: key }),
     openDownloadLocation: (key: string) => void send("openDownloadLocation", { id: key }),
