@@ -502,27 +502,53 @@ export async function run(ctx) {
     await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
   });
 
-  await t("find copies a range (v anchor then y) with the yank flash", async () => {
-    // Neovim-style visual copy: walk to a match, v anchors it, walk to
-    // another match, y copies from the anchor to the current one (inclusive)
-    // and flashes the whole range.
+  await t("yank mode: visual selection shows exactly what will be yanked; yy and y+motion+y copy with flash", async () => {
+    // Y opens the yank mode: the page text is parsed by the Go core, the block
+    // caret tracks the cursor (seeded at the current match). y starts a visual
+    // selection that is highlighted live (badge shows the char count, the hint
+    // row previews the text), and y again copies exactly the highlighted range.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await ctx.leaderPress(ctx.tabA, "/");
     await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
-    await ctx.typeIn(ctx.tabA, "Link");
+    await ctx.typeIn(ctx.tabA, "Lazyfox");
     await sleep(400);
-    const c0 = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
-    assert(c0 === "0/2", "two matches counted, got " + c0);
-    await ctx.press(ctx.tabA, "Enter"); // walk to the first match
-    await sleep(250);
-    await ctx.press(ctx.tabA, "v"); // anchor the range here
-    await sleep(150);
-    await ctx.press(ctx.tabA, "n"); // walk to the second match
-    await sleep(250);
-    await ctx.press(ctx.tabA, "y"); // yank the range
+    await ctx.press(ctx.tabA, "Enter"); // walk to the match -> command mode
+    await sleep(300);
+    await ctx.press(ctx.tabA, "Y"); // enter yank mode (cursor at the match)
+    await sleep(350);
+    const caret = await ctx.hasHost(ctx.tabA, "lazyfox-caret");
+    assert(caret, "block caret shown in yank mode");
+    // yy yanks the whole line the cursor sits on (the h1) with the flash.
+    await ctx.press(ctx.tabA, "y");
     await sleep(120);
-    const flash = await ctx.hasHost(ctx.tabA, "lazyfox-flash");
-    assert(flash, "range yank flash overlay shown");
+    await ctx.press(ctx.tabA, "y");
+    await sleep(120);
+    const flash1 = await ctx.hasHost(ctx.tabA, "lazyfox-flash");
+    assert(flash1, "yy yank flash overlay shown");
+    // y then e starts a selection anchored at the cursor (the whole word).
+    await ctx.press(ctx.tabA, "y");
+    await sleep(120);
+    await ctx.press(ctx.tabA, "e");
+    await sleep(250);
+    const selOverlay = await ctx.hasHost(ctx.tabA, "lazyfox-sel");
+    assert(selOverlay, "selection highlight overlay shown while selecting");
+    // The widget lives in a closed shadow root, so it mirrors its state onto
+    // <html data-lf-yank> like data-lf-find: idle:<L>:<C> or sel:<N chars>:<preview>.
+    const yst = await evalIn(ctx.tabA, `document.documentElement.getAttribute('data-lf-yank')`);
+    assert(
+      yst === "sel:7 chars:Lazyfox",
+      "yank state mirrors the live selection (size + text), got " + JSON.stringify(yst)
+    );
+    // y copies the highlighted range with the flash and leaves selection mode.
+    await ctx.press(ctx.tabA, "y");
+    await sleep(150);
+    const flash2 = await ctx.hasHost(ctx.tabA, "lazyfox-flash");
+    assert(flash2, "yank of the selection flashes the copied text");
+    // Esc exits yank mode back to find command mode; Esc again closes.
+    await ctx.press(ctx.tabA, "Escape");
+    await sleep(200);
+    const stillOpen = await ctx.hasHost(ctx.tabA, "lazyfox-popup");
+    assert(stillOpen, "Esc exits yank mode but keeps the find widget open");
     await ctx.press(ctx.tabA, "Escape");
     await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
   });

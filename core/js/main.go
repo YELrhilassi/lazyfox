@@ -22,6 +22,14 @@ func strArray(s []string) js.Value {
 	return a
 }
 
+func intArray(ns []int) js.Value {
+	a := js.Global().Get("Array").New(len(ns))
+	for i, v := range ns {
+		a.SetIndex(i, v)
+	}
+	return a
+}
+
 func wkItemObj(it core.WkItem) js.Value {
 	o := obj()
 	o.Set("key", it.Key)
@@ -525,6 +533,68 @@ func main() {
 			now = int64(args[1].Int())
 		}
 		return recoveryRows(core.OrganizeRecovery(items, now))
+	})
+
+	// ---- page yank (neovim-style motions/text objects over parsed page text) ----
+
+	set("yankParse", func(this js.Value, args []js.Value) interface{} {
+		text := ""
+		if len(args) > 0 {
+			text = args[0].String()
+		}
+		lines, lineStart, total := core.YankParse(text)
+		o := obj()
+		o.Set("lines", lines)
+		o.Set("total", total)
+		o.Set("lineStart", intArray(lineStart))
+		return o
+	})
+
+	set("yankMotion", func(this js.Value, args []js.Value) interface{} {
+		op, arg := "", ""
+		line, col := 0, 0
+		if len(args) > 0 {
+			op = args[0].String()
+		}
+		if len(args) > 1 {
+			arg = args[1].String()
+		}
+		if len(args) > 2 {
+			line = args[2].Int()
+		}
+		if len(args) > 3 {
+			col = args[3].Int()
+		}
+		l, c := core.YankMotion(op, arg, line, col)
+		o := obj()
+		o.Set("line", l)
+		o.Set("col", c)
+		return o
+	})
+
+	set("yankObject", func(this js.Value, args []js.Value) interface{} {
+		op := ""
+		line, col := 0, 0
+		if len(args) > 0 {
+			op = args[0].String()
+		}
+		if len(args) > 1 {
+			line = args[1].Int()
+		}
+		if len(args) > 2 {
+			col = args[2].Int()
+		}
+		o := obj()
+		if sl, sc, el, ec, ok := core.YankObject(op, line, col); ok {
+			o.Set("ok", true)
+			o.Set("sl", sl)
+			o.Set("sc", sc)
+			o.Set("el", el)
+			o.Set("ec", ec)
+		} else {
+			o.Set("ok", false)
+		}
+		return o
 	})
 
 	set("formatBytes", func(this js.Value, args []js.Value) interface{} {
