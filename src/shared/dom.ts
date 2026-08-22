@@ -13,20 +13,41 @@ export function esc(s: unknown): string {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESC_MAP[c] || c);
 }
 
+// Deepest element actually focused inside an open shadow root. Custom
+// elements (Reddit's <faceplate-search-input>, YouTube's search box, ...)
+// host their real <input>/<textarea> in shadow DOM; the focused element the
+// page reports (document.activeElement / the retargeted event target) is the
+// HOST, not the editable inside. Follow shadowRoot.activeElement down so
+// typing detection sees the real field instead of the wrapper.
+export function deepTypingFocus(el: Element | null): Element | null {
+  let cur = el;
+  let depth = 0;
+  while (cur && depth < 10) {
+    const sr = (cur as HTMLElement).shadowRoot;
+    if (!sr || sr.mode !== "open") break;
+    const ae = sr.activeElement as Element | null;
+    if (!ae) break;
+    cur = ae;
+    depth++;
+  }
+  return cur;
+}
+
 // Unified typing-target predicate. Strips any "html:" style namespace prefix
 // (chrome's Services.focus reports namespaced tag names) and accepts the
 // superset of conditions the old content/chrome/frame copies each knew.
 export function isTypingTarget(el: Element | null): boolean {
-  if (!el || !el.tagName) return false;
-  const tag = String(el.tagName).replace(/^[^:]+:/, "").toUpperCase();
+  const target = deepTypingFocus(el);
+  if (!target || !target.tagName) return false;
+  const tag = String(target.tagName).replace(/^[^:]+:/, "").toUpperCase();
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "ISINDEX") {
     return true;
   }
-  const he = el as HTMLElement;
+  const he = target as HTMLElement;
   if (he.isContentEditable) return true;
-  if (el.getAttribute && el.getAttribute("contenteditable") === "true") return true;
-  if (el.getAttribute && el.getAttribute("role") === "textbox") return true;
-  if (el.closest && el.closest('[contenteditable="true"]')) return true;
+  if (target.getAttribute && target.getAttribute("contenteditable") === "true") return true;
+  if (target.getAttribute && target.getAttribute("role") === "textbox") return true;
+  if (target.closest && target.closest('[contenteditable="true"]')) return true;
   return false;
 }
 

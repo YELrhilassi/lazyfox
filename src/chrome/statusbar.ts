@@ -48,6 +48,11 @@ export interface StatusBarCtl {
   // helper's own leader never arms — by consulting this per-index cache.
   setContentLeader(index: number, active: boolean): void;
   contentLeaderActive(index: number): boolean;
+  // Content-script find-in-page state by tab-strip index (pushed by the
+  // background on every count change). The window-level bar shows the live
+  // match count for the selected web page, where the content script owns the
+  // find widget and the chrome helper's own find bar never opens.
+  setContentFind(index: number, count: number, cur: number): void;
   mounted(): boolean;
   dlActive(): string[];
   getInfo(): {
@@ -93,6 +98,9 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   // Content-script leader arm state by tab-strip index (the index the
   // background's sender.tab.index reports — same ordering as gBrowser.tabs).
   let contentLeaderByIndex: Record<number, boolean> = {};
+  // Content-script find-in-page state by tab-strip index (1-based current
+  // match, 0 = query typed but nothing walked to; total matches).
+  let contentFindByIndex: Record<number, { count: number; cur: number }> = {};
 
   // Is the selected tab the extension's command center page?
   function isCommandCenterTab(): boolean {
@@ -141,6 +149,7 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     const tabs = window.gBrowser.tabs;
     const sel = tabs.indexOf(window.gBrowser.selectedTab);
     const mode = deps.getMode();
+    const findState = sel >= 0 ? contentFindByIndex[sel] : undefined;
     // The CURRENT session's pill count tracks live tabs, so opening/closing a
     // tab updates the pill immediately — without a sessionState round-trip,
     // which would create a transient tab and churn counts under automation.
@@ -162,6 +171,9 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
       mode: mode,
       sessions: sessions,
       downloads: chromeStatusDownloads,
+      // count -1 = no active find session (segment hidden); 0 = query with
+      // no matches (red 0); >0 = live cur/count.
+      find: findState && findState.count >= 0 ? findState : null,
     });
   }
 
@@ -242,6 +254,10 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
       computeChromeStatus();
     },
     contentLeaderActive: (index) => !!contentLeaderByIndex[index],
+    setContentFind: (index, count, cur) => {
+      contentFindByIndex[index] = { count: count, cur: cur };
+      computeChromeStatus();
+    },
     mounted: () => chromeStatusBar.mounted,
     dlActive: () =>
       chromeStatusDownloads.map(

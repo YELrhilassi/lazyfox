@@ -303,6 +303,10 @@ export function openHistoryPopup(ctx: PopupCtx): void {
   let armDelete: { url: string; timer: ReturnType<typeof setTimeout> | null } | null = null;
   let armClear = false;
   let armClearTimer: ReturnType<typeof setTimeout> | null = null;
+  // `c` arms a group toggle: the next key picks the group by its hint char
+  // (shown next to each header), `c` again toggles the group under the
+  // cursor, Esc cancels, and any other key falls through to normal handling.
+  let armGroup = false;
 
   // Related-history index, built once from the cached snapshot so the right
   // pane can answer "same site" and "similar title" instantly per selection.
@@ -389,6 +393,42 @@ export function openHistoryPopup(ctx: PopupCtx): void {
     return out;
   };
 
+  // Stable per-bucket hint letters for the `c` + char group toggle, in
+  // display order. Prefer the bucket's own first letter (Today→t,
+  // Yesterday→y, This week→w, ...); fall back to the next free letter if two
+  // bucket names ever collide.
+  const groupHints = (): Record<string, string> => {
+    const used = new Set<string>();
+    const out: Record<string, string> = {};
+    const seen = new Set<string>();
+    for (const r of rows) {
+      const b = r.bucket;
+      if (!b || seen.has(b)) continue;
+      seen.add(b);
+      let ch = "";
+      for (let i = 0; i < b.length; i++) {
+        const c = b[i]!.toLowerCase();
+        if (/^[a-z]$/.test(c) && !used.has(c)) {
+          ch = c;
+          break;
+        }
+      }
+      if (!ch) {
+        for (const c of "abcdefghijklmnopqrstuvwxyz") {
+          if (!used.has(c)) {
+            ch = c;
+            break;
+          }
+        }
+      }
+      if (ch) {
+        used.add(ch);
+        out[b] = ch;
+      }
+    }
+    return out;
+  };
+
   ctx.open(
     "<div class='lf-panel wide'><div class='lf-title'>History</div>" +
       "<div class='lf-split'>" +
@@ -403,6 +443,8 @@ export function openHistoryPopup(ctx: PopupCtx): void {
       "<span class='lf-badge'>j/k</span> move &middot; <span class='lf-badge'>i</span> search &middot; " +
       "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>o</span> current &middot; " +
       "<span class='lf-badge'>x</span> delete &middot; <span class='lf-badge'>X</span> clear all &middot; " +
+      "<span class='lf-badge'>c+hint</span> toggle group &middot; <span class='lf-badge'>C</span> collapse &middot; " +
+      "<span class='lf-badge'>O</span> expand &middot; <span class='lf-badge'>g/G</span> top/bottom &middot; " +
       "<span class='lf-badge'>Tab</span> details &middot; <span class='lf-badge'>Esc</span> close</span>" +
       "<span class='lf-status' style='display:none'></span></div>" +
       "</div>",
@@ -413,6 +455,7 @@ export function openHistoryPopup(ctx: PopupCtx): void {
       const detailEl = root.querySelector(".lf-detail") as HTMLElement;
       const relatedEl = root.querySelector(".lf-related") as HTMLElement;
       const statusEl = root.querySelector(".lf-status") as HTMLElement | null;
+      const hintEl = root.querySelector(".lf-hint") as HTMLElement | null;
 
       // The chrome helper re-creates dropped form controls without the class;
       // re-assert the command-mode dimming here.
@@ -475,6 +518,14 @@ export function openHistoryPopup(ctx: PopupCtx): void {
 
       const setStatus = () => {
         if (!statusEl) return;
+        if (armGroup) {
+          const hs = groupHints();
+          const parts = Object.keys(hs).map((b) => hs[b] + " " + b);
+          statusEl.style.display = "";
+          statusEl.textContent =
+            "c + " + parts.join(" \u00b7 ") + " toggles that group \u00b7 c again = current \u00b7 Esc cancel";
+          return;
+        }
         if (armClear) {
           statusEl.style.display = "";
           statusEl.textContent = "press X again to clear ALL history";
@@ -493,6 +544,32 @@ export function openHistoryPopup(ctx: PopupCtx): void {
         }
         statusEl.style.display = "none";
         statusEl.textContent = "";
+      };
+
+      // The bottom guide switches with the active context: command mode on
+      // the list, insert mode (typing a filter), the details pane, and the
+      // armed group toggle each show their own keys. setStatus() owns the
+      // transient messages (armed deletes/clears, pane-R guide); updateFoot
+      // decides which span is visible and what the static guide says.
+      const CMD_L_HINT =
+        "<span class='lf-badge'>j/k</span> move &middot; <span class='lf-badge'>i</span> search &middot; " +
+        "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>o</span> current &middot; " +
+        "<span class='lf-badge'>x</span> delete &middot; <span class='lf-badge'>X</span> clear all &middot; " +
+        "<span class='lf-badge'>c+hint</span> toggle group &middot; <span class='lf-badge'>C</span> collapse &middot; " +
+        "<span class='lf-badge'>O</span> expand &middot; <span class='lf-badge'>g/G</span> top/bottom &middot; " +
+        "<span class='lf-badge'>Tab</span> details &middot; <span class='lf-badge'>Esc</span> close";
+      const INSERT_HINT =
+        "<span class='lf-badge'>j/k</span> move &middot; <span class='lf-badge'>Enter</span> open &middot; " +
+        "<span class='lf-badge'>Esc</span> done";
+      const updateFoot = () => {
+        if (!hintEl || !statusEl) return;
+        setStatus();
+        if (statusEl.style.display !== "none") {
+          hintEl.style.display = "none";
+          return;
+        }
+        hintEl.style.display = "";
+        hintEl.innerHTML = mode === "insert" ? INSERT_HINT : CMD_L_HINT;
       };
 
       const disarmAll = () => {
@@ -591,7 +668,7 @@ export function openHistoryPopup(ctx: PopupCtx): void {
           emptyEl.style.display = "block";
           detailEl.textContent = "";
           relatedEl.textContent = "";
-          setStatus();
+          updateFoot();
           markCols();
           return;
         }
@@ -602,14 +679,23 @@ export function openHistoryPopup(ctx: PopupCtx): void {
         });
         const frag = document.createDocumentFragment();
         let lastBucket = "";
+        const hints = groupHints();
         rows.forEach((it, i) => {
           if (it.bucket !== lastBucket) {
             const count = rows.reduce((n, r) => n + (r.bucket === it.bucket ? 1 : 0), 0);
             const hd = document.createElement("div");
-            hd.className = "lf-hgroup" + (collapsed[it.bucket] ? " lf-collapsed" : "");
-            hd.innerHTML = esc(it.bucket) + "<span class='lf-hcount'>" + count + "</span>";
+            hd.className =
+              "lf-hgroup" +
+              (collapsed[it.bucket] ? " lf-collapsed" : "") +
+              (armGroup ? " lf-arm" : "");
+            const hkey = hints[it.bucket];
+            hd.innerHTML =
+              (hkey ? "<span class='lf-hkey'>" + hkey + "</span>" : "") +
+              esc(it.bucket) +
+              "<span class='lf-hcount'>" + count + "</span>";
             hd.addEventListener("mousedown", (ev) => {
               ev.preventDefault();
+              armGroup = false;
               collapsed[it.bucket] = !collapsed[it.bucket];
               render();
             });
@@ -647,7 +733,7 @@ export function openHistoryPopup(ctx: PopupCtx): void {
         if (sel) sel.scrollIntoView({ block: "nearest" });
         drawDetail();
         drawRelated();
-        setStatus();
+        updateFoot();
         markCols();
       };
 
@@ -750,7 +836,7 @@ export function openHistoryPopup(ctx: PopupCtx): void {
       const setPane = (p: "L" | "R") => {
         pane = p;
         markCols();
-        setStatus();
+        updateFoot();
       };
 
       inputEl.addEventListener("input", () => {
@@ -815,6 +901,40 @@ export function openHistoryPopup(ctx: PopupCtx): void {
             return true;
           }
 
+          // `c` armed a group toggle: the next key picks a group by its hint
+          // char (shown in each header), `c` again toggles the current group,
+          // Esc cancels, and anything else drops the arm and is handled
+          // normally below.
+          if (armGroup) {
+            if (k === "Escape") {
+              e.preventDefault();
+              armGroup = false;
+              updateFoot();
+              return true;
+            }
+            if (k === "c" && noMods) {
+              e.preventDefault();
+              armGroup = false;
+              toggleCurrentGroup();
+              return true;
+            }
+            if (noMods && k.length === 1) {
+              const hs = groupHints();
+              const kc = k.toLowerCase();
+              for (const b of Object.keys(hs)) {
+                if (hs[b] === kc) {
+                  e.preventDefault();
+                  armGroup = false;
+                  collapsed[b] = !collapsed[b];
+                  render();
+                  return true;
+                }
+              }
+            }
+            armGroup = false;
+            updateFoot();
+          }
+
           if (k === "Tab") { e.preventDefault(); setPane("R"); return true; }
           if (k === "j" || k === "ArrowDown") { e.preventDefault(); move(1); return true; }
           if (k === "k" || k === "ArrowUp") { e.preventDefault(); move(-1); return true; }
@@ -829,12 +949,18 @@ export function openHistoryPopup(ctx: PopupCtx): void {
             inputEl.classList.remove("lf-cmd");
             disarmAll();
             inputEl.focus();
+            updateFoot();
             organize();
             return true;
           }
           if (k === "Enter") { e.preventDefault(); openRow(e.shiftKey ? false : undefined); return true; }
           if (k === "o" && noMods) { e.preventDefault(); openRow(false); return true; }
-          if (k === "c" && noMods) { e.preventDefault(); toggleCurrentGroup(); return true; }
+          if (k === "c" && noMods) {
+            e.preventDefault();
+            armGroup = true;
+            render(); // repaint headers with the armed hint highlight
+            return true;
+          }
           if (k === "C" && noMods) { e.preventDefault(); collapseAll(); return true; }
           if (k === "O" && noMods) { e.preventDefault(); expandAll(); return true; }
           if (k === "x" && noMods) { e.preventDefault(); onX(); return true; }
@@ -849,6 +975,7 @@ export function openHistoryPopup(ctx: PopupCtx): void {
             inputEl.classList.remove("lf-cmd");
             disarmAll();
             inputEl.focus();
+            updateFoot();
             if (ctx.manualText) {
               manualTextKey(e, inputEl);
               return true;

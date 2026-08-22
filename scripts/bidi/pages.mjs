@@ -23,6 +23,33 @@ export const pages = {
 <input id="inp2" type="text" placeholder="second input">
 <textarea id="ta1" rows="2" cols="30" placeholder="textarea"></textarea>
 <div id="ce1" contenteditable="true" style="border:1px solid #ccc;padding:4px;min-height:1.2em" placeholder="editable div">editable</div>
+<script>
+(function () {
+  // Custom elements that host their real editable in shadow DOM, like Reddit's
+  // <faceplate-search-input> — typing detection must pierce the shadow root.
+  customElements.define("lf-shadow-input", class extends HTMLElement {
+    connectedCallback() {
+      const sh = this.attachShadow({ mode: "open" });
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.placeholder = "shadow search";
+      sh.appendChild(inp);
+    }
+  });
+  customElements.define("lf-shadow-editable", class extends HTMLElement {
+    connectedCallback() {
+      const sh = this.attachShadow({ mode: "open" });
+      const div = document.createElement("div");
+      div.contentEditable = "true";
+      div.textContent = "shadow editable";
+      div.style.cssText = "border:1px solid #ccc;padding:4px;min-height:1.2em";
+      sh.appendChild(div);
+    }
+  });
+})();
+</script>
+<lf-shadow-input id="shin1"></lf-shadow-input>
+<lf-shadow-editable id="shce1"></lf-shadow-editable>
 </body></html>`,
   },
   "/target1": { body: `<!DOCTYPE html><title>TARGET ONE</title><h1>Target One</h1><a href="/">back</a>` },

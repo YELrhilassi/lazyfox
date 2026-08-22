@@ -327,6 +327,20 @@ async function handleMessage(msg: BgAction, sender: any) {
         );
       }
       return { ok: true };
+    case "syncFind":
+      // Live find-in-page count from the content script's find widget,
+      // relayed to the chrome helper's window-level status bar the same way
+      // leaderState rides (findState.<b64>.<nonce> per tab-strip index).
+      // count -1 = the widget closed (hide the segment); 0 = no matches.
+      if (sender && sender.tab && sender.tab.id != null) {
+        const c = Number(data.count);
+        pushFindStateToChrome(
+          typeof sender.tab.index === "number" ? sender.tab.index : -1,
+          isNaN(c) ? -1 : c,
+          Math.max(0, Number(data.cur) || 0)
+        );
+      }
+      return { ok: true };
     case "sessionList":
       return sessionList();
     case "listSessionTabs":
@@ -574,6 +588,18 @@ function pushLeaderStateToChrome(index: number, active: boolean): void {
   const nonce = "ls" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
   requestChrome(
     "leaderState." + b64utf8(JSON.stringify({ index: index, active: active })),
+    nonce
+  );
+}
+
+// Relay the content script's find-in-page count to the chrome helper so its
+// window-level status bar can show "🔍 cur/count" on web pages. The push
+// carries the tab's strip index + count state; the helper caches it per index.
+function pushFindStateToChrome(index: number, count: number, cur: number): void {
+  if (index < 0) return;
+  const nonce = "fs" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+  requestChrome(
+    "findState." + b64utf8(JSON.stringify({ index: index, count: count, cur: cur })),
     nonce
   );
 }

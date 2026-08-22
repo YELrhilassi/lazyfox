@@ -42,6 +42,11 @@ export interface StatusBarData {
   downloads: StatusBarDownload[];
   // True when the active tab is a stealth tab — shows a badge on the bar.
   activeStealth?: boolean;
+  // Live find-in-page state (content-script find widget): current match
+  // (1-based, 0 = none selected yet) and total matches. Shown as a "find"
+  // segment; null (or count 0) hides it. Pushed by the content script and
+  // relayed from the background for the chrome helper's window-level bar.
+  find?: { cur: number; count: number } | null;
 }
 
 const CSS = `
@@ -69,6 +74,9 @@ const CSS = `
 .seg.tabs .cnt{color:#9aa5ce;font-weight:600;}
 .seg.tabs .st{color:#bb9af7;font-weight:800;padding-right:4px;}
 .seg.split{background:#e0af68;color:#1a1b26;font-weight:800;}
+.seg.find{background:#2ac3de;color:#16161e;font-weight:800;}
+.seg.find b{font-weight:900;}
+.seg.find .none{color:#f7768e;}
 .seg.dl{margin-left:auto;background:#16161e;color:#c0caf5;font-weight:700;clip-path:none;
   border-left:1px solid #24283b;pointer-events:auto;cursor:pointer;}
 .seg.dl .ic{color:#7dcfff;}
@@ -176,6 +184,7 @@ export class StatusBar {
       "<span class='seg leader'><span class='ic'>»</span></span>" +
       "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
       "<span class='seg tabs linked'><span class='ic'>▤</span><span class='st'>🕶</span><b></b><span class='cnt'></span></span>" +
+      "<span class='seg find' style='display:none'><span class='ic'>🔍</span><b class='cur'></b><span class='cnt'></span></span>" +
       "<span class='seg chips'></span>" +
       "<span class='seg dl'><span class='ic'>⭳</span><span class='items'></span></span>" +
       "</div>";
@@ -329,6 +338,9 @@ export class StatusBar {
     const tabIdx = tabs ? (tabs.querySelector("b") as HTMLElement | null) : null;
     const tabCnt = tabs ? (tabs.querySelector(".cnt") as HTMLElement | null) : null;
     const stealth = tabs ? (tabs.querySelector(".st") as HTMLElement | null) : null;
+    const find = sh.querySelector(".find") as HTMLElement | null;
+    const findCur = find ? (find.querySelector(".cur") as HTMLElement | null) : null;
+    const findCnt = find ? (find.querySelector(".cnt") as HTMLElement | null) : null;
     const dl = sh.querySelector(".dl") as HTMLElement | null;
     const dlItems = dl ? (dl.querySelector(".items") as HTMLElement | null) : null;
     const chips = sh.querySelector(".chips");
@@ -344,6 +356,28 @@ export class StatusBar {
     if (tabCnt) tabCnt.textContent = "/" + this.data.tabCount;
     if (tabs) tabs.style.display = this.data.tabCount > 0 ? "" : "none";
     if (stealth) stealth.style.display = this.data.activeStealth ? "" : "none";
+
+    // Live find-in-page count: "🔍 cur/count" while a find session is open
+    // on the page, "🔍 0" (red) when a query has no matches.
+    if (find && findCur && findCnt) {
+      const f = this.data.find;
+      if (f && f.count > 0) {
+        // cur is 1-based (0 = a query is typed but nothing walked to yet).
+        find.style.display = "";
+        findCur.textContent = String(f.cur > 0 ? f.cur : 0);
+        findCnt.textContent = "/" + f.count;
+        findCur.style.display = "";
+        findCur.classList.remove("none");
+      } else if (f && f.count === 0) {
+        find.style.display = "";
+        findCur.textContent = "0";
+        findCnt.textContent = "";
+        findCur.style.display = "";
+        findCur.classList.add("none");
+      } else {
+        find.style.display = "none";
+      }
+    }
 
     if (dl && dlItems) {
       dl.style.display = this.data.downloads.length > 0 ? "" : "none";
@@ -449,7 +483,12 @@ export class StatusBar {
           "|" +
           this.position +
           "|" +
-          (this.data.activeStealth ? "stealth" : "")
+          (this.data.activeStealth ? "stealth" : "") +
+          (this.data.find && this.data.find.count > 0
+            ? "|find:" + this.data.find.cur + "/" + this.data.find.count
+            : this.data.find && this.data.find.count === 0
+              ? "|find:0/0"
+              : "")
       );
     } catch (e) {
       // ignore

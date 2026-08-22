@@ -8,7 +8,19 @@
 function isTypingTarget(t: unknown): boolean {
   if (!t) return false;
   try {
-    const el = t as Element;
+    let el = t as Element;
+    // Custom elements keep their real input in shadow DOM; the event target /
+    // focusedElement reported here is the retargeted HOST, so pierce open
+    // shadow roots down to the element that actually holds focus.
+    let depth = 0;
+    while (el && depth < 10) {
+      const sr = (el as HTMLElement).shadowRoot;
+      if (!sr || sr.mode !== "open") break;
+      const ae = sr.activeElement as Element | null;
+      if (!ae) break;
+      el = ae;
+      depth++;
+    }
     // Content key events forwarded to chrome arrive with namespaced tag names
     // like "html:input" (lowercase, namespaced), so strip any "prefix:" and
     // upper-case before comparing.

@@ -16,8 +16,25 @@
     if (content.top !== content) return;
   } catch (e) {}
 
+  // Deepest element actually focused inside an open shadow root: custom
+  // elements (Reddit's <faceplate-search-input>, ...) keep their real input
+  // in shadow DOM and only the host shows up as activeElement here.
+  function deepFocus(el: Element | null): Element | null {
+    let cur = el;
+    let depth = 0;
+    while (cur && depth < 10) {
+      const sr = (cur as HTMLElement).shadowRoot;
+      if (!sr || sr.mode !== "open") break;
+      const ae = sr.activeElement as Element | null;
+      if (!ae) break;
+      cur = ae;
+      depth++;
+    }
+    return cur;
+  }
+
   function typingNow(): boolean {
-    const ae = content.document.activeElement;
+    const ae = deepFocus(content.document.activeElement as Element | null);
     if (!ae || !ae.tagName) return false;
     const t = ae.tagName;
     return (

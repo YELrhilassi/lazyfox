@@ -85,7 +85,19 @@ interface SplitTab {
   }
 
   function typing(): boolean {
-    const a = document.activeElement;
+    // Pierces open shadow roots: custom-element inputs (Reddit's
+    // <faceplate-search-input>, ...) host their real field in shadow DOM and
+    // only the host appears as document.activeElement.
+    let a = document.activeElement as Element | null;
+    let depth = 0;
+    while (a && depth < 10) {
+      const sr = (a as HTMLElement).shadowRoot;
+      if (!sr || sr.mode !== "open") break;
+      const ae = sr.activeElement as Element | null;
+      if (!ae) break;
+      a = ae;
+      depth++;
+    }
     if (!a) return false;
     const tag = a.tagName || "";
     return tag === "INPUT" || tag === "TEXTAREA" || !!(a as HTMLElement).isContentEditable;

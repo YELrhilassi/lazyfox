@@ -36,12 +36,30 @@
     if (text) hudTimer = setTimeout(() => (hudEl!._span.textContent = ""), 2500);
   }
 
+  // Custom-element inputs (e.g. Reddit's <faceplate-search-input>) keep the
+  // real field in shadow DOM; the event target is the host, so pierce down to
+  // the element that actually holds focus before checking tags.
+  function deepField(el: any): any {
+    let cur = el;
+    let depth = 0;
+    while (cur && depth < 10) {
+      const sr = cur.shadowRoot;
+      if (!sr || sr.mode !== "open") break;
+      const ae = sr.activeElement;
+      if (!ae) break;
+      cur = ae;
+      depth++;
+    }
+    return cur;
+  }
+
   function isField(el: any): boolean {
-    if (!el || !el.tagName) return false;
-    if (el.isContentEditable) return true;
-    if (el.tagName === "TEXTAREA" || el.tagName === "SELECT") return true;
-    if (el.tagName === "INPUT") {
-      const t = (el.type || "").toLowerCase();
+    const target = deepField(el);
+    if (!target || !target.tagName) return false;
+    if (target.isContentEditable) return true;
+    if (target.tagName === "TEXTAREA" || target.tagName === "SELECT") return true;
+    if (target.tagName === "INPUT") {
+      const t = (target.type || "").toLowerCase();
       return t !== "checkbox" && t !== "radio" && t !== "button" && t !== "submit";
     }
     return false;
