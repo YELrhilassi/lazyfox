@@ -3,6 +3,7 @@
 // chrome helper implements the same interface natively; content scripts can
 // never touch chrome APIs, so everything goes through the background.
 
+import { coreReady, coreSync, type CoreApi } from "../../shared/core";
 import { copyText } from "../../shared/dom";
 import { toast, type PopupCtl } from "../../shared/overlay";
 import type { ActionOps } from "../../shared/ops";
@@ -43,7 +44,8 @@ function relTime(ts: number): string {
 // wrapper the shared engine creates is made pointer-transparent here (clicks
 // fall through to the page); only the small panel captures input. The count
 // updates live as you type; Enter jumps and switches to command mode, where
-// y copies the match / range with a neovim-style flash.
+// y copies the match with a neovim-style flash and Y opens the full yank
+// mode (Go core motions/text objects with a block cursor).
 const FIND_CSS =
   ".lf-popup{inset:auto !important;right:14px !important;bottom:26px !important;" +
   "background:none !important;align-items:flex-end !important;justify-content:flex-end !important;" +
@@ -54,10 +56,12 @@ const FIND_CSS =
   "font:13px ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;padding:5px 9px;outline:none;}" +
   ".lf-finput:focus{border-color:#7aa2f7;}" +
   ".lf-finput.lf-cmd{color:#565f89;}" +
+  ".lf-finput.lf-yank{border-color:#e0af68;}" +
   ".lf-fcount{flex:none;font:700 11px ui-monospace,Menlo,Consolas,monospace;color:#7aa2f7;" +
   "background:#16161e;border:1px solid #414868;border-radius:6px;padding:3px 8px;min-width:34px;text-align:center;}" +
   ".lf-fcount.zero{color:#f7768e;border-color:#f7768e;}" +
   ".lf-fcount.vis{background:#292e42;border-color:#2ac3de;color:#2ac3de;}" +
+  ".lf-fcount.sel{background:#292e42;border-color:#e0af68;color:#e0af68;}" +
   ".lf-fhint{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:center;padding:6px 12px 8px;" +
   "font-size:10px;color:#565f89;border-top:1px solid #2a2f45;min-height:20px;}" +
   ".lf-fhint b{color:#7aa2f7;font-weight:700;}" +
@@ -112,6 +116,85 @@ interface FindHit {
 const FIND_SKIP = new Set([
   "SCRIPT", "STYLE", "TEXTAREA", "NOSCRIPT", "SELECT", "IFRAME", "TITLE",
 ]);
+
+/* ---------- page text model for the Go yank core ---------- */
+
+// Block-level elements: entering or leaving one inserts a synthetic '\n' in
+// the flat yank text, so the Go core's line motions (j/k/gg/G/yy/ip) see a
+// rendered document instead of one endless run-on line. Inline elements
+// (span/a/strong/...) contribute no breaks, exactly like CSS flow.
+const YANK_BLOCK = new Set([
+  "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DD", "DIV", "DL", "DT",
+  "FIELDSET", "FIGCAPTION", "FIGURE", "FOOTER", "FORM", "H1", "H2", "H3",
+  "H4", "H5", "H6", "HEADER", "HR", "LI", "MAIN", "NAV", "OL", "P",
+  "PRE", "SECTION", "TABLE", "TBODY", "TD", "TFOOT", "TH", "THEAD", "TR",
+  "UL",
+]);
+
+// One flat-text segment: the text node it came from and its [start, end)
+// offsets in the flat string (UTF-16 units). Used to map the Go core's
+// (line, col) cursor back to a DOM position for the caret and the flash.
+interface YankSeg {
+  node: Text;
+  start: number;
+  end: number;
+}
+
+// Flattens the page into one string for the Go yank core. Open shadow roots
+// are pierced (framework custom elements like Reddit's <faceplate-*> keep
+// their rendered text there, so window.find-style DOM walks miss it), and
+// synthetic '\n' are inserted at block boundaries so line motions work.
+function buildYankText(): { text: string; segs: YankSeg[] } {
+  const body = document.body || document.documentElement;
+  let text = "";
+  const segs: YankSeg[] = [];
+  const nl = () => {
+    if (text && !text.endsWith("\n")) text += "\n";
+  };
+  const walk = (n: Node, depth: number): void => {
+    if (depth > 40) return;
+    if (n.nodeType === Node.TEXT_NODE) {
+      const p = n.parentElement;
+      if (p && FIND_SKIP.has(p.tagName)) return;
+      const data = (n as Text).data || "";
+      if (!data.trim()) return;
+      segs.push({ node: n as Text, start: text.length, end: text.length + data.length });
+      text += data;
+      return;
+    }
+    if (n.nodeType !== Node.ELEMENT_NODE) {
+      // Document/ShadowRoot: walk children without block semantics.
+      const kids = (n as ParentNode).childNodes;
+      for (let i = 0; i < kids.length; i++) walk(kids[i]!, depth + 1);
+      return;
+    }
+    const el = n as HTMLElement;
+    const tag = el.tagName;
+    if (FIND_SKIP.has(tag) || el.hidden) return;
+    if (tag === "BR") {
+      nl();
+      return;
+    }
+    const block = YANK_BLOCK.has(tag);
+    if (block) nl();
+    const sr = el.shadowRoot;
+    if (sr && sr.mode === "open") {
+      // Shadow DOM replaces the light children visually: walk the shadow
+      // tree instead so the yank text matches what is actually rendered.
+      walk(sr, depth + 1);
+    } else {
+      const kids = el.childNodes;
+      for (let i = 0; i < kids.length; i++) walk(kids[i]!, depth + 1);
+    }
+    if (block) nl();
+  };
+  try {
+    walk(body, 0);
+  } catch (e) {
+    // ignore
+  }
+  return { text: text, segs: segs };
+}
 
 function openFindPopup(
   shell: ContentPopupShell,
@@ -171,6 +254,9 @@ function openFindPopup(
     // somewhere new: re-anchor the top of the stack so "back" returns to
     // where they actually were, not a stale pre-scroll coordinate.
     const onScroll = () => {
+      // In yank mode the caret itself scrolls the window to follow the
+      // cursor; that must not pollute the find position stack.
+      if (yankMode !== "off") return;
       if (inFindScroll) return;
       if (!posStack.length) return;
       posStack[posStack.length - 1] = { x: window.scrollX, y: window.scrollY };
@@ -191,7 +277,6 @@ function openFindPopup(
     let hits: FindHit[] = [];
     let cur = -1; // index into hits; -1 = query typed but nothing walked to
     let mode: "insert" | "cmd" = "insert";
-    let visual: FindHit | null = null; // range anchor for v / y
     let lastQuery = "";
     let findTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -248,7 +333,7 @@ function openFindPopup(
     };
 
     // Rebuild the hit list from the cached nodes for the given query. Keeps
-    // cur/visual (they index into hits; callers clamp after the DOM changes).
+    // cur (it indexes into hits; callers clamp after the DOM changes).
     const countHits = (q: string): void => {
       lastQuery = q;
       const list = collectNodes();
@@ -284,7 +369,6 @@ function openFindPopup(
       clearPageSelection();
       countHits(q);
       cur = -1;
-      visual = null;
       render();
     };
 
@@ -293,32 +377,70 @@ function openFindPopup(
       findTimer = setTimeout(runFind, 40);
     };
 
-    const snippet = (node: Text, s: number, e: number): string => {
-      const t = (node.data || "").slice(s, e).replace(/\s+/g, " ").trim();
-      return t.length > 24 ? t.slice(0, 24) + "\u2026" : t;
-    };
-
     const render = (): void => {
       const total = hits.length;
       const active = total > 0 && cur >= 0;
-      countEl.textContent = total === 0 ? "0" : (cur >= 0 ? cur + 1 : 0) + "/" + total;
-      countEl.classList.toggle("zero", total === 0);
-      countEl.classList.toggle("vis", active);
-      // Context-aware hint line: typing, walking, and range-copy each show
-      // only their own keys (same pattern as the history popup's footer).
-      if (mode === "insert") {
-        keysEl.innerHTML =
-          "<b>Enter</b> next &middot; <b>Shift+Enter</b> prev &middot; <b>Esc</b> close";
-      } else if (visual) {
-        keysEl.innerHTML =
-          "<b>n/N</b> walk &middot; <b>y</b> copy range &middot; <b>v</b> cancel &middot; <b>i</b> edit &middot; <b>Esc</b> close";
+      // In yank mode the count badge shows the Go cursor position (line:col)
+      // and the hint line lists motions/operators; the find count stays on
+      // the status bar so the user does not lose track of the search.
+      if (yankMode !== "off") {
+        // Badge + preview make the yank state obvious: cursor position while
+        // idle, and the live character count + text preview of the selection
+        // while selecting — so the user always knows what `y` will copy.
+        if (yankMode === "sel" && yankModel) {
+          const aOff = yankCharOff(yankSelAnchor.line, yankSelAnchor.col);
+          const cOff = yankCharOff(yankLine, yankCol);
+          const n = Math.abs(cOff - aOff) + 1;
+          const s = Math.min(aOff, cOff);
+          const e = Math.max(aOff, cOff) + 1;
+          const ch = yankModel.text[s];
+          const valid = e > s && ch !== "\n" && ch !== undefined;
+          countEl.textContent = valid ? n + " chars" : "0 chars";
+          countEl.classList.toggle("zero", !valid);
+          countEl.classList.toggle("vis", true);
+          let snip = valid ? yankModel.text.slice(s, e).replace(/\s+/g, " ").trim() : "";
+          if (snip.length > 46) snip = snip.slice(0, 46) + "\u2026";
+          rangeEl.textContent = snip;
+        } else {
+          countEl.textContent = yankLine + ":" + yankCol;
+          countEl.classList.toggle("zero", false);
+          countEl.classList.toggle("vis", true);
+          rangeEl.textContent = "";
+        }
+        keysEl.innerHTML = yankHints();
+        updateSelHighlight();
+        // Mirror the yank state onto <html> (same pattern as data-lf-find)
+        // so the host and tests can read it without piercing the closed
+        // popup root: idle:<line>:<col> or sel:<N chars>:<preview>.
+        const yst =
+          yankMode === "sel" && yankModel
+            ? "sel:" + countEl.textContent + ":" + rangeEl.textContent
+            : "idle:" + yankLine + ":" + yankCol;
+        try {
+          document.documentElement.setAttribute("data-lf-yank", yst);
+        } catch (e) {
+          // ignore
+        }
       } else {
-        keysEl.innerHTML =
-          "<b>n/N</b> walk &middot; <b>y</b> copy &middot; <b>v</b> range &middot; <b>i</b> edit &middot; <b>Esc</b> close";
+        try {
+          document.documentElement.setAttribute("data-lf-yank", "off");
+        } catch (e) {
+          // ignore
+        }
+        countEl.textContent = total === 0 ? "0" : (cur >= 0 ? cur + 1 : 0) + "/" + total;
+        countEl.classList.toggle("zero", total === 0);
+        countEl.classList.toggle("vis", active);
+        // Context-aware hint line: typing and walking each show only their
+        // own keys (same pattern as the history popup's footer).
+        if (mode === "insert") {
+          keysEl.innerHTML =
+            "<b>Enter</b> next &middot; <b>Shift+Enter</b> prev &middot; <b>Esc</b> close";
+        } else {
+          keysEl.innerHTML =
+            "<b>n/N</b> walk &middot; <b>y</b> copy &middot; <b>Y</b> yank mode &middot; <b>i</b> edit &middot; <b>Esc</b> close";
+        }
+        rangeEl.textContent = "";
       }
-      rangeEl.textContent = visual
-        ? "range: \u201C" + snippet(visual.node, visual.start, visual.end) + "\u201D \u2192"
-        : "";
       // Status-bar state: 1-based current match (0 = nothing walked to).
       const st = total > 0 ? { cur: cur >= 0 ? cur + 1 : 0, count: total } : null;
       if (setFindState) setFindState(st);
@@ -384,7 +506,7 @@ function openFindPopup(
       if (cur < 0) idx = back ? n - 1 : nextFromViewport();
       else idx = back ? (cur - 1 + n) % n : (cur + 1) % n;
       cur = idx;
-      // Walking commits the query: y/v/n/i are commands until the user edits.
+      // Walking commits the query: y/Y/n/i are commands until the user edits.
       mode = "cmd";
       input.classList.add("lf-cmd");
       try {
@@ -407,13 +529,13 @@ function openFindPopup(
 
     const currentHit = (): FindHit | null => (cur >= 0 ? hits[cur] || null : null);
 
-    // Amber flash overlay over the copied text, fading out like a yank
+    // Amber flash overlay over any text span, fading out like a yank
     // highlight. Lives in a closed shadow root so page CSS can't break it.
-    const flashRange = (a: FindHit, b: FindHit): void => {
+    const flashNodeRange = (aNode: Text, aOff: number, bNode: Text, bOff: number): void => {
       try {
         const range = document.createRange();
-        range.setStart(a.node, a.start);
-        range.setEnd(b.node, b.end);
+        range.setStart(aNode, aOff);
+        range.setEnd(bNode, bOff);
         const rects = range.getClientRects();
         if (!rects || !rects.length) return;
         let host = document.getElementById("lazyfox-flash") as (HTMLElement & { _sh?: ShadowRoot }) | null;
@@ -455,30 +577,6 @@ function openFindPopup(
       }
     };
 
-    // Text from match a to match b inclusive, in document order. Uses the
-    // cached node list (refreshed first) so node indices stay in sync.
-    const copyRangeText = (a: FindHit, b: FindHit): string => {
-      let x = a;
-      let y = b;
-      if (y.ni < x.ni || (y.ni === x.ni && y.start < x.start)) {
-        const t = x;
-        x = y;
-        y = t;
-      }
-      const list = collectNodes();
-      let out = "";
-      for (let i = x.ni; i <= y.ni; i++) {
-        const node = list[i];
-        if (!node) continue;
-        const text = node.data || "";
-        if (i === x.ni && i === y.ni) out += text.slice(x.start, y.end);
-        else if (i === x.ni) out += text.slice(x.start);
-        else if (i === y.ni) out += text.slice(0, y.end);
-        else out += text;
-      }
-      return out;
-    };
-
     const doYank = (): void => {
       // Re-sync against any DOM changes since the last count so the node
       // indices below match the current page (and clamp a stale walk index).
@@ -489,51 +587,422 @@ function openFindPopup(
         toast("no match to copy");
         return;
       }
-      let text: string;
-      let a: FindHit;
-      if (visual) {
-        a = visual;
-        text = copyRangeText(a, m);
-      } else {
-        a = m;
-        text = (m.node.data || "").slice(m.start, m.end);
-      }
+      const text = (m.node.data || "").slice(m.start, m.end);
       void copyText(text).then((ok) => {
         if (ok) toast("copied " + text.length + " chars");
         else toast("copy failed");
       });
-      flashRange(a, m);
+      flashNodeRange(m.node, m.start, m.node, m.end);
       render();
     };
 
-    const toggleVisual = (): void => {
-      if (visual) {
-        visual = null;
-        render();
-        return;
+    /* ---------- full yank mode (Go core motions + visual selection) ---------- */
+
+    // The yank buffer lives in the Go core: this script flattens the page's
+    // text (block boundaries + open shadow roots) into one string, YankParse
+    // builds the line table, and EVERY cursor motion is computed by Go — so
+    // the widget and the parsed page cannot drift, and the page is re-parsed
+    // in real time whenever the DOM mutates (dirty). The cursor renders as a
+    // block caret that scrolls the page to follow it. y opens a visual
+    // selection: the anchor -> cursor range is highlighted live (with a char
+    // count + text preview in the widget) and y yanks exactly that range.
+    // yy yanks the whole line; Esc steps back, i returns to the query.
+    interface YankModel {
+      text: string;
+      segs: YankSeg[];
+      lineStart: number[];
+      lines: number;
+    }
+    let yankModel: YankModel | null = null;
+    let yankMode: "off" | "idle" | "pendY" | "sel" = "off";
+    let yankLine = 0;
+    let yankCol = 0;
+    // Visual-selection anchor: where `y` was pressed. The highlighted range
+    // runs anchor -> cursor (inclusive), so the user always sees exactly what
+    // `y` will copy before pressing it.
+    let yankSelAnchor = { line: 0, col: 0 };
+    let caretEl: HTMLElement | null = null;
+    let selHost: (HTMLElement & { _sh?: ShadowRoot }) | null = null;
+
+    const tryYankApi = (): CoreApi | null => {
+      try {
+        if (coreReady()) return coreSync();
+      } catch (e) {
+        // core not ready yet
       }
-      if (cur < 0 && hits.length) cur = nextFromViewport();
-      const m = currentHit();
-      if (!m) {
-        toast("no match for range");
-        return;
+      return null;
+    };
+
+    // Rebuild the flat text + Go line table. Returns false when the core
+    // is still initializing (the caller shows a toast and stays put).
+    const rebuildYankModel = (): boolean => {
+      const api = tryYankApi();
+      if (!api) return false;
+      const built = buildYankText();
+      const parsed = api.yankParse(built.text);
+      yankModel = {
+        text: built.text,
+        segs: built.segs,
+        lineStart: parsed.lineStart,
+        lines: parsed.lines,
+      };
+      if (yankLine >= yankModel.lines) yankLine = yankModel.lines - 1;
+      if (yankLine < 0) yankLine = 0;
+      return true;
+    };
+
+    // Flat offset -> (text node, offset within it). Binary search over the
+    // segment table; an offset past a segment's end clamps into it.
+    const segAt = (off: number): { node: Text; nodeOff: number } | null => {
+      if (!yankModel || !yankModel.segs.length) return null;
+      const arr = yankModel.segs;
+      let lo = 0;
+      let hi = arr.length - 1;
+      let best = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (arr[mid]!.start <= off) {
+          best = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
       }
-      if (mode !== "cmd") {
-        mode = "cmd";
-        input.classList.add("lf-cmd");
+      if (best < 0) return null;
+      const s = arr[best]!;
+      const o = off > s.end ? s.end : off;
+      return { node: s.node, nodeOff: o - s.start };
+    };
+
+    const flatOf = (line: number, col: number): number => {
+      if (!yankModel) return 0;
+      if (line < 0) line = 0;
+      if (line >= yankModel.lines) line = yankModel.lines - 1;
+      return yankModel.lineStart[line]! + col;
+    };
+
+    // Flat offset of a specific text node offset (seeds the cursor at the
+    // current match when yank mode opens).
+    const nodeFlatOffset = (node: Text, off: number): number => {
+      if (!yankModel) return 0;
+      for (let i = 0; i < yankModel.segs.length; i++) {
+        const s = yankModel.segs[i]!;
+        if (s.node === node) return Math.min(s.start + off, s.end);
+      }
+      return 0;
+    };
+
+    const ensureCaret = (): HTMLElement => {
+      if (caretEl && caretEl.isConnected) return caretEl;
+      if (!caretEl) {
+        caretEl = document.createElement("div");
+        caretEl.id = "lazyfox-caret";
+        caretEl.style.cssText =
+          "all:initial;position:fixed;z-index:2147483647;pointer-events:none;" +
+          "background:rgba(122,162,247,.55);border:1px solid #7aa2f7;border-radius:2px;" +
+          "box-shadow:0 0 0 1px rgba(10,12,20,.6);";
+      }
+      document.documentElement.appendChild(caretEl);
+      return caretEl;
+    };
+
+    const hideCaret = (): void => {
+      if (caretEl) {
         try {
-          input.blur();
+          caretEl.remove();
         } catch (e) {
           // ignore
         }
+        caretEl = null;
       }
-      visual = m;
-      inFindScroll = true;
-      selectHit(m);
-      setTimeout(() => {
-        inFindScroll = false;
-      }, 60);
+    };
+
+    // Positions the block caret on the character under the Go cursor and
+    // scrolls the window so the caret stays visible (the "cursor movement"
+    // part of yank mode — the page follows the cursor like a pager).
+    const showCaret = (): void => {
+      if (!yankModel) return;
+      const off = flatOf(yankLine, yankCol);
+      const seg = segAt(off);
+      if (!seg) return;
+      const node = seg.node;
+      const len = (node.data || "").length;
+      let s = seg.nodeOff;
+      let e = Math.min(s + 1, len);
+      if (s >= len) {
+        s = Math.max(0, len - 1);
+        e = len;
+      }
+      try {
+        const range = document.createRange();
+        range.setStart(node, s);
+        range.setEnd(node, e);
+        const rect = range.getBoundingClientRect();
+        if (rect && rect.height > 0 && rect.width > 0) {
+          const el = ensureCaret();
+          el.style.left = rect.left + "px";
+          el.style.top = rect.top + "px";
+          el.style.width = Math.max(2, rect.width) + "px";
+          el.style.height = rect.height + "px";
+          const vh = window.innerHeight;
+          if (rect.top < 90) window.scrollBy(0, rect.top - 90);
+          else if (rect.bottom > vh - 70) window.scrollBy(0, rect.bottom - vh + 70);
+          return;
+        }
+      } catch (e) {
+        // range across trees: ignore
+      }
+      hideCaret();
+    };
+
+    const isMotion = (k: string): boolean =>
+      k === "h" || k === "j" || k === "k" || k === "l" || k === "0" || k === "$" ||
+      k === "w" || k === "W" || k === "b" || k === "B" || k === "e" || k === "E" ||
+      k === "g" || k === "G";
+
+    // One motion through the Go core. Re-parses first when the page changed
+    // since the model was built, so lazy-loading feeds stay current.
+    const yankMotionTo = (op: string, arg: string): { line: number; col: number } | null => {
+      if (!yankModel) return null;
+      if (dirty) rebuildYankModel();
+      const api = tryYankApi();
+      if (!api || !yankModel) return null;
+      const r = api.yankMotion(op, arg, yankLine, yankCol);
+      return { line: r.line, col: r.col };
+    };
+
+    const moveTo = (line: number, col: number): void => {
+      yankLine = line;
+      yankCol = col;
+      showCaret();
       render();
+    };
+
+    // Copy + flash a span of the flat text ([sOff, eOff), unordered).
+    const yankSpanOff = (sOff: number, eOff: number): void => {
+      if (!yankModel) return;
+      if (eOff < sOff) {
+        const t = sOff;
+        sOff = eOff;
+        eOff = t;
+      }
+      if (sOff === eOff) {
+        toast("empty yank");
+        return;
+      }
+      const text = yankModel.text.slice(sOff, eOff);
+      const a = segAt(sOff);
+      const b = segAt(eOff - 1);
+      if (a && b) {
+        const bEnd = Math.min(b.nodeOff + 1, (b.node.data || "").length);
+        flashNodeRange(a.node, a.nodeOff, b.node, bEnd);
+      }
+      void copyText(text).then((ok) => {
+        if (ok) toast("yanked " + text.length + " chars");
+        else toast("copy failed");
+      });
+    };
+
+    // Resolve a text object at the cursor and yank it. op is the Go core's
+    // object key: yy / iw / aw / iW / aW / ip / ap / i" / a" / i' / a' /
+    // i` / a` / i( / a( / i[ / a[ / i{ / a{ / i< / a<.
+    const yankObjectAt = (op: string): void => {
+      const api = tryYankApi();
+      if (!api || !yankModel) return;
+      const o = api.yankObject(op, yankLine, yankCol);
+      if (!o.ok) {
+        toast(op === "yy" ? "nothing to yank here" : "no " + op + " here");
+        return;
+      }
+      yankSpanOff(flatOf(o.sl, o.sc), flatOf(o.el, o.ec));
+    };
+
+    const yankEnter = (): void => {
+      if (!rebuildYankModel()) {
+        toast("yank: core loading");
+        return;
+      }
+      yankMode = "idle";
+      // Seed the cursor at the current match when there is one, else top.
+      const m = currentHit();
+      if (m && yankModel) {
+        const off = nodeFlatOffset(m.node, m.start);
+        const ls = yankModel.lineStart;
+        let line = 0;
+        for (let i = 0; i < ls.length; i++) {
+          if (ls[i]! <= off) line = i;
+          else break;
+        }
+        yankLine = line;
+        yankCol = off - ls[line]!;
+        if (yankCol < 0) yankCol = 0;
+      } else {
+        yankLine = 0;
+        yankCol = 0;
+      }
+      input.classList.add("lf-cmd");
+      input.classList.add("lf-yank");
+      try {
+        input.blur();
+      } catch (e) {
+        // ignore
+      }
+      showCaret();
+      render();
+    };
+
+    const yankExit = (to: "cmd" | "insert"): void => {
+      yankMode = "off";
+      hideCaret();
+      clearSel();
+      input.classList.remove("lf-yank");
+      if (to === "insert") {
+        mode = "insert";
+        input.classList.remove("lf-cmd");
+        input.focus();
+      }
+      render();
+    };
+
+    // Enter visual selection at the cursor. Every motion from here extends
+    // the highlighted range, and y yanks exactly what is highlighted, so the
+    // user always sees what will be copied before pressing y.
+    const yankEnterSel = (): void => {
+      yankSelAnchor = { line: yankLine, col: yankCol };
+      yankMode = "sel";
+      render();
+    };
+
+    // Flat offset of the real character under the cursor (never a '\n': a
+    // cursor at end-of-line resolves to the line's last character).
+    const yankCharOff = (line: number, col: number): number => {
+      if (!yankModel) return 0;
+      const ls = yankModel.lineStart;
+      if (line < 0) line = 0;
+      if (line >= yankModel.lines) line = yankModel.lines - 1;
+      const end = line + 1 < ls.length ? ls[line + 1]! - 1 : yankModel.text.length;
+      const len = Math.max(0, end - ls[line]!);
+      let c = col;
+      if (c < 0) c = 0;
+      if (c >= len) c = Math.max(0, len - 1);
+      return ls[line]! + c;
+    };
+
+    // Persistent blue overlay showing the visual selection. Lives in a
+    // closed shadow root so page CSS can't break it; rebuilt per motion.
+    const drawSel = (rects: DOMRect[]): void => {
+      if (!selHost) {
+        selHost = document.createElement("div");
+        selHost.id = "lazyfox-sel";
+        selHost.style.cssText =
+          "all:initial;position:fixed;inset:0;pointer-events:none;z-index:2147483646;";
+        selHost._sh = selHost.attachShadow({ mode: "closed" });
+        document.documentElement.appendChild(selHost);
+      }
+      const sh = selHost._sh!;
+      sh.textContent = "";
+      if (!rects.length) return;
+      const st = document.createElement("style");
+      st.textContent =
+        ".s{position:fixed;background:rgba(122,162,247,.30);border-radius:2px;pointer-events:none;}";
+      sh.appendChild(st);
+      const n = Math.min(rects.length, 250);
+      for (let i = 0; i < n; i++) {
+        const r = rects[i]!;
+        const d = document.createElement("div");
+        d.className = "s";
+        d.style.left = r.left + "px";
+        d.style.top = r.top + "px";
+        d.style.width = r.width + "px";
+        d.style.height = r.height + "px";
+        sh.appendChild(d);
+      }
+    };
+
+    const clearSel = (): void => {
+      if (selHost) {
+        try {
+          selHost.remove();
+        } catch (e) {
+          // ignore
+        }
+        selHost = null;
+      }
+    };
+
+    // Redraw the selection highlight for the current anchor -> cursor range.
+    const updateSelHighlight = (): void => {
+      if (yankMode !== "sel" || !yankModel) {
+        clearSel();
+        return;
+      }
+      const aOff = yankCharOff(yankSelAnchor.line, yankSelAnchor.col);
+      const cOff = yankCharOff(yankLine, yankCol);
+      const s = Math.min(aOff, cOff);
+      const e = Math.max(aOff, cOff) + 1;
+      if (e <= s) {
+        clearSel();
+        return;
+      }
+      const a = segAt(s);
+      const b = segAt(e - 1);
+      if (!a || !b) {
+        clearSel();
+        return;
+      }
+      try {
+        const range = document.createRange();
+        range.setStart(a.node, a.nodeOff);
+        const bEnd = Math.min(b.nodeOff + 1, (b.node.data || "").length);
+        range.setEnd(b.node, bEnd);
+        drawSel(Array.prototype.slice.call(range.getClientRects()));
+      } catch (err) {
+        clearSel();
+      }
+    };
+
+    // Yank the highlighted anchor -> cursor range (cursor character included)
+    // and leave selection mode. What gets copied is exactly what was
+    // highlighted while moving.
+    const yankSel = (): void => {
+      if (!yankModel) return;
+      const aOff = yankCharOff(yankSelAnchor.line, yankSelAnchor.col);
+      const cOff = yankCharOff(yankLine, yankCol);
+      const s = Math.min(aOff, cOff);
+      const e = Math.max(aOff, cOff) + 1;
+      const ch = yankModel.text[s];
+      if (e <= s || ch === "\n" || ch === undefined) {
+        toast("nothing selected to yank");
+        return;
+      }
+      yankSpanOff(s, e);
+      yankMode = "idle";
+      clearSel();
+      render();
+    };
+
+    // Idle yank-mode keys: motions move the cursor through the Go core.
+    const yankIdleKey = (k: string): boolean => {
+      if (isMotion(k)) {
+        const t = yankMotionTo(k === "g" ? "gg" : k, "");
+        if (t) moveTo(t.line, t.col);
+        return true;
+      }
+      return false;
+    };
+
+    const yankHints = (): string => {
+      if (yankMode === "sel") {
+        return "<b>hjkl w b e 0 $ g G</b> extend &middot; <b>y</b> yank &middot; " +
+          "<b>Esc</b> cancel";
+      }
+      if (yankMode === "pendY") {
+        return "<b>y</b> line &middot; <b>hjkl w b e 0 $ g G</b> select &middot; " +
+          "<b>Esc</b> cancel";
+      }
+      return "<b>hjkl</b> move &middot; <b>w b e</b> word &middot; <b>0 $</b> line &middot; " +
+        "<b>g G</b> top/bottom &middot; <b>yy</b> line &middot; <b>y</b> select &middot; " +
+        "<b>i</b> edit &middot; <b>Esc</b> back";
     };
 
     const manualInsert = (k: string): void => {
@@ -556,6 +1025,59 @@ function openFindPopup(
       onKey: (e): boolean => {
         const k = e.key;
         const noMods = !e.ctrlKey && !e.altKey && !e.metaKey;
+
+        // Full yank mode owns every key: motions move the cursor, y arms the
+        // operator, Esc steps back to find command mode. Esc here exits the
+        // mode instead of closing the widget (the widget itself only closes
+        // from the find modes, below).
+        if (yankMode !== "off") {
+          if (k === "Escape") {
+            e.preventDefault();
+            if (yankMode === "sel" || yankMode === "pendY") {
+              yankMode = "idle";
+              render();
+            } else {
+              yankExit("cmd");
+            }
+            return true;
+          }
+          if (!noMods || !k || k.length > 1) return true;
+          e.preventDefault();
+          if (yankMode === "pendY") {
+            if (k === "y") {
+              yankObjectAt("yy");
+              yankMode = "idle";
+              render();
+            } else if (k === "i") {
+              yankExit("insert");
+            } else if (isMotion(k)) {
+              // y then a motion starts a selection at the cursor, so the
+              // range is visible before it is yanked.
+              yankEnterSel();
+              yankIdleKey(k);
+            } else {
+              yankMode = "idle";
+            }
+            return true;
+          }
+          if (yankMode === "sel") {
+            if (k === "y") yankSel();
+            else if (k === "i") yankExit("insert");
+            else yankIdleKey(k); // motions extend the selection
+            return true;
+          }
+          // idle
+          if (k === "y") {
+            yankMode = "pendY";
+            render();
+          } else if (k === "i") {
+            // i leaves for the find query (neovim: i inserts).
+            yankExit("insert");
+          } else {
+            yankIdleKey(k);
+          }
+          return true;
+        }
 
         if (k === "Enter") {
           e.preventDefault();
@@ -588,9 +1110,9 @@ function openFindPopup(
             doYank();
             return true;
           }
-          if (k === "v" && noMods) {
+          if (k === "Y" && noMods) {
             e.preventDefault();
-            toggleVisual();
+            yankEnter();
             return true;
           }
           if (k === "Backspace") {
@@ -639,9 +1161,13 @@ function openFindPopup(
           }
         }
         if (findTimer) clearTimeout(findTimer);
+        yankMode = "off";
+        hideCaret();
+        clearSel();
         if (setFindState) setFindState(null);
         try {
           document.documentElement.removeAttribute("data-lf-find");
+          document.documentElement.removeAttribute("data-lf-yank");
         } catch (e) {
           // ignore
         }

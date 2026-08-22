@@ -51,6 +51,13 @@ export interface CoreApi {
   coalescePair(pre: string[], anchor: string, partner: string): string[];
   coalesceIntoGroup(pre: string[], members: string[], tab: string): string[];
   planStrip(current: string[], desired: string[], groups: string[][]): [string, number][];
+  yankParse(text: string): { lines: number; total: number; lineStart: number[] };
+  yankMotion(op: string, arg: string, line: number, col: number): { line: number; col: number };
+  yankObject(
+    op: string,
+    line: number,
+    col: number
+  ): { ok: boolean; sl: number; sc: number; el: number; ec: number };
   formatBytes(n: number): string;
   formatSpeed(n: number): string;
   downloadProgress(received: number, total: number): number;
@@ -141,6 +148,16 @@ export function createCoreFacade(getApi: () => Promise<CoreApi>) {
       call((a) => a.coalesceIntoGroup(pre, members, tab)),
     planStrip: (current: string[], desired: string[], groups: string[][]): Promise<[string, number][]> =>
       call((a) => a.planStrip(current, desired, groups)),
+    yankParse: (text: string): Promise<{ lines: number; total: number; lineStart: number[] }> =>
+      call((a) => a.yankParse(text)),
+    yankMotion: (op: string, arg: string, line: number, col: number): Promise<{ line: number; col: number }> =>
+      call((a) => a.yankMotion(op, arg, line, col)),
+    yankObject: (
+      op: string,
+      line: number,
+      col: number
+    ): Promise<{ ok: boolean; sl: number; sc: number; el: number; ec: number }> =>
+      call((a) => a.yankObject(op, line, col)),
     formatBytes: (n: number): Promise<string> => call((a) => a.formatBytes(n)),
     formatSpeed: (n: number): Promise<string> => call((a) => a.formatSpeed(n)),
     downloadProgress: (received: number, total: number): Promise<number> =>
