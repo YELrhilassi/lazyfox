@@ -414,6 +414,163 @@ export async function run(ctx) {
     await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
   });
 
+  await t("find restores the previous scroll position on close and Ctrl+o walks back", async () => {
+    // The first match of a fresh search is often at the very top of the page,
+    // so jumping yanks the user away from where they were reading. Esc must
+    // bring them back, and Ctrl+o must walk back one jump at a time.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 900); true`);
+    await sleep(200);
+    await ctx.leaderPress(ctx.tabA, "/");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "Lazyfox");
+    await ctx.press(ctx.tabA, "Enter"); // h1 sits at the top: page scrolls there
+    await sleep(350);
+    const atTop = await evalIn(ctx.tabA, `window.scrollY`);
+    assert(atTop < 100, "find scrolled to the top match, got " + atTop);
+    // Ctrl+o returns to the position the jump left from.
+    await ctx.press(ctx.tabA, "o", { ctrl: true });
+    await sleep(300);
+    const backed = await evalIn(ctx.tabA, `window.scrollY`);
+    assert(Math.abs(backed - 900) < 40, "Ctrl+o returned to the pre-jump position, got " + backed);
+    // Jump again, then Esc: the popup closes and the original position returns.
+    await ctx.press(ctx.tabA, "Enter");
+    await sleep(300);
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    const after = await evalIn(ctx.tabA, `window.scrollY`);
+    assert(Math.abs(after - 900) < 40, "Esc restored the original position, got " + after);
+  });
+
+  await t("find counts matches live, walks with Enter, and selects the match", async () => {
+    // The mini widget shows a live N/M count (data-lf-find: cur/count; 0 =
+    // query typed but nothing walked to). Enter jumps to the next match
+    // (starting at the viewport, not the top of the page) and selects it.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "/");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "Lazyfox");
+    await sleep(400);
+    const c0 = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c0 === "0/1", "live count before walking, got " + c0);
+    await ctx.press(ctx.tabA, "Enter");
+    await sleep(300);
+    const c1 = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c1 === "1/1", "walk advanced the count, got " + c1);
+    const sel = await evalIn(ctx.tabA, `window.getSelection().toString()`);
+    assert(sel === "Lazyfox", "match selected, got " + JSON.stringify(sel));
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+  });
+
+  await t("find pierces open shadow roots (Reddit-style custom elements)", async () => {
+    // window.find cannot see text inside shadow DOM — the old widget found
+    // "nothing" on Reddit-style pages. The finder walks open shadow roots, so
+    // text living only inside <lf-shadow-editable>'s shadow tree must count.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "/");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "shadow editable");
+    await sleep(500);
+    const c = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c === "0/1", "shadow-root text counted, got " + c);
+    await ctx.press(ctx.tabA, "Enter");
+    await sleep(300);
+    const c2 = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c2 === "1/1", "walked into the shadow match, got " + c2);
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+  });
+
+  await t("find yanks the current match with a neovim-style flash", async () => {
+    // In command mode (after walking), y copies the selected match and shows
+    // the amber yank flash over the copied text.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "/");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "Lazyfox");
+    await sleep(400);
+    await ctx.press(ctx.tabA, "Enter");
+    await sleep(300);
+    await ctx.press(ctx.tabA, "y");
+    await sleep(120);
+    const flash = await ctx.hasHost(ctx.tabA, "lazyfox-flash");
+    assert(flash, "yank flash overlay shown");
+    const sel = await evalIn(ctx.tabA, `window.getSelection().toString()`);
+    assert(sel === "Lazyfox", "selection kept after yank, got " + JSON.stringify(sel));
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+  });
+
+  await t("find copies a range (v anchor then y) with the yank flash", async () => {
+    // Neovim-style visual copy: walk to a match, v anchors it, walk to
+    // another match, y copies from the anchor to the current one (inclusive)
+    // and flashes the whole range.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "/");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "Link");
+    await sleep(400);
+    const c0 = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c0 === "0/2", "two matches counted, got " + c0);
+    await ctx.press(ctx.tabA, "Enter"); // walk to the first match
+    await sleep(250);
+    await ctx.press(ctx.tabA, "v"); // anchor the range here
+    await sleep(150);
+    await ctx.press(ctx.tabA, "n"); // walk to the second match
+    await sleep(250);
+    await ctx.press(ctx.tabA, "y"); // yank the range
+    await sleep(120);
+    const flash = await ctx.hasHost(ctx.tabA, "lazyfox-flash");
+    assert(flash, "range yank flash overlay shown");
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+  });
+
+  await t("leader key types into shadow-DOM inputs and editables (custom elements)", async () => {
+    // Regression: Reddit-style <faceplate-search-input> custom elements keep
+    // their real input in shadow DOM, so document.activeElement / the event
+    // target is the host and typing detection used to miss it — `;` armed the
+    // leader instead of typing, and a stray ' re-armed the marker capture.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await evalIn(
+      ctx.tabA,
+      `document.getElementById("shin1").shadowRoot.querySelector("input").focus(); true`
+    );
+    await sleep(200);
+    await ctx.typeIn(ctx.tabA, ";'1");
+    const val = await evalIn(
+      ctx.tabA,
+      `document.getElementById("shin1").shadowRoot.querySelector("input").value`
+    );
+    assert(val === ";'1", "shadow input got ;'1, got " + JSON.stringify(val));
+    assert(
+      !(await ctx.hasHost(ctx.tabA, "lazyfox-leader")),
+      "leader armed while typing into a shadow-DOM input"
+    );
+    // Same for a contenteditable hosted inside a shadow root.
+    await evalIn(
+      ctx.tabA,
+      `document.getElementById("shce1").shadowRoot.querySelector("div").textContent = ""; true`
+    );
+    await evalIn(
+      ctx.tabA,
+      `document.getElementById("shce1").shadowRoot.querySelector("div").focus(); true`
+    );
+    await sleep(200);
+    await ctx.typeIn(ctx.tabA, ";");
+    const ce = await evalIn(
+      ctx.tabA,
+      `document.getElementById("shce1").shadowRoot.querySelector("div").textContent`
+    );
+    assert(ce === ";", "shadow contenteditable got ;, got " + JSON.stringify(ce));
+    assert(
+      !(await ctx.hasHost(ctx.tabA, "lazyfox-leader")),
+      "leader armed while typing into a shadow-DOM contenteditable"
+    );
+    await evalIn(ctx.tabA, `document.activeElement && document.activeElement.blur(); true`);
+  });
+
   await t(";w resize popup from the content page", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const before = await ctx.windowRect();

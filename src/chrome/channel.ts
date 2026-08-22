@@ -609,6 +609,26 @@ export function createChannel(deps: ChannelDeps): Channel {
       removeReqTab(browser);
       return;
     }
+    if (cmd === "findState") {
+      // Content-script find-in-page count relayed from the background
+      // (findState.<b64>.<nonce>): cache it per tab-strip index so the
+      // window-level status bar shows the live match count on web pages,
+      // then drop the request tab.
+      const dot = rest.indexOf(".");
+      const b64 = dot < 0 ? rest : rest.slice(0, dot);
+      let st: { index?: number; count?: number; cur?: number } | null = null;
+      try {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        st = JSON.parse(new TextDecoder().decode(bytes));
+      } catch (e) {
+        st = null;
+      }
+      if (st && typeof st.index === "number" && st.index >= 0) {
+        deps.status.setContentFind(st.index, st.count || 0, st.cur || 0);
+      }
+      removeReqTab(browser);
+      return;
+    }
     if (cmd === "sessionTabs") {
       // Reply to requestSessionTabs: sessionTabs.<b64>.<nonce>.
       const dot = rest.indexOf(".");

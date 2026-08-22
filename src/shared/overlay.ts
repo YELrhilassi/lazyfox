@@ -32,7 +32,7 @@ export const PANEL_CSS = `
 .lf-input.lf-cmd{color:#565f89;}
 .lf-input.lf-cmd::placeholder{color:#3b4261;}
 .lf-foot{flex:none;padding:8px 16px;font-size:11px;color:#565f89;border-top:1px solid #2a2f45;
-  display:flex;gap:6px;align-items:center;}
+  display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
 .lf-panel.wide{width:820px;max-width:94vw;}
 .lf-split{display:flex;flex:1;overflow:hidden;}
 .lf-col{display:flex;flex-direction:column;flex:1 1 50%;min-width:0;border-right:1px solid #2a2f45;}
@@ -47,6 +47,9 @@ export const PANEL_CSS = `
 .lf-hgroup.lf-collapsed::before{transform:rotate(-90deg);}
 .lf-hgroup:hover{color:#9ece6a;}
 .lf-hcount{font-size:9px;color:#565f89;background:#16161e;border:1px solid #2a2f45;border-radius:8px;padding:0 6px;letter-spacing:0;}
+.lf-hkey{display:inline-block;min-width:15px;text-align:center;background:#16161e;border:1px solid #414868;
+  border-radius:4px;padding:0 4px;margin-right:2px;color:#2ac3de;font-size:9px;letter-spacing:0;}
+.lf-hgroup.lf-arm .lf-hkey{color:#16161e;background:#2ac3de;border-color:#2ac3de;}
 .lf-collapsed-hint{padding:20px 16px;text-align:center;color:#565f89;font-size:12px;}
 .lf-hist .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .lf-hist .s{display:flex;gap:8px;align-items:center;min-width:0;}

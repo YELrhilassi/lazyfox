@@ -126,6 +126,15 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     config: () => config,
     startHints: () => void hints.start(),
     focusFirstInput: focusFirstInput,
+    // Live find count: feed the standalone status bar AND relay it to the
+    // chrome helper's window-level bar (whose status bar is the one drawn on
+    // real setups) so "N/M" follows the find widget everywhere.
+    setFindState: (s) => {
+      statusBar.setData({ find: s });
+      // count -1 = the widget closed (hide the bar segment); 0 = a query with
+      // no matches (red 0); >0 = live cur/count.
+      void send("syncFind", s ? { cur: s.cur, count: s.count } : { cur: 0, count: -1 });
+    },
   });
 
   let leader: LeaderController;
