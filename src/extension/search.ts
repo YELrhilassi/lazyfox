@@ -126,7 +126,7 @@ export async function historySearch(q: string) {
   const items = await browser.history.search({
     text: text,
     startTime: 0,
-    maxResults: text ? 60 : 30
+    maxResults: text ? 80 : 1000
   });
   return {
     items: items.map((h: any) => ({

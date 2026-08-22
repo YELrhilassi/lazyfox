@@ -54,6 +54,7 @@ export interface Channel {
   requestSessionState(): Promise<void>;
   // Fetches one named session's tabs (for the sessions popup's right pane).
   requestSessionTabs(name: string): Promise<PopupItem[]>;
+  requestRecentlyClosed(): Promise<PopupItem[]>;
   setHash(browser: any, hash: string): void;
   handleLfc(browser: any, payload: string): void;
 }
@@ -69,6 +70,9 @@ export function createChannel(deps: ChannelDeps): Channel {
   // One-shot waiters for requestSessionTabs, resolved by the handleLfc
   // "sessionTabs" reply with the session's tab rows.
   let sessionTabsWaiters: Record<string, (items: PopupItem[]) => void> = {};
+  // One-shot waiters for requestRecentlyClosed, resolved by the handleLfc
+  // "recentlyClosed" reply with the closed-tab rows.
+  let recentlyClosedWaiters: Record<string, (items: PopupItem[]) => void> = {};
 
   function ccBaseUrl(): string | null {
     try {
@@ -182,6 +186,42 @@ export function createChannel(deps: ChannelDeps): Channel {
       } catch (e) {
         if (sessionTabsWaiters[nonce]) {
           delete sessionTabsWaiters[nonce];
+          resolve([]);
+        }
+      }
+    });
+  }
+
+  function requestRecentlyClosed(): Promise<PopupItem[]> {
+    const base = ccBaseUrl();
+    if (!base) return Promise.resolve([]);
+    const nonce = "rc" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+    return new Promise((resolve) => {
+      recentlyClosedWaiters[nonce] = resolve;
+      try {
+        const tab = window.gBrowser.addTab(
+          base + "commandcenter.html#lfc=req.recentlyClosed." + nonce,
+          {
+            inBackground: true,
+            skipAnimation: true,
+            triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+          }
+        );
+        // Safety net: if the reply never arrives, drop the request tab.
+        setTimeout(() => {
+          try {
+            if (tab && !tab.closing) window.gBrowser.removeTab(tab);
+          } catch (e) {
+            // ignore
+          }
+          if (recentlyClosedWaiters[nonce]) {
+            delete recentlyClosedWaiters[nonce];
+            resolve([]);
+          }
+        }, 5000);
+      } catch (e) {
+        if (recentlyClosedWaiters[nonce]) {
+          delete recentlyClosedWaiters[nonce];
           resolve([]);
         }
       }
@@ -589,6 +629,26 @@ export function createChannel(deps: ChannelDeps): Channel {
       removeReqTab(browser);
       return;
     }
+    if (cmd === "recentlyClosed") {
+      // Reply to requestRecentlyClosed: recentlyClosed.<b64>.<nonce>.
+      const dot = rest.indexOf(".");
+      const b64 = dot < 0 ? rest : rest.slice(0, dot);
+      const nonce = dot < 0 ? "" : rest.slice(dot + 1);
+      let items: PopupItem[] = [];
+      try {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        items = JSON.parse(new TextDecoder().decode(bytes));
+      } catch (e) {
+        items = [];
+      }
+      const w = recentlyClosedWaiters[nonce];
+      if (w) {
+        delete recentlyClosedWaiters[nonce];
+        w(items || []);
+      }
+      removeReqTab(browser);
+      return;
+    }
     if (cmd === "reqResult") {
       // Async reply to a chrome-helper request (e.g. stealthOpen): toast the
       // outcome so a failure is never silent, then drop the reply tab.
@@ -638,6 +698,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     requestBg,
     requestSessionState,
     requestSessionTabs,
+    requestRecentlyClosed,
     setHash,
     handleLfc,
   };

@@ -229,6 +229,74 @@ func sessionSummaryArray(items []core.SessionSummaryItem) js.Value {
 	return a
 }
 
+func historyItems(v js.Value) []core.HistoryItem {
+	if v.IsUndefined() || v.IsNull() {
+		return nil
+	}
+	n := v.Length()
+	out := make([]core.HistoryItem, 0, n)
+	for i := 0; i < n; i++ {
+		it := v.Index(i)
+		out = append(out, core.HistoryItem{
+			URL:   it.Get("url").String(),
+			Title: it.Get("title").String(),
+			Time:  int64(it.Get("time").Int()),
+		})
+	}
+	return out
+}
+
+func historyRows(items []core.HistoryRow) js.Value {
+	a := js.Global().Get("Array").New(len(items))
+	for i, it := range items {
+		o := obj()
+		o.Set("url", it.URL)
+		o.Set("title", it.Title)
+		o.Set("time", it.Time)
+		o.Set("host", it.Host)
+		o.Set("bucket", it.Bucket)
+		o.Set("rel", it.Rel)
+		a.SetIndex(i, o)
+	}
+	return a
+}
+
+func recoveryItems(v js.Value) []core.RecoveryItem {
+	if v.IsUndefined() || v.IsNull() {
+		return nil
+	}
+	n := v.Length()
+	out := make([]core.RecoveryItem, 0, n)
+	for i := 0; i < n; i++ {
+		it := v.Index(i)
+		out = append(out, core.RecoveryItem{
+			Key:      it.Get("key").String(),
+			Kind:     it.Get("kind").String(),
+			Title:    it.Get("title").String(),
+			URL:      it.Get("url").String(),
+			TabCount: it.Get("tabCount").Int(),
+			Time:     int64(it.Get("time").Int()),
+		})
+	}
+	return out
+}
+
+func recoveryRows(items []core.RecoveryRow) js.Value {
+	a := js.Global().Get("Array").New(len(items))
+	for i, it := range items {
+		o := obj()
+		o.Set("key", it.Key)
+		o.Set("kind", it.Kind)
+		o.Set("title", it.Title)
+		o.Set("url", it.URL)
+		o.Set("tabCount", it.TabCount)
+		o.Set("host", it.Host)
+		o.Set("rel", it.Rel)
+		a.SetIndex(i, o)
+	}
+	return a
+}
+
 func main() {
 	api := obj()
 	set := func(name string, fn func(js.Value, []js.Value) interface{}) {
@@ -423,6 +491,40 @@ func main() {
 			ids = intSlice(args[0])
 		}
 		return splitPairsArray(core.SplitPairsOf(ids))
+	})
+
+	// ---- history / recovery organization ----
+
+	set("organizeHistory", func(this js.Value, args []js.Value) interface{} {
+		items := []core.HistoryItem(nil)
+		if len(args) > 0 {
+			items = historyItems(args[0])
+		}
+		query := ""
+		if len(args) > 1 {
+			query = args[1].String()
+		}
+		now := int64(0)
+		if len(args) > 2 {
+			now = int64(args[2].Int())
+		}
+		tz := 0
+		if len(args) > 3 {
+			tz = args[3].Int()
+		}
+		return historyRows(core.OrganizeHistory(items, query, now, tz))
+	})
+
+	set("organizeRecovery", func(this js.Value, args []js.Value) interface{} {
+		items := []core.RecoveryItem(nil)
+		if len(args) > 0 {
+			items = recoveryItems(args[0])
+		}
+		now := int64(0)
+		if len(args) > 1 {
+			now = int64(args[1].Int())
+		}
+		return recoveryRows(core.OrganizeRecovery(items, now))
 	})
 
 	set("formatBytes", func(this js.Value, args []js.Value) interface{} {

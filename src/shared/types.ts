@@ -48,6 +48,28 @@ export interface VisitedItem {
   time: number;
 }
 
+// One organized history row as returned by the Go core: host / time bucket /
+// relative time precomputed so the popup only renders.
+export interface HistoryRow {
+  url: string;
+  title: string;
+  time: number;
+  host: string;
+  bucket: string;
+  rel: string;
+}
+
+// One organized recovery row (closed tab or window) from the Go core.
+export interface RecoveryRow {
+  key: string;
+  kind: string;
+  title: string;
+  url: string;
+  tabCount: number;
+  host: string;
+  rel: string;
+}
+
 export interface Lfc {
   kind: "open" | "cfg" | "req" | "ok" | "err" | "";
   target: string;
@@ -103,6 +125,8 @@ export interface PopupItem {
   total?: number;
   speed?: number;
   progress?: number;
+  // Recently-closed sessions: how many tabs a closed window held.
+  tabCount?: number;
 }
 
 // One download as tracked by the Go notification manager. `id` is a stable key

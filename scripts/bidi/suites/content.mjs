@@ -456,6 +456,31 @@ export async function run(ctx) {
     await ctx.activateTab(ctx.tabA);
   });
 
+  await t(";V recently-closed popup lists and restores a closed tab", async () => {
+    // The popup (capital V) shows everything the browser remembers closing;
+    // Enter restores the highlighted (most recent) entry. Unlike ;v, which
+    // reopens the last tab without a list, ;V must open a real popup.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const before = await ctx.tabCount();
+    // Seed one recently-closed entry without disturbing tabA: create and then
+    // remove a background tab through the probe's extension realm.
+    const tid = await evalIn(
+      ctx.probe,
+      `browser.tabs.create({ url: ${JSON.stringify(`${ctx.base}/target2`)}, active: false }).then(t => t.id)`
+    );
+    await sleep(600);
+    await evalIn(ctx.probe, `browser.tabs.remove(${tid}).then(() => true)`);
+    await sleep(400);
+    await ctx.leaderPress(ctx.tabA, "V");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.press(ctx.tabA, "Enter");
+    await waitFor(async () => (await ctx.tabCount()) === before + 1 ? true : null, 10000);
+    // The restored tab is the newly active web page; hand focus back to tabA
+    // and remove the restored tab so later tests start from a clean strip.
+    await ctx.activateTab(ctx.tabA);
+    await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true}).then(ts => { const t = ts.find(x => (x.url||"").indexOf("/target2") !== -1); return t ? browser.tabs.remove(t.id).then(() => true) : true; })`).catch(() => {});
+  });
+
   await t("a stale leader never eats keys typed into an input", async () => {
     // Regression: pressing `;` on the page then clicking into a text field used
     // to leave the leader armed, so the first key typed (; or ') was swallowed

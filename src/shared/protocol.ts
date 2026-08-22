@@ -26,6 +26,12 @@ export interface BgApi {
   closeTab: { req: { id?: number; force?: boolean }; res: { ok: boolean; last?: boolean } };
   newTab: { req: Record<string, never>; res: { ok: boolean } };
   reopenTab: { req: Record<string, never>; res: { ok: boolean } };
+  alternateTab: { req: Record<string, never>; res: { ok: boolean } };
+  recentlyClosed: { req: Record<string, never>; res: { items: PopupItem[] } };
+  restoreClosedTab: { req: { key: string }; res: { ok: boolean } };
+  restoreAllClosed: { req: Record<string, never>; res: { ok: boolean; count?: number } };
+  removeHistory: { req: { url: string }; res: { ok: boolean } };
+  clearHistory: { req: Record<string, never>; res: { ok: boolean } };
   duplicateTab: { req: Record<string, never>; res: { ok: boolean } };
   reload: { req: Record<string, never>; res: { ok: boolean } };
   back: { req: Record<string, never>; res: { ok: boolean } };

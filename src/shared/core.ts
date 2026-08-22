@@ -1,6 +1,6 @@
 import "../vendor/wasm_exec.js";
 import { WASM_BASE64 } from "./wasm-embed";
-import type { DownloadEntry, Lfc, VisitedItem, WkItem, WkPage } from "./types";
+import type { DownloadEntry, HistoryRow, Lfc, RecoveryRow, VisitedItem, WkItem, WkPage } from "./types";
 
 // The Go core (core.wasm) is compiled to a single wasm module and exposed to
 // JS as the "LazyfoxCore" object. Every Lazyfox context uses this facade; the
@@ -34,6 +34,16 @@ export interface CoreApi {
   lfcOk(nonce: string): string;
   lfcErr(nonce: string): string;
   assignSessionMarker(taken: number[]): number;
+  organizeHistory(
+    items: { url: string; title: string; time: number }[],
+    query: string,
+    now: number,
+    tzOffsetMinutes: number
+  ): HistoryRow[];
+  organizeRecovery(
+    items: { key: string; kind: string; title: string; url: string; tabCount: number; time: number }[],
+    now: number
+  ): RecoveryRow[];
   splitPairsOf(ids: number[]): [number, number][];
   encodeSplits(pairs: [number, number][]): string;
   decodeSplits(encoded: string): [number, number][];
@@ -105,6 +115,18 @@ export function createCoreFacade(getApi: () => Promise<CoreApi>) {
     lfcErr: (n: string): Promise<string> => call((a) => a.lfcErr(n)),
     assignSessionMarker: (taken: number[]): Promise<number> =>
       call((a) => a.assignSessionMarker(taken)),
+    organizeHistory: (
+      items: { url: string; title: string; time: number }[],
+      query: string,
+      now: number,
+      tzOffsetMinutes: number
+    ): Promise<HistoryRow[]> =>
+      call((a) => a.organizeHistory(items, query, now, tzOffsetMinutes)),
+    organizeRecovery: (
+      items: { key: string; kind: string; title: string; url: string; tabCount: number; time: number }[],
+      now: number
+    ): Promise<RecoveryRow[]> =>
+      call((a) => a.organizeRecovery(items, now)),
     splitPairsOf: (ids: number[]): Promise<[number, number][]> =>
       call((a) => a.splitPairsOf(ids)),
     encodeSplits: (pairs: [number, number][]): Promise<string> =>

@@ -31,6 +31,16 @@ export interface ActionOps {
   activateTab(id: number): void;
   tabNav(dir: number): void;
   tabJump(n: number): void;
+  // Jump to the previously-active tab; pressing it again jumps back (a
+  // two-tab toggle like Vim's Ctrl+^).
+  alternateTab(): void;
+  // Recently closed tabs: list, restore one (by its stable key), restore all.
+  recentlyClosed(): Promise<PopupItem[]>;
+  restoreClosedTab(key: string): void;
+  restoreAllClosed(): void;
+  // History: delete one entry or clear the whole history.
+  removeHistory(url: string): void;
+  clearHistory(): void;
   zoom(delta: number, factor?: number): void;
   openDownload(key: string): void;
   removeDownload(key: string): void;

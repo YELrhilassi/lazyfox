@@ -22,9 +22,11 @@ var Bindings = []WkItem{
 	{Key: "n", Label: "New tab", Group: "Tabs"},
 	{Key: "x", Label: "Close tab", Group: "Tabs"},
 	{Key: "v", Label: "Reopen closed tab", Group: "Tabs"},
+	{Key: "V", Label: "Recently closed tabs", Group: "Tabs"},
 	{Key: "c", Label: "Duplicate tab", Group: "Tabs"},
 	{Key: "j", Label: "Next tab", Group: "Tabs"},
 	{Key: "k", Label: "Previous tab", Group: "Tabs"},
+	{Key: "a", Label: "Alternate tab (last used)", Group: "Tabs"},
 	{Key: "1", Label: "Go to tab 1-8", Group: "Tabs"},
 	{Key: "9", Label: "Go to last tab", Group: "Tabs"},
 

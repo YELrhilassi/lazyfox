@@ -262,6 +262,7 @@ export interface ChromeOpsDeps {
     requestBg(action: string, arg?: string): void;
     requestSessionState(): Promise<void>;
     requestSessionTabs(name: string): Promise<PopupItem[]>;
+    requestRecentlyClosed(): Promise<PopupItem[]>;
     ccBaseUrl(): string | null;
   };
 }
@@ -355,7 +356,7 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
   },
     history: (q: string) => {
       const text = (q || "").trim();
-      return Promise.resolve(histItems(text, text ? 80 : 30));
+      return Promise.resolve(histItems(text, text ? 80 : 1000));
     },
     bookmarks: async (q: string) => {
       try {
@@ -515,6 +516,15 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       window.gBrowser.selectedTab = tabs[idx];
       window.focus();
     },
+    alternateTab: () => {
+      // The background tracks the per-window activation order and flips back.
+      deps.getChannel().requestBg("alternateTab");
+    },
+    recentlyClosed: () => deps.getChannel().requestRecentlyClosed(),
+    restoreClosedTab: (key: string) => deps.getChannel().requestBg("restoreClosedTab", key),
+    restoreAllClosed: () => deps.getChannel().requestBg("restoreAllClosed"),
+    removeHistory: (url: string) => deps.getChannel().requestBg("removeHistory", url),
+    clearHistory: () => deps.getChannel().requestBg("clearHistory"),
     zoom: (delta: number, factor?: number) => {
       try {
         const b = window.gBrowser.selectedBrowser;
