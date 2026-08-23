@@ -21,6 +21,9 @@ no `Enter`, nothing to memorize.
   tabs, history, bookmarks and downloads.
 - **Link hints** — every visible link gets a short label; type it and the
   link opens. Labels stay short because only what you can see gets one.
+- **Find in page** — `;/` searches the page with a live match count, a
+  highlight that survives page scripts, and neovim-style copy/yank of what
+  you find. It works on framework pages where `Ctrl+F` gives up.
 - **Sessions** — name your current window and switch between named ones; tabs
   and split layout come back exactly as you left them.
 - **Split view** — two tabs side by side, without a window manager.
@@ -80,11 +83,19 @@ gatekeeper. The action runs the moment you press its key; `Esc` just cancels.
 | `;{` / `;}` | swap panes left / right |
 | `;+` then `1`–`9` | move that tab into the split |
 | `; d` / `; h` / `; b` | downloads / history / bookmarks |
+| `; /` | find in page — search, walk, copy (`y`) or yank (`Y`) |
 | `; N` | new stealth tab |
 | `; Q` | save the session and quit Firefox |
 | `; w` / `; m` | resize / move the window |
 | `j` `k` `d` `u` `gg` `G` | scroll the page (when not typing) |
 | `Ctrl+Alt+Space` / `Ctrl+Alt+K` | open the menu / command center from anywhere |
+
+The history (`;h`) and recently-closed (`;V`) popups group entries by time —
+Today, Yesterday, This week, This month, Earlier — with a hint letter on
+each group header. `c` arms group toggling, then the hint letter
+collapses/expands that group (`c` again toggles the group under the cursor);
+`C` collapses all groups, `O` expands them, `g`/`G` jump to the top/bottom.
+The popup footer always shows the keys for what you're doing at the moment.
 
 ### The command center
 
@@ -115,6 +126,37 @@ opens — no mouse, no tabbing.
 <p align="center">
   <img src="docs/img/hints.png" width="880">
 </p>
+
+### Find in page
+
+`;/` searches the page you're looking at. The widget sits in a corner
+instead of the middle, so it never covers the text you're searching.
+
+- Type to search: the **N/M** match count updates live on the widget and on
+  the status bar (`0` in red means no matches yet). The search is
+  framework-proof — it reads through open shadow roots (Reddit-style custom
+  elements), matches words split across elements, treats `&nbsp;` and stray
+  whitespace as one space, and reaches text nested dozens of levels deep —
+  the pages where `Ctrl+F` finds nothing.
+- `Enter` / `Shift+Enter` walk to the next / previous match. The first jump
+  starts from where you are, not the top of the page. `Ctrl+o` steps back
+  through every position you visited; `Esc` returns you to where you started
+  the search. Matches are walked in **visual reading order** — top to
+  bottom, left to right as the page renders — even when the site reorders
+  blocks with CSS.
+- After walking, the widget enters command mode and its hints switch:
+  `n`/`N` walk · `y` copy · `Y` yank mode · `i` edit the query · `Esc`
+  close. `y` copies the current match with an amber flash over the copied
+  text.
+- `Y` opens **yank mode**: a block cursor moves through the page's parsed
+  text (`hjkl`, `w`/`b`/`e`, `0`/`$`, `g`/`G`), `y` starts a selection —
+  highlighted live with a character count and a preview of exactly what
+  will be copied — and `y` again yanks that range with the flash. `yy`
+  yanks the whole line. Selections follow the page's content tree: menus,
+  buttons, headers and footers are never part of what you copy. `Esc` steps
+  back to the search, `i` edits the query.
+- The highlight is Lazyfox's own overlay drawn in a shadow root — page
+  scripts and clicks can't clear it, and it survives lazy-loading feeds.
 
 ### Sessions
 

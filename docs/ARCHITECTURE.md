@@ -26,11 +26,13 @@ it. That's the `#lfc=` channel you'll see referenced everywhere.
 ## The Go core
 
 URL parsing, visited-site ranking, link-hint generation, which-key pagination,
-session summary math and download progress formatting all live in one Go
-module (`core/`), compiled to WebAssembly and embedded into every bundle.
-Every context calls the same pure functions, so behavior never drifts between
-the chrome helper, the content script and the command center. The JS side
-talks to it through a thin facade in `src/shared/core.ts`.
+session summary math, download progress formatting, and the text-yank motions
+behind the find widget's copy mode (`core/yank.go`: `YankParse`/`YankMotion`/
+`YankObject`) all live in one Go module (`core/`), compiled to WebAssembly
+and embedded into every bundle. Every context calls the same pure functions,
+so behavior never drifts between the chrome helper, the content script and
+the command center. The JS side talks to it through a thin facade in
+`src/shared/core.ts`.
 
 ## Source layout
 
@@ -109,8 +111,10 @@ root:
 - `commandcenter/keys.ts` — the keydown dispatcher, leader-mode runner,
   close-tab confirmation, typing helpers.
 
-Plus `content/` (the content script), `splitpanel.ts` (the split companion
-pane), `options.ts` and `popup.ts`.
+Plus `content/` (the content script: the `;` leader and popups on web pages,
+plus the find-in-page widget — a flat, shadow-piercing page-text model that
+feeds both the search hit list and the Go-backed yank mode), `splitpanel.ts`
+(the split companion pane), `options.ts` and `popup.ts`.
 
 ## How a keypress flows
 
