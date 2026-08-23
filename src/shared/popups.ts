@@ -1758,6 +1758,7 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     // `;+1-9` (move a specific tab into the split) needs the leader's one-shot
     // digit capture, so it is wired by each context after makeLeaderActions.
     i: () => ctx.ops.focusFirstInput(),
+    I: () => ctx.ops.openSetup(),
     n: () => ctx.ops.newTab(),
     x: () => ctx.ops.closeTab(),
     v: () => ctx.ops.reopenTab(),

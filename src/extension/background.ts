@@ -410,6 +410,8 @@ async function handleMessage(msg: BgAction, sender: any) {
     }
     case "stealthOpen":
       return stealthOpen(() => pushSessionStateToChrome());
+    case "openSetup":
+      return openSetupTab();
     case "quit":
       return quitBrowser();
     case "sessionState":
@@ -639,6 +641,10 @@ async function handleReq(tab: any, action: string, arg: string) {
     } catch (e) {}
     return;
   }
+  if (action === "openSetup") {
+    await openSetupTab();
+    return;
+  }
   if (action === "stealthOpen") {
     // Reply through the tab's hash so the chrome helper can toast the outcome
     // instead of failing silently; the chrome helper removes the reply tab
@@ -801,7 +807,25 @@ browser.tabs
 browser.runtime.onStartup.addListener(() => {
   browser.storage.local.set({ chromeAlive: false }).catch(() => {});
   checkChromeLayerHealth();
+  nudgeFreshInstall();
   void reconcileStealth();
+});
+
+// Open the "complete the installation" page (setup.html) in a new tab. Used by
+// ;I, the chrome-down notifications, and the relay-tab channel from the chrome
+// helper (which cannot call browser.tabs itself).
+function openSetupTab(): Promise<{ ok: boolean }> {
+  return browser.tabs
+    .create({ url: browser.runtime.getURL("setup.html"), active: true })
+    .then(() => ({ ok: true }))
+    .catch(() => ({ ok: false, error: "tab failed" } as { ok: boolean }));
+}
+
+// The chrome-down notification opens the setup page so the user can re-run the
+// patcher (or finish a fresh install) in one click.
+const CHROME_NOTIF = "lf-chrome-down";
+browser.notifications.onClicked.addListener((id: string) => {
+  if (id === CHROME_NOTIF) void openSetupTab();
 });
 
 // Update-survivability: the chrome helper announces "alive" on every window
@@ -821,7 +845,8 @@ function checkChromeLayerHealth(): void {
     .get("chromeEverAlive")
     .then((r: { chromeEverAlive?: boolean }) => {
       // Never loaded even once (fresh install, standalone-only user): the
-      // extension alone is the intended state, so stay quiet.
+      // extension alone is the intended state; the fresh-install nudge below
+      // offers the full install once.
       if (!r || !r.chromeEverAlive) return;
       setTimeout(async () => {
         try {
@@ -832,7 +857,7 @@ function checkChromeLayerHealth(): void {
             iconUrl: browser.runtime.getURL("icons/icon96.png"),
             title: "Lazyfox chrome layer didn't load",
             message:
-              "Firefox may have updated and broken the loader. Re-run the Lazyfox installer to repair it.",
+              "Firefox may have updated and broken the loader. Click to open the setup page and re-run the installer.",
           });
         } catch (e) {
           // never let the check break startup
@@ -841,9 +866,42 @@ function checkChromeLayerHealth(): void {
     })
     .catch(() => {});
 }
+
+// Fresh store installs (chrome never announced): offer the full UI once, since
+// the add-on alone is only half of Lazyfox. One-shot via setupNudgeShown so a
+// standalone-only user is not nagged again.
+function nudgeFreshInstall(): void {
+  browser.storage.local
+    .get(["chromeEverAlive", "setupNudgeShown"])
+    .then((r: { chromeEverAlive?: boolean; setupNudgeShown?: boolean }) => {
+      if (r.chromeEverAlive || r.setupNudgeShown) return;
+      setTimeout(async () => {
+        try {
+          const c = await browser.storage.local.get("chromeAlive");
+          if (c && c.chromeAlive) return; // the helper announced in time
+          await browser.notifications.create({
+            type: "basic",
+            iconUrl: browser.runtime.getURL("icons/icon96.png"),
+            title: "Complete your Lazyfox install",
+            message:
+              "The add-on works, but the toolbar-free UI needs a one-time setup. Click to open it.",
+          });
+          await browser.storage.local.set({ setupNudgeShown: true });
+        } catch (e) {
+          // never let the check break startup
+        }
+      }, 20000);
+    })
+    .catch(() => {});
+}
 // Also reconcile on background load (covers install/reload and the very first
 // launch after enabling the feature) — idempotent.
 void reconcileStealth();
+// Fresh installs land here first (onStartup fires on later launches): offer
+// the full-UI setup once, and keep the chrome-layer health check honest on
+// reloads.
+checkChromeLayerHealth();
+nudgeFreshInstall();
 
 /* ===================== session autosave + restore ===================== */
 

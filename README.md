@@ -39,7 +39,20 @@ is always a way in.
 
 ## Install
 
-Firefox **Developer Edition or Nightly** is required (the add-on is unsigned).
+Two halves make Lazyfox: the **add-on** (this repo's `dist/extension` — also
+published on addons.mozilla.org) and the **profile patch** that physically
+removes the browser chrome. Firefox will not let an add-on write files, so the
+profile patch is applied by a small installer — Firefox **Developer Edition or
+Nightly** is only required for the manually-loaded unsigned add-on; the AMO
+build is signed and runs on stable Firefox.
+
+**From the store** — install `Lazyfox` from addons.mozilla.org, then press
+`;I` (or open the extension's setup page) and download the one-click
+installer it offers. It detects the right profile, writes the four
+`chrome/` files, merges Lazyfox's preferences, and asks for admin rights
+**once** to drop the autoconfig loader into the Firefox install folder.
+
+**From this repo** —
 
 | OS | Command |
 | --- | --- |
@@ -84,6 +97,7 @@ gatekeeper. The action runs the moment you press its key; `Esc` just cancels.
 | `;+` then `1`–`9` | move that tab into the split |
 | `; d` / `; h` / `; b` | downloads / history / bookmarks |
 | `; /` | find in page — search, walk, copy (`y`) or yank (`Y`) |
+| `; I` | full install — the setup page that completes the toolbar-free UI |
 | `; N` | new stealth tab |
 | `; Q` | save the session and quit Firefox |
 | `; w` / `; m` | resize / move the window |

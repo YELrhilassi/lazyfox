@@ -63,6 +63,8 @@ export interface ActionOps {
   // window resize via chrome window APIs vs background messages).
   openFind(): void;
   openResize(): void;
+  // Open the "complete the installation" page (store add-on -> profile patch).
+  openSetup(): void;
 
   // ---- sessions (tmux-style) ----
   listSessions(q: string): Promise<PopupItem[]>;

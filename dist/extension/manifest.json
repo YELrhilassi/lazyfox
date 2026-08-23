@@ -43,7 +43,12 @@
       "all_frames": false
     }
   ],
-  "web_accessible_resources": [],
+  "web_accessible_resources": [
+    {
+      "resources": ["patch/*", "setup.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true
