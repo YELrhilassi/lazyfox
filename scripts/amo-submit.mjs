@@ -85,17 +85,21 @@ if (!processed) {
   process.exit(1);
 }
 
-// 4. Create the version (or the add-on with its first version).
+// 4. Create the version (or the add-on with its first version). For an
+// existing add-on the version fields sit at the top level; a new add-on wraps
+// them in a `version` object alongside the listing metadata.
 const version = { upload: uuid, license: LICENSE, channel: "listed" };
 const body = known
-  ? { version }
+  ? version
   : { version, categories: { firefox: [CATEGORY] }, name: { "en-US": "Lazyfox" }, summary: { "en-US": "Keyboard-first, UI-free Firefox: leader-key navigation, link hints, sessions, find-in-page with yank, and a status bar." } };
 const target = known ? `/addons/addon/${guid}/versions/` : `/addons/addon/${guid}/`;
 const ver = await api(target, { method: known ? "POST" : "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-const v = ver.json?.version || (known ? ver.json : ver.json);
+// For a new add-on the response is the add-on object (version nested); for an
+// existing add-on it is the version object itself (or wraps it). Handle both.
+const v = ver.json?.version || ver.json;
 if (ver.status === 201 || ver.status === 200) {
   const slug = known ? exist.json?.slug : ver.json?.slug;
-  console.log(`SUBMITTED: version ${v?.version} (${v?.channel}) — file status ${v?.file?.status || "pending"}`);
+  console.log(`SUBMITTED: version ${v?.version || v?.id || "?"} (${v?.channel || "listed"}) — file status ${v?.file?.status || "pending"}`);
   console.log(`manage: https://addons.mozilla.org/developers/addon/${slug || GUID}/versions/`);
 } else {
   console.error(`submission failed: ${ver.status}`);
