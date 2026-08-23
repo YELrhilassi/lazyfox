@@ -102,20 +102,79 @@ const RESIZE_HTML =
   "<span><span class='rz-k'>esc</span> done</span>" +
   "</div></div>";
 
-// One find match: the text node it lives in (plus its index in the cached
-// node list) and the character offsets. gs is the match's global start
-// offset across the whole document, used to order range copies.
-interface FindHit {
+// One find match in the flat search text (see buildFindText below): its
+// [sOff, eOff) offsets and the DOM pieces it spans. A match may cross text
+// nodes / shadow boundaries (e.g. "lazy" in one <span> and "fox" in the
+// next), so pieces carries one {node, start, end} per touched text node for
+// highlighting and copying.
+interface FindPiece {
   node: Text;
-  ni: number;
   start: number;
   end: number;
-  gs: number;
+}
+interface FindHit {
+  sOff: number;
+  eOff: number;
+  text: string;
+  pieces: FindPiece[];
 }
 
 const FIND_SKIP = new Set([
   "SCRIPT", "STYLE", "TEXTAREA", "NOSCRIPT", "SELECT", "IFRAME", "TITLE",
+  "TEMPLATE", "OBJECT", "EMBED",
 ]);
+
+// Components whose text is never content: nav chrome, mastheads, footers,
+// sidebars, form controls, buttons, dialogs — and anything explicitly marked
+// aria-hidden. buildYankText excludes them from the flat text, so a multi-line
+// visual selection can never sweep in "Show all"-style chips, site chrome, or
+// decorative labels: the yanked text is the page's real content tree, not
+// whatever happened to sit between two cursor positions.
+const YANK_CHROME = new Set([
+  "NAV", "HEADER", "FOOTER", "ASIDE", "FORM", "BUTTON", "SELECT",
+  "TEXTAREA", "INPUT", "MENU", "MENUITEM", "TOOLBAR", "DIALOG",
+]);
+
+const CHROME_ROLES = new Set([
+  "button", "navigation", "menubar", "menu", "menuitem", "tablist", "tab",
+  "search", "banner", "contentinfo", "complementary", "dialog", "toolbar",
+  "form",
+]);
+
+// True when the element is part of a chrome component (self, ancestor tag, or
+// role/aria-hidden on the way up). Walking ancestors per element is O(depth),
+// but the scan is debounced/cached and short-circuits at the first chrome
+// ancestor, so it stays cheap even on 50k-node pages.
+function isChromeNode(el: Element): boolean {
+  let cur: Element | null = el;
+  while (cur) {
+    if (YANK_CHROME.has(cur.tagName)) return true;
+    const r = cur.getAttribute ? cur.getAttribute("role") : null;
+    if (r && CHROME_ROLES.has(r.toLowerCase())) return true;
+    const ah = cur.getAttribute ? cur.getAttribute("aria-hidden") : null;
+    if (ah === "true") return true;
+    cur = cur.parentElement;
+  }
+  return false;
+}
+
+// Whether an element is rendered at all (display:none / content-visibility:
+// hidden subtrees are not real content). checkVisibility accounts for CSS
+// overrides of the hidden attribute, so a framework page that marks a
+// container hidden in markup but shows it via CSS still keeps its text.
+// content-visibility:auto content counts as visible (it renders on scroll).
+const visible = (el: Element): boolean => {
+  try {
+    const h = el as HTMLElement;
+    if (typeof h.checkVisibility === "function") return h.checkVisibility();
+    if (h.hidden) return false;
+    if (h.style && h.style.display === "none") return false;
+    return true;
+  } catch (e) {
+    // Be conservative: include the text rather than lose it.
+    return true;
+  }
+};
 
 /* ---------- page text model for the Go yank core ---------- */
 
@@ -151,47 +210,207 @@ function buildYankText(): { text: string; segs: YankSeg[] } {
   const nl = () => {
     if (text && !text.endsWith("\n")) text += "\n";
   };
-  const walk = (n: Node, depth: number): void => {
-    if (depth > 40) return;
-    if (n.nodeType === Node.TEXT_NODE) {
-      const p = n.parentElement;
-      if (p && FIND_SKIP.has(p.tagName)) return;
-      const data = (n as Text).data || "";
-      if (!data.trim()) return;
-      segs.push({ node: n as Text, start: text.length, end: text.length + data.length });
-      text += data;
+  // Iterative walk (explicit stack, no depth cap): framework pages nest
+  // content 40+ divs deep (Google's AI Overview, React apps), so a fixed
+  // recursion limit silently drops real text — words like "blood" in an AI
+  // Overview were invisible to search. Chrome components (nav, buttons,
+  // headers/footers, sidebars, aria-hidden) are excluded: selection must
+  // operate on the page's content tree, not on whatever chrome sits between
+  // two cursor positions. Per-node errors skip one node instead of aborting
+  // the whole scan; a char budget bounds pathological pages.
+  const MAX_CHARS = 4 * 1024 * 1024;
+  interface YkSt {
+    n: Node | null;
+    chrome: boolean;
+    block: boolean;
+    root: boolean;
+  }
+  const stack: YkSt[] = [{ n: body, chrome: false, block: false, root: true }];
+  while (stack.length) {
+    if (text.length > MAX_CHARS) break;
+    const st = stack.pop()!;
+    try {
+      if (st.n === null) {
+        // Leaving a block element: its newline closes the rendered line.
+        nl();
+        continue;
+      }
+      const n = st.n;
+      if (n.nodeType === Node.TEXT_NODE) {
+        if (st.chrome) continue;
+        const p = n.parentElement;
+        if (p && FIND_SKIP.has(p.tagName)) continue;
+        const data = (n as Text).data || "";
+        if (!data.trim()) continue;
+        segs.push({ node: n as Text, start: text.length, end: text.length + data.length });
+        text += data;
+        continue;
+      }
+      if (n.nodeType !== Node.ELEMENT_NODE) {
+        // Document/ShadowRoot: walk children without block semantics.
+        const kids = (n as ParentNode).childNodes;
+        for (let i = kids.length - 1; i >= 0; i--) {
+          stack.push({ n: kids[i]!, chrome: st.chrome, block: false, root: false });
+        }
+        continue;
+      }
+      const el = n as HTMLElement;
+      const tag = el.tagName;
+      if (FIND_SKIP.has(tag)) continue;
+      let chrome = st.chrome;
+      if (!chrome) chrome = isChromeNode(el);
+      if (chrome) continue; // chrome subtree: skip entirely
+      if (!st.root && !visible(el)) continue;
+      if (tag === "BR") {
+        nl();
+        continue;
+      }
+      const block = YANK_BLOCK.has(tag);
+      if (block) nl();
+      // Shadow DOM replaces the light children visually: walk the shadow tree
+      // instead so the yank text matches what is actually rendered.
+      let kids: NodeList;
+      const sr = el.shadowRoot;
+      if (sr && sr.mode === "open") kids = sr.childNodes;
+      else kids = el.childNodes;
+      // Leave-sentinel first (it pops AFTER the children), children reversed.
+      if (block) stack.push({ n: null, chrome: chrome, block: true, root: false });
+      for (let i = kids.length - 1; i >= 0; i--) {
+        stack.push({ n: kids[i]!, chrome: chrome, block: false, root: false });
+      }
+    } catch (e) {
+      // One bad node must not abort the scan: skip it and keep walking.
+    }
+  }
+  return { text: text, segs: segs };
+}
+
+/* ---------- flat search text + query cleaning ---------- */
+
+// Normalizes a search query the same way buildFindText normalizes the page:
+// nbsp -> space, any whitespace run -> one space, edges trimmed. Searching
+// "lazy  fox" or "lazy\u00A0fox" therefore finds "lazy fox" on the page.
+function cleanQuery(q: string): string {
+  return q.replace(/\u00A0/g, " ").replace(/[ \t\r\n]+/g, " ").trim();
+}
+
+// One segment of the flat search text: the source text node and which flat
+// offsets came from it. noff is the node offset of flat position `start`, so
+// a flat offset maps back to (node, nodeOffset) as start - s.start + s.noff.
+interface FindSeg {
+  node: Text;
+  start: number;
+  end: number;
+  noff: number;
+}
+
+// Builds the page's visible text as ONE normalized string, walking open
+// shadow roots (Reddit-style custom elements keep their text there). Unlike
+// the yank text, whitespace runs — spaces, tabs, newlines, nbsp, even across
+// node boundaries — collapse to a single space, so queries match regardless
+// of how a framework split the text. Block boundaries (reusing YANK_BLOCK)
+// become a \u0001 sentinel that can never match a query, so results never
+// span paragraphs. Every flat character maps back to its source (node,
+// offset) through segs, letting matches that cross <span>/shadow boundaries
+// resolve to real DOM ranges for highlighting and copying.
+function buildFindText(
+  onShadow?: (sr: ShadowRoot) => void
+): { text: string; segs: FindSeg[] } {
+  const body = document.body || document.documentElement;
+  let text = "";
+  const segs: FindSeg[] = [];
+  let lastOff = -1;
+
+  const push = (node: Text, off: number, ch: string): void => {
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "\u00A0") {
+      const l = text[text.length - 1];
+      if (l === " " || l === "\u0001") return; // collapse a run / drop next to a block edge
+      text += " ";
+      segs.push({ node: node, start: text.length - 1, end: text.length, noff: off });
+      lastOff = off;
       return;
     }
-    if (n.nodeType !== Node.ELEMENT_NODE) {
-      // Document/ShadowRoot: walk children without block semantics.
-      const kids = (n as ParentNode).childNodes;
-      for (let i = 0; i < kids.length; i++) walk(kids[i]!, depth + 1);
-      return;
-    }
-    const el = n as HTMLElement;
-    const tag = el.tagName;
-    if (FIND_SKIP.has(tag) || el.hidden) return;
-    if (tag === "BR") {
-      nl();
-      return;
-    }
-    const block = YANK_BLOCK.has(tag);
-    if (block) nl();
-    const sr = el.shadowRoot;
-    if (sr && sr.mode === "open") {
-      // Shadow DOM replaces the light children visually: walk the shadow
-      // tree instead so the yank text matches what is actually rendered.
-      walk(sr, depth + 1);
+    const s = segs[segs.length - 1];
+    if (s && s.node === node && lastOff === off - 1) {
+      s.end = text.length + 1; // same text node, contiguous: extend the segment
     } else {
-      const kids = el.childNodes;
-      for (let i = 0; i < kids.length; i++) walk(kids[i]!, depth + 1);
+      segs.push({ node: node, start: text.length, end: text.length + 1, noff: off });
     }
-    if (block) nl();
+    text += ch;
+    lastOff = off;
   };
-  try {
-    walk(body, 0);
-  } catch (e) {
-    // ignore
+
+  // Block edge: never matchable, and swallows an adjacent space ("lazy " +
+  // <p> + "fox" reads "lazy\u0001fox", not "lazy fox" — no cross-paragraph hits).
+  const blockEdge = (): void => {
+    if (!text) return;
+    if (text[text.length - 1] === "\u0001") return;
+    if (text[text.length - 1] === " ") {
+      text = text.slice(0, -1);
+      segs.pop();
+    }
+    text += "\u0001";
+  };
+
+  // Iterative walk, same robustness as buildYankText: no depth cap (deeply
+  // nested framework text must be findable), per-node error isolation, and a
+  // char budget for pathological pages.
+  const MAX_CHARS = 4 * 1024 * 1024;
+  interface FdSt {
+    n: Node | null;
+    block: boolean;
+    root: boolean;
+  }
+  const stack: FdSt[] = [{ n: body, block: false, root: true }];
+  while (stack.length) {
+    if (text.length > MAX_CHARS) break;
+    const st = stack.pop()!;
+    try {
+      if (st.n === null) {
+        // Leaving a block element: its sentinel terminates the block edge.
+        blockEdge();
+        continue;
+      }
+      const n = st.n;
+      if (n.nodeType === Node.TEXT_NODE) {
+        const p = n.parentElement;
+        if (p && FIND_SKIP.has(p.tagName)) continue;
+        const data = (n as Text).data || "";
+        for (let i = 0; i < data.length; i++) push(n as Text, i, data[i]!);
+        continue;
+      }
+      if (n.nodeType !== Node.ELEMENT_NODE) {
+        const kids = (n as ParentNode).childNodes;
+        for (let i = kids.length - 1; i >= 0; i--) {
+          stack.push({ n: kids[i]!, block: false, root: false });
+        }
+        continue;
+      }
+      const el = n as HTMLElement;
+      const tag = el.tagName;
+      if (FIND_SKIP.has(tag)) continue;
+      if (!st.root && !visible(el)) continue;
+      if (tag === "BR") {
+        blockEdge();
+        continue;
+      }
+      const block = YANK_BLOCK.has(tag);
+      if (block) blockEdge();
+      let kids: NodeList;
+      const sr = el.shadowRoot;
+      if (sr && sr.mode === "open") {
+        if (onShadow) onShadow(sr);
+        kids = sr.childNodes;
+      } else {
+        kids = el.childNodes;
+      }
+      if (block) stack.push({ n: null, block: true, root: false });
+      for (let i = kids.length - 1; i >= 0; i--) {
+        stack.push({ n: kids[i]!, block: false, root: false });
+      }
+    } catch (e) {
+      // One bad node must not abort the scan: skip it and keep walking.
+    }
   }
   return { text: text, segs: segs };
 }
@@ -265,24 +484,31 @@ function openFindPopup(
 
     /* ---------- the finder ---------- */
 
-    // The finder walks text nodes in document order, PIERCING open shadow
-    // roots (Reddit's <faceplate-*> custom elements keep their text in
-    // shadow DOM, which window.find cannot see — the old widget therefore
-    // found "nothing" on exactly the pages this tool targets). Script/style/
-    // textarea/iframe subtrees are skipped.
-    let nodes: Text[] = [];
-    let nodesBody: HTMLElement | null = null;
-    let nodesAt = 0;
+    // The finder searches ONE flat, normalized string of the page's text
+    // (buildFindText: open shadow roots pierced, whitespace runs collapsed,
+    // block boundaries sentineled). That makes matching reliable on exactly
+    // the pages that broke the old per-text-node indexOf walk: framework
+    // pages that split words across <span>/shadow boundaries ("lazy" + "fox"),
+    // that use nbsp, or that lazy-load new content into shadow roots.
+    let findText = "";
+    let findLower = "";
+    let findSegs: FindSeg[] = [];
+    let findBody: HTMLElement | null = null;
+    let findAt = 0;
     let dirty = false;
     let hits: FindHit[] = [];
     let cur = -1; // index into hits; -1 = query typed but nothing walked to
     let mode: "insert" | "cmd" = "insert";
     let lastQuery = "";
     let findTimer: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
 
-    // DOM-changed marker so the cached node list stays fresh on lazy-loading
+    // DOM-changed marker so the cached flat text stays fresh on lazy-loading
     // pages (infinite feeds) without re-walking the whole document on every
     // keystroke: mutations just set a flag; the next recount rebuilds once.
+    // A body-level observer cannot see INTO shadow roots, so buildFindText
+    // reports every open shadow root it touches and each gets its own
+    // observer — lazy feeds inside Reddit-style custom elements mark dirty.
     let mo: MutationObserver | null = null;
     try {
       mo = new MutationObserver(() => {
@@ -295,64 +521,135 @@ function openFindPopup(
     } catch (e) {
       mo = null;
     }
-
-    const collectNodes = (): Text[] => {
-      const body = document.body || document.documentElement;
-      const now = Date.now();
-      if (nodesBody === body && !dirty && now - nodesAt < 2000) return nodes;
-      dirty = false;
-      nodesBody = body;
-      nodesAt = now;
-      const out: Text[] = [];
-      const walk = (n: Node, depth: number): void => {
-        if (depth > 40) return;
-        if (n.nodeType === Node.TEXT_NODE) {
-          const p = n.parentElement;
-          if (p && FIND_SKIP.has(p.tagName)) return;
-          out.push(n as Text);
-          return;
-        }
-        if (n.nodeType === Node.ELEMENT_NODE) {
-          const el = n as Element;
-          const tag = el.tagName;
-          if (FIND_SKIP.has(tag)) return;
-          const sr = (el as HTMLElement).shadowRoot;
-          if (sr && sr.mode === "open") walk(sr, depth + 1);
-        }
-        // Element children, plus Document/ShadowRoot (fragment) children.
-        const kids = (n as ParentNode).childNodes;
-        for (let i = 0; i < kids.length; i++) walk(kids[i]!, depth + 1);
-      };
+    const observedShadows = new Set<Node>();
+    const shadowObs: MutationObserver[] = [];
+    const observeShadow = (sr: ShadowRoot): void => {
+      if (observedShadows.has(sr)) return;
+      observedShadows.add(sr);
       try {
-        walk(body, 0);
+        const o = new MutationObserver(() => {
+          dirty = true;
+        });
+        o.observe(sr, { childList: true, subtree: true });
+        shadowObs.push(o);
       } catch (e) {
         // ignore
       }
-      nodes = out;
+    };
+
+    const ensureTextModel = (): void => {
+      const body = document.body || document.documentElement;
+      const now = Date.now();
+      if (findBody === body && !dirty && now - findAt < 2000) return;
+      dirty = false;
+      findBody = body;
+      findAt = now;
+      const built = buildFindText(observeShadow);
+      findText = built.text;
+      findLower = built.text.toLowerCase();
+      findSegs = built.segs;
+    };
+
+    // Flat offset range -> DOM pieces (one per touched text node), merging
+    // adjacent pieces on the same node so the highlight is one range.
+    const piecesFor = (sOff: number, eOff: number): FindPiece[] => {
+      const out: FindPiece[] = [];
+      let lo = 0;
+      let hi = findSegs.length - 1;
+      let i = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (findSegs[mid]!.end > sOff) {
+          i = mid;
+          hi = mid - 1;
+        } else {
+          lo = mid + 1;
+        }
+      }
+      if (i < 0) return out;
+      for (; i < findSegs.length; i++) {
+        const s = findSegs[i]!;
+        if (s.start >= eOff) break;
+        const a = Math.max(sOff, s.start);
+        const b = Math.min(eOff, s.end);
+        const na = a - s.start + s.noff;
+        const nb = b - s.start + s.noff;
+        const last = out[out.length - 1];
+        if (last && last.node === s.node && last.end === na) last.end = nb;
+        else out.push({ node: s.node, start: na, end: nb });
+      }
       return out;
     };
 
-    // Rebuild the hit list from the cached nodes for the given query. Keeps
-    // cur (it indexes into hits; callers clamp after the DOM changes).
+    // Rebuild the hit list from the flat text for the given query. The query
+    // is cleaned the same way the page text was (trim, collapse whitespace,
+    // nbsp -> space), so the two can never disagree. Keeps cur; callers clamp
+    // after the DOM changes. Capped at 1000 hits like native find.
     const countHits = (q: string): void => {
       lastQuery = q;
-      const list = collectNodes();
+      const cq = cleanQuery(q);
+      ensureTextModel();
+      // Remember the current match before the visual re-sort so a walk stays
+      // anchored on the same result even when the order changes.
+      const curS = cur >= 0 ? (hits[cur] ? hits[cur]!.sOff : -1) : -1;
       hits = [];
-      if (q) {
-        const needle = q.toLowerCase();
-        let gs = 0;
-        for (let ni = 0; ni < list.length; ni++) {
-          const node = list[ni]!;
-          const text = node.data || "";
-          const lower = text.toLowerCase();
-          let idx = lower.indexOf(needle);
-          while (idx !== -1) {
-            hits.push({ node: node, ni: ni, start: idx, end: idx + needle.length, gs: gs + idx });
-            idx = lower.indexOf(needle, idx + needle.length);
-          }
-          gs += text.length;
+      if (cq) {
+        const needle = cq.toLowerCase();
+        const MAX_HITS = 1000;
+        let idx = findLower.indexOf(needle);
+        while (idx !== -1 && hits.length < MAX_HITS) {
+          hits.push({
+            sOff: idx,
+            eOff: idx + needle.length,
+            text: findText.slice(idx, idx + needle.length),
+            pieces: piecesFor(idx, idx + needle.length),
+          });
+          idx = findLower.indexOf(needle, idx + needle.length);
         }
       }
+      sortHitsVisual();
+      if (curS >= 0) {
+        const ni = hits.findIndex((h) => h.sOff === curS);
+        cur = ni >= 0 ? ni : -1;
+      }
+    };
+
+    // Visual reading-order key of a hit: the on-screen position of its first
+    // laid-out rect. Walking must follow what the user SEES — DOM (flat-text)
+    // order zigzags on framework pages, because Google reorders SERP blocks
+    // (URL, breadcrumb, snippet) with CSS and flex/grid pages reorder columns,
+    // so Enter jumping by flat offset bounces up and down. Matches inside
+    // content-visibility:auto regions report empty rects until scrolled into
+    // view; those sort LAST (in flat order among themselves) so a walk never
+    // dives into unrendered content first — and the re-sort after each jump
+    // slots them in once the browser lays them out.
+    const hitKey = (h: FindHit): { top: number; left: number } => {
+      for (const p of h.pieces) {
+        try {
+          const r = document.createRange();
+          r.setStart(p.node, p.start);
+          r.setEnd(p.node, p.end);
+          const rs = r.getClientRects();
+          for (let i = 0; i < rs.length; i++) {
+            const rc = rs[i]!;
+            if (rc.width > 0 || rc.height > 0) return { top: rc.top, left: rc.left };
+          }
+        } catch (e) {
+          // cross-tree piece: try the next one
+        }
+      }
+      return { top: Number.POSITIVE_INFINITY, left: 0 };
+    };
+
+    const sortHitsVisual = (): void => {
+      if (hits.length < 2) return;
+      const keys = new Map<number, { top: number; left: number }>();
+      for (const h of hits) keys.set(h.sOff, hitKey(h));
+      hits.sort((a, b) => {
+        const ka = keys.get(a.sOff)!;
+        const kb = keys.get(b.sOff)!;
+        return ka.top - kb.top || ka.left - kb.left || a.sOff - b.sOff;
+      });
     };
 
     const clearPageSelection = (): void => {
@@ -384,6 +681,7 @@ function openFindPopup(
       // and the hint line lists motions/operators; the find count stays on
       // the status bar so the user does not lose track of the search.
       if (yankMode !== "off") {
+        clearHit();
         // Badge + preview make the yank state obvious: cursor position while
         // idle, and the live character count + text preview of the selection
         // while selecting — so the user always knows what `y` will copy.
@@ -421,6 +719,21 @@ function openFindPopup(
         } catch (e) {
           // ignore
         }
+        // Dev-only probe: when a test sets data-lf-yank-probe, mirror the flat
+        // yank text so tests can assert what the component tree contains
+        // (e.g. chrome excluded, deep content included).
+        if (__DEV__) {
+          try {
+            const de = document.documentElement;
+            if (de.hasAttribute("data-lf-yank-probe")) {
+              de.setAttribute("data-lf-yank-text", yankModel ? yankModel.text : "");
+            } else {
+              de.removeAttribute("data-lf-yank-text");
+            }
+          } catch (e2) {
+            // ignore
+          }
+        }
       } else {
         try {
           document.documentElement.setAttribute("data-lf-yank", "off");
@@ -440,6 +753,11 @@ function openFindPopup(
             "<b>n/N</b> walk &middot; <b>y</b> copy &middot; <b>Y</b> yank mode &middot; <b>i</b> edit &middot; <b>Esc</b> close";
         }
         rangeEl.textContent = "";
+        // Live match highlight: after walking, the walked match; while
+        // typing, the first match (so results are visible before Enter).
+        // Cleared when the query has no matches.
+        if (total > 0) drawHit(hitRects(cur >= 0 ? hits[cur]! : hits[0]!));
+        else clearHit();
       }
       // Status-bar state: 1-based current match (0 = nothing walked to).
       const st = total > 0 ? { cur: cur >= 0 ? cur + 1 : 0, count: total } : null;
@@ -452,25 +770,96 @@ function openFindPopup(
       } catch (e) {
         // ignore
       }
+      // Mirror which match is current (or previewed) so the host and tests
+      // can tell WHICH result was walked without piercing the closed popup
+      // root: the source text of the match's first piece, trimmed.
+      try {
+        const m = total > 0 ? (cur >= 0 ? hits[cur]! : hits[0]!) : null;
+        let curTxt =
+          m && m.pieces.length ? (m.pieces[0]!.node.data || "").slice(0, 80).trim() : "";
+        if (!curTxt && m) curTxt = m.text;
+        if (curTxt) document.documentElement.setAttribute("data-lf-cur", curTxt);
+        else document.documentElement.removeAttribute("data-lf-cur");
+      } catch (e) {
+        // ignore
+      }
     };
 
     /* ---------- walking ---------- */
 
-    const selectHit = (m: FindHit): void => {
-      try {
-        const range = document.createRange();
-        range.setStart(m.node, m.start);
-        range.setEnd(m.node, m.end);
-        const sel = window.getSelection();
-        if (sel) {
-          sel.removeAllRanges();
-          sel.addRange(range);
-        }
-      } catch (e) {
-        // Selecting across shadow boundaries can throw; the scroll still works.
+    /* ---------- match highlight (own overlay, not the page selection) ---------- */
+
+    // The old widget highlighted via window.getSelection().addRange — which
+    // throws across shadow boundaries (so Reddit-style pages showed NO
+    // highlight) and gets cleared by page scripts/clicks. This overlay draws
+    // amber rects over the match in a closed shadow root: it works inside
+    // shadow DOM, survives clicks, and page CSS can't touch it.
+    let hlHost: (HTMLElement & { _sh?: ShadowRoot }) | null = null;
+    const drawHit = (rects: DOMRect[]): void => {
+      if (!hlHost) {
+        hlHost = document.createElement("div");
+        hlHost.id = "lazyfox-hl";
+        hlHost.style.cssText =
+          "all:initial;position:fixed;inset:0;pointer-events:none;z-index:2147483646;";
+        hlHost._sh = hlHost.attachShadow({ mode: "closed" });
+        document.documentElement.appendChild(hlHost);
       }
+      const sh = hlHost._sh!;
+      sh.textContent = "";
+      if (!rects.length) return;
+      const st = document.createElement("style");
+      st.textContent =
+        ".h{position:fixed;background:rgba(224,175,104,.38);" +
+        "outline:1px solid rgba(224,175,104,.85);border-radius:2px;pointer-events:none;}";
+      sh.appendChild(st);
+      const n = Math.min(rects.length, 300);
+      for (let i = 0; i < n; i++) {
+        const r = rects[i]!;
+        const d = document.createElement("div");
+        d.className = "h";
+        d.style.left = r.left + "px";
+        d.style.top = r.top + "px";
+        d.style.width = r.width + "px";
+        d.style.height = r.height + "px";
+        sh.appendChild(d);
+      }
+    };
+    const clearHit = (): void => {
+      if (hlHost) {
+        try {
+          hlHost.remove();
+        } catch (e) {
+          // ignore
+        }
+        hlHost = null;
+      }
+    };
+
+    // Viewport rects of a hit (each piece may live in a different tree).
+    const hitRects = (m: FindHit): DOMRect[] => {
+      const out: DOMRect[] = [];
+      for (const p of m.pieces) {
+        try {
+          const r = document.createRange();
+          r.setStart(p.node, p.start);
+          r.setEnd(p.node, p.end);
+          const rs = r.getClientRects();
+          for (let i = 0; i < rs.length; i++) out.push(rs[i]!);
+        } catch (e) {
+          // ignore
+        }
+      }
+      return out;
+    };
+
+    const selectHit = (m: FindHit): void => {
+      // Scroll the first piece into view (scrollIntoView on the piece's
+      // element also scrolls inner overflow containers, which window.scrollTo
+      // would miss on Reddit-style app pages). The highlight itself is drawn
+      // by render() from hitRects; no native selection is set, so page
+      // scripts and clicks cannot clear it.
       try {
-        const el = m.node.parentElement;
+        const el = m.pieces[0]?.node.parentElement;
         if (el) el.scrollIntoView({ block: "center" });
       } catch (e) {
         // ignore
@@ -484,11 +873,8 @@ function openFindPopup(
       const docY = window.scrollY;
       for (let i = 0; i < hits.length; i++) {
         try {
-          const el = hits[i]!.node.parentElement as HTMLElement | null;
-          if (el) {
-            const top = el.getBoundingClientRect().top + docY;
-            if (top >= docY - 4) return i;
-          }
+          const r = hitRects(hits[i]!)[0];
+          if (r && r.top + docY >= docY - 4) return i;
         } catch (e) {
           // ignore
         }
@@ -497,6 +883,10 @@ function openFindPopup(
     };
 
     const walk = (back: boolean): boolean => {
+      // The page may have changed since the last count: refresh the hit list
+      // (cheap when the model is fresh) and drop a stale walk index.
+      countHits(lastQuery);
+      if (cur >= hits.length) cur = -1;
       if (!hits.length) {
         toast("no matches");
         return false;
@@ -522,6 +912,17 @@ function openFindPopup(
         inFindScroll = false;
       }, 60);
       render();
+      // content-visibility:auto pages report empty rects right after
+      // scrollIntoView; redraw once the browser lays the match out so the
+      // highlight actually appears over the walked match.
+      setTimeout(() => {
+        if (closed) return;
+        // The browser may have laid out content-visibility regions only now;
+        // re-sort the hits visually (countHits remaps cur by identity) and
+        // redraw so the highlight and the walk order reflect the settled page.
+        countHits(lastQuery);
+        render();
+      }, 120);
       return true;
     };
 
@@ -529,57 +930,76 @@ function openFindPopup(
 
     const currentHit = (): FindHit | null => (cur >= 0 ? hits[cur] || null : null);
 
-    // Amber flash overlay over any text span, fading out like a yank
+    // Amber flash overlay over any text rects, fading out like a yank
     // highlight. Lives in a closed shadow root so page CSS can't break it.
+    const flashRects = (rects: DOMRect[]): void => {
+      if (!rects || !rects.length) return;
+      let host = document.getElementById("lazyfox-flash") as (HTMLElement & { _sh?: ShadowRoot }) | null;
+      if (!host) {
+        host = document.createElement("div");
+        host.id = "lazyfox-flash";
+        host.style.cssText =
+          "all:initial;position:fixed;inset:0;pointer-events:none;z-index:2147483647;";
+        host._sh = host.attachShadow({ mode: "closed" });
+        document.documentElement.appendChild(host);
+      }
+      const sh = host._sh!;
+      sh.textContent = "";
+      const st = document.createElement("style");
+      st.textContent =
+        "@keyframes lfYank{from{opacity:.55}to{opacity:0}}" +
+        ".y{position:fixed;background:#e0af68;border-radius:2px;pointer-events:none;" +
+        "animation:lfYank .38s ease-out forwards;}";
+      sh.appendChild(st);
+      for (let i = 0; i < rects.length; i++) {
+        const r = rects[i]!;
+        const d = document.createElement("div");
+        d.className = "y";
+        d.style.left = r.left + "px";
+        d.style.top = r.top + "px";
+        d.style.width = r.width + "px";
+        d.style.height = r.height + "px";
+        sh.appendChild(d);
+      }
+      setTimeout(() => {
+        try {
+          if (host) host.remove();
+        } catch (e) {
+          // ignore
+        }
+      }, 450);
+    };
+
     const flashNodeRange = (aNode: Text, aOff: number, bNode: Text, bOff: number): void => {
       try {
         const range = document.createRange();
         range.setStart(aNode, aOff);
         range.setEnd(bNode, bOff);
-        const rects = range.getClientRects();
-        if (!rects || !rects.length) return;
-        let host = document.getElementById("lazyfox-flash") as (HTMLElement & { _sh?: ShadowRoot }) | null;
-        if (!host) {
-          host = document.createElement("div");
-          host.id = "lazyfox-flash";
-          host.style.cssText =
-            "all:initial;position:fixed;inset:0;pointer-events:none;z-index:2147483647;";
-          host._sh = host.attachShadow({ mode: "closed" });
-          document.documentElement.appendChild(host);
-        }
-        const sh = host._sh!;
-        sh.textContent = "";
-        const st = document.createElement("style");
-        st.textContent =
-          "@keyframes lfYank{from{opacity:.55}to{opacity:0}}" +
-          ".y{position:fixed;background:#e0af68;border-radius:2px;pointer-events:none;" +
-          "animation:lfYank .38s ease-out forwards;}";
-        sh.appendChild(st);
-        for (let i = 0; i < rects.length; i++) {
-          const r = rects[i]!;
-          const d = document.createElement("div");
-          d.className = "y";
-          d.style.left = r.left + "px";
-          d.style.top = r.top + "px";
-          d.style.width = r.width + "px";
-          d.style.height = r.height + "px";
-          sh.appendChild(d);
-        }
-        setTimeout(() => {
-          try {
-            if (host) host.remove();
-          } catch (e) {
-            // ignore
-          }
-        }, 450);
+        flashRects(Array.prototype.slice.call(range.getClientRects()));
       } catch (e) {
         // range spans trees that cannot be flashed; skip the visual
       }
     };
 
+    const flashPieces = (pieces: FindPiece[]): void => {
+      const rects: DOMRect[] = [];
+      for (const p of pieces) {
+        try {
+          const r = document.createRange();
+          r.setStart(p.node, p.start);
+          r.setEnd(p.node, p.end);
+          const rs = r.getClientRects();
+          for (let i = 0; i < rs.length; i++) rects.push(rs[i]!);
+        } catch (e) {
+          // ignore
+        }
+      }
+      flashRects(rects);
+    };
+
     const doYank = (): void => {
-      // Re-sync against any DOM changes since the last count so the node
-      // indices below match the current page (and clamp a stale walk index).
+      // Re-sync against any DOM changes since the last count so the hits
+      // match the current page (and clamp a stale walk index).
       countHits(lastQuery);
       if (cur >= hits.length) cur = hits.length - 1;
       const m = currentHit();
@@ -587,12 +1007,11 @@ function openFindPopup(
         toast("no match to copy");
         return;
       }
-      const text = (m.node.data || "").slice(m.start, m.end);
-      void copyText(text).then((ok) => {
-        if (ok) toast("copied " + text.length + " chars");
+      void copyText(m.text).then((ok) => {
+        if (ok) toast("copied " + m.text.length + " chars");
         else toast("copy failed");
       });
-      flashNodeRange(m.node, m.start, m.node, m.end);
+      flashPieces(m.pieces);
       render();
     };
 
@@ -825,8 +1244,8 @@ function openFindPopup(
       yankMode = "idle";
       // Seed the cursor at the current match when there is one, else top.
       const m = currentHit();
-      if (m && yankModel) {
-        const off = nodeFlatOffset(m.node, m.start);
+      if (m && m.pieces[0] && yankModel) {
+        const off = nodeFlatOffset(m.pieces[0].node, m.pieces[0].start);
         const ls = yankModel.lineStart;
         let line = 0;
         for (let i = 0; i < ls.length; i++) {
@@ -1152,6 +1571,7 @@ function openFindPopup(
       },
       refresh: () => {},
       close: () => {
+        closed = true;
         window.removeEventListener("scroll", onScroll);
         if (mo) {
           try {
@@ -1160,14 +1580,25 @@ function openFindPopup(
             // ignore
           }
         }
+        for (const o of shadowObs) {
+          try {
+            o.disconnect();
+          } catch (e) {
+            // ignore
+          }
+        }
+        shadowObs.length = 0;
+        observedShadows.clear();
         if (findTimer) clearTimeout(findTimer);
         yankMode = "off";
         hideCaret();
         clearSel();
+        clearHit();
         if (setFindState) setFindState(null);
         try {
           document.documentElement.removeAttribute("data-lf-find");
           document.documentElement.removeAttribute("data-lf-yank");
+          if (__DEV__) document.documentElement.removeAttribute("data-lf-yank-text");
         } catch (e) {
           // ignore
         }

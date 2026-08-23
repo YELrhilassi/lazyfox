@@ -3,6 +3,26 @@
 // extra response headers (used to exercise X-Frame-Options stripping in the
 // split-view tests).
 
+// A Google-SERP-like page: site chrome (nav/header/button/footer) around
+// content nested 60 divs deep. Framework pages (Google's AI Overview, React
+// apps) push real text far past a naive recursion limit, and selection must
+// follow the content tree, ignoring chrome that sits between paragraphs.
+const deepBody = (() => {
+  let inner =
+    "<div class='ai-overview'><ul><li>Medical: checks on your body or <b>blood</b> to find health issues</li></ul></div>";
+  for (let i = 0; i < 60; i++) inner = "<div class='w" + i + "'>" + inner + "</div>";
+  return (
+    "<!DOCTYPE html><html><head><title>Deep Page</title></head><body>" +
+    "<nav>All Images NAV_CHROME Shopping Videos</nav>" +
+    "<header>HEADER_CHROME</header>" +
+    inner +
+    "<button>BTN_CHROME Show all</button>" +
+    "<p>main content here</p>" +
+    "<footer>FOOTER_CHROME</footer>" +
+    "</body></html>"
+  );
+})();
+
 export const pages = {
   // A slow, chunked octet-stream: downloading it keeps the entry in_progress
   // (~4s at 64KB/250ms) so the status-bar progress segment can be observed.
@@ -50,6 +70,25 @@ export const pages = {
 </script>
 <lf-shadow-input id="shin1"></lf-shadow-input>
 <lf-shadow-editable id="shce1"></lf-shadow-editable>
+<p id="crs1">forked <b>river</b> bank</p>
+<p id="ws1">double&nbsp;&nbsp;space here</p>
+</body></html>`,
+  },
+  "/deep": { body: deepBody },
+  // A page whose DOM order deliberately differs from its visual order (Google
+  // reorders SERP blocks with CSS). DOM order: ZETA, ALPHA, BETA, DELTA.
+  // Reading order: ALPHA (top-left), BETA (top-right), DELTA (bottom-left),
+  // ZETA (bottom-right). Walking by flat-text offset bounces bottom-right ->
+  // top-left -> top-right -> bottom-left ("up and down"); the finder must
+  // walk what the user sees instead.
+  "/reorder": {
+    body: `<!DOCTYPE html><html><head><title>Reorder Page</title>
+<style>body{margin:0}.blk{position:absolute;font:14px sans-serif}</style></head>
+<body>
+<div id="z" class="blk" style="top:120px;left:220px">MATCH ZETA</div>
+<div id="a" class="blk" style="top:20px;left:20px">MATCH ALPHA</div>
+<div id="b" class="blk" style="top:20px;left:220px">MATCH BETA</div>
+<div id="d" class="blk" style="top:120px;left:20px">MATCH DELTA</div>
 </body></html>`,
   },
   "/target1": { body: `<!DOCTYPE html><title>TARGET ONE</title><h1>Target One</h1><a href="/">back</a>` },

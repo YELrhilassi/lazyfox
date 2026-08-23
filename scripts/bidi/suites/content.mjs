@@ -453,12 +453,18 @@ export async function run(ctx) {
     await sleep(400);
     const c0 = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
     assert(c0 === "0/1", "live count before walking, got " + c0);
+    // While typing, the first match is already highlighted live.
+    const liveHl = await ctx.hasHost(ctx.tabA, "lazyfox-hl");
+    assert(liveHl, "first match highlighted while typing");
     await ctx.press(ctx.tabA, "Enter");
     await sleep(300);
     const c1 = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
     assert(c1 === "1/1", "walk advanced the count, got " + c1);
-    const sel = await evalIn(ctx.tabA, `window.getSelection().toString()`);
-    assert(sel === "Lazyfox", "match selected, got " + JSON.stringify(sel));
+    // The match is highlighted with our own overlay (window.getSelection
+    // cannot cross shadow boundaries, so the old native highlight failed on
+    // Reddit-style pages).
+    const hl = await ctx.hasHost(ctx.tabA, "lazyfox-hl");
+    assert(hl, "walked match highlighted by the find overlay");
     await ctx.press(ctx.tabA, "Escape");
     await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
   });
@@ -482,6 +488,127 @@ export async function run(ctx) {
     await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
   });
 
+  await t("find matches text split across element boundaries", async () => {
+    // Framework pages split words across nodes ("forked " + <b>river</b>);
+    // the old per-text-node indexOf never saw a match spanning two nodes.
+    // The flat search text glues them, so "forked river" counts and walks.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "/");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "forked river");
+    await sleep(400);
+    const c = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c === "0/1", "cross-node match counted, got " + c);
+    await ctx.press(ctx.tabA, "Enter");
+    await sleep(300);
+    const c2 = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c2 === "1/1", "cross-node match walked, got " + c2);
+    const hl = await ctx.hasHost(ctx.tabA, "lazyfox-hl");
+    assert(hl, "cross-node match highlighted");
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+  });
+
+  await t("find cleans the query: whitespace runs and nbsp match like one space", async () => {
+    // The page renders "double&nbsp;&nbsp;space here" (two nbsp). The query
+    // is cleaned (trim + collapse + nbsp -> space) the same way the page text
+    // is, so sloppy typing still hits.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "/");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, " double  space "); // leading/trailing + double space
+    await sleep(400);
+    const c = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c === "0/1", "cleaned query matched nbsp text, got " + c);
+    await ctx.press(ctx.tabA, "Enter");
+    await sleep(300);
+    const c2 = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c2 === "1/1", "cleaned query walked, got " + c2);
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+  });
+
+  await t("find sees text nested 40+ levels deep (Google-style framework pages)", async () => {
+    // Google's AI Overview nests content dozens of divs deep; the old walker
+    // dropped anything past a fixed recursion depth, so words like "blood"
+    // were silently invisible to search. The walk is now iterative (no depth
+    // cap), so deeply nested text must count, walk, and highlight.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/deep`);
+    await ctx.leaderPress(ctx.tabA, "/");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "blood");
+    await sleep(400);
+    const c = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c === "0/1", "deeply nested text counted, got " + c);
+    await ctx.press(ctx.tabA, "Enter");
+    await sleep(300);
+    const c2 = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c2 === "1/1", "deeply nested match walked, got " + c2);
+    const hl = await ctx.hasHost(ctx.tabA, "lazyfox-hl");
+    assert(hl, "deeply nested match highlighted");
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+  });
+
+  await t("find walks in visual reading order, not DOM order (Google-style CSS reordering)", async () => {
+    // Google reorders SERP blocks with CSS (URL, breadcrumb, snippet), so the
+    // flat-text/DOM order zigzags visually and Enter bounces up and down. The
+    // hit list is sorted by each match's on-screen position, so the walk must
+    // follow reading order: ALPHA (top-left), BETA (top-right), DELTA
+    // (bottom-left), ZETA (bottom-right) — not the DOM order ZETA, ALPHA,
+    // BETA, DELTA. data-lf-cur mirrors the current match's source text.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/reorder`);
+    await ctx.leaderPress(ctx.tabA, "/");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "MATCH");
+    await sleep(400);
+    const c = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-find")`);
+    assert(c === "0/4", "four matches counted, got " + c);
+    const seen = [];
+    for (let i = 0; i < 4; i++) {
+      await ctx.press(ctx.tabA, "Enter");
+      await sleep(250);
+      seen.push(await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-cur")`));
+    }
+    assert(
+      seen.join("|") === "MATCH ALPHA|MATCH BETA|MATCH DELTA|MATCH ZETA",
+      "walk follows visual reading order, got " + seen.join("|")
+    );
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+  });
+
+  await t("yank selection follows the component tree: chrome is not selectable, deep content is", async () => {
+    // A multi-line visual selection must only ever contain real content — not
+    // the nav chips, buttons, header/footer, or aria-hidden chrome that sits
+    // between two cursor positions. The yank model builds from the page's
+    // content tree (chrome excluded) and reaches text nested far past the old
+    // recursion limit. The dev probe mirrors the flat yank text onto <html>.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/deep`);
+    await evalIn(ctx.tabA, `document.documentElement.setAttribute("data-lf-yank-probe", "1"); true`);
+    await ctx.leaderPress(ctx.tabA, "/");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "blood");
+    await sleep(400);
+    await ctx.press(ctx.tabA, "Enter"); // walk -> command mode
+    await sleep(300);
+    await ctx.press(ctx.tabA, "Y"); // enter yank mode (cursor at the match)
+    await sleep(350);
+    const txt = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-yank-text")`);
+    assert(
+      txt != null && txt.indexOf("blood") !== -1,
+      "yank model reaches deeply nested content, got " + JSON.stringify(txt && txt.slice(0, 160))
+    );
+    assert(txt.indexOf("main content here") !== -1, "content paragraph included in the yank model");
+    assert(txt.indexOf("NAV_CHROME") === -1, "nav chrome excluded from the yank model");
+    assert(txt.indexOf("BTN_CHROME") === -1, "button chrome excluded from the yank model");
+    assert(txt.indexOf("HEADER_CHROME") === -1, "header chrome excluded from the yank model");
+    assert(txt.indexOf("FOOTER_CHROME") === -1, "footer chrome excluded from the yank model");
+    await ctx.press(ctx.tabA, "Escape"); // back to find command mode
+    await ctx.press(ctx.tabA, "Escape"); // close the widget
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+  });
+
   await t("find yanks the current match with a neovim-style flash", async () => {
     // In command mode (after walking), y copies the selected match and shows
     // the amber yank flash over the copied text.
@@ -496,8 +623,8 @@ export async function run(ctx) {
     await sleep(120);
     const flash = await ctx.hasHost(ctx.tabA, "lazyfox-flash");
     assert(flash, "yank flash overlay shown");
-    const sel = await evalIn(ctx.tabA, `window.getSelection().toString()`);
-    assert(sel === "Lazyfox", "selection kept after yank, got " + JSON.stringify(sel));
+    const hl = await ctx.hasHost(ctx.tabA, "lazyfox-hl");
+    assert(hl, "match highlight stays after yank");
     await ctx.press(ctx.tabA, "Escape");
     await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
   });
