@@ -601,6 +601,9 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     startHints: () => {
       deps.getChannel().requestBg("startHints");
     },
+    openSetup: () => {
+      deps.getChannel().requestBg("openSetup");
+    },
     openTarget: (which: string) => {
       const ABOUT: Record<string, string> = {
         preferences: "about:preferences",

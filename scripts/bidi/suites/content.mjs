@@ -21,6 +21,44 @@ export async function run(ctx) {
     await ctx.press(ctx.tabA, "Escape");
   });
 
+  await t(";I opens the full-install setup page with a self-contained patcher", async () => {
+    // The store add-on cannot write profile files itself, so ;I opens the
+    // setup page that hands the user a self-contained patcher. The package
+    // must ship patch/install.ps1 (chrome helper payload embedded) and the
+    // page must render its status + steps.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "i", { shift: true });
+    const setupTab = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const t = ts.find((x) => (x.url || "").includes("setup.html"));
+      return t || null;
+    }, 8000);
+    assert(setupTab, ";I opened a setup.html tab");
+    const all = contextsOf(await getTree());
+    const setupCtx = all.find((c) => (c.url || "").includes("setup.html"));
+    assert(setupCtx, "found the setup page's browsing context");
+    const raw = await evalIn(setupCtx.context, `(async () => {
+      const patch = await fetch(browser.runtime.getURL("patch/install.ps1")).then(r => r.text()).catch(e => "ERR:" + e);
+      return JSON.stringify({
+        ok: !!document.getElementById("lazyfox-setup"),
+        dl: !!document.getElementById("dl"),
+        steps: (document.getElementById("steps") || {}).textContent || "",
+        header: typeof patch === "string" ? patch.slice(0, 34) : String(patch),
+        payload: typeof patch === "string" && patch.length > 5000000 && patch.indexOf("FromBase64String") !== -1,
+        alive: await browser.storage.local.get("chromeAlive").then(r => !!r.chromeAlive).catch(() => null),
+      });
+    })()`);
+    const dump = JSON.parse(raw);
+    assert(dump.ok && dump.dl, "setup page rendered, got " + raw);
+    assert(dump.steps && dump.steps.length > 0, "install steps rendered");
+    assert(
+      typeof dump.header === "string" && dump.header.startsWith("# Lazyfox full-install patcher"),
+      "patcher is fetchable and self-contained, got " + dump.header
+    );
+    assert(dump.payload, "patcher embeds the chrome helper payload");
+    await evalIn(setupCtx.context, `browser.tabs.remove(${setupTab.id})`).catch(() => {});
+  });
+
   await t("scroll keys j k d u gg G", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await evalIn(ctx.tabA, `window.scrollTo(0, 0); document.activeElement && document.activeElement.blur(); true`);

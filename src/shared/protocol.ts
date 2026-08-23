@@ -53,6 +53,7 @@ export interface BgApi {
   removeDownload: { req: { id: string }; res: { ok: boolean } };
   openDownloadLocation: { req: { id: string }; res: { ok: boolean } };
   stealthOpen: { req: Record<string, never>; res: { ok: boolean; error?: string } };
+  openSetup: { req: Record<string, never>; res: { ok: boolean } };
   quit: { req: Record<string, never>; res: { ok: boolean } };
   zen: { req: Record<string, never>; res: { zen: boolean } };
   mute: { req: Record<string, never>; res: { muted: boolean } };
@@ -119,7 +120,7 @@ export type BgAction = {
 export type BgResult<K extends keyof BgApi> = BgApi[K]["res"];
 
 // Chrome helper -> background requests, carried by the #lfc=req.<action> tab.
-export type ReqAction = "alive" | "startHints" | "focusFirstInput" | "openOptions";
+export type ReqAction = "alive" | "startHints" | "focusFirstInput" | "openOptions" | "openSetup";
 
 // background -> content script actions.
 export type ContentAction = "startHints" | "focusFirstInput";
