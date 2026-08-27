@@ -429,3 +429,72 @@ func TestLoaderFileIsUpToDate(t *testing.T) {
 		t.Fatal("differing dst should not be up-to-date")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Linux profile discovery: XDG config dir (modern Firefox) + dedupe
+// ---------------------------------------------------------------------------
+
+func TestLinuxProfileRootsXDGConfig(t *testing.T) {
+	// Modern Firefox stores profiles under $XDG_CONFIG_HOME/mozilla/firefox
+	// (defaulting to ~/.config). Discovery must scan that even when the legacy
+	// ~/.mozilla tree is absent.
+	xdg := t.TempDir()
+	homeDir := t.TempDir()
+	moz := filepath.Join(xdg, "mozilla", "firefox")
+	os.MkdirAll(moz, 0o755)
+	os.WriteFile(filepath.Join(moz, "profiles.ini"),
+		[]byte("[Profile0]\nName=default\nIsRelative=1\nPath=p.default\nDefault=1\n"), 0o644)
+	os.MkdirAll(filepath.Join(moz, "p.default"), 0o755)
+
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", homeDir)
+	// Legacy roots must not exist so we know only the XDG path is used.
+	if !containsString(linuxProfileRoots(), moz) {
+		t.Fatalf("expected %q in linuxProfileRoots(): %v", moz, linuxProfileRoots())
+	}
+
+	profs := detectFirefoxProfiles()
+	if len(profs) != 1 || profs[0].Name != "default" {
+		t.Fatalf("expected 1 default profile from XDG dir, got %+v", profs)
+	}
+}
+
+func TestDetectProfilesDedupes(t *testing.T) {
+	// detectFirefoxProfiles must not emit the same profile twice (a previous bug
+	// appended to the slice being ranged over, re-iterating appended items).
+	homeDir := t.TempDir()
+	root := filepath.Join(homeDir, ".config", "mozilla", "firefox")
+	os.MkdirAll(filepath.Join(root, "aa.default"), 0o755)
+	os.MkdirAll(filepath.Join(root, "bb.default-default"), 0o755)
+	ini := `[General]
+StartWithLastProfile=1
+Version=2
+
+[Profile0]
+Name=default
+IsRelative=1
+Path=aa.default
+Default=1
+
+[Profile1]
+Name=default-default
+IsRelative=1
+Path=bb.default-default
+`
+	os.WriteFile(filepath.Join(root, "profiles.ini"), []byte(ini), 0o644)
+
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
+	t.Setenv("HOME", homeDir)
+
+	profs := detectFirefoxProfiles()
+	if len(profs) != 2 {
+		t.Fatalf("expected exactly 2 profiles (no dupes), got %d: %+v", len(profs), profs)
+	}
+	seen := map[string]bool{}
+	for _, p := range profs {
+		if seen[p.Dir] {
+			t.Fatalf("duplicate profile dir in results: %s", p.Dir)
+		}
+		seen[p.Dir] = true
+	}
+}
