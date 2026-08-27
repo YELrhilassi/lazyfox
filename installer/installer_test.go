@@ -353,3 +353,79 @@ func TestBuildXPI(t *testing.T) {
 		t.Fatalf("unexpected entries: %v", names)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// embedded loader payload (loader-only mode works with no repo/dist)
+// ---------------------------------------------------------------------------
+
+func TestLoaderSourceBytesEmbeddedFallback(t *testing.T) {
+	// With a nil repoContext the embedded payload must supply real bytes — this
+	// is what lets loader-only mode run from a bare downloaded binary.
+	cfg, err := loaderSourceBytes(nil, loaderConfigName)
+	if err != nil {
+		t.Fatalf("embedded config failed: %v", err)
+	}
+	if len(cfg) == 0 {
+		t.Fatal("embedded config.js is empty")
+	}
+	if !strings.Contains(string(cfg), "lfLoad") {
+		t.Fatalf("embedded config.js missing expected content: %q", string(cfg))
+	}
+	prefs, err := loaderSourceBytes(nil, loaderPrefsName)
+	if err != nil {
+		t.Fatalf("embedded prefs failed: %v", err)
+	}
+	if !strings.Contains(string(prefs), "general.config.filename") {
+		t.Fatalf("embedded config-prefs.js missing expected content: %q", string(prefs))
+	}
+}
+
+func TestLoaderSourceBytesPrefersDist(t *testing.T) {
+	// When a repoContext is available, dist/ wins over the embedded payload.
+	dist := t.TempDir()
+	loaderDir := filepath.Join(dist, "chrome", "loader")
+	os.MkdirAll(loaderDir, 0o755)
+	customCfg := "// custom from dist\nlockPref(\"xpinstall.signatures.required\", false);"
+	os.WriteFile(filepath.Join(loaderDir, loaderConfigName), []byte(customCfg), 0o644)
+	os.WriteFile(filepath.Join(loaderDir, loaderPrefsName), []byte("// custom prefs"), 0o644)
+
+	rc := &repoContext{Dist: dist}
+	cfg, err := loaderSourceBytes(rc, loaderConfigName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cfg) != customCfg {
+		t.Fatalf("expected dist bytes, got %q", string(cfg))
+	}
+	prefs, err := loaderSourceBytes(rc, loaderPrefsName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(prefs) != "// custom prefs" {
+		t.Fatalf("expected dist prefs bytes, got %q", string(prefs))
+	}
+}
+
+func TestLoaderFileIsUpToDate(t *testing.T) {
+	// A dst matching the embedded payload is up-to-date even with a nil rc.
+	dir := t.TempDir()
+	cfg, _ := loaderSourceBytes(nil, loaderConfigName)
+	dst := filepath.Join(dir, loaderConfigName)
+	if err := os.WriteFile(dst, cfg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !loaderFileIsUpToDate(nil, loaderConfigName, dst) {
+		t.Fatal("matching dst should be up-to-date")
+	}
+	// A missing dst is not up-to-date.
+	if loaderFileIsUpToDate(nil, loaderConfigName, filepath.Join(dir, "nope.js")) {
+		t.Fatal("missing dst should not be up-to-date")
+	}
+	// A differing dst is not up-to-date.
+	if err := os.WriteFile(dst, []byte("// different"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if loaderFileIsUpToDate(nil, loaderConfigName, dst) {
+		t.Fatal("differing dst should not be up-to-date")
+	}
+}

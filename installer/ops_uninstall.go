@@ -107,8 +107,8 @@ func removeChromeLoader(rc *repoContext, rep StepReporter, o UninstallOptions, p
 	if dir == "" || !isDir(dir) {
 		return fmt.Errorf("firefox install dir not found: %q", dir)
 	}
-	cfg := filepath.Join(dir, loaderConfig)
-	pref := filepath.Join(dir, "defaults", "pref", "config-prefs.js")
+	cfg := filepath.Join(dir, loaderConfigName)
+	pref := filepath.Join(dir, "defaults", "pref", loaderPrefsName)
 
 	if isWritable(dir) {
 		for _, p := range []string{cfg, pref} {
