@@ -5,6 +5,41 @@ param(
   [string]$FirefoxDir = ""
 )
 
+# Delegate to the unified Go TUI installer (recommended). Falls back to the
+# legacy logic below if no binary or Go toolchain is available.
+$lzBin = $null
+foreach ($c in @(
+  (Join-Path $PSScriptRoot "..\installer\bin\lazyfox-install-windows.exe"),
+  (Join-Path $PSScriptRoot "lazyfox-install.exe")
+)) {
+  if (Test-Path $c) { $lzBin = $c; break }
+}
+if (-not $lzBin) {
+  $goCmd = Get-Command go -ErrorAction SilentlyContinue
+  if ($goCmd) {
+    $lzTmp = Join-Path $env:TEMP ("lazyfox-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $lzTmp -Force | Out-Null
+    Push-Location (Join-Path $PSScriptRoot "..\installer")
+    & go build -o (Join-Path $lzTmp "lazyfox-install.exe") .
+    Pop-Location
+    if (Test-Path (Join-Path $lzTmp "lazyfox-install.exe")) { $lzBin = Join-Path $lzTmp "lazyfox-install.exe" }
+  }
+}
+if ($lzBin) {
+  $goArgs = @('--mode', 'uninstall')
+  if ($Profile) { $goArgs += @('-Profile', $Profile) }
+  if ($RemoveChromeLoader) { $goArgs += '-RemoveChromeLoader' }
+  if ($KeepExtensionDisabledOnly) { $goArgs += '-KeepExtensionDisabledOnly' }
+  if ($FirefoxDir) { $goArgs += @('-FirefoxDir', $FirefoxDir) }
+  try {
+    & $lzBin @goArgs
+    exit $LASTEXITCODE
+  } catch {
+    Write-Host "Go installer failed; falling back to the legacy installer." -ForegroundColor Yellow
+  }
+}
+
+
 # Lazyfox uninstaller for Windows.
 #
 # Removes everything scripts/install.ps1 put in place, and nothing else:

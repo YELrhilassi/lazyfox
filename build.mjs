@@ -126,4 +126,26 @@ for (const tpl of ["install.ps1.tpl", "install.sh.tpl"]) {
   console.log(`[patch] ${tpl.replace(".tpl", "")} (${out.length} bytes, payload embedded)`);
 }
 
+/* ---------- 5. cross-platform installer binary ---------- */
+
+// The interactive installer is a single Go binary (replaces the per-OS shell
+// installers). Build it for every supported platform into installer/bin/ so
+// releases ship one native binary per OS:
+//   lazyfox-install-linux, lazyfox-install-darwin, lazyfox-install-windows.exe
+const INSTALLER_TARGETS = [
+  { goos: "linux", arch: "amd64", out: "lazyfox-install-linux" },
+  { goos: "darwin", arch: "arm64", out: "lazyfox-install-darwin" },
+  { goos: "windows", arch: "amd64", out: "lazyfox-install-windows.exe" },
+];
+mkdirSync(join(root, "installer", "bin"), { recursive: true });
+for (const t of INSTALLER_TARGETS) {
+  const out = join(root, "installer", "bin", t.out);
+  execFileSync(
+    "go",
+    ["build", "-trimpath", "-ldflags=-s -w", "-o", out, "."],
+    { cwd: join(root, "installer"), env: { ...process.env, GOOS: t.goos, GOARCH: t.arch }, stdio: "inherit" }
+  );
+  console.log(`[installer] ${t.goos}/${t.arch} -> installer/bin/${t.out}`);
+}
+
 console.log("\nBuild complete. dist/ is ready to install.");

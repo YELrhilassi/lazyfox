@@ -22,6 +22,31 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# ---------------------------------------------------------------
+# Delegate to the unified Go TUI installer when we can. This is the
+# recommended path (one cross-platform binary with an interactive wizard).
+# If the binary isn't available and no Go toolchain exists, we fall back to
+# the legacy shell logic below.
+# ---------------------------------------------------------------
+LZ_INSTALL_BIN=""
+for c in "$REPO_ROOT/installer/bin/lazyfox-install-linux" \
+         "$REPO_ROOT/installer/bin/lazyfox-install" \
+         "$REPO_ROOT/scripts/lazyfox-install"; do
+  if [[ -x "$c" ]]; then LZ_INSTALL_BIN="$c"; break; fi
+done
+if [[ -z "$LZ_INSTALL_BIN" ]] && command -v go >/dev/null 2>&1; then
+  LZ_TMP="$(mktemp -d --suffix=.lazyfox 2>/dev/null || mktemp -d)"
+  trap 'rm -rf "$LZ_TMP"' EXIT
+  if (cd "$REPO_ROOT/installer" && go build -o "$LZ_TMP/lazyfox-install" .) >/dev/null 2>&1; then
+    LZ_INSTALL_BIN="$LZ_TMP/lazyfox-install"
+  fi
+fi
+if [[ -n "$LZ_INSTALL_BIN" ]]; then
+  exec "$LZ_INSTALL_BIN" "$@"
+  # exec does not return; the lines below are dead unless exec failed.
+fi
+# ---------------------------------------------------------------
+
 PROFILE="${1:-}"
 NO_EXTENSION=0
 NO_LAUNCH=0
