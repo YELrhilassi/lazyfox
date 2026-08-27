@@ -33,20 +33,12 @@ var chromeFiles = []string{
 }
 
 // loaderFiles are the fx-autoconfig loader files written into the Firefox
-// install dir (need elevation).
-const (
-	loaderConfig      = "config.js"
-	loaderConfigPrefs = "defaults/pref/config-prefs.js"
-)
-
+// install dir (need elevation). Source bytes come from the embedded payload or
+// dist/ (see embedded.go).
 const addonID = "lazyfox@lazyfox.dev"
 
 func (r *repoContext) chromeFile(name string) string {
 	return filepath.Join(r.Dist, "chrome", name)
-}
-
-func (r *repoContext) loaderSource(name string) string {
-	return filepath.Join(r.Dist, "chrome", "loader", name)
 }
 
 func (r *repoContext) extensionDir() string {

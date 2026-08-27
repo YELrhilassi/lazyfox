@@ -210,11 +210,10 @@ func InstallChromeLoader(rc *repoContext, rep StepReporter, ff *FirefoxInstall, 
 		return fmt.Errorf("firefox install dir not found: %q", dir)
 	}
 	cfgDst := filepath.Join(dir, "config.js")
-	prefSrc := filepath.Join(rc.Dist, "chrome", "loader", "config-prefs.js")
 	prefDst := filepath.Join(dir, "defaults", "pref", "config-prefs.js")
 
-	loaderUpToDate := fileMatches(rc.loaderSource(loaderConfig), cfgDst) &&
-		fileMatches(prefSrc, prefDst)
+	loaderUpToDate := loaderFileIsUpToDate(rc, loaderConfigName, cfgDst) &&
+		loaderFileIsUpToDate(rc, loaderPrefsName, prefDst)
 	if !force && loaderUpToDate {
 		rep.Note("Chrome loader already installed and up to date in %s", dir)
 		return nil
@@ -243,8 +242,8 @@ func InstallChromeLoader(rc *repoContext, rep StepReporter, ff *FirefoxInstall, 
 		} else if err := writeLoaderFiles(rc, dir); err != nil {
 			return err
 		}
-		if fileMatches(rc.loaderSource(loaderConfig), cfgDst) &&
-			fileMatches(prefSrc, prefDst) {
+		if loaderFileIsUpToDate(rc, loaderConfigName, cfgDst) &&
+			loaderFileIsUpToDate(rc, loaderPrefsName, prefDst) {
 			rep.Step("Chrome loader verified in %s", dir)
 			return nil
 		}
@@ -291,11 +290,11 @@ func InstallChromeLoader(rc *repoContext, rep StepReporter, ff *FirefoxInstall, 
 // owned) install dir — a single privileged step, robust against piped-input
 // quoting issues.
 func sudoWriteLoader(rc *repoContext, dir, password string) error {
-	cfg, err := os.ReadFile(rc.loaderSource(loaderConfig))
+	cfg, err := loaderSourceBytes(rc, loaderConfigName)
 	if err != nil {
 		return err
 	}
-	prefs, err := os.ReadFile(filepath.Join(rc.Dist, "chrome", "loader", "config-prefs.js"))
+	prefs, err := loaderSourceBytes(rc, loaderPrefsName)
 	if err != nil {
 		return err
 	}
@@ -322,46 +321,30 @@ func sudoWriteLoader(rc *repoContext, dir, password string) error {
 	return nil
 }
 
-// writeLoaderFiles writes the loader files directly (no elevation).
+// writeLoaderFiles writes the loader files directly (no elevation). Source
+// bytes come from dist/ when available, else from the embedded standalone
+// payload, so a bare downloaded binary can install the loader without a repo.
 func writeLoaderFiles(rc *repoContext, dir string) error {
 	if err := ensureDir(filepath.Join(dir, "defaults", "pref")); err != nil {
 		return err
 	}
-	for _, f := range []string{loaderConfig, "config-prefs.js"} {
-		var src string
-		if f == loaderConfig {
-			src = rc.loaderSource(loaderConfig)
-		} else {
-			src = filepath.Join(rc.Dist, "chrome", "loader", "config-prefs.js")
-		}
-		data, err := os.ReadFile(src)
+	entries := []struct{ name, dst string }{
+		{loaderConfigName, filepath.Join(dir, "config.js")},
+		{loaderPrefsName, filepath.Join(dir, "defaults", "pref", "config-prefs.js")},
+	}
+	for _, e := range entries {
+		data, err := loaderSourceBytes(rc, e.name)
 		if err != nil {
 			return err
 		}
-		var dst string
-		if f == loaderConfig {
-			dst = filepath.Join(dir, "config.js")
-		} else {
-			dst = filepath.Join(dir, "defaults", "pref", "config-prefs.js")
+		if exists(e.dst) {
+			_ = backupFile(e.dst, "install")
 		}
-		if exists(dst) {
-			_ = backupFile(dst, "install")
-		}
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
+		if err := os.WriteFile(e.dst, data, 0o644); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// fileMatches reports whether content at a equals content at b (both exist).
-func fileMatches(a, b string) bool {
-	ca, err1 := os.ReadFile(a)
-	cb, err2 := os.ReadFile(b)
-	if err1 != nil || err2 != nil {
-		return false
-	}
-	return string(ca) == string(cb)
 }
 
 // isWritable reports whether we can create a file in dir.
