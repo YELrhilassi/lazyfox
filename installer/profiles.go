@@ -64,7 +64,9 @@ func detectFirefoxProfiles() []*FirefoxProfile {
 	for _, root := range roots {
 		out = append(out, parseProfilesIni(root)...)
 	}
-	// Dedupe by normalized dir.
+	// Dedupe by normalized dir. Build a fresh slice (never append to the slice
+	// being ranged over — that re-iterates the appended items and duplicates).
+	var deduped []*FirefoxProfile
 	seen := map[string]*FirefoxProfile{}
 	for _, p := range out {
 		full := resolveReal(p.Dir)
@@ -87,8 +89,9 @@ func detectFirefoxProfiles() []*FirefoxProfile {
 			p.Flavor = flavorStable
 		}
 		seen[full] = p
-		out = append(out, p)
+		deduped = append(deduped, p)
 	}
+	out = deduped
 	// Sort: dev first, then Lazyfox-installed, then default, then last-used.
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
@@ -131,7 +134,9 @@ func profileLocked(dir string) bool {
 
 // linuxProfileRoots returns the profile base directories Firefox uses on
 // Linux, honoring MOZ_DIR / MOZ_FIREFOX_HOME overrides and covering
-// stable/dev/nightly + snap + flatpak layouts.
+// stable/dev/nightly + snap + flatpak layouts. Firefox moved its profile base
+// from ~/.mozilla/firefox to the XDG config dir (~/.config/mozilla/firefox,
+// or $XDG_CONFIG_HOME/mozilla/firefox) in 2025, so both are scanned.
 func linuxProfileRoots() []string {
 	var roots []string
 	h := home()
@@ -146,15 +151,35 @@ func linuxProfileRoots() []string {
 	if env := os.Getenv("MOZ_FIREFOX_HOME"); env != "" {
 		push(env)
 	}
+	// XDG config home (the location modern Firefox uses). Defaults to
+	// ~/.config when unset.
+	xdgConfig := os.Getenv("XDG_CONFIG_HOME")
+	if xdgConfig == "" && h != "" {
+		xdgConfig = filepath.Join(h, ".config")
+	}
+	if xdgConfig != "" {
+		push(filepath.Join(xdgConfig, "mozilla", "firefox"))
+		push(filepath.Join(xdgConfig, "mozilla", "firefox-dev-edition"))
+		push(filepath.Join(xdgConfig, "mozilla", "firefox-nightly"))
+		push(filepath.Join(xdgConfig, "mozilla", "firefox-esr"))
+		push(filepath.Join(xdgConfig, "snap", "firefox", "common", "mozilla", "firefox"))
+	}
 	if h != "" {
+		// Legacy pre-XDG locations.
 		push(filepath.Join(h, ".mozilla", "firefox"))
 		push(filepath.Join(h, ".mozilla", "firefox-dev-edition"))
 		push(filepath.Join(h, ".mozilla", "firefox-nightly"))
 		push(filepath.Join(h, ".mozilla", "firefox-esr"))
 		push(filepath.Join(h, "snap", "firefox", "common", ".mozilla", "firefox"))
-		push(filepath.Join(h, ".var", "app", "org.mozilla.firefox", ".mozilla", "firefox"))
-		push(filepath.Join(h, ".var", "app", "org.mozilla.firefoxnightly", ".mozilla", "firefox"))
-		push(filepath.Join(h, ".var", "app", "org.mozilla.firefoxdeveloperedition", ".mozilla", "firefox"))
+		// Flatpak (both legacy and XDG relocations).
+		for _, app := range []string{
+			"org.mozilla.firefox",
+			"org.mozilla.firefoxnightly",
+			"org.mozilla.firefoxdeveloperedition",
+		} {
+			push(filepath.Join(h, ".var", "app", app, ".config", "mozilla", "firefox"))
+			push(filepath.Join(h, ".var", "app", app, ".mozilla", "firefox"))
+		}
 	}
 	return roots
 }
