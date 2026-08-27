@@ -1,0 +1,4 @@
+# Dev-stage build output (go build . inside installer/). The distributable
+# binaries live in bin/ and ARE committed.
+/installer
+/installer.exe
