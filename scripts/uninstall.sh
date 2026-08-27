@@ -20,6 +20,31 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# ---------------------------------------------------------------
+# Delegate to the unified Go TUI installer when we can (recommended path).
+# Falls back to the legacy shell logic below if unavailable.
+# ---------------------------------------------------------------
+LZ_INSTALL_BIN=""
+for c in "$REPO_ROOT/installer/bin/lazyfox-install-linux" \
+         "$REPO_ROOT/installer/bin/lazyfox-install" \
+         "$REPO_ROOT/scripts/lazyfox-install"; do
+  if [[ -x "$c" ]]; then LZ_INSTALL_BIN="$c"; break; fi
+done
+if [[ -z "$LZ_INSTALL_BIN" ]] && command -v go >/dev/null 2>&1; then
+  LZ_TMP="$(mktemp -d --suffix=.lazyfox 2>/dev/null || mktemp -d)"
+  trap 'rm -rf "$LZ_TMP"' EXIT
+  if (cd "$REPO_ROOT/installer" && go build -o "$LZ_TMP/lazyfox-install" .) >/dev/null 2>&1; then
+    LZ_INSTALL_BIN="$LZ_TMP/lazyfox-install"
+  fi
+fi
+if [[ -n "$LZ_INSTALL_BIN" ]]; then
+  # The Go CLI understands the legacy flags directly (-RemoveChromeLoader,
+  # -KeepExtensionDisabledOnly, -FirefoxDir); just select uninstall mode. The
+  # legacy bare-positional profile also carries through.
+  exec "$LZ_INSTALL_BIN" --mode uninstall "$@"
+fi
+# ---------------------------------------------------------------
+
 PROFILE="${1:-}"
 REMOVE_CHROME_LOADER=0
 KEEP_EXTENSION_DISABLED_ONLY=0

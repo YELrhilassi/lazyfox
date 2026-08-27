@@ -52,15 +52,25 @@ installer it offers. It detects the right profile, writes the four
 `chrome/` files, merges Lazyfox's preferences, and asks for admin rights
 **once** to drop the autoconfig loader into the Firefox install folder.
 
-**From this repo** —
+**From this repo** — one prebuilt, cross-platform installer binary (Go/TUI)
+replaces the old per-OS shell scripts, and **no build system, Go toolchain or
+npm is required**. Prebuilt binaries for Linux, macOS and Windows are committed
+under `installer/bin/`. It detects your OS, every Firefox installation and
+every profile, then guides you through install or uninstall in an interactive
+terminal wizard:
 
 | OS | Command |
 | --- | --- |
-| Windows | `powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1` |
 | Linux | `./scripts/install.sh` |
+| macOS | `./scripts/install.sh` |
+| Windows | `.\scripts\install.ps1` |
 
-To pick a profile, add `-Profile "C:\path\to\profile"` (Windows) or pass the
-path as an argument (Linux).
+These scripts run the bundled binary directly (they only fall back to compiling
+it if the binary is missing *and* the Go toolchain happens to be present, as a
+developer convenience). Running with no arguments opens the interactive wizard;
+it auto-detects your profile. To skip the wizard and target a specific profile,
+pass its path as an argument (Linux/macOS) or use `-Profile "C:\path\to\profile"`
+(Windows).
 
 The installer finds your Firefox profile, copies the UI files, merges only the
 preferences Lazyfox owns, and installs the add-on permanently. It also drops a
@@ -68,6 +78,19 @@ small helper into the Firefox install folder so the leader key works on pages
 where add-ons cannot run — that one step asks for admin rights **once** (a UAC
 prompt on Windows, `sudo` on Linux). Your profile, bookmarks, history and
 settings are never touched; every file that gets replaced is backed up first.
+
+The binary is fully self-contained (no runtime dependencies); it reads its
+payloads from the committed `dist/` folder, so a fresh clone installs without
+any toolchain. To rebuild the binaries yourself:
+
+```
+npm run build:installer     # builds installer/bin/lazyfox-install for the host; or
+go build -o installer/bin/lazyfox-install ./installer
+installer/bin/lazyfox-install            # interactive wizard
+installer/bin/lazyfox-install --mode list
+installer/bin/lazyfox-install --mode install --profile "…" --firefox-dir "…"
+installer/bin/lazyfox-install --mode uninstall --profile "…"
+```
 
 ## Everyday use
 
