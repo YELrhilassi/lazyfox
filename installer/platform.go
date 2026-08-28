@@ -1,9 +1,9 @@
 // Package main: Lazyfox cross-platform installer TUI.
 //
-// A single Go binary replaces the old per-OS shell installers
-// (install.sh / install.ps1 / uninstall.sh / uninstall.ps1). It detects the
-// host platform, finds every Firefox installation and profile, and walks the
-// user through install / uninstall with a rich terminal UI.
+// A single self-contained Go binary. It detects the host platform, finds every
+// Firefox installation and profile, and walks the user through install /
+// uninstall with a rich terminal UI (or runs non-interactively with flags for
+// automation/tests). There are no shell or PowerShell install scripts.
 package main
 
 import (

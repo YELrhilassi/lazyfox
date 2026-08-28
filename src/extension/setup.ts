@@ -1,10 +1,11 @@
-// The store extension's "complete the installation" page. A WebExtension
-// cannot write files into the profile or the Firefox install dir, so this page
-// hands the user a self-contained patcher (built into the package as
-// patch/install.ps1 / patch/install.sh with the chrome helper payload embedded)
-// and guides them through running it. The chrome layer announces itself alive
-// on window startup; until then, chromeAlive is false and this page shows what
-// is missing and how to finish the install.
+// The store extension's "complete the installation" page.
+//
+// A WebExtension cannot write files into the profile or the Firefox install
+// dir, so Lazyfox ships a single native, self-contained installer binary (pure
+// Go, no shell/PowerShell). This page points the user to the GitHub Releases
+// download for their OS and walks them through running it. The chrome layer
+// announces itself alive on window startup; until then chromeAlive is false
+// and this page shows what is missing and how to finish the install.
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
 
 const osName = (os: string): string => {
@@ -13,6 +14,17 @@ const osName = (os: string): string => {
   if (os === "linux") return "Linux";
   return os;
 };
+
+// Asset name of the standalone installer on GitHub Releases, per platform.
+const ASSET: Record<string, string> = {
+  win: "lazyfox-install-windows.exe",
+  mac: "lazyfox-install-darwin",
+  linux: "lazyfox-install-linux",
+};
+
+// The latest-release download URL for a given asset.
+const releaseUrl = (asset: string): string =>
+  "https://github.com/YELrhilassi/lazyfox/releases/latest/download/" + asset;
 
 let alive = false;
 
@@ -34,30 +46,42 @@ const renderStatus = (): void => {
 
 const renderSteps = (isWin: boolean): void => {
   const steps = $("steps");
-  const file = isWin ? "lazyfox-install.ps1" : "lazyfox-install.sh";
   if (isWin) {
     steps.innerHTML =
-      "<li>Downloaded as <b>" + file + "</b> (your Downloads folder).</li>" +
-      "<li>Right-click it &rarr; <b>Run with PowerShell</b>.</li>" +
-      "<li>If Windows blocks it: right-click &rarr; <b>Properties</b> &rarr; tick <b>Unblock</b> &rarr; OK, then run again.</li>" +
+      "<li><b>Download</b> <span class='kbd'>lazyfox-install-windows.exe</span> (step 1).</li>" +
+      "<li><b>Run it</b> — double-click the file.</li>" +
+      "<li>If Windows shows a SmartScreen warning, click <b>More info</b> &rarr; <b>Run anyway</b> (it is a signed, open-source installer).</li>" +
       "<li>Accept the one-time <b>UAC</b> prompt (installs the autoconfig loader into the Firefox folder).</li>" +
-      "<li>When it prints <b>Done</b>, fully quit and restart Firefox.</li>";
+      "<li>The installer's <b>guided wizard</b> finds your Firefox and walks you through it.</li>" +
+      "<li>When it finishes, fully quit and restart Firefox.</li>";
   } else {
     steps.innerHTML =
-      "<li>Downloaded as <b>" + file + "</b> (your Downloads folder).</li>" +
-      "<li>Open a terminal and run:<br><span class='kbd'>bash ~/Downloads/" + file + "</span></li>" +
+      "<li><b>Download</b> <span class='kbd'>lazyfox-install-" +
+      (navigator.platform.toLowerCase().indexOf("mac") !== -1 ? "darwin" : "linux") +
+      "</span> (step 1).</li>" +
+      "<li>Make it executable and <b>run</b> it in a terminal:<br>" +
+      "<span class='kbd'>chmod +x ~/Downloads/lazyfox-install-*</span><br>" +
+      "<span class='kbd'>~/Downloads/lazyfox-install-*</span></li>" +
       "<li>Enter your password at the one-time <b>sudo</b> prompt (installs the autoconfig loader into the Firefox folder).</li>" +
-      "<li>When it prints <b>Done</b>, fully quit and restart Firefox.</li>";
+      "<li>The installer's <b>guided wizard</b> finds your Firefox and walks you through it.</li>" +
+      "<li>When it finishes, fully quit and restart Firefox.</li>";
   }
 };
 
 (async () => {
-  const isWin = (await browser.runtime.getPlatformInfo()).os === "win";
-  $("osName").textContent = osName((await browser.runtime.getPlatformInfo()).os);
+  const info = await browser.runtime.getPlatformInfo();
+  const os = info.os;
+  const isWin = os === "win";
+  const asset: string = ASSET[os] || "lazyfox-install-linux";
+  $("osName").textContent = osName(os);
   renderSteps(isWin);
+
+  const dl = $("dl") as HTMLAnchorElement;
+  dl.href = releaseUrl(asset);
+  dl.textContent = "Download lazyfox-install (" + osName(os) + ")";
   $("dlNote").textContent =
-    "~11 MB, fully self-contained (the chrome helper is embedded). If the download does not start, " +
-    "<a href='" + browser.runtime.getURL("patch/" + (isWin ? "install.ps1" : "install.sh")) + "'>click here</a>.";
+    "~23 MB, fully self-contained (the chrome helper and the AMO-signed add-on are embedded). " +
+    "If the download does not start, " + "<a href='" + releaseUrl(asset) + "'>click here</a>.";
 
   const readAlive = async (): Promise<boolean> => {
     try {
@@ -78,22 +102,6 @@ const renderSteps = (isWin: boolean): void => {
       }
     }
   );
-
-  $("dl").addEventListener("click", async () => {
-    const file = isWin ? "install.ps1" : "install.sh";
-    const st = $("status");
-    st.textContent = "downloading\u2026";
-    try {
-      await browser.downloads.download({
-        url: browser.runtime.getURL("patch/" + file),
-        filename: "lazyfox-install." + (isWin ? "ps1" : "sh"),
-        saveAs: false,
-      });
-      st.textContent = "downloaded \u2014 now run it (step 2)";
-    } catch (e) {
-      st.textContent = "download failed \u2014 use the direct link below";
-    }
-  });
 
   $("verify").addEventListener("click", async () => {
     const st = $("status");

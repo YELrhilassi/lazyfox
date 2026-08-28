@@ -45,7 +45,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["patch/*", "setup.html"],
+      "resources": ["setup.html"],
       "matches": ["<all_urls>"]
     }
   ],
