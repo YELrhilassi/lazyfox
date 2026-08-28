@@ -7,10 +7,10 @@
   "scripts": {
     "build": "node build.mjs",
     "build:dev": "node build.mjs --dev",
-    "build:installer": "go build -trimpath -ldflags=\"-s -w\" -o installer/bin/lazyfox-install ./installer",
+    "build:installer": "node scripts/build-installer.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "go test ./core/ && go test ./installer/ && node scripts/check-dist.mjs",
-    "test:installer": "go test ./installer/",
+    "test": "go test ./core/ && node scripts/test-installer.mjs && node scripts/check-dist.mjs",
+    "test:installer": "node scripts/test-installer.mjs",
     "prepare": "node scripts/check-toolchain.mjs"
   },
   "devDependencies": {
