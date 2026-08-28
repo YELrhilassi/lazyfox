@@ -59,20 +59,16 @@ func runInstall(rc *repoContext, rep StepReporter, o InstallOptions, pw Password
 	}
 
 	// 2. Chrome assets (profile-side, no root needed).
-	if err := rc.requireDist(); err != nil {
-		return err
-	}
 	chromeDir := filepath.Join(profileDir, "chrome")
 	if err := ensureDir(chromeDir); err != nil {
 		return err
 	}
 	for _, f := range chromeFiles {
-		src := rc.chromeFile(f)
 		dst := filepath.Join(chromeDir, f)
 		if exists(dst) {
 			_ = backupFile(dst, "install")
 		}
-		data, err := os.ReadFile(src)
+		data, err := rc.chromeFileBytes(f)
 		if err != nil {
 			return err
 		}
@@ -82,7 +78,7 @@ func runInstall(rc *repoContext, rep StepReporter, o InstallOptions, pw Password
 	}
 	removeStaleBackups(chromeDir)
 	removeStaleBackups(filepath.Join(profileDir, "extensions"))
-	rep.Step("Installed chrome/userChrome.css, userChrome.uc.js, frame.js, corebootstrap.js")
+	rep.Step("Installed chrome/userChrome.css, userChrome.uc.js, frame.js, corebootstrap.js (payload: %s)", rc.payloadOrigin())
 
 	// 3. user.js pref merge.
 	if err := mergeUserJS(rc, profileDir); err != nil {
@@ -113,11 +109,15 @@ func runInstall(rc *repoContext, rep StepReporter, o InstallOptions, pw Password
 	return nil
 }
 
-// installExtension builds the xpi and arranges for it to be imported/enabled.
+// installExtension installs the AMO-signed add-on xpi verbatim and arranges for
+// it to be imported/enabled.
 func installExtension(rc *repoContext, rep StepReporter, profileDir string, o InstallOptions) error {
-	extDir := rc.extensionDir()
-	if !isDir(extDir) {
-		return fmt.Errorf("extension build folder missing: %s", extDir)
+	data, err := rc.extensionXpiBytes()
+	if err != nil {
+		return fmt.Errorf("signed extension xpi unavailable: %w", err)
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("signed extension xpi is empty")
 	}
 	extensionsDir := filepath.Join(profileDir, "extensions")
 	if err := ensureDir(extensionsDir); err != nil {
@@ -127,10 +127,10 @@ func installExtension(rc *repoContext, rep StepReporter, profileDir string, o In
 	if exists(xpi) {
 		_ = backupFile(xpi, "install")
 	}
-	if err := buildXPI(extDir, xpi); err != nil {
-		return fmt.Errorf("could not build %s: %w", xpi, err)
+	if err := os.WriteFile(xpi, data, 0o644); err != nil {
+		return fmt.Errorf("could not install signed extension %s: %w", xpi, err)
 	}
-	rep.Step("Built and installed extension: %s", xpi)
+	rep.Step("Installed signed extension: %s", xpi)
 
 	// Drop the add-on startup cache AND the cached entry so Firefox re-imports
 	// the freshly built xpi with correct content-script metadata.

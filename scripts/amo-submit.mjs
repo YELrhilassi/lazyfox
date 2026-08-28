@@ -6,47 +6,25 @@
 // validate it, then create the version (or the add-on on first submission)
 // with `license` and `channel=listed`.
 //
+// Credentials come from the environment or a gitignored `.env` in the repo
+// root (see .env.example / scripts/amo-lib.mjs). For the automated build-time
+// signer use scripts/amo-sign.mjs instead; this is the fully manual path.
+//
 // Usage: node scripts/amo-submit.mjs <xpi-path> [license] [category]
-// Env:    AMO_API_KEY (JWT issuer, e.g. user:123:45), AMO_API_SECRET (JWT secret)
-import crypto from "node:crypto";
 import fs from "node:fs";
+import { api, sleep, loadEnv } from "./amo-lib.mjs";
 
-const API_KEY = process.env.AMO_API_KEY;
-const API_SECRET = process.env.AMO_API_SECRET;
+loadEnv();
 const XPI = process.argv[2];
 const LICENSE = process.argv[3] || "MIT";
 const CATEGORY = process.argv[4] || "tabs";
 const GUID = "lazyfox@lazyfox.dev";
+const guid = encodeURIComponent(GUID);
 
-if (!API_KEY || !API_SECRET || !XPI) {
-  console.error("usage: AMO_API_KEY=... AMO_API_SECRET=... node scripts/amo-submit.mjs <xpi> [license] [category]");
+if (!process.env.AMO_API_KEY || !process.env.AMO_API_SECRET || !XPI) {
+  console.error("usage: node scripts/amo-submit.mjs <xpi> [license] [category]  (set AMO_API_KEY + AMO_API_SECRET in .env)");
   process.exit(1);
 }
-
-const b64url = (s) => Buffer.from(s).toString("base64url");
-const token = () => {
-  const now = Math.floor(Date.now() / 1000);
-  const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const payload = b64url(JSON.stringify({ iss: API_KEY, jti: crypto.randomUUID(), iat: now, exp: now + 300 }));
-  const sig = crypto.createHmac("sha256", API_SECRET).update(`${header}.${payload}`).digest("base64url");
-  return `${header}.${payload}.${sig}`;
-};
-
-const base = "https://addons.mozilla.org/api/v5";
-async function api(path, opts = {}) {
-  const res = await fetch(base + path, {
-    ...opts,
-    headers: { Authorization: "JWT " + token(), ...(opts.headers || {}) },
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {}
-  return { status: res.status, json, text };
-}
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const guid = encodeURIComponent(GUID);
 
 // 1. Does the add-on already exist?
 const exist = await api(`/addons/addon/${guid}/`);
