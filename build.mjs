@@ -96,37 +96,7 @@ cpSync(join(root, "src", "static", "chrome"), join(root, "dist", "chrome"), {
 });
 console.log("[static] src/static/{extension,chrome} -> dist/");
 
-/* ---------- 4. self-contained full-install patchers ---------- */
-
-// The store WebExtension cannot write profile/install-dir files itself, so the
-// AMO package ships one-click patchers (install.ps1 / install.sh) with the
-// chrome helper payload embedded as base64. The setup page offers them for
-// download; each is fully self-contained (no repo checkout, no toolchain).
-const PATCH_PAYLOAD = [
-  ["userChrome.css", "userChrome_css"],
-  ["userChrome.uc.js", "userChrome_uc_js"],
-  ["frame.js", "frame_js"],
-  ["corebootstrap.js", "corebootstrap_js"],
-  ["user.js", "user_js"],
-  ["loader/config.js", "loader_config_js"],
-  ["loader/config-prefs.js", "loader_config_prefs_js"],
-];
-for (const tpl of ["install.ps1.tpl", "install.sh.tpl"]) {
-  let out = readFileSync(join(root, "scripts", "patcher", tpl), "utf8");
-  for (const [file, token] of PATCH_PAYLOAD) {
-    const bytes = readFileSync(join(root, "dist", "chrome", file));
-    out = out.split("__B64_" + token + "__").join(bytes.toString("base64"));
-  }
-  if (out.includes("__B64_")) {
-    throw new Error("unfilled payload token in " + tpl);
-  }
-  const dest = join(root, "dist", "extension", "patch", tpl.replace(".tpl", ""));
-  mkdirSync(dirname(dest), { recursive: true });
-  writeFileSync(dest, out);
-  console.log(`[patch] ${tpl.replace(".tpl", "")} (${out.length} bytes, payload embedded)`);
-}
-
-/* ---------- 5. signed add-on + cross-platform installer binary ---------- */
+/* ---------- 4. signed add-on + cross-platform installer binary ---------- */
 
 // Ensure a signed .xpi exists for the current extension version (scripts/
 // amo-sign.mjs reuses the committed signed artifact offline, or auto-submits a

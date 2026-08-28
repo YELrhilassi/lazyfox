@@ -49,30 +49,35 @@ setup paths work on **stable** Firefox — no Developer Edition or Nightly neede
 `about:debugging`).
 
 **From the store** — install `Lazyfox` from addons.mozilla.org, then press
-`;I` (or open the extension's setup page) and download the one-click
-installer it offers. It detects the right profile, writes the four
-`chrome/` files, merges Lazyfox's preferences, and asks for admin rights
-**once** to drop the autoconfig loader into the Firefox install folder.
+`;I` (or open the extension's setup page). It detects the right profile,
+writes the four `chrome/` files, merges Lazyfox's preferences, installs the
+add-on, and asks for admin rights **once** to drop the autoconfig loader into
+the Firefox install folder.
 
-**From this repo** — one prebuilt, cross-platform installer binary (Go/TUI)
-replaces the old per-OS shell scripts, and **no build system, Go toolchain or
-npm is required**. Prebuilt binaries for Linux, macOS and Windows are committed
-under `installer/bin/`. It detects your OS, every Firefox installation and
-every profile, then guides you through install or uninstall in an interactive
+**The installer** — one prebuilt, cross-platform, **pure-Go** binary does the
+whole install. There are **no shell or PowerShell scripts**; the binary itself
+is the installer. It detects your OS, every Firefox installation and every
+profile, then guides you through install or uninstall in an interactive
 terminal wizard:
 
-| OS | Command |
-| --- | --- |
-| Linux | `./scripts/install.sh` |
-| macOS | `./scripts/install.sh` |
-| Windows | `.\scripts\install.ps1` |
+| OS | Distribution | Command / run |
+| --- | --- | --- |
+| Linux | GitHub Releases `lazyfox-install-linux` | `chmod +x lazyfox-install-linux` then run it |
+| macOS | GitHub Releases `lazyfox-install-darwin` | run `lazyfox-install-darwin` |
+| Windows | GitHub Releases `lazyfox-install-windows.exe` | double-click, or run from a terminal |
 
-These scripts run the bundled binary directly (they only fall back to compiling
-it if the binary is missing *and* the Go toolchain happens to be present, as a
-developer convenience). Running with no arguments opens the interactive wizard;
-it auto-detects your profile. To skip the wizard and target a specific profile,
-pass its path as an argument (Linux/macOS) or use `-Profile "C:\path\to\profile"`
-(Windows).
+Downloads publish through the repo's **GitHub Releases** page; each build is
+also committed under `installer/bin/` for direct use. Running the binary with
+no arguments opens the interactive wizard and auto-detects your profile. To
+skip the wizard and target a specific profile non-interactively (used by the
+automated tests), pass it as a positional argument or a flag:
+
+```
+lazyfox-install                # interactive wizard (default)
+lazyfox-install --mode list
+lazyfox-install --mode install --profile "…" --firefox-dir "…"
+lazyfox-install --mode uninstall --profile "…"
+```
 
 The installer finds your Firefox profile, copies the UI files, merges only the
 preferences Lazyfox owns, and installs the add-on permanently. It also drops a
@@ -91,13 +96,22 @@ dependencies**: no repo checkout, no `dist/`, no Go toolchain, no npm, no
 payload otherwise. To rebuild the binaries yourself:
 
 ```
-npm run build          # full build: wasm, bundles, patch patchers, all binaries
+npm run build            # full build: wasm, bundles, signed xpi, all binaries
 npm run build:installer  # build only the host rebuild of installer/bin/lazyfox-install
 installer/bin/lazyfox-install            # interactive wizard
 installer/bin/lazyfox-install --mode list
 installer/bin/lazyfox-install --mode install --profile "…" --firefox-dir "…"
 installer/bin/lazyfox-install --mode uninstall --profile "…"
 ```
+
+## Development, testing & Nightly
+
+Lazyfox develops against **Firefox Nightly**. Testing and manual smoke-tests
+use the one installer binary with non-interactive flags (see above) so
+everything is automatable. Nightly is used for both WebDriver (BiDi/Marionette)
+test runs and for loading an *unsigned* dev build of the add-on from
+`about:debugging` — stable Firefox rejects unsigned builds, so dev work happens
+on Nightly, while released installs use the AMO-signed xpi on stable.
 
 ## Everyday use
 
@@ -346,10 +360,10 @@ Layout of the repo:
 
 ## Uninstall
 
-Run `scripts/uninstall.ps1` (Windows) or `scripts/uninstall.sh` (Linux), plus
-`-RemoveChromeLoader` if you want the admin helper undone as well. It
-reverses exactly what the installer did — your profile, bookmarks, history
-and other add-ons are never touched.
+Run the same standalone installer with the `uninstall` action
+(`installer/bin/lazyfox-install --mode uninstall`, or use the wizard and pick
+uninstall). It reverses exactly what the installer did — your profile,
+bookmarks, history and other add-ons are never touched.
 
 ## License
 

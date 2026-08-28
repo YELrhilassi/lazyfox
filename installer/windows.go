@@ -64,9 +64,10 @@ func isElevated() bool {
 }
 
 // elevateSelf re-runs the current binary as administrator with the given
-// arguments, waits for completion, and returns its exit code. Modeled on the
-// old install.ps1 UAC elevator: spawn an elevated copy that performs a narrow,
-// self-contained task (chrome-loader install/remove) and exits.
+// arguments, waits for completion, and returns its exit code. On Windows an
+// elevated copy performs a narrow, self-contained task (chrome-loader
+// install/remove) and exits — the same UAC model the old installer used, now
+// entirely inside the Go binary.
 func elevateSelf(args ...string) (int, error) {
 	exe, err := os.Executable()
 	if err != nil {
