@@ -62,7 +62,7 @@ func parseArgs(rc *repoContext, args []string) (cfg config, handled bool, err er
 	cfg.hasProfileArg = *profile != ""
 	cfg.action = *action
 
-	// A bare positional argument is the profile (matches install.sh usage).
+	// A bare positional argument is the profile (legacy CLI convention).
 	if pos := fs.Args(); len(pos) > 0 {
 		if cfg.profile == "" {
 			cfg.profile = pos[0]

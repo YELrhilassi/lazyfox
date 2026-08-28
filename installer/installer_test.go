@@ -25,8 +25,7 @@ func TestTranslateLegacyFlags(t *testing.T) {
 }
 
 func TestParseArgsBareProfile(t *testing.T) {
-	// A bare positional profile must be accepted (the legacy install.sh bug:
-	// PROFILE was pre-set so the positional arg was rejected as unexpected).
+	// A bare positional profile must be accepted (kept from the legacy CLI).
 	cfg := config{}
 	args := []string{"/tmp/some/profile"}
 	// We just validate translation + positional handling; full parse needs a
