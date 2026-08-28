@@ -339,6 +339,14 @@ into the installer binaries; `scripts/amo-sign.mjs` produces it:
   exist on AMO. Re-running with no version bump never re-signs, so you are not
   signing on every build.
 
+AMO signs **listed** (store) versions only after their human review passes. If
+a version is submitted but still pending review, `amo-sign.mjs` falls back to
+the most recent committed signed xpi (printing a clear warning) so the build,
+tests and executables keep working. To swap in the freshly signed xpi once AMO
+approves, download the signed file from that version on AMO to
+`dist/lazyfox2-<version>.xpi`, then re-run `npm run build` — the version check
+then matches and the new signed xpi is embedded and the release refreshed.
+
 ```
 
 The end-to-end suite drives a real Firefox over WebDriver BiDi, and the
