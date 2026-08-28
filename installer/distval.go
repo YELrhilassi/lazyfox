@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -36,14 +37,6 @@ var chromeFiles = []string{
 // install dir (need elevation). Source bytes come from the embedded payload or
 // dist/ (see embedded.go).
 const addonID = "lazyfox@lazyfox.dev"
-
-func (r *repoContext) chromeFile(name string) string {
-	return filepath.Join(r.Dist, "chrome", name)
-}
-
-func (r *repoContext) extensionDir() string {
-	return filepath.Join(r.Dist, "extension")
-}
 
 // locateRepoRoot searches for the repo from the given start directories.
 func locateRepoRoot(starts ...string) *repoContext {
@@ -91,13 +84,35 @@ func dedupeStrs(in []string) []string {
 	return out
 }
 
-// requireDist returns an error if the repo/dist is not resolvable. Some
-// operations (install of the chrome loader only) can run without it, but a
-// full install needs every artifact.
+// hasDist reports whether a live repo dist/ folder is available. When it is,
+// the installer prefers it over the embedded payloads so a freshly rebuilt dist
+// always governs behavior; when it is not, the embedded standalone payloads are
+// used and a full install still works.
+func (r *repoContext) hasDist() bool {
+	return r != nil && r.Dist != "" && isDir(r.Dist)
+}
+
+// payloadOrigin returns a human-readable description of where the install
+// artifacts are coming from (live dist/ vs embedded standalone payload).
+func (r *repoContext) payloadOrigin() string {
+	if r.hasDist() {
+		return "repo dist/ (" + r.Dist + ")"
+	}
+	return "embedded standalone payload"
+}
+
+// requireDist is retained for callers that genuinely need the on-disk repo
+// (none of the install/uninstall paths do anymore, since the binary embeds its
+// full payload). It now only fails when neither a dist/ nor embedded payload is
+// available, which cannot normally happen for a properly built binary.
 func (r *repoContext) requireDist() error {
-	if r == nil || r.Dist == "" || !isDir(r.Dist) {
-		return fmt.Errorf("could not locate the Lazyfox dist/ folder; run this from the repo checkout or place the binary in scripts/ next to dist/\n" +
-			"  (You can still use the chrome-loader-only mode, which embeds its own payload.)")
+	if r.hasDist() {
+		return nil
+	}
+	// Confirm we have an embedded standalone payload to fall back on.
+	if _, err := fs.Stat(chromePayloadFS, "payload/chrome/userChrome.uc.js"); err != nil {
+		return fmt.Errorf("no live dist/ folder and no embedded payload (this binary was not built with payloads embedded);\n" +
+			"  run this from the repo checkout, or run `npm run build` to build a self-contained binary.")
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -325,36 +326,6 @@ user_pref("extensions.lazyfox.dev", false);
 }
 
 // ---------------------------------------------------------------------------
-// zip round-trip
-// ---------------------------------------------------------------------------
-
-func TestBuildXPI(t *testing.T) {
-	src := t.TempDir()
-	os.MkdirAll(filepath.Join(src, "sub"), 0o755)
-	manifest := `{"manifest_version":2}`
-	os.WriteFile(filepath.Join(src, "manifest.json"), []byte(manifest), 0o644)
-	os.WriteFile(filepath.Join(src, "sub", "content.js"), []byte("// hi"), 0o644)
-	os.WriteFile(filepath.Join(src, ".DS_Store"), []byte("junk"), 0o644) // should be excluded
-
-	dst := filepath.Join(t.TempDir(), "lazyfox.xpi")
-	if err := buildXPI(src, dst); err != nil {
-		t.Fatal(err)
-	}
-	zr, err := zip.OpenReader(dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer zr.Close()
-	var names []string
-	for _, f := range zr.File {
-		names = append(names, f.Name)
-	}
-	if !reflect.DeepEqual(names, []string{"manifest.json", "sub/content.js"}) {
-		t.Fatalf("unexpected entries: %v", names)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // embedded loader payload (loader-only mode works with no repo/dist)
 // ---------------------------------------------------------------------------
 
@@ -496,5 +467,103 @@ Path=bb.default-default
 			t.Fatalf("duplicate profile dir in results: %s", p.Dir)
 		}
 		seen[p.Dir] = true
+	}
+}
+
+// ---------------------------------------------------------------------------
+// embedded payload fallback (standalone full install, no repo/dist)
+// ---------------------------------------------------------------------------
+
+// TestEmbeddedPayloadFallback verifies that a bare binary with no repo dist/
+// folder still has every full-install artifact via the embedded standalone
+// payloads: the chrome files, the managed-prefs user.js and the signed add-on
+// xpi.
+func TestEmbeddedPayloadFallback(t *testing.T) {
+	rc := &repoContext{Root: "", Dist: ""} // no live dist/ anywhere
+
+	// requireDist must NOT fail when embedded payloads are present.
+	if err := rc.requireDist(); err != nil {
+		t.Fatalf("requireDist failed with embedded payload present: %v", err)
+	}
+
+	// Chrome files resolve from the embedded set.
+	for _, f := range chromeFiles {
+		data, err := rc.chromeFileBytes(f)
+		if err != nil {
+			t.Fatalf("chromeFileBytes(%q): %v", f, err)
+		}
+		if len(data) == 0 {
+			t.Fatalf("chromeFileBytes(%q) returned empty payload", f)
+		}
+	}
+
+	// Managed-prefs user.js resolves and parses into the expected prefs.
+	ours, err := rc.userJSBytes()
+	if err != nil {
+		t.Fatalf("userJSBytes: %v", err)
+	}
+	prefs := userPrefs(ours)
+	if len(prefs) == 0 {
+		t.Fatalf("embedded user.js yielded no managed prefs")
+	}
+	if !prefs["toolkit.legacyUserProfileCustomizations.stylesheets"] {
+		t.Fatalf("expected toolkit.legacyUserProfileCustomizations.stylesheets in embedded prefs, got %v", prefs)
+	}
+
+	// The signed add-on xpi resolves and is a non-empty, signed zip.
+	xpi, err := rc.extensionXpiBytes()
+	if err != nil {
+		t.Fatalf("extensionXpiBytes: %v", err)
+	}
+	if len(xpi) == 0 {
+		t.Fatalf("embedded signed xpi is empty")
+	}
+	zr, err := zip.NewReader(bytes.NewReader(xpi), int64(len(xpi)))
+	if err != nil {
+		t.Fatalf("embedded signed xpi is not a valid zip: %v", err)
+	}
+	var names []string
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+	}
+	if !hasEntry(names, "META-INF/cose.sig") {
+		t.Fatalf("embedded signed xpi is not signed (missing META-INF/cose.sig); entries: %v", names)
+	}
+	if !hasEntry(names, "manifest.json") {
+		t.Fatalf("embedded signed xpi missing manifest.json: %v", names)
+	}
+	if !rc.extensionXpiIsAvailable() {
+		t.Fatalf("extensionXpiIsAvailable should be true with embedded xpi")
+	}
+}
+
+func hasEntry(names []string, want string) bool {
+	for _, n := range names {
+		if n == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRepoDistPreferredOverEmbedded ensures a live dist/ copy wins over the
+// embedded payloads (so a freshly rebuilt dist governs behavior).
+func TestRepoDistPreferredOverEmbedded(t *testing.T) {
+	rc := makeRepo(t)
+	data, err := rc.userJSBytes()
+	if err != nil {
+		t.Fatalf("userJSBytes: %v", err)
+	}
+	// makeRepo's dist/user.js manages exactly two prefs; the embedded set
+	// manages many. If the live dist/ copy is preferred we see exactly two.
+	prefs := userPrefs(data)
+	if len(prefs) != 2 {
+		t.Fatalf("expected the live dist/user.js to be preferred (2 prefs), got %d", len(prefs))
+	}
+	if !rc.hasDist() {
+		t.Fatalf("hasDist() should be true for a live dist/")
+	}
+	if origin := rc.payloadOrigin(); origin == "embedded standalone payload" {
+		t.Fatalf("payloadOrigin should report the repo dist/, got %q", origin)
 	}
 }

@@ -11,17 +11,11 @@ import (
 // user_pref("name", value) capture for identifying which prefs Lazyfox owns.
 var userPrefRe = regexp.MustCompile(`^user_pref\("([^"]+)"`)
 
-// distUserPrefs returns the set of pref names Lazyfox manages, read from
-// dist/chrome/user.js.
-func distUserPrefs(rc *repoContext) map[string]bool {
+// userPrefs returns the set of pref names Lazyfox manages, read from the
+// managed-prefs payload (live dist/chrome/user.js or the embedded copy).
+func userPrefs(source []byte) map[string]bool {
 	managed := map[string]bool{}
-	path := rc.chromeFile("user.js")
-	f, err := os.Open(path)
-	if err != nil {
-		return managed
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(strings.NewReader(string(source)))
 	for sc.Scan() {
 		if m := userPrefRe.FindStringSubmatch(sc.Text()); m != nil {
 			managed[m[1]] = true
@@ -34,7 +28,11 @@ func distUserPrefs(rc *repoContext) map[string]bool {
 // ours, while any other pref the user has set is preserved. The previous file
 // is backed up; the prefs section is appended after the preserved lines.
 func mergeUserJS(rc *repoContext, profileDir string) error {
-	managed := distUserPrefs(rc)
+	ours, err := rc.userJSBytes()
+	if err != nil {
+		return err
+	}
+	managed := userPrefs(ours)
 	userJs := filepath.Join(profileDir, "user.js")
 	if err := backupFile(userJs, "install"); err != nil {
 		return err
@@ -52,10 +50,6 @@ func mergeUserJS(rc *repoContext, profileDir string) error {
 			kept = append(kept, line)
 		}
 		f.Close()
-	}
-	ours, err := os.ReadFile(rc.chromeFile("user.js"))
-	if err != nil {
-		return err
 	}
 	var body strings.Builder
 	for _, l := range kept {
@@ -76,7 +70,11 @@ func mergeUserJS(rc *repoContext, profileDir string) error {
 // dropManagedPrefs removes only Lazyfox-owned prefs from user.js (uninstall),
 // preserving every other line.
 func dropManagedPrefs(rc *repoContext, profileDir string) error {
-	managed := distUserPrefs(rc)
+	ours, err := rc.userJSBytes()
+	if err != nil {
+		return err
+	}
+	managed := userPrefs(ours)
 	userJs := filepath.Join(profileDir, "user.js")
 	if !exists(userJs) {
 		return nil
