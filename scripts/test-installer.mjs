@@ -9,7 +9,7 @@
 // left untouched.
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,7 +33,17 @@ if (existsSync(join(root, "dist", "chrome")) || existsSync(join(root, "dist", "e
     const manifestPath = join(root, "dist", "extension", "manifest.json");
     if (existsSync(manifestPath)) {
       const version = JSON.parse(readFileSync(manifestPath, "utf8")).version;
-      const src = join(root, "dist", `lazyfox2-${version}.xpi`);
+      let src = join(root, "dist", `lazyfox2-${version}.xpi`);
+      if (!existsSync(src)) {
+        // Exact-version xpi may be pending AMO review; fall back to the most
+        // recent committed signed xpi so the embed/test still uses a valid,
+        // stable-Firefox-compatible signed add-on.
+        const dir = join(root, "dist");
+        const candidates = existsSync(dir)
+          ? readdirSync(dir).filter((n) => /^lazyfox2-.*\.xpi$/.test(n)).sort()
+          : [];
+        src = candidates.length ? join(dir, candidates[candidates.length - 1]) : src;
+      }
       if (existsSync(src)) {
         rmSync(extDst, { recursive: true, force: true });
         mkdirSync(extDst, { recursive: true });
