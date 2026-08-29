@@ -19,6 +19,7 @@ type config struct {
 	keepDisabled bool
 	force        bool
 	password     string // for sudo (non-interactive loader ops)
+	xpiPath      string // install this unsigned xpi instead of the embedded signed build (dev)
 	// TUI defaults.
 	hasProfileArg bool
 }
@@ -43,6 +44,7 @@ func parseArgs(rc *repoContext, args []string) (cfg config, handled bool, err er
 	fs.BoolVar(&help, "h", false, "show help")
 	fs.BoolVar(&help, "help", false, "show help")
 	fs.StringVar(&cfg.password, "sudo-pass", "", "sudo password for non-interactive loader ops")
+	xpiPath := fs.String("xpi", "", "install this unsigned xpi instead of the embedded signed build (dev)")
 	fs.Usage = func() { printUsage(fs) }
 
 	// Also accept the legacy single-dash flags (-Profile, -NoExtension, …) for
@@ -61,6 +63,7 @@ func parseArgs(rc *repoContext, args []string) (cfg config, handled bool, err er
 	cfg.force = force
 	cfg.hasProfileArg = *profile != ""
 	cfg.action = *action
+	cfg.xpiPath = *xpiPath
 
 	// A bare positional argument is the profile (legacy CLI convention).
 	if pos := fs.Args(); len(pos) > 0 {
@@ -133,6 +136,7 @@ Examples:
   lazyfox-install                  open the interactive installer
   lazyfox-install --profile "…"    preset the profile for the TUI
   lazyfox-install --mode install --profile "…" --firefox-dir "…"
+  lazyfox-install --mode install --profile "…" --xpi "…/lazyfox2-0.5.3.xpi" --no-launch
   lazyfox-install --mode loader-only --firefox-dir "…"
   lazyfox-install --mode uninstall --profile "…"
   lazyfox-install --mode list
@@ -196,6 +200,7 @@ func runNonInteractive(rc *repoContext, cfg config) error {
 			UseExtension: !cfg.noExt,
 			UseLaunch:    !cfg.noLaunch,
 			ForceLoader:  cfg.force,
+			XpiPath:      cfg.xpiPath,
 		}, pw)
 
 	case "uninstall":

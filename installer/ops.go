@@ -31,6 +31,9 @@ type InstallOptions struct {
 	ForceLoader bool
 	// Skip stop/relaunch of Firefox (for non-interactive safety).
 	NoStop bool
+	// XpiPath, when set, installs this unsigned xpi file (dev) instead of the
+	// embedded AMO-signed build. Used with --mode install --xpi <path>.
+	XpiPath string
 }
 
 const (
@@ -109,15 +112,32 @@ func runInstall(rc *repoContext, rep StepReporter, o InstallOptions, pw Password
 	return nil
 }
 
-// installExtension installs the AMO-signed add-on xpi verbatim and arranges for
-// it to be imported/enabled.
+// installExtension installs the add-on xpi verbatim and arranges for it to be
+// imported/enabled. When o.XpiPath is set (dev), it installs that unsigned xpi
+// file (e.g. a freshly built dist/lazyfox2-*.xpi for Firefox Nightly).
+// Otherwise it installs the embedded AMO-signed build.
 func installExtension(rc *repoContext, rep StepReporter, profileDir string, o InstallOptions) error {
-	data, err := rc.extensionXpiBytes()
-	if err != nil {
-		return fmt.Errorf("signed extension xpi unavailable: %w", err)
-	}
-	if len(data) == 0 {
-		return fmt.Errorf("signed extension xpi is empty")
+	var data []byte
+	label := "signed extension"
+	if o.XpiPath != "" {
+		d, err := os.ReadFile(o.XpiPath)
+		if err != nil {
+			return fmt.Errorf("could not read dev xpi %s: %w", o.XpiPath, err)
+		}
+		if len(d) == 0 {
+			return fmt.Errorf("dev xpi %s is empty", o.XpiPath)
+		}
+		data = d
+		label = "dev (unsigned) extension"
+	} else {
+		d, err := rc.extensionXpiBytes()
+		if err != nil {
+			return fmt.Errorf("signed extension xpi unavailable: %w", err)
+		}
+		if len(d) == 0 {
+			return fmt.Errorf("signed extension xpi is empty")
+		}
+		data = d
 	}
 	extensionsDir := filepath.Join(profileDir, "extensions")
 	if err := ensureDir(extensionsDir); err != nil {
@@ -128,9 +148,9 @@ func installExtension(rc *repoContext, rep StepReporter, profileDir string, o In
 		_ = backupFile(xpi, "install")
 	}
 	if err := os.WriteFile(xpi, data, 0o644); err != nil {
-		return fmt.Errorf("could not install signed extension %s: %w", xpi, err)
+		return fmt.Errorf("could not install %s %s: %w", label, xpi, err)
 	}
-	rep.Step("Installed signed extension: %s", xpi)
+	rep.Step("Installed %s: %s", label, xpi)
 
 	// Drop the add-on startup cache AND the cached entry so Firefox re-imports
 	// the freshly built xpi with correct content-script metadata.
