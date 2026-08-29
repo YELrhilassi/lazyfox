@@ -1,0 +1,77 @@
+# Releasing Lazyfox
+
+This repo has two long-lived branches that own different adds:
+
+- **`dev-nightly`** — the latest **unsigned** build. The `build:dev` flow
+  produces an unsigned xpi that devs install straight into Firefox
+  Nightly/Developer Edition (a persistent install, no manual “Add” click).
+- **`master`** — the **last AMO-signed** version. Regular users and GitHub
+  Releases use master.
+
+**The branch determines signed-vs-unsigned.** The version always lives in
+`dist/extension/manifest.json`; nothing in the build tools hardcodes it.
+
+---
+
+## The release loop
+
+1. **Develop on `dev-nightly`.** `npm run build:dev` builds an unsigned xpi and
+   `npm run build:dev:clean` installs it persistently into Nightly/Devedition.
+2. When the next version is stable, **bump `dist/extension/manifest.json`** on
+   `dev-nightly` (e.g. to `0.5.4`). Development now targets that “next” version.
+3. **Publish from `dev-nightly`**: `node scripts/amo-sign.mjs` submits that
+   version to AMO (requires `AMO_API_KEY` / `AMO_API_SECRET`).
+4. **Wait for AMO review + signing.** AMO only auto-signs *listed* versions
+   after approval.
+5. **Sync the signed xpi down to `master`.** Once reviewing is complete, re-run
+   the master workflow (a push to master, or `workflow_dispatch`). It derives the
+   version from the manifest, downloads the AMO-signed xpi for that exact version
+   via `scripts/sync-signed-xpi.mjs`, commits it back as
+   `dist/lazyfox2-<ver>.xpi` + `-signed.xpi`, embeds it in the release installers,
+   and (on a manual release run) tags + drafts a GitHub Release.
+
+### Version semantics
+
+- **Dev manifest** (`dev-nightly`) is the *next* unsigned version, e.g. `0.5.4`.
+- **Master manifest** (`master`) matches the *last AMO-signed* version, e.g.
+  `0.5.3`.
+
+This is why the branches carry different versions: master always points at a
+version that is already signed, so a fresh clone can rebuild the installer
+offline (it reuses the committed signed xpi) without needing AMO credentials.
+
+---
+
+## Workflows
+
+| File | Trigger | Purpose |
+|------|---------|---------|
+| `.github/workflows/master.yml` | push to `master`; manual release via `workflow_dispatch` | Build + release: sync signed xpi from AMO, commit it back, verify dist + installer, tag + GitHub Release. |
+| `.github/workflows/dev-nightly.yml` | push to `dev-nightly` | Auto-test the **unsigned** dev build on Firefox Nightly (BiDi). |
+| `.github/workflows/nightly.yml` | push to `dev-nightly` | Another Nightly CI pass (unsigned dev build), including the installer tests. |
+
+All three derive the version from `dist/extension/manifest.json`; there are no
+hardcoded versions.
+
+---
+
+## Signing vs. syncing
+
+- `scripts/amo-sign.mjs` — **submits a new version** to AMO and downloads the
+  freshly signed xpi. Used by `npm run build` (development convenience) and by
+  step 3 above.
+- `scripts/sync-signed-xpi.mjs` — **downloads the signed xpi for an exact,
+  already-submitted version** and writes both the plain and `-signed` artifacts.
+  Used by the master workflow (`RELEASE=1`). It is deterministic: it reuses the
+  committed signed xpi when already current, and otherwise fetches the exact
+  version from AMO (refusing to guess or fabricate an unsigned one).
+
+## CLI: `npm run build:*`
+
+| Script | Output |
+|--------|--------|
+| `npm run build` | Prod build (sign via `amo-sign.mjs`), rebuild the 3 per-OS installer binaries. |
+| `npm run build:release` | Same but with `RELEASE=1` — syncs the AMO-signed xpi down instead of signing (used by master). |
+| `npm run build:dev` | Unsigned xpi + dev bundles, **skips** AMO signing and installer rebuild. |
+| `npm run build:dev:clean` | Fresh dev build + persistent install into Nightly/Devedition (+ default profile). |
+| `npm run build:installer` | Rebuild the host `installer/bin/lazyfox-install` binary. |

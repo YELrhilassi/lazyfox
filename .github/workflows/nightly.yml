@@ -20,8 +20,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build extension
-        run: npm run build
+      - name: Build dev extension (unsigned)
+        run: npm run build:dev
 
       - name: Run installer tests
         run: npm test
@@ -38,13 +38,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Derive version
+        id: version
+        run: |
+          V=$(node -p "require('./dist/extension/manifest.json').version")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
       - name: Setup Firefox Nightly
         uses: browser-actions/setup-firefox-nightly@v1
 
       - name: Install extension
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
           .tools/firefox-nightly/firefox -P "nightly-test" --createprofile
-          .tools/firefox-nightly/firefox -P "nightly-test" -no-remote -installAddon "dist/lazyfox2-0.5.3.xpi" &
+          .tools/firefox-nightly/firefox -P "nightly-test" -no-remote -installAddon "dist/lazyfox2-${VERSION}.xpi" &
           sleep 5
 
       - name: Run BiDi test suite
