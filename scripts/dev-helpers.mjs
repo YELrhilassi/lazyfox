@@ -1,4 +1,5 @@
-import { readdirSync, existsSync, rmSync, readFileSync, writeFileSync } from 'fs';
+import { readdirSync, existsSync, rmSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { join, basename, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -95,6 +96,53 @@ export function findFirefoxDir() {
     if (existsSync(join(dir, 'firefox'))) return dir;
   }
   return null;
+}
+
+// ---- host dev installer (installer/bin/lazyfox-install) ---------------------
+
+// The host installer binary (no platform suffix, gitignored) is what the dev
+// scripts invoke. It is NOT built by `npm run build:dev` (that short-circuits
+// before the installer step), so a fresh clone would lack it. This helper
+// builds it on demand: it stages the chrome payloads and the freshly built
+// UNSIGNED xpi into installer/payload/ so `go build` succeeds (go:embed needs
+// those dirs to exist) and the binary is a self-contained dev installer — the
+// 'different dev installer' decision.
+//
+// Returns the absolute path to the host binary. Rebuilds lazily: if the binary
+// already exists it is returned as-is (dev iteration is fast); force with
+// `--rebuild` to pick up Go source or payload changes.
+export function ensureHostInstaller(root, { rebuild = false, xpi = null } = {}) {
+  const installerDir = join(root, 'installer');
+  const binDir = join(installerDir, 'bin');
+  const out = join(binDir, 'lazyfox-install');
+
+  if (!rebuild && existsSync(out)) return out;
+
+  // Stage chrome profile payloads (same set build.mjs stages).
+  const chromeSrc = join(root, 'dist/chrome');
+  const chromeDst = join(installerDir, 'payload/chrome');
+  mkdirSync(chromeDst, { recursive: true });
+  for (const f of ['userChrome.css', 'userChrome.uc.js', 'frame.js', 'corebootstrap.js', 'user.js']) {
+    cpSync(join(chromeSrc, f), join(chromeDst, f));
+  }
+
+  // Stage the extension payload. In dev we use the freshly built unsigned xpi
+  // so the host dev installer embeds the unsigned payload (fresh-clone
+  // self-contained), matching the 'different dev installer for dev' decision.
+  const extDst = join(installerDir, 'payload/extension');
+  mkdirSync(extDst, { recursive: true });
+  const extSrc = xpi || latestUnsignedXpi(join(root, 'dist'));
+  if (!extSrc || !existsSync(extSrc)) {
+    throw new Error(`ensureHostInstaller: no xpi to embed (${extSrc || 'none'}) — run npm run build:dev first`);
+  }
+  cpSync(extSrc, join(extDst, 'lazyfox2.xpi'));
+
+  mkdirSync(binDir, { recursive: true });
+  execFileSync('go', ['build', '-trimpath', '-ldflags=-s -w', '-o', out, '.'], {
+    cwd: installerDir,
+    stdio: 'inherit',
+  });
+  return out;
 }
 
 // ---- profiles.ini editing (make the dev profile the default) ----------------

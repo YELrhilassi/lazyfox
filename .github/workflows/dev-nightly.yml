@@ -23,6 +23,12 @@ jobs:
       - name: Build dev extension
         run: npm run build:dev
 
+      - name: Derive version
+        id: version
+        run: |
+          V=$(node -p "require('./dist/extension/manifest.json').version")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
       - name: Find Firefox Nightly
         id: find-nightly
         run: |
@@ -46,11 +52,12 @@ jobs:
       - name: Install extension on Nightly
         if: steps.find-nightly.outputs.nightly_path != ''
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
           "${{ steps.find-nightly.outputs.nightly_path }}" -P "nightly-test" --profilemanager > /dev/null 2>&1 || true
           # Create profile if needed
           mkdir -p ~/.nightly-profile
           # Install the extension
-          "${{ steps.find-nightly.outputs.nightly_path }}" -P "nightly-test" -no-remote -installAddon "dist/lazyfox2-0.5.3.xpi" &>/dev/null &
+          "${{ steps.find-nightly.outputs.nightly_path }}" -P "nightly-test" -no-remote -installAddon "dist/lazyfox2-${VERSION}.xpi" &>/dev/null &
           sleep 3
 
       - name: Run BiDi test suite

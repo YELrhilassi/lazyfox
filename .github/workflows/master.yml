@@ -1,27 +1,54 @@
 name: Master CI - Build and Release Signed XPI
 
+# Master holds the last AMO-signed release. On push, the workflow builds the
+# extension, downloads the AMO-signed xpi for the exact manifest version, embeds
+# it in the release installers, and (on a tagged/manual run) drafts a GitHub
+# release. The version is ALWAYS derived from dist/extension/manifest.json —
+# never hardcoded here.
 on:
   push:
     branches: [master]
-  pull_request:
-    branches: [master]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Create a GitHub release for the current version"
+        required: false
+        default: "true"
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Persist creds so the release job can push the signed-xpi commit/tag.
+          persist-credentials: true
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build extension
+      - name: Build extension (release, sync AMO-signed xpi)
+        env:
+          RELEASE: "1"
+          AMO_API_KEY: ${{ secrets.AMO_API_KEY }}
+          AMO_API_SECRET: ${{ secrets.AMO_API_SECRET }}
         run: npm run build
+
+      - name: Derive version
+        id: version
+        run: |
+          V=$(node -p "require('./dist/extension/manifest.json').version")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
 
       - name: Verify dist
         run: node scripts/check-dist.mjs
@@ -29,46 +56,34 @@ jobs:
       - name: Check installer
         run: node scripts/test-installer.mjs
 
-  amosign:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Submit to AMO
+      - name: Commit signed xpi back to master
+        # Sync the freshly downloaded signed xpi so master's committed dist/
+        # always matches the AMO-signed version (the next clone's `npm build`
+        # can reuse it without AMO creds).
         env:
-          AMO_API_TOKEN: ${{ secrets.AMO_API_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          node scripts/amo-sign.mjs
-
-      - name: Download signed xpi
-        run: |
-          # Download the newly signed xpi from AMO
-          curl -L -o dist/lazyfox2-0.5.3-signed.xpi \
-            "https://addons.mozilla.org/firefox/downloads/file/$(grep -o 'files/[0-9]*' dist/lazyfox2-0.5.3-signed.xpi | head -1 | cut -d/ -f2)/lazyfox2-0.5.3.xpi"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/lazyfox2-${VERSION}.xpi dist/lazyfox2-${VERSION}-signed.xpi || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: sync AMO-signed xpi v${VERSION}"
+            git push origin master
+          fi
 
       - name: Create GitHub Release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # Create release with 3 platform binaries + signed xpi + source
-          git tag -a v0.5.3 -m "Lazyfox v0.5.3 signed release"
-          git push origin v0.5.3
-
-          # Upload assets
-          gh release create v0.5.3 \
-            --title "Lazyfox v0.5.3" \
+          TAG="v${VERSION}"
+          git tag -a "${TAG}" -m "Lazyfox ${TAG} signed release"
+          git push origin "${TAG}"
+          gh release create "${TAG}" \
+            --title "Lazyfox ${TAG}" \
             --notes "Signed release for stable Firefox" \
             dist/lazyfox-install-linux \
             dist/lazyfox-install-darwin \
             dist/lazyfox-install-windows.exe \
-            dist/lazyfox2-0.5.3-signed.xpi \
-            --generate-notes
+            "dist/lazyfox2-${VERSION}-signed.xpi"
