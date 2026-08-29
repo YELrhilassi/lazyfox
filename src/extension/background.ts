@@ -822,7 +822,7 @@ function openSetupTab(): Promise<{ ok: boolean }> {
 }
 
 // The chrome-down notification opens the setup page so the user can re-run the
-// patcher (or finish a fresh install) in one click.
+// installer (or finish a fresh install) in one click.
 const CHROME_NOTIF = "lf-chrome-down";
 browser.notifications.onClicked.addListener((id: string) => {
   if (id === CHROME_NOTIF) void openSetupTab();

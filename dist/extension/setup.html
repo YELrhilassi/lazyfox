@@ -24,12 +24,12 @@
   .status-line { display: flex; align-items: center; gap: 10px; font-size: 13px; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: #f7768e; }
   .dot.on { background: #9ece6a; }
-  button {
-    padding: 10px 22px; background: #7aa2f7; color: #16161e;
+  button, a.dl {
+    display: inline-block; padding: 10px 22px; background: #7aa2f7; color: #16161e;
     border: none; border-radius: 6px; font-family: inherit; font-size: 13px;
-    font-weight: 600; cursor: pointer;
+    font-weight: 600; cursor: pointer; text-decoration: none;
   }
-  button:hover { background: #89b0fa; }
+  button:hover, a.dl:hover { background: #89b0fa; }
   button.ghost { background: #1e1e2e; color: #7aa2f7; border: 1px solid #414868; }
   button.ghost:hover { border-color: #7aa2f7; }
   button:disabled { opacity: .5; cursor: default; }
@@ -46,26 +46,27 @@
 </head>
 <body id="lazyfox-setup">
   <h1>Lazyfox &middot; complete the installation</h1>
-  <p>The add-on from addons.mozilla.org is installed and works on web pages
+  <p>The Lazyfox add-on is installed and works on web pages
   (<span class="kbd">;</span> leader, link hints, find, sessions&hellip;). The
   <b style="color:#c0caf5">toolbar-free UI</b> &mdash; the hidden tab strip and
   URL bar, the status bar, and the chrome-level <span class="kbd">;</span> keys
-  on <span class="kbd">about:</span> pages &mdash; is installed by a tiny
-  one-time script, because Firefox does not let an add-on write files itself.
-  This page gives you that script and walks you through it.</p>
+  on <span class="kbd">about:</span> pages &mdash; is applied by a small
+  standalone installer, because Firefox does not let an add-on write files
+  itself. This page gets you that installer and walks you through it.</p>
 
   <h2>Status</h2>
   <div class="card" id="statusCard">
     <div class="status-line"><span class="dot" id="dot"></span><span id="statusText">checking&hellip;</span></div>
   </div>
 
-  <h2>1 &middot; Download the one-click installer</h2>
+  <h2>1 &middot; Download the installer</h2>
   <div class="card">
-    <p>Runs on <b id="osName" style="color:#c0caf5">your OS</b>. It writes only
-    Lazyfox's own files into your profile (each with a
-    <span class="kbd">.lazyfox.bak-*</span> backup) and asks for admin rights
-    <b>once</b> to drop the autoconfig loader into the Firefox install folder.</p>
-    <button id="dl">Download lazyfox-install</button>
+    <p>One native, self-contained executable for <b id="osName" style="color:#c0caf5">your OS</b> —
+    no shell, no PowerShell, no toolchain. It writes only Lazyfox's own files
+    into your profile (each with a <span class="kbd">.lazyfox.bak-*</span>
+    backup) and asks for admin rights <b>once</b> to drop the autoconfig loader
+    into the Firefox install folder.</p>
+    <a class="dl" id="dl" target="_blank" rel="noopener">Download lazyfox-install</a>
     <span id="status"></span>
     <p class="muted" id="dlNote"></p>
   </div>
@@ -93,9 +94,9 @@
   </div>
 
   <p class="muted">Your bookmarks, history, passwords and other add-ons are
-  never touched. Everything is reversible: delete the four
-  <span class="kbd">chrome/</span> files and the loader, or re-run the repo's
-  <span class="kbd">scripts/uninstall.*</span>.</p>
+  never touched. Everything is reversible by running the installer's
+  <span class="kbd">uninstall</span> action (the same executable, run with
+  <span class="kbd">--mode uninstall</span>).</p>
 
 <script src="setup.js"></script>
 </body>

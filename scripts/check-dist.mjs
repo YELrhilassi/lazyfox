@@ -30,8 +30,6 @@ const REQUIRED = [
   "dist/extension/popup.js",
   "dist/extension/setup.html",
   "dist/extension/setup.js",
-  "dist/extension/patch/install.ps1",
-  "dist/extension/patch/install.sh",
   "dist/extension/icons/icon48.png",
   "dist/extension/icons/icon96.png",
   "dist/extension/icons/icon128.png",
@@ -76,29 +74,17 @@ if (frame.indexOf("WebAssembly") !== -1) {
   process.exit(1);
 }
 
-// The store add-on's self-contained patchers must carry the full chrome helper
-// payload (no unfilled build tokens) so the setup page can complete a fresh
-// install without the repo or a toolchain.
-for (const p of ["dist/extension/patch/install.ps1", "dist/extension/patch/install.sh"]) {
-  const text = readFileSync(join(root, p), "utf8");
-  if (text.indexOf("__B64_") !== -1) {
-    console.error(`check-dist: ${p} still has unfilled payload tokens (run npm run build).`);
-    process.exit(1);
-  }
-  if (text.indexOf("userChrome.uc.js") === -1) {
-    console.error(`check-dist: ${p} does not embed the chrome helper payload.`);
-    process.exit(1);
-  }
-  if (statSync(join(root, p)).size < 2_000_000) {
-    console.error(`check-dist: ${p} is suspiciously small — payload may be missing.`);
-    process.exit(1);
-  }
-}
-
 // setup.html must reference the bundled setup.js.
 const setupHtml = readFileSync(join(root, "dist/extension/setup.html"), "utf8");
 if (setupHtml.indexOf('src="setup.js"') === -1) {
   console.error("check-dist: setup.html does not reference setup.js.");
+  process.exit(1);
+}
+// The setup page's logic must offer the GitHub Releases standalone installer
+// download (per-OS asset links are built at runtime in setup.js).
+const setupJs = readFileSync(join(root, "dist/extension/setup.js"), "utf8");
+if (setupJs.indexOf("releases/latest/download") === -1) {
+  console.error("check-dist: setup.js does not link to the GitHub Releases installer.");
   process.exit(1);
 }
 

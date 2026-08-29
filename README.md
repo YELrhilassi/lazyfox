@@ -40,27 +40,44 @@ is always a way in.
 ## Install
 
 Two halves make Lazyfox: the **add-on** (this repo's `dist/extension` — also
-published on addons.mozilla.org) and the **profile patch** that physically
-removes the browser chrome. Firefox will not let an add-on write files, so the
-profile patch is applied by a small installer — Firefox **Developer Edition or
-Nightly** is only required for the manually-loaded unsigned add-on; the AMO
-build is signed and runs on stable Firefox.
+published on addons.mozilla.org as the signed `lazyfox2` add-on) and the
+**profile patch** that physically removes the browser chrome. Firefox will not
+let an add-on write files, so the profile patch is applied by a small installer.
+The installer ships the **signed** add-on xpi and installs it verbatim, so both
+setup paths work on **stable** Firefox — no Developer Edition or Nightly needed
+(it is only required if you manually load a *unsigned* dev build from
+`about:debugging`).
 
 **From the store** — install `Lazyfox` from addons.mozilla.org, then press
-`;I` (or open the extension's setup page) and download the one-click
-installer it offers. It detects the right profile, writes the four
-`chrome/` files, merges Lazyfox's preferences, and asks for admin rights
-**once** to drop the autoconfig loader into the Firefox install folder.
+`;I` (or open the extension's setup page). It detects the right profile,
+writes the four `chrome/` files, merges Lazyfox's preferences, installs the
+add-on, and asks for admin rights **once** to drop the autoconfig loader into
+the Firefox install folder.
 
-**From this repo** —
+**The installer** — one prebuilt, cross-platform, **pure-Go** binary does the
+whole install. There are **no shell or PowerShell scripts**; the binary itself
+is the installer. It detects your OS, every Firefox installation and every
+profile, then guides you through install or uninstall in an interactive
+terminal wizard:
 
-| OS | Command |
-| --- | --- |
-| Windows | `powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1` |
-| Linux | `./scripts/install.sh` |
+| OS | Distribution | Command / run |
+| --- | --- | --- |
+| Linux | GitHub Releases `lazyfox-install-linux` | `chmod +x lazyfox-install-linux` then run it |
+| macOS | GitHub Releases `lazyfox-install-darwin` | run `lazyfox-install-darwin` |
+| Windows | GitHub Releases `lazyfox-install-windows.exe` | double-click, or run from a terminal |
 
-To pick a profile, add `-Profile "C:\path\to\profile"` (Windows) or pass the
-path as an argument (Linux).
+Downloads publish through the repo's **GitHub Releases** page; each build is
+also committed under `installer/bin/` for direct use. Running the binary with
+no arguments opens the interactive wizard and auto-detects your profile. To
+skip the wizard and target a specific profile non-interactively (used by the
+automated tests), pass it as a positional argument or a flag:
+
+```
+lazyfox-install                # interactive wizard (default)
+lazyfox-install --mode list
+lazyfox-install --mode install --profile "…" --firefox-dir "…"
+lazyfox-install --mode uninstall --profile "…"
+```
 
 The installer finds your Firefox profile, copies the UI files, merges only the
 preferences Lazyfox owns, and installs the add-on permanently. It also drops a
@@ -68,6 +85,33 @@ small helper into the Firefox install folder so the leader key works on pages
 where add-ons cannot run — that one step asks for admin rights **once** (a UAC
 prompt on Windows, `sudo` on Linux). Your profile, bookmarks, history and
 settings are never touched; every file that gets replaced is backed up first.
+
+The binary is **fully self-contained**: every artifact it needs for a complete
+install — the profile chrome files, the managed `user.js` prefs, and the
+**AMO-signed** add-on xpi (signature block included, so it loads on stable
+Firefox) — is embedded in the binary, so a full install has **zero
+dependencies**: no repo checkout, no `dist/`, no Go toolchain, no npm, no
+`zip`. When it happens to run from a repo checkout it prefers the live `dist/`
+(so a freshly rebuilt `dist` governs behavior), and falls back to its embedded
+payload otherwise. To rebuild the binaries yourself:
+
+```
+npm run build            # full build: wasm, bundles, signed xpi, all binaries
+npm run build:installer  # build only the host rebuild of installer/bin/lazyfox-install
+installer/bin/lazyfox-install            # interactive wizard
+installer/bin/lazyfox-install --mode list
+installer/bin/lazyfox-install --mode install --profile "…" --firefox-dir "…"
+installer/bin/lazyfox-install --mode uninstall --profile "…"
+```
+
+## Development, testing & Nightly
+
+Lazyfox develops against **Firefox Nightly**. Testing and manual smoke-tests
+use the one installer binary with non-interactive flags (see above) so
+everything is automatable. Nightly is used for both WebDriver (BiDi/Marionette)
+test runs and for loading an *unsigned* dev build of the add-on from
+`about:debugging` — stable Firefox rejects unsigned builds, so dev work happens
+on Nightly, while released installs use the AMO-signed xpi on stable.
 
 ## Everyday use
 
@@ -276,9 +320,33 @@ is committed, so installing never needs the toolchain — change source, run
 
 ```bash
 npm install        # esbuild + typescript
-npm run build      # builds the wasm, bundles src/ into dist/
+npm run build      # builds the wasm, bundles src/ into dist/, and rebuilds
+                   # the self-contained installer binaries (payloads embedded)
 npm run typecheck  # tsc --noEmit
-npm test           # go test ./core/ + dist/ completeness
+npm test           # go test ./core/ + installer tests + dist/ completeness
+```
+
+**Signing.** Stable Firefox rejects unsigned add-ons, so the shipped xpi is the
+**signed** one from addons.mozilla.org. `npm run build` embeds `dist/lazyfox2-<version>.xpi`
+into the installer binaries; `scripts/amo-sign.mjs` produces it:
+
+- If that version's signed xpi already exists and is current, it is **reused**
+  (the build is fully offline — this is the normal case after a signed xpi has
+  been committed).
+- Only when you **bump `dist/extension/manifest.json`** to a new version does it
+  submit to AMO for a fresh signature and download the signed xpi. That path
+  needs `AMO_API_KEY`/`AMO_API_SECRET` and requires the new version not already
+  exist on AMO. Re-running with no version bump never re-signs, so you are not
+  signing on every build.
+
+AMO signs **listed** (store) versions only after their human review passes. If
+a version is submitted but still pending review, `amo-sign.mjs` falls back to
+the most recent committed signed xpi (printing a clear warning) so the build,
+tests and executables keep working. To swap in the freshly signed xpi once AMO
+approves, download the signed file from that version on AMO to
+`dist/lazyfox2-<version>.xpi`, then re-run `npm run build` — the version check
+then matches and the new signed xpi is embedded and the release refreshed.
+
 ```
 
 The end-to-end suite drives a real Firefox over WebDriver BiDi, and the
@@ -300,10 +368,10 @@ Layout of the repo:
 
 ## Uninstall
 
-Run `scripts/uninstall.ps1` (Windows) or `scripts/uninstall.sh` (Linux), plus
-`-RemoveChromeLoader` if you want the admin helper undone as well. It
-reverses exactly what the installer did — your profile, bookmarks, history
-and other add-ons are never touched.
+Run the same standalone installer with the `uninstall` action
+(`installer/bin/lazyfox-install --mode uninstall`, or use the wizard and pick
+uninstall). It reverses exactly what the installer did — your profile,
+bookmarks, history and other add-ons are never touched.
 
 ## License
 
