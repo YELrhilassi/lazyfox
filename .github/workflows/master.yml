@@ -1,0 +1,74 @@
+name: Master CI - Build and Release Signed XPI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Verify dist
+        run: node scripts/check-dist.mjs
+
+      - name: Check installer
+        run: node scripts/test-installer.mjs
+
+  amosign:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Submit to AMO
+        env:
+          AMO_API_TOKEN: ${{ secrets.AMO_API_TOKEN }}
+        run: |
+          node scripts/amo-sign.mjs
+
+      - name: Download signed xpi
+        run: |
+          # Download the newly signed xpi from AMO
+          curl -L -o dist/lazyfox2-0.5.3-signed.xpi \
+            "https://addons.mozilla.org/firefox/downloads/file/$(grep -o 'files/[0-9]*' dist/lazyfox2-0.5.3-signed.xpi | head -1 | cut -d/ -f2)/lazyfox2-0.5.3.xpi"
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create release with 3 platform binaries + signed xpi + source
+          git tag -a v0.5.3 -m "Lazyfox v0.5.3 signed release"
+          git push origin v0.5.3
+
+          # Upload assets
+          gh release create v0.5.3 \
+            --title "Lazyfox v0.5.3" \
+            --notes "Signed release for stable Firefox" \
+            dist/lazyfox-install-linux \
+            dist/lazyfox-install-darwin \
+            dist/lazyfox-install-windows.exe \
+            dist/lazyfox2-0.5.3-signed.xpi \
+            --generate-notes

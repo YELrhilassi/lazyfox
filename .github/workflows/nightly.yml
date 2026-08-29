@@ -1,0 +1,60 @@
+name: Nightly CI - Test on Firefox Nightly
+
+on:
+  push:
+    branches: [dev-nightly]
+  pull_request:
+    branches: [dev-nightly]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Run installer tests
+        run: npm test
+
+      - name: Verify dist is self-contained
+        run: node scripts/check-dist.mjs
+
+      - name: Check installer
+        run: node scripts/test-installer.mjs
+
+  firefox-test:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Firefox Nightly
+        uses: browser-actions/setup-firefox-nightly@v1
+
+      - name: Install extension
+        run: |
+          .tools/firefox-nightly/firefox -P "nightly-test" --createprofile
+          .tools/firefox-nightly/firefox -P "nightly-test" -no-remote -installAddon "dist/lazyfox2-0.5.3.xpi" &
+          sleep 5
+
+      - name: Run BiDi test suite
+        run: |
+          FIREFOX_BIN=".tools/firefox-nightly/firefox" \
+          GECKODRIVER=".tools/geckodriver" \
+          timeout 300 node scripts/bidi/test.mjs || true
+
+      - name: Capture test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-test-results
+          path: /tmp/bidi-test*.log
