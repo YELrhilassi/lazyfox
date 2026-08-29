@@ -7,6 +7,7 @@
   "scripts": {
     "build": "node build.mjs",
     "build:dev": "node build.mjs --dev",
+    "build:release": "RELEASE=1 node build.mjs",
     "build:installer": "node scripts/build-installer.mjs",
     "typecheck": "tsc --noEmit",
     "test": "go test ./core/ && node scripts/test-installer.mjs && node scripts/check-dist.mjs",

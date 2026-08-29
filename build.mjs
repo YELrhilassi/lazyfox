@@ -112,13 +112,26 @@ if (DEV) {
   process.exit(0);
 }
 
-// Ensure a signed .xpi exists for the current extension version (scripts/
-// amo-sign.mjs reuses the committed signed artifact offline, or auto-submits a
-// NEW version to AMO when the version is bumped — see that script for details).
-// The installer installs this signed xpi verbatim, which is what makes the
-// add-on load on stable Firefox (it already ships the AMO signature block).
-console.log("[sign] ensuring signed xpi for the current version…");
-execFileSync(process.execPath, [join(root, "scripts", "amo-sign.mjs")], { stdio: "inherit" });
+// Ensure a signed .xpi exists for the current extension version.
+//
+// Release mode (RELEASE=1, used by the master workflow): sync-signed-xpi.mjs
+// downloads the AMO-signed xpi for the exact manifest version from AMO and
+// writes both dist/lazyfox2-<ver>.xpi and -signed.xpi. It reuses a committed
+// signed xpi when already current, so it is deterministic (version comes from
+// the manifest) and never fabricates or guesses.
+//
+// Normal mode: amo-sign.mjs reuses the committed signed artifact offline, or
+// auto-submits a NEW version to AMO when the version is bumped (see that script
+// for details). The installer installs this signed xpi verbatim, which is what
+// makes the add-on load on stable Firefox (it already ships the AMO signature
+// block).
+if (process.env.RELEASE === "1") {
+  console.log("[sign] syncing AMO-signed xpi for the current version…");
+  execFileSync(process.execPath, [join(root, "scripts", "sync-signed-xpi.mjs")], { stdio: "inherit" });
+} else {
+  console.log("[sign] ensuring signed xpi for the current version…");
+  execFileSync(process.execPath, [join(root, "scripts", "amo-sign.mjs")], { stdio: "inherit" });
+}
 const extensionVersion = JSON.parse(readFileSync(join(root, "dist", "extension", "manifest.json"), "utf8")).version;
 
 // The interactive installer is a single Go binary (replaces the per-OS shell

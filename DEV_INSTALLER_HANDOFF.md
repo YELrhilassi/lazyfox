@@ -126,10 +126,18 @@ Note: `dist/lazyfox2-0.5.3.xpi` is **not** in the diff (restored to committed = 
 
 ---
 
-## 6. Suggested next-session checklist (ordered)
+## 6. Session checklist — STATUS
 
-1. `git add` + commit the current working tree (message style: e.g. `feat: dev installer via go-cli --xpi + unsigned dev build + default-profile`) and push to `mine dev-nightly`.
-2. Implement A — make the dev build produce the host dev installer (unsigned embed) so fresh clones work.
-3. Implement C/D — rework `master.yml` (derive version from manifest, AMO download → commit signed xpi to master, release installer + tag), remove hardcoded `0.5.3` in `dev-nightly.yml`/`nightly.yml`.
-4. Confirm B — finalize dev-vs-release installer naming/embed policy with the user.
-5. Add a short RELEASING note documenting the dev→review→master sync loop (decision D).
+1. ✅ `git add` + commit the current working tree (+ push to `mine dev-nightly`).
+2. ✅ Implement A — dev scripts (`clean-profile.mjs`, `dev-install.mjs`) now auto-build the host `installer/bin/lazyfox-install` when missing via `ensureHostInstaller()` in `scripts/dev-helpers.mjs`, embedding the fresh unsigned xpi. Fresh clones work.
+3. ✅ Implement C — reworked `.github/workflows/master.yml` (derives version from manifest, `scripts/sync-signed-xpi.mjs` downloads+commits signed xpi, installers + tag + GitHub Release), added `build:release` (`RELEASE=1 node build.mjs`), removed all hardcoded `0.5.3` from `dev-nightly.yml`/`nightly.yml`.
+4. ⏳ Confirm B — finalize dev-vs-release installer naming/embed policy with the user (still open).
+5. ✅ Add `docs/RELEASING.md` documenting the dev→review→master sync loop (decision D).
+
+### New files this session (committed on `dev-nightly`, branch off last handoff)
+- `scripts/sync-signed-xpi.mjs` — deterministic AMO-signed-xpi sync for a given manifest version (reuse committed → fetch from AMO → write both `.xpi` + `-signed.xpi`).
+- `docs/RELEASING.md` — the release loop, version semantics, workflows table, and `npm run build:*` cheat sheet.
+- `ensureHostInstaller()` helper in `scripts/dev-helpers.mjs`.
+
+### Still open
+- **B**: dev-vs-release installer embed policy. Current: single `installer/bin/lazyfox-install-*` per OS carries the signed embed and `--xpi` switches to unsigned at runtime; dev scripts build a host `lazyfox-install` embedding the unsigned xpi. Decide whether to keep this or ship both variants.
