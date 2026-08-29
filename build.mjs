@@ -17,7 +17,7 @@
 // users who clone don't need a Go toolchain to install.
 
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -96,34 +96,62 @@ cpSync(join(root, "src", "static", "chrome"), join(root, "dist", "chrome"), {
 });
 console.log("[static] src/static/{extension,chrome} -> dist/");
 
-/* ---------- 4. self-contained full-install patchers ---------- */
+/* ---------- 4. signed add-on + cross-platform installer binary ---------- */
 
-// The store WebExtension cannot write profile/install-dir files itself, so the
-// AMO package ships one-click patchers (install.ps1 / install.sh) with the
-// chrome helper payload embedded as base64. The setup page offers them for
-// download; each is fully self-contained (no repo checkout, no toolchain).
-const PATCH_PAYLOAD = [
-  ["userChrome.css", "userChrome_css"],
-  ["userChrome.uc.js", "userChrome_uc_js"],
-  ["frame.js", "frame_js"],
-  ["corebootstrap.js", "corebootstrap_js"],
-  ["user.js", "user_js"],
-  ["loader/config.js", "loader_config_js"],
-  ["loader/config-prefs.js", "loader_config_prefs_js"],
+// Ensure a signed .xpi exists for the current extension version (scripts/
+// amo-sign.mjs reuses the committed signed artifact offline, or auto-submits a
+// NEW version to AMO when the version is bumped — see that script for details).
+// The installer installs this signed xpi verbatim, which is what makes the
+// add-on load on stable Firefox (it already ships the AMO signature block).
+console.log("[sign] ensuring signed xpi for the current version…");
+execFileSync(process.execPath, [join(root, "scripts", "amo-sign.mjs")], { stdio: "inherit" });
+const extensionVersion = JSON.parse(readFileSync(join(root, "dist", "extension", "manifest.json"), "utf8")).version;
+
+// The interactive installer is a single Go binary (replaces the per-OS shell
+// installers). It is built fully self-contained: before compiling, the chrome
+// helper payload and the signed add-on xpi are staged into installer/payload/
+// and embedded with go:embed, so the shipped binary can do a COMPLETE install
+// (profile chrome files, user.js merge, signed add-on install, loader) with no
+// repo checkout, no dist/ folder and no toolchain. Build it for every supported
+// platform into installer/bin/ so releases ship one native binary per OS:
+//   lazyfox-install-linux, lazyfox-install-darwin, lazyfox-install-windows.exe
+const INSTALLER_TARGETS = [
+  { goos: "linux", arch: "amd64", out: "lazyfox-install-linux" },
+  { goos: "darwin", arch: "arm64", out: "lazyfox-install-darwin" },
+  { goos: "windows", arch: "amd64", out: "lazyfox-install-windows.exe" },
 ];
-for (const tpl of ["install.ps1.tpl", "install.sh.tpl"]) {
-  let out = readFileSync(join(root, "scripts", "patcher", tpl), "utf8");
-  for (const [file, token] of PATCH_PAYLOAD) {
-    const bytes = readFileSync(join(root, "dist", "chrome", file));
-    out = out.split("__B64_" + token + "__").join(bytes.toString("base64"));
+
+// Stage the payloads the installer embeds (profile chrome files + user.js, and
+// the signed add-on xpi). These are intermediate build inputs only — the
+// binaries in installer/bin/ carry the embedded copies — so they are excluded
+// from git (see installer/.gitignore). The loader is embedded separately from
+// the committed installer/payload/loader/ and is not re-staged here.
+const stagePayload = () => {
+  const chromeSrc = join(root, "dist", "chrome");
+  const chromeDst = join(root, "installer", "payload", "chrome");
+  mkdirSync(chromeDst, { recursive: true });
+  for (const f of ["userChrome.css", "userChrome.uc.js", "frame.js", "corebootstrap.js", "user.js"]) {
+    cpSync(join(chromeSrc, f), join(chromeDst, f));
   }
-  if (out.includes("__B64_")) {
-    throw new Error("unfilled payload token in " + tpl);
-  }
-  const dest = join(root, "dist", "extension", "patch", tpl.replace(".tpl", ""));
-  mkdirSync(dirname(dest), { recursive: true });
-  writeFileSync(dest, out);
-  console.log(`[patch] ${tpl.replace(".tpl", "")} (${out.length} bytes, payload embedded)`);
+  // Signed add-on: clear any stale tree staged by older builds, then copy the
+  // signed xpi in as the single extension payload.
+  const extDst = join(root, "installer", "payload", "extension");
+  rmSync(extDst, { recursive: true, force: true });
+  mkdirSync(extDst, { recursive: true });
+  cpSync(join(root, "dist", `lazyfox2-${extensionVersion}.xpi`), join(extDst, "lazyfox2.xpi"));
+  console.log(`[installer] staged payloads -> installer/payload/chrome + extension/lazyfox2.xpi (v${extensionVersion})`);
+};
+
+stagePayload();
+mkdirSync(join(root, "installer", "bin"), { recursive: true });
+for (const t of INSTALLER_TARGETS) {
+  const out = join(root, "installer", "bin", t.out);
+  execFileSync(
+    "go",
+    ["build", "-trimpath", "-ldflags=-s -w", "-o", out, "."],
+    { cwd: join(root, "installer"), env: { ...process.env, GOOS: t.goos, GOARCH: t.arch }, stdio: "inherit" }
+  );
+  console.log(`[installer] ${t.goos}/${t.arch} -> installer/bin/${t.out}`);
 }
 
 console.log("\nBuild complete. dist/ is ready to install.");

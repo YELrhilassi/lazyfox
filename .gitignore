@@ -1,6 +1,14 @@
 node_modules/
 web-ext-artifacts/
 dist/extension/*.xpi
+
+# Local secrets (AMO signing credentials etc.). See .env.example. Never commit.
+.env
+.env.*
+!.env.example
+# Host-specific installer built by `npm run build:installer` (the committed,
+# distributable binaries are the per-OS ones in installer/bin/).
+installer/bin/lazyfox-install
 .tools/
 .freebuff/
 Thumbs.db

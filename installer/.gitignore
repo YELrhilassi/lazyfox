@@ -1,0 +1,11 @@
+# Dev-stage build output (go build . inside installer/). The distributable
+# binaries live in bin/ and ARE committed.
+/installer
+/installer.exe
+
+# Staged embed payloads (intermediate build inputs, populated by build.mjs /
+# scripts/build-installer.mjs before compiling). The compiled binaries carry the
+# embedded copies, so these are not committed. payload/loader IS committed (it is
+# the standalone loader embed, small and stable).
+/payload/chrome/
+/payload/extension/

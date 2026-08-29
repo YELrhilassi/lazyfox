@@ -21,11 +21,11 @@ export async function run(ctx) {
     await ctx.press(ctx.tabA, "Escape");
   });
 
-  await t(";I opens the full-install setup page with a self-contained patcher", async () => {
+  await t(";I opens the setup page with a GitHub Releases standalone installer download", async () => {
     // The store add-on cannot write profile files itself, so ;I opens the
-    // setup page that hands the user a self-contained patcher. The package
-    // must ship patch/install.ps1 (chrome helper payload embedded) and the
-    // page must render its status + steps.
+    // setup page that directs the user to download the standalone Go installer
+    // from GitHub Releases. The page must render its status + steps and point
+    // its Download control at a releases/latest/download asset URL.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await ctx.leaderPress(ctx.tabA, "i", { shift: true });
     const setupTab = await waitFor(async () => {
@@ -38,13 +38,10 @@ export async function run(ctx) {
     const setupCtx = all.find((c) => (c.url || "").includes("setup.html"));
     assert(setupCtx, "found the setup page's browsing context");
     const raw = await evalIn(setupCtx.context, `(async () => {
-      const patch = await fetch(browser.runtime.getURL("patch/install.ps1")).then(r => r.text()).catch(e => "ERR:" + e);
       return JSON.stringify({
         ok: !!document.getElementById("lazyfox-setup"),
-        dl: !!document.getElementById("dl"),
+        dl: (document.getElementById("dl") || {}).href || "",
         steps: (document.getElementById("steps") || {}).textContent || "",
-        header: typeof patch === "string" ? patch.slice(0, 34) : String(patch),
-        payload: typeof patch === "string" && patch.length > 5000000 && patch.indexOf("FromBase64String") !== -1,
         alive: await browser.storage.local.get("chromeAlive").then(r => !!r.chromeAlive).catch(() => null),
       });
     })()`);
@@ -52,10 +49,9 @@ export async function run(ctx) {
     assert(dump.ok && dump.dl, "setup page rendered, got " + raw);
     assert(dump.steps && dump.steps.length > 0, "install steps rendered");
     assert(
-      typeof dump.header === "string" && dump.header.startsWith("# Lazyfox full-install patcher"),
-      "patcher is fetchable and self-contained, got " + dump.header
+      typeof dump.dl === "string" && dump.dl.indexOf("releases/latest/download/lazyfox-install-") !== -1,
+      "Download control targets a GitHub Releases installer asset, got " + dump.dl
     );
-    assert(dump.payload, "patcher embeds the chrome helper payload");
     await evalIn(setupCtx.context, `browser.tabs.remove(${setupTab.id})`).catch(() => {});
   });
 
