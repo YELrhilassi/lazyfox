@@ -98,24 +98,40 @@ export function findFirefoxDir() {
   return null;
 }
 
-// ---- host dev installer (installer/bin/lazyfox-install) ---------------------
+// ---- dev installer selection (installer/bin/lazyfox-install-dev-*) -----------
 
-// The host installer binary (no platform suffix, gitignored) is what the dev
-// scripts invoke. It is NOT built by `npm run build:dev` (that short-circuits
-// before the installer step), so a fresh clone would lack it. This helper
-// builds it on demand: it stages the chrome payloads and the freshly built
-// UNSIGNED xpi into installer/payload/ so `go build` succeeds (go:embed needs
-// those dirs to exist) and the binary is a self-contained dev installer — the
-// 'different dev installer' decision.
-//
-// Returns the absolute path to the host binary. Rebuilds lazily: if the binary
-// already exists it is returned as-is (dev iteration is fast); force with
-// `--rebuild` to pick up Go source or payload changes.
-export function ensureHostInstaller(root, { rebuild = false, xpi = null } = {}) {
+// The 'different dev installer' decision: devs get a dev installer whose
+// embedded extension payload is the UNSIGNED xpi (versus the release
+// lazyfox-install-* binaries, which embed the AMO-signed build). Ship/dev
+// installers are built by `npm run build:dev:installers` into the COMMITTED
+// per-OS binaries below, so a fresh clone has a working dev installer with no
+// Go toolchain. This helper returns the committed dev binary for the current
+// platform, or (for an uncovered platform) builds a host-form fallback
+// (installer/bin/lazyfox-install, gitignored) on demand embedding the latest
+// unsigned xpi.
+
+const DEV_INSTALLER_BINARIES = {
+  linux: 'lazyfox-install-dev-linux',
+  darwin: 'lazyfox-install-dev-darwin',
+  win32: 'lazyfox-install-dev-windows.exe',
+};
+
+// Resolve the dev installer the scripts should invoke. Prefers the committed
+// per-OS dev binary; if the current platform has no committed binary, builds a
+// host-form one embedding the fresh unsigned xpi (fallback for unusual hosts).
+export function ensureDevInstaller(root, { rebuild = false, xpi = null } = {}) {
+  const binDir = join(root, 'installer/bin');
+  const perOs = DEV_INSTALLER_BINARIES[process.platform];
+
+  if (perOs) {
+    const committed = join(binDir, perOs);
+    if (existsSync(committed)) return committed; // fresh clone: instant, no go needed
+  }
+
+  // Uncovered platform (or missing committed binary): build a host-form
+  // dev installer on demand, embedding the latest unsigned xpi.
   const installerDir = join(root, 'installer');
-  const binDir = join(installerDir, 'bin');
   const out = join(binDir, 'lazyfox-install');
-
   if (!rebuild && existsSync(out)) return out;
 
   // Stage chrome profile payloads (same set build.mjs stages).
@@ -126,14 +142,11 @@ export function ensureHostInstaller(root, { rebuild = false, xpi = null } = {}) 
     cpSync(join(chromeSrc, f), join(chromeDst, f));
   }
 
-  // Stage the extension payload. In dev we use the freshly built unsigned xpi
-  // so the host dev installer embeds the unsigned payload (fresh-clone
-  // self-contained), matching the 'different dev installer for dev' decision.
   const extDst = join(installerDir, 'payload/extension');
   mkdirSync(extDst, { recursive: true });
   const extSrc = xpi || latestUnsignedXpi(join(root, 'dist'));
   if (!extSrc || !existsSync(extSrc)) {
-    throw new Error(`ensureHostInstaller: no xpi to embed (${extSrc || 'none'}) — run npm run build:dev first`);
+    throw new Error(`ensureDevInstaller: no xpi to embed (${extSrc || 'none'}) — run npm run build:dev first`);
   }
   cpSync(extSrc, join(extDst, 'lazyfox2.xpi'));
 
