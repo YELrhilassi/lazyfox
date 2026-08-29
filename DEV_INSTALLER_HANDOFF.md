@@ -131,7 +131,7 @@ Note: `dist/lazyfox2-0.5.3.xpi` is **not** in the diff (restored to committed = 
 1. ✅ `git add` + commit the current working tree (+ push to `mine dev-nightly`).
 2. ✅ Implement A — dev scripts (`clean-profile.mjs`, `dev-install.mjs`) now auto-build the host `installer/bin/lazyfox-install` when missing via `ensureHostInstaller()` in `scripts/dev-helpers.mjs`, embedding the fresh unsigned xpi. Fresh clones work.
 3. ✅ Implement C — reworked `.github/workflows/master.yml` (derives version from manifest, `scripts/sync-signed-xpi.mjs` downloads+commits signed xpi, installers + tag + GitHub Release), added `build:release` (`RELEASE=1 node build.mjs`), removed all hardcoded `0.5.3` from `dev-nightly.yml`/`nightly.yml`.
-4. ⏳ Confirm B — finalize dev-vs-release installer naming/embed policy with the user (still open).
+4. ✅ B — separate dev binaries implemented: `lazyfox-install-dev-*` (unsigned embed, committed) alongside release `lazyfox-install-*` (signed embed); `ensureDevInstaller()` prefers the committed per-platform dev binary.
 5. ✅ Add `docs/RELEASING.md` documenting the dev→review→master sync loop (decision D).
 
 ### New files this session (committed on `dev-nightly`, branch off last handoff)
@@ -139,5 +139,7 @@ Note: `dist/lazyfox2-0.5.3.xpi` is **not** in the diff (restored to committed = 
 - `docs/RELEASING.md` — the release loop, version semantics, workflows table, and `npm run build:*` cheat sheet.
 - `ensureHostInstaller()` helper in `scripts/dev-helpers.mjs`.
 
-### Still open
-- **B**: dev-vs-release installer embed policy. Current: single `installer/bin/lazyfox-install-*` per OS carries the signed embed and `--xpi` switches to unsigned at runtime; dev scripts build a host `lazyfox-install` embedding the unsigned xpi. Decide whether to keep this or ship both variants.
+### B resolved (next session, after user picked "separate dev binaries")
+- Added committed per-OS **dev** installers `installer/bin/lazyfox-install-dev-{linux,darwin,windows.exe}` that embed the **unsigned** xpi (`npm run build:dev:installers` via `scripts/build-dev-installers.mjs`), alongside the release `lazyfox-install-*` (signed embed).
+- `ensureDevInstaller()` in `scripts/dev-helpers.mjs` now prefers the committed per-OS dev binary for the current platform (no Go toolchain needed on fresh clones), falling back to an on-demand host-form build only on uncovered hosts.
+- Dev-installer split doc added to `docs/RELEASING.md`.

@@ -8,7 +8,7 @@ import {
   findFirefoxDir,
   setDefaultDevProfile,
   profilesRoot,
-  ensureHostInstaller,
+  ensureDevInstaller,
 } from './dev-helpers.mjs';
 
 const GREEN = '\x1b[0;32m';
@@ -43,9 +43,9 @@ async function main() {
   console.log(`  ${GREEN}firefox :${NC} ${ffDir}`);
   console.log(`  ${GREEN}xpi    :${NC} ${xpi}`);
 
-  // Ensure the host dev installer exists (fresh clones lack the gitignored
-  // installer/bin/lazyfox-install). Builds it embedding the fresh unsigned xpi.
-  const INSTALLER = ensureHostInstaller(ROOT, { rebuild: REBUILD, xpi });
+  // Resolve the dev installer: the committed per-OS dev binary when available
+  // (fresh clones included), else an on-demand host-form build.
+  const INSTALLER = ensureDevInstaller(ROOT, { rebuild: REBUILD, xpi });
 
   // 3. Create a fresh dev profile via Firefox + install via the standalone CLI
   console.log(`\n${GREEN}[3/3] Creating fresh dev profile + installing via lazyfox-install${NC}\n`);

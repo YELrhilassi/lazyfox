@@ -112,6 +112,13 @@ if (DEV) {
   process.exit(0);
 }
 
+// `npm run build:dev:installers` (node scripts/build-dev-installers.mjs)
+// builds the committed per-OS DEV installer binaries (embed the unsigned xpi).
+// It is a separate step from build:dev on purpose: the per-OS binaries are
+// semantically "ship/dev" artifacts produced alongside the unsigned build, and
+// keeping them out of the fast dev loop avoids re-cross-compiling Go on every
+// iteration. Dev install flow: npm run build:dev && npm run build:dev:installers.
+
 // Ensure a signed .xpi exists for the current extension version.
 //
 // Release mode (RELEASE=1, used by the master workflow): sync-signed-xpi.mjs
