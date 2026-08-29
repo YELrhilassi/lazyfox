@@ -66,12 +66,32 @@ hardcoded versions.
   committed signed xpi when already current, and otherwise fetches the exact
   version from AMO (refusing to guess or fabricate an unsigned one).
 
+## Installer binaries — dev vs release
+
+Two families of per-OS installer binaries live in `installer/bin/`, embedding
+different extension payloads:
+
+| Family | Binary names | Embedded payload | Built by |
+|--------|--------------|------------------|----------|
+| **Release** | `lazyfox-install-{linux,darwin,windows.exe}` | AMO-**signed** xpi | `npm run build` / `npm run build:release` |
+| **Dev** | `lazyfox-install-dev-{linux,darwin,windows.exe}` | **unsigned** xpi | `npm run build:dev:installers` |
+
+The dev binaries are committed (like the release ones), so a fresh clone has a
+working dev installer with no Go toolchain. Dev scripts call
+`ensureDevInstaller()` which resolves the committed per-OS dev binary for the
+current platform, only building a host-form fallback on an uncovered host.
+
 ## CLI: `npm run build:*`
 
 | Script | Output |
 |--------|--------|
-| `npm run build` | Prod build (sign via `amo-sign.mjs`), rebuild the 3 per-OS installer binaries. |
+| `npm run build` | Prod build (sign via `amo-sign.mjs`), rebuild the 3 per-OS release installer binaries (`lazyfox-install-*`). |
 | `npm run build:release` | Same but with `RELEASE=1` — syncs the AMO-signed xpi down instead of signing (used by master). |
-| `npm run build:dev` | Unsigned xpi + dev bundles, **skips** AMO signing and installer rebuild. |
+| `npm run build:dev` | Unsigned xpi + dev bundles; **skips** AMO signing and installer rebuild for a fast dev loop. |
+| `npm run build:dev:installers` | Rebuild the 3 per-OS **dev** installer binaries (`lazyfox-install-dev-*`, unsigned embed). |
 | `npm run build:dev:clean` | Fresh dev build + persistent install into Nightly/Devedition (+ default profile). |
 | `npm run build:installer` | Rebuild the host `installer/bin/lazyfox-install` binary. |
+
+**Dev install flow:** `npm run build:dev && npm run build:dev:installers` (or just
+`npm run build:dev:clean`, which resolves the committed dev binary for your
+platform and does the install).
