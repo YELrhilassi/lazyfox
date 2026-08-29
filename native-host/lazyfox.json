@@ -1,0 +1,7 @@
+{
+  "name": "lazyfox",
+  "description": "Lazyfox native messaging host",
+  "path": "/usr/local/bin/lazyfox-host",
+  "type": "stdio",
+  "allowed_extensions": ["lazyfox@lazyfox.dev"]
+}
