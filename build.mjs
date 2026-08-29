@@ -21,6 +21,7 @@ import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { zipStore } from "./scripts/amo-lib.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)));
 
@@ -96,7 +97,20 @@ cpSync(join(root, "src", "static", "chrome"), join(root, "dist", "chrome"), {
 });
 console.log("[static] src/static/{extension,chrome} -> dist/");
 
-/* ---------- 4. signed add-on + cross-platform installer binary ---------- */
+/* ---------- 4. dev add-on / signed add-on + installer binary ---------- */
+
+// In --dev mode we short-circuit the production release steps (AMO signing and
+// the standalone installer binary rebuild). The dev installers consume the
+// freshly built UNSIGNED xpi directly from dist/extension, so there is no need
+// to contact AMO or recompile installer/bin every dev iteration.
+if (DEV) {
+  const version = JSON.parse(readFileSync(join(root, "dist", "extension", "manifest.json"), "utf8")).version;
+  const unsignedOut = join(root, "dist", `lazyfox2-${version}.xpi`);
+  console.log(`[dev] packaging unsigned xpi -> dist/lazyfox2-${version}.xpi`);
+  zipStore(join(root, "dist", "extension"), unsignedOut);
+  console.log(`\nBuild complete. dist/ is ready to install (unsigned dev add-on).`);
+  process.exit(0);
+}
 
 // Ensure a signed .xpi exists for the current extension version (scripts/
 // amo-sign.mjs reuses the committed signed artifact offline, or auto-submits a
