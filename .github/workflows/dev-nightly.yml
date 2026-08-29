@@ -1,0 +1,71 @@
+name: Dev Nightly - Auto-test on Firefox Nightly
+
+on:
+  push:
+    branches: [dev-nightly]
+  pull_request:
+    branches: [dev-nightly]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build dev extension
+        run: npm run build:dev
+
+      - name: Find Firefox Nightly
+        id: find-nightly
+        run: |
+          # Look for Firefox Nightly in common locations
+          Nightly_PATHs=(
+            "/opt/firefox-nightly/firefox"
+            "/usr/bin/firefox-nightly"
+            "$HOME/.firefox/firefox-nightly"
+            "/Applications/Firefox Nightly.app/Contents/MacOS/firefox-nightly"
+          )
+          for path in "${Nightly_PATHs[@]}"; do
+            if [ -x "$path" ]; then
+              echo "nightly_path=$path" >> $GITHUB_OUTPUT
+              echo "Found Nightly at $path"
+              exit 0
+            fi
+          done
+          echo "::error::Firefox Nightly not found in standard locations"
+          exit 1
+
+      - name: Install extension on Nightly
+        if: steps.find-nightly.outputs.nightly_path != ''
+        run: |
+          "${{ steps.find-nightly.outputs.nightly_path }}" -P "nightly-test" --profilemanager > /dev/null 2>&1 || true
+          # Create profile if needed
+          mkdir -p ~/.nightly-profile
+          # Install the extension
+          "${{ steps.find-nightly.outputs.nightly_path }}" -P "nightly-test" -no-remote -installAddon "dist/lazyfox2-0.5.3.xpi" &>/dev/null &
+          sleep 3
+
+      - name: Run BiDi test suite
+        if: steps.find-nightly.outputs.nightly_path != ''
+        env:
+          FIREFOX_BIN: "${{ steps.find-nightly.outputs.nightly_path }}"
+          GECKODRIVER: ".tools/geckodriver"
+        run: |
+          FIREFOX_BIN="$FIREFOX_BIN" \
+          GECKODRIVER="$GECKODRIVER" \
+          timeout 300 node scripts/bidi/test.mjs || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-bidi-results
+          path: /tmp/bidi-test*.log
