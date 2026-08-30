@@ -31,11 +31,13 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { api, signXpi } from "./amo-lib.mjs";
+import { api, sleep } from "./amo-lib.mjs";
+
+const GUID = "lazyfox@lazyfox.dev";
+const guid = () => encodeURIComponent(GUID);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const GUID = "lazyfox@lazyfox.dev";
 
 function fail(msg) {
   console.error(`[submit] ${msg}`);
@@ -62,31 +64,71 @@ if (!fs.existsSync(xpi)) {
   fail(`no unsigned xpi for ${version}: run \`npm run build\` first.`);
 }
 
-// 4. Refuse to re-submit an already-existing version (AMO errors on it).
-//    Use the dedicated /versions/ endpoint — the add-on detail object's inline
-//    `versions` field is often empty, so it is not a reliable source of truth.
+// 4. Refuse to re-submit an already-existing version (AMO errors on it). The
+//    direct /versions/{v}/ endpoint is authoritative: the /versions/ list only
+//    returns reviewed/public versions, so an unreviewed duplicate would slip
+//    through a list check. A 200 here means the version already exists.
 console.log(`[submit] checking whether ${version} already exists on AMO…`);
-const list = await api(`/addons/addon/${encodeURIComponent(GUID)}/versions/`);
-if (list.status === 200) {
-  const versions = (list.json?.results || []).map((v) => v.version);
-  if (versions.includes(version)) {
-    fail(
-      `version ${version} already exists on AMO (submitted before). ` +
-        "AMO will not accept the same version twice — bump the version in " +
-        "dist/extension/manifest.json to publish new content."
-    );
-  }
-} else {
-  fail(`could not reach AMO to check existing versions (status ${list.status}).`);
+const dup = await api(`/addons/addon/${guid()}/versions/${encodeURIComponent(version)}/`);
+if (dup.status === 200) {
+  fail(
+    `version ${version} already exists on AMO (submitted before). ` +
+      "AMO will not accept the same version twice — bump the version in " +
+      "dist/extension/manifest.json to publish new content."
+  );
+} else if (dup.status !== 404 && dup.status !== 410) {
+  fail(`could not check for an existing ${version} on AMO (status ${dup.status}).`);
 }
 
-// 5. Submit (upload + create the listed version). This starts the review clock;
-//    the file status is "pending" here — not yet signed.
-console.log(`[submit] uploading ${path.basename(xpi)} (v${version}, listed)…`);
-const { slug } = await signXpi(xpi);
-console.log(`[submit] submitted v${version} as a public listed version.`);
+// 5. Submit: does the add-on exist? (needed to pick create-vs-new-addon body).
+const exist = await api(`/addons/addon/${guid()}/`);
+if (exist.status !== 200) {
+  fail(`could not read the add-on on AMO (status ${exist.status}).`);
+}
+const slug = exist.json?.slug;
 
-// 6. Rebuild the dev installers so the fresh unsigned xpi is embedded and the
+// 6. Upload the fresh package (listed channel).
+console.log(`[submit] uploading ${path.basename(xpi)} (v${version}, listed)…`);
+const fd = new FormData();
+fd.append("upload", new Blob([fs.readFileSync(xpi)], { type: "application/zip" }), path.basename(xpi));
+fd.append("channel", "listed");
+const up = await api("/addons/upload/", { method: "POST", body: fd });
+const uuid = up.json?.uuid;
+if (!uuid) fail(`upload failed: ${JSON.stringify(up.json || up.text)}`);
+console.log(`[submit] upload accepted (${uuid}); waiting for AMO to validate…`);
+
+// 7. Wait for validation.
+let processed = false;
+for (let i = 0; i < 60; i++) {
+  const st = await api(`/addons/upload/${uuid}/`);
+  if (st.json?.processed) {
+    processed = true;
+    const errs = (st.json.validation || {}).errors || [];
+    const warns = (st.json.validation || {}).warnings || [];
+    if (errs.length) fail("validation errors: " + JSON.stringify(errs.slice(0, 5)));
+    console.log(`[submit] upload validated: ${errs.length} errors, ${warns.length} warnings`);
+    break;
+  }
+  await sleep(3000);
+}
+if (!processed) fail("upload still processing after 180s — check the AMO developer dashboard.");
+
+// 8. Create the listed version.
+console.log(`[submit] creating listed version ${version}…`);
+const body = { upload: uuid, license: "MIT", channel: "listed" };
+const ver = await api(`/addons/addon/${guid()}/versions/`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+const v = ver.json?.version || ver.json;
+const vid = v?.version || v?.id;
+if (ver.status !== 201 && ver.status !== 200) {
+  fail(`version creation failed (${ver.status}): ` + JSON.stringify(ver.json?.detail || ver.json || ver.text).slice(0, 300));
+}
+console.log(`[submit] submitted v${version} as a public listed version (AMO id ${vid || "?"}).`);
+
+// 9. Rebuild the dev installers so the fresh unsigned xpi is embedded and the
 //    per-OS dev binaries are current for the next development phase.
 console.log("\n[submit] rebuilding dev installers (npm run build:installers)…");
 try {
@@ -96,7 +138,7 @@ try {
   process.exit(1);
 }
 
-// 7. Next step.
+// 10. Next step.
 console.log("\n════════════════════════════════════════════════════════════");
 console.log(`Submitted v${version} to AMO — pending review.`);
 console.log(`Manage:  https://addons.mozilla.org/developers/addon/${slug || GUID}/versions/`);
