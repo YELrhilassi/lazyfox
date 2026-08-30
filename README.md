@@ -324,13 +324,18 @@ is committed, so installing never needs the toolchain — change source, run
 `npm run build`, and reinstall or **Reload** in `about:debugging`.
 
 ```bash
-npm install            # esbuild + typescript
+npm install            # esbuild + typescript (+ toolchain check)
 npm run build          # dev build: wasm, bundles, unsigned xpi — fast, no AMO
 npm run install        # build + install that dev build into Nightly/Devedition
 npm run install:clean  # …or first wipe stale dev profiles, then install
+npm run ci             # run the whole local CI check before you push (never push to test CI)
 npm run verify         # typecheck + full test suite, in one shot
 npm test               # go test ./core/ + installer tests + dist/ completeness
 ```
+
+> Prefer the concise walkthrough in **`docs/DEVELOPING.md`** (daily loop,
+> publishing, releasing in one page) and **`docs/CI.md`** (running the exact CI
+> checks locally so you never have to push to discover a broken workflow).
 
 Daily loop: `npm run install` (or `npm run install:clean`) is all most people
 need — it builds and installs the unsigned dev build into Firefox
@@ -392,9 +397,11 @@ Layout of the repo:
 ## Uninstall
 
 Run the same standalone installer with the `uninstall` action
-(`installer/bin/lazyfox-install --mode uninstall`, or use the wizard and pick
-uninstall). It reverses exactly what the installer did — your profile,
-bookmarks, history and other add-ons are never touched.
+(`installer/bin/lazyfox-install-linux --mode uninstall`, or use the wizard and
+pick uninstall). It reverses exactly what the installer did — it removes the
+Lazyfox extension from `extensions.json`, restores your profile/chrome/user.js
+to the backed-up originals, and never touches your bookmarks, history or other
+add-ons.
 
 ## License
 

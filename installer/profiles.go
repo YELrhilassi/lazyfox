@@ -34,17 +34,35 @@ type FirefoxProfile struct {
 	// FirefoxVersion is the last Firefox version that used this profile (read
 	// from compatibility.ini), e.g. "132.0.2". Empty if unknown.
 	FirefoxVersion string
+	// AppDir is the Firefox install directory recorded in compatibility.ini's
+	// LastAppDir (the edition that last ran this profile). Empty if unknown.
+	AppDir string
 }
 
+// editionName returns a short friendly label for the Firefox edition a profile
+// belongs to (e.g. "Stable", "Nightly", "Developer Edition", "ESR").
+func (p *FirefoxProfile) editionName() string {
+	if p.Flavor == flavorStable {
+		return "Stable"
+	}
+	if p.Flavor != flavorUnknown {
+		return p.Flavor.String()
+	}
+	return ""
+}
+
+// label renders a one-line human label, always naming the edition so a user
+// with many randomly-named profiles can tell which Firefox each belongs to.
 func (p *FirefoxProfile) label() string {
 	parts := []string{}
-	if p.Name != "" {
-		parts = append(parts, p.Name)
+	if name := p.Name; name != "" {
+		parts = append(parts, name)
+	}
+	if ed := p.editionName(); ed != "" {
+		parts = append(parts, "Firefox "+ed)
 	}
 	if p.FirefoxVersion != "" {
-		parts = append(parts, "Firefox "+p.FirefoxVersion)
-	} else if p.Flavor != flavorUnknown && p.Flavor != flavorStable {
-		parts = append(parts, p.Flavor.String())
+		parts = append(parts, "v"+p.FirefoxVersion)
 	}
 	mark := ""
 	if p.HasLazyfox {
@@ -91,7 +109,18 @@ func detectFirefoxProfiles() []*FirefoxProfile {
 			continue
 		}
 		p.Dir = full
-		p.FirefoxVersion = profileFirefoxVersion(full)
+		profileFirefoxVersion, lastAppDir := profileCompatibilityInfo(full)
+		p.FirefoxVersion = profileFirefoxVersion
+		// `LastAppDir=` in compatibility.ini records the exact Firefox install
+		// dir that last ran this profile — the authoritative signal for which
+		// edition (stable / nightly / dev / esr) the profile belongs to. Prefer
+		// it over the root-path guess.
+		if af := describeFlavor(lastAppDir); af != flavorStable || p.Flavor == flavorUnknown {
+			if lastAppDir != "" {
+				p.Flavor = af
+				p.AppDir = lastAppDir
+			}
+		}
 		p.HasLazyfox = exists(filepath.Join(full, "extensions", "lazyfox@lazyfox.dev.xpi"))
 		p.Locked = profileLocked(full)
 		if st, err := os.Stat(full); err == nil {
@@ -134,20 +163,24 @@ func pickDefaultProfile(profiles []*FirefoxProfile) *FirefoxProfile {
 	return nil
 }
 
-// profileFirefoxVersion reads compatibility.ini's LastAppVersion/LastVersion,
-// the last Firefox version number recorded as having used this profile. Empty
-// if it cannot be determined.
-func profileFirefoxVersion(dir string) string {
+// profileCompatibilityInfo reads compatibility.ini and returns (version,
+// lastAppDir) — the last Firefox version that used this profile and the install
+// directory (LastAppDir) of the Firefox build that last ran it. Empty when
+// either cannot be determined.
+func profileCompatibilityInfo(dir string) (string, string) {
 	f, err := os.Open(filepath.Join(dir, "compatibility.ini"))
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	best := ""
+	appDir := ""
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if v, ok := strings.CutPrefix(line, "LastAppVersion="); ok {
+		if v, ok := strings.CutPrefix(line, "LastAppDir="); ok {
+			appDir = strings.TrimSpace(v)
+		} else if v, ok := strings.CutPrefix(line, "LastAppVersion="); ok {
 			best = strings.TrimSpace(v)
 		} else if v, ok := strings.CutPrefix(line, "LastVersion="); ok {
 			// Some build tracks write LastVersion; prefer it over LastAppVersion
@@ -163,7 +196,7 @@ func profileFirefoxVersion(dir string) string {
 	if i := strings.IndexAny(best, "_ \t/"); i > 0 {
 		best = best[:i]
 	}
-	return strings.TrimSpace(best)
+	return strings.TrimSpace(best), appDir
 }
 
 // profileLocked reports whether Firefox holds this profile's lock files.

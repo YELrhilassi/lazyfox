@@ -51,8 +51,7 @@ offline (it reuses the committed signed xpi) without needing AMO credentials.
 | File | Trigger | Purpose |
 |------|---------|---------|
 | `.github/workflows/master.yml` | push to `master`; manual release via `workflow_dispatch` | Build + release: sync signed xpi from AMO, commit it back, verify dist + installer, tag + GitHub Release. |
-| `.github/workflows/dev-nightly.yml` | push to `dev-nightly` | Auto-test the **unsigned** dev build on Firefox Nightly (BiDi). |
-| `.github/workflows/nightly.yml` | push to `dev-nightly` | Another Nightly CI pass (unsigned dev build), including the installer tests. |
+| `.github/workflows/dev-nightly.yml` | push / PR to `dev-nightly` | Auto-test the **unsigned** dev build: unit tests + installer tests + BiDi e2e on Firefox Nightly. |
 
 All three derive the version from `dist/extension/manifest.json`; there are no
 hardcoded versions.

@@ -99,12 +99,16 @@ func (d profileDelegate) Render(w io.Writer, m list.Model, index int, item list.
 	}
 	sel := index == m.Index()
 	title := p.p.Name
-	// status line: Firefox version, Lazyfox badge, default marker.
+	if title == "" {
+		title = p.p.Section
+	}
+	// status line: edition (stable/nightly/dev/esr), version, badges.
 	var status []string
+	if ed := p.p.editionName(); ed != "" {
+		status = append(status, "Firefox "+ed)
+	}
 	if p.p.FirefoxVersion != "" {
-		status = append(status, "Firefox "+p.p.FirefoxVersion)
-	} else if p.p.Flavor != flavorUnknown && p.p.Flavor != flavorStable {
-		status = append(status, p.p.Flavor.String())
+		status = append(status, "v"+p.p.FirefoxVersion)
 	}
 	if p.p.HasLazyfox {
 		status = append(status, "Lazyfox installed")
