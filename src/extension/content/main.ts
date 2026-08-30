@@ -44,45 +44,55 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   // and the fixed bar would overlap content while scrolling. Only in standalone
   // mode (chrome helper absent) does the content script draw its own bar.
   //
-  // `chromeAlive` is null until the first storage read resolves: a page
-  // restored during startup may load before the chrome helper's announce
-  // lands, and drawing the bar on that guess is exactly the "two status bars
-  // one on top of the other" symptom. The bar appears only once the flag is
-  // known to be false, and the storage listener hides it the moment it flips.
+  // This is decided AUTHORITATIVELY by asking the background (the chromeLayer
+  // message), never by a storage flag: background storage is a racy write an
+  // onStartup reset can clobber, so trusting it is exactly how a second bar
+  // slipped in on top of the chrome window bar. The decision defaults to
+  // HIDDEN until the background explicitly confirms the chrome layer is absent,
+  // so exactly one bar can ever render — and the moment the background flips to
+  // alive (via the storage listener below, which the background still writes),
+  // any errant bar is torn down.
+  //   null = not determined yet -> hide (safe default, no double bar)
+  //   true = chrome layer alive -> hide
+  //   false = chrome layer confirmed absent -> draw standalone bar
   let chromeAlive: boolean | null = null;
-  function refreshChromeAlive() {
-    void browser.storage.local.get("chromeAlive").then(
-      (r: { chromeAlive?: boolean }) => {
-        const next = !!(r && r.chromeAlive);
-        if (chromeAlive === null || next !== chromeAlive) {
-          chromeAlive = next;
-          ensureStatusBar();
-        }
-      },
-      () => {
-        // Read failed: assume standalone so the bar still appears.
-        if (chromeAlive === null) {
-          chromeAlive = false;
-          ensureStatusBar();
-        }
+
+  function refreshChromeAlive(): void {
+    void send("chromeLayer").then((r) => {
+      // Only an EXPLICIT response decides the bar. send() resolves null when
+      // the background is unreachable or not yet answering (a cold boot, the
+      // extension still spinning up) — that is "indeterminate", not "absent":
+      // a content script only runs because the extension injected it, and the
+      // chrome layer is the normal full-install state, so the safe default is
+      // to stay hidden until the background explicitly confirms the chrome
+      // layer is absent ({ alive:false }). Drawing on a null reply is exactly
+      // the transient second bar seen on the first launch of a fresh install.
+      if (!r) {
+        return; // indeterminate -> keep current (null hides, true hides)
       }
-    );
+      const next = !!r.alive;
+      if (chromeAlive === null || next !== chromeAlive) {
+        chromeAlive = next;
+        ensureStatusBar();
+      }
+    });
   }
+  // Ask immediately and keep re-asking (the interval below also covers it) so
+  // a slow announce latches cleanly.
   refreshChromeAlive();
 
   browser.storage.onChanged.addListener(
-    (
-      changes: { config?: { newValue?: Partial<Config> }; chromeAlive?: { newValue?: boolean } },
-      area: string
-    ) => {
+    (changes: { config?: { newValue?: Partial<Config> }; chromeAlive?: { newValue?: boolean } }, area: string) => {
       if (area !== "local") return;
       if (changes.config) {
         config = mergeConfig(changes.config.newValue || {});
         ensureStatusBar();
       }
-      if (changes.chromeAlive) {
-        chromeAlive = !!changes.chromeAlive.newValue;
-        ensureStatusBar();
+      // The background flips storage.chromeAlive when the helper announces;
+      // keep the bar in step via the direct query so authority stays with the
+      // background, mirroring it here only as a fast-path to re-ask.
+      if (changes.chromeAlive && chromeAlive !== !!changes.chromeAlive.newValue) {
+        refreshChromeAlive();
       }
     }
   );
@@ -464,6 +474,10 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   fetchStatus();
   setInterval(renderStatus, 400);
   setInterval(fetchStatus, 3000);
+  // Keep re-asking the authoritative chromeLayer question so a slow announce
+  // latches even without a storage event (and any errant errand bar is torn
+  // down the moment the background confirms the chrome layer is alive).
+  setInterval(refreshChromeAlive, 1500);
 
   // Hide the status bar (and release its reserved space) while any element
   // is fullscreen — a full-screen video would otherwise keep the strip, and

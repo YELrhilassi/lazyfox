@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lazyfox",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "Keyboard-first, UI-free Firefox. Leader-key navigation, paginated which-key overlay, centered search, tab switcher and link hints.",
   "license": "MIT",
   "browser_specific_settings": {
@@ -23,7 +23,8 @@
     "cookies",
     "notifications",
     "tabHide",
-    "nativeMessaging"
+    "nativeMessaging",
+    "clipboardRead"
   ],
   "host_permissions": [
     "<all_urls>"

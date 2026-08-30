@@ -1,4 +1,4 @@
-import { readdirSync, existsSync, rmSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs';
+import { readdirSync, existsSync, rmSync, readFileSync, writeFileSync, mkdirSync, cpSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, basename, dirname } from 'path';
 import { homedir } from 'os';
@@ -43,22 +43,77 @@ export function findProfileDirByName(root, name) {
   return join(root, candidates[candidates.length - 1]);
 }
 
-// Remove every dev profile directory + its profiles.ini entries. Returns count.
+// Lazyfox artifacts a profile may carry (the extension xpi + the chrome layer +
+// backups + managed prefs). Purging these from a NON-dev profile leaves the
+// profile usable but removes stale lazyfox, so no leftover profile can masquerade
+// as the current build when it happens to get launched.
+const LAZYFOX_EXT_XPI = 'extensions/lazyfox@lazyfox.dev.xpi';
+
+function removeLazyfoxFromProfile(profileDir) {
+  let did = false;
+  const targets = [
+    LAZYFOX_EXT_XPI,
+    'chrome/userChrome.css',
+    'chrome/userChrome.uc.js',
+    'chrome/frame.js',
+    'chrome/corebootstrap.js',
+  ];
+  for (const rel of targets) {
+    try {
+      rmSync(join(profileDir, rel), { force: true });
+      did = true;
+    } catch {
+      // ignore
+    }
+  }
+  // Also drop the .lazyfox.bak-* backups + the user.js lines we add (they are
+  // harmless leftovers but leaving them only confuses a later install).
+  try {
+    const chromeDir = join(profileDir, 'chrome');
+    if (existsSync(chromeDir)) {
+      for (const f of readdirSync(chromeDir)) {
+        if (f.indexOf('lazyfox.bak-') === 0) {
+          try { rmSync(join(chromeDir, f), { force: true }); did = true; } catch { /* ignore */ }
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return did;
+}
+
+// Remove every dev profile directory + its entries, and purge stale lazyfox
+// artifacts from any OTHER profile that carries them (so a leftover profile
+// launched by mistake shows the plain, lazyfox-free browser instead of the old
+// build). Also drop profiles.ini entries for dev profiles and for install
+// hashes whose Default= points at a profile directory that no longer exists.
+// Returns count of dev profile dirs removed.
 export function cleanDevProfiles(root) {
   if (!existsSync(root)) return 0;
   const iniPath = join(root, 'profiles.ini');
+  const insPath = join(root, 'installs.ini');
   let ini = existsSync(iniPath) ? readFileSync(iniPath, 'utf8') : '';
   let removed = 0;
 
   for (const entry of readdirSync(root)) {
     const full = join(root, entry);
-    if (isDevProfileDirName(entry)) {
+    const stat = (() => { try { return statSync(full); } catch { return null; } })();
+    if (!stat || !stat.isDirectory()) continue;
+    const base = basename(full);
+    if (base === 'Crash Reports' || base === 'Pending Pings' || base === 'Profile Groups') continue;
+    if (isDevProfileDirName(base)) {
       try {
         rmSync(full, { recursive: true, force: true });
         removed++;
       } catch {
         // ignore
       }
+    } else if (existsSync(join(full, LAZYFOX_EXT_XPI))) {
+      // Non-dev profile with a leftover lazyfox install: strip the artifacts so
+      // it can never inject stale code when launched.
+      removeLazyfoxFromProfile(full);
+      console.log(`  purged stale lazyfox from ${base}`);
     }
   }
 
@@ -69,10 +124,34 @@ export function cleanDevProfiles(root) {
     return block;
   });
   if (cleaned !== ini) {
-    try {
-      writeFileSync(iniPath, cleaned);
-    } catch {
-      // ignore
+    try { writeFileSync(iniPath, cleaned); } catch { /* ignore */ }
+  }
+
+  // Drop install-hash Default= pointers to profile dirs that no longer exist
+  // (e.g. a cleaned lfxdev profile or a stale f15d86rv reference) in BOTH
+  // installs.ini and profiles.ini, so Firefox never tries to open a gone
+  // profile — and remove the whole dead [Install<hash>] section in profiles.ini
+  // when its Default= vanished.
+  const known = new Set(readdirSync(root));
+  const deadDefault = /Default=([^\s]+)/g;
+  if (existsSync(insPath)) {
+    const ins = readFileSync(insPath, 'utf8');
+    const ins2 = ins.replace(deadDefault, (m, val) => (known.has(val) ? m : ''));
+    if (ins2 !== ins) {
+      try { writeFileSync(insPath, ins2); } catch { /* ignore */ }
+    }
+  }
+  // profiles.ini: strip the whole [Install<hash>] section whose Default= points
+  // at a gone profile (it only exists to pin the default for that install).
+  if (existsSync(iniPath)) {
+    let ini2 = readFileSync(iniPath, 'utf8');
+    ini2 = ini2.replace(/\[Install[0-9A-Fa-f]+\][^\[]*?(?=\n\[|\n?$)/g, (block) => {
+      const dm = /^Default=([^\s]+)$/m.exec(block);
+      if (dm && !known.has(dm[1])) return '';
+      return block;
+    });
+    if (ini2 !== ini) {
+      try { writeFileSync(iniPath, ini2); } catch { /* ignore */ }
     }
   }
   return removed;
@@ -254,9 +333,14 @@ function escapeRe(s) {
 }
 
 // Make profileName/profilePath the default so launching firefoxBin with no -P
-// opens it. The persistent default lives in [Install<hash>] Default= (both
-// profiles.ini and installs.ini), which we rewrite for the install that runs
-// devFirefoxDir. Also ensure StartWithLastProfile=1.
+// opens it. Priority:
+//   1. The modern install-hash path ([Install<hash>] Default= in profiles.ini +
+//      installs.ini), which pins the default per Firefox install. Works when
+//      Firefox has already recorded an install section for devFirefoxDir.
+//   2. The classic [ProfileN] Default=1 flag, which any bare `firefox` launch
+//      resolves to when no install-hash section matches. We clear Default=1 from
+//      every other profile and set it on ours.
+// Also ensure StartWithLastProfile=1.
 export function setDefaultDevProfile(root, profileName, profilePath, devFirefoxDir) {
   const iniPath = join(root, 'profiles.ini');
   if (!existsSync(iniPath)) return false;
@@ -269,5 +353,34 @@ export function setDefaultDevProfile(root, profileName, profilePath, devFirefoxD
   ini = ini.replace(/^StartWithLastProfile=0$/m, 'StartWithLastProfile=1');
   writeFileSync(iniPath, ini);
 
-  return setInstallDefault(root, devFirefoxDir, relPath);
+  // 1. Modern install-hash pin (scoped to Dev Edition only).
+  if (setInstallDefault(root, devFirefoxDir, relPath)) return true;
+
+  // 2. Classic Default=1 fallback when no install-hash section exists (e.g.
+  //    installs.ini empty): make our profile the single classic default by
+  //    clearing Default=1 from every other [ProfileN].
+  const sectionRe = /\[[^\]]+\][\s\S]*?(?=\n\[|\n?$)/g;
+  let ini2 = readFileSync(iniPath, 'utf8');
+  let ours = null;
+  const sections = ini2.match(sectionRe) || [];
+  const rebuilt = sections
+    .map((block) => {
+      let b = block.replace(/^Default=1$\n?/m, '');
+      if (block.includes(`Path=${relPath}`)) {
+        b = b.replace(/(^\[Profile\d+\][^\n]*\n)/, '$1Default=1\n');
+        ours = b;
+      }
+      return b;
+    })
+    .join('\n');
+  ini2 = rebuilt;
+  if (!ours) {
+    // No [ProfileN] registered for this path yet — append one.
+    const idx = sections.filter((s) => /^\[Profile\d+\]/m.test(s)).length;
+    ini2 += `\n[Profile${idx}]\nName=${profileName}\nIsRelative=1\nPath=${relPath}\nDefault=1\n`;
+  }
+  if (ini2 !== ini) {
+    try { writeFileSync(iniPath, ini2); return true; } catch { /* ignore */ }
+  }
+  return false;
 }

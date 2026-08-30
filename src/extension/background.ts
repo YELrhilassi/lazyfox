@@ -7,7 +7,8 @@
 // chrome-helper channel to those modules, and wires the tab/window lifecycle
 // listeners.
 
-import { ensureCore } from "../shared/core";
+import { ensureCore, core } from "../shared/core";
+import { hostInfo } from "./host";
 import type { BgAction } from "../shared/protocol";
 import { getConfig } from "./config";
 import { probeHostOnce } from "./host";
@@ -73,6 +74,28 @@ const CHROME_PAGES: { [k: string]: string } = {
   "about:history": "history",
   "about:downloads": "downloads"
 };
+
+// Versions of every Lazyfox component, surfaced on the options page's
+// Components panel. Each piece is versioned independently (the extension, the
+// Go wasm core, the native host, and the chrome helper shipped by the
+// installer), so this reports all of them rather than a single number.
+async function componentsInfo() {
+  const [ext, wasm, host] = await Promise.all([
+    Promise.resolve(browser.runtime.getManifest().version),
+    core.version().catch(() => "?"),
+    hostInfo().catch(() => null),
+  ]);
+  const stored = await browser.storage.local
+    .get("chromeHelperVersion")
+    .catch(() => ({}));
+  return {
+    extension: ext,
+    wasm: wasm,
+    nativeHost: host && host.version ? String(host.version) : null,
+    nativeProtocol: host && host.protocol ? String(host.protocol) : null,
+    chromeHelper: (stored && stored.chromeHelperVersion) || null,
+  };
+}
 
 async function openUrl(url: string, newTab: boolean | undefined) {
   if (!url) return { ok: false };
@@ -156,6 +179,8 @@ async function handleMessage(msg: BgAction, sender: any) {
       return suggestSearch(data.q);
     case "urlSuggest":
       return suggestUrls(data.q);
+    case "components":
+      return componentsInfo();
     case "tabs":
       return tabsInWindow();
     case "activateTab":
@@ -418,6 +443,12 @@ async function handleMessage(msg: BgAction, sender: any) {
       return quitBrowser();
     case "sessionState":
       return sessionState();
+    case "chromeLayer":
+      // Authoritative answer to the content script's one-bar question: only
+      // true if THIS background has confirmed the chrome layer alive this
+      // session. In-memory so a race between onStartup's storage reset and the
+      // helper's announce can never leave content scripts drawing a second bar.
+      return { alive: chromeLayerAlive };
     default:
       return { ok: false, error: "unknown action" };
   }
@@ -563,10 +594,14 @@ browser.runtime.onConnect.addListener((port: any) => {
     (tab && tab.windowId != null ? tab.windowId : null);
   if (winId == null) return;
   // The relay tab is invisible plumbing: never a user tab, never in the strip.
-  if (tabId != null) {
-    transientTabIds.add(tabId);
-    browser.tabs.hide(tabId).catch(() => {});
-  }
+  // NOTE: it is deliberately NOT hidden via browser.tabs.hide() — hiding
+  // detaches the tab's chrome-side browsing context (contentWindow /
+  // browsingContext.window become null), which is exactly what broke the
+  // helper<->relay window bridge on interactive Firefox (remote extension
+  // pages). The chrome helper hides the tab natively (tab.hidden = true,
+  // cosmetic, keeps the browsing context alive) and both sides filter relay
+  // tabs from every count/strip/list.
+  if (tabId != null) transientTabIds.add(tabId);
   relayPorts.set(winId, port);
   // Flush commands queued while no port was connected.
   const q = relayCmdQueues.get(winId) || [];
@@ -601,26 +636,16 @@ browser.runtime.onConnect.addListener((port: any) => {
   });
 });
 
-// Make sure the relay tab exists for the current window (the chrome helper
-// creates one at startup, but it may have been closed; and the helper may not
-// be installed at all, in which case pushes are pointless but harmless).
+// Find the relay tab for the current window (the chrome helper CREATES it at
+// startup — the extension must never create a second one, which is what
+// produced duplicate relay tabs racing the helper's own). Query-only: when no
+// relay tab exists there is no chrome helper attached (or it hasn't come up
+// yet), so pushes are dropped — the helper's own requests/announce recreate
+// the tab the moment its ccBaseUrl resolves.
 function ensureRelayTab(): Promise<any | null> {
   return browser.tabs
     .query({ currentWindow: true })
-    .then((ts: any[]) => {
-      const existing = (ts || []).find(
-        (t: any) => t.url && t.url.indexOf("relay.html") !== -1
-      );
-      if (existing) return existing;
-      return browser.tabs
-        .create({ url: browser.runtime.getURL("relay.html"), active: false })
-        .then((tab: any) => {
-          // Register + hide immediately so it never counts or shows.
-          if (tab && tab.id != null) transientTabIds.add(tab.id);
-          if (tab && tab.id != null) browser.tabs.hide(tab.id).catch(() => {});
-          return tab;
-        });
-    })
+    .then((ts: any[]) => (ts || []).find((t: any) => t.url && t.url.indexOf("relay.html") !== -1) || null)
     .catch(() => null);
 }
 
@@ -630,13 +655,11 @@ function ensureRelayTab(): Promise<any | null> {
 browser.tabs.onCreated.addListener((tab: any) => {
   if (tab && tab.id != null && tab.url && tab.url.indexOf("relay.html") !== -1) {
     transientTabIds.add(tab.id);
-    browser.tabs.hide(tab.id).catch(() => {});
   }
 });
 browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
   if (tab && tab.url && tab.url.indexOf("relay.html") !== -1) {
     transientTabIds.add(tabId);
-    browser.tabs.hide(tabId).catch(() => {});
   }
 });
 
@@ -673,13 +696,15 @@ function requestChrome(action: string, arg?: any): void {
         }
       };
       if (tryPost()) return;
-      // No live port: make sure the relay tab exists, then keep trying until
-      // the port delivers or the command ages out. The retry covers the gap
-      // between "the port connected" and "the onConnect flush ran" (the
-      // flush can beat the queue push), and the dead-port case above. The
-      // entry stays in the queue so onConnect's drain can deliver it; the
-      // retry loop stops the moment the entry leaves the queue (delivered or
-      // aged out), so a command is never posted twice.
+      // No live port: the relay tab may be coming up (the helper creates it
+      // and the page connects a beat later). Queue the command and keep
+      // retrying until the port delivers or the command ages out — without
+      // ever creating a relay tab ourselves (the helper owns that). The
+      // retry covers the gap between "the port connected" and "the onConnect
+      // flush ran" (the flush can beat the queue push), and the dead-port
+      // case above. The entry stays in the queue so onConnect's drain can
+      // deliver it; the retry loop stops the moment the entry leaves the
+      // queue (delivered or aged out), so a command is never posted twice.
       void ensureRelayTab().then(() => {
         const started = Date.now();
         const q = relayCmdQueues.get(winId) || [];
@@ -746,7 +771,15 @@ async function handleRelayReq(action: string, arg: any): Promise<any> {
   if (action !== "alive") markChromeAlive();
   if (action === "alive") {
     markChromeAlive();
-    return null;
+    // The chrome helper announces its own version as the arg; store it so the
+    // options Components panel can report it independently of the extension.
+    if (arg) {
+      browser.storage.local.set({ chromeHelperVersion: String(arg) }).catch(() => {});
+    }
+    // Return a truthy ack so the helper can confirm the announce was really
+    // delivered (and stop retrying). Without it the helper could only know a
+    // fire-and-forget req was accepted/queued, not that chromeAlive landed.
+    return { ok: true };
   }
   if (action === "toggleWhichKey") {
     // The chrome helper flipped its own cached copy; flip storage to match so
@@ -884,9 +917,24 @@ browser.tabs
   })
   .catch(() => {});
 
+// Authoritative in-memory source of truth for "is the chrome layer alive this
+// session?". Set true by markChromeAlive (the helper's confirmed announce);
+// reset false on startup. Content scripts query this via the "chromeLayer"
+// message (NOT a storage flag, which onStartup's write can race) so exactly one
+// status bar ever renders.
+let chromeLayerAlive = false;
+
+function setChromeLayerAlive(v: boolean): void {
+  chromeLayerAlive = v;
+}
+
 // Chrome helper absent unless it pings "alive" on window startup; clear the gate
-// so a stale flag never permanently disables content-side handling.
+// so a stale flag never permanently disables content-side handling. Since
+// content scripts must never trust a racy storage write for the one-bar
+// decision, the authoritative flag is reset here and only the confirmed announce
+// sets it true again.
 browser.runtime.onStartup.addListener(() => {
+  setChromeLayerAlive(false);
   browser.storage.local.set({ chromeAlive: false }).catch(() => {});
   checkChromeLayerHealth();
   nudgeFreshInstall();
@@ -917,6 +965,7 @@ browser.notifications.onClicked.addListener((id: string) => {
 // silent-death failure of Firefox 155 (bug 1974213). Tell the user instead of
 // letting every chrome-only feature degrade to standalone mode with no sign.
 function markChromeAlive(): void {
+  setChromeLayerAlive(true); // authoritative, before any async storage write
   browser.storage.local
     .set({ chromeAlive: true, chromeEverAlive: true })
     .catch(() => {});
