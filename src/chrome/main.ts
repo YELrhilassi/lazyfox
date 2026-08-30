@@ -22,6 +22,11 @@ import { createTypingChannel } from "./typing";
 (function () {
   "use strict";
 
+  // Version of the chrome helper (userChrome.uc.js) shipped by the installer.
+  // Announced to the extension's background with the alive ping and shown on
+  // the options Components panel. Tracks the release; bump with each release.
+  const CHROME_HELPER_VERSION = "0.5.6";
+
   if (window.top !== window) return;
   if (!window.gBrowser) return;
 
@@ -211,24 +216,25 @@ import { createTypingChannel } from "./typing";
 
   // Announce to the extension background that the chrome helper is alive, so
   // content scripts can hand leader-key handling over to chrome and hide their
-  // own status bar (the chrome helper owns the single window-level bar). The
-  // announce is fire-and-forget and needs the extension's moz-extension URL,
-  // so it can miss when the window opened before the add-on finished loading
-  // (fresh test profiles, slow first run). announceChromeAlive() retries from
-  // the 500ms poll until the extension URL is resolvable, then stops.
+  // own status bar (the chrome helper owns the single window-level bar). This
+  // is a CONFIRMED handshake, not a fire-and-forget: the background replies to
+  // the "alive" req with an { ok:true } ack after it has set the storage
+  // chromeAlive flag, and only that ack latches the helper out of retrying. A
+  // fire-and-forget announce could be accepted-while-queued and then dropped
+  // (relay not ready yet), silently leaving chromeAlive=false forever and
+  // every restored web page drawing its own bar on top of the window one.
   let announcedAlive = false;
+  let aliveAckInFlight = false;
   function announceChromeAlive(): void {
-    if (announcedAlive) return;
+    if (announcedAlive || aliveAckInFlight) return;
     if (!channel.ccBaseUrl()) return; // extension not ready yet; poll retries
-    // Only latch once the relay has actually connected AND the "alive"
-    // request is really being delivered, not merely queued (a cold-start
-    // drop would leave chromeAlive=false forever, and every restored web page
-    // would draw its own content bar on top of the window-level one). requestBg
-    // returns true as soon as the request is accepted, so gate on relayReady()
-    // to mean "posted to a live port that will reach the background". The
-    // port remains live after first connect, so this is a one-time event.
-    if (!channel.relayReady()) return; // relay not connected yet; keep retrying
-    announcedAlive = channel.requestBg("alive");
+    aliveAckInFlight = true;
+    void channel.requestReply("alive", CHROME_HELPER_VERSION).then((ack: any) => {
+      aliveAckInFlight = false;
+      // requestReply resolves null on timeout/error; the ack object on success.
+      if (ack && ack.ok) announcedAlive = true;
+      // otherwise the next 500ms poll retries
+    });
   }
   announceChromeAlive();
 
