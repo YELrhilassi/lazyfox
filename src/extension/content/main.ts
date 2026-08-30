@@ -59,7 +59,18 @@ import { createContentOps, type ContentPopupShell } from "./ops";
 
   function refreshChromeAlive(): void {
     void send("chromeLayer").then((r) => {
-      const next = (r && r.alive) ? true : false;
+      // Only an EXPLICIT response decides the bar. send() resolves null when
+      // the background is unreachable or not yet answering (a cold boot, the
+      // extension still spinning up) — that is "indeterminate", not "absent":
+      // a content script only runs because the extension injected it, and the
+      // chrome layer is the normal full-install state, so the safe default is
+      // to stay hidden until the background explicitly confirms the chrome
+      // layer is absent ({ alive:false }). Drawing on a null reply is exactly
+      // the transient second bar seen on the first launch of a fresh install.
+      if (!r) {
+        return; // indeterminate -> keep current (null hides, true hides)
+      }
+      const next = !!r.alive;
       if (chromeAlive === null || next !== chromeAlive) {
         chromeAlive = next;
         ensureStatusBar();

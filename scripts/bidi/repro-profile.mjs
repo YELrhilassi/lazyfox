@@ -11,7 +11,7 @@ import { resolve, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  startGecko, stopGecko, getTree, evalIn, waitFor, sleep,
+  startGecko, stopGecko, getTree, navigate, evalIn, waitFor, sleep,
 } from "./lib.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -51,6 +51,23 @@ async function main() {
   let probe = null;
   const walk = (cs) => { for (const c of cs) { if (!probe && (c.url || "").includes("commandcenter.html")) probe = c.context; if (c.children) walk(c.children); } };
   walk(tree);
+  // Cold boot starts at about:blank with no extension page tab; open a
+  // commandcenter tab to serve as the probe/evalIn context.
+  if (!probe) {
+    const first = tree && tree[0] ? tree[0].context : null;
+    if (first) {
+      try {
+        await evalIn(
+          first,
+          `browser.tabs.create({ url: browser.runtime.getURL("commandcenter.html"), active: true }).then(() => true)`
+        );
+      } catch (e) {
+        console.log("(could not open commandcenter probe: " + (e && e.message) + ")");
+      }
+      await sleep(2000);
+      walk(await getTree());
+    }
+  }
   console.log("probe tab:", probe);
   await sleep(3500); // let the helper boot + announce retries + relay settle
 
@@ -81,6 +98,44 @@ async function main() {
       "| relay:", state.relay && !!state.relay.ready ? "up" : "DOWN",
       "| wrote chromeAlive to storage:", storage && storage.chromeAlive === true,
     );
+  }
+
+  // Symptom measurement: how many window-level status bars ('#lazyfox-status')
+  // are actually mounted in the browser chrome document right now. One = the
+  // chrome helper's bar; two = the double-bar regression.
+  try {
+    const bars = await evalIn(
+      probe,
+      `document.querySelectorAll('#lazyfox-status').length`
+    );
+    console.log("\n[measure] '#lazyfox-status' bars in chrome document:", bars);
+  } catch (e) {
+    console.log("\n[measure] bar count eval failed:", (e && e.message));
+  }
+
+  // Open a real web page and confirm it actually renders (not blank).
+  try {
+    await evalIn(
+      probe,
+      `browser.tabs.create({ url: "data:text/html,<h1>hello</h1>", active: true })`
+    );
+  } catch (e) {
+    console.log("[measure] create tab failed:", (e && e.message));
+  }
+  await sleep(1500);
+  let pageCtx = null;
+  const walk2 = (cs) => { for (const c of cs) { if (!pageCtx && (c.url || "").indexOf("data:text/html") === 0) pageCtx = c.context; if (c.children) walk2(c.children); } };
+  walk2(await getTree());
+  if (pageCtx) {
+    try {
+      const rendered = await evalIn(pageCtx, `document.body.innerHTML.includes('hello')`);
+      const contentBars = await evalIn(pageCtx, `document.querySelectorAll('#lazyfox-status').length`);
+      console.log("[measure] data: page rendered:", rendered, "| content-script bars in page:", contentBars);
+    } catch (e) {
+      console.log("[measure] page render check failed:", (e && e.message));
+    }
+  } else {
+    console.log("[measure] could not find the opened data: page context");
   }
 }
 
