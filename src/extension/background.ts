@@ -443,6 +443,12 @@ async function handleMessage(msg: BgAction, sender: any) {
       return quitBrowser();
     case "sessionState":
       return sessionState();
+    case "chromeLayer":
+      // Authoritative answer to the content script's one-bar question: only
+      // true if THIS background has confirmed the chrome layer alive this
+      // session. In-memory so a race between onStartup's storage reset and the
+      // helper's announce can never leave content scripts drawing a second bar.
+      return { alive: chromeLayerAlive };
     default:
       return { ok: false, error: "unknown action" };
   }
@@ -917,9 +923,24 @@ browser.tabs
   })
   .catch(() => {});
 
+// Authoritative in-memory source of truth for "is the chrome layer alive this
+// session?". Set true by markChromeAlive (the helper's confirmed announce);
+// reset false on startup. Content scripts query this via the "chromeLayer"
+// message (NOT a storage flag, which onStartup's write can race) so exactly one
+// status bar ever renders.
+let chromeLayerAlive = false;
+
+function setChromeLayerAlive(v: boolean): void {
+  chromeLayerAlive = v;
+}
+
 // Chrome helper absent unless it pings "alive" on window startup; clear the gate
-// so a stale flag never permanently disables content-side handling.
+// so a stale flag never permanently disables content-side handling. Since
+// content scripts must never trust a racy storage write for the one-bar
+// decision, the authoritative flag is reset here and only the confirmed announce
+// sets it true again.
 browser.runtime.onStartup.addListener(() => {
+  setChromeLayerAlive(false);
   browser.storage.local.set({ chromeAlive: false }).catch(() => {});
   checkChromeLayerHealth();
   nudgeFreshInstall();
@@ -950,6 +971,7 @@ browser.notifications.onClicked.addListener((id: string) => {
 // silent-death failure of Firefox 155 (bug 1974213). Tell the user instead of
 // letting every chrome-only feature degrade to standalone mode with no sign.
 function markChromeAlive(): void {
+  setChromeLayerAlive(true); // authoritative, before any async storage write
   browser.storage.local
     .set({ chromeAlive: true, chromeEverAlive: true })
     .catch(() => {});
