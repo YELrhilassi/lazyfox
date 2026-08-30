@@ -66,6 +66,7 @@ export function quickCommands(a: QuickActions): QuickCmd[] {
     { kind: "cmd", group: "Window", ic: "\u2726", title: "Move window", keys: ";m", desc: "move with arrow keys (Shift = fine step)", run: () => a.openMove() },
     { kind: "cmd", group: "Window", ic: "\u23fb", title: "Save and quit", keys: ";Q", desc: "save this session, then quit Firefox", run: () => a.quit() },
     { kind: "cmd", group: "Browser", ic: "\u2699", title: "Lazyfox settings", keys: "", desc: "open the extension options page", run: () => a.openOptions() },
+    { kind: "cmd", group: "Browser", ic: "\u2608", title: "Components & versions", keys: "", desc: "extension, chrome helper, wasm core, native host versions", run: () => a.openOptions() },
     { kind: "cmd", group: "Browser", ic: "\u{1F98A}", title: "Firefox settings", keys: "", desc: "open about:preferences", run: () => a.openPage("about:preferences") },
     { kind: "cmd", group: "Browser", ic: "\u21ba", title: "History", keys: "", desc: "show history in this command center", run: () => a.setMode("history") },
     { kind: "cmd", group: "Browser", ic: "\u2913", title: "Downloads", keys: "", desc: "show downloads in this command center", run: () => a.setMode("downloads") },
