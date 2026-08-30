@@ -103,6 +103,26 @@ export function createChannel(deps: ChannelDeps): Channel {
   const relayWaiters: Record<number, { resolve: (v: any) => void; timer: any }> = {};
 
   function ccBaseUrl(): string | null {
+    // Primary: resolve the extension's policy directly. Firefox's
+    // WebExtensionPolicy.getByID() keys on the add-on's moz-extension HOSTNAME
+    // UUID (e.g. ebf1759a-…), not the email-style add-on id, so on a permanent
+    // install it can return null for EXT_ID. Iterate the active policies and
+    // match by the add-on id — the field that is ALWAYS the email id we ship —
+    // so the helper resolves its base URL on a cold boot even with no
+    // extension page tab open (no commandcenter yet). This is what lets the
+    // alive announce + relay come up on a real interactive session; relying
+    // only on getByID + a commandcenter-tab scan left the announce stuck and a
+    // second content status bar drawn.
+    try {
+      const policies = WebExtensionPolicy.getActiveExtensions();
+      for (const p of policies) {
+        if (p && p.id === EXT_ID) return p.getURL("");
+      }
+    } catch (e) {
+      // fall through to getByID then tab scan
+    }
+    // Secondary: getByID by id (works for some installs), then fall back to
+    // scanning for an open commandcenter/relay/extension page tab.
     try {
       const p = WebExtensionPolicy.getByID(EXT_ID);
       if (p) return p.getURL("");
@@ -112,9 +132,18 @@ export function createChannel(deps: ChannelDeps): Channel {
     for (const t of window.gBrowser.tabs) {
       try {
         const s = t.linkedBrowser.currentURI.spec;
-        const i = s.indexOf("commandcenter.html");
-        if (s.indexOf("moz-extension://") === 0 && i !== -1) {
-          return s.slice(0, i);
+        if (s.indexOf("moz-extension://") !== 0) continue;
+        // Any extension page tab works — commandcenter, relay, setup, options.
+        if (
+          s.indexOf("commandcenter.html") !== -1 ||
+          s.indexOf("relay.html") !== -1 ||
+          s.indexOf("setup.html") !== -1 ||
+          s.indexOf("options") !== -1
+        ) {
+          // base = moz-extension://<hostname>/  (slice past hostname to slash).
+          const host = s.indexOf("//") + 2;
+          const slash = s.indexOf("/", host);
+          return slash < 0 ? s : s.slice(0, slash + 1);
         }
       } catch (e) {
         // skip tab
