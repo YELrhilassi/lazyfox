@@ -1,78 +1,63 @@
 # Developing & releasing Lazyfox
 
-This is the whole story in one page. There are two kinds of builds, and they
-map 1:1 to the two main branches:
+Two branches, one rule:
 
-| Branch        | Build        | Who uses it                | Command               |
+| Branch        | Build        | Who uses it                | How it gets updated   |
 |---------------|--------------|---------------------------|-----------------------|
-| `dev-nightly` | **unsigned** | you + Firefox Nightly/Dev | `npm run build`        |
-| `master`      | **signed**   | everyone (AMO/stable)     | `npm run build:release`|
+| `dev-nightly` | **unsigned** | you + Firefox Nightly/Dev | you work here        |
+| `master`      | **signed**   | everyone (AMO/stable)     | `npm run ship`       |
 
-**The version lives only in `dist/extension/manifest.json`.** Nothing hardcodes
-it. Bump it there and the whole pipeline follows.
+You work on `dev-nightly` (or a feature branch). `master` is only ever written
+by one command. CI is read-only on both.
 
 ---
 
 ## Daily dev loop (on `dev-nightly`)
 
 ```bash
-npm install          # once; checks your toolchain (node + go)
+npm install          # once; checks toolchain (node + go)
 npm run build        # compile wasm + bundle the unsigned xpi into dist/
-npm run dev-install  # build + install it into a fresh Nightly/Dev profile
+npm run dev-install  # build + install into a fresh Nightly/Dev profile
 npm run ci           # the full local test run (run before you push)
 ```
 
-That's it — `build` → `dev-install` → `ci`. Commands:
+That's it.
 
-| Command | When |
-|---------|------|
-| `npm run build` | compile the latest changes into `dist/lazyfox2-<ver>.xpi` (unsigned) |
-| `npm run dev-install` | build **and** install into a new Nightly/Dev profile (persistent) |
-| `npm run dev-install:clean` | same, but wipe stale dev profiles first |
-| `npm run ci` | run the whole CI check locally (actionlint + build + tests) |
-| `npm test` / `npm run verify` | just the test / typecheck suites |
+## Releasing (the whole flow is two commands)
 
----
-
-## Publishing a new version (`dev-nightly` → AMO)
-
-1. **Bump the version** in `dist/extension/manifest.json` (e.g. `0.5.5`).
-2. ```bash
-   npm run submit
-   ```
-   This packs the fresh unsigned build, **uploads it to AMO as a listed
-   (public) version**, and rebuilds the dev installers. It refuses to
-   re-submit a version that already exists. Needs `AMO_API_KEY` +
-   `AMO_API_SECRET` in `.env` (gitignored).
-3. **Wait.** AMO reviews the submission; it only *signs* listed add-ons after a
-   reviewer approves them. This is the only step with a human in the loop.
-
----
-
-## Releasing the signed version (`master`)
-
-Once AMO has approved that version, harvest the signed xpi:
+There are exactly **two** release commands — `submit`, then `ship`. Nothing else.
 
 ```bash
-git checkout master
-npm run build:release     # downloads the AMO-signed xpi, rebuilds release installers
-git commit -am "sync signed xpi for master"
-git push
+npm run bump -- 0.5.7    # (optional) start a version: bump everywhere at once
+npm run submit           # publish that version to AMO  → wait for review/signing
+npm run ship             # after AMO signs → the release (merge→signed→tag→GitHub Release)
 ```
 
-`npm run build:release` fails with a clear message (not a stack trace) if that
-version isn't signed yet — in which case you still have to wait for review.
+**`npm run submit`** builds the unsigned xpi, uploads it to addons.mozilla.org as
+a listed version, and rebuilds the dev installers. Needs `AMO_API_KEY` +
+`AMO_API_SECRET` (gitignored `.env`).
 
-### The sign-vs-unsigned rule, stated plainly
+**`npm run ship`** — run from your dev branch once AMO has signed the version —
+does the entire release, automatically and deterministically:
 
-- `npm run build` / `npm run submit` / `npm run build:installers` all make the
-  **unsigned** build — only Firefox Nightly/Developer Edition will accept it.
-- `npm run build:release` makes the **signed** build — what every stable
-  Firefox user gets from AMO / the GitHub release.
+1. Guards + a read-only AMO check that the version is signed.
+2. Merges your dev branch into master with `-X theirs` (never conflicts, even
+   on generated `dist/`/installers).
+3. Syncs the AMO-signed xpi, rebuilds release-mode dist + the release
+   installers.
+4. Verifies, then commits master, tags `v<version>`, pushes, and creates the
+   GitHub Release.
 
-That's why there are two installer families in `installer/bin/`:
-`lazyfox-install-{linux,darwin,windows.exe}` (release, signed) and
-`lazyfox-install-dev-*` (dev, unsigned).
+### The signed-vs-unsigned rule, stated plainly
+
+- `npm run build` / `npm run submit` make the **unsigned** build — only Firefox
+  Nightly/Developer Edition accepts it.
+- `npm run ship` makes the **signed** build — what every stable Firefox user
+  gets from AMO / the GitHub release.
+
+That's why there are two installer families:
+`installer/bin/lazyfox-install-*` (release, signed embed) and
+`installer/bin/lazyfox-install-dev-*` (dev, unsigned embed).
 
 ---
 
@@ -81,10 +66,10 @@ That's why there are two installer families in `installer/bin/`:
 | Command | What it does for you |
 |---------|----------------------|
 | `build` | make the unsigned dev xpi |
-| `build:release` | make the signed release (master, after AMO review) |
-| `submit` | push a new version to AMO + rebuild dev installers |
-| `build:installers` | rebuild the portable dev installer binaries |
 | `dev-install` / `dev-install:clean` | build + install into Nightly/Dev |
+| `bump -- X.Y.Z` | bump the version everywhere at once |
+| `submit` | publish a version to AMO + rebuild dev installers |
+| **`ship`** | **the release**: merge→signed→tag→push→GitHub Release |
 | `ci` / `ci:bidi` | run the local CI (universal pre-push check) |
 | `bidi` | run the WebDriver end-to-end suite (extension only) |
 | `probe:chrome` | probe the real chrome helper (status bar / relay / leader) |
@@ -97,5 +82,6 @@ That's why there are two installer families in `installer/bin/`:
 npm run ci
 ```
 
-Don't push to test whether CI passes — run this. See **docs/CI.md** for the
-full story (and how to install the test tools on Void).
+Don't push to test whether CI passes — run this. The GitHub workflows
+(`dev-nightly.yml`, `master.yml`) run the exact same read-only checks. See
+**docs/CI.md** for details (and how to install the test tools on Void).
