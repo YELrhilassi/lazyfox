@@ -21,14 +21,16 @@ This repo has two long-lived branches that own different adds:
    first) installs it persistently into Nightly/Devedition.
 2. When the next version is stable, **bump `dist/extension/manifest.json`** on
    `dev-nightly` (e.g. to `0.5.4`). Development now targets that “next” version.
-3. **Publish from `dev-nightly`**: `node scripts/amo-sign.mjs` submits that
-   version to AMO (requires `AMO_API_KEY` / `AMO_API_SECRET`).
-4. **Wait for AMO review + signing.** AMO only auto-signs *listed* versions
-   after approval.
-5. **Sync the signed xpi down to `master`.** Once reviewing is complete, re-run
-   the master workflow (a push to master, or `workflow_dispatch`). It derives the
-   version from the manifest, downloads the AMO-signed xpi for that exact version
-   via `scripts/sync-signed-xpi.mjs`, commits it back as
+3. **Submit from `dev-nightly`**: `npm run submit` packs the fresh unsigned xpi,
+   uploads it to AMO as a **listed** (public) version, and rebuilds the dev
+   installer binaries. Requires `AMO_API_KEY` / `AMO_API_SECRET` (in a
+   gitignored `.env`). It refuses to re-submit a version that already exists.
+4. **Wait for AMO review + signing.** AMO only *signs* listed versions after a
+   reviewer approves them — submission does not sign the xpi immediately.
+5. **Sync the signed xpi down to `master`.** Once reviewing is complete, run
+   `npm run build:release` (or the master workflow via `workflow_dispatch`). It
+   derives the version from the manifest, downloads the AMO-signed xpi for that
+   exact version via `scripts/sync-signed-xpi.mjs`, commits it back as
    `dist/lazyfox2-<ver>.xpi` + `-signed.xpi`, embeds it in the release installers,
    and (on a manual release run) tags + drafts a GitHub Release.
 
@@ -84,18 +86,25 @@ current platform, only building a host-form fallback on an uncovered host.
 
 ## CLI reference
 
-| Script | Output |
-|--------|--------|
-| `npm run build` | **Dev** build (default): wasm + bundles + unsigned xpi; fast, no AMO. |
-| `npm run build:release` | **Signed** release: syncs the AMO-signed xpi down (via `sync-signed-xpi.mjs`), rebuilds the 3 per-OS release installer binaries (`lazyfox-install-*`). Used by master CI. |
-| `npm run build:installers` | Rebuild the 3 per-OS **dev** installer binaries (`lazyfox-install-dev-*`, unsigned embed). |
-| `npm run install` | Build + install the fresh dev build into Nightly/Devedition (new profile, default-profile set). |
-| `npm run install:clean` | Same as `install`, but first wipes stale dev profiles. |
-| `npm run clean` | Remove regenerable build products (wasm, wasm embed, staged payloads) so the next build is a full rebuild. |
-| `npm run verify` | `typecheck` + full `test` suite, in one shot. |
-| `npm run typecheck` | `tsc --noEmit`. |
-| `npm run test` | Go core tests + installer tests + dist completeness. |
+| Script | When to use | Output |
+|--------|-------------|--------|
+| `npm run build` | **Daily dev on dev-nightly.** | **Unsigned** dev build: wasm + bundles + `dist/lazyfox2-<ver>.xpi`, fast, no AMO. |
+| `npm run submit` | **Publish a new version to AMO** (from dev-nightly). | Packs the fresh build, uploads it to AMO as a listed version (starts the review clock), rebuilds the dev installers. Needs `AMO_API_KEY`/`SECRET`. |
+| `npm run build:release` | **Master release only** — after AMO has signed the version. | Syncs the AMO-signed xpi down (via `sync-signed-xpi.mjs`), rebuilds the release installers (`lazyfox-install-*`). Fails with a clear message (no stack trace) if that version isn't signed yet. |
+| `npm run build:installers` | After a dev build, to refresh the portable dev installers. | Rebuilds `installer/bin/lazyfox-install-dev-*` (unsigned embed). |
+| `npm run install` | Try the latest dev build in Nightly/Devedition. | Build + install the fresh unsigned build into a new profile (default-profile set). |
+| `npm run install:clean` | Same as `install` but wipe stale dev profiles first. | |
+| `npm run clean` | Before a full rebuild. | Removes regenerable build products (wasm, wasm embed, staged payloads). |
+| `npm run verify` | One-shot check. | `typecheck` + full `test` suite together. |
+| `npm run typecheck` | Quick TS check. | `tsc --noEmit`. |
+| `npm run test` | Full unit suite. | Go core tests + installer tests + dist completeness. |
 
 **Dev install flow:** `npm run install` (or `npm run install:clean`), which
 builds the unsigned xpi and installs it, resolving the committed dev installer
 binary for your platform.
+
+**If `npm run build:release` fails with “the AMO-signed xpi … is not available
+yet”**: that is expected on dev-nightly — that command is only for the master
+release path, after `npm run submit` + AMO review. You almost certainly want
+`npm run build` (unsigned dev build) or `npm run submit` (to publish a new
+version) instead.

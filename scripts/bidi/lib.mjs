@@ -15,6 +15,9 @@ const GECKO = process.env.GECKODRIVER || resolve(ROOT, ".tools/geckodriver.exe")
 const FIREFOX =
   process.env.FIREFOX_BIN ||
   "C:/Program Files/Firefox Developer Edition/firefox.exe";
+// Headless CI (GitHub Actions has no display). Set BIDI_HEADLESS=1 to add the
+// Firefox -headless flag; default off so local interactive runs are unchanged.
+const HEADLESS = process.env.BIDI_HEADLESS === "1";
 
 let reqId = 0;
 const pending = new Map();
@@ -119,7 +122,10 @@ export function startGecko({ profile } = {}) {
           browserName: "firefox",
           "moz:firefoxOptions": {
             binary: FIREFOX,
-            args: profile ? ["-profile", profile] : [],
+            args: [
+              ...(profile ? ["-profile", profile] : []),
+              ...(HEADLESS ? ["-headless"] : []),
+            ],
             prefs: {
               "browser.startup.page": 0,
               "browser.startup.homepage": "about:blank",

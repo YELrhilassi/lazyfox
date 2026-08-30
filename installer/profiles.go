@@ -31,21 +31,32 @@ type FirefoxProfile struct {
 	Locked bool
 	// LastUsed is the mtime of the profile dir, used to sort candidates.
 	LastUsed time.Time
+	// FirefoxVersion is the last Firefox version that used this profile (read
+	// from compatibility.ini), e.g. "132.0.2". Empty if unknown.
+	FirefoxVersion string
 }
 
 func (p *FirefoxProfile) label() string {
-	flavor := ""
-	if p.Flavor != flavorUnknown && p.Flavor != flavorStable {
-		flavor = " • " + p.Flavor.String()
+	parts := []string{}
+	if p.Name != "" {
+		parts = append(parts, p.Name)
+	}
+	if p.FirefoxVersion != "" {
+		parts = append(parts, "Firefox "+p.FirefoxVersion)
+	} else if p.Flavor != flavorUnknown && p.Flavor != flavorStable {
+		parts = append(parts, p.Flavor.String())
 	}
 	mark := ""
 	if p.HasLazyfox {
-		mark = " • Lazyfox installed"
+		mark += " • Lazyfox installed"
 	}
 	if p.IsDefault {
 		mark += " • default"
 	}
-	return p.Name + flavor + mark
+	if mark != "" {
+		parts = append(parts, mark)
+	}
+	return strings.Join(parts, "  ")
 }
 
 // detectFirefoxProfiles enumerates every Firefox profile on the host.
@@ -80,6 +91,7 @@ func detectFirefoxProfiles() []*FirefoxProfile {
 			continue
 		}
 		p.Dir = full
+		p.FirefoxVersion = profileFirefoxVersion(full)
 		p.HasLazyfox = exists(filepath.Join(full, "extensions", "lazyfox@lazyfox.dev.xpi"))
 		p.Locked = profileLocked(full)
 		if st, err := os.Stat(full); err == nil {
@@ -120,6 +132,38 @@ func pickDefaultProfile(profiles []*FirefoxProfile) *FirefoxProfile {
 		return profiles[0]
 	}
 	return nil
+}
+
+// profileFirefoxVersion reads compatibility.ini's LastAppVersion/LastVersion,
+// the last Firefox version number recorded as having used this profile. Empty
+// if it cannot be determined.
+func profileFirefoxVersion(dir string) string {
+	f, err := os.Open(filepath.Join(dir, "compatibility.ini"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	best := ""
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if v, ok := strings.CutPrefix(line, "LastAppVersion="); ok {
+			best = strings.TrimSpace(v)
+		} else if v, ok := strings.CutPrefix(line, "LastVersion="); ok {
+			// Some build tracks write LastVersion; prefer it over LastAppVersion
+			// (it is a fuller "version+buildid" token).
+			v2 := strings.TrimSpace(v)
+			if v2 != "" {
+				best = v2
+			}
+		}
+	}
+	// Trim the build id (trailing "_<num>/<num>") so the user sees a readable
+	// version like "155.0" instead of "155.0_20260826090609/20260826090609".
+	if i := strings.IndexAny(best, "_ \t/"); i > 0 {
+		best = best[:i]
+	}
+	return strings.TrimSpace(best)
 }
 
 // profileLocked reports whether Firefox holds this profile's lock files.
