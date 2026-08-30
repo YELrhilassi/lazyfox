@@ -91,14 +91,28 @@ const EXT_ID = "lazyfox@lazyfox.dev";
 const RELAY_TIMEOUT = 6000;
 
 export function createChannel(deps: ChannelDeps): Channel {
-  // The relay tab's contentWindow (resolved lazily, re-created on demand).
-  let relayWin: any = null;
-  // True once the relay page has connected its runtime port (it announces via
-  // a "ready" message and a __lfxReady flag the helper can read directly).
+  // The persistent relay tab (relay.html) carries every helper<->background
+  // message over SAME-DOCUMENT URL-hash slots (#lfr=..., "lazyfox relay", a
+  // grammar distinct from the debug #lfc= channels). Why URL hashes and not
+  // postMessage: the helper runs in the chrome (parent) process, and a remote
+  // (out-of-process) extension page has NO reachable window object from there
+  // — contentWindow and browsingContext.window are both null on the chrome
+  // side for OOP tabs (verified against interactive Firefox; geckodriver hides
+  // this by forcing extension pages in-process with
+  // extensions.webextensions.remote=false). postMessage to a null window dies
+  // silently, which left the announce stuck and every web page drawing its own
+  // status bar. Same-document navigation works cross-process in both
+  // directions: the helper navigates the relay tab to #lfr=rq.<id>.<action>
+  // (the page forwards it over its runtime port), and the page rewrites its
+  // own URL to #lfr=rp/cm.<...> which the helper polls (it already polls every
+  // 500ms). The URL is a single slot: one request in flight at a time, the
+  // rest queue here; the page never clobbers a pending request hash.
+  let relayTab: { browser: any; tab: any } | null = null;
   let relayReady = false;
-  // Fire-and-forget requests queued while the relay is still coming up.
-  let pendingReqs: Array<{ action: string; arg?: string }> = [];
-  // Reply waiters keyed by request id, resolved by the "resp" message.
+  // Requests queued for the single URL slot (helper -> background).
+  let pendingReqs: Array<{ id: number; action: string; arg?: string }> = [];
+  // Reply waiters keyed by request id, resolved when the relay page writes the
+  // `#lfr=rp.<id>.<json>` hash back into the tab URL.
   let relaySeq = 0;
   const relayWaiters: Record<number, { resolve: (v: any) => void; timer: any }> = {};
 
@@ -180,9 +194,9 @@ export function createChannel(deps: ChannelDeps): Channel {
         // created-browsers set covers that window.
         if (!isRelay && relayBrowsers.has(b)) isRelay = true;
         if (!isRelay) continue;
-        // A relay must carry the extension's page (never a stale leftover);
-        // check the created set OR a committed relay URL.
-        return { browser: b, tab: t };
+    // A relay must carry the extension's page (never a stale leftover);
+    // check the created set OR a committed relay URL.
+    return { browser: b, tab: t };
       }
     } catch (e) {
       // ignore
@@ -190,8 +204,11 @@ export function createChannel(deps: ChannelDeps): Channel {
     return null;
   }
 
-  function findRelayWindow(): any {
-    // Prune browsers whose tab is gone (a relay recreated after a death).
+  // Resolve + cache the relay tab's { browser, tab }. Prunes a dead cache
+  // (tab recreated after a death), hides the tab natively (cosmetic — never
+  // browser.tabs.hide(), which detaches the browsing context and nulls the
+  // URL/loadURI path), and returns null when no relay exists yet.
+  function resolveRelayTab(): { browser: any; tab: any } | null {
     for (const b of relayBrowsers) {
       try {
         if (!window.gBrowser.tabs.some((t: any) => t.linkedBrowser === b)) relayBrowsers.delete(b);
@@ -202,7 +219,13 @@ export function createChannel(deps: ChannelDeps): Channel {
     const r = findRelayTab();
     if (!r) return null;
     relayBrowsers.add(r.browser);
-    return r.browser.contentWindow;
+    try {
+      r.tab.hidden = true; // cosmetic hide only (see above)
+    } catch (e) {
+      // ignore
+    }
+    relayTab = r;
+    return r;
   }
 
   function createRelayTab(): void {
@@ -221,124 +244,237 @@ export function createChannel(deps: ChannelDeps): Channel {
         triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
       });
       if (tab && tab.linkedBrowser) relayBrowsers.add(tab.linkedBrowser);
+      relayTab = tab && tab.linkedBrowser ? { browser: tab.linkedBrowser, tab: tab } : null;
     } catch (e) {
       // ignore
     }
   }
 
-  function flushPending(): void {
-    if (!relayReady || !relayWin) return;
-    const q = pendingReqs;
-    pendingReqs = [];
-    for (const r of q) postReq(r.action, r.arg);
+  // ---- URL-slot relay (see the state comment above) ----------------------
+
+  const RELAY_HASH_PREFIX = "#lfr=";
+
+  function relayBrowser(): any {
+    const cached = relayTab;
+    if (cached && cached.browser) {
+      try {
+        if (window.gBrowser.tabs.some((t: any) => t.linkedBrowser === cached.browser)) return cached.browser;
+      } catch (e) {
+        // ignore
+      }
+    }
+    const r = resolveRelayTab();
+    return r ? r.browser : null;
   }
 
-  function postReq(action: string, arg?: string): void {
-    const w = relayWin;
-    if (!w) return;
+  // Exactly one relay tab per window, ever. Session restore recreates the
+  // previous relay tab while the helper is also creating one at startup, and a
+  // stray second relay means a second hidden page + content process for no
+  // benefit (and the "many processes on htop" the user saw). Called from
+  // startRelay's 500ms poll, so any extra is closed within half a second.
+  function dedupeRelayTabs(): void {
     try {
-      w.postMessage({ lfx: { type: "req", id: 0, action: action, arg: arg != null ? arg : "" } }, "*");
+      const relays = Array.from(window.gBrowser.tabs).filter((t: any) => {
+        try {
+          return t.linkedBrowser && t.linkedBrowser.currentURI && t.linkedBrowser.currentURI.spec.indexOf("relay.html") !== -1;
+        } catch (e) {
+          return false;
+        }
+      });
+      for (const extra of relays.slice(1)) {
+        try {
+          window.gBrowser.removeTab(extra);
+        } catch (e) {
+          // ignore
+        }
+      }
     } catch (e) {
       // ignore
     }
   }
 
-  function onRelayMessage(e: any): void {
-    const d = e && e.data;
-    if (!d || typeof d !== "object" || !d.lfx || typeof d.lfx !== "object") return;
-    const m = d.lfx;
-    if (m.type === "ready") {
-      relayReady = true;
-      flushPending();
+  function relayUrl(browser: any): string {
+    try {
+      return (browser && browser.currentURI && browser.currentURI.spec) || "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  // Navigate the relay tab to url. Same-document hash changes (the common
+  // case) never reload the page; even a full reload is survivable (the page
+  // re-connects its port and re-reads the hash on pageshow). Works for remote
+  // (out-of-process) tabs from the chrome side — plain navigation.
+  function loadRelay(url: string): void {
+    const b = relayBrowser();
+    if (!b) return;
+    try {
+      // Fragment-only changes must stay same-document (no reload, no content
+      // process churn per message): loadURI with an nsIURI preserves the
+      // document for a pure fragment change, while fixupAndLoadURIString can
+      // fix up a fragment-bearing URL into a FULL RELOAD (verified: the relay
+      // page's boot counter incremented on every rq write / hash clear,
+      // spinning a content process per message). loadURI accepts an nsIURI,
+      // not a bare string.
+      const uri = Services.io.newURI(url);
+      b.loadURI(uri, {
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // Clear a handled #lfr hash (same-document navigation back to the bare
+  // relay URL), freeing the slot for the next message.
+  function clearRelayHash(): void {
+    const b = relayBrowser();
+    if (!b) return;
+    const base = ccBaseUrl();
+    if (!base) return;
+    loadRelay(base + "relay.html");
+  }
+
+  // Pop the next queued request and write it into the URL slot.
+  function sendNextRelay(): void {
+    const b = relayBrowser();
+    if (!b) return;
+    const base = ccBaseUrl();
+    if (!base) return;
+    const cur = relayUrl(b);
+    if (cur.indexOf(RELAY_HASH_PREFIX) !== -1) return; // slot busy
+    const next = pendingReqs.shift();
+    if (!next) return;
+    const argEnc = next.arg != null ? "." + encodeURIComponent(next.arg) : "";
+    loadRelay(base + "relay.html" + RELAY_HASH_PREFIX + "rq." + next.id + "." + next.action + argEnc);
+  }
+
+  // Poll the relay tab's URL (called from startRelay every 500ms): handle a
+  // reply or command hash the page wrote, then send the next queued request.
+  function pollRelayUrl(): void {
+    const b = relayBrowser();
+    if (!b) return;
+    const spec = relayUrl(b);
+    const i = spec.indexOf(RELAY_HASH_PREFIX);
+    if (i < 0) {
+      // Slot free (page cleared a forwarded request): send the next one.
+      sendNextRelay();
       return;
     }
-    if (m.type === "resp") {
-      const w = relayWaiters[m.id];
+    const frag = spec.slice(i + RELAY_HASH_PREFIX.length);
+    if (frag.indexOf("rq.") === 0) return; // our own pending request; page will clear it
+    if (frag.indexOf("rp.") === 0) {
+      // Reply hash: #lfr=rp.<id>.<encodeURIComponent(JSON result)>
+      const rest = frag.slice(3);
+      const dot = rest.indexOf(".");
+      if (dot < 0) {
+        clearRelayHash();
+        return;
+      }
+      const id = Number(rest.slice(0, dot));
+      let result: any = null;
+      try {
+        result = JSON.parse(decodeURIComponent(rest.slice(dot + 1)));
+      } catch (e) {
+        result = null;
+      }
+      const w = relayWaiters[id];
       if (w) {
         clearTimeout(w.timer);
-        delete relayWaiters[m.id];
-        w.resolve(m.error !== undefined ? null : m.result !== undefined ? m.result : null);
+        delete relayWaiters[id];
+        w.resolve(result);
       }
+      clearRelayHash();
+      sendNextRelay();
       return;
     }
-    if (m.type === "cmd") {
-      handleCmd(m.action, m.arg);
+    if (frag.indexOf("cm.") === 0) {
+      // Command hash: #lfr=cm.<action>.<encodeURIComponent(JSON arg)>
+      const rest = frag.slice(3);
+      const dot = rest.indexOf(".");
+      const action = dot < 0 ? decodeURIComponent(rest) : decodeURIComponent(rest.slice(0, dot));
+      let arg: any = null;
+      if (dot >= 0 && rest.slice(dot + 1)) {
+        try {
+          arg = JSON.parse(decodeURIComponent(rest.slice(dot + 1)));
+        } catch (e) {
+          arg = decodeURIComponent(rest.slice(dot + 1));
+        }
+      }
+      handleCmd(action, arg);
+      clearRelayHash();
+      sendNextRelay();
     }
   }
 
-  // The relay page is content: the helper's view of its window is an Xray
-  // wrapper, which HIDES expando properties the page script set (__lfxReady).
-  // Read them through wrappedJSObject, or the helper can never see the page
-  // become ready (and the 500ms poll would reset relayReady to false forever,
-  // leaving every request queued).
-  function rawWindow(w: any): any {
+  // The relay tab is invisible plumbing and must NEVER be the selected tab: a
+  // session restore recreates the previous relay tab as the LAST restored tab,
+  // Firefox selects the last restored tab, and the user is left staring at the
+  // blank relay page — with the tab strip hidden and no way to navigate out
+  // (the "blank page on startup" bug, worse when a prompt like the
+  // default-browser ask sits on the active tab). Steer back to a real tab.
+  function keepRelayUnselected(): void {
     try {
-      return (w && w.wrappedJSObject) || w;
+      const sel = window.gBrowser.selectedTab;
+      if (!sel) return;
+      let isRelay = false;
+      try {
+        isRelay = !!(
+          sel.linkedBrowser &&
+          sel.linkedBrowser.currentURI &&
+          sel.linkedBrowser.currentURI.spec.indexOf("relay.html") !== -1
+        );
+      } catch (e) {
+        // ignore
+      }
+      if (!isRelay) return;
+      const real = Array.from(window.gBrowser.tabs).filter((t: any) => {
+        try {
+          return !(
+            t.linkedBrowser &&
+            t.linkedBrowser.currentURI &&
+            t.linkedBrowser.currentURI.spec.indexOf("relay.html") !== -1
+          );
+        } catch (e) {
+          return false;
+        }
+      });
+      if (real.length) window.gBrowser.selectedTab = real[real.length - 1];
     } catch (e) {
-      return w;
+      // ignore
     }
   }
 
   function startRelay(): boolean {
     if (!ccBaseUrl()) return false;
-    const w = findRelayWindow();
-    if (!w) {
-      // No relay yet: create the tab (if needed) and let a later poll pick up
-      // the live window once the page commits. Creating is enough for the
-      // caller to consider the relay accepted — requests queue until ready.
+    let r = resolveRelayTab();
+    if (!r) {
+      // No relay yet: create the tab; requests queue until it exists.
       createRelayTab();
       return true;
     }
-    // Re-attach + re-read readiness on every call: the contentWindow is
-    // replaced when the page loads, and the page connects after we may have
-    // first seen the tab. addEventListener on the same window twice is a
-    // no-op, so this is cheap and idempotent.
-    if (w !== relayWin) {
-      relayWin = w;
-      relayReady = false;
-    }
-    try {
-      (w as any).addEventListener("message", onRelayMessage);
-    } catch (e) {
-      // ignore
-    }
-    // Announce our listener: the relay page buffers background -> chrome
-    // commands until the helper is attached (a session restore recreates the
-    // relay tab, so the page is live a beat before the helper re-resolves
-    // it), then flushes them. Idempotent — the page treats every hello the
-    // same, and addEventListener above is a no-op on repeat.
-    try {
-      (w as any).postMessage({ lfx: { type: "hello" } }, "*");
-    } catch (e) {
-      // ignore
-    }
-    const ready = !!(rawWindow(w) && (rawWindow(w) as any).__lfxReady);
-    if (ready && !relayReady) {
-      relayReady = true;
-      flushPending();
-    }
-    // Never reset relayReady to false here: the "ready" message / the page's
-    // own flag (read via wrappedJSObject) are the source of truth, and the
-    // poll's only job is to detect a window replacement (handled above) and
-    // latch readiness for a fresh window.
+    relayReady = true;
+    dedupeRelayTabs();
+    keepRelayUnselected();
+    pollRelayUrl();
     return true;
   }
 
   function requestBg(action: string, arg?: string): boolean {
     if (!ccBaseUrl()) return false;
     if (!startRelay()) return false;
-    if (relayReady) {
-      postReq(action, arg);
-    } else {
-      const entry = { action: action, arg: arg };
-      pendingReqs.push(entry);
-      // If the relay never becomes ready, drop the entry (the caller — e.g.
-      // the alive announce — retries on its own schedule).
-      setTimeout(() => {
-        const i = pendingReqs.indexOf(entry);
-        if (i >= 0) pendingReqs.splice(i, 1);
-      }, RELAY_TIMEOUT);
-    }
+    // Queue into the single URL slot; sendNextRelay drains it as the slot
+    // frees (the page clears a forwarded request hash, and replies/commands
+    // are handled+cleared by pollRelayUrl). If the relay never comes up, drop
+    // the entry after RELAY_TIMEOUT (the caller — e.g. the alive announce —
+    // retries on its own schedule).
+    const entry = { id: 0, action: action, arg: arg };
+    pendingReqs.push(entry);
+    setTimeout(() => {
+      const i = pendingReqs.indexOf(entry);
+      if (i >= 0) pendingReqs.splice(i, 1);
+    }, RELAY_TIMEOUT);
+    sendNextRelay();
     return true;
   }
 
@@ -350,11 +486,15 @@ export function createChannel(deps: ChannelDeps): Channel {
         resolve(null);
       }, RELAY_TIMEOUT);
       relayWaiters[id] = { resolve: resolve, timer: timer };
-      if (!requestBg(action, arg)) {
+      if (!ccBaseUrl() || !startRelay()) {
         clearTimeout(timer);
         delete relayWaiters[id];
         resolve(null);
+        return;
       }
+      const entry = { id: id, action: action, arg: arg };
+      pendingReqs.push(entry);
+      sendNextRelay();
     });
   }
 
@@ -774,14 +914,11 @@ export function createChannel(deps: ChannelDeps): Channel {
       });
       out.relayTabs = tabs.filter((s: string) => s.indexOf("relay.html") !== -1).length;
       out.allTabs = tabs.map((s: string) => s.replace(/^moz-extension:\/\/[^/]+\//, "ext:").slice(0, 60));
-      const w = relayWin;
-      out.windowLive = !!w;
-      try {
-        // Xray wrappers hide content-set expandos; read the raw window.
-        out.lfxReady = w ? !!(rawWindow(w) && (rawWindow(w) as any).__lfxReady) : null;
-      } catch (e) {
-        out.lfxReady = "ERR:" + String(e);
-      }
+      const b = relayBrowser();
+      out.windowLive = !!b;
+      out.urlSlot = b ? relayUrl(b).split("#")[1] || "(empty)" : null;
+      out.pending = pendingReqs.length;
+      out.awaiting = Object.keys(relayWaiters).length;
     } catch (e) {
       out.error = String(e);
     }

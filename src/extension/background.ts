@@ -594,10 +594,14 @@ browser.runtime.onConnect.addListener((port: any) => {
     (tab && tab.windowId != null ? tab.windowId : null);
   if (winId == null) return;
   // The relay tab is invisible plumbing: never a user tab, never in the strip.
-  if (tabId != null) {
-    transientTabIds.add(tabId);
-    browser.tabs.hide(tabId).catch(() => {});
-  }
+  // NOTE: it is deliberately NOT hidden via browser.tabs.hide() — hiding
+  // detaches the tab's chrome-side browsing context (contentWindow /
+  // browsingContext.window become null), which is exactly what broke the
+  // helper<->relay window bridge on interactive Firefox (remote extension
+  // pages). The chrome helper hides the tab natively (tab.hidden = true,
+  // cosmetic, keeps the browsing context alive) and both sides filter relay
+  // tabs from every count/strip/list.
+  if (tabId != null) transientTabIds.add(tabId);
   relayPorts.set(winId, port);
   // Flush commands queued while no port was connected.
   const q = relayCmdQueues.get(winId) || [];
@@ -632,26 +636,16 @@ browser.runtime.onConnect.addListener((port: any) => {
   });
 });
 
-// Make sure the relay tab exists for the current window (the chrome helper
-// creates one at startup, but it may have been closed; and the helper may not
-// be installed at all, in which case pushes are pointless but harmless).
+// Find the relay tab for the current window (the chrome helper CREATES it at
+// startup — the extension must never create a second one, which is what
+// produced duplicate relay tabs racing the helper's own). Query-only: when no
+// relay tab exists there is no chrome helper attached (or it hasn't come up
+// yet), so pushes are dropped — the helper's own requests/announce recreate
+// the tab the moment its ccBaseUrl resolves.
 function ensureRelayTab(): Promise<any | null> {
   return browser.tabs
     .query({ currentWindow: true })
-    .then((ts: any[]) => {
-      const existing = (ts || []).find(
-        (t: any) => t.url && t.url.indexOf("relay.html") !== -1
-      );
-      if (existing) return existing;
-      return browser.tabs
-        .create({ url: browser.runtime.getURL("relay.html"), active: false })
-        .then((tab: any) => {
-          // Register + hide immediately so it never counts or shows.
-          if (tab && tab.id != null) transientTabIds.add(tab.id);
-          if (tab && tab.id != null) browser.tabs.hide(tab.id).catch(() => {});
-          return tab;
-        });
-    })
+    .then((ts: any[]) => (ts || []).find((t: any) => t.url && t.url.indexOf("relay.html") !== -1) || null)
     .catch(() => null);
 }
 
@@ -661,13 +655,11 @@ function ensureRelayTab(): Promise<any | null> {
 browser.tabs.onCreated.addListener((tab: any) => {
   if (tab && tab.id != null && tab.url && tab.url.indexOf("relay.html") !== -1) {
     transientTabIds.add(tab.id);
-    browser.tabs.hide(tab.id).catch(() => {});
   }
 });
 browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
   if (tab && tab.url && tab.url.indexOf("relay.html") !== -1) {
     transientTabIds.add(tabId);
-    browser.tabs.hide(tabId).catch(() => {});
   }
 });
 
@@ -704,13 +696,15 @@ function requestChrome(action: string, arg?: any): void {
         }
       };
       if (tryPost()) return;
-      // No live port: make sure the relay tab exists, then keep trying until
-      // the port delivers or the command ages out. The retry covers the gap
-      // between "the port connected" and "the onConnect flush ran" (the
-      // flush can beat the queue push), and the dead-port case above. The
-      // entry stays in the queue so onConnect's drain can deliver it; the
-      // retry loop stops the moment the entry leaves the queue (delivered or
-      // aged out), so a command is never posted twice.
+      // No live port: the relay tab may be coming up (the helper creates it
+      // and the page connects a beat later). Queue the command and keep
+      // retrying until the port delivers or the command ages out — without
+      // ever creating a relay tab ourselves (the helper owns that). The
+      // retry covers the gap between "the port connected" and "the onConnect
+      // flush ran" (the flush can beat the queue push), and the dead-port
+      // case above. The entry stays in the queue so onConnect's drain can
+      // deliver it; the retry loop stops the moment the entry leaves the
+      // queue (delivered or aged out), so a command is never posted twice.
       void ensureRelayTab().then(() => {
         const started = Date.now();
         const q = relayCmdQueues.get(winId) || [];
