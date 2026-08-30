@@ -391,7 +391,10 @@ Layout of the repo:
 - `src/chrome/` — the browser-level helper (toolbar-free browsing UI)
 - `src/extension/` — the add-on: background, content script, command center
 - `core/` — the Go core, compiled to Wasm and embedded in every bundle
-- `docs/` — architecture notes and screenshots
+- `docs/` — architecture notes, the release playbook, and screenshots. The
+  release design is also documented *agnostically* in
+  `docs/RELEASE-WORKFLOW-PATTERN.md`, so the pattern can be lifted into any
+  project that has a pair of dev-vs-released branches.
 
 ## Uninstall
 
