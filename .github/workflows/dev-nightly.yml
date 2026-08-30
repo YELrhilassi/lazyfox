@@ -90,7 +90,7 @@ jobs:
           GECKODRIVER: ".tools/geckodriver"
         run: |
           FIREFOX_BIN="$FIREFOX_BIN" GECKODRIVER="$GECKODRIVER" BIDI_HEADLESS=1 \
-            timeout 600 node scripts/bidi/test.mjs
+            timeout 600 node scripts/bidi/test.mjs 2>&1 | tee /tmp/bidi.log
 
       - name: Upload test results
         if: always()
