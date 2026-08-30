@@ -21,7 +21,7 @@ jobs:
         run: npm ci
 
       - name: Build dev extension (unsigned)
-        run: npm run build:dev
+        run: npm run build
 
       - name: Run installer tests
         run: npm test

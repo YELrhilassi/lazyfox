@@ -1,6 +1,6 @@
 // Development-only diagnostics. `__DEV__` is defined globally in globals.d.ts
 // and replaced at build time by esbuild (false in prod, true for
-// `npm run build:dev`). When every debug call site guards on `__DEV__`
+// `npm run build`). When every debug call site guards on `__DEV__`
 // directly, esbuild folds the literal `false` and tree-shakes the dbg() body
 // (and dbg itself, once unreferenced) out of production bundles, so no debug
 // strings ship to dist/. isDev()/dbg() here are convenience wrappers; they are

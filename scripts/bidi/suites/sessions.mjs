@@ -464,7 +464,7 @@ export async function run(ctx) {
       throw new Error("split not created; tabs=" + JSON.stringify(ts));
     });
     const realT0 = (await ctx.tabsInfo()).filter(
-      (t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=")
+      (t) => ctx.isRealTab(t)
     );
     const bIdx = realT0.findIndex((t) => (t.url || "").includes("/hello")) + 1;
     assert(bIdx >= 1 && bIdx <= 9, ";+N target within 1-9: " + bIdx + " of " + realT0.length);
@@ -582,7 +582,15 @@ export async function run(ctx) {
     const w3Row = ids.find((t) => (t.url || "").includes("/lfw3"));
     const w4Row = ids.find((t) => (t.url || "").includes("/lfw4"));
     assert(w1Row && w2Row && w3Row && w4Row, "found all four fresh tabs: " + JSON.stringify(ids.map((t) => t.url)));
-    const realIds = ids.filter((t) => !(t.url || "").includes("commandcenter.html"));
+    // The ordering check compares the four WEB tabs' relative strip slots:
+    // commandcenter tabs (the probe, the home tab) and the persistent relay
+    // tab (relay.html — invisible plumbing whose slot shifts when restore
+    // recreates it) are both excluded, exactly like the baseline test did for
+    // commandcenter alone.
+    const realIds = ids.filter((t) => {
+      const u = t.url || "";
+      return !u.includes("commandcenter.html") && !u.includes("relay.html");
+    });
     // Match by URL, not id: restore RECREATES tabs, so ids change across the
     // session switch — the strip order itself is what must be preserved.
     const namesOf = (rows) =>
@@ -601,7 +609,7 @@ export async function run(ctx) {
     // ;+N digit is a position over the chrome's realTabs() (skips only
     // splitpanel/#lfc transients; commandcenter tabs COUNT), so resolve w3's
     // index over that same list.
-    const chromeReal = ids.filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc="));
+    const chromeReal = ids.filter((t) => ctx.isRealTab(t));
     const w3ChromeIdx = chromeReal.findIndex((t) => t.id === w3Row.id) + 1;
     assert(w3ChromeIdx <= 9, "w3 within ;+1-9: " + w3ChromeIdx);
     await evalIn(ctx.probe, `browser.tabs.update(${w2Row.id}, { active: true })`).catch(() => {});
@@ -633,7 +641,10 @@ export async function run(ctx) {
     const iw2Saved = realIds.findIndex((t) => t.id === w2Row.id);
     const restored = await waitFor(async () => {
       const ts = await ctx.tabsInfo();
-      const realAfter2 = ts.filter((t) => !(t.url || "").includes("commandcenter.html"));
+      const realAfter2 = ts.filter((t) => {
+        const u = t.url || "";
+        return !u.includes("commandcenter.html") && !u.includes("relay.html");
+      });
       if (namesOf(realAfter2) !== beforeOrder) return null;
       const sv2 = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
       if (sv2.length !== 2) return null;
@@ -647,7 +658,7 @@ export async function run(ctx) {
     }, 6000).catch(async () => {
       const ts = await ctx.tabsInfo().catch(() => "ERR");
       const st = await ctx.chromeState().catch(() => "ERR");
-      throw new Error("restore order never settled; want=" + beforeOrder + " w2SavedIdx=" + iw2Saved + " realAfter=" + JSON.stringify(Array.isArray(ts) ? ts.filter((t) => !(t.url || "").includes("commandcenter.html")).map((t) => ({ u: t.url, s: t.splitViewId })) : ts) + " strip=" + JSON.stringify(st && st.strip));
+      throw new Error("restore order never settled; want=" + beforeOrder + " w2SavedIdx=" + iw2Saved + " realAfter=" + JSON.stringify(Array.isArray(ts) ? ts.filter((t) => { const u = t.url || ""; return !u.includes("commandcenter.html") && !u.includes("relay.html"); }).map((t) => ({ u: t.url, s: t.splitViewId })) : ts) + " strip=" + JSON.stringify(st && st.strip));
     });
     assert(restored != null, "restore kept every tab's strip slot (want " + beforeOrder + " with w2@" + iw2Saved + "): " + JSON.stringify((await ctx.tabsInfo()).map((t) => ({ u: t.url, s: t.splitViewId }))));
     const svTabs = restored.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);

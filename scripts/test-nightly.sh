@@ -38,25 +38,20 @@ if echo "$Nightly_PATH" | grep -q "nightly\|Nightly\|dev\|Dev"; then
   IS_NIGHTLY=true
 fi
 
-# Build the extension
+# Build the unsigned dev extension (fast; no AMO).
 echo "Building extension..."
 cd /home/bliss/Projects/lazyfox
-npm run build:dev > /dev/null 2>&1 || npm run build > /dev/null 2>&1
+npm run build > /dev/null 2>&1
 
-# Create a test profile
-PROFILE_DIR="$HOME/.lazyfox-test-profile"
-rm -rf "$PROFILE_DIR"
-mkdir -p "$PROFILE_DIR"
+# Derive the version from the manifest (never hardcode it here).
+VERSION=$(node -p "require('./dist/extension/manifest.json').version")
+XPI="dist/lazyfox2-${VERSION}.xpi"
 
-# Install the extension
-echo "Installing extension..."
-if [ "$IS_NIGHTLY" = true ]; then
-  "$Nightly_PATH" -P "lazyfox-test" --profilemanager > /dev/null 2>&1 || true
-  "$Nightly_PATH" -P "lazyfox-test" -no-remote -installAddon "dist/lazyfox2-0.5.3.xpi" &>/dev/null &
-else
-  "$Nightly_PATH" -P "lazyfox-test" --profilemanager > /dev/null 2>&1 || true
-  "$Nightly_PATH" -P "lazyfox-test" -no-remote -installAddon "dist/lazyfox2-0.5.3.xpi" &>/dev/null &
-fi
+echo "Installing extension (${XPI})..."
+rm -rf "$HOME/.lazyfox-test-profile"
+# Install the unsigned xpi into a scratch profile.
+"$Nightly_PATH" -P "lazyfox-test" --profilemanager > /dev/null 2>&1 || true
+"$Nightly_PATH" -P "lazyfox-test" -no-remote -installAddon "$XPI" &>/dev/null &
 sleep 3
 
 # Run the BiDi test suite

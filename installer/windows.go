@@ -126,6 +126,19 @@ func stopFirefoxForProfile(profileDir string) int {
 	return stopped
 }
 
+// registerNativeHostWindows registers the native-messaging manifest path under
+// the per-user key Firefox scans (HKCU\Software\Mozilla\NativeMessagingHosts\
+// <name> = path to the manifest JSON).
+func registerNativeHostWindows(manifestPath string) error {
+	k, _, err := registry.CreateKey(registry.CURRENT_USER,
+		`Software\Mozilla\NativeMessagingHosts\lazyfox`, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	return k.SetStringValue("", manifestPath)
+}
+
 // processEntry — defined in procentry.go (shared build).
 
 // sudo* helpers are Unix-only; on Windows elevation uses UAC (elevateSelf).

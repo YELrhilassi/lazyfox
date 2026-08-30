@@ -102,6 +102,12 @@ func runInstall(rc *repoContext, rep StepReporter, o InstallOptions, pw Password
 		}
 	}
 
+	// 5b. Native messaging host (optional; never fails the install — the
+	// extension degrades cleanly when the host is absent).
+	if !o.LoaderOnly {
+		_ = installNativeHost(rep, o)
+	}
+
 	// 6. Optional relaunch so the new UI is live immediately.
 	if o.UseLaunch && !o.NoStop && !o.LoaderOnly {
 		if o.Install != nil && o.Install.Exec != "" && exists(o.Install.Exec) {

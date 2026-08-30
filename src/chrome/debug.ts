@@ -24,6 +24,8 @@ export interface DebugState {
   isFullscreen(): boolean;
   activeSplitView(): any;
   cfg(): ChromeCfg;
+  // The persistent relay's helper-side state (relayDebug from channel.ts).
+  relay(): any;
 }
 
 export interface DebugDeps {
@@ -205,10 +207,9 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
           current: st.hasPopup(),
           wkOn: document.querySelectorAll(".wk.on").length,
           rootInputs: document.querySelectorAll(".lf-popup .lf-input").length,
-          panels: panels.map((p) => ({
-            title: (p.querySelector(".lf-title") || {}).textContent || "",
-            hasInput: !!p.querySelector(".lf-input"),
-            status: (p.querySelector(".lf-status") || { textContent: "" }).textContent || "",
+          panels: panels.map((p) => ({                    title: (p.querySelector(".lf-title") || {}).textContent || "",
+                    hasInput: !!p.querySelector(".lf-input"),
+                    status: (p.querySelector(".lf-status") || { textContent: "" }).textContent || "",
           })),
           items: panels
             .map((p) =>
@@ -234,6 +235,13 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
         // ignore
       }
       const state = {
+        relay: (() => {
+          try {
+            return st.relay();
+          } catch (e) {
+            return { error: String(e) };
+          }
+        })(),
         popup: popupInfo,
         navDisplay: stEl(nav),
         tabsDisplay: stEl(tabs),

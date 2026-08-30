@@ -59,6 +59,20 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // splitpanel.html document has not committed yet).
   const createdPanelTabs = new Set<any>();
 
+  // Firefox destroys tab wrappers mid-window-collapse: a tab that is being
+  // removed can still be listed in gBrowser.tabs while its wrapper is already
+  // dead, and ANY property access on a dead wrapper throws "can't access dead
+  // object". Every tab-iteration path must skip those (the leader's status
+  // callback re-renders the bar mid-collapse, so one dead tab would throw
+  // straight through the key dispatch).
+  function isDeadWrapper(o: any): boolean {
+    try {
+      return !!(Cu && Cu.isDeadWrapper(o));
+    } catch (e) {
+      return false;
+    }
+  }
+
   // The split view wrapper the user last interacted with, so `;+` (move the
   // selected tab into the split) works even while the selected tab itself is
   // outside the split. gBrowser.activeSplitView covers the same case on newer
@@ -117,6 +131,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   }
 
   function isSplitPanelTab(tab: any): boolean {
+    if (isDeadWrapper(tab)) return false;
     if (tab && createdPanelTabs.has(tab)) return true;
     try {
       const spec =
@@ -129,12 +144,13 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     }
   }
 
-  // Transient tabs (the split panel + the throwaway #lfc= request relays) are
-  // not user tabs: they are hidden from numbering so a tab's 1-9 identity
-  // never changes just because a split/unsplit added or removed a companion
-  // pane. A REAL tab carrying a momentary #lfc=keys/state request hash is not
+  // Transient tabs (the split panel + the persistent relay) are not user
+  // tabs: they are hidden from numbering so a tab's 1-9 identity never
+  // changes just because a split/unsplit added or removed a companion pane. A
+  // REAL tab carrying a momentary #lfc=keys/state request hash is not
   // transient — excluding it is exactly what shifted ;+N targets mid-request.
   function isTransientTab(tab: any): boolean {
+    if (isDeadWrapper(tab)) return true;
     if (isSplitPanelTab(tab)) return true;
     try {
       const spec =
@@ -147,10 +163,12 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     }
   }
 
-  // Real (user) tabs in strip order — the stable 1-9 identity space.
+  // Real (user) tabs in strip order — the stable 1-9 identity space. Dead
+  // wrappers (a tab being torn down mid-collapse) are skipped, never counted.
   function realTabs(): any[] {
     const out: any[] = [];
     for (const t of window.gBrowser.tabs) {
+      if (isDeadWrapper(t)) continue;
       if (t && !isTransientTab(t)) out.push(t);
     }
     return out;

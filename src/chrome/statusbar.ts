@@ -29,10 +29,9 @@ export interface StatusBarCtl {
   compute(): void;
   refreshDownloads(): Promise<void>;
   pollDownloads(): Promise<void>;
-  // Apply a sessionState reply from the background (base64 JSON) and
-  // re-render. Returns the nonce the reply carried so the caller can resolve
-  // its waiter.
-  applySessionState(b64: string): void;
+  // Apply a sessionState reply from the background (the parsed state object,
+  // delivered structured-cloned over the relay) and re-render.
+  applySessionState(state: any): void;
   // True while a page element is in DOM fullscreen (a video, a gallery
   // lightbox, ...). Only then does the bar hide: browser-level fullscreen
   // (zen mode, F11) keeps the bar visible.
@@ -137,6 +136,9 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     try {
       if (document.documentElement.hasAttribute("inDOMFullscreen")) return true;
       const b = window.gBrowser && window.gBrowser.selectedBrowser;
+      // The selected browser can be a dead wrapper mid-collapse (its tab is
+      // being torn down); any property access then throws. Skip it.
+      if (b && Cu && Cu.isDeadWrapper(b)) return false;
       const doc = b && b.contentDocument;
       if (doc && doc.fullscreenElement) return true;
     } catch (e) {
@@ -146,35 +148,50 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   }
 
   function computeChromeStatus(): void {
-    const tabs = window.gBrowser.tabs;
-    const sel = tabs.indexOf(window.gBrowser.selectedTab);
-    const mode = deps.getMode();
-    const findState = sel >= 0 ? contentFindByIndex[sel] : undefined;
-    // The CURRENT session's pill count tracks live tabs, so opening/closing a
-    // tab updates the pill immediately — without a sessionState round-trip,
-    // which would create a transient tab and churn counts under automation.
-    // Other sessions' counts are refreshed on session actions/startup as usual.
-    const liveCount = deps.realTabs().length;
-    const sessions = chromeStatusInfo.sessions.map((s) =>
-      s.current ? { ...s, tabCount: liveCount } : s
-    );
-    chromeStatusBar.setData({
-      name: chromeStatusInfo.name,
-      marker: chromeStatusInfo.marker,
-      tabIndex: (sel < 0 ? 0 : sel) + 1,
-      tabCount: tabs.length,
-      inSplit: chromeStatusInfo.inSplit,
-      splitOrientation: chromeStatusInfo.splitOrientation,
-      splitActive: chromeStatusInfo.splitActive,
-      splitPanes: chromeStatusInfo.splitPanes,
-      activeStealth: chromeStatusInfo.activeStealth,
-      mode: mode,
-      sessions: sessions,
-      downloads: chromeStatusDownloads,
-      // count -1 = no active find session (segment hidden); 0 = query with
-      // no matches (red 0); >0 = live cur/count.
-      find: findState && findState.count >= 0 ? findState : null,
-    });
+    // Never throw out of here: the leader's status callback runs this MID key
+    // dispatch (a ;| split collapses the window while the bar re-renders), so
+    // a dead tab or a half-torn-down window must degrade to a best-effort
+    // render instead of breaking the key. All reads below are already
+    // defensive (realTabs skips dead wrappers); the try/catch is the final
+    // backstop for anything that still throws.
+    try {
+      const tabs = window.gBrowser.tabs;
+      const sel = tabs.indexOf(window.gBrowser.selectedTab);
+      const mode = deps.getMode();
+      const findState = sel >= 0 ? contentFindByIndex[sel] : undefined;
+      // The CURRENT session's pill count tracks live tabs, so opening/closing
+      // a tab updates the pill immediately — without a sessionState
+      // round-trip (which used to create a transient tab and churn counts
+      // under automation). Other sessions' counts are refreshed on session
+      // actions/startup as usual. Numbering counts REAL tabs only: the
+      // persistent relay tab and split companion panes are internal plumbing
+      // and must never shift the user-visible index/count.
+      const real = deps.realTabs();
+      const liveCount = real.length;
+      const realSel = real.indexOf(window.gBrowser.selectedTab);
+      const sessions = chromeStatusInfo.sessions.map((s) =>
+        s.current ? { ...s, tabCount: liveCount } : s
+      );
+      chromeStatusBar.setData({
+        name: chromeStatusInfo.name,
+        marker: chromeStatusInfo.marker,
+        tabIndex: (realSel < 0 ? 0 : realSel) + 1,
+        tabCount: liveCount,
+        inSplit: chromeStatusInfo.inSplit,
+        splitOrientation: chromeStatusInfo.splitOrientation,
+        splitActive: chromeStatusInfo.splitActive,
+        splitPanes: chromeStatusInfo.splitPanes,
+        activeStealth: chromeStatusInfo.activeStealth,
+        mode: mode,
+        sessions: sessions,
+        downloads: chromeStatusDownloads,
+        // count -1 = no active find session (segment hidden); 0 = query with
+        // no matches (red 0); >0 = live cur/count.
+        find: findState && findState.count >= 0 ? findState : null,
+      });
+    } catch (e) {
+      // a mid-collapse render must never escape
+    }
   }
 
   function updateChromeStatus(): void {
@@ -211,10 +228,9 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     }
   }
 
-  function applySessionState(b64: string): void {
+  function applySessionState(state: any): void {
     try {
-      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-      const state = JSON.parse(new TextDecoder().decode(bytes));
+      state = state || {};
       chromeStatusInfo = {
         name: state && state.name ? String(state.name) : "default",
         marker: state && state.marker ? Number(state.marker) : 0,

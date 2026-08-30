@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -21,6 +22,9 @@ var chromePayloadFS embed.FS
 
 //go:embed payload/extension
 var extensionPayloadFS embed.FS
+
+//go:embed payload/native-host
+var nativeHostPayloadFS embed.FS
 
 // chromeFileBytes returns the bytes for a chrome payload file (relative to
 // dist/chrome/, e.g. "userChrome.uc.js" or "user.js"), preferring the live
@@ -78,4 +82,23 @@ func (r *repoContext) extensionXpiBytes() ([]byte, error) {
 func (r *repoContext) extensionXpiIsAvailable() bool {
 	_, err := fs.Stat(extensionPayloadFS, "payload/extension/lazyfox2.xpi")
 	return err == nil
+}
+
+// nativeHostBytes returns the embedded native messaging host binary for the
+// CURRENT platform (build.mjs stages payload/native-host/<goos>/). A zero
+// result means the host could not be built for this platform and the install
+// step must skip the host gracefully (the host is optional).
+func nativeHostBytes() ([]byte, error) {
+	name := "lazyfox-host"
+	if hostOS() == OSWindows {
+		name = "lazyfox-host.exe"
+	}
+	b, err := nativeHostPayloadFS.ReadFile(filepath.Join("payload/native-host", string(hostOS()), name))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) == 0 {
+		return nil, fmt.Errorf("native host payload is empty (build could not produce it for this platform)")
+	}
+	return b, nil
 }

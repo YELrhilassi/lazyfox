@@ -21,7 +21,7 @@ jobs:
         run: npm ci
 
       - name: Build dev extension
-        run: npm run build:dev
+        run: npm run build
 
       - name: Derive version
         id: version

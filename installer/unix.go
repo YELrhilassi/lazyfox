@@ -200,3 +200,7 @@ func windowsRunningFirefox() []processEntry { return nil }
 
 // windowsRegistryFirefoxExes is Windows-only; stub returns nothing here.
 func windowsRegistryFirefoxExes() []string { return nil }
+
+// registerNativeHostWindows is Windows-only (registry); on Unix the manifest
+// file in the scanned directory is enough.
+func registerNativeHostWindows(manifestPath string) error { return nil }
