@@ -1,6 +1,6 @@
 {
   "name": "lazyfox",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "private": true,
   "description": "Keyboard-first, UI-free Firefox. Leader-key navigation, paginated which-key overlay, centered search, tab switcher and link hints.",
   "type": "module",
