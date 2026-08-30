@@ -260,6 +260,29 @@ function manualTextKey(e: KeyboardEvent, input: HTMLInputElement): boolean {
   const sel = s !== en;
   const atEnd = s >= input.value.length;
   const atStart = s <= 0;
+  // Ctrl+V: native paste is prevented by the window-capture handler, so read
+  // the clipboard and insert at the cursor (mirrors overlay.ts pasteClipboard).
+  if (e.ctrlKey && !e.altKey && !e.metaKey && (k === "v" || k === "V")) {
+    try {
+      const read =
+        (navigator.clipboard && typeof navigator.clipboard.readText === "function")
+          ? navigator.clipboard.readText()
+          : Promise.resolve("");
+      void read
+        .then((txt) => {
+          if (!txt) return;
+          const cs = input.selectionStart == null ? input.value.length : input.selectionStart;
+          const ce = input.selectionEnd == null ? input.value.length : input.selectionEnd;
+          input.value = input.value.slice(0, cs) + txt + input.value.slice(ce);
+          try { input.setSelectionRange(cs + txt.length, cs + txt.length); } catch (err) {}
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        })
+        .catch(() => {});
+    } catch (err) {
+      // ignore
+    }
+    return true;
+  }
   if (k === "Backspace" || k === "Delete") {
     if (sel) {
       input.value = input.value.slice(0, s) + input.value.slice(en);

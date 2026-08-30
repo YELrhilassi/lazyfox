@@ -58,6 +58,25 @@ import { createContentOps, type ContentPopupShell } from "./ops";
           chromeAlive = next;
           ensureStatusBar();
         }
+        // A page restored during startup can read chromeAlive=false a moment
+        // before the chrome helper announces alive (it retries every 500ms).
+        // Draw a content bar if standalone, but re-check shortly after: on a
+        // real install the announce usually lands within a second, and that
+        // late flip must clear the second bar. This catches the race that
+        // left the content bar up on top of the chrome window bar.
+        if (next === false) {
+          setTimeout(() => {
+            browser.storage.local.get("chromeAlive").then(
+              (r2: { chromeAlive?: boolean }) => {
+                if (!!(r2 && r2.chromeAlive) && chromeAlive !== true) {
+                  chromeAlive = true;
+                  ensureStatusBar();
+                }
+              },
+              () => { /* ignore */ }
+            );
+          }, 1500);
+        }
       },
       () => {
         // Read failed: assume standalone so the bar still appears.

@@ -91,6 +91,22 @@ async function main() {
   console.log("probe tab:", probe);
   await sleep(2500); // let the chrome helper boot + relay handshake finish
 
+  // Read storage.chromeAlive + chromeEverAlive from the extension realm: this
+  // is the flag content scripts read to decide whether to draw their own
+  // status bar. If the helper boots + the relay is up but chromeAlive is false
+  // here, that's the double-status-bar root cause (content draws a 2nd bar).
+  let storage = null;
+  try {
+    storage = await evalIn(
+      probe,
+      `browser.storage.local.get(["chromeAlive","chromeEverAlive"]).then(s => ({ chromeAlive: s.chromeAlive, chromeEverAlive: s.chromeEverAlive }))`
+    );
+  } catch (e) {
+    storage = { __error: String(e) };
+  }
+  console.log("\n==== storage flags (what content scripts see) ====");
+  console.log(JSON.stringify(storage, null, 2));
+
   const activeBefore = await evalIn(probe, ACTIVE_REQUERY).catch(() => null);
 
   const state = await chromeQuery(probe, "state");
