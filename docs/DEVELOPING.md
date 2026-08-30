@@ -18,17 +18,17 @@ it. Bump it there and the whole pipeline follows.
 ```bash
 npm install          # once; checks your toolchain (node + go)
 npm run build        # compile wasm + bundle the unsigned xpi into dist/
-npm run install      # build + install it into a fresh Nightly/Dev profile
+npm run dev-install  # build + install it into a fresh Nightly/Dev profile
 npm run ci           # the full local test run (run before you push)
 ```
 
-That's it — `build` → `install` → `ci`. Commands:
+That's it — `build` → `dev-install` → `ci`. Commands:
 
 | Command | When |
 |---------|------|
 | `npm run build` | compile the latest changes into `dist/lazyfox2-<ver>.xpi` (unsigned) |
-| `npm run install` | build **and** install into a new Nightly/Dev profile (persistent) |
-| `npm run install:clean` | same, but wipe stale dev profiles first |
+| `npm run dev-install` | build **and** install into a new Nightly/Dev profile (persistent) |
+| `npm run dev-install:clean` | same, but wipe stale dev profiles first |
 | `npm run ci` | run the whole CI check locally (actionlint + build + tests) |
 | `npm test` / `npm run verify` | just the test / typecheck suites |
 
@@ -84,7 +84,7 @@ That's why there are two installer families in `installer/bin/`:
 | `build:release` | make the signed release (master, after AMO review) |
 | `submit` | push a new version to AMO + rebuild dev installers |
 | `build:installers` | rebuild the portable dev installer binaries |
-| `install` / `install:clean` | build + install into Nightly/Dev |
+| `dev-install` / `dev-install:clean` | build + install into Nightly/Dev |
 | `ci` / `ci:bidi` | run the local CI (universal pre-push check) |
 | `bidi` | run the WebDriver end-to-end suite (extension only) |
 | `probe:chrome` | probe the real chrome helper (status bar / relay / leader) |
