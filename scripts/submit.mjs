@@ -142,7 +142,8 @@ try {
 console.log("\n════════════════════════════════════════════════════════════");
 console.log(`Submitted v${version} to AMO — pending review.`);
 console.log(`Manage:  https://addons.mozilla.org/developers/addon/${slug || GUID}/versions/`);
-console.log("\nOnce AMO has reviewed & signed this version, run the RELEASE step");
-console.log("(`npm run build:release` from master, or the master GitHub workflow)");
-console.log("to download the signed xpi and rebuild the release installer binaries.");
+console.log("\nOnce AMO has reviewed & signed this version, run the RELEASE step:");
+console.log("    npm run ship");
+console.log("(from this dev branch) — it merges to master, syncs the signed xpi,");
+console.log("rebuilds the release installers, tags v" + version + ", pushes and creates the GitHub Release.");
 console.log("════════════════════════════════════════════════════════════");

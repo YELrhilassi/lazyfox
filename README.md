@@ -339,9 +339,8 @@ npm test               # go test ./core/ + installer tests + dist/ completeness
 
 Daily loop: `npm run dev-install` (or `npm run dev-install:clean`) is all most
 people need — it builds and installs the unsigned dev build into Firefox
-Nightly/Devedition automatically. Use `npm run build` alone when you only want
-the built output, and `npm run build:installers` to refresh the portable dev
-installer binaries.
+Nightly/Devedition automatically. `npm run build` alone just makes the built
+output.
 
 **Dev vs signed builds.** Lazyfox has two build modes, and they are not the
 same command — use the one that matches what you are doing:
@@ -350,30 +349,30 @@ same command — use the one that matches what you are doing:
 |---|---|---|
 | Develop / try the latest changes | `npm run build` | **Unsigned** dev build (`__DEV__=true`), fast, no AMO. Produces `dist/lazyfox2-<ver>.xpi` for Nightly/Devedition. |
 | Install my fresh dev build into Nightly | `npm run dev-install` (or `npm run dev-install:clean`) | Builds + installs the unsigned dev xpi into a new profile. |
-| Rebuild the portable dev installer binaries | `npm run build:installers` | Embeds the unsigned xpi into `installer/bin/lazyfox-install-dev-*`. |
+| Start a new version | `npm run bump -- X.Y.Z` | Bump the version everywhere at once. |
 | Publish the next version to AMO | `npm run submit` | Packs the fresh build, uploads it to AMO as a **listed/public** version, and rebuilds the dev installers. Needs `AMO_API_KEY`/`SECRET` in `.env`. |
-| Ship the signed release (master only!) | `npm run build:release` | Syncs the **AMO-signed** xpi + rebuilds the release installers `installer/bin/lazyfox-install-*`. Run this only **after** AMO review has signed the submitted version. |
+| **Ship the signed release** | **`npm run ship`** | **The whole release, from a dev branch**: merges dev into master (`-X theirs`), syncs the **AMO-signed** xpi, rebuilds the release installers, commits master, tags `v<version>`, pushes, and creates the GitHub Release. Run it after AMO review has signed the submitted version. |
 
 **Signing.** Stable Firefox rejects unsigned add-ons, so the shipped xpi is the
 **signed** one from addons.mozilla.org. AMO signs a **listed** (public) version
 only *after* it is reviewed — submitting (`npm run submit`) uploads the xpi but
-does not sign it instantly; it starts the review clock. Once AMO approves, the
-release command downloads the signed xpi:
+does not sign it instantly; it starts the review clock. Once AMO approves,
+`npm run ship` does the rest in one command:
 
 - `npm run submit` — uploads the fresh build to AMO (listed) → starts review.
-- `npm run build:release` — downloads the now-**signed** xpi (via
-  `scripts/sync-signed-xpi.mjs`) and embeds it into the release installer
-  binaries. Run this from master, and only after AMO review has signed the
-  submitted version.
+- `npm run ship` — the release: merge to master, download the now-**signed** xpi
+  (`scripts/sync-signed-xpi.mjs`), embed it in the release installers, tag
+  `v<version>` and create the GitHub Release.
 
-The release command is deterministic about the version (it always comes from
-`dist/extension/manifest.json`) and refuses to fake or guess a signed xpi: it
-reuses the committed signed artifact when it is already current, otherwise it
-downloads the exact version from AMO (needs `AMO_API_KEY`/`AMO_API_SECRET`).
+`ship` is deterministic about the version (it always comes from
+`src/static/extension/manifest.json`) and refuses to fake or guess a signed
+xpi: it verifies the version is signed on AMO before touching git, then syncs
+the exact version's signed xpi (reusing the committed signed artifact when it is
+already current).
 
-The release loop is documented in `docs/RELEASING.md`. If a version was
-already submitted to AMO and is still pending review, run the release build
-again once it is reviewed/signed so the freshly approved xpi is synced down.
+The full release flow (just `bump` → `submit` → wait → `ship`) is documented
+in `docs/RELEASING.md`. CI is read-only on both branches: neither workflow
+pushes, tags, or publishes — releases are created by `ship`, exactly once.
 
 ```
 
