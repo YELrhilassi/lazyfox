@@ -324,16 +324,21 @@ is committed, so installing never needs the toolchain — change source, run
 `npm run build`, and reinstall or **Reload** in `about:debugging`.
 
 ```bash
-npm install            # esbuild + typescript
+npm install            # esbuild + typescript (+ toolchain check)
 npm run build          # dev build: wasm, bundles, unsigned xpi — fast, no AMO
-npm run install        # build + install that dev build into Nightly/Devedition
-npm run install:clean  # …or first wipe stale dev profiles, then install
+npm run dev-install    # build + install that dev build into Nightly/Devedition
+npm run dev-install:clean  # …or first wipe stale dev profiles, then install
+npm run ci             # run the whole local CI check before you push (never push to test CI)
 npm run verify         # typecheck + full test suite, in one shot
 npm test               # go test ./core/ + installer tests + dist/ completeness
 ```
 
-Daily loop: `npm run install` (or `npm run install:clean`) is all most people
-need — it builds and installs the unsigned dev build into Firefox
+> Prefer the concise walkthrough in **`docs/DEVELOPING.md`** (daily loop,
+> publishing, releasing in one page) and **`docs/CI.md`** (running the exact CI
+> checks locally so you never have to push to discover a broken workflow).
+
+Daily loop: `npm run dev-install` (or `npm run dev-install:clean`) is all most
+people need — it builds and installs the unsigned dev build into Firefox
 Nightly/Devedition automatically. Use `npm run build` alone when you only want
 the built output, and `npm run build:installers` to refresh the portable dev
 installer binaries.
@@ -344,7 +349,7 @@ same command — use the one that matches what you are doing:
 | I want to… | Run | What it does |
 |---|---|---|
 | Develop / try the latest changes | `npm run build` | **Unsigned** dev build (`__DEV__=true`), fast, no AMO. Produces `dist/lazyfox2-<ver>.xpi` for Nightly/Devedition. |
-| Install my fresh dev build into Nightly | `npm run install` (or `npm run install:clean`) | Builds + installs the unsigned dev xpi into a new profile. |
+| Install my fresh dev build into Nightly | `npm run dev-install` (or `npm run dev-install:clean`) | Builds + installs the unsigned dev xpi into a new profile. |
 | Rebuild the portable dev installer binaries | `npm run build:installers` | Embeds the unsigned xpi into `installer/bin/lazyfox-install-dev-*`. |
 | Publish the next version to AMO | `npm run submit` | Packs the fresh build, uploads it to AMO as a **listed/public** version, and rebuilds the dev installers. Needs `AMO_API_KEY`/`SECRET` in `.env`. |
 | Ship the signed release (master only!) | `npm run build:release` | Syncs the **AMO-signed** xpi + rebuilds the release installers `installer/bin/lazyfox-install-*`. Run this only **after** AMO review has signed the submitted version. |
@@ -392,9 +397,11 @@ Layout of the repo:
 ## Uninstall
 
 Run the same standalone installer with the `uninstall` action
-(`installer/bin/lazyfox-install --mode uninstall`, or use the wizard and pick
-uninstall). It reverses exactly what the installer did — your profile,
-bookmarks, history and other add-ons are never touched.
+(`installer/bin/lazyfox-install-linux --mode uninstall`, or use the wizard and
+pick uninstall). It reverses exactly what the installer did — it removes the
+Lazyfox extension from `extensions.json`, restores your profile/chrome/user.js
+to the backed-up originals, and never touches your bookmarks, history or other
+add-ons.
 
 ## License
 
