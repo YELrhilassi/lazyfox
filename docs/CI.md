@@ -32,6 +32,14 @@ npm run ci:bidi                                   # adds the WebDriver BiDi suit
 Set `BIDI_FIREFOX_BIN=/path/to/firefox` (and it auto-uses `.tools/geckodriver`)
 when you want the browser-session tests included.
 
+> **Why BiDi is local-only (not on GitHub Actions):** the full e2e suite boots
+> a fresh Firefox and can take many minutes — more than GitHub's free-plan
+> minutes allow. So the `dev-nightly` workflow now runs only the fast `unit`
+> job (~50s) on push, and the browser suites are run locally (`npm run bidi`,
+> `npm run probe:chrome`). Kill orphaned Firefox processes between runs
+> (`pkill -9 geckodriver; pkill -9 firefox`) or a fresh run can stall waiting
+> for a port CPU.
+
 ### Testing the real chrome layer (the production bugs live here)
 
 The BiDi suites only install the *extension*. The chrome helper — which draws
