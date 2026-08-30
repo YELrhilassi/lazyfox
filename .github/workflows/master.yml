@@ -1,42 +1,28 @@
-name: Master CI - Build and Release Signed XPI
+name: Master CI - Read-only verification
 
-# Master holds the last AMO-signed release. The matching version was already
-# submitted from dev-nightly via `npm run submit` and approved by AMO review;
-# this workflow's job is to download that now-signed xpi for the exact manifest
-# version, embed it in the release installers, and (on a manual run) draft a
-# GitHub release. The version is ALWAYS derived from
-# dist/extension/manifest.json — never hardcoded here.
+# Read-only verification of master. Releases ARE NOT created here.
+#
+# The release is created by `npm run ship` (run by a maintainer from a dev
+# branch), which: merges the dev branch into master with `-X theirs`, syncs the
+# AMO-signed xpi, rebuilds the release installers, and pushes master + the
+# v<version> tag + creates the GitHub Release. That push is what triggers this
+# workflow.
+#
+# So this job only verifies the pushed master state (rebuild from source to
+# prove it compiles, then the full unit suite + dist self-containment check). It
+# NEEDS no AMO secrets and NEVER writes back, tags, or pushes — the tag and
+# GitHub Release are created by `ship`, exactly once.
+
 on:
   push:
     branches: [master]
-  workflow_dispatch:
-    inputs:
-      release:
-        description: "Create a GitHub release for the current version"
-        required: false
-        default: "true"
-
-# The GITHUB_TOKEN needs write access to contents so it can (a) push the signed
-# xpi commit back to master and (b) push the release tag + create the GitHub
-# Release on a manual `workflow_dispatch`. Without this block the token is
-# read-only and both pushes fail with a 403 from github-actions[bot].
-permissions:
-  contents: write
 
 jobs:
-  build:
+  verify:
+    name: Verify master
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          # Persist creds so the release job can push the signed-xpi commit/tag.
-          persist-credentials: true
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          # BiDi (lib.mjs) needs Node 22+'s global WebSocket.
-          node-version: "22"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -44,64 +30,19 @@ jobs:
           # Repo modules (root + installer) require Go 1.26; must match go.mod.
           go-version: "1.26"
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install dependencies
         run: npm ci
 
-      - name: Build extension (release, sync AMO-signed xpi)
-        env:
-          AMO_API_KEY: ${{ secrets.AMO_API_KEY }}
-          AMO_API_SECRET: ${{ secrets.AMO_API_SECRET }}
+      - name: Build release-mode sources (compiles check)
+        # RELEASE=1 builds the release-mode dist WITHOUT contacting AMO for the
+        # signed xpi (sync-signed-xpi.mjs reuses the committed signed xpi when
+        # it is already current, so it is offline-safe here).
         run: npm run build:release
 
-      - name: Derive version
-        id: version
-        run: |
-          V=$(node -p "require('./dist/extension/manifest.json').version")
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-
-      - name: Verify dist
-        run: node scripts/check-dist.mjs
-
-      - name: Check installer
-        run: node scripts/test-installer.mjs
-
-      - name: Commit signed xpi back to master
-        # Sync the freshly downloaded signed xpi so master's committed dist/
-        # always matches the AMO-signed version (the next clone's `npm build`
-        # can reuse it without AMO creds). Best-effort: pushing back requires
-        # the Actions token to have write access to master (read-only workflow
-        # permissions or branch protection deny it), and the push is not the
-        # point of this workflow — failing build/verify steps are. So a denied
-        # push is reported as a warning, never a job failure.
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/lazyfox2-${VERSION}.xpi dist/lazyfox2-${VERSION}-signed.xpi \
-            installer/bin/lazyfox-install-linux \
-            installer/bin/lazyfox-install-darwin \
-            installer/bin/lazyfox-install-windows.exe || true
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: sync AMO-signed xpi v${VERSION}"
-            if ! git push origin master 2>&1; then
-              echo "::warning::signed xpi committed in-runner but push to master was denied (branch protection or read-only token). The release build/verification itself succeeded."
-            fi
-          fi
-
-      - name: Create GitHub Release
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          TAG="v${VERSION}"
-          git tag -a "${TAG}" -m "Lazyfox ${TAG} signed release"
-          git push origin "${TAG}"
-          gh release create "${TAG}" \
-            --title "Lazyfox ${TAG}" \
-            --notes "Signed release for stable Firefox" \
-            installer/bin/lazyfox-install-linux \
-            installer/bin/lazyfox-install-darwin \
-            installer/bin/lazyfox-install-windows.exe \
-            "dist/lazyfox2-${VERSION}-signed.xpi"
+      - name: Run full unit suite
+        run: npm test
