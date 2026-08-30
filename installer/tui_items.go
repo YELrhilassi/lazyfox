@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,13 +28,17 @@ func (i profileItem) Title() string {
 	if i.p.Dir == "" {
 		return i.p.Name
 	}
-	return i.p.label()
+	return i.p.Name
 }
 func (i profileItem) Description() string {
 	if i.p.Dir == "" {
 		return ""
 	}
-	return i.p.Dir
+	args := []string{i.p.label()}
+	if i.p.Dir != i.p.Name {
+		args = append(args, i.p.Dir)
+	}
+	return strings.Join(args, "\n")
 }
 func (i profileItem) FilterValue() string { return fmt.Sprintf("%s %s", i.p.Name, i.p.Dir) }
 
@@ -94,28 +99,37 @@ func (d profileDelegate) Render(w io.Writer, m list.Model, index int, item list.
 	}
 	sel := index == m.Index()
 	title := p.p.Name
-	mark := ""
+	// status line: Firefox version, Lazyfox badge, default marker.
+	var status []string
+	if p.p.FirefoxVersion != "" {
+		status = append(status, "Firefox "+p.p.FirefoxVersion)
+	} else if p.p.Flavor != flavorUnknown && p.p.Flavor != flavorStable {
+		status = append(status, p.p.Flavor.String())
+	}
 	if p.p.HasLazyfox {
-		mark = "  [Lazyfox installed]"
-	} else if p.p.IsDefault {
-		mark = "  [default]"
+		status = append(status, "Lazyfox installed")
 	}
-	if p.p.Dev {
-		mark += "  dev-edition"
+	if p.p.IsDefault {
+		status = append(status, "default")
 	}
-	if p.p.Flavor == flavorNightly {
-		mark += "  nightly"
-	}
+
+	statusStr := strings.Join(status, " · ")
 	if sel {
-		fmt.Fprint(w, highlightStyle.Render("▸ "+title)+accentStyle.Render(mark))
+		fmt.Fprint(w, highlightStyle.Render("▸ "+title))
+		if statusStr != "" {
+			fmt.Fprint(w, "  "+dimStyle.Render(statusStr))
+		}
 	} else {
-		fmt.Fprint(w, "  "+title+dimStyle.Render(mark))
+		fmt.Fprint(w, "  "+title)
+		if statusStr != "" {
+			fmt.Fprint(w, "  "+dimStyle.Render(statusStr))
+		}
 	}
 	if p.p.Dir != "" {
+		prefix := "  "
 		if sel {
-			fmt.Fprint(w, "\n"+dimStyle.Render("    "+p.p.Dir))
-		} else {
-			fmt.Fprint(w, "\n  "+dimStyle.Render(p.p.Dir))
+			prefix = "    "
 		}
+		fmt.Fprint(w, "\n"+dimStyle.Render(prefix+p.p.Dir))
 	}
 }

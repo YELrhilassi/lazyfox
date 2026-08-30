@@ -16,7 +16,7 @@
 // dist/ is committed to the repo so installers consume prebuilt output and
 // users who clone don't need a Go toolchain to install.
 
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,10 +49,9 @@ const BUNDLES = [
 
 const wasmOut = join(root, "core", "js", "core.wasm");
 console.log("[wasm] building core.wasm (GOOS=js GOARCH=wasm)...");
-execFileSync("go", ["build", "-ldflags=-s -w", "-o", wasmOut, "./core/js"], {
+run("go", ["build", "-ldflags=-s -w", "-o", wasmOut, "./core/js"], {
   cwd: root,
   env: { ...process.env, GOOS: "js", GOARCH: "wasm" },
-  stdio: "inherit",
 });
 const wasmBytes = readFileSync(wasmOut);
 const b64 = wasmBytes.toString("base64");
@@ -112,9 +111,8 @@ console.log("[static] src/static/{extension,chrome} -> dist/");
   const out = join(hostDir, process.platform === "win32" ? "lazyfox-host.exe" : "lazyfox-host");
   console.log(`[native-host] building lazyfox-host for ${process.platform}/${process.arch}…`);
   try {
-    execFileSync("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", out, "."], {
+    run("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", out, "."], {
       cwd: join(root, "native-host"),
-      stdio: "inherit",
     });
     console.log(`[native-host] ${out}`);
   } catch (e) {
@@ -160,10 +158,22 @@ if (DEV) {
 // block).
 if (process.env.RELEASE === "1") {
   console.log("[sign] syncing AMO-signed xpi for the current version…");
-  execFileSync(process.execPath, [join(root, "scripts", "sync-signed-xpi.mjs")], { stdio: "inherit" });
+  const sync = spawnSync(process.execPath, [join(root, "scripts", "sync-signed-xpi.mjs")], { stdio: "inherit" });
+  if (sync.status !== 0) {
+    // sync-signed-xpi.mjs already printed the reason. Fail gently instead of
+    // letting the raw child-process error bubble up as a stack trace.
+    console.error(
+      "\nRelease build stopped: the AMO-signed xpi for this version is not available yet.\n" +
+        "  • This command (`npm run build:release`) is ONLY for the master release workflow.\n" +
+        "  • If you are developing on dev-nightly, use `npm run build` (unsigned dev build) instead.\n" +
+        "  • To release, first submit this version on AMO (see docs/RELEASING.md), wait for it to be\n" +
+        "    reviewed & signed, then run this from master."
+    );
+    process.exit(1);
+  }
 } else {
   console.log("[sign] ensuring signed xpi for the current version…");
-  execFileSync(process.execPath, [join(root, "scripts", "amo-sign.mjs")], { stdio: "inherit" });
+  serverRun(process.execPath, [join(root, "scripts", "amo-sign.mjs")]);
 }
 const extensionVersion = JSON.parse(readFileSync(join(root, "dist", "extension", "manifest.json"), "utf8")).version;
 
@@ -214,23 +224,42 @@ for (const t of INSTALLER_TARGETS) {
   const hostDst = join(root, "installer", "payload", "native-host", t.goos, hostExe);
   mkdirSync(dirname(hostDst), { recursive: true });
   try {
-    execFileSync(
-      "go",
-      ["build", "-trimpath", "-ldflags=-s -w", "-o", hostDst, "."],
-      { cwd: join(root, "native-host"), env: { ...process.env, GOOS: t.goos, GOARCH: t.arch }, stdio: "inherit" }
-    );
+    run("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", hostDst, "."], {
+      cwd: join(root, "native-host"),
+      env: { ...process.env, GOOS: t.goos, GOARCH: t.arch },
+    });
     console.log(`[installer] staged native host for ${t.goos}/${t.arch}`);
   } catch (e) {
     console.warn("[installer] native host build failed for " + t.goos + "; installer will skip the host step: " + String(e && e.message ? e.message : e));
     writeFileSync(hostDst, ""); // placeholder so go:embed compiles; installNativeHost checks for empty bytes
   }
   const out = join(root, "installer", "bin", t.out);
-  execFileSync(
-    "go",
-    ["build", "-trimpath", "-ldflags=-s -w", "-o", out, "."],
-    { cwd: join(root, "installer"), env: { ...process.env, GOOS: t.goos, GOARCH: t.arch }, stdio: "inherit" }
-  );
+  run("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", out, "."], {
+    cwd: join(root, "installer"),
+    env: { ...process.env, GOOS: t.goos, GOARCH: t.arch },
+  });
   console.log(`[installer] ${t.goos}/${t.arch} -> installer/bin/${t.out}`);
 }
 
 console.log("\nBuild complete. dist/ is ready to install.");
+
+/* ---------- helpers ---------- */
+
+// run executes a command, streaming output to the parent, and throws a readable
+// error (instead of a raw stack trace) if it fails. Used for build steps where a
+// failure is a normal, explainable outcome.
+function run(cmd, args, opts) {
+  const res = spawnSync(cmd, args, { stdio: "inherit", ...opts });
+  if (res.error) {
+    throw new Error(`failed to run ${cmd}: ${res.error.message}`);
+  }
+  if (res.status !== 0) {
+    throw new Error(`${cmd} exited with code ${res.status}`);
+  }
+}
+
+// serverRun is the same as run but swallows non-zero exits (used where a child
+// script already printed its own reason and a failure is a soft signal).
+function serverRun(cmd, args, opts) {
+  spawnSync(cmd, args, { stdio: "inherit", ...opts });
+}

@@ -7,6 +7,30 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// view wraps a body with the header, hint bar, and centers the whole thing on
+// the terminal so it looks intentional instead of pinned to the top-left.
+func (m *model) view(body string, hint string) string {
+	content := m.header() + "\n\n" + body
+	if hint != "" {
+		content += "\n\n" + hint
+	}
+	w, h := m.width, m.height
+	if w <= 0 {
+		w = 72
+	}
+	if h <= 0 {
+		h = 24
+	}
+	// Clamp so the centered box never exceeds the terminal.
+	if bl := lipgloss.Width(content); bl > w {
+		w = bl + 2
+	}
+	if bh := lipgloss.Height(content); bh > h {
+		h = bh
+	}
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
+}
+
 func (m *model) View() string {
 	switch m.screen {
 	case scrAction:
@@ -33,8 +57,8 @@ func (m *model) View() string {
 
 func (m *model) header() string {
 	b := strings.Builder{}
-	b.WriteString(titleStyle.Render("Lazyfox installer"))
-	b.WriteString("\n" + subtitleStyle.Render("Detect the platform, pick a Firefox and a profile, install or uninstall — all in one tool."))
+	b.WriteString(titleStyle.Render("🦊 Lazyfox"))
+	b.WriteString("\n" + subtitleStyle.Render("Keyboard-first browsing. Your data is never touched — Lazyfox only writes its own files, always backed up."))
 	return b.String()
 }
 
@@ -76,13 +100,9 @@ func (m *model) viewAction() string {
 		box.Render(det),
 		"",
 		dimStyle.Render("What would you like to do?"),
-		"MOVE with ↑/↓   SELECT with Enter",
-		"",
 		lipgloss.JoinVertical(lipgloss.Left, rows...),
 	)
-
-	hint := m.hintBar()
-	return m.frame(body) + "\n" + hint
+	return m.view(body, m.hintBar())
 }
 
 func (m *model) hintBar() string {
@@ -109,22 +129,22 @@ func (m *model) hintBar() string {
 
 func (m *model) viewInstallPick() string {
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		box.Render("Choose the Firefox installation to patch."),
+		box.Render("Which Firefox should Lazyfox run in?"),
 		"",
-		titleStyle.Render("Firefox installation"),
+		titleStyle.Render("Firefox to use"),
 		m.installList.View(),
 	)
-	return m.frame(body) + "\n" + m.hintBar()
+	return m.view(body, m.hintBar())
 }
 
 func (m *model) viewProfilePick() string {
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		box.Render("Pick the profile Lazyfox will live in. Your data is never touched — only Lazyfox's own files are written, each backed up."),
+		box.Render("Pick the profile (your saved settings, passwords, bookmarks) Lazyfox will be added to."),
 		"",
-		titleStyle.Render("Firefox profile"),
+		titleStyle.Render("Profile to install into"),
 		m.profileList.View(),
 	)
-	return m.frame(body) + "\n" + m.hintBar()
+	return m.view(body, m.hintBar())
 }
 
 func (m *model) viewOptions() string {
@@ -140,10 +160,10 @@ func (m *model) viewOptions() string {
 		box.Render("Tune this install before it runs."),
 		"",
 		titleStyle.Render("Options"),
-		"  "+ext+"  Install the WebExtension (builds the .xpi)"+"\n"+
-			"  "+launch+"  Relaunch Firefox after installing",
+		"  "+ext+"  Install the Lazyfox extension"+"\n"+
+			"  "+launch+"  Reopen Firefox after installing",
 	)
-	return m.frame(body) + "\n" + m.hintBar()
+	return m.view(body, m.hintBar())
 }
 
 func (m *model) viewConfirm() string {
@@ -184,9 +204,9 @@ func (m *model) viewConfirm() string {
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		box.Render(strings.Join(lines, "\n")),
 		"",
-		okStyle.Render("Press Enter to run")+"     or   Esc to go back",
+		okStyle.Render("Press Enter to go")+"     or   Esc to go back",
 	)
-	return m.frame(body) + "\n" + m.hintBar()
+	return m.view(body, m.hintBar())
 }
 
 func (m *model) viewRunning() string {
@@ -200,7 +220,7 @@ func (m *model) viewRunning() string {
 		Width(m.width - 6).
 		Render(strings.Join(lines, "\n"))
 	body := lipgloss.JoinVertical(lipgloss.Left, spinnerLine, "", logPane)
-	return m.frame(body) + "\n" + m.hintBar()
+	return m.view(body, m.hintBar())
 }
 
 func (m *model) logLines() []string {
@@ -236,19 +256,19 @@ func (m *model) viewPassword() string {
 		"",
 		m.pwInput.View(),
 		"",
-		dimStyle.Render("The installer needs root once to write config.js into your Firefox install folder."),
+		dimStyle.Render("The installer needs admin access once to set up the Lazyfox loader in your Firefox installation."),
 	)
-	return m.frame(body) + "\n" + m.hintBar()
+	return m.view(body, m.hintBar())
 }
 
 func (m *model) viewManual() string {
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Enter a path manually"),
-		"Nothing was auto-detected for this step. Paste the full path below.",
+		"We couldn't find this automatically, so paste the location below.",
 		"",
 		m.manualText.View(),
 	)
-	return m.frame(body) + "\n" + m.hintBar()
+	return m.view(body, m.hintBar())
 }
 
 func (m *model) viewResult() string {
@@ -269,19 +289,13 @@ func (m *model) viewResult() string {
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			okStyle.Render("Done — Lazyfox is "+state),
 			"",
-			"Things to check:",
+			"All set ✓",
 			"  1. Restart Firefox to apply the changes.",
-			"  2. Press ; (semicolon) on any page for the which-key overlay.",
-			"  3. Reveal the URL bar by moving the mouse to the very top edge.",
+			"  2. Press ; (semicolon) on any page to open the command overlay.",
+			"  3. Hover near the very top edge to reveal the URL bar.",
 			"",
 			stepStyle.Render("Press Enter to do another operation, or q to quit."),
 		)
 	}
-	return m.frame(body) + "\n" + m.hintBar()
-}
-
-func (m *model) frame(content string) string {
-	return lipgloss.NewStyle().
-		Align(lipgloss.Left).
-		Render(m.header() + "\n\n" + content)
+	return m.view(body, m.hintBar())
 }
