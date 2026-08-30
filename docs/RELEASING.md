@@ -4,7 +4,7 @@ This repo has two long-lived branches that own different adds:
 
 - **`dev-nightly`** — the latest **unsigned** build. `npm run build` produces
   an unsigned xpi that devs install straight into Firefox
-  Nightly/Developer Edition (`npm run install` — a persistent install, no manual
+  Nightly/Developer Edition (`npm run dev-install` — a persistent install, no manual
   “Add” click).
 - **`master`** — the **last AMO-signed** version. Regular users and GitHub
   Releases use master.
@@ -17,8 +17,8 @@ This repo has two long-lived branches that own different adds:
 ## The release loop
 
 1. **Develop on `dev-nightly`.** `npm run build` builds an unsigned xpi and
-   `npm run install` (or `npm run install:clean` to wipe stale dev profiles
-   first) installs it persistently into Nightly/Devedition.
+   `npm run dev-install` (or `npm run dev-install:clean` to wipe stale dev
+   profiles first) installs it persistently into Nightly/Devedition.
 2. When the next version is stable, **bump `dist/extension/manifest.json`** on
    `dev-nightly` (e.g. to `0.5.4`). Development now targets that “next” version.
 3. **Submit from `dev-nightly`**: `npm run submit` packs the fresh unsigned xpi,
@@ -91,15 +91,15 @@ current platform, only building a host-form fallback on an uncovered host.
 | `npm run submit` | **Publish a new version to AMO** (from dev-nightly). | Packs the fresh build, uploads it to AMO as a listed version (starts the review clock), rebuilds the dev installers. Needs `AMO_API_KEY`/`SECRET`. |
 | `npm run build:release` | **Master release only** — after AMO has signed the version. | Syncs the AMO-signed xpi down (via `sync-signed-xpi.mjs`), rebuilds the release installers (`lazyfox-install-*`). Fails with a clear message (no stack trace) if that version isn't signed yet. |
 | `npm run build:installers` | After a dev build, to refresh the portable dev installers. | Rebuilds `installer/bin/lazyfox-install-dev-*` (unsigned embed). |
-| `npm run install` | Try the latest dev build in Nightly/Devedition. | Build + install the fresh unsigned build into a new profile (default-profile set). |
-| `npm run install:clean` | Same as `install` but wipe stale dev profiles first. | |
+| `npm run dev-install` | Try the latest dev build in Nightly/Devedition. | Build + install the fresh unsigned build into a new profile (default-profile set). |
+| `npm run dev-install:clean` | Same as `dev-install` but wipe stale dev profiles first. | |
 | `npm run clean` | Before a full rebuild. | Removes regenerable build products (wasm, wasm embed, staged payloads). |
 | `npm run verify` | One-shot check. | `typecheck` + full `test` suite together. |
 | `npm run typecheck` | Quick TS check. | `tsc --noEmit`. |
 | `npm run test` | Full unit suite. | Go core tests + installer tests + dist completeness. |
 
-**Dev install flow:** `npm run install` (or `npm run install:clean`), which
-builds the unsigned xpi and installs it, resolving the committed dev installer
+**Dev install flow:** `npm run dev-install` (or `npm run dev-install:clean`),
+which builds the unsigned xpi and installs it, resolving the committed dev installer
 binary for your platform.
 
 **If `npm run build:release` fails with “the AMO-signed xpi … is not available
