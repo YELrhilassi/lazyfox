@@ -1,6 +1,6 @@
 {
   "name": "lazyfox",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "private": true,
   "description": "Keyboard-first, UI-free Firefox. Leader-key navigation, paginated which-key overlay, centered search, tab switcher and link hints.",
   "type": "module",
@@ -9,12 +9,16 @@
     "build:release": "RELEASE=1 node build.mjs",
     "submit": "node scripts/submit.mjs",
     "build:installers": "node scripts/build-dev-installers.mjs",
-    "install": "node scripts/dev-install.mjs",
-    "install:clean": "node scripts/dev-install.mjs --clean",
+  "dev-install": "node scripts/dev-install.mjs",
+  "dev-install:clean": "node scripts/dev-install.mjs --clean",
     "clean": "node scripts/clean.mjs",
     "typecheck": "tsc --noEmit",
     "test": "go test ./core/ && node scripts/test-installer.mjs && node scripts/check-dist.mjs",
-    "verify": "npm run typecheck && npm test",
+  "ci": "node scripts/ci.mjs",
+  "ci:bidi": "node scripts/ci.mjs --bidi",
+  "bidi": "node scripts/bidi/test.mjs",
+  "probe:chrome": "node scripts/bidi/chrome-probe.mjs",
+  "verify": "npm run typecheck && npm test",
     "prepare": "node scripts/check-toolchain.mjs"
   },
   "devDependencies": {

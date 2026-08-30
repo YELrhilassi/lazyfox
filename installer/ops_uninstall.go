@@ -73,13 +73,22 @@ func runUninstall(rc *repoContext, rep StepReporter, o UninstallOptions, pw Pass
 		}
 	}
 
-	// 5. extensions.json: mark our add-on disabled (or leave per option).
-	if o.KeepExtensionDisabledOnly {
-		extJSON := filepath.Join(profileDir, extensionsJSONName)
-		if exists(extJSON) {
+	// 5. extensions.json: on a full uninstall remove our add-on's object (so
+	//    Firefox stops showing it entirely); on the disable-only path just flip
+	//    it to disabled but keep it installed.
+	extJSON := filepath.Join(profileDir, extensionsJSONName)
+	if exists(extJSON) {
+		if o.KeepExtensionDisabledOnly {
 			changed, err := editExtensionsJSON(extJSON, markAddonDisabled, true)
 			if err == nil && changed {
-				rep.Step("Marked Lazyfox disabled in extensions.json")
+				rep.Step("Marked Lazyfox disabled in extensions.json (kept installed)")
+			} else if err != nil {
+				rep.Warn("could not edit extensions.json: %v", err)
+			}
+		} else {
+			changed, err := editExtensionsJSON(extJSON, removeAddonObject, true)
+			if err == nil && changed {
+				rep.Step("Removed Lazyfox from extensions.json (fully uninstalled)")
 			} else if err != nil {
 				rep.Warn("could not edit extensions.json: %v", err)
 			}

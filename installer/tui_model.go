@@ -99,6 +99,17 @@ func newModel(rc *repoContext, cfg config, installs []*FirefoxInstall, profiles 
 		useLaunch:   true,
 		screen:      scrAction,
 	}
+	// Pre-select the recommended default profile (dev / Lazyfox-installed /
+	// Firefox-default) so a consumer only has to press Enter and it does the
+	// sensible thing instead of landing on a random row.
+	if def := pickDefaultProfile(profiles); def != nil {
+		for i, p := range profiles {
+			if p == def {
+				m.profileSel = i
+				break
+			}
+		}
+	}
 	m.buildInstallItems()
 	m.buildProfileItems()
 	return m

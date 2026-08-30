@@ -11,10 +11,24 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import http from "node:http";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const GECKO = process.env.GECKODRIVER || resolve(ROOT, ".tools/geckodriver.exe");
+// Platform-aware geckodriver default: the Windows release is *.exe, the Unix
+// release is a bare binary in the same .tools/ dir. Pick whichever exists.
+const GECKO =
+  process.env.GECKODRIVER ||
+  (process.platform !== "win32" && existsSync(resolve(ROOT, ".tools/geckodriver"))
+    ? resolve(ROOT, ".tools/geckodriver")
+    : resolve(ROOT, ".tools/geckodriver.exe"));
+// Platform-aware Firefox default. Some Linux builds keep the loader config.js
+// in the install dir (e.g. /usr/lib/firefox on Void/Arch); others use only the
+// binary on PATH. Env FIREFOX_BIN always wins. We prefer an install-dir binary
+// when found so the chrome helper actually boots.
 const FIREFOX =
   process.env.FIREFOX_BIN ||
-  "C:/Program Files/Firefox Developer Edition/firefox.exe";
+  (process.platform !== "win32" && existsSync("/usr/lib/firefox/firefox")
+    ? "/usr/lib/firefox/firefox"
+    : process.platform !== "win32" && existsSync("/usr/bin/firefox-esr")
+      ? "/usr/bin/firefox-esr"
+      : "C:/Program Files/Firefox Developer Edition/firefox.exe");
 // Headless CI (GitHub Actions has no display). Set BIDI_HEADLESS=1 to add the
 // Firefox -headless flag; default off so local interactive runs are unchanged.
 const HEADLESS = process.env.BIDI_HEADLESS === "1";
@@ -166,7 +180,15 @@ export function startGecko({ profile } = {}) {
         reject(new Error("no webSocketUrl in session capabilities"));
         return;
       }
-      ws = new WebSocket(wsu);
+      let wsInst;
+      try {
+        wsInst = new WebSocket(wsu);
+      } catch (e) {
+        gd.kill();
+        reject(new Error("bad WebSocket URL " + wsu + ": " + e.message));
+        return;
+      }
+      ws = wsInst;
       ws.addEventListener("open", () => resolvePromise({ gd, port, sessionId: session.value.sessionId, ws }));
       ws.addEventListener("message", (ev) => {
         const msg = JSON.parse(ev.data.toString());
@@ -187,12 +209,17 @@ export function startGecko({ profile } = {}) {
       });
     };
 
-    // wait for the driver port to accept connections
+    // Wait for the driver port to accept connections, then create the BiDi
+    // session exactly ONCE. Before this change, a throw AFTER a successful
+    // POST (e.g. in the WebSocket setup) fell into the retry loop, which
+    // re-POSTed /session and got geckodriver's "Session is already started"
+    // 500 — the crash the headless CI BiDi run hit. Pump `/status` only; once
+    // ready() starts, never enter it again.
     let tries = 0;
+    let started = false;
     const wait = async () => {
       try {
         await httpJson("GET", `http://127.0.0.1:${port}/status`);
-        await ready();
       } catch (e) {
         if (tries++ > 60) {
           gd.kill();
@@ -200,6 +227,16 @@ export function startGecko({ profile } = {}) {
           return;
         }
         setTimeout(wait, 500);
+        return;
+      }
+      // /status is up. ready() kills+rejects or resolves on its own; running it
+      // more than once would create a second session on the same driver.
+      if (started) return;
+      started = true;
+      try {
+        await ready();
+      } catch (e) {
+        // ready() already rejected and killed the driver; nothing to retry.
       }
     };
     wait();
