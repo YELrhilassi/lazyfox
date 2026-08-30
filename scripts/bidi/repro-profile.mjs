@@ -1,141 +1,137 @@
-// Repro the double-status-bar against the REAL dev profile + Dev Edition.
-// Boots the user's actual dev profile (so the perm-installed extension +
-// chrome helper + storage are exactly as-installed) with the Dev Edition
-// binary, then reports storage flags and the helper's live #lfc=state (relay
-// readiness, status mount), which is the authoritative check of whether the
-// alive announce ever reaches the background on a real install.
+// Repro the blank-content / count-vs-list mismatch against the REAL dev profile.
+// Boots a COPY of the user's dev profile with the Dev Edition binary (perm-installed
+// add-on + chrome helper + storage exactly as-installed), then reports:
+//   - storage flags (chromeAlive / chromeHelperVersion) — the one-bar decision
+//   - browser.tabs.query({}) raw output (url, hidden, pinned) — what really exists
+//   - the extension's realTabsInWindow() filter result — what the tab list/numbering sees
+//   - the chrome helper's #lfc=state — its view of the strip + relay liveness
+// Compare #2 vs #3: if raw tabs exist but the filtered list is empty/count differs,
+// that is the blank-content + empty-tabs-list + "count increments but can't navigate"
+// regression (stray relay/transient tabs piling up, or real tabs mis-flagged).
 //
-// Usage: FIREFOX_BIN=/opt/firefox-dev/firefox PROFILE=<path> \
+// Usage: FIREFOX_BIN=/opt/firefox-dev/firefox PROFILE=<real dev profile> \
 //          node scripts/bidi/repro-profile.mjs
 import { resolve, dirname } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  startGecko, stopGecko, getTree, navigate, evalIn, waitFor, sleep,
+  startGecko, stopGecko, getTree, navigate, evalIn, sleep,
 } from "./lib.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PROFILE = process.env.PROFILE;
 if (!PROFILE || !existsSync(PROFILE)) {
-  console.error("set PROFILE=<real dev profile dir>");
+  console.error("usage: PROFILE=<real dev profile> FIREFOX_BIN=... node scripts/bidi/repro-profile.mjs");
   process.exit(1);
 }
-
 let h = null;
 
-async function chromeQuery(probe, category, timeoutMs = 8000) {
-  const nonce = "s" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
-  await evalIn(probe, `location.hash = ${JSON.stringify("lfc=" + category + "." + nonce)}; true`);
-  let reply = null;
+// Derive the permanent add-on's moz-extension UUID from the profile's storage
+// dir (moz-extension+++<uuid>/ under storage/default). Stable for the profile.
+function addonUuid() {
   try {
-    reply = await waitFor(async () => {
-      const u = await evalIn(probe, `location.href`);
-      const m = u && u.match(new RegExp(`#lfc=${category}\\.([^#]*?)\\.(?:s\\d+-\\d+)`));
-      if (!m || !m[1]) return null;
-      try {
-        return JSON.parse(Buffer.from(m[1], "base64").toString("utf8"));
-      } catch (e) {
-        return { __malformed: true, raw: m[1] };
-      }
-    }, timeoutMs);
-  } finally {
-    await evalIn(probe, `history.replaceState(null, "", location.href.split("#")[0]); true`).catch(() => {});
+    const base = `${PROFILE}/storage/default`;
+    for (const d of readdirSync(base)) {
+      if (d && d.indexOf("moz-extension+++") === 0) {
+      return d.replace("moz-extension+++", "").split("^")[0];
+    }
+    }
+  } catch (e) {
+    /* ignore */
   }
-  return reply;
+  return "unknown";
 }
 
 async function main() {
-  console.log("PROFILE:", PROFILE);
+  console.log("PROFILE:", PROFILE, "| addonUuid:", addonUuid());
   h = await startGecko({ profile: PROFILE });
+  await sleep(3500); // let the helper boot + announce retries settle
+
   const tree = await getTree();
-  let probe = null;
-  const walk = (cs) => { for (const c of cs) { if (!probe && (c.url || "").includes("commandcenter.html")) probe = c.context; if (c.children) walk(c.children); } };
-  walk(tree);
-  // Cold boot starts at about:blank with no extension page tab; open a
-  // commandcenter tab to serve as the probe/evalIn context.
-  if (!probe) {
-    const first = tree && tree[0] ? tree[0].context : null;
-    if (first) {
-      try {
-        await evalIn(
-          first,
-          `browser.tabs.create({ url: browser.runtime.getURL("commandcenter.html"), active: true }).then(() => true)`
-        );
-      } catch (e) {
-        console.log("(could not open commandcenter probe: " + (e && e.message) + ")");
-      }
-      await sleep(2000);
-      walk(await getTree());
-    }
-  }
-  console.log("probe tab:", probe);
-  await sleep(3500); // let the helper boot + announce retries + relay settle
-
-  let storage = null;
-  try {
-    storage = await evalIn(
-      probe,
-      `browser.storage.local.get(["chromeAlive","chromeEverAlive","chromeHelperVersion"]).then(s => ({ chromeAlive: s.chromeAlive, chromeEverAlive: s.chromeEverAlive, chromeHelperVersion: s.chromeHelperVersion }))`
-    );
-  } catch (e) {
-    storage = { __error: String(e) };
-  }
-  console.log("\n==== storage flags (what content scripts + components see) ====");
-  console.log(JSON.stringify(storage, null, 2));
-  if (storage && storage.chromeHelperVersion) console.log("  ^ chromeHelperVersion non-null => alive announce REACHED background");
-  if (storage && storage.chromeAlive === true) console.log("  ^ chromeAlive true => content scripts should NOT draw a bar");
-  if (storage && storage.chromeAlive !== true) console.log("  !!! chromeAlive NOT true => content scripts WILL draw a second bar on web pages");
-
-  const state = await chromeQuery(probe, "state").catch(() => null);
-  console.log("\n==== chrome helper #lfc=state ====");
-  if (!state) {
-    console.log("!!! chrome helper did NOT respond to #lfc=state");
-  } else {
-    console.log(JSON.stringify(state, null, 2));
-    console.log(
-      "\n-> chrome alive(windowLive):", !!state.windowLive,
-      "| statusMounted:", state.statusMounted,
-      "| relay:", state.relay && !!state.relay.ready ? "up" : "DOWN",
-      "| wrote chromeAlive to storage:", storage && storage.chromeAlive === true,
-    );
-  }
-
-  // Symptom measurement: how many window-level status bars ('#lazyfox-status')
-  // are actually mounted in the browser chrome document right now. One = the
-  // chrome helper's bar; two = the double-bar regression.
-  try {
-    const bars = await evalIn(
-      probe,
-      `document.querySelectorAll('#lazyfox-status').length`
-    );
-    console.log("\n[measure] '#lazyfox-status' bars in chrome document:", bars);
-  } catch (e) {
-    console.log("\n[measure] bar count eval failed:", (e && e.message));
-  }
-
-  // Open a real web page and confirm it actually renders (not blank).
-  try {
-    await evalIn(
-      probe,
-      `browser.tabs.create({ url: "data:text/html,<h1>hello</h1>", active: true })`
-    );
-  } catch (e) {
-    console.log("[measure] create tab failed:", (e && e.message));
-  }
-  await sleep(1500);
-  let pageCtx = null;
-  const walk2 = (cs) => { for (const c of cs) { if (!pageCtx && (c.url || "").indexOf("data:text/html") === 0) pageCtx = c.context; if (c.children) walk2(c.children); } };
-  walk2(await getTree());
-  if (pageCtx) {
+  const first = tree && tree[0] ? tree[0].context : null;
+  // Navigate the first context to the commandcenter page so it becomes an
+  // extension realm where `browser` is available (about:blank cannot run it).
+  let cc = null;
+  if (first) {
     try {
-      const rendered = await evalIn(pageCtx, `document.body.innerHTML.includes('hello')`);
-      const contentBars = await evalIn(pageCtx, `document.querySelectorAll('#lazyfox-status').length`);
-      console.log("[measure] data: page rendered:", rendered, "| content-script bars in page:", contentBars);
+      await navigate(first, `moz-extension://${addonUuid()}/commandcenter.html`, "complete");
     } catch (e) {
-      console.log("[measure] page render check failed:", (e && e.message));
+      console.log("(navigate to commandcenter failed: " + (e && e.message).split("\n")[0] + ")");
     }
-  } else {
-    console.log("[measure] could not find the opened data: page context");
+    await sleep(1500);
+    const t2 = await getTree();
+    const walk = (cs) => { for (const c of cs) { if ((c.url || "").includes("commandcenter.html")) cc = c.context; if (c.children) walk(c.children); } };
+    walk(t2);
+  }
+  if (!cc) {
+    console.log("ERROR: could not open commandcenter realm — cannot query browser APIs");
+    return;
+  }
+  console.log("commandcenter realm:", cc);
+
+  // Storage flags.
+  try {
+    const s = await evalIn(cc, `browser.storage.local.get(["chromeAlive","chromeEverAlive","chromeHelperVersion"]).then(s => ({ chromeAlive: s.chromeAlive, chromeEverAlive: s.chromeEverAlive, chromeHelperVersion: s.chromeHelperVersion }))`);
+    console.log("\n==== storage ====");
+    console.log(JSON.stringify(s));
+    console.log(s && s.chromeHelperVersion ? "  ^ announce REACHED background (" + s.chromeHelperVersion + ")" : "  !!! announce NOT reached (Components shows n/a)");
+  } catch (e) { console.log("storage query failed:", (e && e.message).split("\n")[0]); }
+
+  // Raw tabs vs the filter the extension's list/numbering uses.
+  try {
+    const raw = await evalIn(cc, `browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => ({ id: t.id, url: (t.url||"").slice(0,80), hidden: !!t.hidden, pinned: !!t.pinned, active: !!t.active, title: (t.title||"").slice(0,30) })))`);
+    // The extension's own transient filter (mirror of isUITab + transientTabIds).
+    const filt = await evalIn(cc, `(() => {
+      const u = (t) => { const s = (t.url||""); if (s.indexOf("relay.html")!==-1) return true; if (s.indexOf("splitpanel.html")!==-1) return true; const i=s.indexOf("#lfc="); return i>=0 && ["req.","reqResult.","sessionState.","sessionTabs.","open.","leaderState."].some(p=>s.slice(i+5).indexOf(p)===0); };
+      return browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => ({ id: t.id, ui: u(t) })).filter(x => !x.ui));
+    })()`);
+    console.log("\n==== RAW tabs (all, incl. relay/transient) ====");
+    console.log(JSON.stringify(raw, null, 1));
+    console.log("raw count:", raw.length);
+    console.log("==== extension 'realTabsInWindow' filter result (what ;t / numbering use) ====");
+    console.log(JSON.stringify(filt, null, 1));
+    console.log("real (non-UI) count:", filt.length);
+    console.log(raw.length !== filt.length ? "  ^^ COUNT MISMATCH: " + (raw.length - filt.length) + " tab(s) are UI/relay/transient" : "  counts agree");
+  } catch (e) { console.log("tabs query failed:", (e && e.message).split("\n")[0]); }
+
+  // Helper's view of the strip + relay via #lfc=state through a throwaway hash.
+  try {
+    const nonce = "s" + Date.now();
+    await evalIn(cc, `location.hash = ${JSON.stringify("lfc=state." + nonce)}; true`);
+    await sleep(800);
+    const href = await evalIn(cc, `location.href`);
+    console.log("\n==== helper #lfc=state reply (parsed) ====");
+    const m = href && href.match(/#lfc=state\.([^#]*?)\.s/);
+    if (m && m[1]) {
+      try { console.log(JSON.stringify(JSON.parse(Buffer.from(m[1], "base64").toString("utf8")), null, 1)); }
+      catch (e) { console.log("unparsed:", m[1].slice(0, 200)); }
+    } else console.log("href:", href);
+  } catch (e) { console.log("state channel failed:", (e && e.message).split("\n")[0]); }
+
+  // The one measurement no probe has taken: on a real WEB page with the chrome
+  // layer confirmed alive, does the CONTENT script still draw a second bar?
+  // Navigate the first context to a real http page, wait, then count
+  // '#lazyfox-status' in the content document. 0 = correct (one bar); >0 = the
+  // double-bar regression (content bar drawn despite chromeAlive true).
+  try {
+    const contarded = await evalIn(cc, `browser.tabs.create({ url: "https://example.com/", active: true }).then(t => t.id)`).catch(() => null);
+    await sleep(4000);
+    const t3 = await getTree();
+    let page = null;
+    const w3 = (cs) => { for (const c of cs) { if ((c.url || "").indexOf("example.com") !== -1) page = c.context; if (c.children) w3(c.children); } };
+    w3(t3);
+    if (!page) {
+      console.log("\n[contentbar] could not find example.com context (network/offline?) — falling back");
+    } else {
+      const contentBars = await evalIn(page, `document.querySelectorAll('#lazyfox-status').length`).catch(() => -1);
+      const rendered = await evalIn(page, `!!document.body && document.body.innerHTML.length > 0`).catch(() => null);
+      console.log("\n[contentbar] example.com rendered:", rendered, "| content-script bars:", contentBars);
+      console.log(contentBars > 0
+        ? "  !! DOUBLE BAR CONFIRMED: content script drew a bar despite chromeAlive true"
+        : "  OK: no content bar on a real web page (single window bar only)");
+    }
+  } catch (e) {
+    console.log("[contentbar] failed:", (e && e.message).split("\n")[0]);
   }
 }
 
@@ -145,5 +141,5 @@ try {
   console.log("REPRO FAILED:", e.stack || e.message);
   process.exitCode = 1;
 } finally {
-  if (h) await stopGecko(h);
+  if (h) await stopGecko(h).catch(() => {});
 }
