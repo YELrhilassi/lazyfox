@@ -22,6 +22,11 @@ import { createTypingChannel } from "./typing";
 (function () {
   "use strict";
 
+  // Version of the chrome helper (userChrome.uc.js) shipped by the installer.
+  // Announced to the extension's background with the alive ping and shown on
+  // the options Components panel. Tracks the release; bump with each release.
+  const CHROME_HELPER_VERSION = "0.5.5";
+
   if (window.top !== window) return;
   if (!window.gBrowser) return;
 
@@ -228,7 +233,9 @@ import { createTypingChannel } from "./typing";
     // to mean "posted to a live port that will reach the background". The
     // port remains live after first connect, so this is a one-time event.
     if (!channel.relayReady()) return; // relay not connected yet; keep retrying
-    announcedAlive = channel.requestBg("alive");
+    // Report the chrome-helper version with the announce so the extension's
+    // options Components panel can show it independently of the extension.
+    announcedAlive = channel.requestBg("alive", CHROME_HELPER_VERSION);
   }
   announceChromeAlive();
 

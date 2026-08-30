@@ -4,6 +4,7 @@
 
 import { CHROME_HOTKEY_DEFAULTS, CONFIG_DEFAULTS } from "../shared/config";
 import { core } from "../shared/core";
+import { send } from "../shared/protocol";
 
 (function () {
   "use strict";
@@ -77,6 +78,19 @@ import { core } from "../shared/core";
       if (chTimer) clearTimeout(chTimer);
       chStatusEl.textContent = "chrome script rejected the config";
     }
+  });
+
+  // Component versions (the Components panel).
+  void send("components").then((c) => {
+    if (!c) return;
+    const set = (id: string, v: string | null | undefined) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v || "n/a";
+    };
+    set("cExt", c.extension);
+    set("cWasm", c.wasm);
+    set("cHost", c.nativeHost ? c.nativeHost + (c.nativeProtocol ? " (proto " + c.nativeProtocol + ")" : "") : null);
+    set("cChrome", c.chromeHelper);
   });
 
   browser.storage.local.get(["config", "chromeBindings"]).then((r: any) => {
