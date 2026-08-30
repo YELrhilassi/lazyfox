@@ -180,7 +180,15 @@ export function startGecko({ profile } = {}) {
         reject(new Error("no webSocketUrl in session capabilities"));
         return;
       }
-      ws = new WebSocket(wsu);
+      let wsInst;
+      try {
+        wsInst = new WebSocket(wsu);
+      } catch (e) {
+        gd.kill();
+        reject(new Error("bad WebSocket URL " + wsu + ": " + e.message));
+        return;
+      }
+      ws = wsInst;
       ws.addEventListener("open", () => resolvePromise({ gd, port, sessionId: session.value.sessionId, ws }));
       ws.addEventListener("message", (ev) => {
         const msg = JSON.parse(ev.data.toString());
@@ -201,12 +209,17 @@ export function startGecko({ profile } = {}) {
       });
     };
 
-    // wait for the driver port to accept connections
+    // Wait for the driver port to accept connections, then create the BiDi
+    // session exactly ONCE. Before this change, a throw AFTER a successful
+    // POST (e.g. in the WebSocket setup) fell into the retry loop, which
+    // re-POSTed /session and got geckodriver's "Session is already started"
+    // 500 — the crash the headless CI BiDi run hit. Pump `/status` only; once
+    // ready() starts, never enter it again.
     let tries = 0;
+    let started = false;
     const wait = async () => {
       try {
         await httpJson("GET", `http://127.0.0.1:${port}/status`);
-        await ready();
       } catch (e) {
         if (tries++ > 60) {
           gd.kill();
@@ -214,6 +227,16 @@ export function startGecko({ profile } = {}) {
           return;
         }
         setTimeout(wait, 500);
+        return;
+      }
+      // /status is up. ready() kills+rejects or resolves on its own; running it
+      // more than once would create a second session on the same driver.
+      if (started) return;
+      started = true;
+      try {
+        await ready();
+      } catch (e) {
+        // ready() already rejected and killed the driver; nothing to retry.
       }
     };
     wait();
