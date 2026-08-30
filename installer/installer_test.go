@@ -571,3 +571,30 @@ func TestRepoDistPreferredOverEmbedded(t *testing.T) {
 		t.Fatalf("payloadOrigin should report the repo dist/, got %q", origin)
 	}
 }
+
+// TestNativeHostManifestShape pins the native-messaging manifest the installer
+// writes: the fields Firefox requires, the exact add-on id, and the host path
+// pointing at the installed binary.
+func TestNativeHostManifestShape(t *testing.T) {
+	data := nativeHostManifest("/home/user/.local/bin/lazyfox-host")
+	if len(data) == 0 {
+		t.Fatalf("nativeHostManifest returned empty bytes")
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("manifest is not valid JSON: %v", err)
+	}
+	if m["name"] != "lazyfox" {
+		t.Fatalf("manifest name = %v, want lazyfox", m["name"])
+	}
+	if m["type"] != "stdio" {
+		t.Fatalf("manifest type = %v, want stdio", m["type"])
+	}
+	if m["path"] != "/home/user/.local/bin/lazyfox-host" {
+		t.Fatalf("manifest path = %v, want the installed host path", m["path"])
+	}
+	allowed, ok := m["allowed_extensions"].([]interface{})
+	if !ok || len(allowed) != 1 || allowed[0] != "lazyfox@lazyfox.dev" {
+		t.Fatalf("allowed_extensions = %v, want [lazyfox@lazyfox.dev]", m["allowed_extensions"])
+	}
+}

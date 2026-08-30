@@ -1,14 +1,23 @@
-// The #lfc= URL channel between the chrome helper and the extension
-// background. The chrome helper cannot use browser.runtime directly, so it
-// opens transient commandcenter tabs whose URL hash carries a request
-// (`#lfc=req.<action>.<arg>`), the background answers by navigating the tab to
-// a reply hash, and the progress listener routes that reply here.
+// The persistent relay channel between the chrome helper and the extension
+// background (see docs/MESSAGING.md for the full design).
 //
-// This module owns the channel primitives (base URL resolution, requestBg,
-// requestSessionState with its one-shot waiters, setHash, removeReqTab) and
-// the handleLfc router that dispatches every reply. The debug/verification
-// commands (reveal/console/diag/state) live in debug.ts; the session/split
-// relays and the status-bar reply are handled here.
+// The chrome helper cannot use browser.runtime directly, so historically every
+// helper<->background message opened a throwaway commandcenter tab whose URL
+// hash carried the payload (`#lfc=req.<action>…`). That created/removed a tab
+// PER MESSAGE — the empty tabs users saw flashing open and auto-close, plus a
+// timing-sensitive handshake (a reply racing the removal, safety timeouts
+// dropping late requests).
+//
+// Today ONE hidden relay tab (relay.html) carries everything. The helper
+// reaches the relay page's window directly (postMessage); the page holds a
+// long-lived runtime port to the background and forwards traffic both ways.
+// Nothing is created or removed per message.
+//
+// This module owns the helper side of the channel: relay resolution/creation,
+// the message bridge (req/resp/cmd/ready), the reply waiters, and the command
+// dispatcher for background->chrome pushes. The deliberate per-message URL
+// channels that ride REAL tabs (the #lfc=keys test synthesizer, the #lfc=state
+// debug query, #lfc=cfg, #lfc=open) are handled here too, in handleLfc.
 
 import { mergeConfig, mergeHotkeys } from "../shared/config";
 import { openBookmarksPopup, openDownloadsPopup, openHistoryPopup, openSearchPopup, openTabsPopup, openUrlPopup, type PopupCtx } from "../shared/popups";
@@ -47,32 +56,44 @@ export interface ChannelDeps {
 
 export interface Channel {
   ccBaseUrl(): string | null;
-  // Opens a transient #lfc=req tab for the background. Returns whether the
-  // request tab was actually created, so callers (the alive announce) can
-  // retry a failed send instead of assuming it landed.
+  // Ensure the persistent relay tab exists and the message bridge is attached
+  // (idempotent; self-heals if the relay tab died). Returns whether the relay
+  // is usable.
+  startRelay(): boolean;
+  // Fire-and-forget request to the background (the alive announce, session
+  // ops, ...). Returns whether the request was accepted by the relay.
   requestBg(action: string, arg?: string): boolean;
+  // Request with a reply (the background's response resolves the promise).
+  // Resolves null on timeout / relay failure — callers must tolerate that.
+  requestReply(action: string, arg?: string): Promise<any>;
   requestSessionState(): Promise<void>;
   // Fetches one named session's tabs (for the sessions popup's right pane).
   requestSessionTabs(name: string): Promise<PopupItem[]>;
   requestRecentlyClosed(): Promise<PopupItem[]>;
   setHash(browser: any, hash: string): void;
+  // Routes a #lfc= payload from a REAL tab (keys/state/cfg/open/debug).
   handleLfc(browser: any, payload: string): void;
+  // Debug/verification: the helper's view of the relay (found window, ready
+  // flag, tab list) — surfaced through the #lfc=state channel.
+  relayDebug(): any;
 }
 
 const EXT_ID = "lazyfox@lazyfox.dev";
+// How long a request may sit queued before the relay becomes ready, and how
+// long a reply-bearing request waits for its response.
+const RELAY_TIMEOUT = 6000;
 
 export function createChannel(deps: ChannelDeps): Channel {
-  // One-shot waiters for requestSessionState, keyed by nonce, resolved by the
-  // handleLfc "sessionState" reply. Lets the sessions popup await a FRESH
-  // list after a delete/save instead of reading the stale cache (which made a
-  // deleted session keep showing until the next Firefox restart).
-  let sessionStateWaiters: Record<string, () => void> = {};
-  // One-shot waiters for requestSessionTabs, resolved by the handleLfc
-  // "sessionTabs" reply with the session's tab rows.
-  let sessionTabsWaiters: Record<string, (items: PopupItem[]) => void> = {};
-  // One-shot waiters for requestRecentlyClosed, resolved by the handleLfc
-  // "recentlyClosed" reply with the closed-tab rows.
-  let recentlyClosedWaiters: Record<string, (items: PopupItem[]) => void> = {};
+  // The relay tab's contentWindow (resolved lazily, re-created on demand).
+  let relayWin: any = null;
+  // True once the relay page has connected its runtime port (it announces via
+  // a "ready" message and a __lfxReady flag the helper can read directly).
+  let relayReady = false;
+  // Fire-and-forget requests queued while the relay is still coming up.
+  let pendingReqs: Array<{ action: string; arg?: string }> = [];
+  // Reply waiters keyed by request id, resolved by the "resp" message.
+  let relaySeq = 0;
+  const relayWaiters: Record<number, { resolve: (v: any) => void; timer: any }> = {};
 
   function ccBaseUrl(): string | null {
     try {
@@ -95,138 +116,295 @@ export function createChannel(deps: ChannelDeps): Channel {
     return null;
   }
 
-  function requestBg(action: string, arg?: string): boolean {
-    const base = ccBaseUrl();
-    if (!base) return false;
-    let frag = "lfc=req." + action;
-    if (arg != null && arg !== "") frag += "." + encodeURIComponent(arg);
+  /* ===================== relay bridge ===================== */
+
+  // The relay tab is identified by its page name (relay.html) — its URL never
+  // changes, so scanning is unambiguous even while messages are in flight.
+  // The <browser>'s contentWindow object is REPLACED when the page commits
+  // (the initial about:blank window dies), so the window must be re-resolved
+  // from the tab on every use — never cached from creation time.
+  const relayBrowsers = new Set<any>();
+
+  function findRelayWindow(): any {
+    // Prune browsers whose tab is gone (a relay recreated after a death).
+    for (const b of relayBrowsers) {
+      try {
+        if (!window.gBrowser.tabs.some((t: any) => t.linkedBrowser === b)) relayBrowsers.delete(b);
+      } catch (e) {
+        relayBrowsers.delete(b);
+      }
+    }
     try {
-      const tab = window.gBrowser.addTab(base + "commandcenter.html#" + frag, {
+      for (const t of window.gBrowser.tabs) {
+        const b = t.linkedBrowser;
+        if (!b) continue;
+        let isRelay = false;
+        try {
+          isRelay = b.currentURI.spec.indexOf("relay.html") !== -1;
+        } catch (e) {
+          // ignore
+        }
+        // A relay tab created a moment ago may still show about:blank; the
+        // created-browsers set covers that window.
+        if (!isRelay && relayBrowsers.has(b)) isRelay = true;
+        if (isRelay) return b.contentWindow;
+      }
+    } catch (e) {
+      // ignore
+    }
+    return null;
+  }
+
+  function createRelayTab(): void {
+    const base = ccBaseUrl();
+    if (!base) return;
+    try {
+      const tab = window.gBrowser.addTab(base + "relay.html", {
         inBackground: true,
         skipAnimation: true,
         triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
       });
-      // Background removes the request tab after handling; give it a safety timeout.
-      setTimeout(() => {
-        try {
-          if (tab && !tab.closing) window.gBrowser.removeTab(tab);
-        } catch (e) {
-          // ignore
-        }
-      }, 3000);
-      return true;
+      if (tab && tab.linkedBrowser) relayBrowsers.add(tab.linkedBrowser);
     } catch (e) {
-      return false;
+      // ignore
     }
   }
 
-  function requestSessionState(): Promise<void> {
-    const base = ccBaseUrl();
-    if (!base) return Promise.resolve();
-    const nonce = "ss" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
-    return new Promise((resolve) => {
-      sessionStateWaiters[nonce] = resolve;
-      try {
-        const tab = window.gBrowser.addTab(
-          base + "commandcenter.html#lfc=req.sessionState." + nonce,
-          {
-            inBackground: true,
-            skipAnimation: true,
-            triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-          }
-        );
-        // Safety net: if the reply never arrives, drop the request tab.
-        setTimeout(() => {
-          try {
-            if (tab && !tab.closing) window.gBrowser.removeTab(tab);
-          } catch (e) {
-            // ignore
-          }
-          if (sessionStateWaiters[nonce]) {
-            delete sessionStateWaiters[nonce];
-            resolve();
-          }
-        }, 5000);
-      } catch (e) {
-        if (sessionStateWaiters[nonce]) {
-          delete sessionStateWaiters[nonce];
-          resolve();
-        }
+  function flushPending(): void {
+    if (!relayReady || !relayWin) return;
+    const q = pendingReqs;
+    pendingReqs = [];
+    for (const r of q) postReq(r.action, r.arg);
+  }
+
+  function postReq(action: string, arg?: string): void {
+    const w = relayWin;
+    if (!w) return;
+    try {
+      w.postMessage({ lfx: { type: "req", id: 0, action: action, arg: arg != null ? arg : "" } }, "*");
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function onRelayMessage(e: any): void {
+    const d = e && e.data;
+    if (!d || typeof d !== "object" || !d.lfx || typeof d.lfx !== "object") return;
+    const m = d.lfx;
+    if (m.type === "ready") {
+      relayReady = true;
+      flushPending();
+      return;
+    }
+    if (m.type === "resp") {
+      const w = relayWaiters[m.id];
+      if (w) {
+        clearTimeout(w.timer);
+        delete relayWaiters[m.id];
+        w.resolve(m.error !== undefined ? null : m.result !== undefined ? m.result : null);
       }
+      return;
+    }
+    if (m.type === "cmd") {
+      handleCmd(m.action, m.arg);
+    }
+  }
+
+  // The relay page is content: the helper's view of its window is an Xray
+  // wrapper, which HIDES expando properties the page script set (__lfxReady).
+  // Read them through wrappedJSObject, or the helper can never see the page
+  // become ready (and the 500ms poll would reset relayReady to false forever,
+  // leaving every request queued).
+  function rawWindow(w: any): any {
+    try {
+      return (w && w.wrappedJSObject) || w;
+    } catch (e) {
+      return w;
+    }
+  }
+
+  function startRelay(): boolean {
+    if (!ccBaseUrl()) return false;
+    const w = findRelayWindow();
+    if (!w) {
+      // No relay yet: create the tab (if needed) and let a later poll pick up
+      // the live window once the page commits. Creating is enough for the
+      // caller to consider the relay accepted — requests queue until ready.
+      createRelayTab();
+      return true;
+    }
+    // Re-attach + re-read readiness on every call: the contentWindow is
+    // replaced when the page loads, and the page connects after we may have
+    // first seen the tab. addEventListener on the same window twice is a
+    // no-op, so this is cheap and idempotent.
+    if (w !== relayWin) {
+      relayWin = w;
+      relayReady = false;
+    }
+    try {
+      (w as any).addEventListener("message", onRelayMessage);
+    } catch (e) {
+      // ignore
+    }
+    // Announce our listener: the relay page buffers background -> chrome
+    // commands until the helper is attached (a session restore recreates the
+    // relay tab, so the page is live a beat before the helper re-resolves
+    // it), then flushes them. Idempotent — the page treats every hello the
+    // same, and addEventListener above is a no-op on repeat.
+    try {
+      (w as any).postMessage({ lfx: { type: "hello" } }, "*");
+    } catch (e) {
+      // ignore
+    }
+    const ready = !!(rawWindow(w) && (rawWindow(w) as any).__lfxReady);
+    if (ready && !relayReady) {
+      relayReady = true;
+      flushPending();
+    }
+    // Never reset relayReady to false here: the "ready" message / the page's
+    // own flag (read via wrappedJSObject) are the source of truth, and the
+    // poll's only job is to detect a window replacement (handled above) and
+    // latch readiness for a fresh window.
+    return true;
+  }
+
+  function requestBg(action: string, arg?: string): boolean {
+    if (!ccBaseUrl()) return false;
+    if (!startRelay()) return false;
+    if (relayReady) {
+      postReq(action, arg);
+    } else {
+      const entry = { action: action, arg: arg };
+      pendingReqs.push(entry);
+      // If the relay never becomes ready, drop the entry (the caller — e.g.
+      // the alive announce — retries on its own schedule).
+      setTimeout(() => {
+        const i = pendingReqs.indexOf(entry);
+        if (i >= 0) pendingReqs.splice(i, 1);
+      }, RELAY_TIMEOUT);
+    }
+    return true;
+  }
+
+  function requestReply(action: string, arg?: string): Promise<any> {
+    return new Promise((resolve) => {
+      const id = ++relaySeq;
+      const timer = setTimeout(() => {
+        delete relayWaiters[id];
+        resolve(null);
+      }, RELAY_TIMEOUT);
+      relayWaiters[id] = { resolve: resolve, timer: timer };
+      if (!requestBg(action, arg)) {
+        clearTimeout(timer);
+        delete relayWaiters[id];
+        resolve(null);
+      }
+    });
+  }
+
+  /* ===================== background -> chrome commands ===================== */
+
+  // Commands the background pushes through the relay (native splits, status
+  // pushes, ...). `arg` arrives structured-cloned: objects come through as
+  // objects, strings as strings.
+  function handleCmd(action: string, arg: any): void {
+    if (action === "splitTab") {
+      try {
+        deps.split.splitCurrentTab("horizontal");
+      } catch (e) {
+        // ignore
+      }
+      return;
+    }
+    if (action === "unsplit") {
+      try {
+        deps.split.unsplit();
+      } catch (e) {
+        // ignore
+      }
+      return;
+    }
+    if (action === "switchPane") {
+      try {
+        deps.split.switchPane(parseInt(arg, 10) || 1);
+      } catch (e) {
+        // ignore
+      }
+      return;
+    }
+    if (action === "swapSplitPanes") {
+      try {
+        deps.split.swapPane(parseInt(arg, 10) || 1);
+      } catch (e) {
+        // ignore
+      }
+      return;
+    }
+    if (action === "moveToSplit") {
+      try {
+        deps.split.addTabToSplitByIndex(parseInt(arg, 10) || 0);
+      } catch (e) {
+        // ignore
+      }
+      return;
+    }
+    if (action === "restoreSplits") {
+      // Session restore finished opening tabs; re-create the native split
+      // groupings. `arg` is JSON of [[index, ...], ...] with 1-based
+      // positions over the SAVED tab list.
+      try {
+        deps.split.restoreSplits(String(arg));
+      } catch (e) {
+        // ignore
+      }
+      return;
+    }
+    if (action === "sessionState") {
+      // Status-bar push/reply: the fresh session summary as an object.
+      deps.status.applySessionState(arg);
+      return;
+    }
+    if (action === "leaderState") {
+      // Content-script leader arm/disarm: cache it per tab-strip index so the
+      // window-level status bar can show the pulsing LEADER chevron on web
+      // pages.
+      const st = arg || {};
+      if (typeof st.index === "number" && st.index >= 0) {
+        deps.status.setContentLeader(st.index, !!st.active);
+      }
+      return;
+    }
+    if (action === "findState") {
+      // Content-script find-in-page count: cache it per tab-strip index so
+      // the window-level status bar shows the live match count on web pages.
+      const st = arg || {};
+      if (typeof st.index === "number" && st.index >= 0) {
+        deps.status.setContentFind(st.index, st.count || 0, st.cur || 0);
+      }
+    }
+  }
+
+  /* ===================== public request wrappers ===================== */
+
+  function requestSessionState(): Promise<void> {
+    return requestReply("sessionState").then((state: any) => {
+      if (state && typeof state === "object") deps.status.applySessionState(state);
     });
   }
 
   function requestSessionTabs(name: string): Promise<PopupItem[]> {
-    const base = ccBaseUrl();
-    if (!base) return Promise.resolve([]);
-    const nonce = "st" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
-    return new Promise((resolve) => {
-      sessionTabsWaiters[nonce] = resolve;
-      try {
-        const tab = window.gBrowser.addTab(
-          base + "commandcenter.html#lfc=req.sessionTabs." + encodeURIComponent(name) + "." + nonce,
-          {
-            inBackground: true,
-            skipAnimation: true,
-            triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-          }
-        );
-        // Safety net: if the reply never arrives, drop the request tab.
-        setTimeout(() => {
-          try {
-            if (tab && !tab.closing) window.gBrowser.removeTab(tab);
-          } catch (e) {
-            // ignore
-          }
-          if (sessionTabsWaiters[nonce]) {
-            delete sessionTabsWaiters[nonce];
-            resolve([]);
-          }
-        }, 5000);
-      } catch (e) {
-        if (sessionTabsWaiters[nonce]) {
-          delete sessionTabsWaiters[nonce];
-          resolve([]);
-        }
-      }
-    });
+    return requestReply("sessionTabs", name).then((items: any) =>
+      Array.isArray(items) ? (items as PopupItem[]) : []
+    );
   }
 
   function requestRecentlyClosed(): Promise<PopupItem[]> {
-    const base = ccBaseUrl();
-    if (!base) return Promise.resolve([]);
-    const nonce = "rc" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
-    return new Promise((resolve) => {
-      recentlyClosedWaiters[nonce] = resolve;
-      try {
-        const tab = window.gBrowser.addTab(
-          base + "commandcenter.html#lfc=req.recentlyClosed." + nonce,
-          {
-            inBackground: true,
-            skipAnimation: true,
-            triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-          }
-        );
-        // Safety net: if the reply never arrives, drop the request tab.
-        setTimeout(() => {
-          try {
-            if (tab && !tab.closing) window.gBrowser.removeTab(tab);
-          } catch (e) {
-            // ignore
-          }
-          if (recentlyClosedWaiters[nonce]) {
-            delete recentlyClosedWaiters[nonce];
-            resolve([]);
-          }
-        }, 5000);
-      } catch (e) {
-        if (recentlyClosedWaiters[nonce]) {
-          delete recentlyClosedWaiters[nonce];
-          resolve([]);
-        }
-      }
-    });
+    return requestReply("recentlyClosed").then((items: any) =>
+      Array.isArray(items) ? (items as PopupItem[]) : []
+    );
   }
+
+  /* ===================== real-tab channels (keys/state/cfg/open) ===================== */
 
   function setHash(browser: any, hash: string): void {
     // Defer the reply by one macrotask: a synchronous location.replace here
@@ -432,16 +610,15 @@ export function createChannel(deps: ChannelDeps): Channel {
       return;
     }
     const seq = Array.isArray(req.keys) ? req.keys : [];
-    try {
-      Services.console.logStringMessage("lazyfox keys: got " + seq.map((k: any) => k.k).join(","));
-    } catch (e) {}
     const errReply = (e: unknown): void => {
       try {
-        Services.console.logStringMessage("lfc keys error: " + String((e && (e as Error).message) || e));
+        const msg = String((e && (e as Error).message) || e);
+        const st = String((e && (e as Error).stack) || "").split("\n").slice(0, 2).join(" @ ");
+        Services.console.logStringMessage("lfc keys error: " + msg + " @ " + st);
+        setHash(browser, "#lfc=keys.err." + btoa(msg + " @ " + st).replace(/=+$/g, "") + "." + nonce);
       } catch (e2) {
-        // ignore
+        setHash(browser, "#lfc=keys.err." + nonce);
       }
-      setHash(browser, "#lfc=keys.err." + nonce);
     };
     // Resolve the tab the harness addressed (idx -1 means the selected tab).
     // The chrome key dispatch runs on the REAL current selection, so leader
@@ -485,16 +662,6 @@ export function createChannel(deps: ChannelDeps): Channel {
     step();
   }
 
-  // Drop the transient #lfc request tab after the chrome helper handles it.
-  function removeReqTab(browser: any): void {
-    try {
-      const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
-      if (tab) window.gBrowser.removeTab(tab);
-    } catch (e) {
-      // ignore
-    }
-  }
-
   function handleLfc(browser: any, payload: string): void {
     const idx = payload.indexOf(".");
     const cmd = idx < 0 ? payload : payload.slice(0, idx);
@@ -509,180 +676,6 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
     if (cmd === "keys") {
       handleKeys(browser, rest, setHash);
-      return;
-    }
-    if (cmd === "moveToSplit") {
-      // ;+1-9 relayed from the background (or the split panel): move tab N
-      // into the active split view, then remove the request tab.
-      try {
-        deps.split.addTabToSplitByIndex(parseInt(rest, 10) || 0);
-      } catch (e) {
-        // ignore
-      }
-      removeReqTab(browser);
-      return;
-    }
-    if (cmd === "splitTab") {
-      // ;| relayed from the background (content-script context).
-      try {
-        deps.split.splitCurrentTab("horizontal");
-      } catch (e) {
-        // ignore
-      }
-      removeReqTab(browser);
-      return;
-    }
-    if (cmd === "unsplit") {
-      // ;\ relayed from the background.
-      try {
-        deps.split.unsplit();
-      } catch (e) {
-        // ignore
-      }
-      removeReqTab(browser);
-      return;
-    }
-    if (cmd === "switchPane") {
-      // ;[ / ;] relayed from the background.
-      try {
-        deps.split.switchPane(parseInt(rest, 10) || 1);
-      } catch (e) {
-        // ignore
-      }
-      removeReqTab(browser);
-      return;
-    }
-    if (cmd === "restoreSplits") {
-      // Session restore finished opening tabs; re-create the native split
-      // groupings. `rest` is JSON of [[index, ...], ...] with 1-based
-      // positions over the SAVED tab list.
-      try {
-        deps.split.restoreSplits(decodeURIComponent(rest));
-      } catch (e) {
-        // ignore
-      }
-      removeReqTab(browser);
-      return;
-    }
-    if (cmd === "swapSplitPanes") {
-      // ;{ / ;} relayed from the background (content-script context): swap
-      // the active pane with its left/right neighbour.
-      try {
-        deps.split.swapPane(parseInt(rest, 10) || 1);
-      } catch (e) {
-        // ignore
-      }
-      removeReqTab(browser);
-      return;
-    }
-    if (cmd === "sessionState") {
-      // Status-bar reply from the background: sessionState.<b64>.<nonce>.
-      const dot = rest.indexOf(".");
-      const b64 = dot < 0 ? rest : rest.slice(0, dot);
-      const nonce = dot < 0 ? "" : rest.slice(dot + 1);
-      deps.status.applySessionState(b64);
-      const w = sessionStateWaiters[nonce];
-      if (w) {
-        delete sessionStateWaiters[nonce];
-        w();
-      }
-      removeReqTab(browser);
-      return;
-    }
-    if (cmd === "leaderState") {
-      // Content-script leader arm/disarm relayed from the background
-      // (leaderState.<b64>.<nonce>): cache it per tab-strip index so the
-      // window-level status bar can show the pulsing LEADER chevron on web
-      // pages, then drop the request tab.
-      const dot = rest.indexOf(".");
-      const b64 = dot < 0 ? rest : rest.slice(0, dot);
-      let st: { index?: number; active?: boolean } | null = null;
-      try {
-        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-        st = JSON.parse(new TextDecoder().decode(bytes));
-      } catch (e) {
-        st = null;
-      }
-      if (st && typeof st.index === "number" && st.index >= 0) {
-        deps.status.setContentLeader(st.index, !!st.active);
-      }
-      removeReqTab(browser);
-      return;
-    }
-    if (cmd === "findState") {
-      // Content-script find-in-page count relayed from the background
-      // (findState.<b64>.<nonce>): cache it per tab-strip index so the
-      // window-level status bar shows the live match count on web pages,
-      // then drop the request tab.
-      const dot = rest.indexOf(".");
-      const b64 = dot < 0 ? rest : rest.slice(0, dot);
-      let st: { index?: number; count?: number; cur?: number } | null = null;
-      try {
-        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-        st = JSON.parse(new TextDecoder().decode(bytes));
-      } catch (e) {
-        st = null;
-      }
-      if (st && typeof st.index === "number" && st.index >= 0) {
-        deps.status.setContentFind(st.index, st.count || 0, st.cur || 0);
-      }
-      removeReqTab(browser);
-      return;
-    }
-    if (cmd === "sessionTabs") {
-      // Reply to requestSessionTabs: sessionTabs.<b64>.<nonce>.
-      const dot = rest.indexOf(".");
-      const b64 = dot < 0 ? rest : rest.slice(0, dot);
-      const nonce = dot < 0 ? "" : rest.slice(dot + 1);
-      let items: PopupItem[] = [];
-      try {
-        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-        items = JSON.parse(new TextDecoder().decode(bytes));
-      } catch (e) {
-        items = [];
-      }
-      const w = sessionTabsWaiters[nonce];
-      if (w) {
-        delete sessionTabsWaiters[nonce];
-        w(items || []);
-      }
-      removeReqTab(browser);
-      return;
-    }
-    if (cmd === "recentlyClosed") {
-      // Reply to requestRecentlyClosed: recentlyClosed.<b64>.<nonce>.
-      const dot = rest.indexOf(".");
-      const b64 = dot < 0 ? rest : rest.slice(0, dot);
-      const nonce = dot < 0 ? "" : rest.slice(dot + 1);
-      let items: PopupItem[] = [];
-      try {
-        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-        items = JSON.parse(new TextDecoder().decode(bytes));
-      } catch (e) {
-        items = [];
-      }
-      const w = recentlyClosedWaiters[nonce];
-      if (w) {
-        delete recentlyClosedWaiters[nonce];
-        w(items || []);
-      }
-      removeReqTab(browser);
-      return;
-    }
-    if (cmd === "reqResult") {
-      // Async reply to a chrome-helper request (e.g. stealthOpen): toast the
-      // outcome so a failure is never silent, then drop the reply tab.
-      const dot = rest.indexOf(".");
-      const b64 = dot < 0 ? rest : rest.slice(0, dot);
-      try {
-        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-        const r = JSON.parse(new TextDecoder().decode(bytes));
-        if (r && r.ok === true) deps.debug.toast("stealth tab opened");
-        else deps.debug.toast("stealth tab failed: " + ((r && r.error) || "unknown"));
-      } catch (e) {
-        // ignore
-      }
-      removeReqTab(browser);
       return;
     }
     if (cmd === "cfg") {
@@ -713,13 +706,42 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
   }
 
+  function relayDebug(): any {
+    const out: any = { ready: relayReady };
+    try {
+      const tabs = Array.from(window.gBrowser.tabs).map((t: any) => {
+        let spec = "";
+        try {
+          spec = t.linkedBrowser && t.linkedBrowser.currentURI ? t.linkedBrowser.currentURI.spec : "";
+        } catch (e) {}
+        return spec;
+      });
+      out.relayTabs = tabs.filter((s: string) => s.indexOf("relay.html") !== -1).length;
+      out.allTabs = tabs.map((s: string) => s.replace(/^moz-extension:\/\/[^/]+\//, "ext:").slice(0, 60));
+      const w = relayWin;
+      out.windowLive = !!w;
+      try {
+        // Xray wrappers hide content-set expandos; read the raw window.
+        out.lfxReady = w ? !!(rawWindow(w) && (rawWindow(w) as any).__lfxReady) : null;
+      } catch (e) {
+        out.lfxReady = "ERR:" + String(e);
+      }
+    } catch (e) {
+      out.error = String(e);
+    }
+    return out;
+  }
+
   return {
     ccBaseUrl,
+    startRelay,
     requestBg,
+    requestReply,
     requestSessionState,
     requestSessionTabs,
     requestRecentlyClosed,
     setHash,
     handleLfc,
+    relayDebug,
   };
 }

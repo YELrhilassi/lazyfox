@@ -9,3 +9,4 @@
 # the standalone loader embed, small and stable).
 /payload/chrome/
 /payload/extension/
+/payload/native-host/{linux,darwin,windows}/

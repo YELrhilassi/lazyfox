@@ -17,11 +17,18 @@ keyboard-driven interface. Two pieces make that work:
 2. **A WebExtension** that provides everything else: the `;` leader key, the
    popups, link hints, the status bar, the command center, sessions.
 
-The two halves coordinate through a URL channel. The chrome helper can't use
-`browser.runtime` directly, so it opens a transient tab pointing at the
-command center with a special hash (`#lfc=req.<action>`), the background
-answers by navigating that tab to a reply hash, and the chrome helper reads
-it. That's the `#lfc=` channel you'll see referenced everywhere.
+The two halves coordinate through a URL channel plus a persistent relay. The
+chrome helper can't use `browser.runtime` directly, so today ONE hidden relay
+tab (`relay.html`) carries every helper↔background message: the helper talks
+to the relay page's window directly (postMessage), the page holds a long-lived
+runtime port to the background and shuttles traffic both ways. Nothing is
+created or removed per message — the old design opened a throwaway tab per
+`#lfc=req.<action>` request and churned the tab strip. The `#lfc=` hash is
+still the sanctioned channel for the few messages that deliberately ride a
+real tab (the `keys` test synthesizer, `state`/`cfg`/`open`). Separately, the
+extension talks to an optional Go native host (`lazyfox-host`, health +
+system-level ops) over native messaging; see `docs/MESSAGING.md` for the full
+design.
 
 ## The Go core
 

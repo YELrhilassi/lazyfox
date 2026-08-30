@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lazyfox relay</title>
+</head>
+<body>
+<!--
+  Persistent relay bridge (see src/extension/relay.ts and docs/MESSAGING.md).
+
+  This hidden tab is the ONE carrier for every chrome-helper <-> background
+  message. The chrome helper (chrome-privileged, no browser.runtime) reaches
+  this page's window directly (postMessage); the page holds a long-lived
+  runtime port to the background and forwards traffic both ways. Nothing is
+  created or removed per message, so no empty tabs flash and there is no
+  create/remove race.
+-->
+<script src="relay.js"></script>
+</body>
+</html>

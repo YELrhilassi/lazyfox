@@ -551,15 +551,22 @@ export function openHistoryPopup(ctx: PopupCtx): void {
       // armed group toggle each show their own keys. setStatus() owns the
       // transient messages (armed deletes/clears, pane-R guide); updateFoot
       // decides which span is visible and what the static guide says.
+      // These hint strings are assigned via `innerHTML` INSIDE the popup
+      // build, on an element that now lives in the chrome (XUL/XML) document.
+      // Its innerHTML setter runs the XML parser, which rejects the undefined
+      // HTML entity `&middot;` as "an invalid or illegal string" — a
+      // SyntaxError that would abort the whole build and deaden every key.
+      // Use the literal · (U+00B7) instead of the entity so the string parses
+      // in both the HTML fragment parser and the chrome XML parser.
       const CMD_L_HINT =
-        "<span class='lf-badge'>j/k</span> move &middot; <span class='lf-badge'>i</span> search &middot; " +
-        "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>o</span> current &middot; " +
-        "<span class='lf-badge'>x</span> delete &middot; <span class='lf-badge'>X</span> clear all &middot; " +
-        "<span class='lf-badge'>c+hint</span> toggle group &middot; <span class='lf-badge'>C</span> collapse &middot; " +
-        "<span class='lf-badge'>O</span> expand &middot; <span class='lf-badge'>g/G</span> top/bottom &middot; " +
-        "<span class='lf-badge'>Tab</span> details &middot; <span class='lf-badge'>Esc</span> close";
+        "<span class='lf-badge'>j/k</span> move \u00b7 <span class='lf-badge'>i</span> search \u00b7 " +
+        "<span class='lf-badge'>Enter</span> open \u00b7 <span class='lf-badge'>o</span> current \u00b7 " +
+        "<span class='lf-badge'>x</span> delete \u00b7 <span class='lf-badge'>X</span> clear all \u00b7 " +
+        "<span class='lf-badge'>c+hint</span> toggle group \u00b7 <span class='lf-badge'>C</span> collapse \u00b7 " +
+        "<span class='lf-badge'>O</span> expand \u00b7 <span class='lf-badge'>g/G</span> top/bottom \u00b7 " +
+        "<span class='lf-badge'>Tab</span> details \u00b7 <span class='lf-badge'>Esc</span> close";
       const INSERT_HINT =
-        "<span class='lf-badge'>j/k</span> move &middot; <span class='lf-badge'>Enter</span> open &middot; " +
+        "<span class='lf-badge'>j/k</span> move \u00b7 <span class='lf-badge'>Enter</span> open \u00b7 " +
         "<span class='lf-badge'>Esc</span> done";
       const updateFoot = () => {
         if (!hintEl || !statusEl) return;

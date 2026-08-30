@@ -50,14 +50,16 @@ function sysPrincipal() {
 }
 
 // Real (user) tabs in strip order: skip the split-panel companion and the
-// throwaway #lfc= request relays so tab numbers stay stable across
-// splits/unsplits. A real tab carrying a momentary #lfc=keys/state hash is NOT
-// transient — it must keep its number (a shared predicate guarantees the
-// chrome and the extension agree).
+// persistent relay so tab numbers stay stable across splits/unsplits. A real
+// tab carrying a momentary #lfc=keys/state hash is NOT transient — it must
+// keep its number (a shared predicate guarantees the chrome and the extension
+// agree). Dead wrappers (a tab torn down mid-collapse) are skipped, never
+// counted: any property access on them throws "can't access dead object".
 function realTabs(): any[] {
   const out: any[] = [];
   for (const t of window.gBrowser.tabs) {
     try {
+      if (Cu && Cu.isDeadWrapper(t)) continue;
       const spec =
         t && t.linkedBrowser && t.linkedBrowser.currentURI
           ? t.linkedBrowser.currentURI.spec
@@ -65,7 +67,7 @@ function realTabs(): any[] {
       if (isRelayTabUrl(spec)) continue;
       out.push(t);
     } catch (e) {
-      out.push(t);
+      // a half-torn-down tab is not a user tab
     }
   }
   return out;
@@ -254,12 +256,13 @@ export interface ChromeOpsDeps {
   cfg: ChromeCfg;
   persistCfg(cfg: ChromeCfg, config?: Config): void;
   applyHoverRevealPref(cfg: ChromeCfg): void;
-  // The #lfc= request channel (channel.ts). Created AFTER ops because the
+  // The persistent relay channel (channel.ts). Created AFTER ops because the
   // channel needs the popup context that wraps ops; requestBg /
-  // requestSessionState only run at action time, so a getter resolves the
-  // construction cycle.
+  // requestReply / requestSessionState only run at action time, so a getter
+  // resolves the construction cycle.
   getChannel(): {
     requestBg(action: string, arg?: string): void;
+    requestReply(action: string, arg?: string): Promise<any>;
     requestSessionState(): Promise<void>;
     requestSessionTabs(name: string): Promise<PopupItem[]>;
     requestRecentlyClosed(): Promise<PopupItem[]>;
@@ -556,7 +559,12 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       dismissBarNotifications(key);
     },
     stealthOpen: () => {
-      deps.getChannel().requestBg("stealthOpen");
+      // The background opens the isolated tab and returns the outcome; toast
+      // it so a failure is never silent.
+      void deps.getChannel().requestReply("stealthOpen").then((r: any) => {
+        if (r && r.ok === true) toast("stealth tab opened");
+        else toast("stealth tab failed: " + ((r && r.error) || "unknown"));
+      });
     },
     copyUrl: () => {
       const url = window.gBrowser.currentURI && window.gBrowser.currentURI.spec;

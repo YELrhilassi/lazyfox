@@ -25,9 +25,9 @@ import { zipStore } from "./scripts/amo-lib.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)));
 
-// `npm run build:dev` (node build.mjs --dev) defines __DEV__=true so the
-// dev-only diagnostics compile in; the default prod build tree-shakes them
-// out entirely (__DEV__=false), keeping dist/ free of debug output.
+// `node build.mjs --dev` (npm run build) defines __DEV__=true so the dev-only
+// diagnostics compile in; the release build (npm run build:release) tree-shakes
+// them out entirely (__DEV__=false), keeping dist/ free of debug output.
 const DEV = process.argv.includes("--dev");
 
 const BUNDLES = [
@@ -37,6 +37,7 @@ const BUNDLES = [
   { in: "src/extension/content/main.ts", out: "dist/extension/content.js" },
   { in: "src/extension/background.ts", out: "dist/extension/background.js" },
   { in: "src/extension/commandcenter.ts", out: "dist/extension/commandcenter.js" },
+  { in: "src/extension/relay.ts", out: "dist/extension/relay.js" },
   { in: "src/extension/splitpanel.ts", out: "dist/extension/splitpanel.js" },
   { in: "src/extension/options.ts", out: "dist/extension/options.js" },
   { in: "src/extension/optionskeys.ts", out: "dist/extension/optionskeys.js" },
@@ -97,6 +98,30 @@ cpSync(join(root, "src", "static", "chrome"), join(root, "dist", "chrome"), {
 });
 console.log("[static] src/static/{extension,chrome} -> dist/");
 
+/* ---------- 3b. native messaging host ---------- */
+
+// Build the Go native host (native-host/) for the CURRENT platform into
+// build/native-host/. The installer writes the matching native-messaging
+// manifest (lazyfox.json) into the OS-native location during install, so the
+// extension's host.ts client can reach it (see docs/MESSAGING.md, Stage 2).
+// The host is OPTIONAL at runtime — AMO/store installs without the installer's
+// host step degrade cleanly — so this step never blocks the extension build.
+{
+  const hostDir = join(root, "build", "native-host");
+  mkdirSync(hostDir, { recursive: true });
+  const out = join(hostDir, process.platform === "win32" ? "lazyfox-host.exe" : "lazyfox-host");
+  console.log(`[native-host] building lazyfox-host for ${process.platform}/${process.arch}…`);
+  try {
+    execFileSync("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", out, "."], {
+      cwd: join(root, "native-host"),
+      stdio: "inherit",
+    });
+    console.log(`[native-host] ${out}`);
+  } catch (e) {
+    console.warn("[native-host] build failed (host is optional; skipping): " + String(e && e.message ? e.message : e));
+  }
+}
+
 /* ---------- 4. dev add-on / signed add-on + installer binary ---------- */
 
 // In --dev mode we short-circuit the production release steps (AMO signing and
@@ -112,12 +137,13 @@ if (DEV) {
   process.exit(0);
 }
 
-// `npm run build:dev:installers` (node scripts/build-dev-installers.mjs)
-// builds the committed per-OS DEV installer binaries (embed the unsigned xpi).
-// It is a separate step from build:dev on purpose: the per-OS binaries are
+// `npm run build:installers` (node scripts/build-dev-installers.mjs) builds the
+// committed per-OS DEV installer binaries (embed the unsigned xpi). It is a
+// separate step from `npm run build` on purpose: the per-OS binaries are
 // semantically "ship/dev" artifacts produced alongside the unsigned build, and
 // keeping them out of the fast dev loop avoids re-cross-compiling Go on every
-// iteration. Dev install flow: npm run build:dev && npm run build:dev:installers.
+// iteration. Dev install flow handled by `npm run install` (build:installers +
+// dev-install).
 
 // Ensure a signed .xpi exists for the current extension version.
 //
@@ -179,6 +205,25 @@ const stagePayload = () => {
 stagePayload();
 mkdirSync(join(root, "installer", "bin"), { recursive: true });
 for (const t of INSTALLER_TARGETS) {
+  // Stage the native host binary for THIS installer target (each installer
+  // binary embeds the host for its own platform — the host is compiled
+  // together with the installer so a bare downloaded installer can install
+  // the full stack). The host is optional at runtime, but the installer
+  // payload must exist or the go:embed below fails to compile.
+  const hostExe = t.goos === "windows" ? "lazyfox-host.exe" : "lazyfox-host";
+  const hostDst = join(root, "installer", "payload", "native-host", t.goos, hostExe);
+  mkdirSync(dirname(hostDst), { recursive: true });
+  try {
+    execFileSync(
+      "go",
+      ["build", "-trimpath", "-ldflags=-s -w", "-o", hostDst, "."],
+      { cwd: join(root, "native-host"), env: { ...process.env, GOOS: t.goos, GOARCH: t.arch }, stdio: "inherit" }
+    );
+    console.log(`[installer] staged native host for ${t.goos}/${t.arch}`);
+  } catch (e) {
+    console.warn("[installer] native host build failed for " + t.goos + "; installer will skip the host step: " + String(e && e.message ? e.message : e));
+    writeFileSync(hostDst, ""); // placeholder so go:embed compiles; installNativeHost checks for empty bytes
+  }
   const out = join(root, "installer", "bin", t.out);
   execFileSync(
     "go",

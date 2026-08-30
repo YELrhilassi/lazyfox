@@ -58,9 +58,11 @@ updating, re-verify each one rather than assuming it still holds.
    Long-stable, but the `moz-extension` scheme/hash checks are the channel's
    lifeline.
 6. **Extension → chrome liveness** — `WebExtensionPolicy.getByID` (internal,
-   stable) and the `#lfc=req.alive` announce. The background treats "no
-   announce within the startup window" as the chrome layer being down and
-   (since the 0.5.x hardening) notifies the user instead of failing silently.
+   stable) and the `alive` announce over the persistent relay (the chrome
+   helper's `requestBg("alive")`, retried until the extension URL
+   resolves). The background treats "no announce within the startup window"
+   as the chrome layer being down and (since the 0.5.x hardening) notifies
+   the user instead of failing silently.
 7. **Home-tab handling** — the newtab override
    (`chrome_url_overrides.newtab`) is the stable path; `maybeConvertHome`
    and the startup blank-tab conversion in `src/extension/background.ts` are
