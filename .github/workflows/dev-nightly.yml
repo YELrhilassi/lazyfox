@@ -1,17 +1,15 @@
 name: Dev Nightly - CI
 
-# Runs the FAST checks on the UNSIGNED dev build for every push to
-# dev-nightly and on PRs: Go core + installer unit tests + dist completeness.
+# Read-only verification of the UNSIGNED dev build on every push/PR to
+# dev-nightly: Go core + installer unit tests + dist completeness.
 #
-# This is intentionally single-job and thin. The full WebDriver BiDi
-# end-to-end suite is heavyweight and long-running, and does not fit GitHub's
-# free-plan minutes, so it is NOT run here. Run it locally instead:
+# This workflow NEVER writes to the repo, pushes, tags, or publishes — it only
+# builds and tests. It is intentionally single-job (free-plan time budget):
+# the full WebDriver BiDi e2e suite is run locally instead of on CI.
 #
 #   bash scripts/install-tools.sh geckodriver   # one-time
-#   npm run bidi                                # the full e2e suite
+#   npm run bidi                                # the full e2e suite locally
 #   npm run probe:chrome                        # the real chrome-layer probe
-#
-# See docs/CI.md for the complete local-testing story.
 
 on:
   push:
