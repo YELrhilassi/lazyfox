@@ -776,7 +776,10 @@ async function handleRelayReq(action: string, arg: any): Promise<any> {
     if (arg) {
       browser.storage.local.set({ chromeHelperVersion: String(arg) }).catch(() => {});
     }
-    return null;
+    // Return a truthy ack so the helper can confirm the announce was really
+    // delivered (and stop retrying). Without it the helper could only know a
+    // fire-and-forget req was accepted/queued, not that chromeAlive landed.
+    return { ok: true };
   }
   if (action === "toggleWhichKey") {
     // The chrome helper flipped its own cached copy; flip storage to match so
