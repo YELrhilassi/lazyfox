@@ -22,7 +22,7 @@ import {
 } from "./lib.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const XXPI = join(ROOT, "dist/lazyfox2-0.5.5.xpi");
+const XXPI = join(ROOT, "dist/lazyfox2-0.5.6.xpi");
 
 let profile = null;
 let h = null;

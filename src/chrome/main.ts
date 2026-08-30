@@ -25,7 +25,7 @@ import { createTypingChannel } from "./typing";
   // Version of the chrome helper (userChrome.uc.js) shipped by the installer.
   // Announced to the extension's background with the alive ping and shown on
   // the options Components panel. Tracks the release; bump with each release.
-  const CHROME_HELPER_VERSION = "0.5.5";
+  const CHROME_HELPER_VERSION = "0.5.6";
 
   if (window.top !== window) return;
   if (!window.gBrowser) return;

@@ -246,6 +246,23 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
       chromeStatusStealthFlags = Array.isArray(state && state.stealthFlags)
         ? state.stealthFlags
         : [];
+      // The background computes activeStealth at push time, which can race
+      // the tab becoming SELECTED: tabs.create resolves before the selection
+      // flips, so a push right after ;N can carry activeStealth=false for a
+      // just-opened stealth tab, and the TabSelect fallback already ran with
+      // the PREVIOUS reply's flags (no stealth tab yet). The flags are keyed
+      // by raw tab index and the selection is live here, so re-derive the
+      // badge from flags + current selection — always correct, never stale.
+      try {
+        const sel = window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
+        if (sel >= 0 && chromeStatusStealthFlags[sel]) {
+          chromeStatusInfo.activeStealth = true;
+        } else {
+          chromeStatusInfo.activeStealth = !!chromeStatusInfo.activeStealth;
+        }
+      } catch (e) {
+        // selection not readable mid-collapse; keep the pushed value
+      }
       computeChromeStatus();
     } catch (e) {
       // ignore

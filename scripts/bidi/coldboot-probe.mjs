@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { startGecko, stopGecko, makeProfile, removeProfile, getTree, navigate, evalIn, sleep } from "./lib.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const XPI = join(ROOT, "dist/lazyfox2-0.5.5.xpi");
+const XPI = join(ROOT, "dist/lazyfox2-0.5.6.xpi");
 
 let h = null;
 let profile = null;
