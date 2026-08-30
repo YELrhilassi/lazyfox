@@ -58,6 +58,10 @@ export interface BgApi {
   zen: { req: Record<string, never>; res: { zen: boolean } };
   mute: { req: Record<string, never>; res: { muted: boolean } };
   copyUrl: { req: Record<string, never>; res: { url: string; title: string } };
+  components: {
+    req: Record<string, never>;
+    res: { extension: string; wasm: string; nativeHost: string | null; nativeProtocol: string | null; chromeHelper: string | null };
+  };
   zoom: { req: { delta: number; factor?: number }; res: { factor?: number } };
   getConfig: { req: Record<string, never>; res: { config?: Record<string, unknown> } };
   setConfig: { req: { config: Config }; res: { ok: boolean } };
@@ -74,6 +78,12 @@ export interface BgApi {
   // to the chrome helper so its window-level status bar shows the find count
   // on web pages (where the content script owns the find widget).
   syncFind: { req: { cur: number; count: number }; res: { ok: boolean } };
+  // Content script -> background: is the chrome layer (userChrome helper)
+  // authoritatively alive? The content script must ONLY draw its standalone bar
+  // when the background confirms the chrome layer is absent — never trust a
+  // racy storage read. This is the single source of truth for the one-bar
+  // guarantee.
+  chromeLayer: { req: Record<string, never>; res: { alive: boolean } };
   sessionList: { req: Record<string, never>; res: { sessions: Session[] } };
   sessionSave: { req: { name: string }; res: { ok: boolean; session?: Session } };
   sessionNew: { req: { name: string }; res: { ok: boolean; note?: string } };

@@ -58,11 +58,45 @@ export async function suggestSearch(q: string) {
   return { entries };
 }
 
+// Built-in Firefox chrome pages offered by the URL popup; typing a leading
+// "about:" autocompletes them (changing prefs, addons, config, etc. is the
+// common case, and without these the popup would offer only history/visited
+// entries — or nothing).
+const ABOUT_PAGES: { url: string; title: string }[] = [
+  { url: "about:preferences", title: "Settings" },
+  { url: "about:addons", title: "Add-ons and themes" },
+  { url: "about:history", title: "History" },
+  { url: "about:downloads", title: "Downloads" },
+  { url: "about:config", title: "Configuration editor" },
+  { url: "about:logins", title: "Passwords" },
+  { url: "about:newtab", title: "New Tab" },
+  { url: "about:blank", title: "Blank tab" },
+  { url: "about:about", title: "List of about: pages" },
+  { url: "about:support", title: "Troubleshooting information" },
+  { url: "about:processes", title: "Task manager" },
+  { url: "about:memory", title: "Memory report" },
+  { url: "about:profiles", title: "About profiles" },
+  { url: "about:privacy", title: "Privacy" },
+  { url: "about:debugging", title: "Remote debugging" },
+  { url: "about:networking", title: "Network tools" },
+  { url: "about:crashes", title: "Crashes" },
+];
+
 export async function suggestUrls(q: string) {
   const text = (q || "").trim();
   const entries: any[] = [];
   if (!text) return { entries };
   const url = await core.normalizeUrl(text);
+  // about: pages — offer chrome pages that match, ahead of history/visited so
+  // they autocomplete reliably and open natively (tabs.update loads them).
+  if (/^about:/i.test(text) || text.length === 0) {
+    const lq = text.toLowerCase();
+    for (const p of ABOUT_PAGES) {
+      if (p.url.toLowerCase().includes(lq) || p.title.toLowerCase().includes(lq)) {
+        entries.push({ kind: "page", title: p.title, subtitle: p.url, url: p.url });
+      }
+    }
+  }
   entries.push({
     kind: "url",
     title: "Open URL",
