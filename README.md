@@ -92,23 +92,21 @@ where add-ons cannot run — that one step asks for admin rights **once** (a UAC
 prompt on Windows, `sudo` on Linux). Your profile, bookmarks, history and
 settings are never touched; every file that gets replaced is backed up first.
 
-The binary is **fully self-contained**: every artifact it needs for a complete
-install — the profile chrome files, the managed `user.js` prefs, and the
-**AMO-signed** add-on xpi (signature block included, so it loads on stable
-Firefox) — is embedded in the binary, so a full install has **zero
-dependencies**: no repo checkout, no `dist/`, no Go toolchain, no npm, no
-`zip`. When it happens to run from a repo checkout it prefers the live `dist/`
-(so a freshly rebuilt `dist` governs behavior), and falls back to its embedded
-payload otherwise. To rebuild the binaries yourself:
+The interactive installer is one self-contained Go binary built for each OS
+into `installer/bin/`:
 
 ```
-npm run build            # dev build: wasm, bundles, unsigned xpi (fast, no AMO)
-npm run build:release    # release build: signed xpi + all release installer binaries
-installer/bin/lazyfox-install-linux / -darwin / -windows.exe   # use the per-OS binary
-installer/bin/lazyfox-install            # interactive wizard (host form)
-installer/bin/lazyfox-install --mode list
-installer/bin/lazyfox-install --mode install --profile "…" --firefox-dir "…"
-installer/bin/lazyfox-install --mode uninstall --profile "…"
+lazyfox-install-linux / -darwin / -windows.exe   # signed release installers
+lazyfox-install-dev-linux / -darwin / -windows.exe   # unsigned dev installers
+```
+
+Run the one for your OS with no arguments to open the wizard (auto-detects your
+profile), or target a specific profile directly:
+
+```
+lazyfox-install --mode list
+lazyfox-install --mode install --profile "…" --firefox-dir "…"
+lazyfox-install --mode uninstall --profile "…"
 ```
 
 ## Development, testing & Nightly
@@ -326,26 +324,44 @@ is committed, so installing never needs the toolchain — change source, run
 `npm run build`, and reinstall or **Reload** in `about:debugging`.
 
 ```bash
-npm install        # esbuild + typescript
-npm run build      # dev build (default): wasm, bundles, unsigned xpi — fast, no AMO
-npm run verify     # typecheck + full test suite, in one shot
-npm run typecheck  # tsc --noEmit
-npm test           # go test ./core/ + installer tests + dist/ completeness
+npm install            # esbuild + typescript
+npm run build          # dev build: wasm, bundles, unsigned xpi — fast, no AMO
+npm run install        # build + install that dev build into Nightly/Devedition
+npm run install:clean  # …or first wipe stale dev profiles, then install
+npm run verify         # typecheck + full test suite, in one shot
+npm test               # go test ./core/ + installer tests + dist/ completeness
 ```
 
-**Dev vs signed builds.** Lazyfox has two build modes, and they are not the
-same command:
+Daily loop: `npm run install` (or `npm run install:clean`) is all most people
+need — it builds and installs the unsigned dev build into Firefox
+Nightly/Devedition automatically. Use `npm run build` alone when you only want
+the built output, and `npm run build:installers` to refresh the portable dev
+installer binaries.
 
-- `npm run build` produces the **unsigned** dev build (`__DEV__=true` bundles
-  and an unsigned xpi) — the fast daily loop, no AMO involvement.
-- `npm run build:release` produces the **signed** release: it synchs the
-  AMO-signed xpi from addons.mozilla.org (via `scripts/sync-signed-xpi.mjs`)
-  and rebuilds the per-OS release installer binaries that embed it.
+**Dev vs signed builds.** Lazyfox has two build modes, and they are not the
+same command — use the one that matches what you are doing:
+
+| I want to… | Run | What it does |
+|---|---|---|
+| Develop / try the latest changes | `npm run build` | **Unsigned** dev build (`__DEV__=true`), fast, no AMO. Produces `dist/lazyfox2-<ver>.xpi` for Nightly/Devedition. |
+| Install my fresh dev build into Nightly | `npm run install` (or `npm run install:clean`) | Builds + installs the unsigned dev xpi into a new profile. |
+| Rebuild the portable dev installer binaries | `npm run build:installers` | Embeds the unsigned xpi into `installer/bin/lazyfox-install-dev-*`. |
+| Publish the next version to AMO | `npm run submit` | Packs the fresh build, uploads it to AMO as a **listed/public** version, and rebuilds the dev installers. Needs `AMO_API_KEY`/`SECRET` in `.env`. |
+| Ship the signed release (master only!) | `npm run build:release` | Syncs the **AMO-signed** xpi + rebuilds the release installers `installer/bin/lazyfox-install-*`. Run this only **after** AMO review has signed the submitted version. |
 
 **Signing.** Stable Firefox rejects unsigned add-ons, so the shipped xpi is the
-**signed** one from addons.mozilla.org. `npm run build:release` embeds
-`dist/lazyfox2-<version>.xpi` into the release installer binaries. The release
-command is deterministic about the version (it always comes from
+**signed** one from addons.mozilla.org. AMO signs a **listed** (public) version
+only *after* it is reviewed — submitting (`npm run submit`) uploads the xpi but
+does not sign it instantly; it starts the review clock. Once AMO approves, the
+release command downloads the signed xpi:
+
+- `npm run submit` — uploads the fresh build to AMO (listed) → starts review.
+- `npm run build:release` — downloads the now-**signed** xpi (via
+  `scripts/sync-signed-xpi.mjs`) and embeds it into the release installer
+  binaries. Run this from master, and only after AMO review has signed the
+  submitted version.
+
+The release command is deterministic about the version (it always comes from
 `dist/extension/manifest.json`) and refuses to fake or guess a signed xpi: it
 reuses the committed signed artifact when it is already current, otherwise it
 downloads the exact version from AMO (needs `AMO_API_KEY`/`AMO_API_SECRET`).

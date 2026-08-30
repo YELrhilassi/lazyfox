@@ -598,3 +598,50 @@ func TestNativeHostManifestShape(t *testing.T) {
 		t.Fatalf("allowed_extensions = %v, want [lazyfox@lazyfox.dev]", m["allowed_extensions"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// profileFirefoxVersion
+// ---------------------------------------------------------------------------
+
+func TestProfileFirefoxVersion(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name string
+		ini  string
+		want string
+	}{
+		{
+			name: "LastVersion with buildid is trimmed to readable version",
+			ini:  "[Compatibility]\nLastVersion=155.0_20260826090609/20260826090609\n",
+			want: "155.0",
+		},
+		{
+			name: "LastAppVersion is used when LastVersion absent",
+			ini:  "[Compatibility]\nLastAppVersion=132.0.3\n",
+			want: "132.0.3",
+		},
+		{
+			name: "empty file yields empty version",
+			ini:  "",
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(dir, "compatibility.ini"), []byte(c.ini), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := profileFirefoxVersion(dir); got != c.want {
+				t.Fatalf("profileFirefoxVersion = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestProfileLabelShowsVersion(t *testing.T) {
+	p := &FirefoxProfile{Name: "dev", Flavor: flavorNightly, FirefoxVersion: "155.0"}
+	got := p.label()
+	if !strings.Contains(got, "Firefox 155.0") {
+		t.Fatalf("label = %q, want it to include the Firefox version", got)
+	}
+}
