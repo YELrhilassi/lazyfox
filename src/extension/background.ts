@@ -7,7 +7,8 @@
 // chrome-helper channel to those modules, and wires the tab/window lifecycle
 // listeners.
 
-import { ensureCore } from "../shared/core";
+import { ensureCore, core } from "../shared/core";
+import { hostInfo } from "./host";
 import type { BgAction } from "../shared/protocol";
 import { getConfig } from "./config";
 import { probeHostOnce } from "./host";
@@ -73,6 +74,28 @@ const CHROME_PAGES: { [k: string]: string } = {
   "about:history": "history",
   "about:downloads": "downloads"
 };
+
+// Versions of every Lazyfox component, surfaced on the options page's
+// Components panel. Each piece is versioned independently (the extension, the
+// Go wasm core, the native host, and the chrome helper shipped by the
+// installer), so this reports all of them rather than a single number.
+async function componentsInfo() {
+  const [ext, wasm, host] = await Promise.all([
+    Promise.resolve(browser.runtime.getManifest().version),
+    core.version().catch(() => "?"),
+    hostInfo().catch(() => null),
+  ]);
+  const stored = await browser.storage.local
+    .get("chromeHelperVersion")
+    .catch(() => ({}));
+  return {
+    extension: ext,
+    wasm: wasm,
+    nativeHost: host && host.version ? String(host.version) : null,
+    nativeProtocol: host && host.protocol ? String(host.protocol) : null,
+    chromeHelper: (stored && stored.chromeHelperVersion) || null,
+  };
+}
 
 async function openUrl(url: string, newTab: boolean | undefined) {
   if (!url) return { ok: false };
@@ -156,6 +179,8 @@ async function handleMessage(msg: BgAction, sender: any) {
       return suggestSearch(data.q);
     case "urlSuggest":
       return suggestUrls(data.q);
+    case "components":
+      return componentsInfo();
     case "tabs":
       return tabsInWindow();
     case "activateTab":
@@ -746,6 +771,11 @@ async function handleRelayReq(action: string, arg: any): Promise<any> {
   if (action !== "alive") markChromeAlive();
   if (action === "alive") {
     markChromeAlive();
+    // The chrome helper announces its own version as the arg; store it so the
+    // options Components panel can report it independently of the extension.
+    if (arg) {
+      browser.storage.local.set({ chromeHelperVersion: String(arg) }).catch(() => {});
+    }
     return null;
   }
   if (action === "toggleWhichKey") {

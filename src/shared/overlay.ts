@@ -126,6 +126,34 @@ export interface SelectorCtl {
   close(): void;
 }
 
+// Paste the clipboard into an input at the cursor, mirroring what the browser's
+// native Ctrl+V would do. Needed for content-script popups, whose window-level
+// capture listener prevents default on every keydown (the manualText model), so
+// the native paste action never runs. Reads text over the async clipboard API;
+// the extension holds the clipboardRead permission.
+function pasteClipboard(input: HTMLInputElement): void {
+  try {
+    const read =
+      (navigator.clipboard && typeof navigator.clipboard.readText === "function")
+        ? navigator.clipboard.readText()
+        : Promise.resolve("");
+    void read
+      .then((txt) => {
+        if (!txt) return;
+        const s = input.selectionStart == null ? input.value.length : input.selectionStart;
+        const en = input.selectionEnd == null ? input.value.length : input.selectionEnd;
+        input.value = input.value.slice(0, s) + txt + input.value.slice(en);
+        try {
+          input.setSelectionRange(s + txt.length, s + txt.length);
+        } catch (err) { /* ignore */ }
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      })
+      .catch(() => { /* clipboard denied — swallow */ });
+  } catch (e) {
+    // ignore
+  }
+}
+
 const HOST_CSS =
   "all:initial;position:fixed;inset:0;z-index:2147483647;display:block;";
 
@@ -380,6 +408,17 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
           input.setSelectionRange(s + 1, s + 1);
         } catch (err) {}
         input.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      }
+      // Ctrl+V / Ctrl+V with shift on the manual-text model: read the clipboard
+      // and insert at the cursor (native paste is prevented by the capture
+      // handler). Handle detail too, for consistency with real paste.
+      if (
+        e.ctrlKey && !e.altKey && !e.metaKey &&
+        k === "v"
+      ) {
+        e.preventDefault();
+        pasteClipboard(input);
         return true;
       }
     }

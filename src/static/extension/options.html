@@ -25,6 +25,11 @@
   }
   select:focus { border-color: #7aa2f7; }
   .row { display: flex; align-items: center; gap: 10px; }
+  .kv { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    padding: 5px 0; border-bottom: 1px solid #1e242e; font-size: 13px; }
+  .kv .lbl { color: #9aa5ce; }
+  .kv .val { color: #c0caf5; }
+  .panel { border: 1px solid #414868; border-radius: 8px; padding: 12px 14px; margin: 8px 0 4px; background: #1a1b26; }
   button {
     margin-top: 24px; padding: 10px 22px; background: #7aa2f7; color: #16161e;
     border: none; border-radius: 6px; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
@@ -103,6 +108,17 @@
   <label for="chDownloads">Downloads</label>
   <input type="text" id="chDownloads" maxlength="32" placeholder="Ctrl+Alt+D">
   <span id="chStatus" style="color:#9ece6a;font-size:12px;"></span>
+
+  <h2 style="margin-top:34px;">Components &amp; versions</h2>
+  <p>Versions of every Lazyfox piece. Each component is versioned
+  independently: the extension (AMO), the Go wasm core, the native messaging
+  host, and the chrome helper installed by the installer.</p>
+  <div class="panel">
+    <div class="kv"><span class="lbl">Lazyfox extension</span><span class="val" id="cExt">&hellip;</span></div>
+    <div class="kv"><span class="lbl">Core engine (wasm)</span><span class="val" id="cWasm">&hellip;</span></div>
+    <div class="kv"><span class="lbl">Native host</span><span class="val" id="cHost">n/a</span></div>
+    <div class="kv"><span class="lbl">Chrome helper</span><span class="val" id="cChrome">n/a</span></div>
+  </div>
 
   <div class="row">
     <button id="save">Save</button>

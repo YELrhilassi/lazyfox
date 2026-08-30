@@ -58,6 +58,10 @@ export interface BgApi {
   zen: { req: Record<string, never>; res: { zen: boolean } };
   mute: { req: Record<string, never>; res: { muted: boolean } };
   copyUrl: { req: Record<string, never>; res: { url: string; title: string } };
+  components: {
+    req: Record<string, never>;
+    res: { extension: string; wasm: string; nativeHost: string | null; nativeProtocol: string | null; chromeHelper: string | null };
+  };
   zoom: { req: { delta: number; factor?: number }; res: { factor?: number } };
   getConfig: { req: Record<string, never>; res: { config?: Record<string, unknown> } };
   setConfig: { req: { config: Config }; res: { ok: boolean } };
