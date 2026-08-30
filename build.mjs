@@ -140,7 +140,7 @@ if (DEV) {
 // separate step from `npm run build` on purpose: the per-OS binaries are
 // semantically "ship/dev" artifacts produced alongside the unsigned build, and
 // keeping them out of the fast dev loop avoids re-cross-compiling Go on every
-// iteration. Dev install flow handled by `npm run install` (build:installers +
+// iteration. Dev install flow handled by `npm run dev-install` (build:installers +
 // dev-install).
 
 // Ensure a signed .xpi exists for the current extension version.

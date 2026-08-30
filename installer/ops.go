@@ -95,9 +95,15 @@ func runInstall(rc *repoContext, rep StepReporter, o InstallOptions, pw Password
 		rep.Warn("Internal-page ; keys and the command-center about: pages will not work until it is.")
 	}
 
-	// 5. WebExtension build + install (unless disabled).
+	// 5. WebExtension build + install (unless disabled). installExtension
+	//    returns whether it left Firefox running (the first-import launch when
+	//    UseLaunch is on doubles as the final launch, so we don't relaunch it
+	//    again below and cause a visible open/kill/reopen flash).
+	launched := false
 	if o.UseExtension && !o.LoaderOnly {
-		if err := installExtension(rc, rep, profileDir, o); err != nil {
+		var err error
+		launched, err = installExtension(rc, rep, profileDir, o)
+		if err != nil {
 			return err
 		}
 	}
@@ -108,8 +114,9 @@ func runInstall(rc *repoContext, rep StepReporter, o InstallOptions, pw Password
 		_ = installNativeHost(rep, o)
 	}
 
-	// 6. Optional relaunch so the new UI is live immediately.
-	if o.UseLaunch && !o.NoStop && !o.LoaderOnly {
+	// 6. Optional relaunch so the new UI is live immediately — unless the
+	//    first-import step already left Firefox running (installed == true).
+	if o.UseLaunch && !o.NoStop && !o.LoaderOnly && !launched {
 		if o.Install != nil && o.Install.Exec != "" && exists(o.Install.Exec) {
 			rep.Step("Launching Firefox with the profile…")
 			_ = launchFirefox(o.Install.Exec, profileDir)
@@ -118,43 +125,46 @@ func runInstall(rc *repoContext, rep StepReporter, o InstallOptions, pw Password
 	return nil
 }
 
-// installExtension installs the add-on xpi verbatim and arranges for it to be
-// imported/enabled. When o.XpiPath is set (dev), it installs that unsigned xpi
-// file (e.g. a freshly built dist/lazyfox2-*.xpi for Firefox Nightly).
-// Otherwise it installs the embedded AMO-signed build.
-func installExtension(rc *repoContext, rep StepReporter, profileDir string, o InstallOptions) error {
+// installExtension installs the add-on xpi whenever it is not yet enabled, and
+// arranges for it to be imported/enabled. When o.XpiPath is set (dev) it
+// installs that unsigned xpi (for Nightly/Dev); otherwise the embedded
+// AMO-signed build is used. It returns whether an import launch left Firefox
+// running (only when UseLaunch is set and this was effectively the final
+// launch) so the caller can skip a redundant relaunch that flashes the window.
+func installExtension(rc *repoContext, rep StepReporter, profileDir string, o InstallOptions) (bool, error) {
+	leftRunning := false
 	var data []byte
 	label := "signed extension"
 	if o.XpiPath != "" {
 		d, err := os.ReadFile(o.XpiPath)
 		if err != nil {
-			return fmt.Errorf("could not read dev xpi %s: %w", o.XpiPath, err)
+			return false, fmt.Errorf("could not read dev xpi %s: %w", o.XpiPath, err)
 		}
 		if len(d) == 0 {
-			return fmt.Errorf("dev xpi %s is empty", o.XpiPath)
+			return false, fmt.Errorf("dev xpi %s is empty", o.XpiPath)
 		}
 		data = d
 		label = "dev (unsigned) extension"
 	} else {
 		d, err := rc.extensionXpiBytes()
 		if err != nil {
-			return fmt.Errorf("signed extension xpi unavailable: %w", err)
+			return false, fmt.Errorf("signed extension xpi unavailable: %w", err)
 		}
 		if len(d) == 0 {
-			return fmt.Errorf("signed extension xpi is empty")
+			return false, fmt.Errorf("signed extension xpi is empty")
 		}
 		data = d
 	}
 	extensionsDir := filepath.Join(profileDir, "extensions")
 	if err := ensureDir(extensionsDir); err != nil {
-		return err
+		return false, err
 	}
 	xpi := filepath.Join(extensionsDir, extensionXpiName)
 	if exists(xpi) {
 		_ = backupFile(xpi, "install")
 	}
 	if err := os.WriteFile(xpi, data, 0o644); err != nil {
-		return fmt.Errorf("could not install %s %s: %w", label, xpi, err)
+		return false, fmt.Errorf("could not install %s %s: %w", label, xpi, err)
 	}
 	rep.Step("Installed %s: %s", label, xpi)
 
@@ -170,7 +180,7 @@ func installExtension(rc *repoContext, rep StepReporter, profileDir string, o In
 	if exists(extJSON) {
 		if profileLocked(profileDir) || runningForProfile(profileDir) {
 			rep.Note("Firefox is running with this profile; quit it and re-run the installer to auto-enable Lazyfox.")
-			return nil
+			return false, nil
 		}
 		less, _ := editExtensionsJSON(extJSON, removeAddonObject, false)
 		if less {
@@ -181,29 +191,40 @@ func installExtension(rc *repoContext, rep StepReporter, profileDir string, o In
 			rep.Note("Lazyfox not yet listed in extensions.json; it will be imported on next launch.")
 		}
 	} else if o.UseLaunch && !o.NoStop && o.Install != nil && exists(o.Install.Exec) {
-		rep.Step("First install: launching Firefox once to import Lazyfox…")
+		// First install with no extensions.json yet: launch Firefox once to
+		// import the add-on, poll until it registers the extension, then — when
+		// we're going to relaunch anyway (UseLaunch) — LEAVE it running and let
+		// this single launch be the final one, so the window doesn't flash by
+		// being killed then reopened. If we're not relaunching, close it after
+		// the import so the profile is not left open.
+		rep.Step("First install: launching Firefox to import Lazyfox…")
 		if err := launchFirefox(o.Install.Exec, profileDir, "about:blank"); err != nil {
-			return err
+			return false, err
 		}
-		// Poll for extensions.json to include us.
 		imported := waitForImport(profileDir, 60*time.Second)
-		if o.Install != nil {
+		keepOpen := o.UseLaunch && !o.NoStop
+		if !keepOpen {
 			_ = stopFirefoxForProfile(profileDir)
 		}
 		if imported {
-			time.Sleep(2 * time.Second)
-			enabled, _ := editExtensionsJSON(filepath.Join(profileDir, extensionsJSONName),
-				unmarkAddon, false)
-			if enabled {
-				rep.Step("Lazyfox imported and enabled. It stays enabled on future launches.")
+			if !keepOpen {
+				time.Sleep(2 * time.Second)
+				enabled, _ := editExtensionsJSON(filepath.Join(profileDir, extensionsJSONName),
+					unmarkAddon, false)
+				if enabled {
+					rep.Step("Lazyfox imported and enabled. It stays enabled on future launches.")
+				} else {
+					rep.Note("Lazyfox was imported but could not be auto-enabled. Enable it once in about:addons.")
+				}
 			} else {
-				rep.Note("Lazyfox was imported but could not be auto-enabled. Enable it once in about:addons.")
+				rep.Note("Lazyfox imported and left running — the UI should now be live.")
 			}
 		} else {
 			rep.Note("Firefox did not finish importing the add-on. Enable Lazyfox once in about:addons.")
 		}
+		leftRunning = keepOpen && imported
 	}
-	return nil
+	return leftRunning, nil
 }
 
 // waitForImport polls extensions.json until our add-on id appears (or timeout).

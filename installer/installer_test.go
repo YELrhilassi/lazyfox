@@ -600,30 +600,40 @@ func TestNativeHostManifestShape(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// profileFirefoxVersion
+// profileCompatibilityInfo
 // ---------------------------------------------------------------------------
 
-func TestProfileFirefoxVersion(t *testing.T) {
+func TestProfileCompatibilityInfo(t *testing.T) {
 	dir := t.TempDir()
 	cases := []struct {
-		name string
-		ini  string
-		want string
+		name     string
+		ini      string
+		wantVer  string
+		wantApp  string
 	}{
 		{
-			name: "LastVersion with buildid is trimmed to readable version",
-			ini:  "[Compatibility]\nLastVersion=155.0_20260826090609/20260826090609\n",
-			want: "155.0",
+			name:     "LastVersion with buildid is trimmed to readable version",
+			ini:      "[Compatibility]\nLastVersion=155.0_20260826090609/20260826090609\n",
+			wantVer:  "155.0",
+			wantApp:  "",
 		},
 		{
-			name: "LastAppVersion is used when LastVersion absent",
-			ini:  "[Compatibility]\nLastAppVersion=132.0.3\n",
-			want: "132.0.3",
+			name:     "LastAppVersion is used when LastVersion absent",
+			ini:      "[Compatibility]\nLastAppVersion=132.0.3\n",
+			wantVer:  "132.0.3",
+			wantApp:  "",
 		},
 		{
-			name: "empty file yields empty version",
-			ini:  "",
-			want: "",
+			name:     "LastAppDir is returned for flavor detection",
+			ini:      "[Compatibility]\nLastAppDir=/opt/firefox-nightly\nLastAppVersion=155.0\n",
+			wantVer:  "155.0",
+			wantApp:  "/opt/firefox-nightly",
+		},
+		{
+			name:     "empty file yields empty values",
+			ini:      "",
+			wantVer:  "",
+			wantApp:  "",
 		},
 	}
 	for _, c := range cases {
@@ -631,17 +641,24 @@ func TestProfileFirefoxVersion(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "compatibility.ini"), []byte(c.ini), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if got := profileFirefoxVersion(dir); got != c.want {
-				t.Fatalf("profileFirefoxVersion = %q, want %q", got, c.want)
+			ver, app := profileCompatibilityInfo(dir)
+			if ver != c.wantVer || app != c.wantApp {
+				t.Fatalf("profileCompatibilityInfo = (%q, %q), want (%q, %q)", ver, app, c.wantVer, c.wantApp)
 			}
 		})
 	}
 }
 
 func TestProfileLabelShowsVersion(t *testing.T) {
-	p := &FirefoxProfile{Name: "dev", Flavor: flavorNightly, FirefoxVersion: "155.0"}
+	p := &FirefoxProfile{Name: "dev", Flavor: flavorNightly, FirefoxVersion: "155.0", AppDir: "/opt/firefox-nightly"}
 	got := p.label()
-	if !strings.Contains(got, "Firefox 155.0") {
+	if !strings.Contains(got, "v155.0") {
 		t.Fatalf("label = %q, want it to include the Firefox version", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "nightly") {
+		t.Fatalf("label = %q, want it to include the Nightly edition", got)
+	}
+	if !strings.Contains(got, "dev") {
+		t.Fatalf("label = %q, want it to include the profile name", got)
 	}
 }
