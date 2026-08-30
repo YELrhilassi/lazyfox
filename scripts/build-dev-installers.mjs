@@ -5,21 +5,21 @@
 // builds embed the AMO-signed xpi (see build.mjs's INSTALLER_TARGETS), while
 // the dev binaries embed the freshly built unsigned xpi so a developer (or a
 // fresh clone with no Go toolchain) can install Lazyfox into Nightly/Developer
-// Edition right after `npm run build:dev` without recompiling anything.
+// Edition right after `npm run build` without recompiling anything.
 //
 // Output (committed to the repo, alongside the release binaries):
 //   installer/bin/lazyfox-install-dev-linux
 //   installer/bin/lazyfox-install-dev-darwin
 //   installer/bin/lazyfox-install-dev-windows.exe
 //
-// Usage: npm run build:dev:installers   (run after `npm run build:dev`)
+// Usage: npm run build:installers   (run after `npm run build`)
 //
 // The host-form binary (lazyfox-install, no suffix) the older dev scripts used
 // is intentionally NOT produced here: dev scripts now prefer the committed
 // per-OS dev binary for the current platform (see ensureHostInstaller).
 
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, existsSync, readFileSync, rmSync, readdirSync } from "node:fs";
+import { cpSync, mkdirSync, existsSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,7 +30,7 @@ const binDir = join(installerDir, "bin");
 const distChrome = join(root, "dist", "chrome");
 const distDir = join(root, "dist", "extension");
 if (!existsSync(distChrome) || !existsSync(distDir)) {
-  console.error("build-dev-installers: missing dist/ — run `npm run build:dev` first (or use a fresh clone; dist/ is committed).");
+  console.error("build-dev-installers: missing dist/ — run `npm run build` first (or use a fresh clone; dist/ is committed).");
   process.exit(1);
 }
 
@@ -46,7 +46,7 @@ function latestUnsignedXpi() {
 }
 const unsignedXpi = latestUnsignedXpi();
 if (!unsignedXpi) {
-  console.error("build-dev-installers: no unsigned xpi in dist/ — run `npm run build:dev` first.");
+  console.error("build-dev-installers: no unsigned xpi in dist/ — run `npm run build` first.");
   process.exit(1);
 }
 
@@ -74,6 +74,22 @@ const TARGETS = [
 
 mkdirSync(binDir, { recursive: true });
 for (const t of TARGETS) {
+  // Stage the native host binary for THIS installer target (each installer
+  // binary embeds the host for its own platform).
+  const hostExe = t.goos === "windows" ? "lazyfox-host.exe" : "lazyfox-host";
+  const hostDst = join(installerDir, "payload", "native-host", t.goos, hostExe);
+  mkdirSync(dirname(hostDst), { recursive: true });
+  try {
+    execFileSync(
+      "go",
+      ["build", "-trimpath", "-ldflags=-s -w", "-o", hostDst, "."],
+      { cwd: join(root, "native-host"), env: { ...process.env, GOOS: t.goos, GOARCH: t.arch }, stdio: "inherit" }
+    );
+    console.log(`[dev-installer] staged native host for ${t.goos}/${t.arch}`);
+  } catch (e) {
+    console.warn("[dev-installer] native host build failed for " + t.goos + "; installer will skip the host step: " + String(e && e.message ? e.message : e));
+    writeFileSync(hostDst, "");
+  }
   const out = join(binDir, t.out);
   execFileSync(
     "go",

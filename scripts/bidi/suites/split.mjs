@@ -249,11 +249,7 @@ export async function run(ctx) {
     // channel, so the test must too (the suite accumulates tabs, so use the
     // earliest movable real tab rather than assuming a fresh tab lands in 1-9).
     const ts = await ctx.tabsInfo();
-    const real = ts.filter(
-      (t) =>
-        !(t.url || "").includes("splitpanel.html") &&
-        !(t.url || "").includes("#lfc=")
-    );
+    const real = ts.filter((t) => ctx.isRealTab(t));
     const ci = real.findIndex(
       (t) => !t.pinned && !(typeof t.splitViewId === "number" && t.splitViewId >= 0)
     );
@@ -333,7 +329,7 @@ export async function run(ctx) {
     await waitFor(async () => {
       const ts = await ctx.tabsInfo();
       const real = ts.filter(
-        (t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=")
+        (t) => ctx.isRealTab(t)
       );
       return real.map((t) => t.id).join(",") === [probeId, aId, bId].join(",") ? real : null;
     }, 5000).catch(async () => {
@@ -410,11 +406,7 @@ export async function run(ctx) {
     await waitNoSplit();
     const before = await ctx.tabsInfo();
     // Pick the first non-active real tab as the move target (real-tab index).
-    const real = before.filter(
-      (t) =>
-        !(t.url || "").includes("splitpanel.html") &&
-        !(t.url || "").includes("#lfc=")
-    );
+    const real = before.filter((t) => ctx.isRealTab(t));
     const target = real.find((t) => !t.active && !t.pinned);
     assert(target, "found a non-active tab to move: " + JSON.stringify(before));
     const targetIndex = real.indexOf(target) + 1;
@@ -454,7 +446,7 @@ export async function run(ctx) {
     const settled = await waitFor(async () => {
       const now = await ctx.tabsInfo();
       const postReal2 = now.filter(
-        (t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=")
+        (t) => ctx.isRealTab(t)
       );
       const postOrder2 = postReal2.map((t) => t.id);
       settleOrder = postOrder2;
@@ -467,7 +459,7 @@ export async function run(ctx) {
     });
     assert(
       settled != null,
-      "pair pinned next to the anchor: anchor=" + activeRow.id + " partner=" + partner + " pair=" + JSON.stringify(pairIds) + " order=" + JSON.stringify((await ctx.tabsInfo()).filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=")).map((t) => t.id))
+      "pair pinned next to the anchor: anchor=" + activeRow.id + " partner=" + partner + " pair=" + JSON.stringify(pairIds) + " order=" + JSON.stringify((await ctx.tabsInfo()).filter((t) => ctx.isRealTab(t)).map((t) => t.id))
     );
     // Clean up.
     await ctx.leaderPress(ctx.tabA, "\\"); // ;\
@@ -502,7 +494,7 @@ export async function run(ctx) {
     await sleep(300);
     // ;+N numbers REAL tabs exactly like the chrome helper's realTabs(): skip
     // only splitpanel/#lfc transients (commandcenter tabs count).
-    const chromeReal = ids.filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc="));
+    const chromeReal = ids.filter((t) => ctx.isRealTab(t));
     const cRealIndex = chromeReal.findIndex((t) => t.id === cRow.id) + 1;
     assert(cRealIndex <= 9, "C index within 1-9: " + cRealIndex);
     await ctx.leaderPress(a, "=", { shift: true }); // ;+
@@ -524,7 +516,7 @@ export async function run(ctx) {
     // strip settles a moment after the split forms, so wait for it.
     const settled = await waitFor(async () => {
       const now = await ctx.tabsInfo();
-      const realAfter2 = now.filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc="));
+      const realAfter2 = now.filter((t) => ctx.isRealTab(t));
       const webOnly = realAfter2.filter((t) => !(t.url || "").includes("commandcenter.html"));
       const wA = webOnly.findIndex((t) => t.id === aRow.id);
       const wC = webOnly.findIndex((t) => t.id === cRow.id);
@@ -534,7 +526,7 @@ export async function run(ctx) {
       if (sv2.length !== 2 || !sv2.every((t) => [aRow.id, cRow.id].includes(t.id))) return null;
       return webOnly;
     }, 4000);
-    assert(settled != null, "pair pinned next to the anchor (A first, then C, then B): web=" + JSON.stringify((await ctx.tabsInfo()).filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=") && !(t.url || "").includes("commandcenter.html")).map((t) => t.id)));
+    assert(settled != null, "pair pinned next to the anchor (A first, then C, then B): web=" + JSON.stringify((await ctx.tabsInfo()).filter((t) => ctx.isRealTab(t) && !(t.url || "").includes("commandcenter.html")).map((t) => t.id)));
     // Clean up: unsplit and close the fresh tabs.
     await ctx.leaderPress(a, "\\");
     await waitNoSplit();
@@ -574,7 +566,7 @@ export async function run(ctx) {
     }, 8000);
     const after = await ctx.tabsInfo();
     const realOrder = after
-      .filter((t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc="))
+      .filter((t) => ctx.isRealTab(t))
       .map((t) => t.id)
       .filter((id) => id === aId || id === bId || id === cId);
     assert(
@@ -607,7 +599,7 @@ export async function run(ctx) {
     await ctx.leaderPress(a, "\\", { shift: true }); // ;| -> CC + panel
     await sleep(800);
     const real = (await ctx.tabsInfo()).filter(
-      (t) => !(t.url || "").includes("splitpanel.html") && !(t.url || "").includes("#lfc=")
+      (t) => ctx.isRealTab(t)
     );
     const helloIdx = real.findIndex((t) => (t.url || "").includes("/hello")) + 1;
     await ctx.leaderPress(a, "=", { shift: true }); // ;+

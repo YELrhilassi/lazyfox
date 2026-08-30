@@ -3,9 +3,10 @@
 //
 //   - the split-panel companion pane (splitpanel.html), pure UI that exists
 //     only while a split is being set up, and
-//   - throwaway request relays the background opens for chrome<->background
-//     messages (#lfc=req./reqResult./sessionState./sessionTabs./open.), which
-//     are created, do one job, and are removed.
+//   - the persistent relay tab (relay.html), the ONE hidden carrier for every
+//     chrome<->background message (see docs/MESSAGING.md), and
+//   - the split-panel companion pane (splitpanel.html), pure UI that exists
+//     only while a split is being set up.
 //
 // Everything else is a real user tab and must NEVER drop out of the numbering
 // mid-operation — including a real tab that momentarily carries a #lfc=keys or
@@ -16,6 +17,9 @@
 // two can never disagree about a tab's number.
 export function isRelayTabUrl(url: string | null | undefined): boolean {
   const u = url || "";
+  // The persistent relay tab (relay.html) is internal plumbing: its URL never
+  // changes, so it is identified by page name rather than hash fragment.
+  if (u.indexOf("relay.html") !== -1) return true;
   const i = u.indexOf("#lfc=");
   if (i >= 0) {
     const frag = u.slice(i + 5);

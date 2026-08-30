@@ -3,12 +3,14 @@
 // Feature logic lives in sibling modules — search.ts (search/suggestions),
 // windowops.ts (window/tab actions), stealth.ts (isolated tabs), sessions.ts
 // (tmux-style sessions), downloads.ts (download actions), config.ts (settings).
-// This file only routes browser.runtime messages and the #lfc=req chrome-helper
-// channel to those modules, and wires the tab/window lifecycle listeners.
+// This file only routes browser.runtime messages and the persistent relay
+// chrome-helper channel to those modules, and wires the tab/window lifecycle
+// listeners.
 
 import { ensureCore } from "../shared/core";
 import type { BgAction } from "../shared/protocol";
 import { getConfig } from "./config";
+import { probeHostOnce } from "./host";
 import { CC_URL, getActiveTab, isCommandCenter, isUITab, realTabsInWindow, stripHash, transientTabIds } from "./tabs";
 import { bookmarksSearch, doSearch, historySearch, searchUrlFor, suggestSearch, suggestUrls } from "./search";
 import {
@@ -363,7 +365,7 @@ async function handleMessage(msg: BgAction, sender: any) {
       return moveTabBetweenSessions(data.from, data.index, data.to, "move");
     case "sessionSplit":
       // Native splits are the chrome helper's domain (gBrowser.addTabSplitView);
-      // relay the request through a transient #lfc= tab.
+      // relay the request over the persistent relay.
       requestChrome("splitTab");
       return { ok: true };
     case "sessionUnsplit":
@@ -533,34 +535,172 @@ browser.runtime.onStartup.addListener(() => {
   maybeConvertStartupBlank();
 });
 
-// Chrome helper request channel: a background tab whose URL is
-// commandcenter.html#lfc=req.<action>[.<arg>]. Handle the request, then remove
-// the tab. The `sessionState` request is the one exception: its reply is
-// written back into the tab's hash and the chrome helper removes the tab itself
-// after reading it (otherwise it would race the removal).
-function b64utf8(s: string): string {
-  return btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+// Persistent relay channel (see docs/MESSAGING.md): ONE hidden relay tab
+// (relay.html) carries every helper<->background message over a long-lived
+// runtime port. The relay page connects a port named "lazyfox-relay"; requests
+// from the chrome helper arrive on it and replies go back the same way, and
+// background->chrome commands are pushed over it too. No tab is created or
+// removed per message.
+const RELAY_QUEUE_TTL = 6000;
+// windowId -> live Port (the relay page reconnects if it drops).
+const relayPorts = new Map<number, any>();
+// Commands queued while no port was connected yet (the relay tab may still be
+// coming up); flushed on connect, dropped after RELAY_QUEUE_TTL so a stale
+// command can never fire late.
+const relayCmdQueues = new Map<number, Array<{ action: string; arg?: any }>>();
+
+browser.runtime.onConnect.addListener((port: any) => {
+  if (!port || !port.name || port.name.indexOf("lazyfox-relay") !== 0) return;
+  // The relay page carries its windowId in the connection name
+  // ("lazyfox-relay:<windowId>") because sender.tab is not guaranteed; fall
+  // back to sender.tab when the name lacks it.
+  const nameWin = /^lazyfox-relay:(\d+)$/.exec(port.name);
+  const sender = port.sender;
+  const tab = sender && sender.tab;
+  const tabId = tab && tab.id != null ? tab.id : null;
+  const winId =
+    (nameWin && nameWin[1] != null ? Number(nameWin[1]) : null) ||
+    (tab && tab.windowId != null ? tab.windowId : null);
+  if (winId == null) return;
+  // The relay tab is invisible plumbing: never a user tab, never in the strip.
+  if (tabId != null) {
+    transientTabIds.add(tabId);
+    browser.tabs.hide(tabId).catch(() => {});
+  }
+  relayPorts.set(winId, port);
+  // Flush commands queued while no port was connected.
+  const q = relayCmdQueues.get(winId) || [];
+  relayCmdQueues.delete(winId);
+  for (const c of q) {
+    try {
+      port.postMessage({ type: "cmd", action: c.action, arg: c.arg !== undefined ? c.arg : "" });
+    } catch (e) {
+      // ignore
+    }
+  }
+  port.onMessage.addListener((msg: any) => {
+    if (!msg || msg.type !== "req") return;
+    handleRelayReq(String(msg.action || ""), msg.arg)
+      .then((result) => {
+        try {
+          port.postMessage({ type: "resp", id: msg.id, result: result !== undefined ? result : null });
+        } catch (e) {
+          // ignore
+        }
+      })
+      .catch((e: any) => {
+        try {
+          port.postMessage({ type: "resp", id: msg.id, error: String((e && e.message) || e) });
+        } catch (e2) {
+          // ignore
+        }
+      });
+  });
+  port.onDisconnect.addListener(() => {
+    if (relayPorts.get(winId) === port) relayPorts.delete(winId);
+  });
+});
+
+// Make sure the relay tab exists for the current window (the chrome helper
+// creates one at startup, but it may have been closed; and the helper may not
+// be installed at all, in which case pushes are pointless but harmless).
+function ensureRelayTab(): Promise<any | null> {
+  return browser.tabs
+    .query({ currentWindow: true })
+    .then((ts: any[]) => {
+      const existing = (ts || []).find(
+        (t: any) => t.url && t.url.indexOf("relay.html") !== -1
+      );
+      if (existing) return existing;
+      return browser.tabs
+        .create({ url: browser.runtime.getURL("relay.html"), active: false })
+        .then((tab: any) => {
+          // Register + hide immediately so it never counts or shows.
+          if (tab && tab.id != null) transientTabIds.add(tab.id);
+          if (tab && tab.id != null) browser.tabs.hide(tab.id).catch(() => {});
+          return tab;
+        });
+    })
+    .catch(() => null);
 }
 
-// Ask the chrome helper to do something only it can (native split view): open a
-// transient background tab whose #lfc= fragment the chrome helper's progress
-// listener handles; the chrome helper removes the tab itself. A safety timeout
-// drops it if the chrome helper never answers.
-function requestChrome(action: string, arg?: string): void {
-  let frag = "lfc=" + action;
-  if (arg != null && arg !== "") frag += "." + encodeURIComponent(arg);
+// Relay tabs are invisible plumbing — register + hide them the moment they
+// appear (the port-connect handler does the same, but only after the page
+// loads; this covers the creation window).
+browser.tabs.onCreated.addListener((tab: any) => {
+  if (tab && tab.id != null && tab.url && tab.url.indexOf("relay.html") !== -1) {
+    transientTabIds.add(tab.id);
+    browser.tabs.hide(tab.id).catch(() => {});
+  }
+});
+browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
+  if (tab && tab.url && tab.url.indexOf("relay.html") !== -1) {
+    transientTabIds.add(tabId);
+    browser.tabs.hide(tabId).catch(() => {});
+  }
+});
+
+// Ask the chrome helper to do something only it can (native splits, status
+// pushes): post the command over the relay's runtime port. `arg` may be any
+// structured-cloneable value (objects arrive as objects on the helper side).
+//
+// Delivery must survive the relay tab being torn down: a session restore
+// removes every unpinned tab (the relay included), so the port in relayPorts
+// can be DEAD while the map still holds it (the disconnect listener is
+// async). Posting into a dead port silently drops the command — the exact bug
+// that lost restoreSplits after a restore. So: verify the port is live,
+// fall through to ensure+queue when it isn't, and keep retrying until the
+// port is actually delivering (or the TTL expires, so a stale command can
+// never fire late).
+function requestChrome(action: string, arg?: any): void {
   browser.tabs
-    .create({ url: CC_URL + "#" + frag, active: false })
-    .then((tab: any) => {
-      // Register the relay tab id immediately so realTabsInWindow filters it
-      // even while its URL is still being applied (see transientTabIds).
-      if (tab && tab.id != null) transientTabIds.add(tab.id);
-      setTimeout(() => {
-        transientTabIds.delete(tab.id);
-        browser.tabs
-          .remove(tab.id)
-          .catch(() => {});
-      }, 5000);
+    .query({ currentWindow: true, active: true })
+    .then((ts: any[]) => {
+      const winId = ts && ts[0] ? ts[0].windowId : null;
+      if (winId == null) return;
+      const entry = { action: action, arg: arg };
+      const tryPost = (): boolean => {
+        const port = relayPorts.get(winId);
+        if (!port) return false;
+        try {
+          port.postMessage({ type: "cmd", action: action, arg: arg !== undefined ? arg : "" });
+          return true;
+        } catch (e) {
+          // The port is dead (its relay tab was removed); drop it so the next
+          // attempt goes through ensureRelayTab.
+          relayPorts.delete(winId);
+          return false;
+        }
+      };
+      if (tryPost()) return;
+      // No live port: make sure the relay tab exists, then keep trying until
+      // the port delivers or the command ages out. The retry covers the gap
+      // between "the port connected" and "the onConnect flush ran" (the
+      // flush can beat the queue push), and the dead-port case above. The
+      // entry stays in the queue so onConnect's drain can deliver it; the
+      // retry loop stops the moment the entry leaves the queue (delivered or
+      // aged out), so a command is never posted twice.
+      void ensureRelayTab().then(() => {
+        const started = Date.now();
+        const q = relayCmdQueues.get(winId) || [];
+        q.push(entry);
+        relayCmdQueues.set(winId, q);
+        const tick = () => {
+          const cur = relayCmdQueues.get(winId) || [];
+          const i = cur.indexOf(entry);
+          if (i < 0) return; // already delivered by onConnect's drain
+          if (tryPost()) {
+            cur.splice(i, 1);
+            return;
+          }
+          if (Date.now() - started > RELAY_QUEUE_TTL) {
+            cur.splice(i, 1);
+            return;
+          }
+          setTimeout(tick, 200);
+        };
+        tick();
+      });
     })
     .catch(() => {});
 }
@@ -568,14 +708,11 @@ function requestChrome(action: string, arg?: string): void {
 // Push the fresh session summary to the chrome helper's status bar after a
 // session mutation that did NOT originate from the chrome helper itself (the
 // helper refreshes on its own actions; content-script and options actions would
-// otherwise leave its bar pointing at a stale session name). The push rides the
-// same #lfc=sessionState channel the helper's own requestSessionState uses, so
-// the helper updates its bar and removes the transient tab.
+// otherwise leave its bar pointing at a stale session name).
 async function pushSessionStateToChrome(): Promise<void> {
   try {
     const state = await sessionState();
-    const nonce = "push" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
-    requestChrome("sessionState." + b64utf8(JSON.stringify(state)), nonce);
+    requestChrome("sessionState", state);
   } catch (e) {
     // ignore
   }
@@ -587,11 +724,7 @@ async function pushSessionStateToChrome(): Promise<void> {
 // strip index + active flag; the chrome helper caches it per index.
 function pushLeaderStateToChrome(index: number, active: boolean): void {
   if (index < 0) return;
-  const nonce = "ls" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
-  requestChrome(
-    "leaderState." + b64utf8(JSON.stringify({ index: index, active: active })),
-    nonce
-  );
+  requestChrome("leaderState", { index: index, active: active });
 }
 
 // Relay the content script's find-in-page count to the chrome helper so its
@@ -599,25 +732,21 @@ function pushLeaderStateToChrome(index: number, active: boolean): void {
 // carries the tab's strip index + count state; the helper caches it per index.
 function pushFindStateToChrome(index: number, count: number, cur: number): void {
   if (index < 0) return;
-  const nonce = "fs" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
-  requestChrome(
-    "findState." + b64utf8(JSON.stringify({ index: index, count: count, cur: cur })),
-    nonce
-  );
+  requestChrome("findState", { index: index, count: count, cur: cur });
 }
 
-async function handleReq(tab: any, action: string, arg: string) {
-  // Every #lfc=req tab is created by the chrome helper, so handling ANY
-  // request proves it is alive — flip the gate so content scripts stop
-  // drawing their own status bar. The dedicated "alive" announce can race
-  // the extension still loading on a cold start; every other request (e.g.
-  // the startup sessionState poll) covers that window.
-  if (action !== "alive") {
-    markChromeAlive();
-  }
+// Handle a chrome-helper request arriving over the relay port. Returns the
+// reply value (structured-cloned back to the helper) or null for
+// fire-and-forget actions. Every request proves the helper is alive — flip
+// the gate so content scripts stop drawing their own status bar. The
+// dedicated "alive" announce can race the extension still loading on a cold
+// start; every other request (e.g. the startup sessionState poll) covers that
+// window.
+async function handleRelayReq(action: string, arg: any): Promise<any> {
+  if (action !== "alive") markChromeAlive();
   if (action === "alive") {
     markChromeAlive();
-    return;
+    return null;
   }
   if (action === "toggleWhichKey") {
     // The chrome helper flipped its own cached copy; flip storage to match so
@@ -625,154 +754,107 @@ async function handleReq(tab: any, action: string, arg: string) {
     const c = await getConfig();
     c.whichKey = !c.whichKey;
     await browser.storage.local.set({ config: c });
-    return;
+    return null;
   }
   if (action === "startHints" || action === "focusFirstInput") {
     const t = await getActiveTab();
-    if (!t || t.id === tab.id) return;
+    if (!t) return null;
     try {
       await browser.tabs.sendMessage(t.id, { action: action });
     } catch (e) {}
-    return;
+    return null;
   }
   if (action === "openOptions") {
     try {
       await browser.runtime.openOptionsPage();
     } catch (e) {}
-    return;
+    return null;
   }
   if (action === "openSetup") {
     await openSetupTab();
-    return;
+    return null;
   }
   if (action === "stealthOpen") {
-    // Reply through the tab's hash so the chrome helper can toast the outcome
-    // instead of failing silently; the chrome helper removes the reply tab
-    // itself (see the reqResult handler).
-    const r = await stealthOpen(() => pushSessionStateToChrome());
-    const nonce = "req" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
-    await browser.tabs
-      .update(tab.id, {
-        url: CC_URL + "#lfc=reqResult." + b64utf8(JSON.stringify(r)) + "." + nonce
-      })
-      .catch(() => {});
-    return;
+    // The result ({ ok, error }) is returned to the helper, which toasts the
+    // outcome so a failure is never silent.
+    return stealthOpen(() => pushSessionStateToChrome());
   }
   if (action === "sessionState") {
-    // Round-trip for the chrome helper's status bar: reply into the hash so the
-    // helper can read the current session name + the session list.
-    const state = await sessionState();
-    await browser.tabs.update(tab.id, {
-      url: CC_URL + "#lfc=sessionState." + b64utf8(JSON.stringify(state)) + "." + (arg || "")
-    });
-    return;
+    // Round-trip for the chrome helper's status bar: the fresh summary.
+    return sessionState();
   }
   if (action === "sessionTabs") {
-    // Round-trip for the chrome helper's sessions popup right pane: reply with
-    // the requested session's tabs and let the helper remove the tab.
-    // arg is "<encoded name>.<nonce>" (name may contain dots, so split from
-    // the right on the nonce).
-    const dot = (arg || "").lastIndexOf(".");
-    const name = dot < 0 ? decodeURIComponent(arg || "") : decodeURIComponent((arg || "").slice(0, dot));
-    const nonce = dot < 0 ? "" : (arg || "").slice(dot + 1);
-    const items = await sessionTabs(name);
-    await browser.tabs.update(tab.id, {
-      url: CC_URL + "#lfc=sessionTabs." + b64utf8(JSON.stringify(items)) + "." + nonce
-    });
-    return;
+    // Round-trip for the chrome helper's sessions popup right pane.
+    return sessionTabs(String(arg || ""));
   }
   if (action === "saveSession") {
-    await saveSession(decodeURIComponent(arg || ""));
-    return;
+    await saveSession(String(arg || ""));
+    return null;
   }
   if (action === "newSession") {
-    await newSession(decodeURIComponent(arg || ""));
-    return;
+    await newSession(String(arg || ""));
+    return null;
   }
   if (action === "restoreSession") {
-    await restoreSession(decodeURIComponent(arg || ""));
-    return;
+    await restoreSession(String(arg || ""));
+    return null;
   }
   if (action === "alternateTab") {
     await alternateTabOp();
-    return;
+    return null;
   }
   if (action === "restoreClosedTab") {
-    await restoreClosedTab(decodeURIComponent(arg || ""));
-    return;
+    await restoreClosedTab(String(arg || ""));
+    return null;
   }
   if (action === "restoreAllClosed") {
     await restoreAllClosedTabs();
-    return;
+    return null;
   }
   if (action === "recentlyClosed") {
-    // Reply channel for the chrome helper's recently-closed popup (mirrors
-    // sessionTabs): write the rows into the tab's hash; the chrome helper
-    // removes the tab after reading it.
-    const items = await recentlyClosed();
-    await browser.tabs.update(tab.id, {
-      url: CC_URL + "#lfc=recentlyClosed." + b64utf8(JSON.stringify(items)) + "." + (arg || "")
-    });
-    return;
+    // Reply for the chrome helper's recently-closed popup.
+    return recentlyClosed();
   }
   if (action === "removeHistory") {
-    await removeHistory(decodeURIComponent(arg || ""));
-    return;
+    await removeHistory(String(arg || ""));
+    return null;
   }
   if (action === "clearHistory") {
     await clearHistory();
-    return;
+    return null;
   }
   if (action === "deleteSession") {
-    await deleteSession(decodeURIComponent(arg || ""));
-    return;
+    await deleteSession(String(arg || ""));
+    return null;
   }
   if (action === "switchSessionByMarker") {
-    await switchSessionByMarker(parseInt(arg || "0", 10));
-    return;
+    await switchSessionByMarker(parseInt(String(arg || "0"), 10));
+    return null;
   }
   if (action === "assignSessionMarker") {
-    const raw = decodeURIComponent(arg || "");
+    const raw = String(arg || "");
     const sep = raw.indexOf("\u0001");
     const nm = sep < 0 ? raw : raw.slice(0, sep);
     const mk = sep < 0 ? 0 : parseInt(raw.slice(sep + 1), 10);
     await assignSessionMarker(nm, mk);
-    return;
+    return null;
   }
   if (action === "sessionTabCopy" || action === "sessionTabMove") {
-    const raw = decodeURIComponent(arg || "");
+    const raw = String(arg || "");
     const p1 = raw.indexOf("\u0001");
     const p2 = p1 < 0 ? -1 : raw.indexOf("\u0001", p1 + 1);
     const from = p1 < 0 ? raw : raw.slice(0, p1);
     const idx = p1 < 0 ? -1 : p2 < 0 ? parseInt(raw.slice(p1 + 1), 10) : parseInt(raw.slice(p1 + 1, p2), 10);
     const to = p2 < 0 ? "" : raw.slice(p2 + 1);
     await moveTabBetweenSessions(from, idx, to, action === "sessionTabCopy" ? "copy" : "move");
-    return;
+    return null;
   }
   if (action === "quit") {
     await quitBrowser();
-    return;
+    return null;
   }
+  return null;
 }
-
-browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
-  if (info.status !== "complete" || !tab || !tab.url) return;
-  if (stripHash(tab.url) !== CC_URL) return;
-  const m = /#lfc=req[.]([a-zA-Z]+)(?:[.]([^#]*))?$/.exec(tab.url);
-  if (!m) return;
-  // sessionState, sessionTabs and stealthOpen write their reply into the tab's
-  // hash and let the chrome helper remove the tab after reading it.
-  const keepOpen =
-    m[1] === "sessionState" ||
-    m[1] === "sessionTabs" ||
-    m[1] === "stealthOpen" ||
-    m[1] === "recentlyClosed";
-  handleReq(tab, m[1]!, m[2] || "")
-    .catch(() => {})
-    .then(() => {
-      if (!keepOpen) return browser.tabs.remove(tabId).catch(() => {});
-    });
-});
 
 browser.tabs.onActivated.addListener((info: any) => {
   if (isRestoring()) return;
@@ -959,3 +1041,8 @@ bindChromeHooks({ requestChrome, pushSessionState: pushSessionStateToChrome });
 
 // Warm the wasm core for the first URL suggestion.
 void ensureCore().catch(() => {});
+
+// Dev-only smoke test: log the native host's diag once (a working host shows
+// up in the console; absence is a silent no-op — the host is optional, and
+// AMO/store installs without the installer's host step must degrade cleanly).
+probeHostOnce();

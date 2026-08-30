@@ -1,0 +1,6 @@
+This directory holds the staged native messaging host binaries
+(payload/native-host/<goos>/lazyfox-host[.exe]) populated by build.mjs /
+scripts/build-dev-installers.mjs right before compiling each installer
+binary. The binaries themselves are gitignored (see .gitignore); this
+placeholder exists so `go:embed payload/native-host` in payload.go compiles
+even in a fresh clone with no staged payload.

@@ -1,9 +1,15 @@
+<p align="center">
+  <img alt="Lazyfox" src="docs/img/lazyfox-logo.svg" width="640">
+</p>
+
 # Lazyfox
 
 **Firefox with the browsing UI stripped away — everything behind one key: `;`.**
 
-![license](https://img.shields.io/badge/license-MIT-blue)
-![firefox](https://img.shields.io/badge/firefox-Developer%20Edition%20%7C%20Nightly-orange)
+<p align="center">
+  <img alt="license MIT" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="Firefox Developer Edition | Nightly" src="https://img.shields.io/badge/firefox-Developer%20Edition%20%7C%20Nightly-orange">
+</p>
 
 Lazyfox hides the tab strip, the URL bar and the menus. Your page gets the
 whole window, with a slim status bar along the bottom that tells you where you
@@ -96,9 +102,10 @@ dependencies**: no repo checkout, no `dist/`, no Go toolchain, no npm, no
 payload otherwise. To rebuild the binaries yourself:
 
 ```
-npm run build            # full build: wasm, bundles, signed xpi, all binaries
-npm run build:installer  # build only the host rebuild of installer/bin/lazyfox-install
-installer/bin/lazyfox-install            # interactive wizard
+npm run build            # dev build: wasm, bundles, unsigned xpi (fast, no AMO)
+npm run build:release    # release build: signed xpi + all release installer binaries
+installer/bin/lazyfox-install-linux / -darwin / -windows.exe   # use the per-OS binary
+installer/bin/lazyfox-install            # interactive wizard (host form)
 installer/bin/lazyfox-install --mode list
 installer/bin/lazyfox-install --mode install --profile "…" --firefox-dir "…"
 installer/bin/lazyfox-install --mode uninstall --profile "…"
@@ -320,32 +327,32 @@ is committed, so installing never needs the toolchain — change source, run
 
 ```bash
 npm install        # esbuild + typescript
-npm run build      # builds the wasm, bundles src/ into dist/, and rebuilds
-                   # the self-contained installer binaries (payloads embedded)
+npm run build      # dev build (default): wasm, bundles, unsigned xpi — fast, no AMO
+npm run verify     # typecheck + full test suite, in one shot
 npm run typecheck  # tsc --noEmit
 npm test           # go test ./core/ + installer tests + dist/ completeness
 ```
 
+**Dev vs signed builds.** Lazyfox has two build modes, and they are not the
+same command:
+
+- `npm run build` produces the **unsigned** dev build (`__DEV__=true` bundles
+  and an unsigned xpi) — the fast daily loop, no AMO involvement.
+- `npm run build:release` produces the **signed** release: it synchs the
+  AMO-signed xpi from addons.mozilla.org (via `scripts/sync-signed-xpi.mjs`)
+  and rebuilds the per-OS release installer binaries that embed it.
+
 **Signing.** Stable Firefox rejects unsigned add-ons, so the shipped xpi is the
-**signed** one from addons.mozilla.org. `npm run build` embeds `dist/lazyfox2-<version>.xpi`
-into the installer binaries; `scripts/amo-sign.mjs` produces it:
+**signed** one from addons.mozilla.org. `npm run build:release` embeds
+`dist/lazyfox2-<version>.xpi` into the release installer binaries. The release
+command is deterministic about the version (it always comes from
+`dist/extension/manifest.json`) and refuses to fake or guess a signed xpi: it
+reuses the committed signed artifact when it is already current, otherwise it
+downloads the exact version from AMO (needs `AMO_API_KEY`/`AMO_API_SECRET`).
 
-- If that version's signed xpi already exists and is current, it is **reused**
-  (the build is fully offline — this is the normal case after a signed xpi has
-  been committed).
-- Only when you **bump `dist/extension/manifest.json`** to a new version does it
-  submit to AMO for a fresh signature and download the signed xpi. That path
-  needs `AMO_API_KEY`/`AMO_API_SECRET` and requires the new version not already
-  exist on AMO. Re-running with no version bump never re-signs, so you are not
-  signing on every build.
-
-AMO signs **listed** (store) versions only after their human review passes. If
-a version is submitted but still pending review, `amo-sign.mjs` falls back to
-the most recent committed signed xpi (printing a clear warning) so the build,
-tests and executables keep working. To swap in the freshly signed xpi once AMO
-approves, download the signed file from that version on AMO to
-`dist/lazyfox2-<version>.xpi`, then re-run `npm run build` — the version check
-then matches and the new signed xpi is embedded and the release refreshed.
+The release loop is documented in `docs/RELEASING.md`. If a version was
+already submitted to AMO and is still pending review, run the release build
+again once it is reviewed/signed so the freshly approved xpi is synced down.
 
 ```
 

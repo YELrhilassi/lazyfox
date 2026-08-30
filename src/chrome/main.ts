@@ -89,6 +89,9 @@ import { createTypingChannel } from "./typing";
       isFullscreen: () => status.isFullscreen(),
       activeSplitView: () => split.activeSplitView(),
       cfg: () => cfg,
+      // The persistent relay's helper-side state (found window, ready flag)
+      // so the harness can verify the bridge is up.
+      relay: () => channel.relayDebug(),
     }),
   });
 
@@ -217,10 +220,10 @@ import { createTypingChannel } from "./typing";
   function announceChromeAlive(): void {
     if (announcedAlive) return;
     if (!channel.ccBaseUrl()) return; // extension not ready yet; poll retries
-    // requestBg reports whether the announce tab was actually created. Only a
-    // real success stops the retries: a swallowed failure would leave
-    // chromeAlive false forever, and every restored web page would draw its
-    // own content bar on top of the window-level one.
+    // requestBg reports whether the request was accepted by the persistent
+    // relay. Only a real success stops the retries: a swallowed failure would
+    // leave chromeAlive false forever, and every restored web page would draw
+    // its own content bar on top of the window-level one.
     announcedAlive = channel.requestBg("alive");
   }
   announceChromeAlive();
@@ -231,9 +234,12 @@ import { createTypingChannel } from "./typing";
   status.compute();
   // Poll every 500ms so the bar hides the moment content enters DOM fullscreen
   // (video) — only a poll catches that attribute transition reliably.
-  // status.update is idempotent and cheap.
+  // status.update is idempotent and cheap. startRelay() keeps the relay tab
+  // alive: the announce creates it, and if the relay ever dies (tab closed,
+  // window rebuilt) this re-creates it within half a second.
   setInterval(() => {
     announceChromeAlive(); // once the extension URL resolves, tell it we're here
+    channel.startRelay();
     status.update();
     status.compute();
   }, 500);

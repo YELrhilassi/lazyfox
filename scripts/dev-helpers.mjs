@@ -103,7 +103,7 @@ export function findFirefoxDir() {
 // The 'different dev installer' decision: devs get a dev installer whose
 // embedded extension payload is the UNSIGNED xpi (versus the release
 // lazyfox-install-* binaries, which embed the AMO-signed build). Ship/dev
-// installers are built by `npm run build:dev:installers` into the COMMITTED
+// installers are rebuilt by `npm run build:installers` into the COMMITTED
 // per-OS binaries below, so a fresh clone has a working dev installer with no
 // Go toolchain. This helper returns the committed dev binary for the current
 // platform, or (for an uncovered platform) builds a host-form fallback
@@ -146,7 +146,7 @@ export function ensureDevInstaller(root, { rebuild = false, xpi = null } = {}) {
   mkdirSync(extDst, { recursive: true });
   const extSrc = xpi || latestUnsignedXpi(join(root, 'dist'));
   if (!extSrc || !existsSync(extSrc)) {
-    throw new Error(`ensureDevInstaller: no xpi to embed (${extSrc || 'none'}) — run npm run build:dev first`);
+    throw new Error(`ensureDevInstaller: no xpi to embed (${extSrc || 'none'}) — run npm run build first`);
   }
   cpSync(extSrc, join(extDst, 'lazyfox2.xpi'));
 

@@ -1,0 +1,5 @@
+# Staged per-OS native host binaries (populated by build.mjs /
+# scripts/build-dev-installers.mjs before compiling). Keep PLACEHOLDER.
+/linux/
+/darwin/
+/windows/

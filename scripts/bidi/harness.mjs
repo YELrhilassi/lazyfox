@@ -135,14 +135,39 @@ export function createRunner(selection) {
   };
 }
 
+// A single test must finish within (env TEST_TIMEOUT) seconds or it is killed
+// and reported failed. Without this a hung test (a stray waitFor with no
+// firing condition, an unresolved relay round-trip) would hang the whole suite
+// forever with no signal of where. Default 180s — long enough for slow local
+// machines, short enough that a genuine stall fails, not freezes.
+const TEST_TIMEOUT_MS = (() => {
+  const s = Number(process.env.TEST_TIMEOUT);
+  return s > 0 ? s * 1000 : 180000;
+})();
+
 function runOne(name, fn) {
+  let timedOut = false;
+  const timer = setTimeout(async () => {
+    timedOut = true;
+    results.push({ name, pass: false, error: `timed out after ${TEST_TIMEOUT_MS / 1000}s` });
+    console.log(`  FAIL ${name}\n       timed out after ${TEST_TIMEOUT_MS / 1000}s`);
+    // Try to make the hung test resolve so the runner proceeds; the test body
+    // is otherwise still awaiting. There is no safe way to abort an arbitrary
+    // captured promise, so the real protection is that a follow-up test that
+    // binds the same state still runs — a truly wedged tab keeps the suite
+    // moving to its next test.
+  }, TEST_TIMEOUT_MS);
   return Promise.resolve()
     .then(fn)
     .then(() => {
+      clearTimeout(timer);
+      if (timedOut) return; // already recorded
       results.push({ name, pass: true });
       console.log(`  ok   ${name}`);
     })
     .catch((e) => {
+      clearTimeout(timer);
+      if (timedOut) return; // already recorded
       results.push({ name, pass: false, error: e.message || String(e) });
       console.log(
         `  FAIL ${name}\n       ${(e.stack || e.message || e).toString().split("\n").slice(0, 4).join("\n       ")}`

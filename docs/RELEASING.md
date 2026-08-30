@@ -2,9 +2,10 @@
 
 This repo has two long-lived branches that own different adds:
 
-- **`dev-nightly`** — the latest **unsigned** build. The `build:dev` flow
-  produces an unsigned xpi that devs install straight into Firefox
-  Nightly/Developer Edition (a persistent install, no manual “Add” click).
+- **`dev-nightly`** — the latest **unsigned** build. `npm run build` produces
+  an unsigned xpi that devs install straight into Firefox
+  Nightly/Developer Edition (`npm run install` — a persistent install, no manual
+  “Add” click).
 - **`master`** — the **last AMO-signed** version. Regular users and GitHub
   Releases use master.
 
@@ -15,8 +16,9 @@ This repo has two long-lived branches that own different adds:
 
 ## The release loop
 
-1. **Develop on `dev-nightly`.** `npm run build:dev` builds an unsigned xpi and
-   `npm run build:dev:clean` installs it persistently into Nightly/Devedition.
+1. **Develop on `dev-nightly`.** `npm run build` builds an unsigned xpi and
+   `npm run install` (or `npm run install:clean` to wipe stale dev profiles
+   first) installs it persistently into Nightly/Devedition.
 2. When the next version is stable, **bump `dist/extension/manifest.json`** on
    `dev-nightly` (e.g. to `0.5.4`). Development now targets that “next” version.
 3. **Publish from `dev-nightly`**: `node scripts/amo-sign.mjs` submits that
@@ -58,8 +60,7 @@ hardcoded versions.
 ## Signing vs. syncing
 
 - `scripts/amo-sign.mjs` — **submits a new version** to AMO and downloads the
-  freshly signed xpi. Used by `npm run build` (development convenience) and by
-  step 3 above.
+  freshly signed xpi. Used by step 3 above.
 - `scripts/sync-signed-xpi.mjs` — **downloads the signed xpi for an exact,
   already-submitted version** and writes both the plain and `-signed` artifacts.
   Used by the master workflow (`RELEASE=1`). It is deterministic: it reuses the
@@ -73,25 +74,28 @@ different extension payloads:
 
 | Family | Binary names | Embedded payload | Built by |
 |--------|--------------|------------------|----------|
-| **Release** | `lazyfox-install-{linux,darwin,windows.exe}` | AMO-**signed** xpi | `npm run build` / `npm run build:release` |
-| **Dev** | `lazyfox-install-dev-{linux,darwin,windows.exe}` | **unsigned** xpi | `npm run build:dev:installers` |
+| **Release** | `lazyfox-install-{linux,darwin,windows.exe}` | AMO-**signed** xpi | `npm run build:release` |
+| **Dev** | `lazyfox-install-dev-{linux,darwin,windows.exe}` | **unsigned** xpi | `npm run build:installers` |
 
 The dev binaries are committed (like the release ones), so a fresh clone has a
 working dev installer with no Go toolchain. Dev scripts call
 `ensureDevInstaller()` which resolves the committed per-OS dev binary for the
 current platform, only building a host-form fallback on an uncovered host.
 
-## CLI: `npm run build:*`
+## CLI reference
 
 | Script | Output |
 |--------|--------|
-| `npm run build` | Prod build (sign via `amo-sign.mjs`), rebuild the 3 per-OS release installer binaries (`lazyfox-install-*`). |
-| `npm run build:release` | Same but with `RELEASE=1` — syncs the AMO-signed xpi down instead of signing (used by master). |
-| `npm run build:dev` | Unsigned xpi + dev bundles; **skips** AMO signing and installer rebuild for a fast dev loop. |
-| `npm run build:dev:installers` | Rebuild the 3 per-OS **dev** installer binaries (`lazyfox-install-dev-*`, unsigned embed). |
-| `npm run build:dev:clean` | Fresh dev build + persistent install into Nightly/Devedition (+ default profile). |
-| `npm run build:installer` | Rebuild the host `installer/bin/lazyfox-install` binary. |
+| `npm run build` | **Dev** build (default): wasm + bundles + unsigned xpi; fast, no AMO. |
+| `npm run build:release` | **Signed** release: syncs the AMO-signed xpi down (via `sync-signed-xpi.mjs`), rebuilds the 3 per-OS release installer binaries (`lazyfox-install-*`). Used by master CI. |
+| `npm run build:installers` | Rebuild the 3 per-OS **dev** installer binaries (`lazyfox-install-dev-*`, unsigned embed). |
+| `npm run install` | Build + install the fresh dev build into Nightly/Devedition (new profile, default-profile set). |
+| `npm run install:clean` | Same as `install`, but first wipes stale dev profiles. |
+| `npm run clean` | Remove regenerable build products (wasm, wasm embed, staged payloads) so the next build is a full rebuild. |
+| `npm run verify` | `typecheck` + full `test` suite, in one shot. |
+| `npm run typecheck` | `tsc --noEmit`. |
+| `npm run test` | Go core tests + installer tests + dist completeness. |
 
-**Dev install flow:** `npm run build:dev && npm run build:dev:installers` (or just
-`npm run build:dev:clean`, which resolves the committed dev binary for your
-platform and does the install).
+**Dev install flow:** `npm run install` (or `npm run install:clean`), which
+builds the unsigned xpi and installs it, resolving the committed dev installer
+binary for your platform.

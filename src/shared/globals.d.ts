@@ -3,8 +3,8 @@
 // a faithful port of working JS and the priority is correct runtime behavior,
 // not exhaustively-checked API surfaces.
 
-// Build-time flag injected by esbuild's `define` (true for `npm run build:dev`,
-// false for `npm run build`). Source sites MUST read `__DEV__` directly (not via
+// Build-time flag injected by esbuild's `define` (true for `npm run build`,
+// false for `npm run build:release`). Source sites MUST read `__DEV__` directly (not via
 // isDev()/dbg() wrappers) so esbuild can fold `if (!__DEV__) return;` /
 // `if (__DEV__) { ... }` against the literal `false` and tree-shake debug code
 // (and the dbg() function itself) out of the production bundle entirely.

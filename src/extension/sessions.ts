@@ -22,7 +22,9 @@ const MAX_SESSION_MARKER = 9;
 
 // Chrome-helper hooks, injected by the background entry point.
 type ChromeHooks = {
-  requestChrome: (action: string, arg?: string) => void;
+  // `arg` may be any structured-cloneable value (the relay delivers objects
+  // as objects); restoreSplits passes a JSON string.
+  requestChrome: (action: string, arg?: any) => void;
   pushSessionState: () => void;
 };
 let requestChrome: ChromeHooks["requestChrome"] = () => {};

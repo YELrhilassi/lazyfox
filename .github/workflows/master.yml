@@ -39,10 +39,9 @@ jobs:
 
       - name: Build extension (release, sync AMO-signed xpi)
         env:
-          RELEASE: "1"
           AMO_API_KEY: ${{ secrets.AMO_API_KEY }}
           AMO_API_SECRET: ${{ secrets.AMO_API_SECRET }}
-        run: npm run build
+        run: npm run build:release
 
       - name: Derive version
         id: version

@@ -229,8 +229,17 @@ export function createCtx(runtime) {
     // Strip the reply hash so the probe tab no longer looks like an #lfc=
     // transient: the tabs popup's listTabs skips #lfc= tabs, so a dirty probe
     // would vanish from the tab list and break arrow navigation (only one row).
+    const _probeUrl = await evalIn(ctx.probe, `location.href`).catch(() => "?");
     await evalIn(ctx.probe, `history.replaceState(null, "", location.href.split("#")[0]); true`).catch(() => {});
-    if (ok !== true) throw new Error("sendKeys: no ok reply");
+    if (ok !== true) {
+      const m = /#lfc=keys\.(ok|err)\.([^.]*)\.([^#]*)$/.exec(_probeUrl || "");
+      if (m && m[1] === "err" && m[2]) {
+        let msg = m[2];
+        try { msg = Buffer.from(m[2], "base64").toString("utf8"); } catch (e) {}
+        throw new Error("sendKeys: keys.err: " + msg);
+      }
+      throw new Error("sendKeys: no ok reply (got " + (m ? "keys." + m[1] : "no keys reply; url=" + String(_probeUrl).slice(0, 120)) + ")");
+    }
   };
 
   ctx.press = async function press(tab, key, opts = {}) {
@@ -262,9 +271,19 @@ export function createCtx(runtime) {
     await sleep(250);
   };
 
+  // Is this a REAL user tab (as the product itself numbers them)? Internal
+  // plumbing — the split-panel companion pane, throwaway #lfc= request
+  // relays, and the persistent relay.html bridge — never counts as a tab.
+  ctx.isRealTab = (t) => {
+    const u = (t && t.url) || "";
+    return !u.includes("splitpanel.html") && !u.includes("#lfc=") && !u.includes("relay.html");
+  };
+
   ctx.tabCount = async function tabCount() {
     const t = await getTree();
-    return contextsOf(t).length;
+    // The persistent relay tab (relay.html) is invisible plumbing: it exists
+    // in the browsing-context tree even when hidden, so count only real tabs.
+    return contextsOf(t).filter((c) => ctx.isRealTab(c)).length;
   };
 
   ctx.hasHost = function hasHost(tab, id) {
