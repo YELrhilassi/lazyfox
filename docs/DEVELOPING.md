@@ -86,6 +86,8 @@ That's why there are two installer families in `installer/bin/`:
 | `build:installers` | rebuild the portable dev installer binaries |
 | `install` / `install:clean` | build + install into Nightly/Dev |
 | `ci` / `ci:bidi` | run the local CI (universal pre-push check) |
+| `bidi` | run the WebDriver end-to-end suite (extension only) |
+| `probe:chrome` | probe the real chrome helper (status bar / relay / leader) |
 | `clean` | wipe regenerable build products |
 | `verify` / `test` / `typecheck` | run the test suites / typecheck |
 

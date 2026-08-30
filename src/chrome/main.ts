@@ -220,10 +220,14 @@ import { createTypingChannel } from "./typing";
   function announceChromeAlive(): void {
     if (announcedAlive) return;
     if (!channel.ccBaseUrl()) return; // extension not ready yet; poll retries
-    // requestBg reports whether the request was accepted by the persistent
-    // relay. Only a real success stops the retries: a swallowed failure would
-    // leave chromeAlive false forever, and every restored web page would draw
-    // its own content bar on top of the window-level one.
+    // Only latch once the relay has actually connected AND the "alive"
+    // request is really being delivered, not merely queued (a cold-start
+    // drop would leave chromeAlive=false forever, and every restored web page
+    // would draw its own content bar on top of the window-level one). requestBg
+    // returns true as soon as the request is accepted, so gate on relayReady()
+    // to mean "posted to a live port that will reach the background". The
+    // port remains live after first connect, so this is a one-time event.
+    if (!channel.relayReady()) return; // relay not connected yet; keep retrying
     announcedAlive = channel.requestBg("alive");
   }
   announceChromeAlive();

@@ -32,6 +32,23 @@ npm run ci:bidi                                   # adds the WebDriver BiDi suit
 Set `BIDI_FIREFOX_BIN=/path/to/firefox` (and it auto-uses `.tools/geckodriver`)
 when you want the browser-session tests included.
 
+### Testing the real chrome layer (the production bugs live here)
+
+The BiDi suites only install the *extension*. The chrome helper — which draws
+the window-level status bar, owns the leader key and runs the relay — is a
+separate install-dir script (`userChrome.uc.js` via the fx-autoconfig loader)
+and is exactly where the tab-churn / double-status-bar bugs live. To probe it:
+
+```bash
+npm run probe:chrome
+```
+
+This boots a real Firefox profile with the full chrome layer and asks the
+helper for its live state (`#lfc=state`). It reports, with a clear pass/fail
+verdict, whether the helper booted, whether the status bar is mounted, how many
+relay tabs exist (1 = healthy, more = relay churn), and the leader state. Run it
+after any edit under `src/chrome/`.
+
 ## The tools (Void Linux)
 
 Install once with:

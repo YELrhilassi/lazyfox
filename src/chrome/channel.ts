@@ -63,6 +63,13 @@ export interface Channel {
   // Fire-and-forget request to the background (the alive announce, session
   // ops, ...). Returns whether the request was accepted by the relay.
   requestBg(action: string, arg?: string): boolean;
+  // True once the relay has actually connected its port (ready), i.e.
+  // requestBg is being delivered rather than buffered. Callers use this to
+  // decide whether a fire-and-forget request actually reached the background
+  // (the alive announce must only latch when the message was REALLY delivered,
+  // not merely queued — otherwise a cold-start drop leaves chromeAlive false
+  // forever and content scripts keep drawing a second status bar).
+  relayReady(): boolean;
   // Request with a reply (the background's response resolves the promise).
   // Resolves null on timeout / relay failure — callers must tolerate that.
   requestReply(action: string, arg?: string): Promise<any>;
@@ -125,15 +132,11 @@ export function createChannel(deps: ChannelDeps): Channel {
   // from the tab on every use — never cached from creation time.
   const relayBrowsers = new Set<any>();
 
-  function findRelayWindow(): any {
-    // Prune browsers whose tab is gone (a relay recreated after a death).
-    for (const b of relayBrowsers) {
-      try {
-        if (!window.gBrowser.tabs.some((t: any) => t.linkedBrowser === b)) relayBrowsers.delete(b);
-      } catch (e) {
-        relayBrowsers.delete(b);
-      }
-    }
+  // Any live <browser> in this window whose tab is a relay page — the one true
+  // answer to "do we already have a relay?", regardless of which side created
+  // it (chrome helper via addTab, or the background via browser.tabs.create).
+  // Returns { browser, tab } or null.
+  function findRelayTab(): { browser: any; tab: any } | null {
     try {
       for (const t of window.gBrowser.tabs) {
         const b = t.linkedBrowser;
@@ -147,7 +150,10 @@ export function createChannel(deps: ChannelDeps): Channel {
         // A relay tab created a moment ago may still show about:blank; the
         // created-browsers set covers that window.
         if (!isRelay && relayBrowsers.has(b)) isRelay = true;
-        if (isRelay) return b.contentWindow;
+        if (!isRelay) continue;
+        // A relay must carry the extension's page (never a stale leftover);
+        // check the created set OR a committed relay URL.
+        return { browser: b, tab: t };
       }
     } catch (e) {
       // ignore
@@ -155,7 +161,28 @@ export function createChannel(deps: ChannelDeps): Channel {
     return null;
   }
 
+  function findRelayWindow(): any {
+    // Prune browsers whose tab is gone (a relay recreated after a death).
+    for (const b of relayBrowsers) {
+      try {
+        if (!window.gBrowser.tabs.some((t: any) => t.linkedBrowser === b)) relayBrowsers.delete(b);
+      } catch (e) {
+        relayBrowsers.delete(b);
+      }
+    }
+    const r = findRelayTab();
+    if (!r) return null;
+    relayBrowsers.add(r.browser);
+    return r.browser.contentWindow;
+  }
+
   function createRelayTab(): void {
+    // One relay per window, ever: if a relay already exists (helper-created or
+    // background-created), never add another. Before this guard, a 500ms poll
+    // that ran before the first relay's page committed (currentURI was still
+    // about:blank) could spawn a duplicate relay tab every tick — the "tabs
+    // flashing open and closed" + one content process per stray tab.
+    if (findRelayTab()) return;
     const base = ccBaseUrl();
     if (!base) return;
     try {
@@ -743,5 +770,6 @@ export function createChannel(deps: ChannelDeps): Channel {
     setHash,
     handleLfc,
     relayDebug,
+    relayReady: () => relayReady,
   };
 }
