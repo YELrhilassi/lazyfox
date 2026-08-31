@@ -16,6 +16,29 @@ user_pref("browser.newtabpage.activity-stream.improvesearch.handoffToAwesomebar"
 user_pref("lazyfox.hoverReveal", true);
 user_pref("browser.tabs.splitView.enabled", true);
 
+// Lazyfox's vim keys / link hints / leader must work on EVERY page, including
+// Mozilla's own. Firefox blocks content scripts on a set of "restricted"
+// domains (addons.mozilla.org, accounts.firefox.com, ...) — no manifest key
+// can opt a single add-on out. Two settings unblock them:
+// 1) The restricted-domains pref (empty string = no restricted domains).
+// 2) addons.mozilla.org is ALSO hardcoded as an add-on site in the C++
+//    (AddonManagerWebAPI::IsValidHost — the host that powers the
+//    navigator.mozAddonManager API), which the pref above does NOT cover.
+//    The only switch is the hidden pref that disables mozAddonManager
+//    entirely (what Tor Browser ships); with it disabled AMO is no longer a
+//    valid add-on site and content scripts are allowed there.
+user_pref("extensions.webextensions.restrictedDomains", "");
+user_pref("privacy.resistFingerprinting.block_mozAddonManager", true);
+
+// Run extension pages in the SAME process as the browser chrome. Lazyfox's
+// chrome helper owns the leader / popups / ;f hints on the command-center
+// page and reads its DOM through selectedBrowser.contentWindow — that only
+// works when the extension page is in-process. Firefox's default (OOP
+// extension pages) makes the home page unreachable from the helper, so ;f /
+// key routing silently fail. Forcing in-process matches exactly what the
+// BiDi suite exercises.
+user_pref("extensions.webextensions.remote", false);
+
 // Dark mode — Lazyfox is a dark, keyboard-first UI; force it for both the
 // browser chrome and web content regardless of the OS theme.
 user_pref("ui.systemUsesDarkTheme", 1);

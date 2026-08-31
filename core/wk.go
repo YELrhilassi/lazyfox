@@ -1,14 +1,15 @@
 package core
 
-// Which-key layout. The overlay is a compact multi-column reminder, not a
-// blocker: every Lazyfox binding is shown at once (a single page), organized
-// under group headings, and the popup scrolls if the window is short. All the
+// Which-key pagination. The overlay is a compact multi-column reminder, not a
+// blocker: pages hold a few complete groups each (a page never splits a group
+// mid-way, so the headings stay readable) and Tab flips between them. All the
 // page math lives here so the chrome helper and the content script cannot
-// drift; wkPerPage is effectively unbounded so one page always holds the whole
-// table (the pagination API stays so flipping remains a no-op instead of a
-// footgun).
+// drift.
 
-const wkPerPage = 99
+// Row budget per page. Chosen so the common group sizes pack into whole
+// groups: Tabs(10)+Navigation(8) fill one page, Open(9)+Tools(9) the next,
+// Sessions(12) its own — three tidy pages.
+const wkPerPage = 18
 
 type WkRow struct {
 	Key        string
@@ -42,12 +43,45 @@ func lazyBindings() []WkItem {
 	return out
 }
 
-func WkPageCount() int {
-	n := len(lazyBindings())
-	if n == 0 {
-		return 1
+// wkGroups returns the item index range of each group, in order.
+func wkGroups() [][2]int {
+	flat := lazyBindings()
+	var out [][2]int
+	start := 0
+	for i := 1; i <= len(flat); i++ {
+		if i == len(flat) || flat[i].Group != flat[i-1].Group {
+			out = append(out, [2]int{start, i})
+			start = i
+		}
 	}
-	return (n + wkPerPage - 1) / wkPerPage
+	return out
+}
+
+// wkPageRanges packs whole groups into pages of at most wkPerPage items. A
+// group is never split across pages, so every page starts at a group heading.
+func wkPageRanges() [][2]int {
+	groups := wkGroups()
+	if len(groups) == 0 {
+		return [][2]int{{0, 0}}
+	}
+	var out [][2]int
+	start := groups[0][0]
+	used := 0
+	for _, g := range groups {
+		size := g[1] - g[0]
+		if used > 0 && used+size > wkPerPage {
+			out = append(out, [2]int{start, g[0]})
+			start = g[0]
+			used = 0
+		}
+		used += size
+	}
+	out = append(out, [2]int{start, groups[len(groups)-1][1]})
+	return out
+}
+
+func WkPageCount() int {
+	return len(wkPageRanges())
 }
 
 // WkPageSlice renders one page of the overlay (lazy bindings only). GroupStart
@@ -55,29 +89,24 @@ func WkPageCount() int {
 // among runnable items (identical to the row index, since flat is lazy-only).
 func WkPageSlice(page int) WkPage {
 	flat := lazyBindings()
-	n := len(flat)
-	total := WkPageCount()
+	ranges := wkPageRanges()
+	total := len(ranges)
 	if page < 0 {
 		page = 0
 	}
 	if page >= total {
 		page = total - 1
 	}
-	start := page * wkPerPage
-	end := start + wkPerPage
-	if end > n {
-		end = n
-	}
 	var rows []WkRow
 	first, last := -1, -1
-	for i := start; i < end; i++ {
+	for i := ranges[page][0]; i < ranges[page][1] && i < len(flat); i++ {
 		it := flat[i]
 		li := i
 		if first < 0 {
 			first = li
 		}
 		last = li
-		groupStart := i == start || flat[i-1].Group != it.Group
+		groupStart := i == ranges[page][0] || flat[i-1].Group != it.Group
 		rows = append(rows, WkRow{
 			Key:        it.Key,
 			Label:      it.Label,
