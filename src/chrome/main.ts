@@ -25,7 +25,7 @@ import { createTypingChannel } from "./typing";
   // Version of the chrome helper (userChrome.uc.js) shipped by the installer.
   // Announced to the extension's background with the alive ping and shown on
   // the options Components panel. Tracks the release; bump with each release.
-  const CHROME_HELPER_VERSION = "0.5.6";
+  const CHROME_HELPER_VERSION = "0.5.7";
 
   // Profile directory leaf name (e.g. "65rp05zu.lfxdev-…"), announced with the
   // alive ping so the extension can show the ACTIVE profile in the command-
