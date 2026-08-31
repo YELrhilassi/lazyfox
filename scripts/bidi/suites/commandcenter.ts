@@ -376,6 +376,36 @@ export async function run(ctx) {
     assert(title === "HELLO PAGE", "hello page title, got " + title);
   });
 
+  await t("command center url mode: about: pages open on Enter", async () => {
+    // Regression: typing an about: URL in the home input and pressing Enter
+    // must open it (Firefox settings, Add-ons manager, ...). The suggestion
+    // row is the ABOUT_PAGES entry, and Enter must act on it / the typed
+    // value — never silently do nothing.
+    await ctx.openCC(ctx.tabA);
+    await ctx.press(ctx.tabA, "2"); // url mode
+    await ctx.press(ctx.tabA, "i");
+    await ctx.typeIn(ctx.tabA, "about:preferences");
+    await waitFor(async () => {
+      const f = await ctx.ccFacts(ctx.tabA);
+      return f.results.some((r) => r.includes("Firefox settings") || r.includes("Open URL")) ? f : null;
+    }, 10000);
+    await ctx.press(ctx.tabA, "Enter");
+    // about: pages cannot be navigated via the tabs API, so openPage routes
+    // them through the chrome helper, which opens a NEW tab with the about:
+    // page (the CC tab itself reloads back to the home grid).
+    const landed = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const t = ts.find((x) => (x.url || "").indexOf("about:preferences") !== -1);
+      return t ? t : null;
+    }, 15000).catch(() => null);
+    assert(landed, "about:preferences opened in a tab, got " + JSON.stringify((await ctx.tabsInfo()).map((t) => t.url).slice(0, 5)));
+    // Close the settings tab so later tab-count tests stay stable, and return
+    // to the command center (its state was never touched by the open).
+    await evalIn(ctx.probe, `browser.tabs.remove(${landed.id}).catch(() => true); true`).catch(() => {});
+    await sleep(400);
+    await ctx.openCC(ctx.tabA);
+  });
+
   await t("command center tabs mode lists and switches tabs", async () => {
     await ctx.openCC(ctx.tabA);
     await ctx.press(ctx.tabA, "3");
