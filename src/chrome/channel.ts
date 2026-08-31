@@ -408,48 +408,72 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
   }
 
-  // The relay tab is invisible plumbing and must NEVER be the selected tab: a
-  // session restore recreates the previous relay tab as the LAST restored tab,
-  // Firefox selects the last restored tab, and the user is left staring at the
-  // blank relay page — with the tab strip hidden and no way to navigate out
-  // (the "blank page on startup" bug, worse when a prompt like the
-  // default-browser ask sits on the active tab). Steer back to a real tab.
-  function keepRelayUnselected(): void {
+  // Firefox may select the adjacent tab AFTER a close — which can be the
+  // hidden relay (blank, keys dead) or a wrapper still being torn down
+  // (blank gray content, nothing renderable). Never leave the user stranded:
+  // on the next tick, if the selected tab is not a real user tab, steer to
+  // the last real tab; if no real tab remains, open a fresh command-center
+  // tab so the window always has live content.
+  function ensureRealTabSelected(): void {
     try {
       const sel = window.gBrowser.selectedTab;
-      if (!sel) return;
-      let isRelay = false;
-      try {
-        isRelay = !!(
-          sel.linkedBrowser &&
-          sel.linkedBrowser.currentURI &&
-          sel.linkedBrowser.currentURI.spec.indexOf("relay.html") !== -1
-        );
-      } catch (e) {
-        // ignore
-      }
-      if (!isRelay) return;
       const real = Array.from(window.gBrowser.tabs).filter((t: any) => {
         try {
-          return !(
-            t.linkedBrowser &&
-            t.linkedBrowser.currentURI &&
-            t.linkedBrowser.currentURI.spec.indexOf("relay.html") !== -1
-          );
+          if (Cu && Cu.isDeadWrapper(t)) return false;
+          const spec =
+            t.linkedBrowser && t.linkedBrowser.currentURI
+              ? t.linkedBrowser.currentURI.spec
+              : "";
+          return spec.indexOf("relay.html") === -1;
         } catch (e) {
           return false;
         }
       });
-      if (real.length) window.gBrowser.selectedTab = real[real.length - 1];
+      if (!real.length) {
+        // All real tabs are gone (a force-closed last tab, a race): open a
+        // command center so the window is never a blank dead end.
+        try {
+          const base = ccBaseUrl();
+          if (base) {
+            const tab = window.gBrowser.addTab(base + "commandcenter.html", {
+              inBackground: false,
+              skipAnimation: true,
+              triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+            });
+            if (tab) window.gBrowser.selectedTab = tab;
+          }
+        } catch (e) {
+          // ignore
+        }
+        return;
+      }
+      let selBad = false;
+      try {
+        if (Cu && Cu.isDeadWrapper(sel)) selBad = true;
+      } catch (e) {
+        selBad = true;
+      }
+      if (!selBad) {
+        try {
+          const s =
+            sel && sel.linkedBrowser && sel.linkedBrowser.currentURI
+              ? sel.linkedBrowser.currentURI.spec
+              : "";
+          if (s.indexOf("relay.html") !== -1) selBad = true;
+        } catch (e) {
+          selBad = true;
+        }
+      }
+      if (selBad) window.gBrowser.selectedTab = real[real.length - 1];
     } catch (e) {
       // ignore
     }
   }
 
   // The 500ms poll alone leaves a window where the relay sits selected after
-  // Firefox auto-selects an adjacent tab on a close (the white flash). Hook
-  // the tab container so any selection/close of the relay is corrected on the
-  // same tick. Idempotent; guards against double-hooking.
+  // Firefox auto-selects an adjacent tab on a close (the white flash / blank
+  // dead end). Hook the tab container so selection is corrected on the same
+  // tick. Idempotent; guards against double-hooking.
   let tabEventsHooked = false;
   function hookTabSelectionGuard(): void {
     if (tabEventsHooked) return;
@@ -457,11 +481,12 @@ export function createChannel(deps: ChannelDeps): Channel {
     try {
       const container = window.gBrowser && window.gBrowser.tabContainer;
       if (!container) return;
-      container.addEventListener("TabSelect", () => keepRelayUnselected());
+      container.addEventListener("TabSelect", () => ensureRealTabSelected());
       container.addEventListener("TabClose", () => {
-        // Firefox may select the adjacent tab (possibly the relay) AFTER the
-        // close event; steer on the next tick once selection has settled.
-        setTimeout(() => keepRelayUnselected(), 0);
+        // Firefox may select the adjacent tab (possibly the relay or a dying
+        // wrapper) AFTER the close event; steer on the next tick once
+        // selection has settled.
+        setTimeout(() => ensureRealTabSelected(), 0);
       });
     } catch (e) {
       // ignore
@@ -479,7 +504,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
     relayReady = true;
     dedupeRelayTabs();
-    keepRelayUnselected();
+    ensureRealTabSelected();
     pollRelayUrl();
     return true;
   }
