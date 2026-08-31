@@ -30,6 +30,15 @@ user_pref("browser.tabs.splitView.enabled", true);
 user_pref("extensions.webextensions.restrictedDomains", "");
 user_pref("privacy.resistFingerprinting.block_mozAddonManager", true);
 
+// Run extension pages in the SAME process as the browser chrome. Lazyfox's
+// chrome helper owns the leader / popups / ;f hints on the command-center
+// page and reads its DOM through selectedBrowser.contentWindow — that only
+// works when the extension page is in-process. Firefox's default (OOP
+// extension pages) makes the home page unreachable from the helper, so ;f /
+// key routing silently fail. Forcing in-process matches exactly what the
+// BiDi suite exercises.
+user_pref("extensions.webextensions.remote", false);
+
 // Dark mode — Lazyfox is a dark, keyboard-first UI; force it for both the
 // browser chrome and web content regardless of the OS theme.
 user_pref("ui.systemUsesDarkTheme", 1);
