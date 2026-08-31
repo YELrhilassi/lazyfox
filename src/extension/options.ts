@@ -209,10 +209,10 @@ import type { QuickApp } from "../shared/types";
     }
   });
 
-  // Real extension icon in the settings header.
+  // Horizontal logo (icon + wordmark) in the settings header.
   try {
     const img = document.getElementById("logoImg") as HTMLImageElement;
-    img.src = browser.runtime.getURL("icons/icon96.png");
+    img.src = browser.runtime.getURL("lazyfox-logo.svg");
   } catch (e) {
     // ignore
   }

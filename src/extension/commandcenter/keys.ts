@@ -138,7 +138,14 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
       renderer.setMode(modeMap[k]);
       return;
     }
-    if (k === "w") renderer.toggleResize(true);
+    if (k === "f") {
+      // `;f` "find" on the home grid: focus the search box so typing filters
+      // the apps/browser tiles (link-hint `;f` targets page links, which do
+      // not exist on the chrome-extension command-center home — filtering is
+      // its home-page equivalent).
+      renderer.setStateTag("insert");
+      deps.focusInput();
+    } else if (k === "w") renderer.toggleResize(true);
     else if (k === "m") renderer.toggleMove(true);
     else if (k === "n") void send("newTab");
     else if (k === "x") closeTabConfirm();

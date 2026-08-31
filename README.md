@@ -146,11 +146,14 @@ The popup footer always shows the keys for what you're doing at the moment.
 ### The command center
 
 `Ctrl+T` (and the startup tab) opens the command center instead of a blank
-new-tab page. The input is focused immediately, so every key just types.
-`1`–`6` (or `Tab`) switch modes — Search · URL · Tabs · History · Bookmarks ·
-Downloads. In the list, `j`/`k` move up and down, `Enter` runs the selection,
-and `;` opens the leader menu from right here. Press `Esc` to leave the input,
-and the list responds to every key again.
+new-tab page. It is keyboard-first: the home grid shows your quick-launch web
+apps and the browser/settings access, and it opens in command mode —
+`h`/`j`/`k`/`l` (or the arrows) move across the tiles, `Enter` runs the
+selection, and `;` arms the leader right here (so `;I`, `;f`, `;n`, … all
+work with no mouse click). Type any letter and the input takes over for a
+search. `1`–`6` (or `Tab`) switch modes — Search · URL · Tabs · History ·
+Bookmarks · Downloads — where `j`/`k` move through the list and `Enter` runs
+it. `Esc` clears back to command mode.
 
 <p align="center">
   <img alt="The command center in tabs mode" src="docs/img/command-center-tabs.png" width="880">

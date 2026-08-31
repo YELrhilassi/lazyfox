@@ -69,6 +69,14 @@ const renderSteps = (isWin: boolean): void => {
 };
 
 (async () => {
+  // Horizontal logo (icon + wordmark) in the header.
+  try {
+    const img = document.getElementById("logoImg") as HTMLImageElement;
+    img.src = browser.runtime.getURL("lazyfox-logo.svg");
+  } catch (e) {
+    // ignore — the header works without the logo
+  }
+
   const info = await browser.runtime.getPlatformInfo();
   const os = info.os;
   const isWin = os === "win";
