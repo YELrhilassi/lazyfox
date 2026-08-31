@@ -147,6 +147,7 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
     else if (k === "c") void send("duplicateTab");
     else if (k === "z") void send("zen");
     else if (k === "N") void send("stealthOpen");
+    else if (k === "I") void send("openSetup"); // ;I — the standalone installer/setup page
     else if (k === "Q") void send("quit");
     else if (k === "?") toggleHelp();
     modeTag.textContent = store.get().mode;
@@ -205,6 +206,11 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
     if (state.resizeOpen && handleResizeKey(e)) return;
     if (state.moveOpen && handleMoveKey(e)) return;
     if (state.resizeOpen || state.moveOpen) return;
+
+    // Modifier shortcuts must never get swallowed by the typing path below:
+    // let Ctrl+?/Alt+?/Meta+? fall through to the browser unless it is a
+    // known leader combo (handled while leaderPending above).
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
 
     if (k === "Tab") {
       e.preventDefault();

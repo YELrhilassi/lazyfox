@@ -11,6 +11,18 @@ export interface Config {
   statusBar: boolean;
   statusBarPosition: "top" | "bottom";
   autoRestore: boolean;
+  // Quick-launch web apps shown on the command-center home grid. Each entry
+  // is one tile (site favicon + name); togglable and editable in the options
+  // page. `enabled=false` hides the tile without deleting its definition.
+  apps: QuickApp[];
+}
+
+// One quick-launch web app tile on the command-center home grid.
+export interface QuickApp {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
 }
 
 export interface ChromeHotkeys {

@@ -94,35 +94,28 @@ export function createCtx(runtime) {
     return r.value;
   };
 
-  // Does the window manager honour programmatic window resizes? The ;w resize
-  // popup drives window.resizeBy()/moveBy(); tiling window managers (i3, hypr,
-  // ...) lock the window's size, so that call is a silent no-op and a size
-  // assertion can never hold there. Probe once (set the rect, read it back,
-  // restore) and cache the result so suites can assert the pixel delta only
-  // where the WM actually applies it, while still exercising the popup itself
-  // everywhere. The software targets Linux, Windows and macOS, running under
-  // both floating and tiling window managers.
-  let windowResizable = null;
-  ctx.windowResizable = async function windowResizable() {
-    if (windowResizable !== null) return windowResizable;
-    const base = `http://127.0.0.1:${ctx.h.port}/session/${ctx.h.sessionId}/window/rect`;
-    let before;
+  // A command-center (moz-extension) tab to read the REAL window viewport from:
+  // the options-page/command-center pages reflect the actual OS window size,
+  // unlike geckodriver's /window/rect endpoint, which reports a stale cached
+  // rect and never sees a programmatic resize. Prefer tabA when it is a CC
+  // page, else the probe tab (always a CC page after bootstrap).
+  const pickCCTab = async () => {
     try {
-      before = (await httpJson("GET", base)).value;
+      const u = await evalIn(ctx.tabA, "location.href").catch(() => "");
+      if (u && /commandcenter\.html/.test(u)) return ctx.tabA;
     } catch (e) {
-      windowResizable = false;
-      return false;
+      // fall through to the probe
     }
-    try {
-      await httpJson("POST", base, { width: before.width + 40, height: before.height + 30 });
-      windowResizable = ((await httpJson("GET", base)).value.width > before.width) ||
-        ((await httpJson("GET", base)).value.height > before.height);
-      // restore the original size
-      await httpJson("POST", base, { width: before.width, height: before.height });
-    } catch (e) {
-      windowResizable = false;
-    }
-    return windowResizable;
+    return ctx.probe;
+  };
+
+  // The live viewport (innerWidth/innerHeight) of the real window, read from
+  // a command-center page. Used by the ;w resize tests INSTEAD of the WebDriver
+  // /window/rect endpoint, which stays frozen at the profile's initial size in
+  // this environment and so can never observe a WM-applied resize.
+  ctx.windowInnerSize = async function windowInnerSize() {
+    const tab = await pickCCTab();
+    return evalIn(tab, `({ width: window.innerWidth, height: window.innerHeight })`);
   };
 
   // Active tab + tab list via the probe tab's extension realm (definitive).
