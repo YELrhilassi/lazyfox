@@ -35,7 +35,10 @@ import { createTypingChannel } from "./typing";
   let profileName = "";
   let profileDir = "";
   try {
-    profileDir = String(Services.dirsvc.get("ProfD").leafName || "");
+    // dirsvc.get needs the nsIFile IID in this context — the one-arg form
+    // throws "Not enough arguments [nsIProperties.get]" and the profile would
+    // silently stay empty (setup page showing "your current profile").
+    profileDir = String(Services.dirsvc.get("ProfD", Ci.nsIFile).leafName || "");
     const dot = profileDir.indexOf(".");
     profileName = dot > 0 ? profileDir.slice(dot + 1) : profileDir;
   } catch (e) {
@@ -180,7 +183,7 @@ import { createTypingChannel } from "./typing";
 
   channel = createChannel({
     ctx,
-    ops: chromeOps as unknown as { openTarget(which: string): boolean; openResize(): void },
+    ops: chromeOps as unknown as { openTarget(which: string): boolean; openUrlNative(url: string): boolean; openResize(): void },
     split,
     status,
     cfg,

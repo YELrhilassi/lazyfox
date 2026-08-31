@@ -99,6 +99,12 @@ async function componentsInfo() {
 
 async function openUrl(url: string, newTab: boolean | undefined) {
   if (!url) return { ok: false };
+  // about: pages cannot be navigated with the tabs API (Firefox rejects them
+  // with "Illegal URL" — the tests/probe confirm it), so they always route
+  // through the chrome helper's native opener.
+  if (/^about:/i.test(url)) {
+    return openPage(url);
+  }
   const tab = await getActiveTab();
   if (isCommandCenter(tab)) {
     await browser.tabs.update(tab.id, { url, active: true });
@@ -117,27 +123,41 @@ async function openUrl(url: string, newTab: boolean | undefined) {
 }
 
 async function openPage(url: string) {
-  const target = CHROME_PAGES[url];
   const tab = await getActiveTab();
-  if (target) {
-    const base = CC_URL;
-    if (isCommandCenter(tab)) {
-      await browser.tabs.update(tab.id, {
-        url: base + "#lfc=open." + target,
-        active: true
-      });
-      try {
-        await new Promise((r) => setTimeout(r, 800));
-        const t = await browser.tabs.get(tab.id);
-        if (t.url && t.url.indexOf("#lfc=") !== -1) {
-          await browser.tabs.update(tab.id, { url: t.url.split("#")[0] });
-        }
-      } catch (e) {}
-      return { ok: true, reused: true };
+  const base = CC_URL;
+  // about: pages must be opened by the chrome helper's native opener. Known
+  // pages map to a short key; a fragment (about:preferences#searchResults)
+  // rides along; any other about: URL (about:config, ...) is carried
+  // base64-encoded so the #lfc= hash grammar stays intact.
+  let payload: string | null = null;
+  let target = CHROME_PAGES[url];
+  if (!target) {
+    for (const [key, t] of Object.entries(CHROME_PAGES)) {
+      if (url.startsWith(key)) {
+        target = t + url.slice(key.length);
+        break;
+      }
     }
+  }
+  if (target) {
+    payload = target;
+  } else if (/^about:/i.test(url)) {
+    try {
+      payload = "u." + btoa(unescape(encodeURIComponent(url))).replace(/=+$/, "");
+    } catch (e) {
+      return { ok: false };
+    }
+  }
+  if (payload) {
+    const hash = "#lfc=open." + payload;
+    // Always drive the open through a throwaway `.c` request tab: the chrome
+    // helper opens the about: page natively and removes the throwaway. The
+    // current command-center tab is NEVER navigated, so it keeps its input
+    // and grid state (an in-place #lfc= navigation would reload it and dump
+    // the user back at a fresh home grid).
     await browser.tabs.create({
-      url: base + "#lfc=open." + target + ".c",
-      active: true
+      url: base + hash + ".c",
+      active: false
     });
     return { ok: true };
   }
@@ -1015,27 +1035,16 @@ function checkChromeLayerHealth(): void {
     .catch(() => {});
 }
 
-// The active Firefox profile the extension is running under, stored so the
-// setup page can tell the user which profile the installer will target. Read
-// via Services.dirsvc in the background (available to Firefox extension
-// contexts, so this works before the chrome helper is installed); the chrome
-// helper's alive announce writes the same key once the helper layer is up.
-// The raw profile dir is a folder like "zfdaq0c3.dev-edition-default"; the
-// USER-FACING name is the part after the first dot ("dev-edition-default") —
-// exactly what the installer's profile picker lists. Store both.
-function storeActiveProfileName(): void {
-  try {
-    const leaf = String(Services.dirsvc.get("ProfD").leafName || "");
-    if (!leaf || !browser.storage.local) return;
-    const dot = leaf.indexOf(".");
-    const friendly = dot > 0 ? leaf.slice(dot + 1) : leaf;
-    browser.storage.local.set({ lfProfileName: friendly, lfProfileDir: leaf }).catch(() => {});
-  } catch (e) {
-    // Services.dirsvc unavailable here (non-Firefox / an odd context): leave
-    // the name to the chrome helper's announce.
-  }
-}
-storeActiveProfileName();
+// The active Firefox profile the extension is running under is stored so the
+// setup page can tell the user which profile the installer will target. The
+// WebExtension context has NO access to the profile directory (Services is
+// not exposed there — verified: "Services is not defined" in extension
+// contexts), so the ONLY source is the chrome helper's alive announce, which
+// carries the user-facing name + raw directory leaf. The raw dir is a folder
+// like "zfdaq0c3.dev-edition-default"; the USER-FACING name is the part after
+// the first dot ("dev-edition-default") — exactly what the installer's
+// profile picker lists. (A store-only install shows the honest placeholder
+// until the chrome layer is installed and announces.)
 
 // Fresh store installs (chrome never announced): offer the full UI once, since
 // the add-on alone is only half of Lazyfox. One-shot via setupNudgeShown so a
