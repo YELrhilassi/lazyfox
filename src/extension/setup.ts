@@ -77,12 +77,20 @@ const renderProfile = (): void => {
   const os = info.os;
   const asset: string = ASSET[os] || "lazyfox-install-linux";
   $("osName").textContent = osName(os);
+  $("osName2").textContent = osName(os);
 
   const dl = $("dl") as HTMLAnchorElement;
   dl.href = releaseUrl(asset);
   dl.textContent = "Download the installer for " + osName(os);
-  $("dlNote").textContent =
-    "~23 MB, fully self-contained. If the download does not start, " + "<a href='" + releaseUrl(asset) + "'>click here</a>.";
+
+  // The actual command to run the self-contained installer, per OS. macOS
+  // needs a Gatekeeper bypass on first launch because the binary is unsigned.
+  const runCmd: Record<string, string> = {
+    linux: "chmod +x lazyfox-install-linux\n./lazyfox-install-linux",
+    mac: "chmod +x lazyfox-install-darwin\nxattr -d com.apple.quarantine lazyfox-install-darwin 2>/dev/null || true\n./lazyfox-install-darwin",
+    win: "lazyfox-install-windows.exe",
+  };
+  $("runCmd").textContent = runCmd[os] || runCmd.linux || "";
 
   renderProfile();
 
