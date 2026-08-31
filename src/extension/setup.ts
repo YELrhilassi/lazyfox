@@ -47,9 +47,16 @@ const renderStatus = (): void => {
 
 const renderProfile = (): void => {
   void browser.storage.local.get("lfProfileName").then((r: any) => {
+    const prof = (r && r.lfProfileName) || "";
     const el = $("profileName");
-    el.textContent = (r && r.lfProfileName) ? "Profile \u201C" + r.lfProfileName + "\u201D" : "your current profile";
-    if (r && r.lfProfileName) el.setAttribute("title", "lazyfox will install into this profile directory");
+    const dir = $("profileDir");
+    el.textContent = prof ? "Profile \u201C" + prof + "\u201D" : "your current profile";
+    if (prof) {
+      el.setAttribute("title", "the Firefox profile this window is running on");
+      dir.textContent = "this is the profile this window is running right now \u2014 match its name in the installer\u2019s profile list. Your settings, bookmarks and add-ons in it are never touched.";
+    } else {
+      dir.textContent = "your settings, bookmarks and add-ons in it are never touched.";
+    }
   }).catch(() => {});
 };
 

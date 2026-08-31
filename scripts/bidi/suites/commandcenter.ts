@@ -128,6 +128,38 @@ export async function run(ctx) {
     assert(f2.state === "cmd", "back to command mode after Esc, got " + f2.state);
   });
 
+  await t("leader ;f hint-pick: a letter runs the tile (never types into the input)", async () => {
+    // Regression: on a REAL new tab the page opens in command mode (input
+    // blurred). If the input ever holds focus, ;f INSERTS the leader combo and
+    // the hint letter types — hint-pick appears dead. This presses an actual
+    // hint letter and asserts it is consumed as a pick, not inserted as text.
+    await ctx.openCC(ctx.tabA);
+    const f0 = await ctx.ccFacts(ctx.tabA);
+    assert(!f0.focused, "home opens in command mode (input blurred)");
+    await ctx.leaderPress(ctx.tabA, "f");
+    await waitFor(async () => {
+      const n = await evalIn(ctx.tabA, `document.querySelectorAll("#results.quick .result .hintkey").length`);
+      return n > 0 ? n : null;
+    }, 8000);
+    // `k` is the hint letter for index 10 — the "History" tile with the default
+    // 6 quick-launch apps (6 apps + 6 browser-access commands). Pressing it
+    // sets the History mode IN PLACE (no navigation), which makes the pick
+    // unambiguous: the key is INTERPRETED as a pick, so it must both clear the
+    // badges (hint consumed), switch to history mode, and never land in the
+    // input as text.
+    await ctx.press(ctx.tabA, "k");
+    const gone = await waitFor(async () => {
+      const n = await evalIn(ctx.tabA, `document.querySelectorAll(".hintkey").length`);
+      return n === 0 ? true : null;
+    }, 5000);
+    assert(gone, "hint letter consumed the pick (badges cleared)");
+    const f = await ctx.ccFacts(ctx.tabA);
+    assert(f.modeTag === "history", "hint letter switched to history mode, got " + f.modeTag);
+    assert(f.inputVal === "", "hint letter did not type into the input, got " + JSON.stringify(f.inputVal));
+    assert(!f.focused, "hint-pick left the input blurred after picking");
+    await ctx.openCC(ctx.tabA);
+  });
+
   await t("leader ;I from the home opens the setup page in the current tab", async () => {
     // Regression: ;I used to spawn a NEW tab (browser.tabs.create). From the
     // command-center home it must reuse the tab in place (like ;o/;h) so the
