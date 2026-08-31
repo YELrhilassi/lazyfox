@@ -274,6 +274,13 @@ import { createStore } from "./commandcenter/state";
   window.addEventListener("load", () => {
     renderer.setStateTag("cmd");
     document.body.classList.add("ready");
+    // Command mode is keyboard-first (hjkl navigate, `;` arms the leader,
+    // `;f` arms hint-pick, Enter opens the selection). Firefox focuses the
+    // first input on a freshly opened tab, which would silently switch the
+    // page into insert mode and make every typed key type into the search box
+    // instead — so a new tab must explicitly blur. Typing any other printable
+    // key re-enters insert mode, so searching still works.
+    if (document.activeElement === refs.input) refs.input.blur();
   });
 
   // Stealth home: when this command center is shown inside a stealth tab

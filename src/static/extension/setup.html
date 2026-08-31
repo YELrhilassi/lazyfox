@@ -16,7 +16,7 @@
     font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     padding: 28px 20px 56px;
   }
-  .wrap { max-width: 820px; margin: 0 auto; }
+  .wrap { max-width: 920px; margin: 0 auto; }
   .topbar { display: flex; align-items: center; gap: 18px; margin-bottom: 12px; }
   .logo { height: 38px; overflow: hidden; flex: none; }
   .logo img { height: 100%; width: auto; object-fit: contain; }
@@ -89,12 +89,19 @@
     </section>
 
     <section class="card">
-      <h2>Where it installs</h2>
-      <p>Lazyfox installs into the Firefox profile you are using right now (your settings, bookmarks and add-ons are never touched):</p>
+      <h2>Which profile gets it</h2>
+      <p>Lazyfox is added to one Firefox <em>profile</em> (a profile holds your settings, bookmarks and add-ons). The installer will ask you to pick which one &mdash; choose the profile shown below, that&rsquo;s the one you use most and the one you&rsquo;re looking at now:</p>
       <div class="prof-line">
         <span class="pf-icon">&#x1F5C3;&#xFE0F;</span>
-        <div><div id="profileName">loading&#x2026;</div><div class="muted">active profile — the installer targets this automatically, no picking required.</div></div>
+        <div>
+          <div id="profileName">loading&#x2026;</div>
+          <div class="muted" id="profileDir">your settings, bookmarks and add-ons in it are never touched.</div>
+        </div>
       </div>
+    </section>
+    <section class="card">
+      <h2>What to pick in the installer</h2>
+      <p>During install you&rsquo;ll see a list of your Firefox profiles. Pick the one highlighted here (the active profile) &mdash; if you run several Firefox versions, each has its own profiles, so match the name above to the picker. Your bookmarks, passwords, history and other add-ons stay exactly as they are, no matter which you choose.</p>
     </section>
 
     <section class="card">

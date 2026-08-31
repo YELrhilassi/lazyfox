@@ -16,6 +16,14 @@ user_pref("browser.newtabpage.activity-stream.improvesearch.handoffToAwesomebar"
 user_pref("lazyfox.hoverReveal", true);
 user_pref("browser.tabs.splitView.enabled", true);
 
+// Lazyfox's vim keys / link hints / leader must work on EVERY page, including
+// Mozilla's own. Firefox blocks content scripts on a set of "restricted"
+// domains by default (addons.mozilla.org, accounts.firefox.com, ...) — the
+// same list that powers the navigator.mozAddonManager API — and no manifest
+// key can opt a single add-on out. This override empties that list so the
+// extension runs on addons.mozilla.org and the other blocked Mozilla pages.
+user_pref("extensions.webextensions.restrictedDomains", "");
+
 // Dark mode — Lazyfox is a dark, keyboard-first UI; force it for both the
 // browser chrome and web content regardless of the OS theme.
 user_pref("ui.systemUsesDarkTheme", 1);
