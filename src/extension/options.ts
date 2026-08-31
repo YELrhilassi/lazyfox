@@ -5,6 +5,7 @@
 
 import { CHROME_HOTKEY_DEFAULTS, CONFIG_DEFAULTS, defaultApps } from "../shared/config";
 import { core } from "../shared/core";
+import { favicon } from "../shared/dom";
 import { send } from "../shared/protocol";
 import type { QuickApp } from "../shared/types";
 
@@ -36,17 +37,8 @@ import type { QuickApp } from "../shared/types";
   const appsList = document.getElementById("appsList") as HTMLDivElement;
   const addAppBtn = document.getElementById("addApp") as HTMLButtonElement;
 
-  // Live favicon preview via Google's favicon service (same source as the
+  // Live favicon preview uses the shared helper (same source as the
   // command-center tiles), so each row shows the site's real icon.
-  function favicon(url: string): string {
-    try {
-      const host = new URL(url).hostname;
-      return "https://www.google.com/s2/favicons?domain=" + encodeURIComponent(host) + "&sz=64";
-    } catch (e) {
-      return "";
-    }
-  }
-
   function renderAppRow(app: QuickApp): void {
     const row = document.createElement("div");
     row.className = "app-row";
