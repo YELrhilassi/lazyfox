@@ -49,6 +49,24 @@ export function findProfileDirByName(root: string, name: string): string | null 
 // as the current build when it happens to get launched.
 const LAZYFOX_EXT_XPI = 'extensions/lazyfox@lazyfox.dev.xpi';
 
+// Does a profile's compatibility.ini pin it to one of the DEV Firefox install
+// dirs? Used to tell a leftover dev build (safe to purge) from a genuine,
+// wanted install on the user's real stable Firefox (must never be touched). A
+// stable install lives under the system/branded dir (e.g. /usr/lib/firefox),
+// which never matches the dev dirs below, so it is preserved.
+function profileIsDevLed(profileDir: string): boolean {
+  let appDir = '';
+  try {
+    const compat = readFileSync(join(profileDir, 'compatibility.ini'), 'utf8');
+    const m = /^LastAppDir=(\S+)$/m.exec(compat);
+    appDir = m && m[1] !== undefined ? m[1] : '';
+  } catch {
+    return false;
+  }
+  const base = appDir.replace(/\/browser\/?$/, '').replace(/\/$/, '');
+  return DEV_FIREFOX_DIRS.some((d) => base === d);
+}
+
 function removeLazyfoxFromProfile(profileDir: string): boolean {
   let did = false;
   const targets = [
@@ -84,11 +102,13 @@ function removeLazyfoxFromProfile(profileDir: string): boolean {
 }
 
 // Remove every dev profile directory + its entries, and purge stale lazyfox
-// artifacts from any OTHER profile that carries them (so a leftover profile
-// launched by mistake shows the plain, lazyfox-free browser instead of the old
-// build). Also drop profiles.ini entries for dev profiles and for install
-// hashes whose Default= points at a profile directory that no longer exists.
-// Returns count of dev profile dirs removed.
+// artifacts ONLY from profiles that belong to a dev Firefox install AND
+// escaped the lfxdev-* naming (renamed dev experiments). A genuine lazyfox
+// install on the user's real stable Firefox is NEVER touched — purging it was
+// destroying the stable install whenever `dev-install:clean` ran. Also drop
+// profiles.ini entries for dev profiles and for install hashes whose Default=
+// points at a profile directory that no longer exists. Returns count of dev
+// profile dirs removed.
 export function cleanDevProfiles(root: string): number {
   if (!existsSync(root)) return 0;
   const iniPath = join(root, 'profiles.ini');
@@ -109,11 +129,15 @@ export function cleanDevProfiles(root: string): number {
       } catch {
         // ignore
       }
-    } else if (existsSync(join(full, LAZYFOX_EXT_XPI))) {
-      // Non-dev profile with a leftover lazyfox install: strip the artifacts so
-      // it can never inject stale code when launched.
+    } else if (
+      existsSync(join(full, LAZYFOX_EXT_XPI)) &&
+      profileIsDevLed(full)
+    ) {
+      // Renamed dev-led profile (compatibility.ini LastAppDir is a dev dir):
+      // strip the artifacts so it can never inject stale code when launched.
+      // Profiles owned by stable Firefox are never matched and stay untouched.
       removeLazyfoxFromProfile(full);
-      console.log(`  purged stale lazyfox from ${base}`);
+      console.log(`  purged stale lazyfox from ${base} (dev-led profile)`);
     }
   }
 
@@ -128,26 +152,33 @@ export function cleanDevProfiles(root: string): number {
   }
 
   // Drop install-hash Default= pointers to profile dirs that no longer exist
-  // (e.g. a cleaned lfxdev profile or a stale f15d86rv reference) in BOTH
-  // installs.ini and profiles.ini, so Firefox never tries to open a gone
-  // profile — and remove the whole dead [Install<hash>] section in profiles.ini
-  // when its Default= vanished.
+  // (e.g. a cleaned lfxdev profile or a stale reference) in BOTH installs.ini
+  // and profiles.ini, so Firefox never tries to open a gone profile — and
+  // remove the whole dead [Install<hash>] section in profiles.ini when its
+  // Default= vanished. EXCEPTION: a pin whose Default= is a DEV-named profile
+  // (e.g. "a1b2c3d4.lfxdev-...") is kept even when its directory is gone,
+  // because it is the record of which install hash belongs to the Dev Edition.
+  // setDefaultDevProfile re-points that pin at the fresh profile right after
+  // clean; deleting it would leave Dev Edition defaulting to an old profile
+  // (or nothing) on the very next launch. Same for installs.ini.
   const known = new Set(readdirSync(root));
-  const deadDefault = /Default=([^\s]+)/g;
+  const devPin = (val: string): boolean => isDevProfileDirName(val);
   if (existsSync(insPath)) {
     const ins = readFileSync(insPath, 'utf8');
-    const ins2 = ins.replace(deadDefault, (m, val) => (known.has(val) ? m : ''));
+    const ins2 = ins.replace(/Default=([^\s]+)/g, (m, val) => (known.has(val) || devPin(val) ? m : ''));
     if (ins2 !== ins) {
       try { writeFileSync(insPath, ins2); } catch { /* ignore */ }
     }
   }
   // profiles.ini: strip the whole [Install<hash>] section whose Default= points
-  // at a gone profile (it only exists to pin the default for that install).
+  // at a gone NON-dev profile (it only exists to pin the default for that
+  // install). Dev-named pins are preserved so the Dev Edition install keeps
+  // its association across cleans.
   if (existsSync(iniPath)) {
     let ini2 = readFileSync(iniPath, 'utf8');
     ini2 = ini2.replace(/\[Install[0-9A-Fa-f]+\][^\[]*?(?=\n\[|\n?$)/g, (block) => {
       const dm = /^Default=([^\s]+)$/m.exec(block);
-      if (dm && dm[1] !== undefined && !known.has(dm[1])) return '';
+      if (dm && dm[1] !== undefined && !known.has(dm[1]) && !devPin(dm[1])) return '';
       return block;
     });
     if (ini2 !== ini) {
@@ -278,7 +309,11 @@ function profileUsesDir(profileDir: string, appDir: string): boolean {
 // Try to find which install hash owns appDir's profiles. Strategy:
 //  1. a cached hash for this appDir, if one was recorded previously;
 //  2. the [hash] whose Default= currently points at a profile using appDir
-//     (works on the first run, before we repoint the default).
+//     (works on the first run, before we repoint the default);
+//  3. the [Install<hash>] in profiles.ini whose Default= is a DEV-named
+//     profile — kept alive by clean even when its directory is gone, so the
+//     Dev Edition install's association survives a clean. This is what makes
+//     `dev-install:clean` work on the second and later runs.
 function findDevHash(
   root: string,
   appDir: string,
@@ -295,40 +330,68 @@ function findDevHash(
     const abs = join(root, p);
     return existsSync(abs) && profileUsesDir(abs, appDir);
   });
-  if (!devProfile) return null;
+  if (devProfile) {
+    // Map that profile -> install hash via installs.ini Default=. Use [^\[]
+    // so the scan never crosses into the next [Install...] section.
+    const hashRe = new RegExp(`\\[([0-9A-Fa-f]+)\\][^\\[]*?\\nDefault=${escapeRe(devProfile)}(?:\\n|$)`);
+    const hashMatch = hashRe.exec(ins);
+    if (hashMatch && hashMatch[1] !== undefined) return hashMatch[1];
+  }
 
-  // Map that profile -> install hash via installs.ini Default=. Use [^\[]
-  // so the scan never crosses into the next [Install...] section.
-  const hashRe = new RegExp(`\\[([0-9A-Fa-f]+)\\][^\\[]*?\\nDefault=${escapeRe(devProfile)}(?:\\n|$)`);
-  const hashMatch = hashRe.exec(ins);
-  return hashMatch && hashMatch[1] !== undefined ? hashMatch[1] : null;
+  // Strategy 3: the dev-install pin preserved by clean (Default= is a
+  // dev-named profile, even if its directory no longer exists).
+  const pinRe = /\[Install([0-9A-Fa-f]+)\][^\[]*?\nDefault=([^\s]+)(?:\n|$)/g;
+  for (const pm of ini.matchAll(pinRe)) {
+    const val = pm[2]!;
+    if (isDevProfileDirName(val) || (existsSync(join(root, val)) && profileUsesDir(join(root, val), appDir))) {
+      return pm[1]!;
+    }
+  }
+  return null;
 }
 
 // Rewrite `Default=<path>` for the [Install<hash>] whose installation runs
-// appDir (e.g. /opt/firefox-dev) to point at profilePath. Returns true if a
-// section was updated.
+// appDir (e.g. /opt/firefox-dev) to point at profilePath. Creates the pin
+// sections in profiles.ini / installs.ini when they are missing (e.g. a fresh
+// machine where Firefox has not yet recorded an install section, or a section
+// stripped by an old clean). Returns true if a section was updated.
 function setInstallDefault(root: string, appDir: string, profilePath: string): boolean {
   const iniPath = join(root, 'profiles.ini');
   const insPath = join(root, 'installs.ini');
   if (!existsSync(iniPath) || !existsSync(insPath)) return false;
 
-  const ini = readFileSync(iniPath, 'utf8');
-  const ins = readFileSync(insPath, 'utf8');
+  let ini = readFileSync(iniPath, 'utf8');
+  let ins = readFileSync(insPath, 'utf8');
   const cache = loadHashCache();
 
   const hash = findDevHash(root, appDir, ini, ins, cache);
   if (!hash) return false;
 
-  // Point that hash's Default= at our profile, in both files.
-  let ini2 = ini.replace(
-    new RegExp(`(\\[Install${hash}\\][^\\[]*?\\nDefault=)[^\\n]+`),
-    `$1${profilePath}`
-  );
-  let ins2 = ins.replace(
-    new RegExp(`(\\[${hash}\\][^\\[]*?\\nDefault=)[^\\n]+`),
-    `$1${profilePath}`
-  );
-  if (ini2 === ini) return false;
+  // Point that hash's Default= at our profile, in both files. When the section
+  // (or its Default= line) is missing, recreate it instead of giving up.
+  const iniSectionRe = new RegExp(`\\[Install${hash}\\][^\\[]*?(?=\\n\\[|\\n?$)`);
+  const insSectionRe = new RegExp(`\\[${hash}\\][^\\[]*?(?=\\n\\[|\\n?$)`);
+  const iniSec = ini.match(iniSectionRe);
+  const insSec = ins.match(insSectionRe);
+
+  let ini2 = ini;
+  let ins2 = ins;
+  if (iniSec && iniSec[0] !== undefined && /^Default=/m.test(iniSec[0])) {
+    ini2 = ini2.replace(new RegExp(`(\\[Install${hash}\\][^\\[]*?\\nDefault=)[^\\n]+`), `$1${profilePath}`);
+  } else if (iniSec && iniSec[0] !== undefined) {
+    ini2 = ini2.replace(iniSectionRe, `${iniSec[0].replace(/\n?$/, '')}\nDefault=${profilePath}\n`);
+  } else {
+    ini2 = `${ini2.replace(/\n?$/, '')}\n\n[Install${hash}]\nDefault=${profilePath}\n`;
+  }
+  if (insSec && insSec[0] !== undefined && /^Default=/m.test(insSec[0])) {
+    ins2 = ins2.replace(new RegExp(`(\\[${hash}\\][^\\[]*?\\nDefault=)[^\\n]+`), `$1${profilePath}`);
+  } else if (insSec && insSec[0] !== undefined) {
+    ins2 = ins2.replace(insSectionRe, `${insSec[0].replace(/\n?$/, '')}\nDefault=${profilePath}\n`);
+  } else {
+    ins2 = `${ins2.replace(/\n?$/, '')}\n\n[${hash}]\nDefault=${profilePath}\n`;
+  }
+
+  if (ini2 === ini && ins2 === ins) return false;
 
   writeFileSync(iniPath, ini2);
   writeFileSync(insPath, ins2);
