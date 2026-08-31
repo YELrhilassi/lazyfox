@@ -4,6 +4,18 @@
 
 import { esc } from "../../shared/dom";
 import { send } from "../../shared/protocol";
+import type { QuickApp } from "../../shared/types";
+
+// Site favicon for a quick-launch app tile, via Google's favicon service so
+// every web app shows its real icon without bundling artwork.
+export function favicon(url: string): string {
+  try {
+    const host = new URL(url).hostname;
+    return "https://www.google.com/s2/favicons?domain=" + encodeURIComponent(host) + "&sz=64";
+  } catch (e) {
+    return "";
+  }
+}
 
 export const MODES = ["search", "url", "tabs", "history", "bookmarks", "downloads"];
 
@@ -43,7 +55,11 @@ export interface QuickActions {
 }
 
 // The home screen command grid, grouped into sections. `group` drives the
-// section headers; items are rendered in order within each section.
+// section headers; items are rendered in order within each section. This list
+// is deliberately SHORT: everything already on the which-key leader menu
+// (`;n` new tab, `;x` close, `;z` zen, `;w` resize, `;S` strip, sessions, ...)
+// is removed so the home page only surfaces what the leader does not — the
+// browser page access and Lazyfox settings, plus the quick-launch apps below.
 export interface QuickCmd {
   kind: string;
   group: string;
@@ -56,22 +72,21 @@ export interface QuickCmd {
 
 export function quickCommands(a: QuickActions): QuickCmd[] {
   return [
-    { kind: "cmd", group: "Tabs", ic: "\u229e", title: "New tab", keys: ";n", desc: "open a fresh tab", run: () => a.newTab() },
-    { kind: "cmd", group: "Tabs", ic: "\u21b6", title: "Reopen closed tab", keys: ";v", desc: "restore the last one you closed", run: () => a.reopenTab() },
-    { kind: "cmd", group: "Tabs", ic: "\u29c9", title: "Duplicate tab", keys: ";c", desc: "copy the current tab", run: () => a.duplicateTab() },
-    { kind: "cmd", group: "Tabs", ic: "\u2715", title: "Close current tab", keys: ";x", desc: "close this tab", run: () => a.closeTab() },
-    { kind: "cmd", group: "Tabs", ic: "\u21c4", title: "Switch mode", keys: "1-6", desc: "Search \u00b7 URL \u00b7 Tabs \u00b7 History \u00b7 Bookmarks \u00b7 Downloads", run: () => {} },
-    { kind: "cmd", group: "Window", ic: "\u25c9", title: "Zen mode", keys: ";z", desc: "fullscreen \u2014 the toolbar stays hidden", run: () => a.zen() },
-    { kind: "cmd", group: "Window", ic: "\u21f2", title: "Resize window", keys: ";w", desc: "resize with arrow keys or buttons", run: () => a.openResize() },
-    { kind: "cmd", group: "Window", ic: "\u2726", title: "Move window", keys: ";m", desc: "move with arrow keys (Shift = fine step)", run: () => a.openMove() },
-    { kind: "cmd", group: "Window", ic: "\u23fb", title: "Save and quit", keys: ";Q", desc: "save this session, then quit Firefox", run: () => a.quit() },
-    { kind: "cmd", group: "Browser", ic: "\u2699", title: "Lazyfox settings", keys: "", desc: "open the extension options page", run: () => a.openOptions() },
-    { kind: "cmd", group: "Browser", ic: "\u2608", title: "Components & versions", keys: "", desc: "extension, chrome helper, wasm core, native host versions", run: () => a.openOptions() },
+    { kind: "cmd", group: "Browser", ic: "\u2699", title: "Lazyfox settings", keys: "", desc: "tune the leader, apps, sessions and chrome", run: () => a.openOptions() },
     { kind: "cmd", group: "Browser", ic: "\u{1F98A}", title: "Firefox settings", keys: "", desc: "open about:preferences", run: () => a.openPage("about:preferences") },
-    { kind: "cmd", group: "Browser", ic: "\u21ba", title: "History", keys: "", desc: "show history in this command center", run: () => a.setMode("history") },
-    { kind: "cmd", group: "Browser", ic: "\u2913", title: "Downloads", keys: "", desc: "show downloads in this command center", run: () => a.setMode("downloads") },
-    { kind: "cmd", group: "Privacy", ic: "\u{1F576}", title: "Stealth tab", keys: ";N", desc: "open a fresh isolated tab — wiped on close", run: () => a.stealthOpen() },
+    { kind: "cmd", group: "Browser", ic: "\u2609", title: "Add-ons manager", keys: "", desc: "open about:addons", run: () => a.openPage("about:addons") },
+    { kind: "cmd", group: "Browser", ic: "\u21ba", title: "History", keys: "", desc: "show history here", run: () => a.setMode("history") },
+    { kind: "cmd", group: "Browser", ic: "\u2913", title: "Downloads", keys: "", desc: "show downloads here", run: () => a.setMode("downloads") },
   ];
+}
+
+// Enabled quick-launch apps -> home-grid tiles. Each tile opens its url; the
+// renderer draws the site's real favicon (see favicon()). Definition + toggle
+// live in the options page (config.apps).
+export function appItems(apps: QuickApp[]): Array<{ kind: "app"; group: string; name: string; url: string }> {
+  return apps
+    .filter((a) => a.enabled && a.url)
+    .map((a) => ({ kind: "app" as const, group: "Quick launch", name: a.name, url: a.url }));
 }
 
 // Fetch the suggestion list for a mode + query. Each branch maps the
@@ -117,6 +132,17 @@ export function getItems(mode: string, q: string): Promise<any[]> {
 // Pure HTML for one row. `quickView` switches the command rows between the
 // home-grid layout (icon + key badge) and the flat list layout.
 export function renderItem(it: any, mode: string, quickView: boolean): string {
+  if (it.kind === "app") {
+    // An app tile: real favicon + name. Broken favicon loads just show empty.
+    const ic = favicon(it.url);
+    return (
+      "<div class='ic'>" +
+      (ic ? "<img src='" + ic + "' alt='' loading='lazy' referrerpolicy='no-referrer'>" : "\u25b8") +
+      "</div>" +
+      "<div class='tx'><div class='t'>" + esc(it.name) +
+      "</div><div class='s'>" + esc(it.url) + "</div></div>"
+    );
+  }
   if (it.kind === "cmd") {
     if (quickView) {
       return (
@@ -158,6 +184,10 @@ export function renderItem(it: any, mode: string, quickView: boolean): string {
 // Dispatch the action for a selected item, given the current mode.
 export function openItem(item: any, mode: string): void {
   if (!item) return;
+  if (item.kind === "app") {
+    void send("openUrl", { url: item.url });
+    return;
+  }
   if (item.kind === "cmd") {
     item.run();
     return;

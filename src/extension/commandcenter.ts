@@ -4,8 +4,10 @@
 // the state store, wires the data/render/keys modules together, and attaches
 // the event listeners. All logic lives in commandcenter/{state,data,render,keys}.
 
+import { mergeConfig } from "../shared/config";
 import { core, ensureCore } from "../shared/core";
 import { send } from "../shared/protocol";
+import type { QuickApp } from "../shared/types";
 import { openItem } from "./commandcenter/data";
 import { createKeyHandler } from "./commandcenter/keys";
 import { createRenderer, type CCRefs } from "./commandcenter/render";
@@ -27,6 +29,23 @@ import { createStore } from "./commandcenter/state";
   };
 
   const store = createStore();
+
+  // Enabled quick-launch apps for the home grid. Kept mutable so a config
+  // change (options page) refreshes the grid live.
+  let apps: QuickApp[] = [];
+  function getApps(): QuickApp[] {
+    return apps;
+  }
+  void browser.storage.local.get("config").then((r: any) => {
+    apps = mergeConfig(r && r.config).apps;
+    renderer.refresh();
+  });
+  browser.storage.onChanged.addListener((changes: any, area: any) => {
+    if (area === "local" && changes.config && changes.config.newValue) {
+      apps = mergeConfig(changes.config.newValue).apps;
+      renderer.refresh();
+    }
+  });
 
   const quick = {
     newTab: () => void send("newTab"),
@@ -75,6 +94,7 @@ import { createStore } from "./commandcenter/state";
     store,
     quick,
     openItem,
+    getApps,
   });
 
   function focusInput(): void {
@@ -152,6 +172,40 @@ import { createStore } from "./commandcenter/state";
 
   renderer.setMode("search");
   renderer.updateResizeSize();
+
+  // Brand logo: use the real extension icon in place of the emoji fallback.
+  try {
+    const logo = document.getElementById("brandLogo");
+    if (logo) {
+      logo.textContent = "";
+      const img = document.createElement("img");
+      img.src = browser.runtime.getURL("icons/icon96.png");
+      img.alt = "";
+      logo.appendChild(img);
+    }
+  } catch (e) {
+    // keep the emoji fallback if the icon is unavailable
+  }
+
+  // First-run install indicator: once the chrome helper is alive, Lazyfox is
+  // fully installed and the banner stays hidden. Shown (amber) otherwise.
+  const banner = document.getElementById("installBanner");
+  const installBtn = document.getElementById("installGo");
+  function refreshInstallBanner(alive: boolean | undefined): void {
+    if (!banner) return;
+    const missing = alive !== true;
+    banner.classList.toggle("show", missing);
+  }
+  if (installBtn) {
+    installBtn.addEventListener("click", () => void send("openSetup"));
+  }
+  if (banner) {
+    void browser.storage.local.get("chromeAlive").then((r: any) => refreshInstallBanner(r.chromeAlive));
+    browser.storage.onChanged.addListener((changes: any, area: any) => {
+      if (area === "local" && changes.chromeAlive) refreshInstallBanner(!!changes.chromeAlive.newValue);
+    });
+  }
+
   // Warm the Go core off the critical path so the first keystroke's URL-vs-
   // search detection and Enter's URL normalization are instant instead of
   // paying a cold wasm instantiation (the home grid renders regardless).
