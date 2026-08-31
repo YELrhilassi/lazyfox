@@ -669,4 +669,54 @@ export async function run(ctx) {
     assert(a.url.includes("/hello"), "history row opened in place, got " + a.url);
     await ctx.openCC(ctx.tabA);
   });
+
+  await t("closing a tab down to two leaves a real tab active, not the relay", async () => {
+    // Regression (the blank-page dead end): with the strip [A, relay, B],
+    // closing the tab next to the hidden relay makes Firefox select the
+    // relay, and the post-close guard must steer back to a REAL tab — never
+    // the dying wrapper still in gBrowser.tabs mid-teardown. Drive the window
+    // down to exactly two real tabs, close one, and assert the survivor is
+    // active, is a real page, and the leader still runs. NOTE: ctx.tabA is
+    // deliberately the tab that gets closed — it must not be touched after.
+    await ctx.openCC(ctx.tabA);
+    await ctx.activateTab(ctx.tabA);
+    await sleep(400);
+    // Identify the two tabs we keep (probe + tabA), close every other tab
+    // from the probe's extension realm.
+    const tabAid = await evalIn(ctx.tabA, `browser.tabs.getCurrent().then(t => t && t.id)`).catch(() => null);
+    const probeId = await evalIn(ctx.probe, `browser.tabs.getCurrent().then(t => t && t.id)`).catch(() => null);
+    assert(tabAid && probeId, "resolved keep ids: " + tabAid + " / " + probeId);
+    // tabsInfo() includes the hidden relay tab (moz-extension://…/relay.html);
+    // "real" tabs are everything else, exactly what the user sees.
+    const realOf = (ts: any[]) => (ts || []).filter((t: any) => !String(t.url || "").includes("relay.html"));
+    const info = await ctx.tabsInfo();
+    for (const t of info as any[]) {
+      if (t.id !== tabAid && t.id !== probeId) {
+        await evalIn(ctx.probe, `browser.tabs.remove(${t.id}).then(() => true)`).catch(() => {});
+        await sleep(250);
+      }
+    }
+    const two = realOf(await ctx.tabsInfo());
+    assert(two.length === 2, "trimmed to exactly two real tabs, got " + two.length);
+    // Close tabA via the leader key path (what the user does).
+    await ctx.activateTab(ctx.tabA);
+    await sleep(300);
+    await ctx.leaderPressNoFocus("x");
+    await sleep(1800);
+    const left = realOf(await ctx.tabsInfo());
+    assert(left.length === 1, "one tab remains after the close, got " + left.length);
+    const active = left.find((t: any) => t.active);
+    assert(active && active.url && active.url.includes("commandcenter.html"), "survivor is active and a real page, got " + (active && active.url));
+    // The leader must still work on the survivor (probe-only from here).
+    const before = left.length;
+    await ctx.leaderPressNoFocus("n");
+    await waitFor(async () => realOf(await ctx.tabsInfo()).length === before + 1 ? true : null, 10000);
+    assert(realOf(await ctx.tabsInfo()).length === before + 1, ";n still opens a tab after the close");
+    // Restore the trimmed tabs so later tests see the standard window.
+    for (let i = 0; i < 2; i++) {
+      await ctx.leaderPressNoFocus("n");
+      await sleep(400);
+    }
+    await ctx.activateTab(ctx.probe);
+  });
 }
