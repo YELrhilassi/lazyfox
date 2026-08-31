@@ -15,7 +15,7 @@
     "dev-install:clean": "node scripts/dev-install.ts --clean",
     "clean": "node scripts/clean.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json --noEmit",
-    "test": "go test ./core/ && node scripts/test-installer.ts && node scripts/check-dist.ts",
+    "test": "go test ./core/ && node scripts/test-dev-helpers.ts && node scripts/test-installer.ts && node scripts/check-dist.ts",
     "ci": "node scripts/ci.ts",
     "ci:bidi": "node scripts/ci.ts --bidi",
     "bidi": "node scripts/bidi/test.ts",
