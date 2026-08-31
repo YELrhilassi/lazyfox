@@ -84,6 +84,47 @@ export async function run(ctx) {
     await waitFor(async () => !(await ctx.chromeState()).popup.current, 8000);
   });
 
+  await t("leader ;f on the home page focuses the search box", async () => {
+    // Regression: `;f` is link-hints on web pages, but the home grid has no
+    // page links — the chrome helper used to run startHints there (a no-op on
+    // a moz-extension page), so `;f` did nothing. On the command center it
+    // must focus the search box (the filtering equivalent).
+    await ctx.openCC(ctx.tabA);
+    const f0 = await ctx.ccFacts(ctx.tabA);
+    assert(!f0.focused, "starts blurred (command mode)");
+    await ctx.leaderPress(ctx.tabA, "f");
+    await sleep(300);
+    const f1 = await ctx.ccFacts(ctx.tabA);
+    assert(f1.focused, ";f focuses the home search box, got focused=" + f1.focused);
+    assert(f1.state === "insert", ";f switches to insert mode, got " + f1.state);
+    await ctx.press(ctx.tabA, "Escape");
+    const f2 = await ctx.ccFacts(ctx.tabA);
+    assert(f2.state === "cmd", "back to command mode after Esc");
+  });
+
+  await t("leader ;I from the home opens the setup page in the current tab", async () => {
+    // Regression: ;I used to spawn a NEW tab (browser.tabs.create). From the
+    // command-center home it must reuse the tab in place (like ;o/;h) so the
+    // install page never stacks a second extension tab.
+    await ctx.openCC(ctx.tabA);
+    await ctx.activateTab(ctx.tabA);
+    await sleep(300);
+    const before = (await ctx.tabsInfo()).length;
+    await ctx.leaderPress(ctx.tabA, "I");
+    const setupTab = await waitFor(async () => {
+      const a = await ctx.activeTabInfo();
+      return a && a.url && a.url.includes("setup.html") ? a : null;
+    }, 15000);
+    assert(setupTab, ";I opened the setup page");
+    const after = (await ctx.tabsInfo()).length;
+    assert(after === before, "no new tab opened: " + before + " -> " + after);
+    const a = await ctx.activeTabInfo();
+    assert(a.url.includes("setup.html"), "active tab is the setup page, got " + a.url);
+    assert(!a.url.includes("commandcenter.html"), "setup page replaced the home tab, not stacked");
+    // Back to the command center for the tests that follow.
+    await ctx.openCC(ctx.tabA);
+  });
+
   await t("home page opens in command mode; hjkl navigates and Enter opens", async () => {
     // The home page must open keyboard-first (command mode, input NOT focused)
     // so hjkl/arrows navigate the grid, Enter opens the selection, and `;`

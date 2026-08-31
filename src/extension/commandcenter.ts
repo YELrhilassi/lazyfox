@@ -188,25 +188,43 @@ import { createStore } from "./commandcenter/state";
     // keep the empty brand area if the logo is unavailable
   }
 
-  // Footer meta: active session name, Firefox version, Lazyfox version.
+  // Footer meta: the active session name (falling back to the active Firefox
+  // profile name, which is always present), Firefox version, Lazyfox version.
+  // The session/profile parts re-render on storage changes; the Firefox version
+  // resolves async and re-renders once known (it used to stay "firefox ?").
   const meta = document.getElementById("footerMeta");
   if (meta) {
-    const setMeta = (sess: string) => {
+    const esc = (s: string) =>
+      s.replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      })[c]!);
+    let fxVer = "firefox ?";
+    try {
+      void browser.runtime
+        .getBrowserInfo()
+        .then((i: any) => {
+          fxVer = "firefox " + (i && i.version ? i.version : "?");
+          refreshMeta();
+        })
+        .catch(() => {});
+    } catch (e) {}
+    const renderMeta = (sess: string, prof: string): void => {
       const manifest = browser.runtime.getManifest();
-      let ver = "firefox ?";
-      try {
-        browser.runtime.getBrowserInfo().then((i: any) => {
-          ver = "firefox " + (i && i.version ? i.version : "?");
-        });
-      } catch (e) {}
       const parts: string[] = [];
-      if (sess) parts.push("session <b>" + sess + "</b>");
-      parts.push(ver);
+      if (sess) parts.push("session <b>" + esc(sess) + "</b>");
+      else if (prof) parts.push("profile <b>" + esc(prof) + "</b>");
+      parts.push(fxVer);
       parts.push("lazyfox " + (manifest && manifest.version ? manifest.version : "?"));
       meta.innerHTML = parts.join(" &middot; ");
     };
-    void browser.storage.local.get("lfCurrentSession").then((r: any) => {
-      setMeta((r && r.lfCurrentSession) || "");
+    const refreshMeta = (): void => {
+      void browser.storage.local.get(["lfCurrentSession", "lfProfileName"]).then((r: any) => {
+        renderMeta((r && r.lfCurrentSession) || "", (r && r.lfProfileName) || "");
+      });
+    };
+    refreshMeta();
+    browser.storage.onChanged.addListener((changes: any, area: any) => {
+      if (area === "local" && (changes.lfCurrentSession || changes.lfProfileName)) refreshMeta();
     });
   }
 

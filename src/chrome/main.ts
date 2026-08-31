@@ -27,6 +27,16 @@ import { createTypingChannel } from "./typing";
   // the options Components panel. Tracks the release; bump with each release.
   const CHROME_HELPER_VERSION = "0.5.6";
 
+  // Profile directory leaf name (e.g. "65rp05zu.lfxdev-…"), announced with the
+  // alive ping so the extension can show the ACTIVE profile in the command-
+  // center footer even before any tmux-style session has been saved.
+  let profileName = "";
+  try {
+    profileName = String(Services.dirsvc.get("ProfD").leafName || "");
+  } catch (e) {
+    // ignore — the footer falls back to versions only
+  }
+
   if (window.top !== window) return;
   if (!window.gBrowser) return;
 
@@ -129,6 +139,20 @@ import { createTypingChannel } from "./typing";
     manualText: false,
   };
   leaderActions = makeLeaderActions(ctx);
+  // `;f` is link-hints on web pages, but the command-center home has no page
+  // links — there it means "find": focus the home search box (the filtering
+  // equivalent). The chrome helper owns the leader on the home tab (it runs
+  // in-process whenever its keys reach chrome), so the routing happens here.
+  {
+    const startHints = leaderActions["f"]!;
+    leaderActions["f"] = () => {
+      if (isCommandCenterTab()) {
+        focusCommandCenterInput();
+        return;
+      }
+      startHints();
+    };
+  }
 
   // The chrome-level key dispatch (leader/popups/hotkeys/typing guard), set
   // up below but referenced here so the #lfc=keys channel can drive it. The
@@ -229,7 +253,10 @@ import { createTypingChannel } from "./typing";
     if (announcedAlive || aliveAckInFlight) return;
     if (!channel.ccBaseUrl()) return; // extension not ready yet; poll retries
     aliveAckInFlight = true;
-    void channel.requestReply("alive", CHROME_HELPER_VERSION).then((ack: any) => {
+    // The arg carries the helper version AND the active profile leaf name
+    // (\u0001-separated); the background stores both so the command-center
+    // footer can show the profile it is running under.
+    void channel.requestReply("alive", CHROME_HELPER_VERSION + "\u0001" + profileName).then((ack: any) => {
       aliveAckInFlight = false;
       // requestReply resolves null on timeout/error; the ack object on success.
       if (ack && ack.ok) announcedAlive = true;
@@ -394,12 +421,14 @@ import { createTypingChannel } from "./typing";
     const typingValue = typing.focusedTypingValue(e as KeyboardEvent);
 
     // The leader (or a one-shot capture) is armed: the next key is a binding —
-    // but only while the user isn't composing text in a field. A field holding
-    // text means typing wins: a stale leader/capture (e.g. `;` pressed on a
-    // page, then clicking into a search box) must disarm and the key must type.
-    // Exception: the command center empty home input keeps the binding —
+    // but only while the user isn't composing text. A field HOLDING text means
+    // typing wins: a stale leader/capture (e.g. `;` pressed on a page, then
+    // clicking into a search box) must disarm and the key must type. An EMPTY
+    // focused field keeps the binding (the command-center home input and an
+    // about: page's search box hold focus but no text — `;` there must still
+    // arm the leader so commands work without a click or Esc first).
     if (leader!.active || leader!.hasPending()) {
-      if (typingNow && !(typingValue === "" && isCommandCenterTab())) {
+      if (typingNow && !(typingValue === "" && (isCommandCenterTab() || isAboutPage()))) {
         if (leader!.active) leader!.hide();
         if (leader!.hasPending()) leader!.cancelPending();
         return false;
@@ -412,32 +441,35 @@ import { createTypingChannel } from "./typing";
       return true;
     }
 
+    // Esc on chrome-owned pages (about:, extension pages) blurs the focused
+    // element so the page returns to a neutral state — the settings search box
+    // on about:preferences#searchResults keeps focus otherwise, eating every
+    // key (and the native page does not always clear it). NOT consumed: the
+    // page also receives Esc (its own cancel/clear). The command center owns
+    // its Esc (clear input / exit command mode), and web pages are the content
+    // script's territory.
+    if (e.key === "Escape") {
+      if (!isCommandCenterTab()) blurFocusedElement();
+      return false;
+    }
+
     // Typing in an editable (a page input, the command center's own input, the
     // URL bar): never intercept — the leader key types like any other. The one
-    // exception is the command center's EMPTY home input: `;` there arms the
-    // leader so commands chain after a command leaves a fresh tab focused,
-    // instead of making the user click (or Esc) to blur it first.
+    // exception is an EMPTY focused field on a Lazyfox-owned page (the command
+    // center's home input, an about: page's search box): `;` there arms the
+    // leader so commands work without a mouse click or an Esc first. The URL
+    // bar is deliberately excluded (isAboutPage is false for it).
     if (typingNow) {
       if (
         e.key === leaderKey() &&
         !e.ctrlKey && !e.altKey && !e.metaKey &&
         typingValue === "" &&
-        isCommandCenterTab()
+        (isCommandCenterTab() || isAboutPage())
       ) {
         leader!.show();
         return true;
       }
       return false;
-    }
-
-    if (leader!.hasPending()) {
-      leader!.handlePending(e.key);
-      return true;
-    }
-
-    if (leader!.active) {
-      leader!.handleKey(e as KeyboardEvent);
-      return true;
     }
 
     // The command center is Lazyfox's own page. In command mode (input
@@ -465,12 +497,117 @@ import { createTypingChannel } from "./typing";
     // Ctrl/Alt/Meta chords are never the leader key on their own.
     if (e.ctrlKey || e.altKey || e.metaKey) return false;
 
+    // Vim scroll keys on chrome-owned pages where the content script never
+    // runs (about:, extension pages): j/k/d/u scroll, gg/G jump to top/bottom,
+    // mirroring the content script's web-page handling. The command center
+    // grid owns its own j/k/h/l navigation, so it is excluded.
+    if (!isCommandCenterTab() && handleChromeScrollKeys(e)) return true;
+
     if (k === leaderKey()) {
       leader!.show();
       return true;
     }
     return false;
   };
+
+  // Focus the command center's search input from chrome (the home tab is
+  // in-process whenever the chrome helper owns its keys, so the page's input
+  // element is reachable from here). Out-of-process the page owns its leader
+  // and routes ;f itself.
+  function focusCommandCenterInput(): void {
+    try {
+      const cw = window.gBrowser.selectedBrowser.contentWindow;
+      const input = cw && cw.document && cw.document.getElementById("input");
+      if (input && typeof input.focus === "function") input.focus();
+    } catch (e) {
+      // ignore — the page handles ;f when it is out of process
+    }
+  }
+
+  // Is the selected tab a privileged about: page (not the URL bar, not an
+  // extension page)? Used to scope the empty-field leader exception.
+  function isAboutPage(): boolean {
+    try {
+      const u = window.gBrowser.selectedBrowser.currentURI;
+      return !!(u && u.spec && /^about:/i.test(u.spec));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Vim-style scrolling for chrome-owned pages where the content script never
+  // runs (about:, extension pages): j/k/d/u scroll, gg/G jump. Mirrors the
+  // content script's web-page scroll keys. Only works when the page is
+  // reachable from chrome (in-process); cross-process pages fall through
+  // unconsumed (nothing else can scroll them).
+  let lastG = false;
+  function handleChromeScrollKeys(e: { key: string }): boolean {
+    if (cfg.config.scrollKeys === false) return false;
+    const k = e.key;
+    const scroll = (fn: (w: any) => void): boolean => {
+      try {
+        const cw = window.gBrowser.selectedBrowser.contentWindow;
+        if (!cw || !cw.document) return false;
+        fn(cw);
+        return true;
+      } catch (err) {
+        return false;
+      }
+    };
+    if (k === "j") return scroll((w) => w.scrollBy(0, 60));
+    if (k === "k") return scroll((w) => w.scrollBy(0, -60));
+    if (k === "d") return scroll((w) => w.scrollBy(0, Math.max(120, w.innerHeight * 0.5)));
+    if (k === "u") return scroll((w) => w.scrollBy(0, -Math.max(120, w.innerHeight * 0.5)));
+    if (k === "G") {
+      return scroll((w) =>
+        w.scrollTo(0, w.document.documentElement.scrollHeight || w.document.body.scrollHeight || 0)
+      );
+    }
+    if (k === "g") {
+      if (lastG) {
+        lastG = false;
+        return scroll((w) => w.scrollTo(0, 0));
+      }
+      lastG = true;
+      setTimeout(() => {
+        lastG = false;
+      }, 600);
+      return true;
+    }
+    return false;
+  }
+
+  // Esc on chrome-owned pages: blur whatever holds focus (an about: page's
+  // search box, a focused button) so the page returns to its neutral state
+  // and the vim keys / leader work without a click. Chrome UI fields (the URL
+  // bar) are left alone — the browser owns their Esc behavior.
+  function blurFocusedElement(): void {
+    try {
+      const fd = (document as { commandDispatcher?: { focusedElement?: Element | null } }).commandDispatcher;
+      const el = fd && fd.focusedElement;
+      if (
+        el &&
+        el !== document.body &&
+        el !== document.documentElement &&
+        typeof (el as HTMLElement).blur === "function"
+      ) {
+        (el as HTMLElement).blur();
+        return;
+      }
+    } catch (e) {
+      // fall through to the content probe
+    }
+    try {
+      const cw = window.gBrowser.selectedBrowser.contentWindow;
+      const doc = cw && cw.document;
+      const ae = doc && doc.activeElement;
+      if (ae && ae !== doc.body && ae !== doc.documentElement && typeof ae.blur === "function") {
+        ae.blur();
+      }
+    } catch (e) {
+      // cross-process or dead — nothing to blur
+    }
+  }
 
   window.addEventListener(
     "keydown",

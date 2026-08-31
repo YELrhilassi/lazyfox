@@ -120,4 +120,74 @@ const renderSteps = (isWin: boolean): void => {
       ? "chrome layer is active \u2014 enjoy the full UI!"
       : "still not detected \u2014 did you restart Firefox after running the installer?";
   });
+
+  // The chrome helper cannot see keys typed into this page (extension pages
+  // run out of process), so the page provides the vim scroll keys, Esc-to-
+  // blur/back and a minimal `;` leader (;g back) itself — the same keys the
+  // chrome helper gives about: pages. Keeps j/k/gg/G and `;g` working here.
+  let leaderPending = false;
+  let gArmed = false;
+  const pageScroll = (dy: number): void => window.scrollBy(0, dy);
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.isComposing) return;
+      if (leaderPending) {
+        e.preventDefault();
+        leaderPending = false;
+        if (e.key === "Escape") return;
+        if (e.key === "g" || e.key === "G") {
+          if (window.history.length > 1) window.history.back();
+        }
+        return;
+      }
+      const ae = document.activeElement as HTMLElement | null;
+      const tag = ae ? String(ae.tagName).toUpperCase() : "";
+      const inField =
+        !!ae &&
+        (tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT" ||
+          ae.isContentEditable ||
+          ae.getAttribute("contenteditable") === "true");
+      if (e.key === "Escape") {
+        if (inField) {
+          e.preventDefault();
+          ae.blur();
+        } else if (window.history.length > 1) {
+          e.preventDefault();
+          window.history.back();
+        }
+        return;
+      }
+      if (inField || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key === ";") {
+        e.preventDefault();
+        leaderPending = true;
+        return;
+      }
+      if (e.key === "j") { e.preventDefault(); pageScroll(60); return; }
+      if (e.key === "k") { e.preventDefault(); pageScroll(-60); return; }
+      if (e.key === "d") { e.preventDefault(); pageScroll(Math.max(120, window.innerHeight * 0.5)); return; }
+      if (e.key === "u") { e.preventDefault(); pageScroll(-Math.max(120, window.innerHeight * 0.5)); return; }
+      if (e.key === "G") {
+        e.preventDefault();
+        window.scrollTo(0, document.documentElement.scrollHeight || document.body.scrollHeight || 0);
+        return;
+      }
+      if (e.key === "g") {
+        e.preventDefault();
+        if (gArmed) {
+          gArmed = false;
+          window.scrollTo(0, 0);
+        } else {
+          gArmed = true;
+          setTimeout(() => {
+            gArmed = false;
+          }, 600);
+        }
+      }
+    },
+    true
+  );
 })();
