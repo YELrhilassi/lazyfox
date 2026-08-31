@@ -446,9 +446,32 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
   }
 
+  // The 500ms poll alone leaves a window where the relay sits selected after
+  // Firefox auto-selects an adjacent tab on a close (the white flash). Hook
+  // the tab container so any selection/close of the relay is corrected on the
+  // same tick. Idempotent; guards against double-hooking.
+  let tabEventsHooked = false;
+  function hookTabSelectionGuard(): void {
+    if (tabEventsHooked) return;
+    tabEventsHooked = true;
+    try {
+      const container = window.gBrowser && window.gBrowser.tabContainer;
+      if (!container) return;
+      container.addEventListener("TabSelect", () => keepRelayUnselected());
+      container.addEventListener("TabClose", () => {
+        // Firefox may select the adjacent tab (possibly the relay) AFTER the
+        // close event; steer on the next tick once selection has settled.
+        setTimeout(() => keepRelayUnselected(), 0);
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
+
   function startRelay(): boolean {
     if (!ccBaseUrl()) return false;
     let r = resolveRelayTab();
+    hookTabSelectionGuard();
     if (!r) {
       // No relay yet: create the tab; requests queue until it exists.
       createRelayTab();
