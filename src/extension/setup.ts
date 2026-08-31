@@ -3,9 +3,10 @@
 // A WebExtension cannot write files into the profile or the Firefox install
 // dir, so Lazyfox ships a single native, self-contained installer binary (pure
 // Go, no shell/PowerShell). This page points the user to the GitHub Releases
-// download for their OS and walks them through running it. The chrome layer
-// announces itself alive on window startup; until then chromeAlive is false
-// and this page shows what is missing and how to finish the install.
+// download for their OS and walks them through it. It deliberately stays
+// low-tech: a clear status, the active profile to target, and one obvious
+// download button. The chrome layer announces itself alive on window startup;
+// until then chromeAlive is false and this page shows what is missing.
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
 
 const osName = (os: string): string => {
@@ -34,38 +35,22 @@ const renderStatus = (): void => {
   const card = $("statusCard");
   if (alive) {
     dot.className = "dot on";
-    card.className = "card ok";
-    txt.textContent = "Chrome layer is active — the full Lazyfox UI is installed and running.";
+    card.className = "card status ok";
+    txt.textContent = "The full Lazyfox UI is installed and running. Nothing left to do here.";
   } else {
     dot.className = "dot";
-    card.className = "card warn";
+    card.className = "card status warn";
     txt.textContent =
-      "Chrome layer is not loaded — the add-on works, but the toolbar-free UI and chrome-level ; keys are missing. Follow the steps below.";
+      "Lazyfox is only half-installed — follow the three steps below to finish, then come back and check again.";
   }
 };
 
-const renderSteps = (isWin: boolean): void => {
-  const steps = $("steps");
-  if (isWin) {
-    steps.innerHTML =
-      "<li><b>Download</b> <span class='kbd'>lazyfox-install-windows.exe</span> (step 1).</li>" +
-      "<li><b>Run it</b> — double-click the file.</li>" +
-      "<li>If Windows shows a SmartScreen warning, click <b>More info</b> &rarr; <b>Run anyway</b> (it is a signed, open-source installer).</li>" +
-      "<li>Accept the one-time <b>UAC</b> prompt (installs the autoconfig loader into the Firefox folder).</li>" +
-      "<li>The installer's <b>guided wizard</b> finds your Firefox and walks you through it.</li>" +
-      "<li>When it finishes, fully quit and restart Firefox.</li>";
-  } else {
-    steps.innerHTML =
-      "<li><b>Download</b> <span class='kbd'>lazyfox-install-" +
-      (navigator.platform.toLowerCase().indexOf("mac") !== -1 ? "darwin" : "linux") +
-      "</span> (step 1).</li>" +
-      "<li>Make it executable and <b>run</b> it in a terminal:<br>" +
-      "<span class='kbd'>chmod +x ~/Downloads/lazyfox-install-*</span><br>" +
-      "<span class='kbd'>~/Downloads/lazyfox-install-*</span></li>" +
-      "<li>Enter your password at the one-time <b>sudo</b> prompt (installs the autoconfig loader into the Firefox folder).</li>" +
-      "<li>The installer's <b>guided wizard</b> finds your Firefox and walks you through it.</li>" +
-      "<li>When it finishes, fully quit and restart Firefox.</li>";
-  }
+const renderProfile = (): void => {
+  void browser.storage.local.get("lfProfileName").then((r: any) => {
+    const el = $("profileName");
+    el.textContent = (r && r.lfProfileName) ? "Profile \u201C" + r.lfProfileName + "\u201D" : "your current profile";
+    if (r && r.lfProfileName) el.setAttribute("title", "lazyfox will install into this profile directory");
+  }).catch(() => {});
 };
 
 (async () => {
@@ -79,17 +64,16 @@ const renderSteps = (isWin: boolean): void => {
 
   const info = await browser.runtime.getPlatformInfo();
   const os = info.os;
-  const isWin = os === "win";
   const asset: string = ASSET[os] || "lazyfox-install-linux";
   $("osName").textContent = osName(os);
-  renderSteps(isWin);
 
   const dl = $("dl") as HTMLAnchorElement;
   dl.href = releaseUrl(asset);
-  dl.textContent = "Download lazyfox-install (" + osName(os) + ")";
+  dl.textContent = "Download the installer for " + osName(os);
   $("dlNote").textContent =
-    "~23 MB, fully self-contained (the chrome helper and the AMO-signed add-on are embedded). " +
-    "If the download does not start, " + "<a href='" + releaseUrl(asset) + "'>click here</a>.";
+    "~23 MB, fully self-contained. If the download does not start, " + "<a href='" + releaseUrl(asset) + "'>click here</a>.";
+
+  renderProfile();
 
   const readAlive = async (): Promise<boolean> => {
     try {
@@ -104,21 +88,26 @@ const renderSteps = (isWin: boolean): void => {
 
   browser.storage.onChanged.addListener(
     (changes: { [key: string]: { oldValue?: unknown; newValue?: unknown } }, area: string) => {
-      if (area === "local" && changes.chromeAlive) {
+      if (area !== "local") return;
+      if (changes.chromeAlive) {
         alive = !!changes.chromeAlive.newValue;
         renderStatus();
       }
+      if (changes.lfProfileName) renderProfile();
     }
   );
 
   $("verify").addEventListener("click", async () => {
-    const st = $("status");
+    const st = $("statusText");
     st.textContent = "checking\u2026";
     alive = await readAlive();
     renderStatus();
-    st.textContent = alive
-      ? "chrome layer is active \u2014 enjoy the full UI!"
-      : "still not detected \u2014 did you restart Firefox after running the installer?";
+    if (alive) {
+      st.textContent = "Ready to go \u2014 enjoy the full Lazyfox!";
+    } else {
+      st.textContent = "Still not detected \u2014 did you restart Firefox after running the installer?";
+    }
+    renderProfile();
   });
 
   // The chrome helper cannot see keys typed into this page (extension pages

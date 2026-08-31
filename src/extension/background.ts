@@ -1013,6 +1013,24 @@ function checkChromeLayerHealth(): void {
     .catch(() => {});
 }
 
+// The active Firefox profile the extension is running under, stored so the
+// setup page can tell the user which profile the installer will target. Read
+// via Services.dirsvc in the background (available to Firefox extension
+// contexts, so this works before the chrome helper is installed); the chrome
+// helper's alive announce writes the same key once the helper layer is up.
+function storeActiveProfileName(): void {
+  try {
+    const leaf = String(Services.dirsvc.get("ProfD").leafName || "");
+    if (leaf && browser.storage.local) {
+      browser.storage.local.set({ lfProfileName: leaf }).catch(() => {});
+    }
+  } catch (e) {
+    // Services.dirsvc unavailable here (non-Firefox / an odd context): leave
+    // the name to the chrome helper's announce.
+  }
+}
+storeActiveProfileName();
+
 // Fresh store installs (chrome never announced): offer the full UI once, since
 // the add-on alone is only half of Lazyfox. One-shot via setupNudgeShown so a
 // standalone-only user is not nagged again.

@@ -95,6 +95,14 @@
     height: auto; min-width: 0; border-left: none; border-radius: 8px; padding: 13px 14px;
     display: flex; align-items: center; gap: 12px; min-height: 56px;
     transition: background .1s ease;
+    position: relative;
+  }
+  /* ;f hint-pick: a small letter badge over each home-grid tile. */
+  #results.quick .result .hintkey {
+    position: absolute; top: 6px; right: 8px; z-index: 2;
+    min-width: 16px; height: 16px; line-height: 16px; text-align: center;
+    font: 650 10px ui-monospace, Menlo, Consolas, monospace;
+    color: #0b0e18; background: var(--accent); border-radius: 4px;
   }
   #results.quick .result:hover:not(.selected) { background: var(--bg2); }
   #results.quick .result.selected { background: var(--sel); }

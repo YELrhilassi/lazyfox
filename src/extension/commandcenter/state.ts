@@ -17,6 +17,9 @@ export interface CCState {
   leaderPending: boolean;
   inInsert: boolean;
   closeArmed: boolean;
+  // Home-grid hint-pick mode (armed by `;f`): each tile shows a letter and the
+  // next printable key runs that tile.
+  hintArmed: boolean;
 }
 
 export interface CCStore {
@@ -36,6 +39,7 @@ export function createStore(initial: Partial<CCState> = {}): CCStore {
     leaderPending: false,
     inInsert: false,
     closeArmed: false,
+    hintArmed: false,
     ...initial,
   };
   return {
