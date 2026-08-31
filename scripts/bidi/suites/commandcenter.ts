@@ -82,6 +82,22 @@ export async function run(ctx) {
     assert((s.popup.panels[0] || {}).title === "Search", "search popup title");
     await ctx.press(ctx.tabA, "Escape");
     await waitFor(async () => !(await ctx.chromeState()).popup.current, 8000);
+  });  await t("about:home (the startup-page fallback) converts to the command center", async () => {
+    // Bug fix: Firefox's STARTUP tab defaults to about:home, which a Chrome
+    // URL override cannot redirect. The startup fix points
+    // browser.startup.homepage at about:newtab (which the override redirects
+    // instantly); this test covers the FALLBACK — any tab left on about:home
+    // (an explicit Home press, a profile whose homepage stayed at about:home)
+    // is converted to the command center by the background.
+    await ctx.activateTab(ctx.tabA);
+    await navigate(ctx.tabA, "about:home", "none");
+    await waitFor(async () => {
+      const u = await evalIn(ctx.tabA, `location.href`);
+      return u && u.includes("commandcenter.html") ? u : null;
+    }, 15000);
+    const f = await ctx.ccFacts(ctx.tabA);
+    assert(f.url.includes("commandcenter.html"), "about:home converted to the command center, got " + f.url);
+    await ctx.openCC(ctx.tabA);
   });
 
   await t("leader ;f on the home page focuses the search box", async () => {
