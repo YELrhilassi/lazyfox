@@ -69,12 +69,26 @@ export async function run(ctx) {
         ok: !!document.getElementById("lazyfox-setup"),
         dl: (document.getElementById("dl") || {}).href || "",
         steps: (document.getElementById("steps") || {}).textContent || "",
+        profileName: (document.getElementById("profileName") || {}).textContent || "",
+        profileDir: (document.getElementById("profileDir") || {}).textContent || "",
+        lfProfileName: (await browser.storage.local.get("lfProfileName").then(r => r && r.lfProfileName).catch(() => null)) || null,
         alive: await browser.storage.local.get("chromeAlive").then(r => !!r.chromeAlive).catch(() => null),
       });
     })()`);
     const dump = JSON.parse(raw);
     assert(dump.ok && dump.dl, "setup page rendered, got " + raw);
     assert(dump.steps && dump.steps.length > 0, "install steps rendered");
+    // The page must show the ACTIVE profile's real name (stored by the chrome
+    // helper's alive announce), never the "your current profile" placeholder
+    // — the user has to match this name in the installer's profile picker.
+    assert(
+      dump.profileName && dump.profileName !== "your current profile" && dump.profileName !== "loading\u2026",
+      "setup page shows the real profile name, got " + JSON.stringify(dump.profileName)
+    );
+    assert(
+      dump.lfProfileName && dump.profileName.indexOf(dump.lfProfileName) !== -1,
+      "shown name matches the stored active profile (" + JSON.stringify(dump.lfProfileName) + ")"
+    );
     assert(
       typeof dump.dl === "string" && dump.dl.indexOf("releases/latest/download/lazyfox-install-") !== -1,
       "Download control targets a GitHub Releases installer asset, got " + dump.dl

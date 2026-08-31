@@ -33,6 +33,7 @@ export interface ChannelDeps {
   // The chrome ops adapter (built by ops.ts, wired by main).
   ops: {
     openTarget(which: string): boolean;
+    openUrlNative(url: string): boolean;
     openResize(): void;
   };
   split: SplitView;
@@ -622,7 +623,34 @@ export function createChannel(deps: ChannelDeps): Channel {
   }
 
   function handleOpen(target: string, browser: any): void {
-    const closeCc = target.indexOf("c") !== -1;
+    // `.c` marks "close the requesting command-center tab after opening".
+    // Checked by SUFFIX (not contains): the base64 URL payload below can
+    // legitimately contain the letter c.
+    const closeCc = target.endsWith(".c");
+    // `u.<base64url>` opens an arbitrary URL natively (about: pages, which
+    // the tabs API rejects as "Illegal URL", are routed here by the
+    // background). base64 never contains a dot, so the first dot after the
+    // `u.` prefix delimits the payload.
+    if (target.indexOf("u.") === 0) {
+      const rest = target.slice(2);
+      const dot = rest.indexOf(".");
+      const b64 = dot < 0 ? rest : rest.slice(0, dot);
+      try {
+        const url = decodeURIComponent(escape(atob(b64)));
+        if (typeof deps.ops.openUrlNative === "function") deps.ops.openUrlNative(url);
+      } catch (e) {
+        // malformed payload — ignore
+      }
+      if (closeCc && browser) {
+        try {
+          const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
+          if (tab) window.gBrowser.removeTab(tab);
+        } catch (e) {
+          // ignore
+        }
+      }
+      return;
+    }
     const which = target.split(".")[0]!;
     const POPUP_ACTIONS: Record<string, () => void> = {
       search: () => openSearchPopup(deps.ctx),

@@ -58,6 +58,9 @@ export interface ActionOps {
   focusFirstInput(): void;
   startHints(): void;
   openTarget(which: string): void;
+  // Open an arbitrary URL natively (switchToTabHavingURI / addTab) — the only
+  // path that can load about: pages (the tabs API rejects them).
+  openUrlNative(url: string): boolean;
 
   // Popups whose chrome is context-specific (native find bar vs in-page find,
   // window resize via chrome window APIs vs background messages).

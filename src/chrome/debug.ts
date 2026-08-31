@@ -246,6 +246,16 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
         // ignore
       }
       const state = {
+        // The active profile's raw directory leaf (ProfD) — reported so the
+        // "setup page shows no profile name" problem is diagnosable.
+        profileLeaf: (() => {
+          try {
+            const f = Services.dirsvc.get("ProfD", Ci.nsIFile);
+            return f ? String(f.leafName || "") : "<null>";
+          } catch (e) {
+            return "<error: " + e + ">";
+          }
+        })(),
         // Firefox blocks content scripts on restricted domains
         // (addons.mozilla.org, accounts.firefox.com, ...) unless this pref is
         // emptied; reported so "extension doesn't work on AMO" is diagnosable.
