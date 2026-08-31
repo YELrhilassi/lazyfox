@@ -94,6 +94,86 @@ export const pages = {
   "/target1": { body: `<!DOCTYPE html><title>TARGET ONE</title><h1>Target One</h1><a href="/">back</a>` },
   "/target2": { body: `<!DOCTYPE html><title>TARGET TWO</title><h1>Target Two</h1><a href="/">back</a>` },
   "/hello": { body: `<!DOCTYPE html><title>HELLO PAGE</title><h1>Hello</h1>` },
+
+  // A realistic editorial page used for the store screenshots / examples: a
+  // titled article with paragraphs, headings, a nav + footer of links (plenty
+  // for link-hint badges), a searchable word repeated for the find-in-page
+  // match count, and a couple of actions. Light theme so it reads clearly
+  // alongside the dark command center.
+  "/demo": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Keyboard-driven browsing — Lazyfox</title>
+<style>
+  body { margin:0; font: 16px/1.55 Georgia, "Times New Roman", serif; color:#2a2a2a; background:#fff; }
+  header { background:#222; color:#fff; padding:14px 28px; font-family: system-ui, sans-serif; }
+  header .brand { font-weight:700; letter-spacing:.03em; }
+  header nav, footer nav { display:flex; gap:18px; margin-top:8px; font-size:14px; flex-wrap:wrap; }
+  header a, footer a { color:#e8c26a; text-decoration:none; }
+  nav.wrap, main, footer { max-width:760px; margin:0 auto; padding:0 28px; }
+  main { padding-top:28px; }
+  h1 { font-size:32px; line-height:1.2; margin:0 0 6px; }
+  .byline { color:#777; font-family:system-ui,sans-serif; font-size:14px; }
+  img.hero { width:100%; height:140px; object-fit:cover; border-radius:8px; background:linear-gradient(135deg,#b98d33,#c84f03); margin:16px 0; }
+  p { margin:0 0 16px; }
+  h2 { font-size:22px; margin:26px 0 8px; }
+  ul { margin:0 0 16px; padding-left:22px; }
+  code { background:#f3f3f3; padding:2px 5px; border-radius:4px; font-size:14px; }
+  pre { background:#f6f6f6; padding:12px; border-radius:8px; overflow:auto; font-size:13px; }
+  .actions { display:flex; gap:10px; margin:18px 0; }
+  button { font: 500 14px/1 system-ui,sans-serif; padding:9px 14px; border-radius:6px; border:1px solid #cacaca; background:#fff; cursor:pointer; }
+  .actions button.run { background:#c84f03; border-color:#c84f03; color:#fff; }
+  mark { background:#ffe28a; padding:0 2px; border-radius:3px; }
+</style></head><body>
+<header>
+  <div class="brand">The Daily Fox</div>
+  <nav>
+    <a href="#world">World</a><a href="#tech">Technology</a><a href="#science">Science</a>
+    <a href="#travel">Travel</a><a href="#opinion">Opinion</a><a href="#about">About</a>
+  </nav>
+</header>
+<main>
+  <h1>Browsing without the browser around it</h1>
+  <p class="byline">By A. Key · 12 min read</p>
+  <div class="hero"></div>
+  <p>For most of a decade the browser wedged itself between you and the web: tab
+  strips, toolbars and menus that turn every page into an office filing cabinet.
+  Lazyfox removes all of it. Your page gets the whole window, and a single
+  leader key — <code>;</code> — runs everything else. Hints, tabs, history,
+  sessions and search all answer to that one key.</p>
+  <p>Type <code>;</code> and the screen answers with a compact overlay of every
+  shortcut. Press a key and the action happens — no mouse, no Enter, nothing to
+  memorize. <mark>Lazyfox</mark> is <mark>Lazyfox</mark> because the browser stays
+  out of the way until you need it.</p>
+  <h2 id="tech">The command center</h2>
+  <p>Your new-tab page is a search box over the things you already have: recent
+  actions, open tabs, history, bookmarks and downloads. Type to search the web
+  or jump straight to a site. The home grid also holds quick-launch apps and
+  one-key access to your bookmarks, history and downloads.</p>
+  <h2 id="science">Hinted links, split panes, sessions</h2>
+  <ul>
+    <li><a href="#hints">Link hints</a> put a letter on every visible link.</li>
+    <li><a href="#split">Split view</a> pairs two tabs side by side.</li>
+    <li><a href="#sessions">Sessions</a> restore whole windows on demand.</li>
+    <li><a href="#find">Find in page</a> highlights text and counts matches.</li>
+    <li><a href="#stealth">Stealth tabs</a> wipe their own cookies.</li>
+  </ul>
+  <h2 id="opinion">One key, one habit</h2>
+  <p>Nothing to install beyond the one small add-on, nothing to configure to get
+  started. If you already use vim, the <code>h</code>, <code>j</code>, <code>k</code>,
+  <code>l</code> scroll keys and <code>Esc</code>-to-unfocus will feel like home.</p>
+  <pre><code>;   open the which-key menu
+;f  press a letter label to open that link
+;p  save or jump to a named session
+;/  search the page (with yank)
+;|  split the current tab side-by-side</code></pre>
+  <p class="byline">Inline links: <a href="#a">docs</a>, <a href="#b">changelog</a>,
+  <a href="#c">install</a>, <a href="#d">source</a>, <a href="#e">support</a>.</p>
+  <div class="actions"><button class="run">Read more</button><button>Bookmark</button><button>Share</button></div>
+</main>
+<footer style="border-top:1px solid #eee;margin-top:30px;padding:20px 28px;font-family:system-ui,sans-serif;">
+  <nav><a href="#terms">Terms</a><a href="#privacy">Privacy</a><a href="#rss">RSS</a><a href="#contact">Contact</a></nav>
+</footer>
+</body></html>`,
+  },
   // A page that scrolls via BODY (html,body { height:100% } + body overflow)
   // — the status bar must reserve on the body element there, or the bar
   // covers the page's last rows.
