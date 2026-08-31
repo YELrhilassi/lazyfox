@@ -1,4 +1,20 @@
-import type { ChromeHotkeys, Config } from "./types";
+import type { ChromeHotkeys, Config, QuickApp } from "./types";
+
+// Factory for the default quick-launch apps. The full desktop set (Spotify,
+// YouTube, X, GitHub, Reddit, Gmail, Netflix) is enabled by default so the
+// home grid feels useful on first run; each can be toggled or have its name /
+// URL edited (or a new one added) on the options page.
+export function defaultApps(): QuickApp[] {
+  return [
+    { id: "spotify", name: "Spotify", url: "https://open.spotify.com", enabled: true },
+    { id: "youtube", name: "YouTube", url: "https://youtube.com", enabled: true },
+    { id: "x", name: "X", url: "https://x.com", enabled: true },
+    { id: "github", name: "GitHub", url: "https://github.com", enabled: true },
+    { id: "reddit", name: "Reddit", url: "https://reddit.com", enabled: true },
+    { id: "gmail", name: "Gmail", url: "https://mail.google.com", enabled: true },
+    { id: "netflix", name: "Netflix", url: "https://netflix.com", enabled: false },
+  ];
+}
 
 // Config defaults are plain data (not logic), so they live here as the single
 // TS source that the chrome helper, content script, background and options
@@ -15,7 +31,9 @@ export const CONFIG_DEFAULTS: Config = {
   statusBar: true,
   statusBarPosition: "bottom",
   autoRestore: true,
+  apps: defaultApps(),
 };
+
 
 export const CHROME_HOTKEY_DEFAULTS: ChromeHotkeys = {
   preferences: "Ctrl+Alt+O",
