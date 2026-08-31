@@ -100,7 +100,7 @@ export function wkBodyHtml(page: WkPage, sel: number): string {
 
 export function wkFootHtml(pageNum: number, total: number): string {
   return (
-    "<span>\u2191/\u2193 select</span><span>Enter run</span><span>Esc cancel</span>" +
+    "<span>\u2191/\u2193 move</span><span>Tab page</span><span>Enter run</span><span>Esc cancel</span>" +
     "<span class='wk-page'>" + (pageNum + 1) + "/" + total + "</span>"
   );
 }

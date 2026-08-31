@@ -198,38 +198,39 @@ html[data-lf-reveal="1"] #navigator-toolbox:hover #nav-bar {
 
 /* ---------- native split view (Firefox 149+) ---------- */
 
-/* The split view reads as twin tab pills: rounded corners, a gap between the
-   panes, and a thick browser-tinted outline on the focused pane. Lazyfox
-   strips the tab strip, so the only sense the split panes need is which one
-   is active — flatten the pills to clean edges sitting flush, and turn the
-   focus cue into a thin app-accent border instead of the heavy outline.
-   Rules target the custom element directly so they apply wherever the split
-   wrapper renders (strip or pane overlay). */
+/* Firefox rounds the split panes themselves: each pane's .browserContainer
+   gets border-radius + a border, and the ACTIVE pane is inset with a margin
+   and wears a thick focus outline. Lazyfox hides the tab strip, so the pane
+   chrome IS the split UI — flatten the corners, sit the panes flush (no
+   inset margin, no gap), and turn the active cue into a thin app-accent
+   border. The tab-strip split pills (tab-split-view-wrapper) are covered too
+   in case any build renders them. */
 
-tab-split-view-wrapper {
+#tabbrowser-tabpanels[splitview] .browserContainer {
   border-radius: 0 !important;
-  gap: 0 !important;
-  padding: 0 !important;
-  margin-inline: 0 !important;
+  outline: 1px solid var(--lf-border2) !important;
 }
 
-tab-split-view-wrapper .tabbrowser-tab {
-  padding-inline: 0 !important;
+/* active pane: no inset margin (panes sit flush) and a thin accent outline */
+#tabbrowser-tabpanels[splitview] .split-view-panel-active {
+  margin: 0 !important;
 }
 
+#tabbrowser-tabpanels[splitview] .deck-selected > .browserContainer {
+  outline: 1px solid var(--lf-accent) !important;
+}
+
+/* tab-strip split pills (only visible on builds that render them) */
+tab-split-view-wrapper,
+tab-split-view-wrapper .tabbrowser-tab,
 tab-split-view-wrapper .tabbrowser-tab .tab-background {
   border-radius: 0 !important;
+  gap: 0 !important;
+  padding-inline: 0 !important;
   margin-inline: 0 !important;
   box-shadow: none !important;
-  outline: none !important;
 }
 
-/* flush the two panes edge to edge, no tooth between them */
-tab-split-view-wrapper .tabbrowser-tab:last-child {
-  border-inline-start: none !important;
-}
-
-/* active pane: subtle tinted fill + thin app-accent border */
 tab-split-view-wrapper[hasactivetab] {
   background: var(--lf-sel) !important;
   border: 1px solid var(--lf-accent) !important;

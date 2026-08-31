@@ -23,25 +23,22 @@ export function leaderCombo(e: KeyboardEvent): string {
 }
 
 export const WK_CSS =
-  ".wk{position:fixed;left:50%;transform:translateX(-50%);bottom:30px;z-index:2147483646;" +
+  ".wk{position:fixed;right:24px;bottom:30px;z-index:2147483646;" +
   "width:360px;max-width:94vw;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:8px;" +
   "box-shadow:0 24px 70px rgba(0,0,0,.6);display:none;font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden}" +
   ".wk.on{display:block}" +
-  ".wk-head{padding:8px 14px;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#7aa2f7;" +
-  "border-bottom:1px solid #2a2f45;display:flex;gap:10px;align-items:center}" +
-  ".wk-prompt{background:#16161e;border:1px solid #414868;border-radius:5px;padding:1px 7px;color:#7aa2f7;font-weight:600}" +
-  ".wk-head .sp{color:#565f89}" +
-  ".wk-head .pg{margin-left:auto;color:#2ac3de}" +
-  ".wk-body{padding:6px 12px;overflow:hidden}" +
-  ".wk-group{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:#565f89;margin:8px 0 3px}" +
-  ".wk-grid{display:grid;grid-template-columns:1fr;gap:1px 10px}" +
-  ".wk-item{display:flex;align-items:center;gap:8px;padding:3px 6px;border-radius:5px;font-size:12px;cursor:default;line-height:1.25}" +
+  ".wk-body{padding:8px 12px 6px;overflow:hidden}" +
+  ".wk-group{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:#565f89;margin:8px 2px 3px}" +
+  ".wk-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px 8px}" +
+  ".wk-item{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 6px;border-radius:5px;font-size:12px;cursor:default;line-height:1.25}" +
+  ".wk-item>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
   ".wk-item.sel{background:#292e42;outline:1px solid #7aa2f7}" +
   ".wk-item.dim{color:#9aa5ce}" +
   ".wk-kbd{display:inline-block;min-width:24px;text-align:center;background:#16161e;border:1px solid #414868;" +
   "border-bottom-width:2px;border-radius:4px;padding:0 6px;color:#7aa2f7;font-size:11px;white-space:nowrap}" +
   ".wk-item.dim .wk-kbd{color:#9aa5ce}" +
-  ".wk-foot{padding:6px 14px;font-size:10px;color:#565f89;border-top:1px solid #2a2f45;display:flex;gap:12px;flex-wrap:wrap}";
+  ".wk-foot{padding:6px 14px;font-size:10px;color:#565f89;border-top:1px solid #2a2f45;display:flex;gap:12px;flex-wrap:wrap;white-space:nowrap}" +
+  ".wk-foot .wk-page{margin-left:auto;color:#2ac3de;font-weight:700}";
 
 type LeaderHost = HTMLElement & { _sh: ShadowRoot };
 
@@ -124,11 +121,6 @@ export class LeaderController {
     const total = await this.wk.pageCount();
     const page = await this.wk.slice();
     this.host._sh.querySelector(".wk-body")!.innerHTML = wkBodyHtml(page, this.wk.sel);
-    const head = this.host._sh.querySelector(".wk-head");
-    if (head) {
-      const pg = head.querySelector(".pg");
-      if (pg) pg.textContent = this.wk.page + 1 + "/" + total;
-    }
     const foot = this.host._sh.querySelector(".wk-foot")!;
     foot.innerHTML = wkFootHtml(this.wk.page, total);
   }
@@ -143,9 +135,7 @@ export class LeaderController {
       const sh = this.host.attachShadow({ mode: "closed" });
       sh.innerHTML =
         "<style>" + WK_CSS + "</style>" +
-        "<div class='wk'><div class='wk-head'><span class='wk-prompt'>LZ\u203A</span>" +
-        "<span class='sp'>lazyfox leader</span><span class='pg'>1/1</span></div>" +
-        "<div class='wk-body'></div><div class='wk-foot'></div></div>";
+        "<div class='wk'><div class='wk-body'></div><div class='wk-foot'></div></div>";
       this.host._sh = sh;
       document.documentElement.appendChild(this.host);
     }
