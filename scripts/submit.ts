@@ -87,12 +87,17 @@ if (exist.status !== 200) {
 }
 const slug = exist.json?.slug;
 
-// 6. Upload the fresh package (listed channel).
+// 6. Upload the fresh package (listed channel). The body is a multi-MB xpi, so
+//    give the POST room and let a slow/throttled AMO fail cleanly (the api()
+//    helper now wraps fetch in a timeout and reports cur.throttle).
 console.log(`[submit] uploading ${path.basename(xpi)} (v${version}, listed)…`);
 const fd = new FormData();
 fd.append("upload", new Blob([fs.readFileSync(xpi)], { type: "application/zip" }), path.basename(xpi));
 fd.append("channel", "listed");
-const up = await api("/addons/upload/", { method: "POST", body: fd });
+const up = await api("/addons/upload/", { method: "POST", body: fd, timeout: 120000 });
+if (up.status === 429) {
+  fail(`AMO rate-limited the upload (429). Wait ${up.throttle || "a while"}s and re-run \`npm run submit\` — do not call the API repeatedly.`);
+}
 const uuid = up.json?.uuid;
 if (!uuid) fail(`upload failed: ${JSON.stringify(up.json || up.text)}`);
 console.log(`[submit] upload accepted (${uuid}); waiting for AMO to validate…`);
@@ -101,6 +106,9 @@ console.log(`[submit] upload accepted (${uuid}); waiting for AMO to validate…`
 let processed = false;
 for (let i = 0; i < 60; i++) {
   const st = await api(`/addons/upload/${uuid}/`);
+  if (st.status === 429) {
+    fail(`AMO rate-limited the validation poll (429). Wait ${st.throttle || "a while"}s and re-run \`npm run submit\` — the upload is already accepted, a re-run re-uploads.`);
+  }
   if (st.json?.processed) {
     processed = true;
     const errs = (st.json.validation || {}).errors || [];
@@ -123,6 +131,9 @@ const ver = await api(`/addons/addon/${guid()}/versions/`, {
 });
 const v = ver.json?.version || ver.json;
 const vid = v?.version || v?.id;
+if (ver.status === 429) {
+  fail(`AMO rate-limited the version submission (429). Wait ${ver.throttle || "a while"}s and re-run \`npm run submit\`.`);
+}
 if (ver.status !== 201 && ver.status !== 200) {
   fail(`version creation failed (${ver.status}): ` + JSON.stringify(ver.json?.detail || ver.json || ver.text).slice(0, 300));
 }

@@ -67,21 +67,48 @@ interface ApiResult {
   status: number;
   json: any | null;
   text: string;
+  // Seconds until AMO's rate limit clears, when status === 429.
+  throttle?: number;
 }
 
-export async function api(apiPath: string, opts: RequestInit = {}): Promise<ApiResult> {
-  const res = await fetch(uri + apiPath, {
-    ...opts,
-    headers: { Authorization: "JWT " + token(), ...(opts.headers || {}) },
-  });
-  const text = await res.text();
-  let json: any | null = null;
+// api() options: RequestInit plus a per-call timeout (default 30s so a slow or
+// rate-limited AMO never hangs the release scripts forever — the original
+// bare fetch with no timeout left `npm run submit` wedged on the upload POST
+// waiting on a throttled response). Also surfaces the 429 cooldown as
+// ApiResult.throttle so callers can wait cleanly instead of hammering.
+type ApiOpts = RequestInit & { timeout?: number };
+
+export async function api(apiPath: string, opts: ApiOpts = {}): Promise<ApiResult> {
+  const { timeout = 30000, ...rest } = opts;
   try {
-    json = JSON.parse(text);
-  } catch {
-    /* not JSON */
+    const res = await fetch(uri + apiPath, {
+      ...rest,
+      headers: {
+        Authorization: "JWT " + token(),
+        ...((rest.headers || {}) as Record<string, string>),
+      },
+      signal: rest.signal || AbortSignal.timeout(timeout),
+    });
+    const text = await res.text();
+    let json: any | null = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      /* not JSON */
+    }
+    let throttle: number | undefined;
+    if (res.status === 429 && json && typeof json.detail === "string") {
+      const m = /available in (\d+) seconds\.?/.exec(json.detail);
+      if (m) throttle = Number(m[1]);
+    }
+    return { status: res.status, json, text, throttle };
+  } catch (e) {
+    const msg = String((e && (e as Error).message) || e);
+    if (/abort|timeout/i.test(msg)) {
+      throw new Error(`AMO request to ${apiPath} timed out after ${timeout}ms — AMO may be busy or rate-limited. Try again shortly.`);
+    }
+    throw e;
   }
-  return { status: res.status, json, text };
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -261,10 +288,10 @@ export async function signXpi(
     path.basename(xpiPath)
   );
   fd.append("channel", "listed");
-  const up = await api("/addons/upload/", { method: "POST", body: fd });
+  const up = await api("/addons/upload/", { method: "POST", body: fd, timeout: 120000 });
   const uuid = up.json?.uuid;
   if (!uuid) {
-    throw new Error("upload failed: " + JSON.stringify(up.json || up.text));
+    throw new Error("upload failed (" + up.status + "): " + JSON.stringify(up.json || up.text).slice(0, 200));
   }
   console.log(`[amo] upload accepted (${uuid})`);
 
