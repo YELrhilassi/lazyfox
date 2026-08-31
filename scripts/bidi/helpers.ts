@@ -63,10 +63,11 @@ export function createCtx(runtime) {
       const n = await evalIn(tab, `document.querySelectorAll("#results .result").length`);
       return n > 0 ? n : null;
     }, 15000);
-    // The CC page opens with its input focused (insert mode). The old harness
-    // moved focus out with a page click, but pointer actions are rejected on
-    // the command center — so blur explicitly. Tests that follow expect
-    // command mode (mode keys 1-6, hjkl navigation, ...).
+    // The CC page opens in COMMAND mode (it blurs its own input on load), so
+    // hjkl navigate, `;` arms the leader and ;f/;I work on a fresh new tab.
+    // Re-blur defensively in case a script inject during navigation left focus
+    // elsewhere — tests that follow expect command mode (mode keys 1-6, hjkl
+    // navigation, ...).
     await evalIn(tab, `document.activeElement && document.activeElement.blur ? (document.activeElement.blur(), true) : true`).catch(() => {});
   };
 
