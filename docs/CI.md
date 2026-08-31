@@ -18,7 +18,7 @@ This runs, in order (mirroring `.github/workflows/dev-nightly.yml` → `unit`):
 3. `npm run prepare` (toolchain check: node + go)
 4. `npm run build` (compiles Go wasm core + bundles the unsigned dev xpi)
 5. `npm test` (Go core tests + installer tests + dist completeness)
-6. `node scripts/check-dist.mjs` (dist is self-contained)
+6. `node scripts/check-dist.ts` (dist is self-contained)
 
 If all six pass, the `unit` job **will** be green on GitHub too.
 

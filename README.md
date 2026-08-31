@@ -92,23 +92,6 @@ where add-ons cannot run — that one step asks for admin rights **once** (a UAC
 prompt on Windows, `sudo` on Linux). Your profile, bookmarks, history and
 settings are never touched; every file that gets replaced is backed up first.
 
-The interactive installer is one self-contained Go binary built for each OS
-into `installer/bin/`:
-
-```
-lazyfox-install-linux / -darwin / -windows.exe   # signed release installers
-lazyfox-install-dev-linux / -darwin / -windows.exe   # unsigned dev installers
-```
-
-Run the one for your OS with no arguments to open the wizard (auto-detects your
-profile), or target a specific profile directly:
-
-```
-lazyfox-install --mode list
-lazyfox-install --mode install --profile "…" --firefox-dir "…"
-lazyfox-install --mode uninstall --profile "…"
-```
-
 ## Development, testing & Nightly
 
 Lazyfox develops against **Firefox Nightly**. Testing and manual smoke-tests
@@ -361,7 +344,7 @@ does not sign it instantly; it starts the review clock. Once AMO approves,
 
 - `npm run submit` — uploads the fresh build to AMO (listed) → starts review.
 - `npm run ship` — the release: merge to master, download the now-**signed** xpi
-  (`scripts/sync-signed-xpi.mjs`), embed it in the release installers, tag
+  (`scripts/sync-signed-xpi.ts`), embed it in the release installers, tag
   `v<version>` and create the GitHub Release.
 
 `ship` is deterministic about the version (it always comes from
@@ -374,15 +357,13 @@ The full release flow (just `bump` → `submit` → wait → `ship`) is document
 in `docs/RELEASING.md`. CI is read-only on both branches: neither workflow
 pushes, tags, or publishes — releases are created by `ship`, exactly once.
 
-```
-
 The end-to-end suite drives a real Firefox over WebDriver BiDi, and the
 screenshots in this README are captured the same way:
 
 ```bash
-node scripts/bidi/test.mjs            # full run
-node scripts/bidi/test.mjs --group sessions
-node scripts/bidi/screenshots.mjs     # writes docs/img/*.png
+node scripts/bidi/test.ts            # full run
+node scripts/bidi/test.ts --group sessions
+node scripts/bidi/screenshots.ts     # writes docs/img/*.png
 ```
 
 Layout of the repo:

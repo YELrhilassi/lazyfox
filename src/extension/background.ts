@@ -507,7 +507,7 @@ function maybeConvertHome(tab: any) {
   return Promise.resolve();
 }
 
-browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
+browser.tabs.onUpdated.addListener((_tabId: number, info: any, tab: any) => {
   if (isRestoring()) return;
   if (info.status === "complete" && tab && tab.active) maybeConvertHome(tab);
 });
@@ -657,7 +657,7 @@ browser.tabs.onCreated.addListener((tab: any) => {
     transientTabIds.add(tab.id);
   }
 });
-browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
+browser.tabs.onUpdated.addListener((tabId: number, _info: any, tab: any) => {
   if (tab && tab.url && tab.url.indexOf("relay.html") !== -1) {
     transientTabIds.add(tabId);
   }
@@ -1059,7 +1059,7 @@ browser.tabs.onMoved.addListener(onTabChange);
 browser.tabs.onAttached.addListener(onTabChange);
 browser.tabs.onDetached.addListener(onTabChange);
 browser.tabs.onActivated.addListener(onTabChange);
-browser.tabs.onUpdated.addListener((tabId: number, info: any) => {
+browser.tabs.onUpdated.addListener((_tabId: number, info: any) => {
   if (info.url || info.status === "complete") onTabChange();
 });
 

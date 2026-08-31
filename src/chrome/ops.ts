@@ -30,8 +30,6 @@ declare const Ci: any;
 declare const ChromeUtils: any;
 declare const ZoomManager: any;
 
-const XHTML = "http://www.w3.org/1999/xhtml";
-
 // Armed close: when ;x would remove the window's LAST tab (closing the whole
 // window), the first press arms a confirmation and a second press within 2.5s
 // actually closes.
@@ -71,15 +69,6 @@ function realTabs(): any[] {
     }
   }
   return out;
-}
-
-function el(tag: string, attrs?: Record<string, string> | null, text?: string | null): HTMLElement {
-  const e = document.createElementNS(XHTML, tag) as HTMLElement;
-  if (attrs) {
-    for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]!);
-  }
-  if (text != null) e.textContent = text;
-  return e;
 }
 
 // Mirrors the Go core's NormalizeUrl (scheme-less input gets https://). Any
