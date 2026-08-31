@@ -27,7 +27,8 @@ export const WK_CSS =
   "width:360px;max-width:94vw;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:8px;" +
   "box-shadow:0 24px 70px rgba(0,0,0,.6);display:none;font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden}" +
   ".wk.on{display:block}" +
-  ".wk-body{padding:8px 12px 6px;overflow:hidden}" +
+  ".wk-body{padding:8px 12px 6px;max-height:min(70vh,480px);overflow-y:auto;overscroll-behavior:contain;" +
+  "scrollbar-width:thin;scrollbar-color:#414868 transparent}" +
   ".wk-group{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:#565f89;margin:8px 2px 3px}" +
   ".wk-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px 8px}" +
   ".wk-item{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 6px;border-radius:5px;font-size:12px;cursor:default;line-height:1.25}" +
@@ -120,7 +121,16 @@ export class LeaderController {
     if (!this.host) return;
     const total = await this.wk.pageCount();
     const page = await this.wk.slice();
-    this.host._sh.querySelector(".wk-body")!.innerHTML = wkBodyHtml(page, this.wk.sel);
+    const body = this.host._sh.querySelector(".wk-body")!;
+    body.innerHTML = wkBodyHtml(page, this.wk.sel);
+    // Keep the current selection visible: the overlay shows every binding on
+    // one page, so arrow navigation scrolls the body to follow the highlight.
+    try {
+      const selEl = body.querySelector(".wk-item.sel");
+      if (selEl) selEl.scrollIntoView({ block: "nearest" });
+    } catch (e) {
+      // ignore
+    }
     const foot = this.host._sh.querySelector(".wk-foot")!;
     foot.innerHTML = wkFootHtml(this.wk.page, total);
   }
