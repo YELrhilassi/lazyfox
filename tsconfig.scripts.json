@@ -1,0 +1,28 @@
+{
+  // Typecheck for the Node-side build/release tooling (build.ts + scripts/).
+  // These run directly under Node 24's native type-stripping — no emit, no
+  // bundling — so this config only exists to typecheck them. Kept separate
+  // from tsconfig.json because the src/ tree targets the browser/DOM and
+  // deliberately declares no ambient Node types.
+  //
+  // scripts/bidi/ is a test harness that talks to the raw (untyped) WebDriver
+  // BiDi protocol, so it is excluded here: its values are protocol messages,
+  // and forcing types on them would be a lie.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["build.ts", "scripts/*.ts"]
+}

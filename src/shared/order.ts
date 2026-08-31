@@ -50,11 +50,6 @@ export function planStrip(current: string[], desired: string[], groups: string[]
 
 /* ---------------- TS ports (mirror core/strip.go) ---------------- */
 
-function indexOf(xs: string[], v: string): number {
-  for (let i = 0; i < xs.length; i++) if (xs[i] === v) return i;
-  return -1;
-}
-
 function coalescePairTs(pre: string[], anchor: string, partner: string): string[] {
   if (anchor === partner) return pre.slice();
   const block = new Set([anchor, partner]);

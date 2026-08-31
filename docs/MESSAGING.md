@@ -113,7 +113,7 @@ owns what only an external process can:
   request handling (a reply is always flushed before the next line is read, so
   a piped EOF can't race a reply out of existence), `host.info`/`ping`/`diag`
   only. Unknown methods return a proper JSON-RPC error.
-- `build.mjs` and `scripts/build-dev-installers.mjs` build `lazyfox-host` for
+- `build.ts` and `scripts/build-dev-installers.ts` build `lazyfox-host` for
   each installer target into `installer/payload/native-host/<goos>/`, embedded
   into the installer binary (bare downloaded installers can install the full
   stack). The current-platform host also goes to `build/native-host/`.

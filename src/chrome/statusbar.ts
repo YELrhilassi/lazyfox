@@ -13,7 +13,6 @@
 import { core } from "../shared/core";
 import { StatusBar } from "../shared/statusbar";
 import { activeDownloads, dismissDownload, updateDownloads } from "./downloads";
-import type { DownloadEntry } from "../shared/types";
 import type { ChromeCfg } from "./config";
 
 export interface StatusBarDeps {
@@ -100,19 +99,6 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   // Content-script find-in-page state by tab-strip index (1-based current
   // match, 0 = query typed but nothing walked to; total matches).
   let contentFindByIndex: Record<number, { count: number; cur: number }> = {};
-
-  // Is the selected tab the extension's command center page?
-  function isCommandCenterTab(): boolean {
-    try {
-      const b = window.gBrowser.selectedBrowser;
-      const uri = b && b.currentURI;
-      if (!uri) return false;
-      const s = uri.spec || "";
-      return s.indexOf("commandcenter.html") !== -1;
-    } catch (e) {
-      return false;
-    }
-  }
 
   // ONE window-level bar owns the bottom of the window for EVERY tab — plain
   // web pages, chrome-only pages, and split panes alike. The bar lives in the

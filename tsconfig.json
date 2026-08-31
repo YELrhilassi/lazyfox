@@ -8,6 +8,8 @@
     "checkJs": false,
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true,
