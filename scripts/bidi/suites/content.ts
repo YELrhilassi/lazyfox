@@ -71,6 +71,7 @@ export async function run(ctx) {
         steps: (document.getElementById("steps") || {}).textContent || "",
         profileName: (document.getElementById("profileName") || {}).textContent || "",
         profileDir: (document.getElementById("profileDir") || {}).textContent || "",
+        runCmd: (document.getElementById("runCmd") || {}).textContent || "",
         lfProfileName: (await browser.storage.local.get("lfProfileName").then(r => r && r.lfProfileName).catch(() => null)) || null,
         alive: await browser.storage.local.get("chromeAlive").then(r => !!r.chromeAlive).catch(() => null),
       });
@@ -78,6 +79,10 @@ export async function run(ctx) {
     const dump = JSON.parse(raw);
     assert(dump.ok && dump.dl, "setup page rendered, got " + raw);
     assert(dump.steps && dump.steps.length > 0, "install steps rendered");
+    assert(
+      typeof dump.runCmd === "string" && dump.runCmd.indexOf("lazyfox-install-") !== -1,
+      "setup page shows the concrete run command, got " + JSON.stringify(dump.runCmd)
+    );
     // The page must show the ACTIVE profile's real name (stored by the chrome
     // helper's alive announce), never the "your current profile" placeholder
     // — the user has to match this name in the installer's profile picker.
