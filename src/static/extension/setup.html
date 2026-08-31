@@ -14,14 +14,14 @@
   body {
     margin: 0; background: var(--bg); color: var(--fg);
     font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    padding: 28px 20px 56px;
+    padding: 32px 20px 56px;
   }
   .wrap { max-width: 920px; margin: 0 auto; }
-  .topbar { display: flex; align-items: center; gap: 20px; margin-bottom: 14px; }
-  .logo { height: 56px; overflow: hidden; flex: none; }
+  .head { margin-bottom: 22px; }
+  .logo { height: 52px; overflow: hidden; margin-bottom: 14px; }
   .logo img { height: 100%; width: auto; object-fit: contain; }
-  h1 { font-size: 20px; margin: 0 0 2px; color: var(--fg); font-weight: 680; letter-spacing: -.01em; }
-  .tagline { margin: 0; color: var(--muted); font-size: 13.5px; max-width: 620px; }
+  h1 { font-size: 22px; margin: 0 0 4px; color: var(--fg); font-weight: 680; letter-spacing: -.01em; }
+  .tagline { margin: 0; color: var(--muted); font-size: 13.5px; max-width: 680px; }
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
     padding: 18px 20px; margin-top: 14px;
@@ -82,12 +82,10 @@
 </head>
 <body id="lazyfox-setup">
   <div class="wrap">
-    <header class="topbar">
+    <header class="head">
       <div class="logo"><img id="logoImg" alt="Lazyfox"></div>
-      <div>
-        <h1>Finish setting up Lazyfox</h1>
-        <p class="tagline">The add-on already works on web pages. One small installer unlocks the full experience — hidden browser bars, the status line, and the <span class="kbd">;</span> keys on every page.</p>
-      </div>
+      <h1>Finish setting up Lazyfox</h1>
+      <p class="tagline">The add-on already works on web pages. One small installer unlocks the full experience — hidden browser bars, the status line, and the <span class="kbd">;</span> keys on every page.</p>
     </header>
 
     <section class="card status" id="statusCard">
