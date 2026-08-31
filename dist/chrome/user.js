@@ -45,3 +45,21 @@ user_pref("browser.urlbar.suggest.quicksuggest.sponsored", false);
 user_pref("browser.search.suggest.enabled", false);
 user_pref("browser.messaging-system.whatsNewPanel.enabled", false);
 user_pref("browser.aboutConfig.showWarning", false);
+
+// Startup: land directly on the Lazyfox command center. Chrome URL overrides
+// cannot redirect about:home, so the startup home page is pointed at
+// about:newtab — which the add-on's chrome_url_overrides redirects to the
+// command center INSTANTLY, before any news / ads / quick-launch new-tab
+// content paints. (Firefox's default about:home startup painted that content
+// first and swapped it out late — the white-tab flash, and occasionally
+// getting stuck on about:blank mid-swap.)
+user_pref("browser.startup.homepage", "about:newtab");
+// Suppress Firefox's one-time "what's new" homepage replacement.
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+
+// Never show the first-run modals that can deadlock Lazyfox's boot behind a
+// dialog: the "make Firefox default" prompt and the onboarding welcome tour.
+// While either was open the command center would render dark behind it and no
+// Lazyfox key worked until (and sometimes despite) dismissing it.
+user_pref("browser.shell.checkDefaultBrowser", false);
+user_pref("browser.aboutwelcome.enabled", false);
