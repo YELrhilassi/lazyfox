@@ -2,20 +2,9 @@
 // per-mode suggestion fetchers, and the pure item renderer + action dispatch.
 // No DOM or state here — everything is a function of (mode, query, item).
 
-import { esc } from "../../shared/dom";
+import { esc, favicon } from "../../shared/dom";
 import { send } from "../../shared/protocol";
 import type { QuickApp } from "../../shared/types";
-
-// Site favicon for a quick-launch app tile, via Google's favicon service so
-// every web app shows its real icon without bundling artwork.
-export function favicon(url: string): string {
-  try {
-    const host = new URL(url).hostname;
-    return "https://www.google.com/s2/favicons?domain=" + encodeURIComponent(host) + "&sz=64";
-  } catch (e) {
-    return "";
-  }
-}
 
 export const MODES = ["search", "url", "tabs", "history", "bookmarks", "downloads"];
 
