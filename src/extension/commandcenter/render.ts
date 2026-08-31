@@ -42,6 +42,10 @@ export interface Renderer {
   updateMovePos(): void;
   setStateTag(label: string): void;
   flashTag(msg: string): void;
+  // Is the page showing the home grid (quick-launch + browser access) with an
+  // empty search box? `;f` arms hint-pick there (and focuses the search box
+  // in every other mode).
+  isHome(): boolean;
 }
 
 const GRID_COLS = 3;
@@ -88,7 +92,14 @@ export function createRenderer(deps: RenderDeps): Renderer {
     const v = input.value.trim();
     if (!v && store.get().mode === "search") {
       // Home grid: quick-launch apps first, then the (pruned) browser access.
-      store.patch({ quickView: true, all: [...appItems(deps.getApps()), ...quickCommands(deps.quick)], idx: 0 });
+      // allQuery is reset so the stale-query guard can never swallow Enter on
+      // the home grid (it only applies to suggestion modes).
+      store.patch({
+        quickView: true,
+        allQuery: "",
+        all: [...appItems(deps.getApps()), ...quickCommands(deps.quick)],
+        idx: 0,
+      });
       render();
       return;
     }
@@ -130,6 +141,13 @@ export function createRenderer(deps: RenderDeps): Renderer {
       li.className = "result" + (i === state.idx ? " selected" : "");
       li.dataset.i = String(i);
       li.innerHTML = renderItem(item, state.mode, state.quickView);
+      // Home-grid hint-pick: overlay each tile's hint letter badge (;f mode).
+      if (state.quickView && state.hintArmed && i < 26) {
+        const h = document.createElement("span");
+        h.className = "hintkey";
+        h.textContent = String.fromCharCode(97 + i);
+        li.appendChild(h);
+      }
       li.addEventListener("mousedown", (ev) => {
         ev.preventDefault();
         deps.openItem(item, state.mode);
@@ -232,6 +250,10 @@ export function createRenderer(deps: RenderDeps): Renderer {
     }, 2200);
   }
 
+  function isHome(): boolean {
+    return store.get().mode === "search" && input.value.trim() === "";
+  }
+
   return {
     setMode,
     refresh,
@@ -243,5 +265,6 @@ export function createRenderer(deps: RenderDeps): Renderer {
     updateMovePos,
     setStateTag,
     flashTag,
+    isHome,
   };
 }

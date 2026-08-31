@@ -100,22 +100,32 @@ export async function run(ctx) {
     await ctx.openCC(ctx.tabA);
   });
 
-  await t("leader ;f on the home page focuses the search box", async () => {
-    // Regression: `;f` is link-hints on web pages, but the home grid has no
-    // page links — the chrome helper used to run startHints there (a no-op on
-    // a moz-extension page), so `;f` did nothing. On the command center it
-    // must focus the search box (the filtering equivalent).
+  await t("leader ;f arms home-grid hint-pick (letters run tiles)", async () => {
+    // ;f is link-hints on web pages; on the home grid it arms hint-PICK: each
+    // tile shows a letter badge and the next key runs that tile (the home
+    // equivalent of link hints), so a tile can be opened with ;f + a letter
+    // instead of arrow keys + Enter.
     await ctx.openCC(ctx.tabA);
     const f0 = await ctx.ccFacts(ctx.tabA);
     assert(!f0.focused, "starts blurred (command mode)");
     await ctx.leaderPress(ctx.tabA, "f");
-    await sleep(300);
+    const badges = await waitFor(async () => {
+      const n = await evalIn(ctx.tabA, `document.querySelectorAll("#results.quick .result .hintkey").length`);
+      return n > 0 ? n : null;
+    }, 8000);
+    assert(badges > 0, "home-grid tiles show ;f hint badges");
+    // Hint-pick is a one-key pick: the input stays blurred; a letter would run
+    // that tile. Esc leaves it with nothing selected, back to command mode.
     const f1 = await ctx.ccFacts(ctx.tabA);
-    assert(f1.focused, ";f focuses the home search box, got focused=" + f1.focused);
-    assert(f1.state === "insert", ";f switches to insert mode, got " + f1.state);
+    assert(!f1.focused, ";f hint-pick does not focus the input");
     await ctx.press(ctx.tabA, "Escape");
+    const gone = await waitFor(async () => {
+      const n = await evalIn(ctx.tabA, `document.querySelectorAll(".hintkey").length`);
+      return n === 0 ? true : null;
+    }, 5000);
+    assert(gone, "Esc exits hint-pick");
     const f2 = await ctx.ccFacts(ctx.tabA);
-    assert(f2.state === "cmd", "back to command mode after Esc");
+    assert(f2.state === "cmd", "back to command mode after Esc, got " + f2.state);
   });
 
   await t("leader ;I from the home opens the setup page in the current tab", async () => {

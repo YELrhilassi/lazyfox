@@ -86,6 +86,7 @@ import { createStore } from "./commandcenter/state";
       updateMovePos: () => renderer.updateMovePos(),
       setStateTag: (l) => renderer.setStateTag(l),
       flashTag: (m) => renderer.flashTag(m),
+      isHome: () => renderer.isHome(),
     },
     focusInput,
   });
@@ -173,6 +174,19 @@ import { createStore } from "./commandcenter/state";
 
   renderer.setMode("search");
   renderer.updateResizeSize();
+
+  // The chrome helper owns `;f` on the home tab when it is in-process (it
+  // owns the leader there). It signals through this event: on the home grid
+  // that arms hint-pick (letter = run tile), in any other mode it focuses the
+  // search box. Out-of-process CC pages arm hint-pick via their own leader.
+  document.addEventListener("lazyfox-find", () => {
+    if (renderer.isHome()) {
+      store.patch({ hintArmed: true });
+      renderer.refresh();
+    } else {
+      focusInput();
+    }
+  });
 
   // Brand logo: ship the horizontal lockup (icon + wordmark). It is a
   // transparent SVG so it sits on the page background with no box behind it.
