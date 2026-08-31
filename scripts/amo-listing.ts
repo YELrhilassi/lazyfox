@@ -42,9 +42,9 @@ const DESCRIPTION = [
 const HOMEPAGE = "https://github.com/YELrhilassi/lazyfox";
 const SUPPORT = "https://github.com/YELrhilassi/lazyfox/issues";
 const CATEGORIES = { firefox: ["tabs"] };
-// Best-effort; AMO maps these to its own tag taxonomy, so expect a 400 for
-// some and fall back to no tags (set the final tags in the dashboard).
-const TAGS = ["shortcuts", "keyboard", "vim", "productivity", "tabs", "navigation", "find-in-page", "split-view", "sessions", "minimal"];
+// Tags are curated per-account on AMO (the v5 API rejects slugs that aren't in
+// your account's tag list), so they are set in the developer dashboard, not
+// pushed here. Recommended tags live in docs/AMO-LISTING.md.
 
 function fail(msg: string): never {
   console.error(`[listing] ${msg}`);
@@ -55,7 +55,7 @@ if (!process.env.AMO_API_KEY || !process.env.AMO_API_SECRET) {
   fail("AMO_API_KEY / AMO_API_SECRET not set (see .env.example).");
 }
 
-const base = { name: { "en-US": "Lazyfox" }, summary: { "en-US": SUMMARY }, description: { "en-US": DESCRIPTION }, homepage: HOMEPAGE, support_url: SUPPORT, categories: CATEGORIES };
+const base = { name: { "en-US": "Lazyfox" }, summary: { "en-US": SUMMARY }, description: { "en-US": DESCRIPTION }, homepage: { "en-US": HOMEPAGE }, support_url: { "en-US": SUPPORT }, categories: CATEGORIES };
 
 // Defensive helper: try the POST with `tags`, retry without on 400 (AMO rejects
 // tags it doesn't know, and we don't want a hard failure over one tag).
@@ -66,17 +66,20 @@ async function push() {
   }
   console.log(`[listing] current summary: ${had.json?.summary?.["en-US"] ?? "(none)"}`);
 
-  let res = await api(`/addons/addon/${guid()}/`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...base, tags: TAGS }) });
-  if (res.status !== 200) {
-    const detail = String(JSON.stringify(res.json?.detail ?? res.json ?? res.text)).slice(0, 240);
-    console.log(`[listing] POST with tags failed (${res.status}): ${detail}`);
-    res = await api(`/addons/addon/${guid()}/`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(base) });
+  const patch = (body: unknown) => api(`/addons/addon/${guid()}/`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  // The throttled-error path: AMO returns 429 under burst; wait and retry once.
+  let res = await patch(base);
+  if (res.status === 429) {
+    const wait = Number(res.json?.detail?.find?.((d: any) => d && typeof d === "string") ?? "");
+    console.log(`[listing] throttled — waiting ${wait || 10}s before retry…`);
+    await new Promise((r) => setTimeout(r, (Number.isFinite(wait) && wait > 0 ? wait : 10) * 1000));
+    res = await patch(base);
   }
   if (res.status !== 200) {
     fail(`listing update failed (${res.status}): ${String(JSON.stringify(res.json?.detail ?? res.json ?? res.text)).slice(0, 300)}`);
   }
   console.log(`[listing] summary now: ${res.json?.summary?.["en-US"] ?? "(see dashboard)"}`);
-  console.log(`[listing] homepage: ${res.json?.homepage?.["en-US"] ?? res.json?.homepage ?? "(none)"} | support: ${res.json?.support_url?.["en-US"] ?? "(none)"}`);
+  console.log(`[listing] homepage: ${res.json?.homepage?.["en-US"] ?? "(none)"} | support: ${res.json?.support_url?.["en-US"] ?? "(none)"}`);
   console.log("[listing] categories:", JSON.stringify(res.json?.categories ?? res.json?.category ?? "(n/a)"));
   console.log("\nDone. Tags & screenshots are set in the developer dashboard:");
   console.log("  https://addons.mozilla.org/developers/addon/lazyfoxlazyfox.dev/edit/");
