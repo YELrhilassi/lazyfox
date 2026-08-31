@@ -2,101 +2,120 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="color-scheme" content="dark">
 <title>Lazyfox — complete the installation</title>
 <style>
+  :root {
+    --bg: #0e1116; --bg2: #161922; --bg3: #1d2130; --panel: #1a1e2a;
+    --fg: #d3d7e6; --muted: #5f6a85; --sub: #9aa3bf; --accent: #6d8fdb;
+    --green: #8fbf5e; --red: #e07a7a; --border: #262b3d; --border2: #343b54;
+  }
+  * { box-sizing: border-box; }
   body {
-    margin: 0;
-    background: #16161e;
-    color: #c0caf5;
-    font-family: ui-monospace, Menlo, Consolas, monospace;
-    padding: 32px;
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    padding: 30px 22px 60px;
   }
-  h1 { font-size: 18px; color: #7aa2f7; letter-spacing: .08em; text-transform: uppercase; margin: 0; }
-  h2 { font-size: 13px; color: #9aa5ce; letter-spacing: .06em; text-transform: uppercase; margin: 26px 0 8px; }
-  p { color: #565f89; font-size: 12px; max-width: 640px; line-height: 1.7; }
-  a { color: #7aa2f7; }
+  .wrap { max-width: 680px; margin: 0 auto; }
+  .topbar { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+  .logo { height: 34px; overflow: hidden; flex: none; }
+  .logo img { height: 100%; width: auto; object-fit: contain; }
+  h1 { font-size: 17px; margin: 0; color: var(--fg); font-weight: 650; }
+  p { color: var(--muted); font-size: 13px; max-width: 640px; line-height: 1.7; }
+  a { color: var(--accent); }
   .card {
-    background: #1e1e2e; border: 1px solid #414868; border-radius: 8px;
-    padding: 16px 18px; max-width: 640px; margin-top: 14px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; max-width: 640px; margin-top: 14px;
   }
-  .card.ok { border-color: #3b5940; }
-  .card.warn { border-color: #f7768e; }
+  .card.ok { border-color: var(--green); }
+  .card.warn { border-color: var(--red); }
+  .card h2 {
+    font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent);
+    margin: 22px 0 0; font-weight: 650;
+  }
   .status-line { display: flex; align-items: center; gap: 10px; font-size: 13px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: #f7768e; }
-  .dot.on { background: #9ece6a; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); }
+  .dot.on { background: var(--green); }
   button, a.dl {
-    display: inline-block; padding: 10px 22px; background: #7aa2f7; color: #16161e;
-    border: none; border-radius: 6px; font-family: inherit; font-size: 13px;
-    font-weight: 600; cursor: pointer; text-decoration: none;
+    display: inline-block; padding: 9px 20px; background: var(--accent); color: #0b0e18;
+    border: none; border-radius: 7px; font-family: inherit; font-size: 13px;
+    font-weight: 650; cursor: pointer; text-decoration: none;
   }
-  button:hover, a.dl:hover { background: #89b0fa; }
-  button.ghost { background: #1e1e2e; color: #7aa2f7; border: 1px solid #414868; }
-  button.ghost:hover { border-color: #7aa2f7; }
+  button:hover, a.dl:hover { filter: brightness(1.07); }
+  button.ghost { background: var(--bg2); color: var(--accent); border: 1px solid var(--border2); }
+  button.ghost:hover { border-color: var(--accent); }
   button:disabled { opacity: .5; cursor: default; }
-  ol { color: #c0caf5; font-size: 12px; line-height: 1.9; padding-left: 22px; margin: 8px 0; }
-  li b { color: #7aa2f7; }
+  ol { color: var(--fg); font-size: 13px; line-height: 1.9; padding-left: 22px; margin: 8px 0; }
+  li b { color: var(--accent); font-weight: 650; }
   .kbd {
-    display: inline-block; background: #1e1e2e; border: 1px solid #414868; border-bottom-width: 2px;
-    border-radius: 5px; padding: 1px 7px; color: #7aa2f7; font-size: 12px;
+    display: inline-block; background: var(--bg2); border: 1px solid var(--border2); border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 7px; color: var(--accent); font-size: 12px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
   }
-  .muted { color: #565f89; font-size: 11px; }
-  #status { color: #9ece6a; font-size: 12px; margin-left: 12px; }
-  .files { color: #565f89; font-size: 11px; line-height: 1.8; }
+  .muted { color: var(--muted); font-size: 12px; }
+  #status { color: var(--green); font-size: 12px; margin-left: 12px; }
+  .files { color: var(--muted); font-size: 12px; line-height: 1.9; }
+  .files b { color: var(--sub); font-weight: 600; }
 </style>
 </head>
 <body id="lazyfox-setup">
-  <h1>Lazyfox &middot; complete the installation</h1>
-  <p>The Lazyfox add-on is installed and works on web pages
-  (<span class="kbd">;</span> leader, link hints, find, sessions&hellip;). The
-  <b style="color:#c0caf5">toolbar-free UI</b> &mdash; the hidden tab strip and
-  URL bar, the status bar, and the chrome-level <span class="kbd">;</span> keys
-  on <span class="kbd">about:</span> pages &mdash; is applied by a small
-  standalone installer, because Firefox does not let an add-on write files
-  itself. This page gets you that installer and walks you through it.</p>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="logo"><img id="logoImg" alt="Lazyfox"></div>
+      <h1>Complete the installation</h1>
+    </div>
+    <p>The Lazyfox add-on is installed and works on web pages
+    (<span class="kbd">;</span> leader, link hints, find, sessions&hellip;). The
+    <b style="color:var(--fg)">toolbar-free UI</b> &mdash; the hidden tab strip and
+    URL bar, the status bar, and the chrome-level <span class="kbd">;</span> keys
+    on <span class="kbd">about:</span> pages &mdash; is applied by a small
+    standalone installer, because Firefox does not let an add-on write files
+    itself. This page gets you that installer and walks you through it.</p>
 
-  <h2>Status</h2>
-  <div class="card" id="statusCard">
-    <div class="status-line"><span class="dot" id="dot"></span><span id="statusText">checking&hellip;</span></div>
+    <h2>Status</h2>
+    <div class="card" id="statusCard">
+      <div class="status-line"><span class="dot" id="dot"></span><span id="statusText">checking&hellip;</span></div>
+    </div>
+
+    <h2>1 &middot; Download the installer</h2>
+    <div class="card">
+      <p>One native, self-contained executable for <b id="osName" style="color:var(--fg)">your OS</b> —
+      no shell, no PowerShell, no toolchain. It writes only Lazyfox's own files
+      into your profile (each with a <span class="kbd">.lazyfox.bak-*</span>
+      backup) and asks for admin rights <b>once</b> to drop the autoconfig loader
+      into the Firefox install folder.</p>
+      <a class="dl" id="dl" target="_blank" rel="noopener">Download lazyfox-install</a>
+      <span id="status"></span>
+      <p class="muted" id="dlNote"></p>
+    </div>
+
+    <h2>2 &middot; Run it</h2>
+    <div class="card">
+      <ol id="steps"></ol>
+    </div>
+
+    <h2>3 &middot; Verify &amp; restart</h2>
+    <div class="card">
+      <p>Fully quit and restart Firefox (the changes apply at startup). Then come
+      back here and press Verify &mdash; the status card above should flip to
+      green.</p>
+      <button class="ghost" id="verify">Verify now</button>
+    </div>
+
+    <h2>What gets installed</h2>
+    <div class="card files">
+      <b>Profile</b> &rarr; <span class="kbd">chrome/userChrome.css</span> &middot;
+      <span class="kbd">userChrome.uc.js</span> &middot; <span class="kbd">frame.js</span> &middot;
+      <span class="kbd">corebootstrap.js</span> &middot; <span class="kbd">user.js</span> (pref merge, yours are kept)<br>
+      <b>Firefox install dir</b> &rarr; <span class="kbd">config.js</span> &middot;
+      <span class="kbd">defaults/pref/config-prefs.js</span> (one-time admin)
+    </div>
+
+    <p class="muted">Your bookmarks, history, passwords and other add-ons are
+    never touched. Everything is reversible by running the installer's
+    <span class="kbd">uninstall</span> action (the same executable, run with
+    <span class="kbd">--mode uninstall</span>).</p>
   </div>
-
-  <h2>1 &middot; Download the installer</h2>
-  <div class="card">
-    <p>One native, self-contained executable for <b id="osName" style="color:#c0caf5">your OS</b> —
-    no shell, no PowerShell, no toolchain. It writes only Lazyfox's own files
-    into your profile (each with a <span class="kbd">.lazyfox.bak-*</span>
-    backup) and asks for admin rights <b>once</b> to drop the autoconfig loader
-    into the Firefox install folder.</p>
-    <a class="dl" id="dl" target="_blank" rel="noopener">Download lazyfox-install</a>
-    <span id="status"></span>
-    <p class="muted" id="dlNote"></p>
-  </div>
-
-  <h2>2 &middot; Run it</h2>
-  <div class="card">
-    <ol id="steps"></ol>
-  </div>
-
-  <h2>3 &middot; Verify &amp; restart</h2>
-  <div class="card">
-    <p>Fully quit and restart Firefox (the changes apply at startup). Then come
-    back here and press Verify &mdash; the status card above should flip to
-    green.</p>
-    <button class="ghost" id="verify">Verify now</button>
-  </div>
-
-  <h2>What gets installed</h2>
-  <div class="card files">
-    <b style="color:#9aa5ce">Profile</b> &rarr; <span class="kbd">chrome/userChrome.css</span> ·
-    <span class="kbd">userChrome.uc.js</span> · <span class="kbd">frame.js</span> ·
-    <span class="kbd">corebootstrap.js</span> · <span class="kbd">user.js</span> (pref merge, yours are kept)<br>
-    <b style="color:#9aa5ce">Firefox install dir</b> &rarr; <span class="kbd">config.js</span> ·
-    <span class="kbd">defaults/pref/config-prefs.js</span> (one-time admin)
-  </div>
-
-  <p class="muted">Your bookmarks, history, passwords and other add-ons are
-  never touched. Everything is reversible by running the installer's
-  <span class="kbd">uninstall</span> action (the same executable, run with
-  <span class="kbd">--mode uninstall</span>).</p>
 
 <script src="setup.js"></script>
 </body>

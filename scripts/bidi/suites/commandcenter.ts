@@ -84,9 +84,11 @@ export async function run(ctx) {
     await waitFor(async () => !(await ctx.chromeState()).popup.current, 8000);
   });
 
-  await t("home page opens with the input focused; typing works for h/l", async () => {
-    // Regression: the home page must start with the input focused so every
-    // key (including h/j/k/l, which navigate the grid in command mode) types.
+  await t("home page opens in command mode; hjkl navigates and Enter opens", async () => {
+    // The home page must open keyboard-first (command mode, input NOT focused)
+    // so hjkl/arrows navigate the grid, Enter opens the selection, and `;`
+    // arms the leader — with no mouse click first. Typing any letter then
+    // switches to insert mode.
     await ctx.activateTab(ctx.tabA);
     await navigate(ctx.tabA, "about:newtab", "complete");
     await waitFor(async () => {
@@ -98,21 +100,32 @@ export async function run(ctx) {
       return n > 0 ? n : null;
     }, 15000);
     const f0 = await ctx.ccFacts(ctx.tabA);
-    assert(f0.focused, "input is focused when the home page opens");
-    assert(f0.state === "insert", "insert mode on open, got " + f0.state);
-    // h and l must TYPE (not navigate the grid) while the input is focused.
-    await ctx.typeIn(ctx.tabA, "h");
-    let f = await ctx.ccFacts(ctx.tabA);
-    assert(f.inputVal === "h", "h typed into the input, got " + JSON.stringify(f.inputVal));
-    await ctx.typeIn(ctx.tabA, "l");
-    f = await ctx.ccFacts(ctx.tabA);
-    assert(f.inputVal === "hl", "l typed into the input, got " + JSON.stringify(f.inputVal));
+    assert(!f0.focused, "input is NOT focused when the home page opens");
+    assert(f0.state === "cmd", "command mode on open, got " + f0.state);
+    // hjkl move the grid selection (no click needed).
+    const sel = () =>
+      evalIn(ctx.tabA, `(() => {
+        const s = document.querySelector("#results .selected");
+        return s ? [...document.querySelectorAll("#results .result")].indexOf(s) : -1;
+      })()`);
+    assert((await sel()) === 0, "selection starts on the first tile");
+    await ctx.press(ctx.tabA, "j");
+    assert((await sel()) === 3, "j moved down a row, got " + (await sel()));
+    await ctx.press(ctx.tabA, "l");
+    assert((await sel()) === 4, "l moved right, got " + (await sel()));
+    // Esc clears into a fresh command state; Enter on a tile opens it.
+    await ctx.press(ctx.tabA, "Escape");
+    // A letter switches to insert/search.
+    await ctx.press(ctx.tabA, "x");
+    const f1 = await ctx.ccFacts(ctx.tabA);
+    assert(f1.state === "insert", "typing a key switches to insert, got " + f1.state);
+    assert(f1.inputVal === "x", "x typed into the input, got " + JSON.stringify(f1.inputVal));
     await ctx.press(ctx.tabA, "Escape");
   });
 
   await t("command center typing starts insert mode, Esc returns to cmd", async () => {
     await ctx.openCC(ctx.tabA);
-    await ctx.typeIn(ctx.tabA, "w");
+    await ctx.press(ctx.tabA, "w");
     let f = await ctx.ccFacts(ctx.tabA);
     assert(f.state === "insert", "state insert after typing, got " + f.state);
     assert(f.inputVal === "w", "input value w, got " + f.inputVal);
@@ -191,26 +204,26 @@ export async function run(ctx) {
     await ctx.press(ctx.tabA, "Escape");
   });
 
-  await t("command center: a fresh tab's empty input still arms the leader", async () => {
-    // Regression: after a command opens a new command-center tab its input
-    // holds focus and is EMPTY. `;` there must arm the leader (so commands
-    // chain without a mouse click), even though it types once text is in it.
+  await t("command center: a fresh tab opens in command mode so `;` arms the leader", async () => {
+    // A new command-center tab must be keyboard-first: command mode, an empty
+    // input, and `;` arms the leader immediately (commands chain with no mouse
+    // click). It only types once the user starts typing.
     await ctx.openCC(ctx.tabA);
     const before = await ctx.tabCount();
-    await ctx.leaderPress(ctx.tabA, "n"); // opens a fresh, focused CC tab
+    await ctx.leaderPress(ctx.tabA, "n"); // opens a fresh CC tab
     await waitFor(async () => (await ctx.tabCount()) === before + 1 ? true : null, 10000);
     await sleep(600);
-    // The new tab is active with an empty, focused input.
     const dup = (await ctx.ccTabs())[0] || ctx.tabA;
     const dupCtx = dup.context || dup;
     let f = await ctx.ccFacts(dupCtx);
-    assert(f.focused, "fresh tab input is focused");
+    assert(!f.focused, "fresh tab input is NOT focused (command mode)");
     assert(f.inputVal === "", "fresh tab input is empty, got " + JSON.stringify(f.inputVal));
-    // `;` on the empty input arms the leader instead of typing.
+    assert(f.state === "cmd", "fresh tab is in command mode, got " + f.state);
+    // `;` on the empty input arms the leader.
     await ctx.press(dupCtx, ";");
     await sleep(300);
     const s = await ctx.chromeState();
-    assert(s && s.leaderActive, "; on the empty home input arms the leader");
+    assert(s && s.leaderActive, "; on the fresh home tab arms the leader");
     assert(!(await ctx.ccFacts(dupCtx)).inputVal, "; did not type into the empty input");
     await ctx.press(dupCtx, "Escape");
     // Cleanup: close the extra tab.

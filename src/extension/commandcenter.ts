@@ -61,6 +61,7 @@ import { createStore } from "./commandcenter/state";
         browser.runtime.openOptionsPage();
       } catch (e) {}
     },
+    openSetup: () => void send("openSetup"),
     openPage: (url: string) => void send("openPage", { url }),
     setMode: (m: string) => renderer.setMode(m),
     stealthOpen: () => void send("stealthOpen"),
@@ -173,18 +174,40 @@ import { createStore } from "./commandcenter/state";
   renderer.setMode("search");
   renderer.updateResizeSize();
 
-  // Brand logo: use the real extension icon in place of the emoji fallback.
+  // Brand logo: ship the horizontal lockup (icon + wordmark). It is a
+  // transparent SVG so it sits on the page background with no box behind it.
   try {
     const logo = document.getElementById("brandLogo");
     if (logo) {
-      logo.textContent = "";
       const img = document.createElement("img");
-      img.src = browser.runtime.getURL("icons/icon96.png");
-      img.alt = "";
+      img.src = browser.runtime.getURL("lazyfox-logo.svg");
+      img.alt = "Lazyfox";
       logo.appendChild(img);
     }
   } catch (e) {
-    // keep the emoji fallback if the icon is unavailable
+    // keep the empty brand area if the logo is unavailable
+  }
+
+  // Footer meta: active session name, Firefox version, Lazyfox version.
+  const meta = document.getElementById("footerMeta");
+  if (meta) {
+    const setMeta = (sess: string) => {
+      const manifest = browser.runtime.getManifest();
+      let ver = "firefox ?";
+      try {
+        browser.runtime.getBrowserInfo().then((i: any) => {
+          ver = "firefox " + (i && i.version ? i.version : "?");
+        });
+      } catch (e) {}
+      const parts: string[] = [];
+      if (sess) parts.push("session <b>" + sess + "</b>");
+      parts.push(ver);
+      parts.push("lazyfox " + (manifest && manifest.version ? manifest.version : "?"));
+      meta.innerHTML = parts.join(" &middot; ");
+    };
+    void browser.storage.local.get("lfCurrentSession").then((r: any) => {
+      setMeta((r && r.lfCurrentSession) || "");
+    });
   }
 
   // First-run install indicator: once the chrome helper is alive, Lazyfox is
@@ -210,13 +233,15 @@ import { createStore } from "./commandcenter/state";
   // search detection and Enter's URL normalization are instant instead of
   // paying a cold wasm instantiation (the home grid renders regardless).
   void ensureCore().catch(() => {});
-  // Start with the input focused (insert mode): typing works for every key,
-  // including h/j/k/l — hjkl only navigate the grid in command mode (Esc).
-  renderer.setStateTag("insert");
-  focusInput();
+  // Start in COMMAND mode with the input blurred: the home grid is keyboard-
+  // first, so hjkl/arrows navigate the tiles, Enter opens the selection, and
+  // `;` arms the leader (so ;I / ;f and ctrl/shift combos reach their actions)
+  // with no need to click first. Typing any other printable key focuses the
+  // input and starts a search (the key handler drives that).
+  renderer.setStateTag("cmd");
   window.addEventListener("load", () => {
-    focusInput();
-    renderer.setStateTag("insert");
+    renderer.setStateTag("cmd");
+    document.body.classList.add("ready");
   });
 
   // Stealth home: when this command center is shown inside a stealth tab
