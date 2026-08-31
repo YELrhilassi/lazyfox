@@ -114,30 +114,35 @@ func TestWhichKeyPagination(t *testing.T) {
 	if lazyCount == 0 || nativeCount == 0 {
 		t.Fatalf("bindings table must contain both lazy and native items: %d / %d", lazyCount, nativeCount)
 	}
-	// The overlay pages over lazy bindings only (native rows are omitted).
+	// The overlay is a single page covering every lazy binding (native rows
+	// are omitted). One page means every shortcut is visible at once — the
+	// overlay scrolls instead of hiding bindings behind page flips.
 	overlay := lazyBindings()
 	pages := WkPageCount()
-	if pages < 2 {
-		t.Fatalf("expected multiple pages, got %d", pages)
+	if pages != 1 {
+		t.Fatalf("expected a single overlay page, got %d", pages)
 	}
-	seen := 0
-	for p := 0; p < pages; p++ {
-		pg := WkPageSlice(p)
-		if len(pg.Items) == 0 || len(pg.Items) > wkPerPage {
-			t.Fatalf("page %d has %d rows", p, len(pg.Items))
+	pg := WkPageSlice(0)
+	if len(pg.Items) == 0 || len(pg.Items) > wkPerPage {
+		t.Fatalf("page 0 has %d rows", len(pg.Items))
+	}
+	if len(pg.Items) != len(overlay) {
+		t.Fatalf("page covers %d rows, want all %d", len(pg.Items), len(overlay))
+	}
+	// every lazy binding is represented, in order
+	for i, r := range pg.Items {
+		if r.Key != overlay[i].Key || r.Label != overlay[i].Label || r.Group != overlay[i].Group {
+			t.Fatalf("row %d mismatch: got %s/%s/%s want %s/%s/%s",
+				i, r.Key, r.Label, r.Group, overlay[i].Key, overlay[i].Label, overlay[i].Group)
 		}
-		seen += len(pg.Items)
-	}
-	if seen != len(overlay) {
-		t.Fatalf("pages cover %d rows, want %d", seen, len(overlay))
 	}
 	// first page selection range must exist and be clamped
 	clamped := WkClampSel(999, 0)
 	if clamped > WkPageSlice(0).SelLast {
 		t.Fatalf("clamp(999,0) = %d, page selLast = %d", clamped, WkPageSlice(0).SelLast)
 	}
-	// navigation wraps within a page
-	pg := WkPageSlice(0)
+	// navigation wraps within the (single) page
+	pg = WkPageSlice(0)
 	if pg.SelFirst < 0 {
 		t.Fatal("first page has no selectable row")
 	}

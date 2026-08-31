@@ -1,10 +1,14 @@
 package core
 
-// Which-key pagination. The which-key overlay shows a fixed number of rows per
-// page and flips between pages instead of scrolling. All the page math lives
-// here so the chrome helper and the content script cannot drift.
+// Which-key layout. The overlay is a compact multi-column reminder, not a
+// blocker: every Lazyfox binding is shown at once (a single page), organized
+// under group headings, and the popup scrolls if the window is short. All the
+// page math lives here so the chrome helper and the content script cannot
+// drift; wkPerPage is effectively unbounded so one page always holds the whole
+// table (the pagination API stays so flipping remains a no-op instead of a
+// footgun).
 
-const wkPerPage = 9
+const wkPerPage = 99
 
 type WkRow struct {
 	Key        string
