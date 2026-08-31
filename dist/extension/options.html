@@ -6,61 +6,59 @@
 <title>Lazyfox settings</title>
 <style>
   :root {
-    --bg: #0f111a; --bg2: #161820; --panel: #1a1e2e; --fg: #cdd3ee; --muted: #5a6384;
-    --sub: #9aa5ce; --accent: #7aa2f7; --green: #9ece6a;
-    --border: #262b3f; --border2: #3a4161; --sel: #2c3353;
+    --bg: #0e1116; --bg2: #161922; --bg3: #1d2130; --panel: #1a1e2a;
+    --fg: #d3d7e6; --muted: #5f6a85; --sub: #9aa3bf; --accent: #6d8fdb;
+    --green: #8fbf5e; --red: #e07a7a; --border: #262b3d; --border2: #343b54; --sel: #2b3150;
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; background: var(--bg);
-    color: var(--fg); font-family: ui-monospace, Menlo, Consolas, monospace; padding: 30px 22px 60px;
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    padding: 28px 22px 60px;
   }
-  .wrap { max-width: 860px; margin: 0 auto; }
-  .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-  .logo {
-    width: 34px; height: 34px; border-radius: 9px; overflow: hidden; flex: none;
-    background: var(--accent);
-    display:flex; align-items:center; justify-content:center;
-  }
-  .logo img { width: 100%; height: 100%; object-fit: cover; }
-  .topbar h1 { font-size: 20px; margin: 0; color: var(--fg); letter-spacing: .02em; }
-  .topbar h1 small { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .18em; text-transform: uppercase; margin-left: 8px; }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  .topbar { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+  .logo { height: 34px; overflow: hidden; flex: none; }
+  .logo img { height: 100%; width: auto; object-fit: contain; }
+  .topbar h1 { font-size: 18px; margin: 0; color: var(--fg); font-weight: 650; }
   .back {
-    margin-left: auto; color: var(--accent); text-decoration: none; font-size: 12px; cursor: pointer;
-    border: 1px solid var(--border2); border-radius: 8px; padding: 6px 12px; background: var(--bg2);
+    margin-left: auto; color: var(--sub); text-decoration: none; font-size: 12px; cursor: pointer;
+    border: 1px solid var(--border2); border-radius: 7px; padding: 6px 12px; background: var(--bg2);
   }
-  .back:hover { border-color: var(--accent); }
-  .sub { color: var(--muted); font-size: 12px; max-width: 680px; line-height: 1.6; margin: 4px 0 22px; }
+  .back:hover { border-color: var(--accent); color: var(--accent); }
+  .sub { color: var(--muted); font-size: 12px; max-width: 660px; line-height: 1.6; margin: 6px 0 24px; }
   .card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
-    padding: 18px 20px; margin-bottom: 16px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px 22px; margin-bottom: 18px;
   }
   .card h2 {
-    font-size: 12px; margin: 0 0 4px; color: var(--accent); letter-spacing: .16em; text-transform: uppercase;
-    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; margin: 0 0 4px; color: var(--accent); letter-spacing: .12em; text-transform: uppercase;
+    display: flex; align-items: center; gap: 8px; font-weight: 650;
   }
-  .card .desc { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 2px 0 14px; }
+  .card > h2 + .desc { margin-top: 6px; }
+  .card .desc { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 2px 0 16px; }
   .field { margin-bottom: 14px; }
   .field label.r { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: var(--sub); cursor: pointer; }
-  .field label.r input { margin-top: 3px; accent-color: var(--accent); }
+  .field label.r input { margin-top: 3px; accent-color: var(--accent); width: 15px; height: 15px; }
   .field label.lbl { display: block; font-size: 12px; color: var(--sub); margin-bottom: 6px; }
   input[type="text"], select {
-    padding: 9px 12px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border2);
-    border-radius: 8px; font-family: inherit; font-size: 13px; outline: none; width: 260px;
+    padding: 8px 12px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border2);
+    border-radius: 7px; font-family: inherit; font-size: 13px; outline: none; width: 260px;
   }
   input[type="text"]:focus, select:focus { border-color: var(--accent); }
   .kbd {
     display: inline-block; background: var(--bg2); border: 1px solid var(--border2); border-bottom-width: 2px;
-    border-radius: 5px; padding: 1px 7px; color: var(--accent); font-size: 11px;
+    border-radius: 4px; padding: 1px 7px; color: var(--accent); font-size: 11px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
   }
   .kv { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; font-size: 13px; }
   .kv .lbl { color: var(--sub); }
-  .kv .val { color: var(--fg); }
+  .kv .val { color: var(--fg); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
   .actions { display: flex; align-items: center; gap: 14px; margin-top: 4px; }
   #save {
-    padding: 12px 28px; background: var(--accent); color: #0b0e18;
-    border: none; border-radius: 10px; font-family: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
+    padding: 10px 26px; background: var(--accent); color: #0b0e18;
+    border: none; border-radius: 7px; font-family: inherit; font-size: 13px; font-weight: 650; cursor: pointer;
   }
   #save:hover { filter: brightness(1.07); }
   #status { color: var(--green); font-size: 12px; }
@@ -70,23 +68,23 @@
   /* Quick-launch apps editor */
   .app-row {
     display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--border);
-    border-radius: 10px; margin-bottom: 8px; background: var(--bg2);
+    border-radius: 8px; margin-bottom: 8px; background: var(--bg2);
   }
   .app-row .en { flex: none; }
-  .app-row input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+  .app-row input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; }
   .app-row input[type="text"] { flex: 1; width: auto; }
   .app-row .ic {
-    flex: none; width: 28px; height: 28px; border-radius: 7px; overflow: hidden; background: var(--bg);
-    border: 1px solid var(--border2); display: flex; align-items: center; justify-content: center;
+    flex: none; width: 24px; height: 24px; overflow: hidden; display: flex; align-items: center; justify-content: center;
   }
-  .app-row .ic img { width: 100%; height: 100%; object-fit: cover; }
+  .app-row .ic img { width: 100%; height: 100%; object-fit: contain; }
+  .app-row .ic:empty::after { content: "\2026"; color: var(--muted); font-size: 12px; }
   .app-row .rm {
     flex: none; background: transparent; border: none; color: var(--muted); font-size: 16px; cursor: pointer; padding: 4px;
   }
   .app-row .rm:hover { color: var(--red); }
   .add-app {
     margin-top: 10px; background: var(--bg2); color: var(--sub); border: 1px dashed var(--border2);
-    border-radius: 10px; padding: 10px; width: 100%; font-family: inherit; font-size: 13px; cursor: pointer;
+    border-radius: 8px; padding: 9px; width: 100%; font-family: inherit; font-size: 13px; cursor: pointer;
   }
   .add-app:hover { color: var(--accent); border-color: var(--accent); }
 </style>
@@ -94,17 +92,15 @@
 <body>
   <div class="wrap">
     <div class="topbar">
-      <div class="logo"><img id="logoImg" alt=""></div>
-      <h1>Lazyfox <small>settings</small></h1>
-      <a class="back" href="#" id="back">&#8592; back</a>
+      <div class="logo"><img id="logoImg" alt="Lazyfox"></div>
+      <h1>Settings</h1>
+      <a class="back" href="#" id="back">&#8592; Back</a>
     </div>
-    <p class="sub">Press the leader key to open the which-key overlay (a paginated list of every Lazyfox binding
-    plus native Firefox shortcuts); Tab / Shift+Tab flip pages, arrows select, or just press a binding's key.
-    Changes apply immediately.</p>
+    <p class="sub">Changes apply immediately. The <span class="kbd">;</span> leader opens the which-key overlay — Tab / Shift+Tab flips pages, arrows select, or press a binding's key.</p>
 
     <div class="card">
       <h2>General</h2>
-      <div class="desc">Leader key, link hints, and the core key behaviour.</div>
+      <div class="desc">Leader key, link hints, and core key behaviour.</div>
       <div class="field"><label class="lbl" for="leader">Leader key</label>
         <input type="text" id="leader" maxlength="2" placeholder=";"></div>
       <div class="field"><label class="lbl" for="hintChars">Link-hint characters (order matters)</label>
@@ -116,7 +112,7 @@
     </div>
 
     <div class="card">
-      <h2>Quick-launch apps</h2>
+      <h2>Quick-launch</h2>
       <div class="desc">Web apps shown as tiles on the command-center home grid. Toggle each on or off; edit the
       name / URL or add your own. The favicon is pulled live from each site.</div>
       <div id="appsList"></div>
@@ -125,9 +121,7 @@
 
     <div class="card">
       <h2>Sessions</h2>
-      <div class="desc">tmux-style session manager: <span class="kbd">;p</span> save &amp; switch named sets,
-      <span class="kbd">;'</span> + 1-9 jump to a marker, <span class="kbd">;|</span> split,
-      <span class="kbd">;{</span>/<span class="kbd">;}</span> swap panes, <span class="kbd">;\</span> close the split view.</div>
+      <div class="desc"><span class="kbd">;p</span> save &amp; switch named sets, <span class="kbd">;'</span> + 1-9 jump to a marker, <span class="kbd">;|</span> split, <span class="kbd">;{</span>/<span class="kbd">;}</span> swap panes, <span class="kbd">;\</span> close the split view.</div>
       <div class="field"><label class="r"><input type="checkbox" id="statusBar"> Show the status bar (session &middot; tabs &middot; session list &middot; mode)</label></div>
       <div class="field"><label class="lbl" for="statusBarPosition">Status bar position</label>
         <select id="statusBarPosition">
@@ -138,10 +132,10 @@
     </div>
 
     <div class="card">
-      <h2>Firefox chrome integration</h2>
+      <h2>Firefox chrome</h2>
       <div class="desc">Handled by <span class="kbd">chrome/userChrome.uc.js</span> (installed by the Lazyfox
       installer). These hotkeys open Firefox's built-in pages and work even on <span class="kbd">about:</span> /
-      error pages where the extension can't run. Changes apply live — no restart needed.</div>
+      error pages where the extension can't run.</div>
       <div class="field"><label class="lbl" for="chPreferences">Firefox settings</label>
         <input type="text" id="chPreferences" maxlength="32" placeholder="Ctrl+Alt+O"></div>
       <div class="field"><label class="lbl" for="chAddons">Add-ons manager</label>
@@ -154,7 +148,7 @@
     </div>
 
     <div class="card">
-      <h2>Components &amp; versions</h2>
+      <h2>Components</h2>
       <div class="desc">Each Lazyfox piece versions independently: the extension, the Go wasm core, the native
       messaging host, and the chrome helper installed by the installer.</div>
       <div class="kv"><span class="lbl">Lazyfox extension</span><span class="val" id="cExt">&hellip;</span></div>
