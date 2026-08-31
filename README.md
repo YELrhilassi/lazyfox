@@ -112,7 +112,7 @@ gatekeeper. The action runs the moment you press its key; `Esc` just cancels.
 
 | Keys | Action |
 | --- | --- |
-| `; f` | link hints (on the command-center home: focuses the search box — there are no page links to hint) |
+| `; f` | link hints (on the command-center home: hint-pick — every grid tile gets a letter, a key runs that tile) |
 | `; s` / `; S` | web search (new tab / current tab) |
 | `; o` / `; O` | open a URL (new tab / current tab) |
 | `; t` | tab switcher — type to filter |

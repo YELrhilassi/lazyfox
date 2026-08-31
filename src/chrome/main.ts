@@ -139,15 +139,22 @@ import { createTypingChannel } from "./typing";
     manualText: false,
   };
   leaderActions = makeLeaderActions(ctx);
-  // `;f` is link-hints on web pages, but the command-center home has no page
-  // links — there it means "find": focus the home search box (the filtering
-  // equivalent). The chrome helper owns the leader on the home tab (it runs
-  // in-process whenever its keys reach chrome), so the routing happens here.
+  // `;f` is link-hints. Web pages run a content script that owns them; the
+  // command-center home has no page links, so there it arms hint-PICK (each
+  // grid tile gets a letter and the next key runs it); and on chrome-owned
+  // pages with no content script (about:, error pages) the helper draws its
+  // own hints (chromePageHints below).
   {
     const startHints = leaderActions["f"]!;
     leaderActions["f"] = () => {
       if (isCommandCenterTab()) {
-        focusCommandCenterInput();
+        signalCommandCenterFind();
+        return;
+      }
+      // chromeOwnsKeys() is true exactly where the content script does not run
+      // (about:, extension pages) — provide hints locally there.
+      if (chromeOwnsKeys()) {
+        chromePageHints();
         return;
       }
       startHints();
@@ -510,17 +517,28 @@ import { createTypingChannel } from "./typing";
     return false;
   };
 
-  // Focus the command center's search input from chrome (the home tab is
-  // in-process whenever the chrome helper owns its keys, so the page's input
-  // element is reachable from here). Out-of-process the page owns its leader
-  // and routes ;f itself.
-  function focusCommandCenterInput(): void {
+  // Tell the command-center page `;f` was pressed. The page decides: on the
+  // home grid it arms hint-pick, elsewhere it focuses the search box. The home
+  // tab is in-process whenever the chrome helper owns its keys, so dispatching
+  // an event in the page's realm reaches its listener; out-of-process the page
+  // owns the leader and handles `;f` itself.
+  function signalCommandCenterFind(): void {
+    try {
+      const cw = window.gBrowser.selectedBrowser.contentWindow;
+      const doc = cw && cw.document;
+      if (doc && typeof doc.dispatchEvent === "function") {
+        doc.dispatchEvent(new (cw as any).Event("lazyfox-find", { bubbles: false, cancelable: false }));
+        return;
+      }
+    } catch (e) {
+      // fall through to the input-focus fallback below
+    }
     try {
       const cw = window.gBrowser.selectedBrowser.contentWindow;
       const input = cw && cw.document && cw.document.getElementById("input");
       if (input && typeof input.focus === "function") input.focus();
     } catch (e) {
-      // ignore — the page handles ;f when it is out of process
+      // ignore
     }
   }
 
@@ -696,6 +714,110 @@ import { createTypingChannel } from "./typing";
     } catch (e) {
       return true;
     }
+  }
+
+  // Link-hints for chrome-owned pages (about:, error pages) where no content
+  // script runs. Collects the visible links in the page's real DOM (reachable
+  // via contentWindow when the page is in-process), labels the first few with
+  // 1-9, then captures the next key through the leader's one-shot slot: a
+  // digit opens that link in the current tab, Esc cancels. Gracefully does
+  // nothing when the page is unreachable (an out-of-process about:/extension
+  // page) and never swallows a key when it cannot draw labels, so it can never
+  // break normal key handling.
+  let hintKeyEntries: Array<{ href: string; el: any }> = [];
+  let hintKeyLabels: any[] = [];
+  let hintKeyCleanup: ReturnType<typeof setTimeout> | null = null;
+  function clearChromeHints(): void {
+    for (const l of hintKeyLabels) {
+      try {
+        l.remove();
+      } catch (e) {
+        // ignore
+      }
+    }
+    hintKeyLabels = [];
+    hintKeyEntries = [];
+    if (hintKeyCleanup) {
+      clearTimeout(hintKeyCleanup);
+      hintKeyCleanup = null;
+    }
+  }
+  function cleanHref(href: string): string {
+    return (href || "").trim();
+  }
+  function openInSelectedTab(href: string, cw: any): void {
+    try {
+      const base = cw && (cw.document && cw.document.baseURI);
+      const url = new (cw ? cw.URL : URL)(href, base).href;
+      const b = window.gBrowser.selectedBrowser;
+      if (b && typeof b.fixupAndLoadURIString === "function") {
+        b.fixupAndLoadURIString(url, {
+          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+        });
+      }
+    } catch (e) {
+      // give up silently
+    }
+  }
+  function chromePageHints(): void {
+    clearChromeHints();
+    let cw: any = null;
+    let doc: any = null;
+    try {
+      const b = window.gBrowser.selectedBrowser;
+      cw = b && b.contentWindow;
+      doc = cw && cw.document;
+      if (!doc || !doc.querySelectorAll) return;
+      const vwHeight = cw.innerHeight || 600;
+      const anchors = Array.from(doc.querySelectorAll("a[href]")) as any[];
+      for (const a of anchors) {
+        const href = cleanHref(a.getAttribute("href"));
+        // Skip pure-fragment anchors and invisible links.
+        if (!href || href.charCodeAt(0) === 35 /* # */) continue;
+        const r = a.getBoundingClientRect();
+        if (!r || r.width < 4 || r.height < 4 || r.bottom < 0 || r.top > vwHeight) continue;
+        hintKeyEntries.push({ href: href, el: a });
+        if (hintKeyEntries.length >= 9) break;
+      }
+    } catch (e) {
+      return; // page unreachable — no hints (safe no-op)
+    }
+    if (!hintKeyEntries.length) {
+      toast("no links on this page");
+      return;
+    }
+    // Draw the 1-9 labels over each hintable link.
+    try {
+      const host = doc.body || doc.documentElement;
+      hintKeyEntries.forEach((it, i) => {
+        const r = it.el.getBoundingClientRect();
+        const label = doc.createElement("span");
+        label.textContent = String(i + 1);
+        label.setAttribute(
+          "style",
+          "position:fixed;z-index:2147483647;background:#1e1e2e;color:#7aa2f7;" +
+            "border:1px solid #414868;border-radius:4px;min-width:16px;height:16px;" +
+            "line-height:16px;text-align:center;font:600 11px monospace;" +
+            "top:" + (r.top + 2) + "px;left:" + (r.left + 2) + "px;pointer-events:none;"
+        );
+        host.appendChild(label);
+        hintKeyLabels.push(label);
+      });
+    } catch (e) {
+      // Couldn't draw the labels — drop the mode so it never swallows a key.
+      clearChromeHints();
+      return;
+    }
+    const snapshot = hintKeyEntries.map((it) => it.href);
+    leader!.armPending((k) => {
+      const chose = k !== "Escape" ? Number(k) : 0;
+      clearChromeHints();
+      if (!chose || chose < 1 || chose > snapshot.length) return true;
+      const target = snapshot[chose - 1];
+      if (target) openInSelectedTab(target, cw);
+      return true;
+    }, 8000);
+    hintKeyCleanup = setTimeout(clearChromeHints, 8000);
   }
 
   // Is the selected tab the extension's command center page?
