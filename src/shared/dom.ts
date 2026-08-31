@@ -13,6 +13,18 @@ export function esc(s: unknown): string {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ESC_MAP[c] || c);
 }
 
+// Site favicon for a quick-launch app, via Google's favicon service so every
+// web app shows its real icon without bundling artwork. Pure string math — no
+// DOM — so it is safe from any context (command center, options page).
+export function favicon(url: string): string {
+  try {
+    const host = new URL(url).hostname;
+    return "https://www.google.com/s2/favicons?domain=" + encodeURIComponent(host) + "&sz=64";
+  } catch (e) {
+    return "";
+  }
+}
+
 // Deepest element actually focused inside an open shadow root. Custom
 // elements (Reddit's <faceplate-search-input>, YouTube's search box, ...)
 // host their real <input>/<textarea> in shadow DOM; the focused element the
