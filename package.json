@@ -6,9 +6,11 @@
   "type": "module",
   "scripts": {
     "build": "node build.ts --dev",
+    "gen:icons": "node scripts/gen-icons.ts",
     "ship": "node scripts/ship.ts",
     "bump": "node scripts/bump-version.ts",
     "submit": "node scripts/submit.ts",
+    "listing": "node scripts/amo-listing.ts",
     "build:installers": "node scripts/build-dev-installers.ts",
     "build:release": "RELEASE=1 node build.ts",
     "dev-install": "node scripts/dev-install.ts",
