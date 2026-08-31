@@ -41,7 +41,9 @@ no `Enter`, nothing to memorize.
   never peeks in.
 
 The leader key works on internal pages too (`about:*`, error pages), so there
-is always a way in.
+is always a way in. Those pages also get the vim scroll keys (`j`/`k`/`d`/`u`,
+`gg`/`G`) and `Esc` unfocuses whatever input holds focus — so a focused
+settings search box never blocks `;g` or the scroll keys.
 
 ## Install
 
@@ -110,7 +112,7 @@ gatekeeper. The action runs the moment you press its key; `Esc` just cancels.
 
 | Keys | Action |
 | --- | --- |
-| `; f` | link hints |
+| `; f` | link hints (on the command-center home: focuses the search box — there are no page links to hint) |
 | `; s` / `; S` | web search (new tab / current tab) |
 | `; o` / `; O` | open a URL (new tab / current tab) |
 | `; t` | tab switcher — type to filter |

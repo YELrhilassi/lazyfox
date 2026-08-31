@@ -771,10 +771,16 @@ async function handleRelayReq(action: string, arg: any): Promise<any> {
   if (action !== "alive") markChromeAlive();
   if (action === "alive") {
     markChromeAlive();
-    // The chrome helper announces its own version as the arg; store it so the
-    // options Components panel can report it independently of the extension.
+    // The chrome helper announces its version AND the active profile leaf
+    // name (\u0001-separated) as the arg. Store the version so the options
+    // Components panel can report it independently of the extension, and the
+    // profile so the command-center footer can show which profile is active
+    // even before any session has been saved.
     if (arg) {
-      browser.storage.local.set({ chromeHelperVersion: String(arg) }).catch(() => {});
+      const parts = String(arg).split("\u0001");
+      const set: Record<string, string> = { chromeHelperVersion: parts[0] || "" };
+      if (parts[1]) set.lfProfileName = parts[1];
+      browser.storage.local.set(set).catch(() => {});
     }
     // Return a truthy ack so the helper can confirm the announce was really
     // delivered (and stop retrying). Without it the helper could only know a
@@ -941,12 +947,21 @@ browser.runtime.onStartup.addListener(() => {
   void reconcileStealth();
 });
 
-// Open the "complete the installation" page (setup.html) in a new tab. Used by
-// ;I, the chrome-down notifications, and the relay-tab channel from the chrome
-// helper (which cannot call browser.tabs itself).
+// Open the "complete the installation" page (setup.html). Used by ;I, the
+// chrome-down notifications, and the relay-tab channel from the chrome helper
+// (which cannot call browser.tabs itself). From the command-center home the
+// tab is reused in place (like ;o/;h open in place) so ;I never stacks a
+// second extension tab; from a real page a fresh tab opens (replacing the
+// user's page would lose it).
 function openSetupTab(): Promise<{ ok: boolean }> {
-  return browser.tabs
-    .create({ url: browser.runtime.getURL("setup.html"), active: true })
+  const url = browser.runtime.getURL("setup.html");
+  return getActiveTab()
+    .then((t) => {
+      if (t && t.id && isCommandCenter(t)) {
+        return browser.tabs.update(t.id, { url: url, active: true });
+      }
+      return browser.tabs.create({ url: url, active: true });
+    })
     .then(() => ({ ok: true }))
     .catch(() => ({ ok: false, error: "tab failed" } as { ok: boolean }));
 }
