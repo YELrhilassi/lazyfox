@@ -21,6 +21,33 @@ export async function run(ctx) {
     await ctx.press(ctx.tabA, "Escape");
   });
 
+  await t("content script runs on addons.mozilla.org (restricted domain unblocked)", async () => {
+    // Regression: Firefox blocks content scripts on addons.mozilla.org (a
+    // "restricted" domain, the same list behind navigator.mozAddonManager)
+    // unless the installed user.js empties extensions.webextensions.
+    // restrictedDomains — no manifest key can opt a single add-on out. The
+    // harness profile mirrors the installed pref, so this proves Lazyfox's
+    // keys actually run on AMO.
+    await ctx.gotoPage(ctx.tabA, "https://addons.mozilla.org/firefox/");
+    // The real page must load (it is a live site; give the network slack).
+    const loaded = await waitFor(async () => {
+      const u = await evalIn(ctx.tabA, `location.href`).catch(() => "");
+      return u && u.indexOf("addons.mozilla.org") !== -1 ? u : null;
+    }, 30000).catch(() => null);
+    assert(loaded, "addons.mozilla.org loaded, got " + String(loaded).slice(0, 60));
+    // A real command must be runnable there: if the content script was blocked
+    // (the restricted-domain list not emptied), `;` does nothing and no leader
+    // overlay appears. The content script injects at document_start, so the
+    // first `;` press is enough.
+    await ctx.press(ctx.tabA, ";");
+    const armed = await waitFor(async () => {
+      return (await ctx.hasHost(ctx.tabA, "lazyfox-leader")) ? true : null;
+    }, 10000).catch(() => null);
+    assert(armed, "leader opens on addons.mozilla.org (a command can run)");
+    await ctx.press(ctx.tabA, "Escape");
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
+
   await t(";I opens the setup page with a GitHub Releases standalone installer download", async () => {
     // The store add-on cannot write profile files itself, so ;I opens the
     // setup page that directs the user to download the standalone Go installer

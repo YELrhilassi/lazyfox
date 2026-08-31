@@ -592,6 +592,13 @@ export async function makeProfile() {
     ["browser.shell.checkDefaultBrowser", false],
     ["lazyfox.hoverReveal", true],
     ["browser.fullscreen.autohide", true],
+    // Mirror the installer's user.js: Firefox blocks content scripts on
+    // restricted domains (accounts.firefox.com, ...) AND hardcodes
+    // addons.mozilla.org as an add-on site (AddonManagerWebAPI::IsValidHost);
+    // both must be lifted so Lazyfox works on AMO. The harness profile must
+    // match so the AMO tests exercise the real installed state.
+    ["extensions.webextensions.restrictedDomains", ""],
+    ["privacy.resistFingerprinting.block_mozAddonManager", true],
   ];
   writeFileSync(
     join(dir, "user.js"),

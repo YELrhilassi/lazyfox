@@ -275,12 +275,27 @@ import { createStore } from "./commandcenter/state";
     renderer.setStateTag("cmd");
     document.body.classList.add("ready");
     // Command mode is keyboard-first (hjkl navigate, `;` arms the leader,
-    // `;f` arms hint-pick, Enter opens the selection). Firefox focuses the
-    // first input on a freshly opened tab, which would silently switch the
-    // page into insert mode and make every typed key type into the search box
-    // instead — so a new tab must explicitly blur. Typing any other printable
-    // key re-enters insert mode, so searching still works.
+    // `;f` arms hint-pick, Enter opens the selection). A fresh new tab can
+    // leave focus in TWO wrong places: the search input (which silently
+    // switches the page into insert mode) or Firefox's URL bar (which
+    // swallows every key entirely). Blur the input and pull focus onto the
+    // page body — tabindex makes the body focusable — so keys land in the
+    // grid. Typing any printable key re-enters insert mode, so searching
+    // still works.
     if (document.activeElement === refs.input) refs.input.blur();
+    const body = document.body;
+    try {
+      body.setAttribute("tabindex", "-1");
+      if (document.activeElement !== body) {
+        body.focus({ preventScroll: true });
+      }
+    } catch (e) {
+      try {
+        body.focus();
+      } catch (e2) {
+        // ignore — chrome's TabSelect focus covers this
+      }
+    }
   });
 
   // Stealth home: when this command center is shown inside a stealth tab

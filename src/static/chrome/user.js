@@ -18,11 +18,17 @@ user_pref("browser.tabs.splitView.enabled", true);
 
 // Lazyfox's vim keys / link hints / leader must work on EVERY page, including
 // Mozilla's own. Firefox blocks content scripts on a set of "restricted"
-// domains by default (addons.mozilla.org, accounts.firefox.com, ...) — the
-// same list that powers the navigator.mozAddonManager API — and no manifest
-// key can opt a single add-on out. This override empties that list so the
-// extension runs on addons.mozilla.org and the other blocked Mozilla pages.
+// domains (addons.mozilla.org, accounts.firefox.com, ...) — no manifest key
+// can opt a single add-on out. Two settings unblock them:
+// 1) The restricted-domains pref (empty string = no restricted domains).
+// 2) addons.mozilla.org is ALSO hardcoded as an add-on site in the C++
+//    (AddonManagerWebAPI::IsValidHost — the host that powers the
+//    navigator.mozAddonManager API), which the pref above does NOT cover.
+//    The only switch is the hidden pref that disables mozAddonManager
+//    entirely (what Tor Browser ships); with it disabled AMO is no longer a
+//    valid add-on site and content scripts are allowed there.
 user_pref("extensions.webextensions.restrictedDomains", "");
+user_pref("privacy.resistFingerprinting.block_mozAddonManager", true);
 
 // Dark mode — Lazyfox is a dark, keyboard-first UI; force it for both the
 // browser chrome and web content regardless of the OS theme.

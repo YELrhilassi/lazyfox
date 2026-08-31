@@ -771,15 +771,17 @@ async function handleRelayReq(action: string, arg: any): Promise<any> {
   if (action !== "alive") markChromeAlive();
   if (action === "alive") {
     markChromeAlive();
-    // The chrome helper announces its version AND the active profile leaf
-    // name (\u0001-separated) as the arg. Store the version so the options
-    // Components panel can report it independently of the extension, and the
-    // profile so the command-center footer can show which profile is active
-    // even before any session has been saved.
+    // The chrome helper announces its version AND the active profile's
+    // user-facing name + raw directory leaf (\u0001-separated) as the arg.
+    // Store the version so the options Components panel can report it
+    // independently of the extension, and the profile so the command-center
+    // footer and setup page can show which profile is active even before any
+    // session has been saved.
     if (arg) {
       const parts = String(arg).split("\u0001");
       const set: Record<string, string> = { chromeHelperVersion: parts[0] || "" };
       if (parts[1]) set.lfProfileName = parts[1];
+      if (parts[2]) set.lfProfileDir = parts[2];
       browser.storage.local.set(set).catch(() => {});
     }
     // Return a truthy ack so the helper can confirm the announce was really
@@ -1018,12 +1020,16 @@ function checkChromeLayerHealth(): void {
 // via Services.dirsvc in the background (available to Firefox extension
 // contexts, so this works before the chrome helper is installed); the chrome
 // helper's alive announce writes the same key once the helper layer is up.
+// The raw profile dir is a folder like "zfdaq0c3.dev-edition-default"; the
+// USER-FACING name is the part after the first dot ("dev-edition-default") —
+// exactly what the installer's profile picker lists. Store both.
 function storeActiveProfileName(): void {
   try {
     const leaf = String(Services.dirsvc.get("ProfD").leafName || "");
-    if (leaf && browser.storage.local) {
-      browser.storage.local.set({ lfProfileName: leaf }).catch(() => {});
-    }
+    if (!leaf || !browser.storage.local) return;
+    const dot = leaf.indexOf(".");
+    const friendly = dot > 0 ? leaf.slice(dot + 1) : leaf;
+    browser.storage.local.set({ lfProfileName: friendly, lfProfileDir: leaf }).catch(() => {});
   } catch (e) {
     // Services.dirsvc unavailable here (non-Firefox / an odd context): leave
     // the name to the chrome helper's announce.

@@ -141,6 +141,12 @@ export async function run(ctx) {
       const n = await evalIn(ctx.tabA, `document.querySelectorAll("#results.quick .result .hintkey").length`);
       return n > 0 ? n : null;
     }, 8000);
+    // The chrome helper arms a one-shot capture for the pick: the next key is
+    // intercepted at the window level and forwarded into the page, so a hint
+    // letter works even when Firefox's (hidden) URL bar holds focus on a fresh
+    // new tab. leaderPending must be true while hint-pick is armed.
+    const s = await ctx.chromeState();
+    assert(s && s.leaderPending, "chrome armed the hint-pick key capture (leaderPending)");
     // `k` is the hint letter for index 10 — the "History" tile with the default
     // 6 quick-launch apps (6 apps + 6 browser-access commands). Pressing it
     // sets the History mode IN PLACE (no navigation), which makes the pick
