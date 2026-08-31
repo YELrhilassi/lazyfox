@@ -46,16 +46,20 @@ const renderStatus = (): void => {
 };
 
 const renderProfile = (): void => {
-  void browser.storage.local.get("lfProfileName").then((r: any) => {
+  void browser.storage.local.get(["lfProfileName", "lfProfileDir"]).then((r: any) => {
     const prof = (r && r.lfProfileName) || "";
+    const dir = (r && r.lfProfileDir) || "";
     const el = $("profileName");
-    const dir = $("profileDir");
-    el.textContent = prof ? "Profile \u201C" + prof + "\u201D" : "your current profile";
+    const dirEl = $("profileDir");
     if (prof) {
+      el.textContent = prof;
       el.setAttribute("title", "the Firefox profile this window is running on");
-      dir.textContent = "this is the profile this window is running right now \u2014 match its name in the installer\u2019s profile list. Your settings, bookmarks and add-ons in it are never touched.";
+      dirEl.textContent = dir
+        ? dir + " \u2014 match this name in the installer\u2019s profile list."
+        : "match this name in the installer\u2019s profile list.";
     } else {
-      dir.textContent = "your settings, bookmarks and add-ons in it are never touched.";
+      el.textContent = "your current profile";
+      dirEl.textContent = "your bookmarks, passwords and other add-ons in it are never touched.";
     }
   }).catch(() => {});
 };

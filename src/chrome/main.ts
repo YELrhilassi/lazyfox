@@ -29,10 +29,15 @@ import { createTypingChannel } from "./typing";
 
   // Profile directory leaf name (e.g. "65rp05zu.lfxdev-…"), announced with the
   // alive ping so the extension can show the ACTIVE profile in the command-
-  // center footer even before any tmux-style session has been saved.
+  // center footer even before any tmux-style session has been saved. The
+  // user-facing name is the part after the first dot ("lfxdev-…") — the raw
+  // leaf "zfdaq0c3.dev-edition-default" would show the hash prefix instead.
   let profileName = "";
+  let profileDir = "";
   try {
-    profileName = String(Services.dirsvc.get("ProfD").leafName || "");
+    profileDir = String(Services.dirsvc.get("ProfD").leafName || "");
+    const dot = profileDir.indexOf(".");
+    profileName = dot > 0 ? profileDir.slice(dot + 1) : profileDir;
   } catch (e) {
     // ignore — the footer falls back to versions only
   }
@@ -260,10 +265,11 @@ import { createTypingChannel } from "./typing";
     if (announcedAlive || aliveAckInFlight) return;
     if (!channel.ccBaseUrl()) return; // extension not ready yet; poll retries
     aliveAckInFlight = true;
-    // The arg carries the helper version AND the active profile leaf name
-    // (\u0001-separated); the background stores both so the command-center
-    // footer can show the profile it is running under.
-    void channel.requestReply("alive", CHROME_HELPER_VERSION + "\u0001" + profileName).then((ack: any) => {
+    // The arg carries the helper version, the active profile's user-facing
+    // name and its raw directory leaf (\u0001-separated); the background
+    // stores all three so the command-center footer and setup page can show
+    // the profile this window is running under.
+    void channel.requestReply("alive", CHROME_HELPER_VERSION + "\u0001" + profileName + "\u0001" + profileDir).then((ack: any) => {
       aliveAckInFlight = false;
       // requestReply resolves null on timeout/error; the ack object on success.
       if (ack && ack.ok) announcedAlive = true;
@@ -334,11 +340,35 @@ import { createTypingChannel } from "./typing";
       } catch (e) {
         // ignore
       }
+      // A fresh command-center tab starts with Firefox's URL-bar focus (the
+      // standard new-tab behavior), which would swallow every key — the grid's
+      // hjkl, `;`, `;f` hint-pick letters, Enter. Pull focus into the page so
+      // the keyboard-first home actually receives keys (the page blurs its own
+      // input, so this leaves it in command mode).
+      if (isCommandCenterTab()) focusCommandCenterContent();
       status.update();
       status.compute();
     });
   } catch (e) {
     // ignore
+  }
+
+  // Move keyboard focus into the command-center tab's content document (out
+  // of the hidden URL bar / chrome UI), leaving it in command mode: hjkl
+  // navigate, `;` arms the leader, ;f arms hint-pick. Focuses the page body,
+  // never the <browser> element (which grabs the search input).
+  function focusCommandCenterContent(): void {
+    try {
+      const cw = window.gBrowser.selectedBrowser.contentWindow;
+      const doc = cw && cw.document;
+      const input = doc && doc.getElementById("input");
+      if (input && doc.activeElement === input && typeof input.blur === "function") {
+        input.blur();
+      }
+    } catch (e) {
+      // ignore
+    }
+    focusCCBody();
   }
 
   /* ==================== lfc progress listener ==================== */
@@ -523,12 +553,13 @@ import { createTypingChannel } from "./typing";
   // an event in the page's realm reaches its listener; out-of-process the page
   // owns the leader and handles `;f` itself.
   function signalCommandCenterFind(): void {
+    let reached = false;
     try {
       const cw = window.gBrowser.selectedBrowser.contentWindow;
       const doc = cw && cw.document;
       if (doc && typeof doc.dispatchEvent === "function") {
         doc.dispatchEvent(new (cw as any).Event("lazyfox-find", { bubbles: false, cancelable: false }));
-        return;
+        reached = true;
       }
     } catch (e) {
       // fall through to the input-focus fallback below
@@ -539,6 +570,61 @@ import { createTypingChannel } from "./typing";
       if (input && typeof input.focus === "function") input.focus();
     } catch (e) {
       // ignore
+    }
+    if (!reached) return;
+    // The home-grid hint-pick letter must reach the PAGE even when focus is
+    // NOT in it — Firefox keeps the (hidden) URL bar focused on a fresh new
+    // tab, and a hint letter typed there would vanish into the URL bar while
+    // the page sits armed. The chrome capture listener sees every key, so
+    // capture the next one and forward it into the page's document: hint-pick
+    // then works regardless of where focus lives. Only armed on the home grid
+    // (the page disarms on any non-home mode switch), matching the page-side
+    // hintArmed state.
+    leader!.armPending((k) => {
+      dispatchToCCPage(k);
+      return true;
+    }, 10000);
+    // Pull focus into the page so keys AFTER the pick (and hjkl on the grid)
+    // land naturally instead of in the hidden URL bar. Focus the page BODY,
+    // never the <browser> element: browser.focus() on an in-process page
+    // grabs the first focusable element, which is the search input — silently
+    // switching the page into insert mode.
+    focusCCBody();
+  }
+
+  // Focus the command-center page's body (tabindex=-1) so keyboard focus sits
+  // in the page, in command mode, away from Firefox's URL bar and the page's
+  // own search input. The page blurs/focuses on load too; this is the chrome
+  // side of the same pull, for when the helper routes keys.
+  function focusCCBody(): void {
+    try {
+      const cw = window.gBrowser.selectedBrowser.contentWindow;
+      const doc = cw && cw.document;
+      const body = doc && doc.body;
+      if (body && doc.activeElement !== body && typeof body.focus === "function") {
+        body.focus();
+      }
+    } catch (e) {
+      // page not loaded / cross-process — nothing to focus yet
+    }
+  }
+
+  // Forward a single key into the command-center page's document (the page's
+  // own keydown listener drives hint-pick / modes / typing from it). Built
+  // with the PAGE's KeyboardEvent constructor — an event created in the chrome
+  // realm is invisible to the page's listeners.
+  function dispatchToCCPage(k: string): void {
+    try {
+      const cw = window.gBrowser.selectedBrowser.contentWindow;
+      const doc = cw && cw.document;
+      if (!doc) return;
+      const ctor = (cw as { KeyboardEvent?: typeof KeyboardEvent }).KeyboardEvent || KeyboardEvent;
+      const target = (doc.activeElement as Element | null) || doc.documentElement;
+      const opts = { key: k, code: k, bubbles: true, cancelable: true };
+      target.dispatchEvent(new ctor("keydown", opts));
+      target.dispatchEvent(new ctor("keyup", opts));
+    } catch (e) {
+      // page unreachable — nothing to forward (safe no-op)
     }
   }
 
