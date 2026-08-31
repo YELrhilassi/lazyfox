@@ -311,7 +311,7 @@ import { createTypingChannel } from "./typing";
 
   window.gBrowser.addTabsProgressListener({
     QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener"]),
-    onLocationChange(browser: any, webProgress: any, request: any, location: any) {
+    onLocationChange(browser: any, _webProgress: any, _request: any, location: any) {
       if (!location) return;
       // The selected tab may have crossed the web/chrome boundary (e.g. a web
       // page navigated to about:preferences): remount the chrome status bar
