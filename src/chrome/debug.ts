@@ -146,6 +146,16 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
       } catch (e) {
         e10s = String(e);
       }
+      // The restricted-domain pref: Firefox blocks content scripts on
+      // addons.mozilla.org / accounts.firefox.com etc unless it is emptied —
+      // reported so install problems on those pages are visible instead of
+      // silent (the shipped user.js sets it to "").
+      let restrictedDomains = null;
+      try {
+        restrictedDomains = (globalThis as any).Services.prefs.getStringPref("extensions.webextensions.restrictedDomains", "<unset>");
+      } catch (e) {
+        restrictedDomains = "<error: " + e + ">";
+      }
       let perTab = null;
       try {
         const tab = (window as any).gBrowser && (window as any).gBrowser.selectedTab;
@@ -159,6 +169,7 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
         active: p ? p.active : false,
         bg: bg,
         e10s: e10s,
+        restrictedDomains: restrictedDomains,
         perTab: perTab,
         contentScripts: cs,
         extUrl: p ? p.getURL("") : null,
@@ -235,6 +246,26 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
         // ignore
       }
       const state = {
+        // The active profile's raw directory leaf (ProfD) — reported so the
+        // "setup page shows no profile name" problem is diagnosable.
+        profileLeaf: (() => {
+          try {
+            const f = Services.dirsvc.get("ProfD", Ci.nsIFile);
+            return f ? String(f.leafName || "") : "<null>";
+          } catch (e) {
+            return "<error: " + e + ">";
+          }
+        })(),
+        // Firefox blocks content scripts on restricted domains
+        // (addons.mozilla.org, accounts.firefox.com, ...) unless this pref is
+        // emptied; reported so "extension doesn't work on AMO" is diagnosable.
+        restrictedDomains: (() => {
+          try {
+            return Services.prefs.getStringPref("extensions.webextensions.restrictedDomains", "<unset>");
+          } catch (e) {
+            return "<error>";
+          }
+        })(),
         relay: (() => {
           try {
             return st.relay();

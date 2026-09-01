@@ -138,7 +138,20 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
       renderer.setMode(modeMap[k]);
       return;
     }
-    if (k === "w") renderer.toggleResize(true);
+    if (k === "f") {
+      // `;f` on the home grid arms hint-PICK: every tile gets a letter badge
+      // and the next key runs that tile — the home-page equivalent of web
+      // link-hints (any mode other than the home grid falls back to focusing
+      // the search box).
+      const home = renderer.isHome();
+      if (home) {
+        store.patch({ hintArmed: true });
+        renderer.refresh();
+      } else {
+        renderer.setStateTag("insert");
+        deps.focusInput();
+      }
+    } else if (k === "w") renderer.toggleResize(true);
     else if (k === "m") renderer.toggleMove(true);
     else if (k === "n") void send("newTab");
     else if (k === "x") closeTabConfirm();
@@ -147,6 +160,7 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
     else if (k === "c") void send("duplicateTab");
     else if (k === "z") void send("zen");
     else if (k === "N") void send("stealthOpen");
+    else if (k === "I") void send("openSetup"); // ;I — the standalone installer/setup page
     else if (k === "Q") void send("quit");
     else if (k === "?") toggleHelp();
     modeTag.textContent = store.get().mode;
@@ -160,6 +174,14 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
   function onEnter(): void {
     const state = store.get();
     const v = input.value.trim();
+    // The home grid has no typed query, so Enter ALWAYS opens the selected
+    // tile. (It must skip the staleness guard below — after a filter + clear,
+    // allQuery still holds the old text while v is empty, and the guard would
+    // wrongly swallow Enter and do nothing.)
+    if (state.quickView) {
+      openItem(state.all[state.idx] || state.all[0], state.mode);
+      return;
+    }
     // Act on the TYPED value whenever the visible list is empty or was built
     // for an earlier query (the 70ms debounce means it lags a fast typist).
     // In URL mode that means opening exactly what you typed, normalized —
@@ -186,10 +208,35 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
+  // Home-grid hint-pick (;f): the next printable key runs the tile labeled
+  // with that letter (a = first tile, b = second, ...). Esc leaves hint mode
+  // with nothing selected; any other key just ends it and does nothing.
+  const HINT_CHARS = "abcdefghijklmnopqrstuvwxyz";
+  function handleHintPick(e: KeyboardEvent): void {
+    const k = e.key;
+    e.preventDefault();
+    const hint = HINT_CHARS.indexOf(k);
+    store.patch({ hintArmed: false });
+    if (k === "Escape" || hint < 0) {
+      renderer.refresh();
+      return;
+    }
+    const item = store.get().all[hint];
+    renderer.refresh();
+    if (item) openItem(item, store.get().mode);
+  }
+
   function onKeyDown(e: KeyboardEvent): void {
     const k = e.key;
     const state = store.get();
     const inInput = document.activeElement === input;
+
+    // While hint-pick is armed on the home grid, every key is a hint letter
+    // (or Esc to cancel) — before leader/typing/resize handling.
+    if (store.get().hintArmed) {
+      handleHintPick(e);
+      return;
+    }
 
     if (state.leaderPending) {
       e.preventDefault();
@@ -205,6 +252,11 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
     if (state.resizeOpen && handleResizeKey(e)) return;
     if (state.moveOpen && handleMoveKey(e)) return;
     if (state.resizeOpen || state.moveOpen) return;
+
+    // Modifier shortcuts must never get swallowed by the typing path below:
+    // let Ctrl+?/Alt+?/Meta+? fall through to the browser unless it is a
+    // known leader combo (handled while leaderPending above).
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
 
     if (k === "Tab") {
       e.preventDefault();

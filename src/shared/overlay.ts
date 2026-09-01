@@ -154,6 +154,53 @@ function pasteClipboard(input: HTMLInputElement): void {
   }
 }
 
+// Manual text insertion for popups where the window-capture keydown handler
+// preventDefaults every key before the input sees it (the content-script
+// model). Handles Backspace/Delete, printable characters, and Ctrl+V (native
+// paste never runs, so read the clipboard and insert at the cursor). Returns
+// true when the key was consumed.
+export function manualTextKey(e: KeyboardEvent, input: HTMLInputElement): boolean {
+  const k = e.key;
+  const s = input.selectionStart == null ? input.value.length : input.selectionStart;
+  const en = input.selectionEnd == null ? input.value.length : input.selectionEnd;
+  const sel = s !== en;
+  const atEnd = s >= input.value.length;
+  const atStart = s <= 0;
+  if (e.ctrlKey && !e.altKey && !e.metaKey && (k === "v" || k === "V")) {
+    pasteClipboard(input);
+    return true;
+  }
+  if (k === "Backspace" || k === "Delete") {
+    if (sel) {
+      input.value = input.value.slice(0, s) + input.value.slice(en);
+      try {
+        input.setSelectionRange(s, s);
+      } catch (err) {}
+    } else if (k === "Backspace" && !atStart) {
+      input.value = input.value.slice(0, s - 1) + input.value.slice(en);
+      try {
+        input.setSelectionRange(s - 1, s - 1);
+      } catch (err) {}
+    } else if (k === "Delete" && !atEnd) {
+      input.value = input.value.slice(0, s) + input.value.slice(en + 1);
+      try {
+        input.setSelectionRange(s, s);
+      } catch (err) {}
+    }
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }
+  if (k && k.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    input.value = input.value.slice(0, s) + k + input.value.slice(en);
+    try {
+      input.setSelectionRange(s + 1, s + 1);
+    } catch (err) {}
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }
+  return false;
+}
+
 const HOST_CSS =
   "all:initial;position:fixed;inset:0;z-index:2147483647;display:block;";
 
@@ -374,51 +421,8 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
       }
     }
     if (opts.manualText) {
-      const input = opts.inputEl;
-      const s = input.selectionStart == null ? input.value.length : input.selectionStart;
-      const en = input.selectionEnd == null ? input.value.length : input.selectionEnd;
-      const sel = s !== en;
-      const atEnd = s >= input.value.length;
-      const atStart = s <= 0;
-      if (k === "Backspace" || k === "Delete") {
+      if (manualTextKey(e, opts.inputEl)) {
         e.preventDefault();
-        if (sel) {
-          input.value = input.value.slice(0, s) + input.value.slice(en);
-          try {
-            input.setSelectionRange(s, s);
-          } catch (err) {}
-        } else if (k === "Backspace" && !atStart) {
-          input.value = input.value.slice(0, s - 1) + input.value.slice(en);
-          try {
-            input.setSelectionRange(s - 1, s - 1);
-          } catch (err) {}
-        } else if (k === "Delete" && !atEnd) {
-          input.value = input.value.slice(0, s) + input.value.slice(en + 1);
-          try {
-            input.setSelectionRange(s, s);
-          } catch (err) {}
-        }
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        return true;
-      }
-      if (k && k.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
-        e.preventDefault();
-        input.value = input.value.slice(0, s) + k + input.value.slice(en);
-        try {
-          input.setSelectionRange(s + 1, s + 1);
-        } catch (err) {}
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        return true;
-      }
-      // Ctrl+V / Ctrl+V with shift on the manual-text model: read the clipboard
-      // and insert at the cursor (native paste is prevented by the capture
-      // handler). Handle detail too, for consistency with real paste.
-      if (
-        e.ctrlKey && !e.altKey && !e.metaKey &&
-        k === "v"
-      ) {
-        e.preventDefault();
-        pasteClipboard(input);
         return true;
       }
     }

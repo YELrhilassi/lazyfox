@@ -3,6 +3,12 @@
 <head>
 <meta charset="utf-8">
 <title>Lazyfox relay</title>
+<style>
+  /* This tab is invisible plumbing, but Firefox can briefly select it (tab
+     close / session restore). Render it dark and empty immediately so a
+     momentary selection shows the app background, never a white flash. */
+  html, body { margin: 0; height: 100%; background: #16161e; }
+</style>
 </head>
 <body>
 <!--

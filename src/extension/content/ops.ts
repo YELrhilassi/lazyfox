@@ -1959,5 +1959,10 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     openTarget: () => {
       // Chrome-only capability (hotkey about: pages); content never calls it.
     },
+    openUrlNative: () => {
+      // Chrome-only capability (about: pages need the chrome-level opener);
+      // content never calls it.
+      return false;
+    },
   };
 }

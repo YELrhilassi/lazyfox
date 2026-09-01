@@ -13,7 +13,6 @@
 import { core } from "../shared/core";
 import { StatusBar } from "../shared/statusbar";
 import { activeDownloads, dismissDownload, updateDownloads } from "./downloads";
-import type { DownloadEntry } from "../shared/types";
 import type { ChromeCfg } from "./config";
 
 export interface StatusBarDeps {
@@ -101,19 +100,6 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   // match, 0 = query typed but nothing walked to; total matches).
   let contentFindByIndex: Record<number, { count: number; cur: number }> = {};
 
-  // Is the selected tab the extension's command center page?
-  function isCommandCenterTab(): boolean {
-    try {
-      const b = window.gBrowser.selectedBrowser;
-      const uri = b && b.currentURI;
-      if (!uri) return false;
-      const s = uri.spec || "";
-      return s.indexOf("commandcenter.html") !== -1;
-    } catch (e) {
-      return false;
-    }
-  }
-
   // ONE window-level bar owns the bottom of the window for EVERY tab — plain
   // web pages, chrome-only pages, and split panes alike. The bar lives in the
   // chrome document (outside the web content) and reserves its 18px by
@@ -169,6 +155,21 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
       const real = deps.realTabs();
       const liveCount = real.length;
       const realSel = real.indexOf(window.gBrowser.selectedTab);
+      // The stealth badge is a LIVE property of the selected tab (its
+      // container), never a cached flag: flags keyed by raw tab index go stale
+      // the moment a tab closes and shift every index after it, so a normal
+      // tab would inherit a dead tab's badge. userContextId > 0 means the tab
+      // runs in an isolated container (Lazyfox stealth opens one per tab).
+      let selStealth = false;
+      try {
+        const t = window.gBrowser.selectedTab;
+        selStealth = !!(
+          t && typeof t.userContextId === "number" && t.userContextId > 0
+        );
+      } catch (e) {
+        // selection not readable mid-collapse; keep the pushed value
+        selStealth = !!chromeStatusInfo.activeStealth;
+      }
       const sessions = chromeStatusInfo.sessions.map((s) =>
         s.current ? { ...s, tabCount: liveCount } : s
       );
@@ -181,7 +182,7 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
         splitOrientation: chromeStatusInfo.splitOrientation,
         splitActive: chromeStatusInfo.splitActive,
         splitPanes: chromeStatusInfo.splitPanes,
-        activeStealth: chromeStatusInfo.activeStealth,
+        activeStealth: selStealth,
         mode: mode,
         sessions: sessions,
         downloads: chromeStatusDownloads,

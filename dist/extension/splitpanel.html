@@ -6,15 +6,9 @@
 <title>Lazyfox split</title>
 <style>
   :root {
-    --bg: #1e1e2e;
-    --bg2: #16161e;
-    --fg: #c0caf5;
-    --muted: #565f89;
-    --sub: #9aa5ce;
-    --accent: #7aa2f7;
-    --border: #2a2f45;
-    --border2: #414868;
-    --sel: #292e42;
+    --bg: #0e1116; --bg2: #161922; --bg3: #1d2130; --fg: #d3d7e6;
+    --muted: #5f6a85; --sub: #9aa3bf; --accent: #6d8fdb;
+    --border: #262b3d; --border2: #343b54; --sel: #2b3150;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -22,7 +16,7 @@
     margin: 0;
     background: var(--bg);
     color: var(--fg);
-    font: 14px/1.5 ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -35,27 +29,12 @@
     flex-direction: column;
     padding: 22px 20px 14px;
   }
-  header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 12px;
-  }
-  .logo {
-    background: var(--bg2);
-    border: 1px solid var(--border2);
-    border-radius: 6px;
-    color: var(--accent);
-    font-weight: 700;
-    letter-spacing: .05em;
-    padding: 2px 8px;
-    font-size: 13px;
-  }
-  .brand { font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+  header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .brand { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
   #state {
     margin-left: auto;
     font-size: 10px;
-    letter-spacing: .18em;
+    letter-spacing: .16em;
     text-transform: uppercase;
     color: var(--accent);
     background: var(--bg2);
@@ -70,17 +49,11 @@
     border-radius: 8px;
     color: var(--fg);
     font: inherit;
-    padding: 12px 14px;
+    padding: 11px 14px;
     outline: none;
   }
   #input:focus { border-color: var(--accent); }
-  .section {
-    margin-top: 12px;
-    font-size: 10px;
-    letter-spacing: .14em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
+  .section { margin-top: 12px; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
   #tabs {
     list-style: none;
     margin: 6px 0 0;
@@ -109,13 +82,7 @@
     text-transform: uppercase;
     letter-spacing: .08em;
   }
-  #tabs li.empty {
-    color: var(--muted);
-    cursor: default;
-    font-size: 12px;
-    text-transform: none;
-    letter-spacing: 0;
-  }
+  #tabs li.empty { color: var(--muted); cursor: default; font-size: 12px; text-transform: none; letter-spacing: 0; }
   .kbd {
     flex: none;
     min-width: 22px;
@@ -127,24 +94,11 @@
     padding: 0 6px;
     color: var(--accent);
     font-size: 11px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
   }
   .txt { min-width: 0; }
-  .t {
-    font-size: 13px;
-    color: var(--fg);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    line-height: 18px;
-  }
-  .s {
-    font-size: 11px;
-    color: var(--muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    line-height: 17px;
-  }
+  .t { font-size: 13px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 18px; }
+  .s { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 17px; }
   footer {
     margin-top: 10px;
     padding-top: 10px;
@@ -161,7 +115,6 @@
 <body>
 <div id="wrap">
   <header>
-    <span class="logo">LZ</span>
     <span class="brand">split pane</span>
     <span id="state">split</span>
   </header>
