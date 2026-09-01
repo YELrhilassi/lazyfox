@@ -212,7 +212,12 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     const active = await activeDownloads();
     const out: { key: string; filename: string; state: string; percent: number; speed: string }[] = [];
     for (const d of active) {
-      const percent = await core.downloadProgress(d.received, d.total);
+      let percent = await core.downloadProgress(d.received, d.total);
+      // 100% must only ever mean done: Firefox can report currentBytes ==
+      // totalBytes a beat before finalize flips the state, which would show a
+      // full bar while the file is still being written. Cap in-progress at 99;
+      // the green ✓ takes over once the state becomes complete.
+      if (percent >= 100 && d.state !== "complete") percent = 99;
       const speed = await core.formatSpeed(d.speed);
       out.push({ key: d.id, filename: d.filename, state: d.state, percent: percent, speed: speed });
     }
@@ -220,12 +225,20 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     computeChromeStatus();
   }
 
+  let downloadsPolling = false;
   async function pollDownloads(): Promise<void> {
+    // Never overlap polls: a slow Downloads.sys.mjs read (large histories,
+    // long-lived big downloads) must not pile up intervals that race on the
+    // shared cache and corrupt the speed deltas.
+    if (downloadsPolling) return;
+    downloadsPolling = true;
     try {
       await updateDownloads();
       await refreshDownloadStatus();
     } catch (e) {
       // downloads are best-effort; never let a poll break the bar
+    } finally {
+      downloadsPolling = false;
     }
   }
 

@@ -673,6 +673,9 @@ export async function run(ctx) {
   });
 
   await t("downloads: progress shows done indicator, ;D dismiss, popup list", async () => {
+    // Sweep leftovers from earlier interrupted runs (Firefox appends " (N)"
+    // to avoid overwriting, so match by name fragment) before starting.
+    await evalIn(ctx.probe, `browser.downloads.search({}).then(rs => Promise.all(rs.filter(r => String(r.filename).indexOf("lf-slow") !== -1).map(r => browser.downloads.removeFile(r.id).catch(() => {}).then(() => browser.downloads.erase({ id: r.id }).catch(() => {}))))).then(() => true)`).catch(() => {});
     // Start a slow download (streamed ~8s) so it stays in_progress long
     // enough for the bar's ⭳ segment to be observed. The extension auto-saves
     // it (fresh profile, no prompt).
@@ -717,8 +720,9 @@ export async function run(ctx) {
     assert(pop && pop.items.some((txt) => String(txt).indexOf("lf-slow") !== -1), "popup lists the download: " + JSON.stringify(pop && pop.items));
     await ctx.press(ctx.tabA, "Escape");
 
-    // Clean the file + history entry so the suite is repeatable.
-    await evalIn(ctx.probe, `browser.downloads.search({ filename: "lf-slow.bin" }).then(rs => Promise.all(rs.map(r => browser.downloads.removeFile(r.id).catch(() => {}).then(() => browser.downloads.erase({ id: r.id }).catch(() => {}))))).then(() => true)`).catch(() => {});
+    // Clean the file + history entry so the suite is repeatable (match by
+    // fragment so numbered copies from interrupted runs are swept too).
+    await evalIn(ctx.probe, `browser.downloads.search({}).then(rs => Promise.all(rs.filter(r => String(r.filename).indexOf("lf-slow") !== -1).map(r => browser.downloads.removeFile(r.id).catch(() => {}).then(() => browser.downloads.erase({ id: r.id }).catch(() => {}))))).then(() => true)`).catch(() => {});
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
   });
 

@@ -30,8 +30,11 @@ let cache: DownloadEntry[] = [];
 // Real Download objects by stable key (full target path).
 const objs = new Map<string, any>();
 // Previous byte counts + timestamps per key, to derive speed across polls.
+// Speed is an EMA (smoothed) so long downloads don't flash 0 / huge spikes
+// from one-second network jitter.
 const prevBytes = new Map<string, number>();
 const prevAt = new Map<string, number>();
+const prevSpeed = new Map<string, number>();
 // True after the first poll. Pre-existing history (downloads that finished or
 // failed before the chrome helper loaded) is seeded as dismissed so it never
 // floods the bar with terminal dots — only downloads observed during THIS
@@ -54,12 +57,13 @@ async function snapshot(): Promise<DownloadEntry[]> {
   const items = await list.getAll();
   await Promise.all(
     items.map((d: any) => {
-      try {
-        if (!d.succeeded && !d.error && !d.canceled) return d.refresh();
-      } catch (e) {
-        // ignore
-      }
-      return Promise.resolve();
+      if (d.succeeded || d.error || d.canceled) return Promise.resolve();
+      // refresh() can reject (the download left the store, or its target was
+      // cleaned up). One bad entry must never kill the whole poll — that would
+      // freeze the status bar at a stale state forever. Guard each refresh.
+      return Promise.resolve()
+        .then(() => d.refresh())
+        .catch(() => {});
     })
   );
   objs.clear();
@@ -81,7 +85,10 @@ async function snapshot(): Promise<DownloadEntry[]> {
     } catch (e) {
       // ignore — a partial download may not expose target/source yet
     }
-    const key = path || url || "dl:" + out.length;
+    // Path is the stable key (pathless entries fall back to a key anchored on
+    // startTime so a shifting index can't make a dismissed flag leak across
+    // different downloads between polls).
+    const key = path || url || "dl:" + startTime + ":" + out.length;
     if (path) objs.set(key, d);
     const filename =
       (path ? path.split(/[\\/]/).pop() : "") ||
@@ -122,10 +129,13 @@ export async function updateDownloads(): Promise<void> {
     const pb = prevBytes.get(d.id);
     const pt = prevAt.get(d.id);
     if (pb != null && pt != null && now > pt) {
-      d.speed = Math.max(0, Math.round((d.received - pb) / ((now - pt) / 1000)));
+      const instant = Math.max(0, Math.round((d.received - pb) / ((now - pt) / 1000)));
+      const prev = prevSpeed.get(d.id);
+      d.speed = prev != null ? Math.round(prev * 0.6 + instant * 0.4) : instant;
     }
     prevBytes.set(d.id, d.received);
     prevAt.set(d.id, now);
+    prevSpeed.set(d.id, d.speed);
   }
   cache = await core.mergeDownloads(cache, fresh);
 }
