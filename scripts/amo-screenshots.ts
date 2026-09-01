@@ -100,9 +100,11 @@ async function retry429<T>(fn: () => Promise<T & { status: number; throttle?: nu
   }
 }
 
-// Skip positions that already exist so a re-run is a no-op.
-const existing = await api(`/addons/addon/${SLUG}/previews/`);
-const have = new Set((existing.json?.results ?? []).map((p: { position: number }) => p.position));
+// Skip positions that already exist so a re-run is a no-op. Read them from
+// the add-on object: the dedicated previews LIST endpoint is not exposed
+// (405 "Method GET not allowed"), but the add-on payload carries its previews.
+const addon = await api(`/addons/addon/${SLUG}/`);
+const have = new Set((addon.json?.previews ?? []).map((p: { position: number }) => p.position));
 const todo = SHOTS.filter((s) => !have.has(s.position));
 if (todo.length === 0) {
   console.log(`[screenshots] all ${SHOTS.length} screenshots already uploaded — nothing to do.`);

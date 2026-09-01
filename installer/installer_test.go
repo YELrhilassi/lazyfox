@@ -541,6 +541,26 @@ func TestEmbeddedPayloadFallback(t *testing.T) {
 	}
 }
 
+// TestEmbedPathsForwardSlashOnly guards the Windows regression where
+// filepath.Join produced backslash paths for embed.FS reads ("open
+// payload\chrome\userChrome.css: file does not exist"). Go's embed.FS only
+// understands "/"-separated paths, so embedding lookups must never go
+// through filepath.Join / filepath.FromSlash.
+func TestEmbedPathsForwardSlashOnly(t *testing.T) {
+	if strings.Contains(embedPath("payload/chrome", "userChrome.css"), "\\") {
+		t.Fatal("embedPath must never produce Windows backslashes")
+	}
+	// A backslash-joined path (what filepath.Join yields on Windows) is a
+	// single bogus file name inside the embed.FS and must NOT resolve.
+	if _, err := chromePayloadFS.ReadFile(`payload\chrome\userChrome.css`); err == nil {
+		t.Skip("embed.FS unexpectedly resolved a backslash path; nothing to guard")
+	}
+	// The forward-slash path — the only one the runtime uses — must resolve.
+	if _, err := chromePayloadFS.ReadFile(embedPath("payload/chrome", "userChrome.css")); err != nil {
+		t.Fatalf("forward-slash embedded path must resolve: %v", err)
+	}
+}
+
 func hasEntry(names []string, want string) bool {
 	for _, n := range names {
 		if n == want {
