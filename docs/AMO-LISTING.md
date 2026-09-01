@@ -72,21 +72,24 @@ and other add-ons are untouched.
 
 ## Tags & category
 
-AMO picks tags from a fixed list curated by reviewers; the exact set you can
-choose is shown in the dashboard's "Tags" box. Start with these and add any
-AMO-approved equivalents it offers:
+AMO picks tags from a fixed, curated list (visible via the v5 API
+`GET /addons/tags/`); anything else is rejected. The tags applied on the
+listing are the best matches from that list:
 
 ```
-shortcuts, keyboard, vim, productivity, tabs, navigation,
-find-in-page, split-view, sessions, browser, minimal
+container, privacy, search
 ```
 
-- **Category:** set to the closest of AMO's list, e.g. `tabs` (or `productivity`).
+(`container` for the stealth tabs, `privacy` for the no-telemetry design,
+`search` for the command-center search. If the curated list changes, re-run
+`npm run listing` with the new slugs from `GET /addons/tags/`.)
 
-`npm run listing` submits `summary`, the description above, `homepage_url`,
-`support_url` and the `categories` array through the v5 API. Tags can usually
-also be sent; if AMO rejects them the script retries without so the run still
-succeeds, and you set tags manually in the dashboard.
+- **Category:** `tabs`.
+
+`npm run listing` submits `summary`, the description above, `homepage`,
+`support_url`, the `categories` array **and** `tags` through the v5 API (all
+verified working). Screenshots are the only field the API can't set — upload
+them in the dashboard.
 
 ## Screenshots (upload in the dashboard)
 
@@ -151,5 +154,5 @@ surprised.
 - `npm run gen:icons` — rebuild the PNG icon set from the logomark SVG.
 - `node scripts/bidi/screenshots.ts` — regenerate the screenshots from the live UI.
 - `npm run submit` — upload a new **listed** version (starts the review).
-- `npm run listing` — push the listing metadata (summary/description/links) via the API.
-- Updates to tags/screenshots are made in the developer dashboard above.
+- `npm run listing` — push the listing metadata (summary/description/links/tags) via the API.
+- Updates to screenshots are made in the developer dashboard (the API cannot upload them).
