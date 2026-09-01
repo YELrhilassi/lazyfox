@@ -77,20 +77,13 @@ import { createTypingChannel } from "./typing";
   let lastAction: string | null = null;
   let lastMoveDebug: string | null = null;
 
-  const getMode = (): "POPUP" | "LEADER" | "NORMAL" => {
-    if (popup.isOpen()) return "POPUP";
-    if (leader && leader.active) return "LEADER";
-    // The content script owns the leader key on web pages; its arm/disarm is
-    // relayed through the background and cached per tab-strip index. Check
-    // the SELECTED tab's index (the bar shows the selected tab's mode).
-    if (contentLeaderActive()) return "LEADER";
-    return "NORMAL";
-  };
-
   status = createStatusBar({
     realTabs: () => split.realTabs(),
     getConfig: () => cfg,
-    getMode,
+    // Raw chrome-side signals that decide the bar's mode. The Go store owns
+    // the mode: it resolves these against the selected tab's content-leader
+    // state (setContentLeader) and paints the result.
+    getUi: () => ({ popup: popup.isOpen(), leader: !!(leader && leader.active) }),
   });
 
   split = createSplitView({
@@ -774,20 +767,6 @@ import { createTypingChannel } from "./typing";
   // the content script owns the leader key (chromeOwnsKeys() is false), so
   // the chrome helper's own leader never arms there — but the window-level
   // status bar must still show the pulsing LEADER chevron. The content
-  // script reports every arm/disarm to the background, which relays it as a
-  // per-index cache the status bar reads. On chrome-owned pages the content
-  // script never runs, so the cache is empty and the chrome helper's own
-  // leader is the truth.
-  function contentLeaderActive(): boolean {
-    try {
-      const sel = window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
-      return sel >= 0 && status.contentLeaderActive(sel);
-    } catch (e) {
-      // ignore
-    }
-    return false;
-  }
-
   // Does the CHROME helper own this tab's keys? True for its own pages
   // (command center, about:, extension URLs) — false for web content, where
   // the content script owns the leader/popups/hints and the chrome helper

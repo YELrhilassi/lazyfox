@@ -12,7 +12,6 @@ import { LeaderController } from "../../shared/leader";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/popups";
 import { send } from "../../shared/protocol";
-import { StatusBar } from "../../shared/statusbar";
 import type { Config } from "../../shared/types";
 import { createLinkHints, focusFirstInput } from "./hints";
 import { createContentOps, type ContentPopupShell } from "./ops";
@@ -38,61 +37,14 @@ import { createContentOps, type ContentPopupShell } from "./ops";
   }
   loadConfig();
 
-  // The chrome helper (userChrome.uc.js) draws the ONE window-level status bar
-  // and shrinks the content area so pages never render under it. When it is
-  // alive this per-page fixed bar must stay hidden, or the two would double up
-  // and the fixed bar would overlap content while scrolling. Only in standalone
-  // mode (chrome helper absent) does the content script draw its own bar.
-  //
-  // This is decided AUTHORITATIVELY by asking the background (the chromeLayer
-  // message), never by a storage flag: background storage is a racy write an
-  // onStartup reset can clobber, so trusting it is exactly how a second bar
-  // slipped in on top of the chrome window bar. The decision defaults to
-  // HIDDEN until the background explicitly confirms the chrome layer is absent,
-  // so exactly one bar can ever render — and the moment the background flips to
-  // alive (via the storage listener below, which the background still writes),
-  // any errant bar is torn down.
-  //   null = not determined yet -> hide (safe default, no double bar)
-  //   true = chrome layer alive -> hide
-  //   false = chrome layer confirmed absent -> draw standalone bar
-  let chromeAlive: boolean | null = null;
-
-  function refreshChromeAlive(): void {
-    void send("chromeLayer").then((r) => {
-      // Only an EXPLICIT response decides the bar. send() resolves null when
-      // the background is unreachable or not yet answering (a cold boot, the
-      // extension still spinning up) — that is "indeterminate", not "absent":
-      // a content script only runs because the extension injected it, and the
-      // chrome layer is the normal full-install state, so the safe default is
-      // to stay hidden until the background explicitly confirms the chrome
-      // layer is absent ({ alive:false }). Drawing on a null reply is exactly
-      // the transient second bar seen on the first launch of a fresh install.
-      if (!r) {
-        return; // indeterminate -> keep current (null hides, true hides)
-      }
-      const next = !!r.alive;
-      if (chromeAlive === null || next !== chromeAlive) {
-        chromeAlive = next;
-        ensureStatusBar();
-      }
-    });
-  }
-  // Ask immediately and keep re-asking (the interval below also covers it) so
-  // a slow announce latches cleanly.
-  refreshChromeAlive();
-
+  // Live config: re-read it when the options page writes it (drives scroll
+  // keys, hint chars, open-in-new-tab). The status bar is NOT the content
+  // script's to draw — the chrome helper owns the single window-level bar, and
+  // standalone extension mode shows no bar at all.
   browser.storage.onChanged.addListener(
-    (changes: { config?: { newValue?: Partial<Config> }; chromeAlive?: { newValue?: boolean } }, area: string) => {
-      if (area !== "local") return;
-      if (changes.config) {
+    (changes: { config?: { newValue?: Partial<Config> } }, area: string) => {
+      if (area === "local" && changes.config) {
         config = mergeConfig(changes.config.newValue || {});
-        ensureStatusBar();
-      }
-      // The background flips storage.chromeAlive when the helper announces;
-      // keep the bar in step via the direct query so authority stays with the
-      // background, mirroring it here only as a fast-path to re-ask.
-      if (changes.chromeAlive && chromeAlive !== !!changes.chromeAlive.newValue) {
-        refreshChromeAlive();
       }
     }
   );
@@ -136,13 +88,11 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     config: () => config,
     startHints: () => void hints.start(),
     focusFirstInput: focusFirstInput,
-    // Live find count: feed the standalone status bar AND relay it to the
-    // chrome helper's window-level bar (whose status bar is the one drawn on
-    // real setups) so "N/M" follows the find widget everywhere.
+    // Live find count: relay it to the chrome helper's window-level bar (the
+    // only bar — this content script never draws one) so "N/M" follows the
+    // find widget on web pages. count -1 = the widget closed (hide the bar
+    // segment); 0 = a query with no matches (red 0); >0 = live cur/count.
     setFindState: (s) => {
-      statusBar.setData({ find: s });
-      // count -1 = the widget closed (hide the bar segment); 0 = a query with
-      // no matches (red 0); >0 = live cur/count.
       void send("syncFind", s ? { cur: s.cur, count: s.count } : { cur: 0, count: -1 });
     },
   });
@@ -191,63 +141,6 @@ import { createContentOps, type ContentPopupShell } from "./ops";
       return false;
     }, 3000);
 
-  /* ==================== status bar (tmux-style) ==================== */
-
-  const statusBar = new StatusBar();
-  let statusInfo = {
-    name: "default",
-    marker: 0,
-    tabIndex: 1,
-    tabCount: 0,
-    inSplit: false,
-    splitOrientation: undefined as "horizontal" | "vertical" | undefined,
-    activeStealth: false,
-    sessions: [] as { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[],
-  };
-
-  function ensureStatusBar(): void {
-    // The chrome helper owns the single window-level bar whenever it is alive
-    // (web pages, chrome pages, and split panes). This per-page fixed bar only
-    // appears in standalone mode, where it pads the page to reserve its space.
-    // chromeAlive === null means "not known yet": hide until proven standalone.
-    if (config.statusBar === false || chromeAlive !== false || statusInfo.inSplit) {
-      statusBar.hide();
-      return;
-    }
-    statusBar.setPosition(config.statusBarPosition || "bottom");
-    statusBar.show();
-  }
-
-  function renderStatus(): void {
-    const mode = currentPopup
-      ? "POPUP"
-      : hints.active
-        ? "HINTS"
-        : leader.active
-          ? "LEADER"
-          : "NORMAL";
-    statusBar.setData({ mode: mode });
-  }
-
-  function fetchStatus(): void {
-    void send("sessionState").then((r) => {
-      if (r) {
-        statusInfo = {
-          name: r.name || "default",
-          marker: r.marker || 0,
-          tabIndex: r.tabIndex || 1,
-          tabCount: r.tabCount || 0,
-          inSplit: !!r.inSplit,
-          splitOrientation: r.splitOrientation,
-          activeStealth: !!r.activeStealth,
-          sessions: r.sessions || [],
-        };
-        ensureStatusBar();
-        statusBar.setData(statusInfo);
-        renderStatus();
-      }
-    });
-  }
 
   /* ==================== scroll keys ==================== */
 
@@ -467,25 +360,6 @@ import { createContentOps, type ContentPopupShell } from "./ops";
     true
   );
 
-  // The bar is decided by refreshChromeAlive's first read (and the storage
-  // listener after that); drawing it here, before the flag is known, is what
-  // produced a second bar on top of the chrome helper's during session
-  // restore. fetchStatus still runs so the standalone bar gets its data.
-  fetchStatus();
-  setInterval(renderStatus, 400);
-  setInterval(fetchStatus, 3000);
-  // Keep re-asking the authoritative chromeLayer question so a slow announce
-  // latches even without a storage event (and any errant errand bar is torn
-  // down the moment the background confirms the chrome layer is alive).
-  setInterval(refreshChromeAlive, 1500);
-
-  // Hide the status bar (and release its reserved space) while any element
-  // is fullscreen — a full-screen video would otherwise keep the strip, and
-  // the page padding it reserves, on top of the content. Re-show on exit.
-  document.addEventListener("fullscreenchange", () => {
-    if (document.fullscreenElement) statusBar.hide();
-    else ensureStatusBar();
-  });
 
   window.addEventListener("blur", () => {
     if (currentPopup) closePopup();

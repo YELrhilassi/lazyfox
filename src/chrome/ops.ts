@@ -400,8 +400,9 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     },
     downloads: (q: string) => {
       const ql = q.trim().toLowerCase();
-      return Promise.resolve(
-        listDownloads()
+      // The merged cache lives in the Go store; this is the popup's read.
+      return listDownloads().then((cache) =>
+        cache
           .slice(0, 120)
           .map((d) => ({
             kind: "download",
