@@ -92,10 +92,10 @@ updating, re-verify each one rather than assuming it still holds.
 
 When a new Firefox (or Developer Edition) lands:
 
-1. `npm run build && node scripts/check-dist.mjs` — confirm `dist/` is
+1. `npm run build && node scripts/check-dist.ts` — confirm `dist/` is
    current and self-contained.
 2. `npm run typecheck && go test ./core/`.
-3. `node scripts/bidi/test.mjs` — full e2e run with the new Firefox. The
+3. `node scripts/bidi/test.ts` — full e2e run with the new Firefox. The
    harness defaults to the installed Developer Edition
    (`FIREFOX_BIN` overrides).
 4. Watch the run's **console error audit**: an error mentioning

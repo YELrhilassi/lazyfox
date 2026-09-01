@@ -606,34 +606,34 @@ func TestNativeHostManifestShape(t *testing.T) {
 func TestProfileCompatibilityInfo(t *testing.T) {
 	dir := t.TempDir()
 	cases := []struct {
-		name     string
-		ini      string
-		wantVer  string
-		wantApp  string
+		name    string
+		ini     string
+		wantVer string
+		wantApp string
 	}{
 		{
-			name:     "LastVersion with buildid is trimmed to readable version",
-			ini:      "[Compatibility]\nLastVersion=155.0_20260826090609/20260826090609\n",
-			wantVer:  "155.0",
-			wantApp:  "",
+			name:    "LastVersion with buildid is trimmed to readable version",
+			ini:     "[Compatibility]\nLastVersion=155.0_20260826090609/20260826090609\n",
+			wantVer: "155.0",
+			wantApp: "",
 		},
 		{
-			name:     "LastAppVersion is used when LastVersion absent",
-			ini:      "[Compatibility]\nLastAppVersion=132.0.3\n",
-			wantVer:  "132.0.3",
-			wantApp:  "",
+			name:    "LastAppVersion is used when LastVersion absent",
+			ini:     "[Compatibility]\nLastAppVersion=132.0.3\n",
+			wantVer: "132.0.3",
+			wantApp: "",
 		},
 		{
-			name:     "LastAppDir is returned for flavor detection",
-			ini:      "[Compatibility]\nLastAppDir=/opt/firefox-nightly\nLastAppVersion=155.0\n",
-			wantVer:  "155.0",
-			wantApp:  "/opt/firefox-nightly",
+			name:    "LastAppDir is returned for flavor detection",
+			ini:     "[Compatibility]\nLastAppDir=/opt/firefox-nightly\nLastAppVersion=155.0\n",
+			wantVer: "155.0",
+			wantApp: "/opt/firefox-nightly",
 		},
 		{
-			name:     "empty file yields empty values",
-			ini:      "",
-			wantVer:  "",
-			wantApp:  "",
+			name:    "empty file yields empty values",
+			ini:     "",
+			wantVer: "",
+			wantApp: "",
 		},
 	}
 	for _, c := range cases {

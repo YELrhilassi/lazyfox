@@ -126,10 +126,36 @@ func TestWhichKeyPagination(t *testing.T) {
 		if len(pg.Items) == 0 || len(pg.Items) > wkPerPage {
 			t.Fatalf("page %d has %d rows", p, len(pg.Items))
 		}
+		// group headings appear exactly on group boundaries: a row never marks
+		// a heading inside its own group (which would mean a group was split
+		// across pages)
+		for i, r := range pg.Items {
+			if r.GroupStart && i > 0 {
+				prev := WkPageSlice(p).Items[i-1]
+				if r.Group == prev.Group {
+					t.Fatalf("page %d marks a heading inside group %q at row %d", p, r.Group, i)
+				}
+			}
+		}
 		seen += len(pg.Items)
 	}
 	if seen != len(overlay) {
 		t.Fatalf("pages cover %d rows, want %d", seen, len(overlay))
+	}
+	// every lazy binding is represented, in order, across the pages
+	idx := 0
+	for p := 0; p < pages; p++ {
+		for _, r := range WkPageSlice(p).Items {
+			if idx >= len(overlay) {
+				t.Fatalf("more rows than bindings")
+			}
+			want := overlay[idx]
+			if r.Key != want.Key || r.Label != want.Label || r.Group != want.Group {
+				t.Fatalf("row %d mismatch: got %s/%s/%s want %s/%s/%s",
+					idx, r.Key, r.Label, r.Group, want.Key, want.Label, want.Group)
+			}
+			idx++
+		}
 	}
 	// first page selection range must exist and be clamped
 	clamped := WkClampSel(999, 0)

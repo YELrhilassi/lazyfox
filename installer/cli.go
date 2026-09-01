@@ -22,6 +22,8 @@ type config struct {
 	xpiPath      string // install this unsigned xpi instead of the embedded signed build (dev)
 	// TUI defaults.
 	hasProfileArg bool
+	// tui forces the terminal UI on Windows (default there is the GUI wizard).
+	tui bool
 }
 
 // parseArgs interprets the command line. On success handled=true means the
@@ -35,12 +37,13 @@ func parseArgs(rc *repoContext, args []string) (cfg config, handled bool, err er
 	profile := fs.String("profile", "", "Firefox profile directory to use")
 	ffdir := fs.String("firefox-dir", "", "Firefox installation directory")
 	action := fs.String("mode", "", "install|uninstall|loader-only|loader-remove|list")
-	var noExt, noLaunch, removeLoader, keepDisabled, force, help bool
+	var noExt, noLaunch, removeLoader, keepDisabled, force, help, tui bool
 	fs.BoolVar(&noExt, "no-extension", false, "skip the WebExtension build/install")
 	fs.BoolVar(&noLaunch, "no-launch", false, "do not relaunch Firefox after install")
 	fs.BoolVar(&removeLoader, "remove-loader", false, "also remove the chrome loader (uninstall)")
 	fs.BoolVar(&keepDisabled, "keep-extension-disabled", false, "only disable the add-on, keep the xpi")
 	fs.BoolVar(&force, "force", false, "force a chrome-loader (re)install/removal")
+	fs.BoolVar(&tui, "tui", false, "use the terminal UI instead of the GUI wizard (Windows only)")
 	fs.BoolVar(&help, "h", false, "show help")
 	fs.BoolVar(&help, "help", false, "show help")
 	fs.StringVar(&cfg.password, "sudo-pass", "", "sudo password for non-interactive loader ops")
@@ -64,6 +67,7 @@ func parseArgs(rc *repoContext, args []string) (cfg config, handled bool, err er
 	cfg.hasProfileArg = *profile != ""
 	cfg.action = *action
 	cfg.xpiPath = *xpiPath
+	cfg.tui = tui
 
 	// A bare positional argument is the profile (legacy CLI convention).
 	if pos := fs.Args(); len(pos) > 0 {
@@ -124,9 +128,10 @@ func translateLegacyFlags(args []string) []string {
 func printUsage(fs *flag.FlagSet) {
 	fmt.Fprintf(fs.Output(), `Lazyfox installer — a single cross-platform tool.
 
-Without options the interactive TUI opens: it detects your platform, every
-Firefox installation and every profile, then guides you through install or
-uninstall.
+Without options the interactive installer opens: on Windows a native GUI
+wizard (pass --tui to force the terminal TUI), on Linux/macOS the terminal
+TUI. It detects your platform, every Firefox installation and every profile,
+then guides you through install or uninstall.
 
 Flags:
 `)

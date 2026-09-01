@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Lazyfox",
-  "version": "0.5.6",
-  "description": "Keyboard-first, UI-free Firefox. Leader-key navigation, paginated which-key overlay, centered search, tab switcher and link hints.",
+  "version": "0.5.7",
+  "description": "Firefox with the browsing UI stripped away — tabs, split view, sessions, link hints, find-in-page, search and a status bar, all behind one key: ;",
+  "homepage_url": "https://github.com/YELrhilassi/lazyfox",
   "license": "MIT",
   "browser_specific_settings": {
     "gecko": {
@@ -30,26 +31,38 @@
     "<all_urls>"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; img-src 'self' https: data:"
   },
   "chrome_url_overrides": {
     "newtab": "commandcenter.html"
   },
   "background": {
-    "scripts": ["background.js"]
+    "scripts": [
+      "background.js"
+    ]
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*", "file:///*"],
-      "js": ["content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "file:///*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_start",
       "all_frames": false
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["setup.html"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "setup.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ],
   "options_ui": {
@@ -60,8 +73,12 @@
     "default_title": "Lazyfox",
     "default_popup": "popup.html",
     "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
       "48": "icons/icon48.png",
-      "96": "icons/icon96.png"
+      "64": "icons/icon64.png",
+      "96": "icons/icon96.png",
+      "128": "icons/icon128.png"
     }
   },
   "commands": {
@@ -105,7 +122,10 @@
   },
   "icons": {
     "48": "icons/icon48.png",
+    "64": "icons/icon64.png",
     "96": "icons/icon96.png",
-    "128": "icons/icon128.png"
+    "128": "icons/icon128.png",
+    "256": "icons/icon256.png",
+    "512": "icons/icon512.png"
   }
 }

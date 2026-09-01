@@ -4,7 +4,7 @@
 // (content/ops.ts); this file only owns config state, chrome-alive gating and
 // the window-level key dispatch.
 
-import { CONFIG_DEFAULTS, mergeConfig } from "../../shared/config";
+import { mergeConfig } from "../../shared/config";
 import { ensureCore } from "../../shared/core";
 import { isTypingTarget } from "../../shared/dom";
 import { dbg } from "../../shared/dev";

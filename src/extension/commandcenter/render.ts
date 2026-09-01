@@ -4,7 +4,8 @@
 // background directly (data.ts owns that).
 
 import { send } from "../../shared/protocol";
-import { EMPTY_TEXTS, MODES, PLACEHOLDERS, getItems, quickCommands, renderItem, type QuickActions } from "./data";
+import type { QuickApp } from "../../shared/types";
+import { EMPTY_TEXTS, MODES, PLACEHOLDERS, appItems, getItems, quickCommands, renderItem, type QuickActions } from "./data";
 import type { CCStore } from "./state";
 
 export interface CCRefs {
@@ -24,6 +25,10 @@ export interface RenderDeps {
   store: CCStore;
   quick: QuickActions;
   openItem(item: any, mode: string): void;
+  // Enabled quick-launch apps (from config), rendered on the home grid. A
+  // getter so the page can live-update when settings change without recreating
+  // the renderer.
+  getApps(): QuickApp[];
 }
 
 export interface Renderer {
@@ -37,6 +42,10 @@ export interface Renderer {
   updateMovePos(): void;
   setStateTag(label: string): void;
   flashTag(msg: string): void;
+  // Is the page showing the home grid (quick-launch + browser access) with an
+  // empty search box? `;f` arms hint-pick there (and focuses the search box
+  // in every other mode).
+  isHome(): boolean;
 }
 
 const GRID_COLS = 3;
@@ -82,7 +91,15 @@ export function createRenderer(deps: RenderDeps): Renderer {
   function refresh(): void {
     const v = input.value.trim();
     if (!v && store.get().mode === "search") {
-      store.patch({ quickView: true, all: quickCommands(deps.quick), idx: 0 });
+      // Home grid: quick-launch apps first, then the (pruned) browser access.
+      // allQuery is reset so the stale-query guard can never swallow Enter on
+      // the home grid (it only applies to suggestion modes).
+      store.patch({
+        quickView: true,
+        allQuery: "",
+        all: [...appItems(deps.getApps()), ...quickCommands(deps.quick)],
+        idx: 0,
+      });
       render();
       return;
     }
@@ -124,6 +141,13 @@ export function createRenderer(deps: RenderDeps): Renderer {
       li.className = "result" + (i === state.idx ? " selected" : "");
       li.dataset.i = String(i);
       li.innerHTML = renderItem(item, state.mode, state.quickView);
+      // Home-grid hint-pick: overlay each tile's hint letter badge (;f mode).
+      if (state.quickView && state.hintArmed && i < 26) {
+        const h = document.createElement("span");
+        h.className = "hintkey";
+        h.textContent = String.fromCharCode(97 + i);
+        li.appendChild(h);
+      }
       li.addEventListener("mousedown", (ev) => {
         ev.preventDefault();
         deps.openItem(item, state.mode);
@@ -151,34 +175,18 @@ export function createRenderer(deps: RenderDeps): Renderer {
     if (sel) sel.scrollIntoView({ block: "nearest" });
   }
 
-  // Grid-aware navigation. In the home grid, j/k move between rows (three
-  // columns wide) and h/l move between columns; in the flat list views j/k
-  // step one row at a time and h/l do nothing.
+  // Grid-aware navigation. In the home grid the cells form a 3-column grid in
+  // reading order, and movement is just a position delta clamped to the list:
+  // j moves down a row, k up, l right (wrapping to the next row's first cell),
+  // h left — continuous and never stuck, even on a short last row. In the
+  // flat list views j/k step one row and h/l do nothing.
   function move(dx: number, dy: number): void {
     const state = store.get();
     if (!state.all.length) return;
     if (state.quickView) {
-      const col = state.idx % GRID_COLS;
-      const row = Math.floor(state.idx / GRID_COLS);
-      let ncol = col + dx;
-      let nrow = row + dy;
-      if (dx !== 0) {
-        nrow = Math.min(nrow, Math.floor((state.all.length - 1) / GRID_COLS));
-        if (ncol < 0 || ncol >= GRID_COLS) {
-          nrow = (nrow + dy + Math.floor((state.all.length - 1) / GRID_COLS) + 1) % (Math.floor((state.all.length - 1) / GRID_COLS) + 1);
-          ncol = (ncol + GRID_COLS) % GRID_COLS;
-        }
-        store.patch({ idx: Math.min(nrow * GRID_COLS + ncol, state.all.length - 1) });
-      } else {
-        store.patch({
-          idx: Math.min(
-            Math.max(nrow, 0),
-            Math.floor((state.all.length - 1) / GRID_COLS)
-          ) * GRID_COLS + col,
-        });
-        const s = store.get();
-        store.patch({ idx: Math.min(s.idx, state.all.length - 1) });
-      }
+      const last = state.all.length - 1;
+      const nxt = state.idx + dx + dy * GRID_COLS;
+      store.patch({ idx: Math.max(0, Math.min(nxt, last)) });
     } else {
       store.patch({ idx: (state.idx + dy + state.all.length) % state.all.length });
     }
@@ -242,6 +250,10 @@ export function createRenderer(deps: RenderDeps): Renderer {
     }, 2200);
   }
 
+  function isHome(): boolean {
+    return store.get().mode === "search" && input.value.trim() === "";
+  }
+
   return {
     setMode,
     refresh,
@@ -253,5 +265,6 @@ export function createRenderer(deps: RenderDeps): Renderer {
     updateMovePos,
     setStateTag,
     flashTag,
+    isHome,
   };
 }
