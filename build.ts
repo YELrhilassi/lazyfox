@@ -22,6 +22,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { zipStore } from "./scripts/amo-lib.ts";
+import { buildWinRes } from "./scripts/winres.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)));
 
@@ -234,7 +235,16 @@ for (const t of INSTALLER_TARGETS) {
     writeFileSync(hostDst, ""); // placeholder so go:embed compiles; installNativeHost checks for empty bytes
   }
   const out = join(root, "installer", "bin", t.out);
-  run("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", out, "."], {
+  // Windows ships the interactive GUI wizard: embed the manifest + icon
+  // resource (go-winres) and link as a GUI-subsystem binary so double-clicking
+  // opens the wizard instead of flashing a console window. Best-effort: a
+  // missing resource degrades to the default icon, not a build failure.
+  let ldflags = "-s -w";
+  if (t.goos === "windows") {
+    buildWinRes(join(root, "installer"), extensionVersion);
+    ldflags += " -H windowsgui";
+  }
+  run("go", ["build", "-trimpath", `-ldflags=${ldflags}`, "-o", out, "."], {
     cwd: join(root, "installer"),
     env: { ...process.env, GOOS: t.goos, GOARCH: t.arch },
   });

@@ -12,8 +12,13 @@ func main() {
 	}
 }
 
-// realMain parses CLI args and runs the TUI (or a non-interactive operation).
+// realMain parses CLI args and runs the interactive front-end for this
+// platform (Windows: GUI wizard; Unix: TUI) or a non-interactive operation.
 func realMain(args []string) error {
+	// A GUI-subsystem Windows exe needs its console re-attached when invoked
+	// with arguments from a terminal, so --mode output is not silently lost.
+	attachCLIConsole()
+
 	// Locate the repo (dist/) for reading artifacts.
 	var starts []string
 	if exe, err := os.Executable(); err == nil {
@@ -29,5 +34,5 @@ func realMain(args []string) error {
 		// e.g. --help printed; exit successfully.
 		return nil
 	}
-	return runTUI(rc, cfg)
+	return startInteractive(rc, cfg)
 }
