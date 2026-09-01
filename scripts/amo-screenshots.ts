@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 // Upload the AMO listing screenshots (previews) through the v5 API.
 //
-// The public API CAN manage screenshots (the docs list them as read-only, but
-// POST /addons/addon/{slug}/previews/ accepts multipart with an `image`
-// field) — it's just rate-limited: AMO's addon_submission throttles cap
-// writes at 3/minute, 10/hour and 24/day, escalating the cooldown on each
-// hit. So this script spaces uploads out (~25s) instead of bursting and
-// waits out any 429 before continuing.
+// The public API CAN manage screenshots: create via multipart POST, then
+// caption/position via JSON PATCH on the preview detail endpoint. The docs
+// list previews as read-only, but both endpoints work for add-on authors.
+// Caption is a translated field: AMO only accepts a real object
+// ({locale: text}) — a multipart string or a stringified JSON payload is
+// rejected with "You must provide an object of {lang-code:value}." — so the
+// caption is set on a separate JSON PATCH (application/json parses it into a
+// dict), not on the image POST.
+//
+// Writes are hard rate-limited by addon_submission throttles: 3/minute,
+// 10/hour and 24/day (failed requests count too). Each screenshot costs two
+// writes (POST + PATCH), so a full run spans more than an hour: this script
+// paces itself (~40s apart) and waits out every 429 (with the exact
+// Retry-After) before continuing. Run it overnight/unattended:
 //
 //   npm run screenshots
 //
@@ -43,25 +51,53 @@ if (!process.env.AMO_API_KEY || !process.env.AMO_API_SECRET) {
   fail("AMO_API_KEY / AMO_API_SECRET not set (see .env.example).");
 }
 
-async function upload(shot: { file: string; position: number; caption: string }): Promise<void> {
+// POST the image, then PATCH caption+position as JSON. Each is a throttled
+// write; POST/PATCH pairs are kept together and spaced far enough apart to
+// stay under AMO's 3/minute burst cap, and any 429 is waited out with the
+// exact Retry-After (a run can span hours — that is expected and safe to
+// leave unattended; re-runs skip what already landed).
+async function uploadShot(shot: { file: string; position: number; caption: string }): Promise<void> {
   const p = path.join(root, "docs", "img", shot.file);
   if (!fs.existsSync(p)) fail(`missing screenshot: ${p}`);
+
+  // 1. create with the image only (multipart) — caption/position would be
+  //    stringified here and rejected by AMO's translated-field parser.
   const fd = new FormData();
   fd.append("image", new Blob([fs.readFileSync(p)], { type: "image/png" }), shot.file);
-  fd.append("position", String(shot.position));
-  fd.append("caption", JSON.stringify({ "en-US": shot.caption }));
-  const r = await api(`/addons/addon/${SLUG}/previews/`, { method: "POST", body: fd, timeout: 60000 });
-  if (r.status === 201) {
-    console.log(`[screenshots] uploaded ${shot.file} (position ${shot.position})`);
-    return;
+  const r = await retry429(() => api(`/addons/addon/${SLUG}/previews/`, { method: "POST", body: fd, timeout: 60000 }));
+  if (r.status !== 201) {
+    fail(`create of ${shot.file} failed (${r.status}): ${JSON.stringify(r.json?.detail ?? r.json ?? r.text).slice(0, 200)}`);
   }
-  if (r.status === 429) {
+  const id = r.json?.id;
+  if (!id) fail(`create of ${shot.file} returned no id: ${JSON.stringify(r.json).slice(0, 200)}`);
+
+  // 2. caption + position via JSON PATCH (application/json → real dict).
+  const patch = await retry429(() =>
+    api(`/addons/addon/${SLUG}/previews/${id}/`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ caption: { "en-US": shot.caption }, position: shot.position }),
+      timeout: 60000,
+    })
+  );
+  if (patch.status !== 200) {
+    fail(`caption of ${shot.file} failed (${patch.status}): ${JSON.stringify(patch.json?.detail ?? patch.json ?? patch.text).slice(0, 200)}`);
+  }
+  console.log(`[screenshots] uploaded ${shot.file} (position ${shot.position})`);
+}
+
+// Run `fn`; on 429 wait out the exact cooldown (or a sane default) and retry
+// once. Throttle counters count the failed attempt too, so this never hammers
+// — it just sleeps until AMO says writes are allowed again.
+async function retry429<T>(fn: () => Promise<T & { status: number; throttle?: number }>): Promise<T & { status: number; throttle?: number }> {
+  for (let attempt = 0; ; attempt++) {
+    const r = await fn();
+    if (r.status !== 429) return r;
     const wait = (r.throttle ?? 60) + 5;
-    console.log(`[screenshots] throttled, waiting ${wait}s…`);
+    console.log(`[screenshots] rate-limited, waiting ${wait}s before retrying…`);
     await sleep(wait * 1000);
-    return upload(shot); // retry once after the cooldown
+    if (attempt > 12) fail("still rate-limited after many retries; re-run later (already-done shots are skipped).");
   }
-  fail(`upload of ${shot.file} failed (${r.status}): ${JSON.stringify(r.json?.detail ?? r.json ?? r.text).slice(0, 200)}`);
 }
 
 // Skip positions that already exist so a re-run is a no-op.
@@ -75,8 +111,8 @@ if (todo.length === 0) {
 console.log(`[screenshots] uploading ${todo.length} of ${SHOTS.length} (already have ${have.size})…`);
 
 for (let i = 0; i < todo.length; i++) {
-  if (i > 0) await sleep(25_000); // stay under the 3/min burst throttle
-  await upload(todo[i]!);
+  if (i > 0) await sleep(40_000); // 2 writes/pair under the 3/min burst cap
+  await uploadShot(todo[i]!);
 }
 
 console.log("[screenshots] done — verify at https://addons.mozilla.org/developers/addon/lazyfox2/edit/");
