@@ -15,6 +15,15 @@
 // The chrome-loader step elevates via UAC (elevateSelf re-runs this binary
 // with --loader-only), so there is no password page — nothing to maintain
 // beyond the three steps above.
+//
+// Design notes:
+//   - A walk Dialog (not MainWindow): Dialog.Run() shows itself, supports a
+//     real default button, and is a fixed-size modal — right for an installer.
+//   - The dialog sizes itself to the ACTIVE page's content (resizeToContent),
+//     so there is never dead space or widely-spread text.
+//   - Flat, light theme: neutral background, bold section headers instead of
+//     heavy group boxes, thin separators. Labels have no text-color API in
+//     this walk version, so everything stays monochrome.
 package main
 
 import (
@@ -30,7 +39,7 @@ import (
 //go:embed winres/icon256.png
 var appIconPNG []byte
 
-// guiWizard holds the window and its page state.
+// guiWizard holds the dialog and its page state.
 type guiWizard struct {
 	rc  *repoContext
 	cfg config
@@ -38,7 +47,7 @@ type guiWizard struct {
 	installs []*FirefoxInstall
 	profiles []*FirefoxProfile
 
-	mw   *walk.MainWindow
+	dlg  *walk.Dialog
 	root *walk.Composite
 
 	// one composite per wizard page; only one is visible at a time
@@ -65,34 +74,51 @@ type guiWizard struct {
 	action action
 }
 
+// show flips to the named page, then re-sizes the dialog to that page's
+// content so the window never has dead space.
 func (w *guiWizard) show(name string) {
 	for i, n := range w.names {
 		w.pages[i].SetVisible(n == name)
 	}
+	w.resizeToContent()
+}
+
+// resizeToContent sizes the dialog's client area to the minimum the active
+// page needs (invisible pages consume no space). This keeps the wizard tight
+// on every page and at any DPI, instead of a fixed oversized window.
+func (w *guiWizard) resizeToContent() {
+	item := walk.CreateLayoutItemsForContainer(w.dlg)
+	min := item.MinSizeForSize(walk.Size{1 << 20, 1 << 20})
+	if min.Width < 440 {
+		min.Width = 440
+	}
+	if min.Height < 380 {
+		min.Height = 380
+	}
+	_ = w.dlg.SetClientSizePixels(min)
 }
 
 // --- page 1: what to do ---------------------------------------------------
 
 func (w *guiWizard) buildActionPage() *walk.Composite {
-	page := newComposite(w.root)
-	page.SetLayout(walk.NewVBoxLayout())
+	page := newPage(w.root)
 
-	newLabel(page, "🦊  Lazyfox Installer", fontTitle)
-	newLabel(page, "Keyboard-first browsing. This installer only writes Lazyfox's own files — your settings, bookmarks and passwords are never touched.", fontBody)
+	newLabel(page, "Lazyfox Installer", fontTitle)
+	newLabel(page, "Keyboard-first browsing for Firefox — your settings, bookmarks and passwords are never touched.", fontBody)
 
-	group := newGroupBox(page, "What would you like to do?")
-	group.SetLayout(walk.NewVBoxLayout())
+	newSeparator(page)
 
+	section(page, "What do you want to do?")
 	actions := []struct {
 		id    action
 		label string
 	}{
-		{actInstall, "Install — apply the full Lazyfox UI (chrome files, prefs, extension, loader)"},
-		{actUninstall, "Uninstall — reverse an install and restore the default Firefox UI"},
-		{actLoaderOnly, "Install the chrome loader only (internal-page ; keys, needs admin)"},
+		{actInstall, "Install Lazyfox"},
+		{actUninstall, "Uninstall Lazyfox"},
+		{actLoaderOnly, "Chrome loader only"},
 	}
 	for i, a := range actions {
-		rb, err := walk.NewRadioButton(group)
+		rb, err := walk.NewRadioButton(page)
 		if err != nil {
 			continue
 		}
@@ -101,18 +127,14 @@ func (w *guiWizard) buildActionPage() *walk.Composite {
 		w.actionRadios = append(w.actionRadios, rb)
 	}
 	w.action = actInstall
+	newLabel(page, "Loader-only adds the ; keys on internal pages — it needs administrator rights.", fontNote)
 
-	det := fmt.Sprintf("Windows  ·  Firefox installs: %d  ·  Profiles: %d", len(w.installs), len(w.profiles))
-	if len(w.installs) == 0 || len(w.profiles) == 0 {
-		det += "  (manual path entry available)"
-	}
-	newLabel(page, det, fontBody)
-
-	// Radio buttons in one group; read the selection when Next is pressed.
 	btnRow := newButtonRow(page)
-	next := newPushButton(btnRow, "Next  >")
-	next.SetMinMaxSizePixels(walk.Size{96, 30}, walk.Size{96, 30})
-	next.Clicked().Attach(func() { w.chooseAction() })
+	next := newPushButton(btnRow, "Next  →")
+	next.Clicked().Attach(func() {
+		w.chooseAction() // rebuilds the targets page, which sets its own default
+	})
+	_ = w.dlg.SetDefaultButton(next)
 
 	return page
 }
@@ -132,13 +154,11 @@ func (w *guiWizard) chooseAction() {
 // --- page 2: targets -------------------------------------------------------
 
 func (w *guiWizard) buildTargetsPage() *walk.Composite {
-	page := newComposite(w.root)
-	page.SetLayout(walk.NewVBoxLayout())
-	return page // content filled by rebuildTargetsPage
+	return newPage(w.root) // content filled by rebuildTargetsPage
 }
 
 // rebuildTargetsPage re-creates the page's children for the chosen action, so
-// install (2 groups + options) vs loader-only (1 group) differ cleanly.
+// install (2 sections + options) vs loader-only (1 section) differ cleanly.
 func (w *guiWizard) rebuildTargetsPage() {
 	page := w.pages[1]
 	// Dispose children (backwards to keep indices valid while removing).
@@ -146,39 +166,34 @@ func (w *guiWizard) rebuildTargetsPage() {
 		page.Children().At(i).Dispose()
 	}
 
-	title := map[action]string{
-		actInstall:    "Install into",
-		actUninstall:  "Remove from",
-		actLoaderOnly: "Chrome loader target",
-	}[w.action]
-	newLabel(page, title, fontTitle)
+	newLabel(page, map[action]string{
+		actInstall:    "Install Lazyfox",
+		actUninstall:  "Remove Lazyfox",
+		actLoaderOnly: "Chrome loader only",
+	}[w.action], fontTitle)
+	newSeparator(page)
 
-	// --- Firefox install ---
-	gi := newGroupBox(page, "Firefox installation")
-	gi.SetLayout(walk.NewVBoxLayout())
+	// --- Firefox installation ---
+	section(page, "Firefox installation")
 	if len(w.installs) > 0 {
-		w.installCombo = newComboBox(gi)
+		w.installCombo = newComboBox(page)
 		labels := make([]string, 0, len(w.installs))
 		for _, fi := range w.installs {
 			labels = append(labels, fi.Label+"   ["+fi.Exec+"]")
 		}
 		_ = w.installCombo.SetModel(labels)
 		_ = w.installCombo.SetCurrentIndex(0)
-		newLabel(gi, "…or paste a Firefox executable / install directory:", fontBody)
-		w.installPath = newTextEdit(gi)
-		w.installPath.SetText(w.cfg.firefoxDir)
 	} else {
-		newLabel(gi, "No Firefox installation detected. Paste the path to firefox.exe / the install dir:", fontBody)
-		w.installPath = newTextEdit(gi)
+		newLabel(page, "No Firefox detected — paste its path below:", fontNote)
+		w.installPath = newTextEdit(page)
 		w.installPath.SetText(w.cfg.firefoxDir)
 	}
 
 	// --- Profile (not for loader-only) ---
 	if w.action != actLoaderOnly {
-		gp := newGroupBox(page, "Firefox profile")
-		gp.SetLayout(walk.NewVBoxLayout())
+		section(page, "Firefox profile")
 		if len(w.profiles) > 0 {
-			w.profileCombo = newComboBox(gp)
+			w.profileCombo = newComboBox(page)
 			labels := make([]string, 0, len(w.profiles))
 			for _, p := range w.profiles {
 				labels = append(labels, p.label()+"   ["+p.Dir+"]")
@@ -194,47 +209,44 @@ func (w *guiWizard) rebuildTargetsPage() {
 				}
 			}
 			_ = w.profileCombo.SetCurrentIndex(idx)
-			newLabel(gp, "…or paste a profile directory:", fontBody)
-			w.profilePath = newTextEdit(gp)
 		} else {
-			newLabel(gp, "No Firefox profile detected. Paste the profile directory (the folder with prefs.js):", fontBody)
-			w.profilePath = newTextEdit(gp)
+			newLabel(page, "No profile detected — paste the profile folder (the one with prefs.js):", fontNote)
+			w.profilePath = newTextEdit(page)
 		}
 	}
 
 	// --- Options (install only) ---
 	if w.action == actInstall {
-		go_ := newGroupBox(page, "Options")
-		go_.SetLayout(walk.NewVBoxLayout())
-		w.useExtBox, _ = walk.NewCheckBox(go_)
+		section(page, "Options")
+		w.useExtBox, _ = walk.NewCheckBox(page)
 		w.useExtBox.SetText("Install the Lazyfox extension")
 		w.useExtBox.SetChecked(!w.cfg.noExt)
-		w.useLaunchBox, _ = walk.NewCheckBox(go_)
+		w.useLaunchBox, _ = walk.NewCheckBox(page)
 		w.useLaunchBox.SetText("Reopen Firefox after installing")
 		w.useLaunchBox.SetChecked(!w.cfg.noLaunch)
 	}
 
 	btnRow := newButtonRow(page)
-	back := newPushButton(btnRow, "< Back")
+	back := newPushButton(btnRow, "← Back")
 	back.Clicked().Attach(func() { w.show("action") })
 	run := newPushButton(btnRow, "Run")
-	run.SetMinMaxSizePixels(walk.Size{96, 30}, walk.Size{96, 30})
 	run.Clicked().Attach(func() { w.run() })
+	_ = w.dlg.SetDefaultButton(run)
 }
 
 // --- page 3: running / result ---------------------------------------------
 
 func (w *guiWizard) buildRunPage() *walk.Composite {
-	page := newComposite(w.root)
-	page.SetLayout(walk.NewVBoxLayout())
+	page := newPage(w.root)
 
 	newLabel(page, "Running…", fontTitle)
 	w.stat = newLabel(page, "Working — this only touches Lazyfox's own files; everything else is backed up.", fontBody)
 
 	w.log = newTextEdit(page)
 	w.log.SetReadOnly(true)
-	w.log.SetFont(mustFont("Consolas", 10))
+	w.log.SetFont(mustFont("Consolas", 9))
 	w.log.SetText("")
+	_ = w.log.AsWidgetBase().SetMinMaxSizePixels(walk.Size{0, 150}, walk.Size{0, 150})
 
 	w.progressB, _ = walk.NewProgressBar(page)
 	_ = w.progressB.SetMarqueeMode(true)
@@ -243,14 +255,24 @@ func (w *guiWizard) buildRunPage() *walk.Composite {
 	btnRow := newButtonRow(page)
 	w.closeBtn = newPushButton(btnRow, "Close")
 	w.closeBtn.SetEnabled(false)
-	w.closeBtn.SetMinMaxSizePixels(walk.Size{96, 30}, walk.Size{96, 30})
-	w.closeBtn.Clicked().Attach(func() { w.mw.Close() })
+	w.closeBtn.Clicked().Attach(func() { w.dlg.Close(walk.DlgCmdCancel) })
 
 	return page
 }
 
-// run executes the selected operation off the UI thread, streaming step lines.
+// run validates the selection, then executes the operation off the UI thread,
+// streaming step lines into the run page.
 func (w *guiWizard) run() {
+	// The ops below dereference Profile/Install unconditionally — a nil one
+	// would crash the process. Check up front and tell the user what to fix
+	// instead of dying silently (a GUI-subsystem exe shows no panic output).
+	if what := w.missingSelection(); what != "" {
+		walk.MsgBox(w.dlg, "Nothing to do",
+			"No "+what+" was selected.\n\nGo back and paste a path, then run again.",
+			walk.MsgBoxIconError)
+		return
+	}
+
 	w.show("run")
 	rep := &guiReporter{w: w}
 	go func() {
@@ -276,24 +298,42 @@ func (w *guiWizard) run() {
 	}()
 }
 
+// missingSelection returns a human description of what the current action
+// still needs (empty when everything required is selected).
+func (w *guiWizard) missingSelection() string {
+	switch w.action {
+	case actInstall, actUninstall:
+		if w.selectedProfile() == nil {
+			return "Firefox profile"
+		}
+		if w.selectedInstall() == nil {
+			return "Firefox installation"
+		}
+	default: // actLoaderOnly
+		if w.selectedInstall() == nil {
+			return "Firefox installation"
+		}
+	}
+	return ""
+}
+
 // finish updates the status line and enables Close (UI thread).
 func (w *guiWizard) finish(err error) {
-	w.mw.Synchronize(func() {
+	w.dlg.Synchronize(func() {
 		_ = w.progressB.SetMarqueeMode(false)
+		rep := &guiReporter{w: w}
 		if err != nil {
 			w.stat.SetText("The operation did not complete — see the log for details.")
-			rep := &guiReporter{w: w}
 			rep.Append("")
 			rep.Append("FAILED: " + err.Error())
 		} else {
 			state := "removed"
 			if w.action != actUninstall {
-				state = "installed & enabled"
+				state = "installed"
 			}
-			w.stat.SetText("Done — Lazyfox is " + state + ".\n1. Restart Firefox to apply the changes.  2. Press ; (semicolon) on any page for the command overlay.")
-			rep := &guiReporter{w: w}
+			w.stat.SetText(fmt.Sprintf("Done — Lazyfox is %s. Restart Firefox, then press ; on any page for the command overlay.", state))
 			rep.Append("")
-			rep.Append("All set ✓ — close this window and restart Firefox.")
+			rep.Append("All set — close this window and restart Firefox.")
 		}
 		w.closeBtn.SetEnabled(true)
 	})
@@ -367,7 +407,7 @@ func (r *guiReporter) Note(format string, args ...interface{}) {
 }
 
 func (r *guiReporter) Append(line string) {
-	r.w.mw.Synchronize(func() {
+	r.w.dlg.Synchronize(func() {
 		cur := r.w.log.Text()
 		if cur != "" {
 			cur += "\r\n"
@@ -379,7 +419,7 @@ func (r *guiReporter) Append(line string) {
 
 // --- window setup ----------------------------------------------------------
 
-// guiStart runs the wizard and returns when the window is closed.
+// guiStart runs the wizard and returns when the dialog is closed.
 func guiStart(rc *repoContext, cfg config) error {
 	w := &guiWizard{
 		rc:       rc,
@@ -388,26 +428,40 @@ func guiStart(rc *repoContext, cfg config) error {
 		profiles: detectFirefoxProfiles(),
 	}
 
-	mw, err := walk.NewMainWindow()
+	// A top-level Dialog (no owner) is the right shape for the installer:
+	// fixed-size, close button only, centered, and Dialog.Run() shows it.
+	dlg, err := walk.NewDialog(nil)
 	if err != nil {
 		return fmt.Errorf("could not open the installer window: %w", err)
 	}
-	w.mw = mw
-	mw.SetTitle("Lazyfox Installer")
-	_ = mw.SetMinMaxSizePixels(walk.Size{660, 600}, walk.Size{660, 600})
-	_ = mw.SetClientSizePixels(walk.Size{660, 600})
+	w.dlg = dlg
+	dlg.SetTitle("Lazyfox Installer")
+
+	// FormBase delegates Layout/Children to its internal clientComposite, so
+	// the dialog itself must be given a layout before any child is added —
+	// without it the layout pass panics on a nil layout when the dialog shows.
+	_ = dlg.SetLayout(walk.NewVBoxLayout())
+
+	// Light flat background; labels and sections are transparent, so this
+	// reads as a clean neutral canvas rather than raw white.
+	if bg, err := walk.NewSolidColorBrush(walk.RGB(0xF2, 0xF4, 0xF7)); err == nil {
+		dlg.SetBackground(bg)
+	}
 
 	// Window icon (embedded icon256.png; the exe icon itself comes from the
 	// go-winres resource so the taskbar/file icon are consistent too).
 	if ic, ierr := windowIcon(); ierr == nil {
-		_ = mw.SetIcon(ic)
+		_ = dlg.SetIcon(ic)
 	}
 
-	root := newComposite(mw)
+	root := newComposite(dlg)
 	root.SetLayout(walk.NewVBoxLayout())
 	if bl, ok := root.Layout().(*walk.BoxLayout); ok {
-		bl.SetMargins(walk.Margins{12, 12, 12, 12})
-		bl.SetSpacing(8)
+		bl.SetMargins(walk.Margins{20, 18, 20, 14})
+		bl.SetSpacing(9)
+		// Left-align fixed-width children (radios, checkboxes, combos) — the
+		// walk default centers them, which scatters them across the dialog.
+		_ = bl.SetAlignment(walk.AlignHNearVNear)
 	}
 	w.root = root
 
@@ -422,7 +476,7 @@ func guiStart(rc *repoContext, cfg config) error {
 	}
 	w.show("action")
 
-	mw.Run()
+	dlg.Run()
 	return nil
 }
 
@@ -438,8 +492,9 @@ func windowIcon() (*walk.Icon, error) {
 // --- small widget helpers ----------------------------------------------------
 
 const (
-	fontTitle = 15
-	fontBody  = 9
+	fontTitle = 18
+	fontBody  = 10
+	fontNote  = 9
 )
 
 // newLabel creates a label on parent (best-effort; errors return nil).
@@ -453,10 +508,43 @@ func newLabel(parent walk.Container, text string, size int) *walk.Label {
 	return l
 }
 
-// newButtonRow creates a horizontal row container for footer buttons.
+// section adds a bold section header (flat alternative to a group box).
+func section(parent walk.Container, text string) {
+	newLabel(parent, text, 10).SetFont(mustFont("Segoe UI", 10, walk.FontBold))
+}
+
+// newSeparator adds a thin horizontal rule between page regions.
+func newSeparator(parent walk.Container) {
+	sep := newComposite(parent)
+	if br, err := walk.NewSolidColorBrush(walk.RGB(0xDD, 0xE1, 0xE6)); err == nil {
+		sep.SetBackground(br)
+	}
+	_ = sep.AsWidgetBase().SetMinMaxSizePixels(walk.Size{0, 1}, walk.Size{0, 1})
+}
+
+// newPage creates a page composite: vertical stack, left-aligned so fixed-
+// width widgets (radios, checkboxes, combos) line up under their headers
+// instead of floating centered.
+func newPage(parent walk.Container) *walk.Composite {
+	page := newComposite(parent)
+	page.SetLayout(walk.NewVBoxLayout())
+	if bl, ok := page.Layout().(*walk.BoxLayout); ok {
+		_ = bl.SetAlignment(walk.AlignHNearVNear)
+	}
+	return page
+}
+
+// newButtonRow creates a right-aligned horizontal row for footer buttons: a
+// stretchy spacer goes first, so buttons appended after it sit at the right
+// edge (the standard wizard look).
 func newButtonRow(parent walk.Container) *walk.Composite {
 	row := newComposite(parent)
 	row.SetLayout(walk.NewHBoxLayout())
+	spacer := newComposite(row)
+	_ = spacer.SetLayout(walk.NewHBoxLayout())
+	if bl, ok := row.Layout().(*walk.BoxLayout); ok {
+		_ = bl.SetStretchFactor(spacer, 1)
+	}
 	return row
 }
 
@@ -468,16 +556,6 @@ func newComposite(parent walk.Container) *walk.Composite {
 		return nil
 	}
 	return c
-}
-
-// newGroupBox wraps walk.NewGroupBox similarly.
-func newGroupBox(parent walk.Container, title string) *walk.GroupBox {
-	g, err := walk.NewGroupBox(parent)
-	if err != nil {
-		return nil
-	}
-	g.SetTitle(title)
-	return g
 }
 
 // newPushButton wraps walk.NewPushButton similarly.
@@ -509,8 +587,12 @@ func newTextEdit(parent walk.Container) *walk.TextEdit {
 }
 
 // mustFont returns a font or nil (never panics on bad input).
-func mustFont(family string, size int) *walk.Font {
-	f, err := walk.NewFont(family, size, 0)
+func mustFont(family string, size int, style ...walk.FontStyle) *walk.Font {
+	var s walk.FontStyle
+	if len(style) > 0 {
+		s = style[0]
+	}
+	f, err := walk.NewFont(family, size, s)
 	if err != nil {
 		return nil
 	}
