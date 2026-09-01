@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // The full-install payloads (the profile chrome helper files and the user.js
@@ -26,6 +27,14 @@ var extensionPayloadFS embed.FS
 //go:embed payload/native-host
 var nativeHostPayloadFS embed.FS
 
+// embedPath joins an embed.FS-relative path. embed paths always use forward
+// slashes regardless of platform: filepath.Join would produce Windows
+// backslashes on Windows and break the embedded reads (Go's embed.FS only
+// understands "/"-separated paths).
+func embedPath(parts ...string) string {
+	return strings.Join(parts, "/")
+}
+
 // chromeFileBytes returns the bytes for a chrome payload file (relative to
 // dist/chrome/, e.g. "userChrome.uc.js" or "user.js"), preferring the live
 // repo dist/ copy and falling back to the embedded standalone payload.
@@ -35,7 +44,7 @@ func (r *repoContext) chromeFileBytes(name string) ([]byte, error) {
 			return b, nil
 		}
 	}
-	return chromePayloadFS.ReadFile(filepath.Join("payload/chrome", filepath.FromSlash(name)))
+	return chromePayloadFS.ReadFile(embedPath("payload/chrome", name))
 }
 
 // userJSBytes is chromeFileBytes for the managed-prefs file.
@@ -51,7 +60,7 @@ func (r *repoContext) chromeFileExists(name string) bool {
 			return true
 		}
 	}
-	_, err := fs.Stat(chromePayloadFS, filepath.Join("payload/chrome", filepath.FromSlash(name)))
+	_, err := fs.Stat(chromePayloadFS, embedPath("payload/chrome", name))
 	return err == nil
 }
 
@@ -93,7 +102,7 @@ func nativeHostBytes() ([]byte, error) {
 	if hostOS() == OSWindows {
 		name = "lazyfox-host.exe"
 	}
-	b, err := nativeHostPayloadFS.ReadFile(filepath.Join("payload/native-host", string(hostOS()), name))
+	b, err := nativeHostPayloadFS.ReadFile(embedPath("payload/native-host", string(hostOS()), name))
 	if err != nil {
 		return nil, err
 	}
