@@ -34,7 +34,7 @@ import {
   toggleZen,
   zoom
 } from "./windowops";
-import { openDownload, openDownloadLocation, removeDownload, downloadsList } from "./downloads";
+import { openDownload, openDownloadLocation, removeDownload, retryDownload, downloadsList } from "./downloads";
 import { reconcileStealth, removeStealthContainerForTab, stealthOpen } from "./stealth";
 import {
   assignSessionMarker,
@@ -333,6 +333,8 @@ async function handleMessage(msg: BgAction, sender: any) {
       return removeDownload(data.id);
     case "openDownloadLocation":
       return openDownloadLocation(data.id);
+    case "retryDownload":
+      return retryDownload(data.id);
     case "zen":
       return toggleZen();
     case "zoom":

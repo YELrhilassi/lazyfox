@@ -31,6 +31,14 @@ export const pages = {
     headers: { "Content-Disposition": "attachment; filename=\"lf-slow.bin\"" },
     stream: { body: "L".repeat(2 * 1024 * 1024), chunkBytes: 65536, delayMs: 250 },
   },
+  // Always 500s: downloading it produces a failed entry, which exercises the
+  // downloads popup's retry action (r restarts the download from its URL).
+  "/failfile": {
+    type: "application/octet-stream",
+    headers: { "Content-Disposition": "attachment; filename=\"lf-fail.bin\"" },
+    status: 500,
+    body: "nope",
+  },
   "/": {
     body: `<!DOCTYPE html><html><head><title>LF Test Page</title></head>
 <body>

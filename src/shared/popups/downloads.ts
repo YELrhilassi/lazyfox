@@ -1,5 +1,6 @@
-// Downloads popup: live-refreshing list with two-step delete and progress bars.
-import { esc } from "../dom";
+// Downloads popup: live-refreshing list with two-step delete, retry for
+// failed/paused downloads, copy-link, and progress bars.
+import { copyText, esc } from "../dom";
 import type { PopupItem } from "../types";
 import { basePanel, makeSelector, fmtBytes, type PopupCtx } from "./kit";
 
@@ -10,7 +11,7 @@ export function openDownloadsPopup(ctx: PopupCtx): void {
     basePanel(
       "Downloads",
       "no downloads",
-      "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>o</span> location &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
+      "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>o</span> location &middot; <span class='lf-badge'>r</span> retry &middot; <span class='lf-badge'>y</span> copy link &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
     ),
     (root) => {
       panelRoot = root;
@@ -77,6 +78,26 @@ export function openDownloadsPopup(ctx: PopupCtx): void {
           if (k === "o" && item && item.key != null) {
             e.preventDefault();
             ctx.ops.openDownloadLocation(item.key);
+            return true;
+          }
+          if (k === "r" && item && item.key != null) {
+            e.preventDefault();
+            if (item.state === "failed" || item.state === "paused") {
+              ctx.ops.retryDownload(item.key);
+              ctx.toast(item.state === "paused" ? "resuming download" : "retrying download");
+            } else {
+              ctx.toast("nothing to retry");
+            }
+            return true;
+          }
+          if (k === "y" && item) {
+            e.preventDefault();
+            const url = (item as any).url || "";
+            if (!url) {
+              ctx.toast("no download link");
+              return true;
+            }
+            void copyText(url).then((ok) => ctx.toast(ok ? "copied download link" : "copy failed"));
             return true;
           }
           if (k === "x" && sel.empty && item && item.key != null) {
