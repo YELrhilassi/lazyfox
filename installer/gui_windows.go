@@ -34,6 +34,7 @@ import (
 	"strings"
 
 	"github.com/lxn/walk"
+	"github.com/lxn/win"
 )
 
 //go:embed winres/icon256.png
@@ -246,7 +247,9 @@ func (w *guiWizard) buildRunPage() *walk.Composite {
 	w.log.SetReadOnly(true)
 	w.log.SetFont(mustFont("Consolas", 9))
 	w.log.SetText("")
-	_ = w.log.AsWidgetBase().SetMinMaxSizePixels(walk.Size{0, 150}, walk.Size{0, 150})
+	// A real minimum so the log is readable, with no max so the box (and the
+	// dialog) can grow with the content. walk.Size{} means "ignored".
+	_ = w.log.AsWidgetBase().SetMinMaxSizePixels(walk.Size{560, 180}, walk.Size{})
 
 	w.progressB, _ = walk.NewProgressBar(page)
 	_ = w.progressB.SetMarqueeMode(true)
@@ -408,12 +411,18 @@ func (r *guiReporter) Note(format string, args ...interface{}) {
 
 func (r *guiReporter) Append(line string) {
 	r.w.dlg.Synchronize(func() {
-		cur := r.w.log.Text()
-		if cur != "" {
-			cur += "\r\n"
+		te := r.w.log
+		if te.TextLength() > 0 {
+			te.AppendText("\r\n" + line)
+		} else {
+			te.SetText(line)
 		}
-		r.w.log.SetText(cur + line)
-		r.w.log.ScrollToCaret()
+		// AppendText restores the previous selection (caret stays where it
+		// was), so move the caret to the end explicitly — otherwise
+		// ScrollToCaret never brings the newest line into view.
+		end := te.TextLength()
+		te.SetTextSelection(end, end)
+		te.ScrollToCaret()
 	})
 }
 
@@ -577,9 +586,12 @@ func newComboBox(parent walk.Container) *walk.ComboBox {
 	return c
 }
 
-// newTextEdit wraps walk.NewTextEdit similarly.
+// newTextEdit wraps walk.NewTextEdit similarly. The style adds vertical
+// scrollbars + auto-scroll: without them a read-only log box cannot be wheel-
+// scrolled and appended lines stay hidden below the fold.
 func newTextEdit(parent walk.Container) *walk.TextEdit {
-	e, err := walk.NewTextEdit(parent)
+	e, err := walk.NewTextEditWithStyle(parent,
+		win.ES_AUTOVSCROLL|win.ES_AUTOHSCROLL|win.WS_VSCROLL)
 	if err != nil {
 		return nil
 	}

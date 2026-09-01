@@ -191,9 +191,13 @@ func launchFirefox(bin, profileDir string, args ...string) error {
 
 // elevateSelf is a UAC-only concept; on Unix the chrome loader uses sudo
 // instead. Stub kept so the shared loader code compiles on this OS.
-func elevateSelf(args ...string) (int, error) {
-	return -1, fmt.Errorf("UAC elevation is not available on this platform")
+func elevateSelf(statusFile string, args ...string) error {
+	return fmt.Errorf("UAC elevation is not available on this platform")
 }
+
+// writeElevatedStatus is the Windows UAC child-report helper (see windows.go);
+// on Unix there is no UAC, so a no-op keeps cli.go cross-platform.
+func writeElevatedStatus(statusFile string, err error) {}
 
 // windowsRunningFirefox is Windows-only; stub returns nothing here.
 func windowsRunningFirefox() []processEntry { return nil }
