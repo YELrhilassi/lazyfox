@@ -60,6 +60,7 @@ user_pref("toolkit.telemetry.server", "data:,");
 user_pref("breakpad.reportURL", "");
 user_pref("browser.tabs.crashReporting.sendReport", false);
 user_pref("browser.crashReports.unsubmittedCheck.enabled", false);
+user_pref("app.shield.optoutstudies.enabled", false);
 user_pref("app.normandy.enabled", false);
 user_pref("browser.discovery.enabled", false);
 user_pref("browser.pocket.enabled", false);
@@ -68,6 +69,25 @@ user_pref("browser.urlbar.suggest.quicksuggest.sponsored", false);
 user_pref("browser.search.suggest.enabled", false);
 user_pref("browser.messaging-system.whatsNewPanel.enabled", false);
 user_pref("browser.aboutConfig.showWarning", false);
+
+// First-run consent screens: none of Firefox's Terms-of-Use / data-choices
+// dialogs or first-run onboarding may ever show. Each one is a modal that
+// blocks the window while Lazyfox is booting, and its "Continue" gate is
+// exactly the kind of popup a keyboard-first tool can get stuck behind.
+//   - termsofuse.* gates the Firefox 150+ "Welcome to Firefox, by continuing
+//     you agree to the Terms of Use" screen (ASRouter targeting requires
+//     bypass OR an accepted version >= minimumVersion).
+//   - datareporting.policy.* gates the data-collection infobar; the pair
+//     below is precisely what Firefox's SkipTermsOfUse policy prefs set.
+//   - toolkit.telemetry.reportingpolicy.firstRun marks the profile as
+//     already seen, so the policy module never schedules those screens.
+user_pref("termsofuse.bypassNotification", true);
+user_pref("termsofuse.acceptedVersion", 999);
+user_pref("termsofuse.acceptedDate", "1785000000000");
+user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+user_pref("datareporting.policy.dataSubmissionPolicyAcceptedVersion", 999);
+user_pref("datareporting.policy.dataSubmissionPolicyNotifiedTime", "1785000000000");
+user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
 
 // Startup: land directly on the Lazyfox command center. Chrome URL overrides
 // cannot redirect about:home, so the startup home page is pointed at
