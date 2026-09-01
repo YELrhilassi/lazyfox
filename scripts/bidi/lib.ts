@@ -541,7 +541,7 @@ export function startTestServer(pages) {
         res.end("not found");
         return;
       }
-      res.writeHead(200, Object.assign(
+      res.writeHead(page.status || 200, Object.assign(
         { "Content-Type": page.type || "text/html; charset=utf-8" },
         page.headers || {}
       ));

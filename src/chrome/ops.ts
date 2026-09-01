@@ -17,7 +17,8 @@ import {
   listDownloads,
   openDownload as launchDownload,
   openDownloadLocation as revealDownload,
-  removeDownload as eraseDownload
+  removeDownload as eraseDownload,
+  retryDownload as restartDownload
 } from "./downloads";
 import { withConfig, type ChromeCfg } from "./config";
 import { toast } from "../shared/overlay";
@@ -561,6 +562,11 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     removeDownload: (key: string) => {
       void eraseDownload(key).then((ok) => {
         toast(ok ? "download removed" : "could not remove download");
+      });
+    },
+    retryDownload: (key: string) => {
+      void restartDownload(key).then((ok) => {
+        toast(ok ? "retrying download" : "nothing to retry");
       });
     },
     dismissDownload: (key?: string) => {

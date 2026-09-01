@@ -198,3 +198,24 @@ export async function removeDownload(key: string): Promise<boolean> {
     return false;
   }
 }
+
+export async function retryDownload(key: string): Promise<boolean> {
+  const d = objs.get(key);
+  if (!d) return false;
+  try {
+    if (d.error && typeof d.retry === "function") {
+      // Failed download: Firefox restarts it from its source.
+      await d.retry();
+      return true;
+    }
+    if (d.stopped && typeof d.start === "function") {
+      // Paused download: resume in place.
+      await d.start();
+      return true;
+    }
+    // In-progress or complete — nothing to retry.
+    return false;
+  } catch (e) {
+    return false;
+  }
+}

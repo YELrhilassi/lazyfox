@@ -85,3 +85,27 @@ export async function openDownloadLocation(id: string) {
     return { ok: false, error: String(e) };
   }
 }
+
+export async function retryDownload(id: string) {
+  const n = Number(id);
+  try {
+    const found = await browser.downloads.search({ id: n });
+    const d = found && found[0];
+    if (!d || !d.url) return { ok: false, error: "download not found" };
+    // Resume a paused download in place; otherwise restart from the source
+    // URL as a fresh copy (never overwrite the existing file).
+    if (d.state === "paused" && d.canResume) {
+      await browser.downloads.resume(n);
+      return { ok: true, resumed: true };
+    }
+    await browser.downloads.download({
+      url: d.url,
+      filename: d.filename ? String(d.filename).split(/[\\/]/).pop() : undefined,
+      conflictAction: "uniquify",
+      saveAs: false,
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}

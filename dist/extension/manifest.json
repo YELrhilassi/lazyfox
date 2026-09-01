@@ -25,7 +25,8 @@
     "notifications",
     "tabHide",
     "nativeMessaging",
-    "clipboardRead"
+    "clipboardRead",
+    "clipboardWrite"
   ],
   "host_permissions": [
     "<all_urls>"
