@@ -42,9 +42,10 @@ const DESCRIPTION = [
 const HOMEPAGE = "https://github.com/YELrhilassi/lazyfox";
 const SUPPORT = "https://github.com/YELrhilassi/lazyfox/issues";
 const CATEGORIES = { firefox: ["tabs"] };
-// Tags are curated per-account on AMO (the v5 API rejects slugs that aren't in
-// your account's tag list), so they are set in the developer dashboard, not
-// pushed here. Recommended tags live in docs/AMO-LISTING.md.
+// Tags must come from AMO's curated per-account list (GET /addons/tags/);
+// anything else makes AMO reject the whole request. These are the fits for
+// Lazyfox: "container" (stealth tabs), "privacy", and "search" (command center).
+const TAGS = ["container", "privacy", "search"];
 
 function fail(msg: string): never {
   console.error(`[listing] ${msg}`);
@@ -55,7 +56,7 @@ if (!process.env.AMO_API_KEY || !process.env.AMO_API_SECRET) {
   fail("AMO_API_KEY / AMO_API_SECRET not set (see .env.example).");
 }
 
-const base = { name: { "en-US": "Lazyfox" }, summary: { "en-US": SUMMARY }, description: { "en-US": DESCRIPTION }, homepage: { "en-US": HOMEPAGE }, support_url: { "en-US": SUPPORT }, categories: CATEGORIES };
+const base = { name: { "en-US": "Lazyfox" }, summary: { "en-US": SUMMARY }, description: { "en-US": DESCRIPTION }, homepage: { "en-US": HOMEPAGE }, support_url: { "en-US": SUPPORT }, categories: CATEGORIES, tags: TAGS };
 
 // Defensive helper: try the POST with `tags`, retry without on 400 (AMO rejects
 // tags it doesn't know, and we don't want a hard failure over one tag).
@@ -79,10 +80,10 @@ async function push() {
     fail(`listing update failed (${res.status}): ${String(JSON.stringify(res.json?.detail ?? res.json ?? res.text)).slice(0, 300)}`);
   }
   console.log(`[listing] summary now: ${res.json?.summary?.["en-US"] ?? "(see dashboard)"}`);
-  console.log(`[listing] homepage: ${res.json?.homepage?.["en-US"] ?? "(none)"} | support: ${res.json?.support_url?.["en-US"] ?? "(none)"}`);
-  console.log("[listing] categories:", JSON.stringify(res.json?.categories ?? res.json?.category ?? "(n/a)"));
-  console.log("\nDone. Tags & screenshots are set in the developer dashboard:");
-  console.log("  https://addons.mozilla.org/developers/addon/lazyfoxlazyfox.dev/edit/");
+  console.log(`[listing] homepage: ${res.json?.homepage?.url?.["en-US"] ?? "(none)"} | support: ${res.json?.support_url?.url?.["en-US"] ?? "(none)"}`);
+  console.log("[listing] categories:", JSON.stringify(res.json?.categories ?? "(n/a)"), "| tags:", JSON.stringify(res.json?.tags ?? "(n/a)"));
+  console.log("\nDone. Screenshots are set in the developer dashboard:");
+  console.log("  https://addons.mozilla.org/developers/addon/lazyfox2/edit/");
 }
 
 push().catch((e) => fail((e && e.stack) || String(e)));
