@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/json"
 	"lazyfox/core"
 
 	"syscall/js"
@@ -683,6 +684,120 @@ func main() {
 			}
 		}
 		return stripMovesArray(core.PlanStrip(strSlice(args[0]), strSlice(args[1]), groups))
+	})
+
+	// ---- status store (single source of truth for the status bar) ----
+
+	// Session state blob from the background: name, marker, split state,
+	// session pills, tab ids + stealth flags (for the tab switcher).
+	set("statusSession", func(this js.Value, args []js.Value) interface{} {
+		if len(args) == 0 {
+			return nil
+		}
+		var p core.SessionPatch
+		if err := json.Unmarshal([]byte(args[0].String()), &p); err == nil {
+			core.StatusApplySession(p)
+		}
+		return nil
+	})
+
+	// Live selection: raw strip index (0-based), display index (1-based over
+	// real tabs) and the real tab count.
+	set("statusTab", func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 3 {
+			return nil
+		}
+		core.StatusSetTab(args[0].Int(), args[1].Int(), args[2].Int())
+		return nil
+	})
+
+	// Raw chrome-side UI signals that decide the bar mode: popup open, chrome
+	// leader armed.
+	set("statusUi", func(this js.Value, args []js.Value) interface{} {
+		popup := false
+		leader := false
+		if len(args) > 0 {
+			popup = args[0].Bool()
+		}
+		if len(args) > 1 {
+			leader = args[1].Bool()
+		}
+		core.StatusSetUi(popup, leader)
+		return nil
+	})
+
+	// Content-script leader arm state for one tab-strip index.
+	set("statusLeader", func(this js.Value, args []js.Value) interface{} {
+		index, active := 0, false
+		if len(args) > 0 {
+			index = args[0].Int()
+		}
+		if len(args) > 1 {
+			active = args[1].Bool()
+		}
+		core.StatusSetLeader(index, active)
+		return nil
+	})
+
+	// Find-in-page state for one tab-strip index; count < 0 clears it.
+	set("statusFind", func(this js.Value, args []js.Value) interface{} {
+		index, cur, count := 0, 0, -1
+		if len(args) > 0 {
+			index = args[0].Int()
+		}
+		if len(args) > 1 {
+			cur = args[1].Int()
+		}
+		if len(args) > 2 {
+			count = args[2].Int()
+		}
+		core.StatusSetFind(index, cur, count)
+		return nil
+	})
+
+	// Live stealth badge of the selected tab (derived from its container).
+	set("statusStealth", func(this js.Value, args []js.Value) interface{} {
+		on := false
+		if len(args) > 0 {
+			on = args[0].Bool()
+		}
+		core.StatusSetStealth(on)
+		return nil
+	})
+
+	// Fresh download snapshot from Firefox (JSON []Download). The store merges
+	// it, carries dismissed flags, seeds history and derives speed.
+	set("statusDownloads", func(this js.Value, args []js.Value) interface{} {
+		if len(args) == 0 {
+			return nil
+		}
+		var fresh []core.Download
+		if err := json.Unmarshal([]byte(args[0].String()), &fresh); err == nil {
+			core.StatusSetDownloads(fresh)
+		}
+		return nil
+	})
+
+	// Dismiss download notification(s) on the bar. Empty array = all.
+	set("statusDismiss", func(this js.Value, args []js.Value) interface{} {
+		keys := []string(nil)
+		if len(args) > 0 {
+			_ = json.Unmarshal([]byte(args[0].String()), &keys)
+		}
+		core.StatusDismiss(keys)
+		return nil
+	})
+
+	// The render model the single view paints (JSON StatusModel).
+	set("statusSnapshot", func(this js.Value, args []js.Value) interface{} {
+		b, _ := json.Marshal(core.StatusSnapshot())
+		return string(b)
+	})
+
+	// The merged download cache (newest first) for the downloads popup.
+	set("downloadsList", func(this js.Value, args []js.Value) interface{} {
+		b, _ := json.Marshal(core.StatusDownloads())
+		return string(b)
 	})
 
 	js.Global().Set("LazyfoxCore", api)
