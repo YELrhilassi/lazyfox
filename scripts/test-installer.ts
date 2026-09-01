@@ -10,6 +10,7 @@
 
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -54,3 +55,30 @@ if (existsSync(join(root, "dist", "chrome")) || existsSync(join(root, "dist", "e
 }
 
 execFileSync("go", ["test", "./..."], { cwd: installerDir, stdio: "inherit" });
+
+// The Windows GUI wizard (gui_windows.go) is behind a `windows` build tag so
+// the unit tests above never compile it. Cross-compile the windows binary here
+// to prove the GUI still builds on every `npm test` — cheap and catches API
+// drift in lxn/walk long before a release build.
+console.log("\n[test-installer] cross-compiling the Windows GUI installer…\n");
+const tmp = join(os.tmpdir(), `lfx-wincheck-${process.pid}.exe`);
+try {
+  // Generate the resource object (manifest/icon) first, exactly like the real
+  // build does — 0.0.0 as version is fine for a compile check.
+  const winres = await import("./winres.ts");
+  winres.buildWinRes(installerDir, "0.0.0");
+  execFileSync(
+    "go",
+    ["build", "-trimpath", "-ldflags=-s -w -H windowsgui", "-o", tmp, "."],
+    { cwd: installerDir, env: { ...process.env, GOOS: "windows", GOARCH: "amd64" }, stdio: "inherit" }
+  );
+  console.log("[test-installer] windows cross-compile OK");
+} catch (e) {
+  console.error("[test-installer] windows cross-compile FAILED — the GUI wizard does not build.");
+  throw e;
+} finally {
+  try {
+    rmSync(tmp, { force: true });
+    rmSync(join(installerDir, "rsrc_windows_amd64.syso"), { force: true });
+  } catch { /* best-effort cleanup */ }
+}

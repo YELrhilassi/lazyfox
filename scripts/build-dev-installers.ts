@@ -22,6 +22,7 @@ import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, existsSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildWinRes } from "./winres.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installerDir = join(root, "installer");
@@ -49,6 +50,10 @@ if (!unsignedXpi) {
   console.error("build-dev-installers: no unsigned xpi in dist/ — run `npm run build` first.");
   process.exit(1);
 }
+
+// Extension version tag (from the xpi filename) used for the Windows resource.
+const m = /lazyfox2-(\d+\.\d+\.\d+)\.xpi$/.exec(unsignedXpi);
+const latestUnsignedXpiVersion = m ? m[1]! : "0.0.0";
 
 console.log(`[dev-installer] embedding unsigned xpi: ${unsignedXpi}`);
 
@@ -91,9 +96,17 @@ for (const t of TARGETS) {
     writeFileSync(hostDst, "");
   }
   const out = join(binDir, t.out);
+  // Windows links the interactive GUI wizard (GUI subsystem so double-click
+  // opens the wizard, not a console flash) and embeds its manifest/icon
+  // resource via go-winres (best-effort: missing resource -> default icon).
+  let ldflags = "-s -w";
+  if (t.goos === "windows") {
+    buildWinRes(installerDir, latestUnsignedXpiVersion);
+    ldflags += " -H windowsgui";
+  }
   execFileSync(
     "go",
-    ["build", "-trimpath", "-ldflags=-s -w", "-o", out, "."],
+    ["build", "-trimpath", `-ldflags=${ldflags}`, "-o", out, "."],
     { cwd: installerDir, env: { ...process.env, GOOS: t.goos, GOARCH: t.arch }, stdio: "inherit" }
   );
   console.log(`[dev-installer] ${t.goos}/${t.arch} -> installer/bin/${t.out}`);

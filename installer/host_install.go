@@ -36,7 +36,7 @@ func nativeHostManifest(hostPath string) []byte {
 //   - Linux:   ~/.mozilla/native-messaging-hosts/lazyfox.json
 //   - macOS:   ~/Library/Application Support/Mozilla/NativeMessagingHosts/lazyfox.json
 //   - Windows: registry HKCU\Software\Mozilla\NativeMessagingHosts\lazyfox ->
-//              path to lazyfox.json (written below)
+//     path to lazyfox.json (written below)
 //
 // The manifest's `path` points at the installed host binary. On Windows the
 // binary lives next to the manifest; on Unix in ~/.local/bin (user-writable,
