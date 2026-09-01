@@ -52,6 +52,7 @@ export interface BgApi {
   openDownload: { req: { id: string }; res: { ok: boolean } };
   removeDownload: { req: { id: string }; res: { ok: boolean } };
   openDownloadLocation: { req: { id: string }; res: { ok: boolean } };
+  retryDownload: { req: { id: string }; res: { ok: boolean; error?: string; resumed?: boolean } };
   stealthOpen: { req: Record<string, never>; res: { ok: boolean; error?: string } };
   openSetup: { req: Record<string, never>; res: { ok: boolean } };
   quit: { req: Record<string, never>; res: { ok: boolean } };

@@ -1791,6 +1791,7 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     openDownload: (key: string) => void send("openDownload", { id: key }),
     openDownloadLocation: (key: string) => void send("openDownloadLocation", { id: key }),
     removeDownload: (key: string) => void send("removeDownload", { id: key }),
+    retryDownload: (key: string) => void send("retryDownload", { id: key }),
     stealthOpen: () => {
       void send("stealthOpen").then((r) => {
         if (r && r.ok === true) toast("stealth tab opened");

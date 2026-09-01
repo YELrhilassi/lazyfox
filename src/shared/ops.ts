@@ -45,6 +45,7 @@ export interface ActionOps {
   openDownload(key: string): void;
   removeDownload(key: string): void;
   openDownloadLocation(key: string): void;
+  retryDownload(key: string): void;
   dismissDownload(key?: string): void;
   // Open the current page in a stealth (isolated, self-wiping) tab.
   stealthOpen(): void;

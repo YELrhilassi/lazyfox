@@ -5,6 +5,7 @@
 // for the input element it focuses/types into.
 
 import { core } from "../../shared/core";
+import { copyText } from "../../shared/dom";
 import { send } from "../../shared/protocol";
 import { MODES, openItem } from "./data";
 import type { Renderer } from "./render";
@@ -325,12 +326,23 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
       renderer.move(-1, 0);
       return;
     }
-    if (state.mode === "downloads" && (k === "x" || k === "o")) {
+    if (state.mode === "downloads" && (k === "x" || k === "o" || k === "r" || k === "y")) {
       const item = state.all[state.idx];
       if (item && item.key) {
         e.preventDefault();
         if (k === "x") void send("removeDownload", { id: item.key });
-        else void send("openDownloadLocation", { id: item.key });
+        else if (k === "r") {
+          if (item.state === "failed" || item.state === "paused") {
+            void send("retryDownload", { id: item.key });
+            renderer.flashTag(item.state === "paused" ? "resuming download" : "retrying download");
+          } else {
+            renderer.flashTag("nothing to retry");
+          }
+        } else if (k === "y") {
+          void copyText(item.url || "").then((ok) =>
+            renderer.flashTag(ok ? "copied download link" : "copy failed")
+          );
+        } else void send("openDownloadLocation", { id: item.key });
       }
       return;
     }
