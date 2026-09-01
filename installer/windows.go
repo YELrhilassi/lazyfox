@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -64,42 +65,83 @@ func isElevated() bool {
 }
 
 // elevateSelf re-runs the current binary as administrator with the given
-// arguments, waits for completion, and returns its exit code. On Windows an
-// elevated copy performs a narrow, self-contained task (chrome-loader
-// install/remove) and exits — the same UAC model the old installer used, now
-// entirely inside the Go binary.
-func elevateSelf(args ...string) (int, error) {
+// arguments. The elevated copy performs a narrow, self-contained task
+// (chrome-loader install/remove) and reports its outcome by writing to
+// statusFile (a fresh per-invocation path passed via --status). ShellExecute
+// with the "runas" verb gives no exit status, so we poll for that file: this
+// both waits out the UAC prompt and surfaces the child's real error instead of
+// a blind "files missing" guess — and it avoids PowerShell argument quoting
+// (a path like "C:\Program Files\Mozilla Firefox" used to lose its spaces).
+func elevateSelf(statusFile string, args ...string) error {
 	exe, err := os.Executable()
 	if err != nil {
-		return -1, fmt.Errorf("cannot resolve own executable: %w", err)
+		return fmt.Errorf("cannot resolve own executable: %w", err)
 	}
-	quoted := make([]string, len(args))
-	for i, a := range args {
-		quoted[i] = "'" + strings.ReplaceAll(a, "'", "''") + "'"
+	quoted := make([]string, 0, len(args))
+	for _, a := range args {
+		quoted = append(quoted, quoteArgWindows(a))
 	}
-	ps := fmt.Sprintf("Start-Process -FilePath '%s' -ArgumentList %s -Verb RunAs -Wait",
-		strings.ReplaceAll(exe, "'", "''"), strings.Join(quoted, ", "))
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-		"-Command", ps)
-	if err := cmd.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			return ee.ExitCode(), nil
+	exePtr, _ := windows.UTF16PtrFromString(exe)
+	argsPtr, _ := windows.UTF16PtrFromString(strings.Join(quoted, " "))
+	if err := windows.ShellExecute(0, windows.StringToUTF16Ptr("runas"),
+		exePtr, argsPtr, nil, windows.SW_SHOWNORMAL); err != nil {
+		return fmt.Errorf("UAC elevation failed (was the prompt declined?): %w", err)
+	}
+	// Poll for the child's outcome. The UAC prompt itself can take a while.
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(statusFile); err == nil {
+			os.Remove(statusFile)
+			report := strings.TrimSpace(string(b))
+			if report == "" || report == "OK" {
+				return nil
+			}
+			return fmt.Errorf("elevated installer reported: %s", report)
 		}
-		return -1, fmt.Errorf("UAC elevation failed: %w", err)
+		time.Sleep(300 * time.Millisecond)
 	}
-	return 0, nil
+	return fmt.Errorf("the elevated installer did not report back within 90s (UAC may have been declined)")
 }
 
-// stopFirefoxForProfile terminates every firefox.exe whose command line
-// references profileDir, then waits for the processes to exit. It returns the
-// number stopped. This mirrors the old ps1 behaviour (the .xpi and
-// extensions.json are locked/rewritten while Firefox runs).
+// quoteArgWindows quotes a single command-line argument for
+// CommandLineToArgvW parsing (the CRT rule the Go runtime uses). Bare tokens
+// pass through; anything with spaces/quotes is wrapped in double quotes with
+// embedded quotes backslash-escaped.
+func quoteArgWindows(a string) string {
+	if a != "" && !strings.ContainsAny(a, " \t\"") {
+		return a
+	}
+	return `"` + strings.ReplaceAll(a, `"`, `\"`) + `"`
+}
+
+// writeElevatedStatus is the child side of the status-file protocol: it
+// records the outcome of the elevated operation where the parent can read it.
+// A nil statusFile (normal runs) is a no-op.
+func writeElevatedStatus(statusFile string, err error) {
+	if statusFile == "" {
+		return
+	}
+	msg := "OK"
+	if err != nil {
+		msg = err.Error()
+	}
+	_ = os.WriteFile(statusFile, []byte(msg), 0o600)
+}
+
+// stopFirefoxForProfile terminates the Firefox processes using profileDir,
+// then waits for them to exit. It returns the number stopped. This mirrors the
+// old ps1 behaviour (the .xpi / extensions.json are locked while Firefox runs).
 func stopFirefoxForProfile(profileDir string) int {
+	locked := profileLocked(profileDir)
 	procs := windowsRunningFirefox()
 	stopped := 0
 	targets := make([]uint32, 0, len(procs))
 	for _, p := range procs {
-		if processUsesProfile(p, profileDir) {
+		// Kill every Firefox process while the profile lock is held: a
+		// normally launched Firefox does NOT put -profile <dir> on its command
+		// line, so matching only on the command line would miss it entirely
+		// and the profile files (incl. the loaded .xpi) stay mapped.
+		if locked || processUsesProfile(p, profileDir) {
 			if killProcess(p) {
 				stopped++
 				targets = append(targets, p.pid)
@@ -107,7 +149,8 @@ func stopFirefoxForProfile(profileDir string) int {
 		}
 	}
 	if stopped > 0 {
-		// Wait up to ~20s for them to actually exit.
+		// Wait up to ~20s for the processes to actually exit, then a short
+		// grace period so Firefox releases its mapped profile files.
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
 			alive := false
@@ -122,6 +165,7 @@ func stopFirefoxForProfile(profileDir string) int {
 			}
 			time.Sleep(250 * time.Millisecond)
 		}
+		time.Sleep(1500 * time.Millisecond)
 	}
 	return stopped
 }
