@@ -47,6 +47,10 @@ export interface StatusBarData {
   // segment; null (or count 0) hides it. Pushed by the content script and
   // relayed from the background for the chrome helper's window-level bar.
   find?: { cur: number; count: number } | null;
+  // Real tab ids + stealth flags in strip order, from the Go store's session
+  // snapshot — read by the tab switcher (badges + true Firefox ids).
+  tabIds?: number[];
+  stealthFlags?: boolean[];
 }
 
 const CSS = `
@@ -312,8 +316,17 @@ export class StatusBar {
     this.bodyReserved = false;
   }
 
+  // The last rendered snapshot (serialized) — identical snapshots skip the
+  // DOM write entirely. The Go store is the source of truth; this view only
+  // paints when the store's model actually changed.
+  private lastKey: string | null = null;
+
   setData(d: Partial<StatusBarData>): void {
-    this.data = Object.assign({}, this.data, d);
+    const next = Object.assign({}, this.data, d);
+    const key = JSON.stringify(next);
+    if (this.lastKey === key) return;
+    this.lastKey = key;
+    this.data = next;
     this.render();
   }
 

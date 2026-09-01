@@ -1,5 +1,6 @@
 import "../vendor/wasm_exec.js";
 import { WASM_BASE64 } from "./wasm-embed";
+import type { StatusBarData } from "./statusbar";
 import type { DownloadEntry, HistoryRow, Lfc, RecoveryRow, VisitedItem, WkItem, WkPage } from "./types";
 
 // The Go core (core.wasm) is compiled to a single wasm module and exposed to
@@ -63,6 +64,20 @@ export interface CoreApi {
   downloadProgress(received: number, total: number): number;
   mergeDownloads(prev: DownloadEntry[], fresh: DownloadEntry[]): DownloadEntry[];
   activeDownloads(downloads: DownloadEntry[]): DownloadEntry[];
+  // ---- status store: single source of truth for the status bar ----
+  // All events flow IN via these setters (JSON for structured payloads); the
+  // render model flows OUT via statusSnapshot(). The chrome helper pushes and
+  // paints; nothing else owns bar state.
+  statusSession(state: string): void;
+  statusTab(selected: number, tabIndex: number, tabCount: number): void;
+  statusUi(popup: boolean, leader: boolean): void;
+  statusLeader(index: number, active: boolean): void;
+  statusFind(index: number, cur: number, count: number): void;
+  statusStealth(on: boolean): void;
+  statusDownloads(fresh: string): void;
+  statusDismiss(keys: string): void;
+  statusSnapshot(): string;
+  downloadsList(): string;
   sessionSummary(
     sessions: { name: string; marker: number; tabCount: number; splits: string; legacySplitTabs: number }[],
     current: string
@@ -166,6 +181,42 @@ export function createCoreFacade(getApi: () => Promise<CoreApi>) {
       call((a) => a.mergeDownloads(prev, fresh)),
     activeDownloads: (downloads: DownloadEntry[]): Promise<DownloadEntry[]> =>
       call((a) => a.activeDownloads(downloads)),
+    statusSession: (state: unknown): Promise<void> =>
+      call((a) => {
+        a.statusSession(JSON.stringify(state || {}));
+      }),
+    statusTab: (selected: number, tabIndex: number, tabCount: number): Promise<void> =>
+      call((a) => {
+        a.statusTab(selected, tabIndex, tabCount);
+      }),
+    statusUi: (popup: boolean, leader: boolean): Promise<void> =>
+      call((a) => {
+        a.statusUi(popup, leader);
+      }),
+    statusLeader: (index: number, active: boolean): Promise<void> =>
+      call((a) => {
+        a.statusLeader(index, active);
+      }),
+    statusFind: (index: number, cur: number, count: number): Promise<void> =>
+      call((a) => {
+        a.statusFind(index, cur, count);
+      }),
+    statusStealth: (on: boolean): Promise<void> =>
+      call((a) => {
+        a.statusStealth(on);
+      }),
+    statusDownloads: (fresh: DownloadEntry[]): Promise<void> =>
+      call((a) => {
+        a.statusDownloads(JSON.stringify(fresh || []));
+      }),
+    statusDismiss: (keys: string[]): Promise<void> =>
+      call((a) => {
+        a.statusDismiss(JSON.stringify(keys || []));
+      }),
+    statusSnapshot: (): Promise<StatusBarData> =>
+      call((a) => JSON.parse(a.statusSnapshot())),
+    downloadsList: (): Promise<DownloadEntry[]> =>
+      call((a) => JSON.parse(a.downloadsList())),
     sessionSummary: (
       sessions: { name: string; marker: number; tabCount: number; splits: string; legacySplitTabs: number }[],
       current: string
