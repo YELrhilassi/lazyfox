@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -50,6 +52,10 @@ func runInstall(rc *repoContext, rep StepReporter, o InstallOptions, pw Password
 
 	// 1. Stop Firefox on this profile so the .xpi / extensions.json can be
 	//    replaced and the add-on enabled. Relaunched at the end when UseLaunch.
+	//    If Firefox is STILL holding the profile after the stop attempt, abort
+	//    before touching anything: writing over a running Firefox leaves the
+	//    profile half-installed and the .xpi write fails with Windows'
+	//    ERROR_USER_MAPPED_FILE.
 	if !o.NoStop {
 		rep.Note("Checking whether Firefox is using this profile…")
 		if profileLocked(profileDir) || runningForProfile(profileDir) {
@@ -57,6 +63,10 @@ func runInstall(rc *repoContext, rep StepReporter, o InstallOptions, pw Password
 			n := stopFirefoxForProfile(profileDir)
 			if n > 0 {
 				time.Sleep(2 * time.Second)
+			}
+			if profileLocked(profileDir) {
+				return fmt.Errorf("Firefox is still running with this profile and did not close.\n" +
+					"Close it completely, then run the installer again.")
 			}
 		}
 	}
@@ -163,8 +173,8 @@ func installExtension(rc *repoContext, rep StepReporter, profileDir string, o In
 	if exists(xpi) {
 		_ = backupFile(xpi, "install")
 	}
-	if err := os.WriteFile(xpi, data, 0o644); err != nil {
-		return false, fmt.Errorf("could not install %s %s: %w", label, xpi, err)
+	if err := writeXpiRetryIfMapped(xpi, data, profileDir); err != nil {
+		return false, fmt.Errorf("could not install %s %s: %w (close Firefox first if this keeps failing)", label, xpi, err)
 	}
 	rep.Step("Installed %s: %s", label, xpi)
 
@@ -227,6 +237,32 @@ func installExtension(rc *repoContext, rep StepReporter, profileDir string, o In
 	return leftRunning, nil
 }
 
+// writeXpiRetryIfMapped writes the add-on xpi, retrying once after stopping
+// Firefox if the first attempt failed. Windows keeps the loaded .xpi mapped
+// while Firefox runs (ERROR_USER_MAPPED_FILE), and Firefox can relaunch
+// between our stop and this write, so a single re-stop + retry closes that
+// race. Non-Windows platforms just take the first attempt.
+func writeXpiRetryIfMapped(xpi string, data []byte, profileDir string) error {
+	err := os.WriteFile(xpi, data, 0o644)
+	if err != nil && isMappedFileError(err) {
+		_ = stopFirefoxForProfile(profileDir)
+		err = os.WriteFile(xpi, data, 0o644)
+	}
+	return err
+}
+
+// isMappedFileError reports whether err is Windows' ERROR_USER_MAPPED_FILE
+// (1224) — Firefox still had a file mapped. The constant is Windows-only in
+// the syscall package, so compare the errno value directly; on other platforms
+// no errno matches this number.
+func isMappedFileError(err error) bool {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return uintptr(errno) == 1224
+	}
+	return false
+}
+
 // waitForImport polls extensions.json until our add-on id appears (or timeout).
 func waitForImport(profileDir string, timeout time.Duration) bool {
 	extJSON := filepath.Join(profileDir, extensionsJSONName)
@@ -279,12 +315,10 @@ func InstallChromeLoader(rc *repoContext, rep StepReporter, ff *FirefoxInstall, 
 	if hostOS() == OSWindows {
 		if !isElevated() {
 			rep.Step("Installing the chrome loader into %s needs administrator rights (one-time UAC prompt).", dir)
-			code, err := elevateSelf("--loader-only", "--firefox-dir", dir)
-			if err != nil {
+			statusFile := filepath.Join(os.TempDir(), fmt.Sprintf("lazyfox-uac-%d.txt", os.Getpid()))
+			os.Remove(statusFile) // make sure a stale report cannot be read
+			if err := elevateSelf(statusFile, "--loader-only", "--firefox-dir", dir, "--status", statusFile); err != nil {
 				return err
-			}
-			if code != 0 {
-				return fmt.Errorf("UAC elevation returned exit code %d", code)
 			}
 		} else if err := writeLoaderFiles(rc, dir); err != nil {
 			return err
