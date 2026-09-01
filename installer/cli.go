@@ -20,6 +20,7 @@ type config struct {
 	force        bool
 	password     string // for sudo (non-interactive loader ops)
 	xpiPath      string // install this unsigned xpi instead of the embedded signed build (dev)
+	statusFile   string // elevated child reports its outcome here (Windows UAC)
 	// TUI defaults.
 	hasProfileArg bool
 	// tui forces the terminal UI on Windows (default there is the GUI wizard).
@@ -47,6 +48,7 @@ func parseArgs(rc *repoContext, args []string) (cfg config, handled bool, err er
 	fs.BoolVar(&help, "h", false, "show help")
 	fs.BoolVar(&help, "help", false, "show help")
 	fs.StringVar(&cfg.password, "sudo-pass", "", "sudo password for non-interactive loader ops")
+	fs.StringVar(&cfg.statusFile, "status", "", "write the operation outcome to this file (elevated child reporting)")
 	xpiPath := fs.String("xpi", "", "install this unsigned xpi instead of the embedded signed build (dev)")
 	fs.Usage = func() { printUsage(fs) }
 
@@ -182,7 +184,10 @@ func runNonInteractive(rc *repoContext, cfg config) error {
 			return fmt.Errorf("could not resolve a Firefox installation (use --firefox-dir)")
 		}
 		pw := func() (string, bool, error) { return cfg.password, cfg.password != "", nil }
-		return InstallChromeLoader(rc, rep, ff, cfg.force, pw)
+		err := InstallChromeLoader(rc, rep, ff, cfg.force, pw)
+		// The parent (UAC elevation caller) watches this file for the outcome.
+		writeElevatedStatus(cfg.statusFile, err)
+		return err
 
 	case "loader-remove":
 		ff := pickFishFromDir(rc, cfg)
@@ -190,7 +195,9 @@ func runNonInteractive(rc *repoContext, cfg config) error {
 			return fmt.Errorf("could not resolve a Firefox installation (use --firefox-dir)")
 		}
 		pw := func() (string, bool, error) { return cfg.password, cfg.password != "", nil }
-		return removeChromeLoader(rc, rep, UninstallOptions{Install: ff}, pw)
+		err := removeChromeLoader(rc, rep, UninstallOptions{Install: ff}, pw)
+		writeElevatedStatus(cfg.statusFile, err)
+		return err
 
 	case "install":
 		prof := pickProfile(rc, cfg)
