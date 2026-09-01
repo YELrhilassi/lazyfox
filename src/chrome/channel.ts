@@ -33,6 +33,7 @@ export interface ChannelDeps {
   // The chrome ops adapter (built by ops.ts, wired by main).
   ops: {
     openTarget(which: string): boolean;
+    openUrlNative(url: string): boolean;
     openResize(): void;
   };
   split: SplitView;
@@ -407,39 +408,146 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
   }
 
-  // The relay tab is invisible plumbing and must NEVER be the selected tab: a
-  // session restore recreates the previous relay tab as the LAST restored tab,
-  // Firefox selects the last restored tab, and the user is left staring at the
-  // blank relay page — with the tab strip hidden and no way to navigate out
-  // (the "blank page on startup" bug, worse when a prompt like the
-  // default-browser ask sits on the active tab). Steer back to a real tab.
-  function keepRelayUnselected(): void {
-    try {
-      const sel = window.gBrowser.selectedTab;
-      if (!sel) return;
-      let isRelay = false;
+  // Real user tabs only: alive, and not the hidden relay. The just-closed
+  // tab is excluded separately (lastClosedTabs): Firefox keeps a closing tab
+  // in gBrowser.tabs while it tears down, and steering the selection onto that
+  // dying wrapper is exactly the blank-gray-page dead end (with two tabs the
+  // strip is [A, relay, B], so closing B selects the relay and the guard must
+  // NOT "fix" it by selecting B again). We deliberately do NOT filter on
+  // t.closing here: session restore marks EVERY tab closing during its
+  // close-all phase, and treating that as "no real tabs" made the guard open
+  // a command-center tab for each pass, corrupting the restored window.
+  const lastClosedTabs = new Set<any>();
+  function realUserTabs(): any[] {
+    return Array.from(window.gBrowser.tabs).filter((t: any) => {
       try {
-        isRelay = !!(
-          sel.linkedBrowser &&
-          sel.linkedBrowser.currentURI &&
-          sel.linkedBrowser.currentURI.spec.indexOf("relay.html") !== -1
-        );
+        if (Cu && Cu.isDeadWrapper(t)) return false;
+        if (lastClosedTabs.has(t)) return false;
+        const spec =
+          t.linkedBrowser && t.linkedBrowser.currentURI
+            ? t.linkedBrowser.currentURI.spec
+            : "";
+        return spec.indexOf("relay.html") === -1;
+      } catch (e) {
+        return false;
+      }
+    });
+  }
+
+  // Delayed stranded-recovery. When no real tab remains, the window may be
+  // mid-restore (its close-all phase leaves only the relay for a moment) or
+  // genuinely stranded (the user closed the last real tab). Recover on a
+  // delayed pass: if a real tab reappears first (restore proceeded), just
+  // steer; only when the window is STILL relay-only do we open a fresh
+  // command-center tab. One in-flight pass, ever.
+  let recoveryTimer: any = null;
+  function scheduleStrandedRecovery(): void {
+    if (recoveryTimer) return;
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = null;
+      try {
+        const real = realUserTabs();
+        if (real.length) {
+          ensureRealTabSelected(); // restore proceeded — just steer if needed
+          return;
+        }
+        let onlyRelay = true;
+        try {
+          for (const t of Array.from(window.gBrowser.tabs) as any[]) {
+            const spec =
+              t.linkedBrowser && t.linkedBrowser.currentURI
+                ? t.linkedBrowser.currentURI.spec
+                : "";
+            if (spec.indexOf("relay.html") === -1) {
+              onlyRelay = false;
+              break;
+            }
+          }
+        } catch (e) {
+          onlyRelay = false;
+        }
+        if (onlyRelay) {
+          const base = ccBaseUrl();
+          if (base) {
+            const tab = window.gBrowser.addTab(base + "commandcenter.html", {
+              inBackground: false,
+              skipAnimation: true,
+              triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+            });
+            if (tab) window.gBrowser.selectedTab = tab;
+          }
+        }
       } catch (e) {
         // ignore
       }
-      if (!isRelay) return;
-      const real = Array.from(window.gBrowser.tabs).filter((t: any) => {
+    }, 700);
+  }
+
+  // Firefox may select the adjacent tab AFTER a close — which can be the
+  // hidden relay (blank, keys dead) or a wrapper still being torn down
+  // (blank gray content, nothing renderable). Never leave the user stranded:
+  // on the next tick, if the selected tab is not a real user tab, steer to
+  // the last real tab; if no real tab remains, defer to the delayed recovery
+  // (a restore in progress must not be clobbered with a new tab).
+  function ensureRealTabSelected(): void {
+    try {
+      const sel = window.gBrowser.selectedTab;
+      const real = realUserTabs();
+      if (!real.length) {
+        scheduleStrandedRecovery();
+        return;
+      }
+      let selBad = false;
+      try {
+        if (Cu && Cu.isDeadWrapper(sel)) selBad = true;
+      } catch (e) {
+        selBad = true;
+      }
+      if (!selBad) {
         try {
-          return !(
-            t.linkedBrowser &&
-            t.linkedBrowser.currentURI &&
-            t.linkedBrowser.currentURI.spec.indexOf("relay.html") !== -1
-          );
+          const s =
+            sel && sel.linkedBrowser && sel.linkedBrowser.currentURI
+              ? sel.linkedBrowser.currentURI.spec
+              : "";
+          if (s.indexOf("relay.html") !== -1) selBad = true;
         } catch (e) {
-          return false;
+          selBad = true;
         }
+      }
+      if (selBad) window.gBrowser.selectedTab = real[real.length - 1];
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // The 500ms poll alone leaves a window where the relay sits selected after
+  // Firefox auto-selects an adjacent tab on a close (the white flash / blank
+  // dead end). Hook the tab container so selection is corrected on the same
+  // tick. Idempotent; guards against double-hooking.
+  let tabEventsHooked = false;
+  function hookTabSelectionGuard(): void {
+    if (tabEventsHooked) return;
+    tabEventsHooked = true;
+    try {
+      const container = window.gBrowser && window.gBrowser.tabContainer;
+      if (!container) return;
+      container.addEventListener("TabSelect", () => ensureRealTabSelected());
+      container.addEventListener("TabClose", (e: any) => {
+        // Remember the exact tab that closed: while it tears down it still
+        // sits in gBrowser.tabs, and steering onto it is the blank dead end.
+        const closed = e && e.target;
+        if (closed) {
+          lastClosedTabs.add(closed);
+          setTimeout(() => lastClosedTabs.delete(closed), 3000);
+        }
+        // Firefox may select the adjacent tab (possibly the relay or a dying
+        // wrapper) AFTER the close event; steer on the next tick once
+        // selection has settled, and check again once the removal completes.
+        setTimeout(() => {
+          ensureRealTabSelected();
+          setTimeout(() => ensureRealTabSelected(), 250);
+        }, 0);
       });
-      if (real.length) window.gBrowser.selectedTab = real[real.length - 1];
     } catch (e) {
       // ignore
     }
@@ -448,6 +556,7 @@ export function createChannel(deps: ChannelDeps): Channel {
   function startRelay(): boolean {
     if (!ccBaseUrl()) return false;
     let r = resolveRelayTab();
+    hookTabSelectionGuard();
     if (!r) {
       // No relay yet: create the tab; requests queue until it exists.
       createRelayTab();
@@ -455,7 +564,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
     relayReady = true;
     dedupeRelayTabs();
-    keepRelayUnselected();
+    ensureRealTabSelected();
     pollRelayUrl();
     return true;
   }
@@ -622,7 +731,34 @@ export function createChannel(deps: ChannelDeps): Channel {
   }
 
   function handleOpen(target: string, browser: any): void {
-    const closeCc = target.indexOf("c") !== -1;
+    // `.c` marks "close the requesting command-center tab after opening".
+    // Checked by SUFFIX (not contains): the base64 URL payload below can
+    // legitimately contain the letter c.
+    const closeCc = target.endsWith(".c");
+    // `u.<base64url>` opens an arbitrary URL natively (about: pages, which
+    // the tabs API rejects as "Illegal URL", are routed here by the
+    // background). base64 never contains a dot, so the first dot after the
+    // `u.` prefix delimits the payload.
+    if (target.indexOf("u.") === 0) {
+      const rest = target.slice(2);
+      const dot = rest.indexOf(".");
+      const b64 = dot < 0 ? rest : rest.slice(0, dot);
+      try {
+        const url = decodeURIComponent(escape(atob(b64)));
+        if (typeof deps.ops.openUrlNative === "function") deps.ops.openUrlNative(url);
+      } catch (e) {
+        // malformed payload — ignore
+      }
+      if (closeCc && browser) {
+        try {
+          const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
+          if (tab) window.gBrowser.removeTab(tab);
+        } catch (e) {
+          // ignore
+        }
+      }
+      return;
+    }
     const which = target.split(".")[0]!;
     const POPUP_ACTIONS: Record<string, () => void> = {
       search: () => openSearchPopup(deps.ctx),

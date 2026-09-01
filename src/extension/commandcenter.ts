@@ -4,8 +4,10 @@
 // the state store, wires the data/render/keys modules together, and attaches
 // the event listeners. All logic lives in commandcenter/{state,data,render,keys}.
 
+import { mergeConfig } from "../shared/config";
 import { core, ensureCore } from "../shared/core";
 import { send } from "../shared/protocol";
+import type { QuickApp } from "../shared/types";
 import { openItem } from "./commandcenter/data";
 import { createKeyHandler } from "./commandcenter/keys";
 import { createRenderer, type CCRefs } from "./commandcenter/render";
@@ -28,6 +30,23 @@ import { createStore } from "./commandcenter/state";
 
   const store = createStore();
 
+  // Enabled quick-launch apps for the home grid. Kept mutable so a config
+  // change (options page) refreshes the grid live.
+  let apps: QuickApp[] = [];
+  function getApps(): QuickApp[] {
+    return apps;
+  }
+  void browser.storage.local.get("config").then((r: any) => {
+    apps = mergeConfig(r && r.config).apps;
+    renderer.refresh();
+  });
+  browser.storage.onChanged.addListener((changes: any, area: any) => {
+    if (area === "local" && changes.config && changes.config.newValue) {
+      apps = mergeConfig(changes.config.newValue).apps;
+      renderer.refresh();
+    }
+  });
+
   const quick = {
     newTab: () => void send("newTab"),
     reopenTab: () => void send("reopenTab"),
@@ -42,6 +61,7 @@ import { createStore } from "./commandcenter/state";
         browser.runtime.openOptionsPage();
       } catch (e) {}
     },
+    openSetup: () => void send("openSetup"),
     openPage: (url: string) => void send("openPage", { url }),
     setMode: (m: string) => renderer.setMode(m),
     stealthOpen: () => void send("stealthOpen"),
@@ -66,6 +86,7 @@ import { createStore } from "./commandcenter/state";
       updateMovePos: () => renderer.updateMovePos(),
       setStateTag: (l) => renderer.setStateTag(l),
       flashTag: (m) => renderer.flashTag(m),
+      isHome: () => renderer.isHome(),
     },
     focusInput,
   });
@@ -75,6 +96,7 @@ import { createStore } from "./commandcenter/state";
     store,
     quick,
     openItem,
+    getApps,
   });
 
   function focusInput(): void {
@@ -152,17 +174,128 @@ import { createStore } from "./commandcenter/state";
 
   renderer.setMode("search");
   renderer.updateResizeSize();
+
+  // The chrome helper owns `;f` on the home tab when it is in-process (it
+  // owns the leader there). It signals through this event: on the home grid
+  // that arms hint-pick (letter = run tile), in any other mode it focuses the
+  // search box. Out-of-process CC pages arm hint-pick via their own leader.
+  document.addEventListener("lazyfox-find", () => {
+    if (renderer.isHome()) {
+      store.patch({ hintArmed: true });
+      renderer.refresh();
+    } else {
+      focusInput();
+    }
+  });
+
+  // Brand logo: ship the horizontal lockup (icon + wordmark). It is a
+  // transparent SVG so it sits on the page background with no box behind it.
+  try {
+    const logo = document.getElementById("brandLogo");
+    if (logo) {
+      const img = document.createElement("img");
+      img.src = browser.runtime.getURL("lazyfox-logo.svg");
+      img.alt = "Lazyfox";
+      logo.appendChild(img);
+    }
+  } catch (e) {
+    // keep the empty brand area if the logo is unavailable
+  }
+
+  // Footer meta: the active session name (falling back to the active Firefox
+  // profile name, which is always present), Firefox version, Lazyfox version.
+  // The session/profile parts re-render on storage changes; the Firefox version
+  // resolves async and re-renders once known (it used to stay "firefox ?").
+  const meta = document.getElementById("footerMeta");
+  if (meta) {
+    const esc = (s: string) =>
+      s.replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      })[c]!);
+    let fxVer = "firefox ?";
+    try {
+      void browser.runtime
+        .getBrowserInfo()
+        .then((i: any) => {
+          fxVer = "firefox " + (i && i.version ? i.version : "?");
+          refreshMeta();
+        })
+        .catch(() => {});
+    } catch (e) {}
+    const renderMeta = (sess: string, prof: string): void => {
+      const manifest = browser.runtime.getManifest();
+      const parts: string[] = [];
+      if (sess) parts.push("session <b>" + esc(sess) + "</b>");
+      else if (prof) parts.push("profile <b>" + esc(prof) + "</b>");
+      parts.push(fxVer);
+      parts.push("lazyfox " + (manifest && manifest.version ? manifest.version : "?"));
+      meta.innerHTML = parts.join(" &middot; ");
+    };
+    const refreshMeta = (): void => {
+      void browser.storage.local.get(["lfCurrentSession", "lfProfileName"]).then((r: any) => {
+        renderMeta((r && r.lfCurrentSession) || "", (r && r.lfProfileName) || "");
+      });
+    };
+    refreshMeta();
+    browser.storage.onChanged.addListener((changes: any, area: any) => {
+      if (area === "local" && (changes.lfCurrentSession || changes.lfProfileName)) refreshMeta();
+    });
+  }
+
+  // First-run install indicator: once the chrome helper is alive, Lazyfox is
+  // fully installed and the banner stays hidden. Shown (amber) otherwise.
+  const banner = document.getElementById("installBanner");
+  const installBtn = document.getElementById("installGo");
+  function refreshInstallBanner(alive: boolean | undefined): void {
+    if (!banner) return;
+    const missing = alive !== true;
+    banner.classList.toggle("show", missing);
+  }
+  if (installBtn) {
+    installBtn.addEventListener("click", () => void send("openSetup"));
+  }
+  if (banner) {
+    void browser.storage.local.get("chromeAlive").then((r: any) => refreshInstallBanner(r.chromeAlive));
+    browser.storage.onChanged.addListener((changes: any, area: any) => {
+      if (area === "local" && changes.chromeAlive) refreshInstallBanner(!!changes.chromeAlive.newValue);
+    });
+  }
+
   // Warm the Go core off the critical path so the first keystroke's URL-vs-
   // search detection and Enter's URL normalization are instant instead of
   // paying a cold wasm instantiation (the home grid renders regardless).
   void ensureCore().catch(() => {});
-  // Start with the input focused (insert mode): typing works for every key,
-  // including h/j/k/l — hjkl only navigate the grid in command mode (Esc).
-  renderer.setStateTag("insert");
-  focusInput();
+  // Start in COMMAND mode with the input blurred: the home grid is keyboard-
+  // first, so hjkl/arrows navigate the tiles, Enter opens the selection, and
+  // `;` arms the leader (so ;I / ;f and ctrl/shift combos reach their actions)
+  // with no need to click first. Typing any other printable key focuses the
+  // input and starts a search (the key handler drives that).
+  renderer.setStateTag("cmd");
   window.addEventListener("load", () => {
-    focusInput();
-    renderer.setStateTag("insert");
+    renderer.setStateTag("cmd");
+    document.body.classList.add("ready");
+    // Command mode is keyboard-first (hjkl navigate, `;` arms the leader,
+    // `;f` arms hint-pick, Enter opens the selection). A fresh new tab can
+    // leave focus in TWO wrong places: the search input (which silently
+    // switches the page into insert mode) or Firefox's URL bar (which
+    // swallows every key entirely). Blur the input and pull focus onto the
+    // page body — tabindex makes the body focusable — so keys land in the
+    // grid. Typing any printable key re-enters insert mode, so searching
+    // still works.
+    if (document.activeElement === refs.input) refs.input.blur();
+    const body = document.body;
+    try {
+      body.setAttribute("tabindex", "-1");
+      if (document.activeElement !== body) {
+        body.focus({ preventScroll: true });
+      }
+    } catch (e) {
+      try {
+        body.focus();
+      } catch (e2) {
+        // ignore — chrome's TabSelect focus covers this
+      }
+    }
   });
 
   // Stealth home: when this command center is shown inside a stealth tab

@@ -30,8 +30,6 @@ declare const Ci: any;
 declare const ChromeUtils: any;
 declare const ZoomManager: any;
 
-const XHTML = "http://www.w3.org/1999/xhtml";
-
 // Armed close: when ;x would remove the window's LAST tab (closing the whole
 // window), the first press arms a confirmation and a second press within 2.5s
 // actually closes.
@@ -47,6 +45,25 @@ function disarmClose() {
 
 function sysPrincipal() {
   return Services.scriptSecurityManager.getSystemPrincipal();
+}
+
+// Open an arbitrary URL natively (switchToTabHavingURI / addTab). This is the
+// ONLY path that can load about: pages — the tabs API rejects them with
+// "Illegal URL". Used by openTarget for the known chrome pages and by the
+// #lfc=open.u.<b64> channel for arbitrary about: URLs.
+function openUrlNative(url: string): boolean {
+  try {
+    if (typeof (window as any).switchToTabHavingURI === "function") {
+      (window as any).switchToTabHavingURI(url, true, {});
+    } else {
+      const tab = window.gBrowser.addTab(url, { triggeringPrincipal: sysPrincipal() });
+      window.gBrowser.selectedTab = tab;
+    }
+    window.focus();
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 // Real (user) tabs in strip order: skip the split-panel companion and the
@@ -71,15 +88,6 @@ function realTabs(): any[] {
     }
   }
   return out;
-}
-
-function el(tag: string, attrs?: Record<string, string> | null, text?: string | null): HTMLElement {
-  const e = document.createElementNS(XHTML, tag) as HTMLElement;
-  if (attrs) {
-    for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]!);
-  }
-  if (text != null) e.textContent = text;
-  return e;
 }
 
 // Mirrors the Go core's NormalizeUrl (scheme-less input gets https://). Any
@@ -619,21 +627,16 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
         history: "about:history",
         downloads: "about:downloads",
       };
-      const url = ABOUT[which];
+      // which may carry a fragment ("preferences#searchResults") from the
+      // background's prefix-matched about: URL.
+      const fragIdx = which.indexOf("#");
+      const base = fragIdx < 0 ? which : which.slice(0, fragIdx);
+      const frag = fragIdx < 0 ? "" : which.slice(fragIdx);
+      const url = ABOUT[base];
       if (!url) return false;
-      try {
-        if (typeof (window as any).switchToTabHavingURI === "function") {
-          (window as any).switchToTabHavingURI(url, true, {});
-        } else {
-          const tab = window.gBrowser.addTab(url, { triggeringPrincipal: sysPrincipal() });
-          window.gBrowser.selectedTab = tab;
-        }
-        window.focus();
-        return true;
-      } catch (e) {
-        return false;
-      }
+      return openUrlNative(url + frag);
     },
+    openUrlNative: (url: string) => openUrlNative(url),
     // Sessions on chrome-only pages relay through the #lfc=req channel to the
     // extension background (which owns browser.storage).
     listSessions: async (q: string) => {

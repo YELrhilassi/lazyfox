@@ -41,7 +41,9 @@ no `Enter`, nothing to memorize.
   never peeks in.
 
 The leader key works on internal pages too (`about:*`, error pages), so there
-is always a way in.
+is always a way in. Those pages also get the vim scroll keys (`j`/`k`/`d`/`u`,
+`gg`/`G`) and `Esc` unfocuses whatever input holds focus — so a focused
+settings search box never blocks `;g` or the scroll keys.
 
 ## Install
 
@@ -92,23 +94,6 @@ where add-ons cannot run — that one step asks for admin rights **once** (a UAC
 prompt on Windows, `sudo` on Linux). Your profile, bookmarks, history and
 settings are never touched; every file that gets replaced is backed up first.
 
-The interactive installer is one self-contained Go binary built for each OS
-into `installer/bin/`:
-
-```
-lazyfox-install-linux / -darwin / -windows.exe   # signed release installers
-lazyfox-install-dev-linux / -darwin / -windows.exe   # unsigned dev installers
-```
-
-Run the one for your OS with no arguments to open the wizard (auto-detects your
-profile), or target a specific profile directly:
-
-```
-lazyfox-install --mode list
-lazyfox-install --mode install --profile "…" --firefox-dir "…"
-lazyfox-install --mode uninstall --profile "…"
-```
-
 ## Development, testing & Nightly
 
 Lazyfox develops against **Firefox Nightly**. Testing and manual smoke-tests
@@ -127,7 +112,7 @@ gatekeeper. The action runs the moment you press its key; `Esc` just cancels.
 
 | Keys | Action |
 | --- | --- |
-| `; f` | link hints |
+| `; f` | link hints (on the command-center home: hint-pick — every grid tile gets a letter, a key runs that tile) |
 | `; s` / `; S` | web search (new tab / current tab) |
 | `; o` / `; O` | open a URL (new tab / current tab) |
 | `; t` | tab switcher — type to filter |
@@ -163,11 +148,14 @@ The popup footer always shows the keys for what you're doing at the moment.
 ### The command center
 
 `Ctrl+T` (and the startup tab) opens the command center instead of a blank
-new-tab page. The input is focused immediately, so every key just types.
-`1`–`6` (or `Tab`) switch modes — Search · URL · Tabs · History · Bookmarks ·
-Downloads. In the list, `j`/`k` move up and down, `Enter` runs the selection,
-and `;` opens the leader menu from right here. Press `Esc` to leave the input,
-and the list responds to every key again.
+new-tab page. It is keyboard-first: the home grid shows your quick-launch web
+apps and the browser/settings access, and it opens in command mode —
+`h`/`j`/`k`/`l` (or the arrows) move across the tiles, `Enter` runs the
+selection, and `;` arms the leader right here (so `;I`, `;f`, `;n`, … all
+work with no mouse click). Type any letter and the input takes over for a
+search. `1`–`6` (or `Tab`) switch modes — Search · URL · Tabs · History ·
+Bookmarks · Downloads — where `j`/`k` move through the list and `Enter` runs
+it. `Esc` clears back to command mode.
 
 <p align="center">
   <img alt="The command center in tabs mode" src="docs/img/command-center-tabs.png" width="880">
@@ -361,7 +349,7 @@ does not sign it instantly; it starts the review clock. Once AMO approves,
 
 - `npm run submit` — uploads the fresh build to AMO (listed) → starts review.
 - `npm run ship` — the release: merge to master, download the now-**signed** xpi
-  (`scripts/sync-signed-xpi.mjs`), embed it in the release installers, tag
+  (`scripts/sync-signed-xpi.ts`), embed it in the release installers, tag
   `v<version>` and create the GitHub Release.
 
 `ship` is deterministic about the version (it always comes from
@@ -374,15 +362,13 @@ The full release flow (just `bump` → `submit` → wait → `ship`) is document
 in `docs/RELEASING.md`. CI is read-only on both branches: neither workflow
 pushes, tags, or publishes — releases are created by `ship`, exactly once.
 
-```
-
 The end-to-end suite drives a real Firefox over WebDriver BiDi, and the
 screenshots in this README are captured the same way:
 
 ```bash
-node scripts/bidi/test.mjs            # full run
-node scripts/bidi/test.mjs --group sessions
-node scripts/bidi/screenshots.mjs     # writes docs/img/*.png
+node scripts/bidi/test.ts            # full run
+node scripts/bidi/test.ts --group sessions
+node scripts/bidi/screenshots.ts     # writes docs/img/*.png
 ```
 
 Layout of the repo:

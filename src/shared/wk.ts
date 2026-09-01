@@ -99,8 +99,11 @@ export function wkBodyHtml(page: WkPage, sel: number): string {
 }
 
 export function wkFootHtml(pageNum: number, total: number): string {
+  // With a single page (every binding visible) there is nothing to flip;
+  // only show the Tab hint when paging actually exists.
+  const pageHint = total > 1 ? "<span>Tab page</span>" : "";
   return (
-    "<span>\u2191/\u2193 select</span><span>Enter run</span><span>Esc cancel</span>" +
+    "<span>\u2191/\u2193 move</span>" + pageHint + "<span>Enter run</span><span>Esc cancel</span>" +
     "<span class='wk-page'>" + (pageNum + 1) + "/" + total + "</span>"
   );
 }

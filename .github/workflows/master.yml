@@ -33,14 +33,14 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Install dependencies
         run: npm ci
 
       - name: Build release-mode sources (compiles check)
         # RELEASE=1 builds the release-mode dist WITHOUT contacting AMO for the
-        # signed xpi (sync-signed-xpi.mjs reuses the committed signed xpi when
+        # signed xpi (sync-signed-xpi.ts reuses the committed signed xpi when
         # it is already current, so it is offline-safe here).
         run: npm run build:release
 

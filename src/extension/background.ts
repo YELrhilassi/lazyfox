@@ -99,6 +99,12 @@ async function componentsInfo() {
 
 async function openUrl(url: string, newTab: boolean | undefined) {
   if (!url) return { ok: false };
+  // about: pages cannot be navigated with the tabs API (Firefox rejects them
+  // with "Illegal URL" — the tests/probe confirm it), so they always route
+  // through the chrome helper's native opener.
+  if (/^about:/i.test(url)) {
+    return openPage(url);
+  }
   const tab = await getActiveTab();
   if (isCommandCenter(tab)) {
     await browser.tabs.update(tab.id, { url, active: true });
@@ -117,27 +123,41 @@ async function openUrl(url: string, newTab: boolean | undefined) {
 }
 
 async function openPage(url: string) {
-  const target = CHROME_PAGES[url];
   const tab = await getActiveTab();
-  if (target) {
-    const base = CC_URL;
-    if (isCommandCenter(tab)) {
-      await browser.tabs.update(tab.id, {
-        url: base + "#lfc=open." + target,
-        active: true
-      });
-      try {
-        await new Promise((r) => setTimeout(r, 800));
-        const t = await browser.tabs.get(tab.id);
-        if (t.url && t.url.indexOf("#lfc=") !== -1) {
-          await browser.tabs.update(tab.id, { url: t.url.split("#")[0] });
-        }
-      } catch (e) {}
-      return { ok: true, reused: true };
+  const base = CC_URL;
+  // about: pages must be opened by the chrome helper's native opener. Known
+  // pages map to a short key; a fragment (about:preferences#searchResults)
+  // rides along; any other about: URL (about:config, ...) is carried
+  // base64-encoded so the #lfc= hash grammar stays intact.
+  let payload: string | null = null;
+  let target = CHROME_PAGES[url];
+  if (!target) {
+    for (const [key, t] of Object.entries(CHROME_PAGES)) {
+      if (url.startsWith(key)) {
+        target = t + url.slice(key.length);
+        break;
+      }
     }
+  }
+  if (target) {
+    payload = target;
+  } else if (/^about:/i.test(url)) {
+    try {
+      payload = "u." + btoa(unescape(encodeURIComponent(url))).replace(/=+$/, "");
+    } catch (e) {
+      return { ok: false };
+    }
+  }
+  if (payload) {
+    const hash = "#lfc=open." + payload;
+    // Always drive the open through a throwaway `.c` request tab: the chrome
+    // helper opens the about: page natively and removes the throwaway. The
+    // current command-center tab is NEVER navigated, so it keeps its input
+    // and grid state (an in-place #lfc= navigation would reload it and dump
+    // the user back at a fresh home grid).
     await browser.tabs.create({
-      url: base + "#lfc=open." + target + ".c",
-      active: true
+      url: base + hash + ".c",
+      active: false
     });
     return { ok: true };
   }
@@ -507,7 +527,7 @@ function maybeConvertHome(tab: any) {
   return Promise.resolve();
 }
 
-browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
+browser.tabs.onUpdated.addListener((_tabId: number, info: any, tab: any) => {
   if (isRestoring()) return;
   if (info.status === "complete" && tab && tab.active) maybeConvertHome(tab);
 });
@@ -657,7 +677,7 @@ browser.tabs.onCreated.addListener((tab: any) => {
     transientTabIds.add(tab.id);
   }
 });
-browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
+browser.tabs.onUpdated.addListener((tabId: number, _info: any, tab: any) => {
   if (tab && tab.url && tab.url.indexOf("relay.html") !== -1) {
     transientTabIds.add(tabId);
   }
@@ -771,10 +791,18 @@ async function handleRelayReq(action: string, arg: any): Promise<any> {
   if (action !== "alive") markChromeAlive();
   if (action === "alive") {
     markChromeAlive();
-    // The chrome helper announces its own version as the arg; store it so the
-    // options Components panel can report it independently of the extension.
+    // The chrome helper announces its version AND the active profile's
+    // user-facing name + raw directory leaf (\u0001-separated) as the arg.
+    // Store the version so the options Components panel can report it
+    // independently of the extension, and the profile so the command-center
+    // footer and setup page can show which profile is active even before any
+    // session has been saved.
     if (arg) {
-      browser.storage.local.set({ chromeHelperVersion: String(arg) }).catch(() => {});
+      const parts = String(arg).split("\u0001");
+      const set: Record<string, string> = { chromeHelperVersion: parts[0] || "" };
+      if (parts[1]) set.lfProfileName = parts[1];
+      if (parts[2]) set.lfProfileDir = parts[2];
+      browser.storage.local.set(set).catch(() => {});
     }
     // Return a truthy ack so the helper can confirm the announce was really
     // delivered (and stop retrying). Without it the helper could only know a
@@ -941,12 +969,21 @@ browser.runtime.onStartup.addListener(() => {
   void reconcileStealth();
 });
 
-// Open the "complete the installation" page (setup.html) in a new tab. Used by
-// ;I, the chrome-down notifications, and the relay-tab channel from the chrome
-// helper (which cannot call browser.tabs itself).
+// Open the "complete the installation" page (setup.html). Used by ;I, the
+// chrome-down notifications, and the relay-tab channel from the chrome helper
+// (which cannot call browser.tabs itself). From the command-center home the
+// tab is reused in place (like ;o/;h open in place) so ;I never stacks a
+// second extension tab; from a real page a fresh tab opens (replacing the
+// user's page would lose it).
 function openSetupTab(): Promise<{ ok: boolean }> {
-  return browser.tabs
-    .create({ url: browser.runtime.getURL("setup.html"), active: true })
+  const url = browser.runtime.getURL("setup.html");
+  return getActiveTab()
+    .then((t) => {
+      if (t && t.id && isCommandCenter(t)) {
+        return browser.tabs.update(t.id, { url: url, active: true });
+      }
+      return browser.tabs.create({ url: url, active: true });
+    })
     .then(() => ({ ok: true }))
     .catch(() => ({ ok: false, error: "tab failed" } as { ok: boolean }));
 }
@@ -997,6 +1034,17 @@ function checkChromeLayerHealth(): void {
     })
     .catch(() => {});
 }
+
+// The active Firefox profile the extension is running under is stored so the
+// setup page can tell the user which profile the installer will target. The
+// WebExtension context has NO access to the profile directory (Services is
+// not exposed there — verified: "Services is not defined" in extension
+// contexts), so the ONLY source is the chrome helper's alive announce, which
+// carries the user-facing name + raw directory leaf. The raw dir is a folder
+// like "zfdaq0c3.dev-edition-default"; the USER-FACING name is the part after
+// the first dot ("dev-edition-default") — exactly what the installer's
+// profile picker lists. (A store-only install shows the honest placeholder
+// until the chrome layer is installed and announces.)
 
 // Fresh store installs (chrome never announced): offer the full UI once, since
 // the add-on alone is only half of Lazyfox. One-shot via setupNudgeShown so a
@@ -1059,7 +1107,7 @@ browser.tabs.onMoved.addListener(onTabChange);
 browser.tabs.onAttached.addListener(onTabChange);
 browser.tabs.onDetached.addListener(onTabChange);
 browser.tabs.onActivated.addListener(onTabChange);
-browser.tabs.onUpdated.addListener((tabId: number, info: any) => {
+browser.tabs.onUpdated.addListener((_tabId: number, info: any) => {
   if (info.url || info.status === "complete") onTabChange();
 });
 
