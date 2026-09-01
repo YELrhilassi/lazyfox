@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 )
 
@@ -134,12 +135,10 @@ func removeChromeLoader(rc *repoContext, rep StepReporter, o UninstallOptions, p
 	if hostOS() == OSWindows {
 		if !isElevated() {
 			rep.Step("Removing the chrome loader needs administrator rights (one-time UAC prompt).")
-			code, err := elevateSelf("--loader-remove", "--firefox-dir", dir)
-			if err != nil {
+			statusFile := filepath.Join(os.TempDir(), fmt.Sprintf("lazyfox-uac-%d.txt", os.Getpid()))
+			os.Remove(statusFile) // make sure a stale report cannot be read
+			if err := elevateSelf(statusFile, "--loader-remove", "--firefox-dir", dir, "--status", statusFile); err != nil {
 				return err
-			}
-			if code != 0 {
-				return fmt.Errorf("UAC elevation returned exit code %d", code)
 			}
 		} else if removeLoaderFiles(dir) != nil {
 			return errRemovalFailed(pathForRemove(dir))
