@@ -6,6 +6,7 @@
 // dispatcher built from each context's ops adapter) and `enabled()` (whether
 // the overlay is allowed by config).
 import { core } from "./core";
+import { UI_FONT } from "./theme";
 import type { WkItem } from "./types";
 import { WkSession, wkBodyHtml, wkFootHtml } from "./wk";
 
@@ -25,11 +26,11 @@ export function leaderCombo(e: KeyboardEvent): string {
 export const WK_CSS =
   ".wk{position:fixed;right:24px;bottom:30px;z-index:2147483646;" +
   "width:360px;max-width:94vw;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:8px;" +
-  "box-shadow:0 24px 70px rgba(0,0,0,.6);display:none;font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden}" +
+  "box-shadow:0 24px 70px rgba(0,0,0,.6);display:none;font-family:" + UI_FONT + ";overflow:hidden}" +
   ".wk.on{display:block}" +
   ".wk-body{padding:8px 12px 6px;max-height:min(70vh,480px);overflow-y:auto;overscroll-behavior:contain;" +
   "scrollbar-width:thin;scrollbar-color:#414868 transparent}" +
-  ".wk-group{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:#565f89;margin:8px 2px 3px}" +
+  ".wk-group{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#565f89;margin:8px 2px 3px}" +
   ".wk-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px 8px}" +
   ".wk-item{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 6px;border-radius:5px;font-size:12px;cursor:default;line-height:1.25}" +
   ".wk-item>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +

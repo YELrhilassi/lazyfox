@@ -7,13 +7,15 @@
 
 // Style sheet used by both the shadow-DOM popups (content) and the chrome
 // helper's plain-DOM popups (chrome.ts injects the same text into its root).
+import { UI_FONT } from "./theme";
+
 export const PANEL_CSS = `
 .lf-popup{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;
-  justify-content:center;background:rgba(8,8,14,.4);font-family:ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;}
+  justify-content:center;background:rgba(8,8,14,.4);font-family:${UI_FONT};}
 .lf-panel{width:640px;max-width:92vw;max-height:82vh;display:flex;flex-direction:column;overflow:hidden;
   background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;
   box-shadow:0 24px 70px rgba(0,0,0,.6);}
-.lf-title{padding:10px 16px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#7aa2f7;
+.lf-title{padding:10px 16px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7aa2f7;
   border-bottom:1px solid #2a2f45;flex:none;}
 .lf-main{display:flex;flex:1;overflow:hidden;}
 .lf-list{flex:1;overflow-y:auto;padding:4px 0;}
@@ -37,12 +39,12 @@ export const PANEL_CSS = `
 .lf-split{display:flex;flex:1;overflow:hidden;}
 .lf-col{display:flex;flex-direction:column;flex:1 1 50%;min-width:0;border-right:1px solid #2a2f45;}
 .lf-col:last-child{border-right:none;}
-.lf-col-head{padding:6px 14px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#7aa2f7;
+.lf-col-head{padding:6px 14px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#7aa2f7;
   border-bottom:1px solid #2a2f45;flex:none;}
 .lf-tabs{flex:1;overflow-y:auto;padding:4px 0;}
 .lf-tabs .lf-item.active{border-left-color:#9ece6a;}
 .lf-tabs-empty{padding:26px 16px;text-align:center;color:#565f89;font-size:12px;}
-.lf-hgroup{flex:none;padding:10px 16px 4px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#7aa2f7;display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;}
+.lf-hgroup{flex:none;padding:10px 16px 4px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#7aa2f7;display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;}
 .lf-hgroup::before{content:"";width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid #565f89;transition:transform .08s ease;flex:none;}
 .lf-hgroup.lf-collapsed::before{transform:rotate(-90deg);}
 .lf-hgroup:hover{color:#9ece6a;}
@@ -60,7 +62,7 @@ export const PANEL_CSS = `
 .lf-rel .s{display:flex;gap:8px;align-items:center;min-width:0;}
 .lf-detail{flex:none;overflow:hidden;padding:14px 16px 10px;font-size:12px;color:#c0caf5;}
 .lf-related{flex:1;overflow-y:auto;border-top:1px solid #2a2f45;padding:8px 16px 12px;min-height:0;}
-.lf-related-head{padding:8px 2px 4px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#7aa2f7;}
+.lf-related-head{padding:8px 2px 4px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#7aa2f7;}
 .lf-related-empty{padding:16px 2px;color:#565f89;font-size:11px;}
 .lf-detail-title{font-size:14px;line-height:1.3;color:#ffffff;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .lf-detail-host{font-size:11px;color:#2ac3de;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -72,7 +74,7 @@ export const PANEL_CSS = `
 .lf-badge{color:#7aa2f7;}
 .kbd{display:inline-block;min-width:26px;text-align:center;background:#16161e;border:1px solid #414868;
   border-bottom-width:2px;border-radius:5px;padding:1px 7px;margin-right:8px;color:#7aa2f7;font-size:12px;}
-.lf-native-tag{display:inline-block;font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+.lf-native-tag{display:inline-block;font-size:9px;letter-spacing:.06em;text-transform:uppercase;
   background:#292e42;color:#9aa5ce;border-radius:4px;padding:1px 6px;margin-right:8px;vertical-align:1px;}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#7aa2f7;margin-right:6px;}
 .dot.new{background:#9ece6a;border-radius:2px;}
@@ -81,7 +83,7 @@ export const PANEL_CSS = `
 .lf-item.selected.lf-armed{background:#3a1f2a;border-left-color:#f7768e;}
 .lf-item.selected.lf-armed .t{color:#f7768e;}
 .lf-arm{color:#f7768e;font-weight:700;font-size:11px;}
-.dl-state{display:inline-block;font-size:9px;letter-spacing:.08em;text-transform:uppercase;
+.dl-state{display:inline-block;font-size:9px;letter-spacing:.05em;text-transform:uppercase;
   background:#292e42;color:#9aa5ce;border-radius:4px;padding:0 6px;margin-left:8px;vertical-align:1px;}
 .dl-pct{color:#7aa2f7;font-size:12px;margin-left:8px;font-weight:700;}
 .dl-bar{height:3px;background:#16161e;border-radius:2px;margin-top:5px;overflow:hidden;}
@@ -450,7 +452,7 @@ let toastHost: {
 
 const TOAST_CSS = `
 .t{position:fixed;bottom:52px;left:50%;transform:translateX(-50%);z-index:2147483647;
-  background:rgba(22,22,30,.96);color:#c0caf5;font:13px ui-monospace,Menlo,Consolas,monospace;
+  background:rgba(22,22,30,.96);color:#c0caf5;font:13px ${UI_FONT};
   padding:8px 14px;border:1px solid #414868;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.5);
   opacity:0;transition:opacity .12s ease;pointer-events:none;}
 .t.on{opacity:1;}

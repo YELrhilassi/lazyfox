@@ -98,6 +98,31 @@ export async function run(ctx) {
       typeof dump.dl === "string" && dump.dl.indexOf("releases/latest/download/lazyfox-install-") !== -1,
       "Download control targets a GitHub Releases installer asset, got " + dump.dl
     );
+    // Pre-install state (no chrome announce yet): the page must NEVER invent
+    // a profile name ("your current profile" is not a real profile). It shows
+    // an honest label and tells the user how to see the real name themselves
+    // (about:profiles — the one page that works without anything installed).
+    await evalIn(setupCtx.context, `browser.storage.local.remove("lfProfileName").then(() => true)`);
+    await waitFor(async () => {
+      const p = await evalIn(setupCtx.context, `(document.getElementById("profileName") || {}).textContent || ""`);
+      return p === "the profile in use right now" ? true : null;
+    }, 5000);
+    const fb = JSON.parse(
+      await evalIn(setupCtx.context, `JSON.stringify({
+        profileName: (document.getElementById("profileName") || {}).textContent || "",
+        profileDir: (document.getElementById("profileDir") || {}).textContent || "",
+      })`)
+    );
+    assert(
+      fb.profileName === "the profile in use right now",
+      "honest pre-install profile label, got " + JSON.stringify(fb)
+    );
+    assert(
+      typeof fb.profileDir === "string" && fb.profileDir.indexOf("about:profiles") !== -1,
+      "fallback points the user at about:profiles, got " + JSON.stringify(fb)
+    );
+    // Restore the stored name (the chrome helper keeps announcing it).
+    await evalIn(setupCtx.context, `browser.storage.local.set({ lfProfileName: ${JSON.stringify(dump.lfProfileName)} }).then(() => true)`);
     await evalIn(setupCtx.context, `browser.tabs.remove(${setupTab.id})`).catch(() => {});
   });
 
