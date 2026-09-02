@@ -9,6 +9,7 @@
 // The bar is thin (20px) so it never gets in the way of content.
 //
 // Rendered in a closed shadow root so page CSS cannot restyle it.
+import { UI_FONT } from "./theme";
 
 export interface StatusBarSessions {
   marker: number;
@@ -58,7 +59,7 @@ const CSS = `
 .lf-status{position:fixed;left:0;right:0;height:18px;z-index:2147482000;
   display:flex;align-items:stretch;
   background:#1a1b26;color:#c0caf5;
-  font:600 11px/18px ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
+  font:600 11px/18px ${UI_FONT};
   pointer-events:none;user-select:none;}
 .lf-status.top{top:0;border-bottom:1px solid #24283b;}
 .lf-status.bottom{bottom:0;border-top:1px solid #24283b;}

@@ -5,6 +5,7 @@
 // the single `currentPopup` slot so the key dispatcher can route Esc/arrows.
 
 import { PANEL_CSS, type PopupCtl } from "../shared/overlay";
+import { UI_FONT } from "../shared/theme";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 
@@ -76,7 +77,7 @@ export function createPopupHost(): PopupHost {
     const root = el("div");
     root.style.cssText =
       "position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;" +
-      "background:rgba(8,8,14,.4);font-family:ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace";
+      "background:rgba(8,8,14,.4);font-family:" + UI_FONT;
     const hdoc = document.implementation.createHTMLDocument("");
     hdoc.body.innerHTML = html;
     while (hdoc.body.firstChild) root.appendChild(hdoc.body.firstChild);
@@ -142,7 +143,7 @@ export function createPopupHost(): PopupHost {
     const root = el("div");
     root.style.cssText =
       "position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;" +
-      "background:rgba(8,8,14,.4);font-family:ui-monospace,Menlo,Consolas,monospace";
+      "background:rgba(8,8,14,.4);font-family:" + UI_FONT;
     const panel = el("div");
     panel.style.cssText =
       "width:520px;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;" +
