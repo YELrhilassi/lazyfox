@@ -1,6 +1,7 @@
 // Keyboard handling for the options page: Esc-to-back, `;` leader menu and
 // j/k scrolling, plus the window resize/move mini-modes. Sits alongside
 // options.ts (the options.html page loads both bundles).
+import { UI_FONT } from "../shared/theme";
 
 (function () {
   "use strict";
@@ -22,7 +23,7 @@
       const style = document.createElement("style");
       style.textContent =
         "#lazyfox-hud{position:fixed;top:12px;right:12px;z-index:2147483647;" +
-        "background:rgba(22,22,30,.96);color:#7aa2f7;font:12px ui-monospace,Menlo,Consolas,monospace;" +
+        "background:rgba(22,22,30,.96);color:#7aa2f7;font:12px " + UI_FONT + ";" +
         "padding:6px 12px;border:1px solid #414868;border-radius:8px;pointer-events:none;" +
         "box-shadow:0 6px 24px rgba(0,0,0,.5);}";
       const sh = hudEl.attachShadow({ mode: "closed" });

@@ -4,81 +4,7 @@
 <meta charset="utf-8">
 <meta name="color-scheme" content="dark">
 <title>Lazyfox — finish the setup</title>
-<style>
-  :root {
-    --bg: #0e1116; --bg2: #161922; --bg3: #1d2130; --panel: #1a1e2a;
-    --fg: #d3d7e6; --muted: #8a93ad; --sub: #b6bdd6; --accent: #6d8fdb;
-    --green: #8fbf5e; --red: #e07a7a; --border: #262b3d; --border2: #343b54;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--fg);
-    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    padding: 32px 20px 56px;
-  }
-  .wrap { max-width: 920px; margin: 0 auto; }
-  .head { margin-bottom: 22px; }
-  .logo { height: 52px; overflow: hidden; margin-bottom: 14px; }
-  .logo img { height: 100%; width: auto; object-fit: contain; }
-  h1 { font-size: 22px; margin: 0 0 4px; color: var(--fg); font-weight: 680; letter-spacing: -.01em; }
-  .tagline { margin: 0; color: var(--muted); font-size: 13.5px; max-width: 680px; }
-  .card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-    padding: 18px 20px; margin-top: 14px;
-  }
-  .card h2 { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin: 0 0 6px; font-weight: 650; }
-  .card p { color: var(--muted); font-size: 13.5px; margin: 4px 0 0; }
-  .status-line { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--fg); }
-  .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--red); flex: none; }
-  .dot.on { background: var(--green); }
-  #statusCard.ok { border-color: var(--green); }
-  #statusCard.warn { border-color: var(--red); }
-  button, a.dl {
-    display: inline-block; background: var(--accent); color: #0b0e18;
-    border: none; border-radius: 8px; font-family: inherit; font-size: 14px;
-    font-weight: 660; cursor: pointer; text-decoration: none;
-  }
-  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--border2); padding: 8px 16px; }
-  button.ghost:hover { border-color: var(--accent); }
-  .card.status .status-line button { margin-left: auto; }
-  .prof-line { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
-  .pf-icon {
-    flex: none; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
-    font-size: 20px; background: var(--bg2); border: 1px solid var(--border2); border-radius: 10px;
-  }
-  .pf-icon img { width: 22px; height: 22px; object-fit: contain; }
-  #profileName { color: var(--fg); font-weight: 650; font-size: 15px; word-break: break-word; }
-  .muted { color: var(--muted); font-size: 12.5px; }
-  .kbd {
-    display: inline-block; background: var(--bg2); border: 1px solid var(--border2); border-bottom-width: 2px;
-    border-radius: 4px; padding: 1px 7px; color: var(--accent); font-size: 12px;
-    font-family: ui-monospace, Menlo, Consolas, monospace;
-  }
-  .steps { list-style: none; counter-reset: step; margin: 6px 0 0; padding: 0; }
-  .steps li {
-    counter-increment: step; position: relative; padding: 12px 0 12px 44px;
-    border-top: 1px solid var(--border); font-size: 14px; color: var(--fg);
-  }
-  .steps li::before {
-    content: counter(step); position: absolute; left: 0; top: 14px;
-    width: 28px; height: 28px; line-height: 28px; text-align: center;
-    background: var(--bg2); border: 1px solid var(--border2); border-radius: 50%;
-    color: var(--accent); font-weight: 680; font-size: 13px;
-  }
-  .steps li b { color: var(--accent); font-weight: 660; }
-  .steps li p, .steps li .muted { margin: 2px 0 0; font-size: 13px; }
-  .dl { display: inline-block; padding: 10px 20px; margin-top: 4px; }
-  .dl:hover { filter: brightness(1.07); }
-  a { color: var(--accent); }
-  code.cmd {
-    display: inline-block; user-select: all; margin-top: 6px; padding: 9px 13px;
-    background: var(--bg2); border: 1px solid var(--border2); border-radius: 7px;
-    color: var(--accent); font: 570 13px ui-monospace, Menlo, Consolas, "Courier New", monospace;
-    word-break: break-all; white-space: pre-wrap;
-  }
-  .footer { margin-top: 22px; color: var(--muted); font-size: 12.5px; }
-  .footer code { color: var(--sub); }
-</style>
+<link rel="stylesheet" href="setup.css">
 </head>
 <body id="lazyfox-setup">
   <div class="wrap">
@@ -94,12 +20,12 @@
 
     <section class="card">
       <h2>Which profile gets it</h2>
-      <p>The installer asks which Firefox profile to add Lazyfox to. Pick the one below &mdash; it&rsquo;s the profile this window is running on:</p>
+      <p>The installer asks which Firefox profile to add Lazyfox to. It runs on the profile this window is using right now, and that's the one to pick:</p>
       <div class="prof-line">
         <span class="pf-icon">&#x1F5C3;&#xFE0F;</span>
         <div>
           <div id="profileName">loading&#x2026;</div>
-          <div class="muted" id="profileDir">your bookmarks, passwords and other add-ons in it are never touched.</div>
+          <div class="muted" id="profileDir"></div>
         </div>
       </div>
     </section>

@@ -8,6 +8,7 @@ import { copyText } from "../../shared/dom";
 import { toast, type PopupCtl } from "../../shared/overlay";
 import type { ActionOps } from "../../shared/ops";
 import { send } from "../../shared/protocol";
+import { UI_FONT } from "../../shared/theme";
 import type { Config, PopupItem } from "../../shared/types";
 
 export interface ContentPopupShell {
@@ -53,11 +54,11 @@ const FIND_CSS =
   ".lf-popup .lf-panel{pointer-events:auto;width:380px;max-width:94vw;max-height:none;}" +
   ".lf-frow{display:flex;align-items:center;gap:8px;padding:8px 12px;}" +
   ".lf-finput{flex:1;min-width:0;background:#16161e;border:1px solid #414868;border-radius:6px;color:#c0caf5;" +
-  "font:13px ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;padding:5px 9px;outline:none;}" +
+  "font:13px " + UI_FONT + ";padding:5px 9px;outline:none;}" +
   ".lf-finput:focus{border-color:#7aa2f7;}" +
   ".lf-finput.lf-cmd{color:#565f89;}" +
   ".lf-finput.lf-yank{border-color:#e0af68;}" +
-  ".lf-fcount{flex:none;font:700 11px ui-monospace,Menlo,Consolas,monospace;color:#7aa2f7;" +
+  ".lf-fcount{flex:none;font:700 11px " + UI_FONT + ";color:#7aa2f7;" +
   "background:#16161e;border:1px solid #414868;border-radius:6px;padding:3px 8px;min-width:34px;text-align:center;}" +
   ".lf-fcount.zero{color:#f7768e;border-color:#f7768e;}" +
   ".lf-fcount.vis{background:#292e42;border-color:#2ac3de;color:#2ac3de;}" +
@@ -82,9 +83,9 @@ const FIND_HTML =
 
 const RESIZE_CSS =
   ".rz{position:fixed;right:18px;bottom:18px;z-index:2147483647;min-width:320px;" +
-  "background:rgba(20,20,30,.98);color:#c0caf5;font:13px/1.5 ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;" +
+  "background:rgba(20,20,30,.98);color:#c0caf5;font:13px/1.5 " + UI_FONT + ";" +
   "border:1px solid #414868;border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.55);padding:12px 14px}" +
-  ".rz-title{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#565f89;" +
+  ".rz-title{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#565f89;" +
   "border-bottom:1px solid #2a2f45;padding-bottom:8px;margin-bottom:8px}" +
   ".rz-size{font-size:16px;color:#7aa2f7;font-weight:600}" +
   ".rz-keys{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:#9aa5ce}" +

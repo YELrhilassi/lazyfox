@@ -52,14 +52,23 @@ const renderProfile = (): void => {
     const el = $("profileName");
     const dirEl = $("profileDir");
     if (prof) {
+      // The chrome helper announced the active profile (site of the alive
+      // ping) — show the exact name the installer's picker will list.
       el.textContent = prof;
       el.setAttribute("title", "the Firefox profile this window is running on");
       dirEl.textContent = dir
         ? dir + " \u2014 match this name in the installer\u2019s profile list."
         : "match this name in the installer\u2019s profile list.";
     } else {
-      el.textContent = "your current profile";
-      dirEl.textContent = "your bookmarks, passwords and other add-ons in it are never touched.";
+      // Pre-install / no chrome layer: no WebExtension API can read the
+      // active profile's name (Firefox blocks extensions from about:profiles
+      // and from every profile API — verified), so instead of inventing a
+      // name, tell the user how to see the real one themselves.
+      el.textContent = "the profile in use right now";
+      dirEl.textContent =
+        "Its name is revealed once the chrome layer is installed. Until then, type " +
+        "about:profiles in the address bar \u2014 the profile marked \u201cin use\u201d is this one. " +
+        "Pick that name in the installer\u2019s list.";
     }
   }).catch(() => {});
 };
