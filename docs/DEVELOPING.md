@@ -85,3 +85,67 @@ npm run ci
 Don't push to test whether CI passes — run this. The GitHub workflows
 (`dev-nightly.yml`, `master.yml`) run the exact same read-only checks. See
 **docs/CI.md** for details (and how to install the test tools on Void).
+
+---
+
+## When the dev loop misbehaves (checklist)
+
+Most “it broke after I pulled” cases are one of these four. Work down the list.
+
+### 1. Reinstall dependencies after every pull
+
+`package.json` changes between branches, and a stale `node_modules` is the
+usual cause of a wall of type errors that make no sense:
+
+```bash
+npm install
+```
+
+A missing `@types/node` (or any “Cannot find type definition file” error) is
+almost always a stale install, not a real type error.
+
+### 2. esbuild's binary: npm 11 blocks install scripts by default
+
+npm 11 refuses to run package install scripts unless they are approved, so
+**esbuild's `postinstall` (which installs its platform binary) is skipped** and
+`npm run build` fails with a missing/`ENOENT` esbuild binary. Approve it once:
+
+```bash
+npm approve-scripts esbuild      # or: npm approve-scripts --allow-scripts-pending
+npm install
+```
+
+You only need to do this on a machine where the binary is not already present;
+CI and existing checkouts are unaffected.
+
+### 3. Ditch stale generated artifacts before building
+
+`dist/`, `build/`, the wasm, and any generated Go files are **build output**.
+When you switch branches, output from the old branch can linger untracked and
+break a build in a way that looks impossible (we have hit a stale generated
+`core/js/version_gen.go` shadowing the real `version` const, which failed
+`go build ./core/js`). When in doubt:
+
+```bash
+npm run clean && npm run build
+```
+
+`npm run clean` only removes regenerable products; it never touches source.
+
+### 4. The version is one number, everywhere — bump it with the tool
+
+Never hand-edit a version. `npm run bump -- X.Y.Z` updates **all** of it
+(`package.json`, `package-lock.json`, the source manifest, the chrome helper's
+`CHROME_HELPER_VERSION`, and the Go core's `const version`). `npm test`
+fails loudly if any of those drift — which is how we caught the core still
+reporting `0.5.1` long after the extension shipped `0.5.7`.
+
+---
+
+## Which half am I running?
+
+The add-on and the window chrome are separate halves with different capabilities
+(the status bar in particular exists in both, by two different mechanisms). If
+you are unsure what a given checkout is actually doing, read
+**`docs/INSTALLER-ANALYSIS.md`** — it has the full capability matrix and how to
+probe the live state (`npm run probe:chrome`).
