@@ -11,6 +11,8 @@
 //     manifest, then `npm run build` propagates it into dist/extension)
 //   - src/chrome/main.ts                 (CHROME_HELPER_VERSION, surfaced on the
 //     Components page)
+//   - core/js/main.go                    (the Go core's `version`, returned by
+//     core.version() and surfaced in the command center / status bar)
 //
 // The version in dist/extension/manifest.json is DERIVED from src/static during
 // `npm run build`, so it is not edited here — run `npm run build` after bumping
@@ -83,6 +85,23 @@ for (const f of ["package.json", "package-lock.json"]) {
     console.log(`bumped ${path.relative(root, p)} (CHROME_HELPER_VERSION) → ${next}`);
   } else {
     console.warn(`note: no CHROME_HELPER_VERSION in ${p} — left unchanged.`);
+  }
+}
+
+// 5. core/js/main.go: `const version = "x.y.z"` (the Go core's own version).
+// This is a separate, hand-maintained const (not generated), so it MUST be
+// bumped here or the core silently reports an old version forever.
+{
+  const p = path.join(root, "core/js/main.go");
+  if (fs.existsSync(p)) {
+    const s = fs.readFileSync(p, "utf8");
+    const re = /(const version\s*=\s*")[^"]+(")/;
+    if (re.test(s)) {
+      fs.writeFileSync(p, s.replace(re, `$1${next}$2`));
+      console.log(`bumped ${path.relative(root, p)} (core version) → ${next}`);
+    } else {
+      console.warn(`note: no \`const version\` in ${p} — left unchanged.`);
+    }
   }
 }
 

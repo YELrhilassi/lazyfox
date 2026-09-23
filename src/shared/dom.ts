@@ -100,3 +100,22 @@ export function el(tag: string, attrs: Record<string, string> = {}, text = ""): 
   if (text) node.textContent = text;
   return node;
 }
+
+// Mirror a value onto an <html> attribute without ever throwing (a hostile
+// page can make setAttribute fail, and the mirrors are best-effort state for
+// the host/tests). Used by the find widget's data-lf-* state mirrors.
+export function setHtmlAttr(name: string, value: string): void {
+  try {
+    document.documentElement.setAttribute(name, value);
+  } catch (e) {
+    // ignore
+  }
+}
+
+export function removeHtmlAttr(name: string): void {
+  try {
+    document.documentElement.removeAttribute(name);
+  } catch (e) {
+    // ignore
+  }
+}

@@ -423,7 +423,7 @@ func TestLinuxProfileRootsXDGConfig(t *testing.T) {
 		t.Fatalf("expected %q in linuxProfileRoots(): %v", moz, linuxProfileRoots())
 	}
 
-	profs := detectFirefoxProfiles()
+	profs := detectProfilesFromRoots(linuxProfileRoots())
 	if len(profs) != 1 || profs[0].Name != "default" {
 		t.Fatalf("expected 1 default profile from XDG dir, got %+v", profs)
 	}
@@ -456,7 +456,7 @@ Path=bb.default-default
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
 	t.Setenv("HOME", homeDir)
 
-	profs := detectFirefoxProfiles()
+	profs := detectProfilesFromRoots(linuxProfileRoots())
 	if len(profs) != 2 {
 		t.Fatalf("expected exactly 2 profiles (no dupes), got %d: %+v", len(profs), profs)
 	}
