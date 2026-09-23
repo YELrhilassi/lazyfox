@@ -79,16 +79,27 @@ func (p *FirefoxProfile) label() string {
 
 // detectFirefoxProfiles enumerates every Firefox profile on the host.
 func detectFirefoxProfiles() []*FirefoxProfile {
-	var roots []string
+	return detectProfilesFromRoots(platformProfileRoots())
+}
+
+// platformProfileRoots returns the profile base directories for the host OS.
+func platformProfileRoots() []string {
 	switch hostOS() {
 	case OSLinux:
-		roots = linuxProfileRoots()
+		return linuxProfileRoots()
 	case OSMac:
-		roots = macProfileRoots()
+		return macProfileRoots()
 	case OSWindows:
-		roots = windowsProfileRoots()
+		return windowsProfileRoots()
 	}
+	return nil
+}
 
+// detectProfilesFromRoots turns profile base directories into the deduped,
+// enriched, sorted profile list. Split out from detectFirefoxProfiles so tests
+// can drive discovery hermetically (given roots) instead of depending on the
+// host machine's real profile locations.
+func detectProfilesFromRoots(roots []string) []*FirefoxProfile {
 	var out []*FirefoxProfile
 	for _, root := range roots {
 		out = append(out, parseProfilesIni(root)...)

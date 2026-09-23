@@ -51,6 +51,8 @@ Two halves make Lazyfox: the **add-on** (this repo's `dist/extension` — also
 published on addons.mozilla.org as the signed `lazyfox2` add-on) and the
 **profile patch** that physically removes the browser chrome. Firefox will not
 let an add-on write files, so the profile patch is applied by a small installer.
+(For exactly what each half enables — and what the status bar does in each —
+see **[docs/INSTALLER-ANALYSIS.md](docs/INSTALLER-ANALYSIS.md)**.)
 The installer ships the **signed** add-on xpi and installs it verbatim, so both
 setup paths work on **stable** Firefox — no Developer Edition or Nightly needed
 (it is only required if you manually load a *unsigned* dev build from

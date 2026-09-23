@@ -88,4 +88,42 @@ if (setupJs.indexOf("releases/latest/download") === -1) {
   process.exit(1);
 }
 
+// The extension version must be ONE number everywhere. `npm run bump` edits all
+// of these together; this guard catches any place it missed. It is not
+// theoretical: the Go core silently reported 0.5.1 while the extension shipped
+// 0.5.7, because the bump script did not know about core/js/main.go.
+{
+  const read = (p: string): string => readFileSync(join(root, p), "utf8");
+  const jsonVersion = (p: string): string | undefined => {
+    try {
+      return JSON.parse(read(p)).version;
+    } catch (e) {
+      return undefined;
+    }
+  };
+  const match = (text: string, re: RegExp): string | undefined => {
+    const m = text.match(re);
+    return m ? m[1] : undefined;
+  };
+  const versions: Record<string, string | undefined> = {
+    "package.json": jsonVersion("package.json"),
+    "src/static/extension/manifest.json": jsonVersion("src/static/extension/manifest.json"),
+    "dist/extension/manifest.json": jsonVersion("dist/extension/manifest.json"),
+    "src/chrome/main.ts (CHROME_HELPER_VERSION)": match(
+      read("src/chrome/main.ts"),
+      /CHROME_HELPER_VERSION\s*=\s*"([^"]+)"/
+    ),
+    "core/js/main.go (core version)": match(read("core/js/main.go"), /const version\s*=\s*"([^"]+)"/),
+  };
+  const distinct = new Set(Object.values(versions));
+  if (distinct.size !== 1) {
+    console.error("check-dist: the version is not the same everywhere:");
+    for (const [where, v] of Object.entries(versions)) {
+      console.error(`  ${where}: ${v === undefined ? "(not found)" : v}`);
+    }
+    console.error("Run `npm run bump -- <version>` so every place is set at once.");
+    process.exit(1);
+  }
+}
+
 console.log("check-dist: dist/ complete and self-contained.");

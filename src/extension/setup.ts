@@ -40,8 +40,13 @@ const renderStatus = (): void => {
   } else {
     dot.className = "dot";
     card.className = "card status warn";
+    // Name exactly what is missing. The add-on half is running (leader key on
+    // web pages, find/yank, popups), so "half-installed" alone reads as if
+    // nothing works — the real gap is the toolbar-free window chrome.
     txt.textContent =
-      "Lazyfox is only half-installed — follow the three steps below to finish, then come back and check again.";
+      "The add-on is running, but Lazyfox's window chrome is not installed yet. " +
+      "Follow the three steps below to add it — that is what removes the toolbar " +
+      "and puts the status bar on every page — then come back and check again.";
   }
 };
 

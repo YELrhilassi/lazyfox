@@ -14,7 +14,8 @@ import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/
 import { send } from "../../shared/protocol";
 import type { Config } from "../../shared/types";
 import { createLinkHints, focusFirstInput } from "./hints";
-import { createContentOps, type ContentPopupShell } from "./ops";
+import { createContentOps } from "./ops";
+import type { ContentPopupShell } from "./find";
 
 (function () {
   "use strict";
