@@ -195,28 +195,35 @@ func detectFirefoxWindows() []*FirefoxInstall {
 		}
 		out = append(out, &FirefoxInstall{Exec: exe, Flavor: fl})
 	}
-	pf := os.Getenv("ProgramFiles")
-	pf86 := os.Getenv("ProgramFiles(x86)")
-	for _, base := range []string{pf, pf86} {
+	// The channel-specific install directory names Mozilla actually uses
+	// (Developer Edition -> `Firefox Developer Edition`, Nightly ->
+	// `Firefox Nightly`), plus the legacy `Mozilla Firefox *` variants.
+	cands := []struct {
+		rel string
+		fl  flavor
+	}{
+		{"Firefox Developer Edition\\firefox.exe", flavorDeveloper},
+		{"Mozilla Firefox Developer Edition\\firefox.exe", flavorDeveloper},
+		{"Firefox Nightly\\firefox.exe", flavorNightly},
+		{"Mozilla Firefox Nightly\\firefox.exe", flavorNightly},
+		{"Mozilla Firefox\\firefox.exe", flavorStable},
+		{"Firefox\\firefox.exe", flavorStable},
+		{"Mozilla Firefox ESR\\firefox.exe", flavorESR},
+		{"Firefox ESR\\firefox.exe", flavorESR},
+	}
+	for _, base := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LOCALAPPDATA")} {
 		if base == "" {
 			continue
-		}
-		cands := []struct {
-			rel string
-			fl  flavor
-		}{
-			{"Mozilla Firefox Developer Edition\\firefox.exe", flavorDeveloper},
-			{"Mozilla Firefox\\firefox.exe", flavorStable},
-			{"Mozilla Firefox ESR\\firefox.exe", flavorESR},
-			{"Mozilla Firefox Nightly\\firefox.exe", flavorNightly},
 		}
 		for _, c := range cands {
 			add(filepath.Join(base, c.rel), c.fl)
 		}
 	}
-	// Registry installs (HKCU/HKLM) that may differ from the defaults above.
+	// Registry installs (HKCU/HKLM) that may differ from the defaults above —
+	// flavour is inferred from the path so a registered Developer Edition or
+	// Nightly is not mislabelled stable (which would make it the wrong target).
 	for _, exe := range windowsRegistryFirefoxExes() {
-		add(exe, flavorStable)
+		add(exe, describeFlavor(exe))
 	}
 	return out
 }
