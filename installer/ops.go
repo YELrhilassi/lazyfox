@@ -144,7 +144,14 @@ func runInstall(rc *repoContext, rep StepReporter, o InstallOptions, pw Password
 func installExtension(rc *repoContext, rep StepReporter, profileDir string, o InstallOptions) (bool, error) {
 	leftRunning := false
 	var data []byte
+	// The embedded payload is the AMO-signed xpi for a stable-channel build and
+	// the UNSIGNED dev xpi for a nightly-channel build — label it truthfully so
+	// a dev user is never told they installed a "signed" add-on.
+	embeddedUnsigned := parseChannel(embeddedChannel) == channelNightly
 	label := "signed extension"
+	if embeddedUnsigned {
+		label = "unsigned (dev) extension"
+	}
 	if o.XpiPath != "" {
 		d, err := os.ReadFile(o.XpiPath)
 		if err != nil {
@@ -158,10 +165,10 @@ func installExtension(rc *repoContext, rep StepReporter, profileDir string, o In
 	} else {
 		d, err := rc.extensionXpiBytes()
 		if err != nil {
-			return false, fmt.Errorf("signed extension xpi unavailable: %w", err)
+			return false, fmt.Errorf("the embedded %s xpi is unavailable: %w", label, err)
 		}
 		if len(d) == 0 {
-			return false, fmt.Errorf("signed extension xpi is empty")
+			return false, fmt.Errorf("the embedded %s xpi is empty", label)
 		}
 		data = d
 	}

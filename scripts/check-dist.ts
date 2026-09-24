@@ -81,10 +81,13 @@ if (setupHtml.indexOf('src="setup.js"') === -1) {
   process.exit(1);
 }
 // The setup page's logic must offer the GitHub Releases standalone installer
-// download (per-OS asset links are built at runtime in setup.js).
+// download for BOTH channels (per-OS asset links are built at runtime in
+// setup.js): stable -> releases/latest/download, nightly -> releases/download/nightly.
 const setupJs = readFileSync(join(root, "dist/extension/setup.js"), "utf8");
-if (setupJs.indexOf("releases/latest/download") === -1) {
-  console.error("check-dist: setup.js does not link to the GitHub Releases installer.");
+if (setupJs.indexOf("latest/download") === -1 || setupJs.indexOf("download/nightly/") === -1) {
+  console.error(
+    "check-dist: setup.js must link both the stable (latest/download) and nightly (download/nightly) installers."
+  );
   process.exit(1);
 }
 
