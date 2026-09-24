@@ -14,6 +14,10 @@ type UninstallOptions struct {
 	RemoveLoader bool
 	// KeepExtensionDisabledOnly only disables the add-on in extensions.json.
 	KeepExtensionDisabledOnly bool
+	// RemoveDedicated removes a Lazyfox-created dedicated profile entirely
+	// (the profile the installer made when the user's own could not be used).
+	// It never touches a profile the user created.
+	RemoveDedicated bool
 	// ForceLoaderRemove forces removal even if sudo password needed; caller
 	// drives the interactive prompt.
 	NoStop bool
@@ -96,7 +100,19 @@ func runUninstall(rc *repoContext, rep StepReporter, o UninstallOptions, pw Pass
 		}
 	}
 
-	// 6. optional chrome loader removal.
+	// 6. remove a Lazyfox-owned dedicated profile, if this was one.
+	//    Refuses any profile without our ownership marker.
+	if o.RemoveDedicated && isLazyfoxOwnedProfile(profileDir) {
+		if profileLocked(profileDir) || runningForProfile(profileDir) {
+			rep.Warn("the Lazyfox profile %s is still in use; quit Firefox and re-run to remove it.", profileDir)
+		} else if err := removeDedicatedProfile(o.Profile.Root, profileDir); err != nil {
+			rep.Warn("could not remove the Lazyfox profile: %v", err)
+		} else {
+			rep.Step("Removed the dedicated Lazyfox profile %s (and its profiles.ini entry)", filepath.Base(profileDir))
+		}
+	}
+
+	// 7. optional chrome loader removal.
 	if o.RemoveLoader {
 		if err := removeChromeLoader(rc, rep, o, pw); err != nil {
 			rep.Warn("Chrome loader was not removed (%v).", err)

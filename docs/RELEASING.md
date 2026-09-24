@@ -29,6 +29,21 @@ npm run ship                 # (3) the release: merge to master, sync signed xpi
                              # rebuild release installers, tag, GitHub Release
 ```
 
+And, anytime you want to refresh the **dev channel** (no AMO, no master, no
+review) — so Developer Edition / Nightly users get the newest build from the
+setup page:
+
+```
+npm run build && npm run build:installers   # unsigned xpi + dev installers
+npm run ship:nightly                        # (re)publish the `nightly` prerelease
+```
+
+`ship:nightly` updates the rolling GitHub prerelease tagged `nightly` in place
+with the dev installers and the unsigned xpi. It is completely independent of
+the signed release: it never touches `master`, never needs AMO, and is safe to
+run as often as you like. The setup page points Developer Edition / Nightly at
+this prerelease and stable Firefox at `releases/latest`.
+
 ### 1 · `npm run bump -- X.Y.Z`
 
 Updates the version in every tracked place at once (`package.json`,
@@ -123,10 +138,14 @@ CI, no permission gymnastics.
 
 ## Installer binaries — dev vs release
 
-| Binary | Embedded payload | Built by |
-|--------|------------------|----------|
-| `installer/bin/lazyfox-install-{linux,darwin,windows.exe}` | **signed** xpi | `npm run ship` (release) |
-| `installer/bin/lazyfox-install-dev-{linux,darwin,windows.exe}` | **unsigned** xpi | `npm run submit` (dev) |
+| Binary | Channel | Embedded payload | Targets | Built & published by |
+|--------|---------|------------------|---------|----------------------|
+| `installer/bin/lazyfox-install-{linux,darwin,windows.exe}` | **stable** | **signed** xpi | stable / ESR | `npm run ship` → GitHub Release (`releases/latest`) |
+| `installer/bin/lazyfox-install-dev-{linux,darwin,windows.exe}` | **nightly** | **unsigned** xpi | Developer Edition / Nightly | `npm run build:installers` + `npm run ship:nightly` → `nightly` prerelease |
+
+The installer auto-detects the Firefox of its channel, the profile that Firefox
+is actually using (no prompting), and falls back to a dedicated Lazyfox-owned
+profile if the user's own cannot be used. See `docs/INSTALLER-ANALYSIS.md`.
 
 ## CLI reference
 
@@ -137,6 +156,7 @@ CI, no permission gymnastics.
 | `npm run dev-install` / `dev-install:clean` | Daily dev | Build + install the unsigned build into a fresh Nightly/Dev profile. |
 | `npm run submit` | Publish a version to AMO | Uploads the unsigned build as a listed version + rebuilds dev installers. |
 | `npm run ship` | **Release** (after AMO signs) | Merge to master, sync signed xpi, rebuild release installers, tag, push, GitHub Release. |
+| `npm run ship:nightly` | **Dev channel refresh** (any time) | (Re)publish the rolling `nightly` prerelease with the dev installers + unsigned xpi. No AMO, no master. |
 | `npm run ci` | Before pushing | Run the local CI (compile + unit suite). |
 | `npm test` / `npm run verify` | Quick check | Unit suite / typecheck+suite. |
 | `npm run clean` | Free-space/rebuild | Remove regenerable build products. |

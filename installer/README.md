@@ -7,11 +7,43 @@ set of operations:
 |-------|------|----------|
 | `guiStart` (`gui_windows.go`) | interactive, default | Windows |
 | `runTUI` (`tui_*.go`) | interactive with `--tui`, or Unix | all |
-| `--mode install/uninstall/…` (`cli.go` → `runNonInteractive`) | scripted | all |
+| `--mode auto/install/uninstall/…` (`cli.go` → `runNonInteractive`) | scripted | all |
 
 The pieces share `runInstall` / `runUninstall` / `InstallChromeLoader`
 (`ops*.go`) so every front-end behaves identically: same profile detection,
 same backups, same steps.
+
+## Channels — one binary, one channel
+
+Each binary is stamped with a channel at build time
+(`-X main.embeddedChannel=stable|nightly`, see `build.ts` / `build-dev-installers.ts`):
+
+| Channel | Embeds | Targets | Built by |
+|---------|--------|---------|----------|
+| `stable` | AMO-**signed** xpi | stable / ESR Firefox | `npm run ship` |
+| `nightly` | **unsigned** dev xpi | Developer Edition / Nightly | `npm run build:installers` |
+
+The channel decides which Firefox the installer prefers and which add-on it
+carries, so a Nightly user is never handed the older signed stable build.
+`--channel` overrides it for testing; `--mode list` prints it.
+
+## `--mode auto` — the hands-off install (zero prompts)
+
+The path the public one-click flow uses (`auto.go`):
+
+1. **Firefox** — the install matching the channel, preferring one that has a
+   profile, then the most recently used (`target.go`). `--firefox-dir` overrides.
+2. **Profile** — the one Firefox is actually using: the currently-locked
+   profile, else the install's `Default=` pin, else the most recently used. The
+   user is never asked to pick a profile.
+3. **Fallback** — if the real profile is locked/unwritable or the install does
+   not verify, a **dedicated Lazyfox-owned profile** is created, registered and
+   pinned (`<8hex>.lazyfox[-nightly]`, marked with `.lazyfox-profile`).
+4. **Verify** — `verifyInstall` checks the xpi, `chrome/*` and `user.js` landed,
+   and reports the add-on as pending-enable (imported on next launch) instead of
+   falsely claiming success (`target.go`).
+5. **Uninstall** — removes the Lazyfox-owned profile (only one carrying the
+   marker) and its `profiles.ini` entries; `--keep-profile` opts out.
 
 ## Layout
 
@@ -64,7 +96,10 @@ For the Windows target both paths:
   (`scripts/test-installer.ts`) so the walk GUI can't silently rot — the GUI
   is behind a `windows` build tag and never compiled by the unit tests alone.
 - Unit tests live in `installer_test.go` (profiles.ini parsing, flag
-  translation, manifest shape, exec/CLI helpers).
+  translation, manifest shape, exec/CLI helpers) and `target_test.go`
+  (channel/profile selection, dedicated-profile create/remove). Profile
+  discovery reads through a `detectProfilesFromRoots(root)` test seam so the
+  tests are hermetic on every OS instead of reading the host's real profiles.
 
 ## Design notes
 

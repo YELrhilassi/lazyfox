@@ -16,16 +16,43 @@ const osName = (os: string): string => {
   return os;
 };
 
-// Asset name of the standalone installer on GitHub Releases, per platform.
-const ASSET: Record<string, string> = {
+// Asset name of the standalone installer on GitHub Releases, per platform, for
+// each channel. Stable Firefox gets the AMO-signed build from `releases/latest`;
+// Developer Edition / Nightly gets the unsigned dev build from the rolling
+// `nightly` prerelease (which embeds the unsigned xpi and targets dev Firefox).
+const ASSET_STABLE: Record<string, string> = {
   win: "lazyfox-install-windows.exe",
   mac: "lazyfox-install-darwin",
   linux: "lazyfox-install-linux",
 };
+const ASSET_NIGHTLY: Record<string, string> = {
+  win: "lazyfox-install-dev-windows.exe",
+  mac: "lazyfox-install-dev-darwin",
+  linux: "lazyfox-install-dev-linux",
+};
 
-// The latest-release download URL for a given asset.
-const releaseUrl = (asset: string): string =>
-  "https://github.com/YELrhilassi/lazyfox/releases/latest/download/" + asset;
+const REPO_URL = "https://github.com/YELrhilassi/lazyfox/releases/";
+const releaseUrl = (asset: string, nightly: boolean): string =>
+  nightly
+    ? REPO_URL + "download/nightly/" + asset
+    : REPO_URL + "latest/download/" + asset;
+
+// detectChannel reads the running Firefox's version: Developer Edition builds
+// carry a `b` (e.g. 117.0b3), Nightly carries `a1` (e.g. 118.0a1), stable/ESR
+// carry neither. A WebExtension cannot otherwise tell the channel apart, and
+// this is exactly what decides which installer the user needs.
+type FirefoxChannel = "stable" | "nightly";
+const detectChannel = async (): Promise<{ channel: FirefoxChannel; label: string }> => {
+  try {
+    const info = await browser.runtime.getBrowserInfo();
+    const v = String(info.version || "");
+    if (/a\d+$/.test(v)) return { channel: "nightly", label: "Nightly" };
+    if (/b\d+$/.test(v)) return { channel: "nightly", label: "Developer Edition" };
+    return { channel: "stable", label: "stable Firefox" };
+  } catch (e) {
+    return { channel: "stable", label: "stable Firefox" };
+  }
+};
 
 let alive = false;
 
@@ -62,18 +89,17 @@ const renderProfile = (): void => {
       el.textContent = prof;
       el.setAttribute("title", "the Firefox profile this window is running on");
       dirEl.textContent = dir
-        ? dir + " \u2014 match this name in the installer\u2019s profile list."
-        : "match this name in the installer\u2019s profile list.";
+        ? dir + " \u2014 the installer detects this profile automatically."
+        : "the installer detects this profile automatically.";
     } else {
       // Pre-install / no chrome layer: no WebExtension API can read the
       // active profile's name (Firefox blocks extensions from about:profiles
       // and from every profile API — verified), so instead of inventing a
       // name, tell the user how to see the real one themselves.
-      el.textContent = "the profile in use right now";
+      el.textContent = "detected automatically";
       dirEl.textContent =
-        "Its name is revealed once the chrome layer is installed. Until then, type " +
-        "about:profiles in the address bar \u2014 the profile marked \u201cin use\u201d is this one. " +
-        "Pick that name in the installer\u2019s list.";
+        "You do not need to know or pick your profile \u2014 the installer finds the " +
+        "profile Firefox is using and installs there, with no prompting.";
     }
   }).catch(() => {});
 };
@@ -89,20 +115,33 @@ const renderProfile = (): void => {
 
   const info = await browser.runtime.getPlatformInfo();
   const os = info.os;
-  const asset: string = ASSET[os] || "lazyfox-install-linux";
+  const { channel, label } = await detectChannel();
+  const nightly = channel === "nightly";
+  const suffix = nightly ? "-dev" : "";
+  const asset: string = (nightly ? ASSET_NIGHTLY : ASSET_STABLE)[os] || "lazyfox-install" + suffix + "-linux";
   $("osName").textContent = osName(os);
   $("osName2").textContent = osName(os);
 
   const dl = $("dl") as HTMLAnchorElement;
-  dl.href = releaseUrl(asset);
+  dl.href = releaseUrl(asset, nightly);
   dl.textContent = "Download the installer for " + osName(os);
+
+  // Tell the user which channel we matched, so a Nightly user is never puzzled
+  // about why they got the dev build (and vice versa).
+  const chNote = $("channelNote");
+  if (chNote) {
+    chNote.textContent = nightly
+      ? "Detected " + label + " — this is the unsigned dev installer that targets Developer Edition / Nightly."
+      : "Detected stable Firefox — this is the AMO-signed installer for stable releases.";
+  }
 
   // The actual command to run the self-contained installer, per OS. macOS
   // needs a Gatekeeper bypass on first launch because the binary is unsigned.
+  const bin = (p: string): string => "lazyfox-install" + suffix + p;
   const runCmd: Record<string, string> = {
-    linux: "chmod +x lazyfox-install-linux\n./lazyfox-install-linux",
-    mac: "chmod +x lazyfox-install-darwin\nxattr -d com.apple.quarantine lazyfox-install-darwin 2>/dev/null || true\n./lazyfox-install-darwin",
-    win: "lazyfox-install-windows.exe",
+    linux: "chmod +x " + bin("-linux") + "\n./" + bin("-linux"),
+    mac: "chmod +x " + bin("-darwin") + "\nxattr -d com.apple.quarantine " + bin("-darwin") + " 2>/dev/null || true\n./" + bin("-darwin"),
+    win: bin("-windows.exe"),
   };
   $("runCmd").textContent = runCmd[os] || runCmd.linux || "";
 

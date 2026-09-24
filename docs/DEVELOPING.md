@@ -59,6 +59,29 @@ That's why there are two installer families:
 `installer/bin/lazyfox-install-*` (release, signed embed) and
 `installer/bin/lazyfox-install-dev-*` (dev, unsigned embed).
 
+### The dev channel is fully self-service (no AMO, no waiting)
+
+Development never waits on Firefox review. To put the newest unsigned build in
+front of Developer Edition / Nightly users — and to exercise the installer from
+the setup page exactly as those users do:
+
+```bash
+npm run build && npm run build:installers   # unsigned xpi + dev installers (channel=nightly)
+npm run ship:nightly                        # (re)publish the rolling `nightly` prerelease
+```
+
+`ship:nightly` never touches `master` and needs no AMO credentials. The `;I`
+setup page detects the running Firefox (`a1` → Nightly, `b` → Developer
+Edition) and links Nightly/Dev users at this prerelease, stable users at
+`releases/latest`. So both audiences always get the build that matches their
+browser — see `docs/INSTALLER-ANALYSIS.md`.
+
+The `--mode auto` installer (what that page's download runs) needs no decisions:
+it picks the channel-matched Firefox, the profile Firefox is actually using,
+and falls back to a dedicated Lazyfox-owned profile if necessary — then verifies
+what it wrote. `npm run build:installers` also stamps the channel into the
+binary, so a dev installer refuses to masquerade as a signed one.
+
 ---
 
 ## One-line summary of every npm command

@@ -72,6 +72,8 @@ export async function run(ctx) {
         profileName: (document.getElementById("profileName") || {}).textContent || "",
         profileDir: (document.getElementById("profileDir") || {}).textContent || "",
         runCmd: (document.getElementById("runCmd") || {}).textContent || "",
+        chNote: (document.getElementById("channelNote") || {}).textContent || "",
+        ver: await browser.runtime.getBrowserInfo().then(i => String(i.version || "")).catch(() => ""),
         lfProfileName: (await browser.storage.local.get("lfProfileName").then(r => r && r.lfProfileName).catch(() => null)) || null,
         alive: await browser.storage.local.get("chromeAlive").then(r => !!r.chromeAlive).catch(() => null),
       });
@@ -94,9 +96,25 @@ export async function run(ctx) {
       dump.lfProfileName && dump.profileName.indexOf(dump.lfProfileName) !== -1,
       "shown name matches the stored active profile (" + JSON.stringify(dump.lfProfileName) + ")"
     );
+    // The installer link is channel-aware: Developer Edition / Nightly builds
+    // (the e2e browser) must be pointed at the rolling `nightly` prerelease's
+    // dev installer, stable at releases/latest. This is the core of the
+    // "dev Firefox gets the dev installer" behaviour.
+    const isDev = /[ab]\d+$/.test(dump.ver);
+    const wantPath = isDev
+      ? "releases/download/nightly/lazyfox-install-dev-"
+      : "releases/latest/download/lazyfox-install-";
     assert(
-      typeof dump.dl === "string" && dump.dl.indexOf("releases/latest/download/lazyfox-install-") !== -1,
-      "Download control targets a GitHub Releases installer asset, got " + dump.dl
+      typeof dump.dl === "string" && dump.dl.indexOf(wantPath) !== -1,
+      "Download control targets the " + (isDev ? "nightly" : "stable") + " installer asset (Firefox " + dump.ver + "), got " + dump.dl
+    );
+    assert(
+      typeof dump.chNote === "string" && dump.chNote.length > 0,
+      "channel note is shown so the user knows which build they got, got " + JSON.stringify(dump.chNote)
+    );
+    assert(
+      typeof dump.runCmd === "string" && dump.runCmd.indexOf(isDev ? "lazyfox-install-dev-" : "lazyfox-install-") !== -1,
+      "run command names the channel-correct binary, got " + JSON.stringify(dump.runCmd)
     );
     // Pre-install state (no chrome announce yet): the page must NEVER invent
     // a profile name ("your current profile" is not a real profile). It shows
@@ -105,7 +123,7 @@ export async function run(ctx) {
     await evalIn(setupCtx.context, `browser.storage.local.remove("lfProfileName").then(() => true)`);
     await waitFor(async () => {
       const p = await evalIn(setupCtx.context, `(document.getElementById("profileName") || {}).textContent || ""`);
-      return p === "the profile in use right now" ? true : null;
+      return p === "detected automatically" ? true : null;
     }, 5000);
     const fb = JSON.parse(
       await evalIn(setupCtx.context, `JSON.stringify({
@@ -114,12 +132,12 @@ export async function run(ctx) {
       })`)
     );
     assert(
-      fb.profileName === "the profile in use right now",
-      "honest pre-install profile label, got " + JSON.stringify(fb)
+      fb.profileName === "detected automatically",
+      "pre-install profile is shown as auto-detected (no hand-matching), got " + JSON.stringify(fb)
     );
     assert(
-      typeof fb.profileDir === "string" && fb.profileDir.indexOf("about:profiles") !== -1,
-      "fallback points the user at about:profiles, got " + JSON.stringify(fb)
+      typeof fb.profileDir === "string" && fb.profileDir.indexOf("installer finds") !== -1,
+      "fallback reassures the user the installer finds the profile, got " + JSON.stringify(fb)
     );
     // Restore the stored name (the chrome helper keeps announcing it).
     await evalIn(setupCtx.context, `browser.storage.local.set({ lfProfileName: ${JSON.stringify(dump.lfProfileName)} }).then(() => true)`);
