@@ -21,31 +21,48 @@ import (
 func windowsRegistryFirefoxExes() []string {
 	var exes []string
 	roots := []registry.Key{registry.CURRENT_USER, registry.LOCAL_MACHINE}
-	baseKeys := []string{
-		`Software\Mozilla\Mozilla Firefox`,
-		`Software\Mozilla\Mozilla Firefox Developer Edition`,
-		`Software\Mozilla\Mozilla Firefox ESR`,
-		`Software\Mozilla\Mozilla Firefox Nightly`,
+	// `Software\Mozilla` holds one key per Firefox family, named by flavour:
+	// `Mozilla Firefox` (stable), `Firefox Developer Edition`, `Firefox Nightly`,
+	// `Firefox ESR`, plus a generic `Firefox` key. The family key has a version
+	// subkey (e.g. `157.0 (x64 en-CA)`) whose `Main\PathToExe` is the binary — the
+	// exact names differ per channel, so enumerate instead of hardcoding them.
+	parents := []string{
+		`Software\Mozilla`,
+		`Software\WOW6432Node\Mozilla`,
 	}
+	seen := map[string]bool{}
 	for _, root := range roots {
-		for _, key := range baseKeys {
-			k, err := registry.OpenKey(root, key, registry.QUERY_VALUE|registry.ENUMERATE_SUB_KEYS)
+		for _, parent := range parents {
+			pk, err := registry.OpenKey(root, parent, registry.ENUMERATE_SUB_KEYS)
 			if err != nil {
 				continue
 			}
-			names, _ := k.ReadSubKeyNames(0)
-			for _, n := range names {
-				vk, err := registry.OpenKey(root, key+`\`+n+`\Main`, registry.QUERY_VALUE)
+			families, _ := pk.ReadSubKeyNames(0)
+			pk.Close()
+			for _, family := range families {
+				if !strings.Contains(strings.ToLower(family), "firefox") {
+					continue
+				}
+				key := parent + `\` + family
+				fk, err := registry.OpenKey(root, key, registry.ENUMERATE_SUB_KEYS)
 				if err != nil {
 					continue
 				}
-				path, _, err := vk.GetStringValue("PathToExe")
-				vk.Close()
-				if err == nil && path != "" {
-					exes = append(exes, path)
+				versions, _ := fk.ReadSubKeyNames(0)
+				fk.Close()
+				for _, v := range versions {
+					vk, err := registry.OpenKey(root, key+`\`+v+`\Main`, registry.QUERY_VALUE)
+					if err != nil {
+						continue
+					}
+					path, _, err := vk.GetStringValue("PathToExe")
+					vk.Close()
+					if err == nil && path != "" && !seen[strings.ToLower(path)] {
+						seen[strings.ToLower(path)] = true
+						exes = append(exes, path)
+					}
 				}
 			}
-			k.Close()
 		}
 	}
 	return exes

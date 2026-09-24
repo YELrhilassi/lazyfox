@@ -31,6 +31,31 @@ func TestChannelParsingAndNames(t *testing.T) {
 	}
 }
 
+// TestDescribeFlavorRealInstallPaths guards the detection fix: the Windows
+// install directories Mozilla actually uses (`Firefox Developer Edition`,
+// `Firefox Nightly`) must classify correctly, or a nightly installer would
+// silently target the wrong (or no) Firefox.
+func TestDescribeFlavorRealInstallPaths(t *testing.T) {
+	cases := []struct {
+		path string
+		want flavor
+	}{
+		{`C:\Program Files\Firefox Developer Edition\firefox.exe`, flavorDeveloper},
+		{`C:\Program Files\Mozilla Firefox Developer Edition\firefox.exe`, flavorDeveloper},
+		{`C:\Program Files\Firefox Nightly\firefox.exe`, flavorNightly},
+		{`C:\Program Files\Mozilla Firefox Nightly\firefox.exe`, flavorNightly},
+		{`C:\Program Files\Mozilla Firefox\firefox.exe`, flavorStable},
+		{`C:\Program Files\Firefox\firefox.exe`, flavorStable},
+		{`C:\Program Files\Mozilla Firefox ESR\firefox.exe`, flavorESR},
+		{`/usr/lib/firefox-developer-edition/firefox`, flavorDeveloper},
+	}
+	for _, c := range cases {
+		if got := describeFlavor(c.path); got != c.want {
+			t.Errorf("describeFlavor(%q) = %s, want %s", c.path, got, c.want)
+		}
+	}
+}
+
 func TestChannelMatchesOnlyItsFlavors(t *testing.T) {
 	if !channelNightly.matches(flavorDeveloper) || !channelNightly.matches(flavorNightly) {
 		t.Fatal("nightly channel must match Developer Edition and Nightly")
