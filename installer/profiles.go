@@ -161,17 +161,38 @@ func detectProfilesFromRoots(roots []string) []*FirefoxProfile {
 	return out
 }
 
-// pickDefaultProfile returns the single best default profile.
+// pickDefaultProfile returns the single best profile for the wizard to pre-select,
+// using the strongest available signal rather than the first row (the old
+// behaviour returned whatever happened to be first and could land on the wrong
+// profile):
+//
+//  1. a profile Firefox is running right now (locked) — unambiguously in use,
+//  2. the install's Default= pin,
+//  3. a profile Lazyfox is already installed in (re-install lands where it was),
+//  4. the most recently used profile.
 func pickDefaultProfile(profiles []*FirefoxProfile) *FirefoxProfile {
-	for _, p := range profiles {
-		if p.Dev || p.HasLazyfox || p.IsDefault {
-			return p
+	if len(profiles) == 0 {
+		return nil
+	}
+	best := func(match func(*FirefoxProfile) bool) *FirefoxProfile {
+		var picked *FirefoxProfile
+		for _, p := range profiles {
+			if match(p) && (picked == nil || p.LastUsed.After(picked.LastUsed)) {
+				picked = p
+			}
 		}
+		return picked
 	}
-	if len(profiles) > 0 {
-		return profiles[0]
+	if p := best(func(p *FirefoxProfile) bool { return p.Locked }); p != nil {
+		return p
 	}
-	return nil
+	if p := best(func(p *FirefoxProfile) bool { return p.IsDefault }); p != nil {
+		return p
+	}
+	if p := best(func(p *FirefoxProfile) bool { return p.HasLazyfox }); p != nil {
+		return p
+	}
+	return best(func(*FirefoxProfile) bool { return true })
 }
 
 // profileCompatibilityInfo reads compatibility.ini and returns (version,

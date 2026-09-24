@@ -56,6 +56,42 @@ func TestDescribeFlavorRealInstallPaths(t *testing.T) {
 	}
 }
 
+// TestPickDefaultProfilePrefersRealSignals guards the wizard pre-selection: it
+// must land on the profile Firefox is actually using (locked), not the first row.
+func TestPickDefaultProfilePrefersRealSignals(t *testing.T) {
+	now := time.Now()
+	mk := func(name string, locked, isDefault, hasLazyfox bool, ago time.Duration) *FirefoxProfile {
+		return &FirefoxProfile{
+			Name:       name,
+			Dir:        "/p/" + name,
+			Locked:     locked,
+			IsDefault:  isDefault,
+			HasLazyfox: hasLazyfox,
+			LastUsed:   now.Add(-ago),
+		}
+	}
+	other := mk("other", false, false, false, time.Minute) // first row, newest
+	locked := mk("locked", true, false, false, time.Hour)  // in use right now (older)
+	def := mk("default", false, true, false, 2*time.Hour)  // pin (even older)
+	lazy := mk("lazyfox", false, false, true, 3*time.Hour) // already installed
+
+	if got := pickDefaultProfile([]*FirefoxProfile{other, def, lazy, locked}); got != locked {
+		t.Fatalf("locked profile should win, got %q", got.Name)
+	}
+	if got := pickDefaultProfile([]*FirefoxProfile{other, def, lazy}); got != def {
+		t.Fatalf("Default= pin should win without a locked profile, got %q", got.Name)
+	}
+	if got := pickDefaultProfile([]*FirefoxProfile{other, lazy}); got != lazy {
+		t.Fatalf("Lazyfox-installed profile should win next, got %q", got.Name)
+	}
+	if got := pickDefaultProfile([]*FirefoxProfile{other}); got != other {
+		t.Fatalf("fallback should be the most recently used profile, got %q", got.Name)
+	}
+	if pickDefaultProfile(nil) != nil {
+		t.Fatal("nil profiles should yield nil")
+	}
+}
+
 func TestChannelMatchesOnlyItsFlavors(t *testing.T) {
 	if !channelNightly.matches(flavorDeveloper) || !channelNightly.matches(flavorNightly) {
 		t.Fatal("nightly channel must match Developer Edition and Nightly")
