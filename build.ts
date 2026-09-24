@@ -239,7 +239,10 @@ for (const t of INSTALLER_TARGETS) {
   // resource (go-winres) and link as a GUI-subsystem binary so double-clicking
   // opens the wizard instead of flashing a console window. Best-effort: a
   // missing resource degrades to the default icon, not a build failure.
-  let ldflags = "-s -w";
+  // Stamp the channel: these are the RELEASE installers, so they carry the
+  // AMO-signed build and target stable Firefox. The dev installers
+  // (scripts/build-dev-installers.ts) stamp "nightly" instead.
+  let ldflags = "-s -w -X main.embeddedChannel=stable";
   if (t.goos === "windows") {
     buildWinRes(join(root, "installer"), extensionVersion);
     ldflags += " -H windowsgui";

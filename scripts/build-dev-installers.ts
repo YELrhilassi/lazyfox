@@ -99,7 +99,10 @@ for (const t of TARGETS) {
   // Windows links the interactive GUI wizard (GUI subsystem so double-click
   // opens the wizard, not a console flash) and embeds its manifest/icon
   // resource via go-winres (best-effort: missing resource -> default icon).
-  let ldflags = "-s -w";
+  // Stamp the channel: these are the DEV installers (unsigned xpi embed), so
+  // they target Developer Edition / Nightly. The release installers
+  // (build.ts) stamp "stable" instead.
+  let ldflags = "-s -w -X main.embeddedChannel=nightly";
   if (t.goos === "windows") {
     buildWinRes(installerDir, latestUnsignedXpiVersion);
     ldflags += " -H windowsgui";

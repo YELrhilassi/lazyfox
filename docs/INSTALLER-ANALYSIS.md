@@ -145,6 +145,57 @@ Development is deliberately outside both gates: an **unsigned** dev build loads
 from `about:debugging` on **Nightly / Developer Edition** with no review, and
 `npm run dev-install` wires that up automatically. See `docs/DEVELOPING.md`.
 
+## One installer per channel — stable vs Nightly/Developer Edition
+
+The installer is a **single Go binary per OS**, but it is built for exactly one
+**channel**, stamped at build time (`-X main.embeddedChannel=…`):
+
+| Channel | Built by | Embeds | Targets | Published as |
+|---------|----------|--------|---------|--------------|
+| **stable** | `npm run ship` (`RELEASE=1`) | the **AMO-signed** xpi | stable / ESR Firefox | asset of the `vX.Y.Z` GitHub Release (`releases/latest`) |
+| **nightly** | `npm run build:installers` | the **unsigned** dev xpi | Developer Edition / Nightly | asset of the rolling `nightly` prerelease (`releases/download/nightly`) |
+
+This is the fix for the real user complaint: a Developer Edition / Nightly user
+who installed the add-on from AMO actually got the **previous stable** add-on,
+and the published installer embedded the *signed* (stable) xpi too. Now the setup
+page detects the running Firefox from `browser.runtime.getBrowserInfo()`
+(`a1` → Nightly, `b` → Developer Edition, otherwise stable) and links:
+
+- **stable Firefox** → `releases/latest/download/lazyfox-install-<os>` (signed)
+- **Developer Edition / Nightly** → `releases/download/nightly/lazyfox-install-dev-<os>` (unsigned dev)
+
+The page states which channel it matched, so nobody is puzzled about the build
+they got. `npm run ship:nightly` publishes/updates the rolling `nightly`
+prerelease in place (dev installers + unsigned xpi); it needs no AMO access and
+never touches `master`.
+
+## The hands-off install — `--mode auto`, and what it guarantees
+
+The one-click flow (and what the setup page's installer runs) is `--mode auto`.
+It is built to require **zero decisions from the user**:
+
+1. **Pick the Firefox for the channel.** Among detected installs it prefers one
+   whose flavor matches the channel, then one that has a profile, then the most
+   recently used. (`--firefox-dir` overrides it.)
+2. **Pick the profile Firefox actually uses — no prompting.** `selectActiveProfile`
+   prefers the profile that is **locked right now** (Firefox is running it),
+   then the install's `Default=` pin, then the most recently used profile of that
+   install, then any Lazyfox-owned profile, then the newest overall. The user is
+   never asked to “match this name in the list”.
+3. **Dedicated-profile fallback.** If the real profile is locked, not writable,
+   or the install does not verify, `ensureDedicatedProfile` creates a fresh
+   profile Lazyfox **owns** (`<8hex>.lazyfox` / `<8hex>.lazyfox-nightly`,
+   carrying a `.lazyfox-profile` marker), registers it in `profiles.ini`, and
+   pins it as the install's default. It owns nothing of the user's.
+4. **Verify on disk, then tell the truth.** `verifyInstall` checks the xpi,
+   `chrome/*`, and the managed `user.js` prefs are present, and reports the
+   add-on as *pending enable* (it imports on the next launch) rather than
+telling the user nothing happened. Failures trigger the dedicated fallback.
+5. **Uninstall cleans up after itself.** `--mode uninstall` finds the
+   Lazyfox-owned profile automatically and removes it (and its `profiles.ini`
+   entries) — but **only** a profile carrying the marker; a user's own profile
+   is never deleted. `--keep-profile` opts out.
+
 ## How to tell which mode you are in
 
 - `npm run probe:chrome` — boots a real profile with the full chrome layer and
@@ -157,9 +208,9 @@ from `about:debugging` on **Nightly / Developer Edition** with no review, and
 
 ## Recommendations (open)
 
-1. **Reword “half-installed”** in the setup page and banner to name exactly what
-   is missing (“the toolbar-free window chrome”) rather than implying the
-   add-on does nothing.
+1. ~~**Reword “half-installed”**~~ — **done:** the setup page now names exactly
+   what is missing (“the toolbar-free window chrome”) and says which channel the
+   installer it links belongs to.
 2. **Make the add-on-only bar obviously a fallback** — e.g. a subtle marker — so
    users do not think the window-level bar is broken.
 3. **Decide the native host's future.** Either grow it into a real user-facing
