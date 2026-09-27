@@ -1009,7 +1009,10 @@ export function createChannel(deps: ChannelDeps): Channel {
         let spec = "";
         try {
           spec = t.linkedBrowser && t.linkedBrowser.currentURI ? t.linkedBrowser.currentURI.spec : "";
-        } catch (e) {}
+        } catch (e) {
+          // A tab can be torn down while we enumerate; its linkedBrowser is
+          // already gone. A tab with no readable URL just is not a match.
+        }
         return spec;
       });
       out.relayTabs = tabs.filter((s: string) => s.indexOf("relay.html") !== -1).length;
