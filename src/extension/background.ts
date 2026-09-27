@@ -348,8 +348,6 @@ async function handleMessage(msg: BgAction, sender: any) {
       if (!tab) return { url: "", title: "" };
       return { url: tab.url || "", title: tab.title || "" };
     }
-    case "getConfig":
-      return browser.storage.local.get("config");
     case "setConfig":
       await browser.storage.local.set({ config: data.config });
       return { ok: true };
@@ -482,12 +480,6 @@ async function handleMessage(msg: BgAction, sender: any) {
       return quitBrowser();
     case "sessionState":
       return sessionState();
-    case "chromeLayer":
-      // Authoritative answer to the content script's one-bar question: only
-      // true if THIS background has confirmed the chrome layer alive this
-      // session. In-memory so a race between onStartup's storage reset and the
-      // helper's announce can never leave content scripts drawing a second bar.
-      return { alive: chromeLayerAlive };
     default:
       return { ok: false, error: "unknown action" };
   }
