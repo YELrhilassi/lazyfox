@@ -16,11 +16,39 @@ This runs, in order (mirroring `.github/workflows/dev-nightly.yml` → `unit`):
    expression errors statically)
 2. `npm ci`
 3. `npm run prepare` (toolchain check: node + go)
-4. `npm run build` (compiles Go wasm core + bundles the unsigned dev xpi)
-5. `npm test` (Go core tests + installer tests + dist completeness)
-6. `node scripts/check-dist.ts` (dist is self-contained)
+4. `npm run check` (**before** anything is built: are the committed artifacts
+   consistent with the committed source?)
+5. `npm run build` (compiles Go wasm core + bundles the unsigned dev xpi, and
+   refreshes every committed installer binary)
+6. `npm test` (Go core tests + installer tests + payload tests + dist
+   completeness + the installer freshness check)
+7. `node scripts/check-dist.ts` (dist is self-contained)
+8. `npm run check` again (the build itself left nothing inconsistent)
 
-If all six pass, the `unit` job **will** be green on GitHub too.
+If all of them pass, the `unit` job **will** be green on GitHub too.
+
+### The step that runs *before* the build
+
+Step 4 exists because of a specific, previously-invisible failure: `dist/` and
+the installer binaries in `installer/bin/` are committed, so it is possible to
+change a source file, commit, and push — with the artifacts still holding the
+previous build. Every other step in the workflow would pass, because they either
+rebuild first (repairing the tree in place, so the mistake never surfaces) or
+never look at the artifacts at all. Whoever later downloaded `installer/bin/…`
+would get old code.
+
+`npm run check` compares two content hashes recorded by the last build:
+
+- the **source fingerprint** (everything under `src/`, `core/`, `native-host/`,
+  plus `build.ts` and the Go module files) — catches "source edited, nothing
+  rebuilt", even when `dist/` was not touched;
+- the **payload hash** (the staged chrome files, the loader files, the native
+  host's source, and the embedded add-on) — catches "dist/ rebuilt, installers
+  not", for every platform, including the ones this machine cannot run.
+
+It is a hash comparison, not a build, so it is fast and it does not depend on
+the toolchain. `npm run check:fix` rebuilds whatever it finds and re-checks, for
+when you want the repair rather than the report.
 
 End-to-end (optional, needs a real Firefox):
 
@@ -40,34 +68,30 @@ when you want the browser-session tests included.
 > (`pkill -9 geckodriver; pkill -9 firefox`) or a fresh run can stall waiting
 > for a port CPU.
 
-### Nightly: link hints against real pages (GitHub Actions)
+### Link hints (local only)
 
-The one browser suite that **does** run on GitHub is the scheduled
-`.github/workflows/nightly-hints.yml`. Every night it builds the extension,
-installs a pinned Firefox + geckodriver, downloads real UI-heavy page snapshots
-(GitHub, YouTube) with `npm run bidi:fixtures`, and runs the link-hint tests —
-including the stress test that exercises the hint engine against markup it did
-not author.
-
-It is built so a blocked network is never a false failure:
-
-* the snapshot download is a `continue-on-error` step, so if it fails the run
-  carries on and the stress test **skips** (the other hint tests use local
-  fixtures and always run);
-* `BIDI_REQUIRE_FIXTURES` is passed to the test only when the download actually
-  succeeded, which turns a *missing* snapshot into a real failure — so a broken
-  download cannot hide behind a skip.
-
-Run the same thing locally:
+The link-hint suite runs **locally only**, against the local test pages:
 
 ```bash
-npm run bidi:fixtures   # best-effort: pull the real-page snapshots
-npm run bidi:hints      # just the link-hints tests (uses them when present)
+npm run bidi:hints      # just the link-hint tests
 npm run ci:hints        # the above with the full local CI prefix
 ```
 
-The snapshots live in the gitignored `scripts/bidi/fixtures/`, so nothing
-third-party is ever committed.
+It needs no network and no third-party markup: `scripts/bidi/pages.ts` serves
+deliberately hostile local pages (occluding overlays, nested clickable wrappers,
+shadow roots, virtual-DOM churn, a fixed header) and the suite asserts real
+behaviour — which elements get keys, that keys stay stable across a re-render,
+that Escape clears state, that nothing is anchored outside the viewport.
+
+There used to be a scheduled workflow that downloaded real YouTube and GitHub
+home pages and ran a "stress" test against the saved HTML. It is gone, and so is
+the downloader: a snapshot of someone's home page is not a test fixture (its
+markup changes under you, the external CSS/JS 404s so the page renders
+unstyled, and the assertion it could make — "the collector completes and
+anchors N hints" — is one the local pages already assert far more precisely).
+Debugging a hint that will not appear is now a job for the in-page diagnostics
+page (it reports the hint pipeline's found/hinted/rejected counters and probes
+each candidate), not for a nightly scrape.
 
 A full run is ~10+ minutes (the browser is real, and the suites wait on
 network/timing). If your shell enforces a shorter cap, run the groups one at a

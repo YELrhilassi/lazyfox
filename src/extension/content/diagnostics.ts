@@ -10,7 +10,7 @@
 // never have side effects.
 
 import type { PageReport } from "../../shared/types";
-import { diagnoseHints } from "./hints";
+import { diagnoseHints, type LinkHints } from "./hints";
 import type { ScrollController } from "./scroll";
 
 // How many candidates the probe table shows. Enough to spot the pattern in a
@@ -131,7 +131,10 @@ function readPerf(): PageReport["perf"] {
   };
 }
 
-export async function collectPageReport(scroll: ScrollController): Promise<PageReport> {
+export async function collectPageReport(
+  scroll: ScrollController,
+  linkHints?: LinkHints,
+): Promise<PageReport> {
   const hints = diagnoseHints(PROBE_LIMIT);
   const perf = readPerf();
   const fps = await measureFps(400);
@@ -147,6 +150,9 @@ export async function collectPageReport(scroll: ScrollController): Promise<PageR
       probes: hints.probes,
       shadowRoots: hints.shadowRoots,
       pointerControls: hints.pointerControls,
+      // The outcome of the last activation, so the page can answer "I pressed
+      // the key and nothing happened" with a fact instead of a guess.
+      lastActivation: linkHints ? linkHints.lastActivation() : null,
     },
     scroll: {
       target: scroll.currentLabel(),

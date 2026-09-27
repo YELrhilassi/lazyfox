@@ -19,7 +19,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isSignedXpi, xpiVersion } from "./amo-lib.ts";
-import { buildInstallerSet, isNativeTarget, HOST, type InstallerTarget } from "./installer-build.ts";
+import { buildInstallerSet, type InstallerTarget } from "./installer-build.ts";
+import { HOST, TARGETS, isNativeTarget } from "./payload.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installerDir = join(root, "installer");
@@ -62,11 +63,13 @@ function pickSignedXpi(): string {
 const xpi = pickSignedXpi();
 console.log(`[installer] embedding signed xpi: ${xpi} (extension dir version ${version})`);
 
-const ALL_TARGETS: InstallerTarget[] = [
-  { goos: "linux", arch: "amd64", out: "lazyfox-install-linux" },
-  { goos: "darwin", arch: "arm64", out: "lazyfox-install-darwin" },
-  { goos: "windows", arch: "amd64", out: "lazyfox-install-windows.exe" },
-];
+// Same declared target list as the dev installers (artifacts.json), so the two
+// channels can never drift onto different platforms or file names.
+const ALL_TARGETS: InstallerTarget[] = TARGETS.map((t) => ({
+  goos: t.goos,
+  arch: t.arch,
+  out: t.releaseOut,
+}));
 
 // `host` refreshes only this machine's installer; `all` (default) is for releases.
 const ONLY = (process.env.LF_INSTALLER_TARGETS || "all").toLowerCase();

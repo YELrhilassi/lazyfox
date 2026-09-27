@@ -438,6 +438,73 @@ html,body{margin:0}
   // a control inside an open shadow root, and a link far below the fold for the
   // scroll re-hint test. Every interactive element carries a `data-id` so a test
   // can map a hint position back to the element it belongs to.
+  // The shape that broke hinting on a video player: a WRAPPER that is
+  // hintable in its own right (here a div with an inline click handler, which is
+  // what a component library builds) containing a real, small, named control.
+  //
+  // Under the old "the outer element wins" nesting rule the wrapper took the
+  // hint and the control inside it got nothing at all — so the key did
+  // something, it hit the player, and it was never what the user meant. Note
+  // that a merely cursor:pointer wrapper does NOT reproduce this: leafClickable
+  // already refuses a container that contains a hintable descendant, so the
+  // wrapper never enters the pool at all. It is the wrapper's own semantics
+  // (onclick / role) that put it in the pool, and that is what has to lose to
+  // the real control inside it.
+  "/playerlike": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>PLAYERLIKE</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:#0b0b0f; color:#eee; }
+  main { padding:16px; }
+  /* The player: unnamed, clickable, and it WRAPS MEDIA, so it is hintable by
+     the media exemption. It is also big, which is what made it win. */
+  #player { position:relative; width:760px; height:430px; background:#15151c;
+            cursor:pointer; }
+  #player > video { position:absolute; inset:0; width:100%; height:100%; }
+  /* The ad overlay sitting on top of the lower third, as an ad layer does. */
+  #adlayer { position:absolute; left:0; right:0; bottom:0; height:120px;
+             background:linear-gradient(transparent, rgba(0,0,0,.75)); z-index:3; }
+  /* The control the user actually wants, inside the player, above the overlay. */
+  #skipad { position:absolute; right:14px; bottom:96px; z-index:4;
+            background:#fff; color:#111; border:0; border-radius:4px;
+            padding:8px 14px; font:600 13px system-ui,sans-serif; cursor:pointer; }
+  /* A decoy: a role=button span INSIDE the real button. The button must win. */
+  #skipad span { font-weight:400; opacity:.7; }
+  /* A control that only answers a REAL press: the case the deleted
+     trusted-press path was meant to cover. Nothing should make it work again —
+     but the user must at least be TOLD that the page ignored the click. */
+  #deaf { display:block; width:120px; height:34px; margin-top:14px; background:#333;
+          color:#eee; border:0; font:13px system-ui,sans-serif; cursor:pointer; }
+  /* A second, genuinely decorative media wrapper with nothing inside it: it must
+     STILL be hintable (that is what the media exemption is for). */
+  #lonely { width:120px; height:70px; margin-top:18px; cursor:pointer; background:#222; }
+  #lonely img { width:100%; height:100%; }
+</style></head>
+<body>
+<main>
+  <!-- The wrapper's own handler ignores clicks that came from a control
+       inside it, as a real card/player does, so a test can tell "the button
+       was pressed" from "the wrapper was pressed". -->
+  <div id="player" data-id="player" onclick="if (event.target === this) document.title = 'PLAYER'">
+    <video></video>
+    <div id="adlayer" data-id="adlayer"></div>
+    <button id="skipad" data-id="skipad" onclick="document.title='SKIPPED'">Skip ad <span data-id="skipad-inner">now</span></button>
+  </div>
+  <button id="deaf" data-id="deaf">Ignore me</button>
+  <div id="lonely" data-id="lonely"><img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='70'%3E%3Crect width='120' height='70' fill='%23222'/%3E%3C/svg%3E"></div>
+</main>
+<script>
+  // Answer only a genuine press. The synthetic sequence a content script can
+  // dispatch is untrusted, so this control does nothing — which is exactly the
+  // case the user must be told about rather than left guessing. Wired at the
+  // END of the body so the element exists.
+  document.getElementById("deaf").addEventListener("click", function (e) {
+    if (e.isTrusted) document.title = "DEAF-PRESSED";
+  });
+</script>
+</main>
+</body></html>`,
+  },
   "/uitest": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>UI Heavy</title>
 <style>
@@ -534,11 +601,6 @@ html,body{margin:0}
 </script>
 </body></html>`,
   },
-  // An OPTIONAL real-world snapshot of a UI-heavy page (GitHub's home by
-  // default) served verbatim from disk, for the hint stress test. Populate it
-  // with `npm run bidi:fixtures`; when the file is absent this path 404s and
-  // the test is skipped, so a network-less CI run still passes.
-  "/real": { file: "fixtures/github.html" },
   // A page that can enter DOM fullscreen (like an HTML5 video would) — the
   // status bar must hide the moment it does, and re-show on exit. The `f` key
   // triggers it so tests can send a real (trusted) key event, which Firefox

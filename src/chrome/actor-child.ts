@@ -127,16 +127,6 @@ export class LazyfoxChild extends BaseChild {
 
   receiveMessage(msg: any): any {
     if (!msg) return undefined;
-    if (msg.name === "lazyfox-trusted-click") {
-      // A real, trusted mouse press at viewport coordinates. Reached from the
-      // chrome helper (which got the coordinates from the background, which got
-      // them from the content script's hint activation) because the content
-      // script's own dispatched events are untrusted and a few controls ignore
-      // those. This half is the ONLY place the press can be genuinely trusted:
-      // it runs privileged in the content process, next to the widget.
-      this.pressAt(msg.data);
-      return undefined;
-    }
     if (msg.name !== "lazyfox-scroll") return undefined;
     try {
       const cw = this.contentWindow;
@@ -162,24 +152,4 @@ export class LazyfoxChild extends BaseChild {
   // as-is. The sequence is move -> down -> up -> click: the move first because
   // some widgets track the pointer before accepting a press, and the click
   // last because that is the event which actually activates.
-  private pressAt(data: any): void {
-    try {
-      const x = Number(data && data.x);
-      const y = Number(data && data.y);
-      if (!isFinite(x) || !isFinite(y)) return;
-      const cw = this.contentWindow as any;
-      const utils = cw && cw.windowUtils;
-      if (!utils || typeof utils.sendMouseEvent !== "function") return;
-      const types = ["mousemove", "mousedown", "mouseup", "click"];
-      for (const type of types) {
-        // type, x, y, button, clickCount, modifiers
-        utils.sendMouseEvent(type, x, y, 0, 1, 0);
-      }
-    } catch (e) {
-      // The window went away between the request and the press, or this
-      // process does not expose windowUtils. The content script has already
-      // been told the privileged path is live, so there is nothing to
-      // recover here — the page simply does not get the press.
-    }
-  }
 }

@@ -1,0 +1,57 @@
+{
+  "_comment": [
+    "The single declaration of what Lazyfox's installer ships and which installer",
+    "binaries exist. It lives inside the payload package because that is the one",
+    "place Go can //go:embed it, and every build script reads the very same file.",
+    "",
+    "It exists to kill a whole bug class: the chrome file list used to be copied",
+    "into four places (this package's registry, the build's staging step, the dev",
+    "helpers' staleness hash, and the installer's own test), and a file added to",
+    "three of them shipped a half-installed chrome layer that no test noticed.",
+    "One declaration, read by all of them, cannot drift.",
+    "",
+    "Destination paths (which subdirectory a file lands in) stay in the Go",
+    "registry — they are install behavior, not build inputs. Only the names and",
+    "the target list are shared here."
+  ],
+
+  "chromeFiles": [
+    "userChrome.css",
+    "userChrome.uc.js",
+    "frame.js",
+    "corebootstrap.js",
+    "actor-boot.js",
+    "lazyfox-child.sys.mjs",
+    "lazyfox-parent.sys.mjs"
+  ],
+
+  "_userJS": "Managed prefs, MERGED into the profile's user.js rather than copied over it, so it is staged as a chrome file but installed through its own artifact kind.",
+  "userJS": "user.js",
+
+  "loaderFiles": [
+    "config.js",
+    "config-prefs.js"
+  ],
+
+  "_targets": "Every shipping installer target, with the file name each one is committed under. devOut embeds the UNSIGNED add-on (nightly channel, for `npm run dev-install`); releaseOut embeds the AMO-signed one (stable channel). The native GUI window can only be compiled on its own platform — every other target gets the cross-compiled terminal installer (see buildInstaller).",
+  "targets": [
+    {
+      "goos": "linux",
+      "arch": "amd64",
+      "devOut": "lazyfox-install-dev-linux",
+      "releaseOut": "lazyfox-install-linux"
+    },
+    {
+      "goos": "darwin",
+      "arch": "arm64",
+      "devOut": "lazyfox-install-dev-darwin",
+      "releaseOut": "lazyfox-install-darwin"
+    },
+    {
+      "goos": "windows",
+      "arch": "amd64",
+      "devOut": "lazyfox-install-dev-windows.exe",
+      "releaseOut": "lazyfox-install-windows.exe"
+    }
+  ]
+}

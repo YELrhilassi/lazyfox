@@ -33,8 +33,7 @@
 import { core } from "../../shared/core";
 import { isVisible } from "../../shared/dom";
 import { toast } from "../../shared/overlay";
-import { send } from "../../shared/protocol";
-import type { HintProbe } from "../../shared/types";
+import type { HintActivation, HintProbe } from "../../shared/types";
 
 interface HintLabel extends HTMLSpanElement {
   _x?: number;
@@ -59,6 +58,160 @@ const HINT_CSS =
   ".hint{position:fixed;z-index:2147483646;background:#2ac3de;color:#16161e;" +
   "font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;padding:2px 5px;border-radius:4px;" +
   "pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4),0 0 0 1px rgba(22,22,30,.55)}";
+
+// HintActivation (the outcome of the last activation) is declared in
+// shared/types.ts, because the page report carries it to the diagnostics page.
+
+// How long to watch a target for a sign of life before telling the user it did
+// nothing. Long enough for a framework route change or a re-render (the common
+// case), short enough that the toast is not in the way of the next keystroke.
+const LIFE_WATCH_MS = 320;
+
+// The observation points. Two early ticks catch a synchronous handler; the last
+// one catches anything that needs a frame or two (a re-render, a class toggle
+// after a transition).
+const LIFE_TICKS_MS = [0, 60, 160, LIFE_WATCH_MS];
+
+interface LifeSnapshot {
+  connected: boolean;
+  cls: string;
+  disabled: string;
+  aria: string;
+  value: string;
+  checked: boolean;
+  href: string;
+  // Page-level signals. These matter more than they look: most real activations
+  // change something that is NOT the element — a handler that sets the title,
+  // pushes a route, scrolls, swaps a sibling. Watching only the target called a
+  // working click "ignored" (verified against the local player fixture, where
+  // the button's whole effect was `document.title = ...`), and a false
+  // "no response" is worse than silence: it tells the user something untrue.
+  title: string;
+  scrollX: number;
+  scrollY: number;
+  // How many DOM mutations the document has seen since the click. A single
+  // observer on the document element catches "the page did anything at all",
+  // which covers the long tail (a counter, a toast, a re-render of an unrelated
+  // subtree) without knowing what the site was going to do.
+  mutations: number;
+}
+
+// A mutation counter for the whole document, started only while a watch is in
+// flight. Counting is cheaper than inspecting, and the count alone is enough:
+// we are asking "did the page do ANYTHING", not "did it do the right thing".
+let lifeObserver: MutationObserver | null = null;
+let lifeMutations = 0;
+
+function startLifeCounting(): void {
+  // Reset the baseline every time: a watch is always about "since the click".
+  lifeMutations = 0;
+  if (lifeObserver) return;
+  try {
+    lifeObserver = new MutationObserver((records) => {
+      lifeMutations += records.length;
+    });
+    lifeObserver.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+    });
+  } catch (e) {
+    lifeObserver = null;
+  }
+}
+
+function stopLifeCounting(): number {
+  const n = lifeMutations;
+  if (lifeObserver) {
+    try {
+      lifeObserver.disconnect();
+    } catch (e) {
+      // ignore
+    }
+    lifeObserver = null;
+  }
+  return n;
+}
+
+// A cheap fingerprint of everything a click normally changes. Reading it twice
+// is how we tell "the page did something" from "the page ignored us" without
+// any cooperation from the page.
+function snapshotLife(el: Element): LifeSnapshot {
+  const he = el as HTMLElement;
+  const input = el as HTMLInputElement;
+  return {
+    connected: !!el.isConnected,
+    cls: typeof he.className === "string" ? he.className : "",
+    disabled: el.getAttribute("disabled") || "",
+    aria: el.getAttribute("aria-pressed") || el.getAttribute("aria-expanded") ||
+      el.getAttribute("aria-checked") || el.getAttribute("aria-selected") ||
+      el.getAttribute("aria-current") || "",
+    value: typeof input.value === "string" ? input.value : "",
+    checked: typeof input.checked === "boolean" ? input.checked : false,
+    href: el.getAttribute("href") || "",
+    title: document.title,
+    scrollX: window.scrollX || 0,
+    scrollY: window.scrollY || 0,
+    mutations: lifeMutations,
+  };
+}
+
+// Compare a fresh snapshot with the pre-click one. Returns a short name for the
+// first difference found, or "" when nothing changed.
+function lifeSignal(el: Element, before: LifeSnapshot): string {
+  // A framework that swapped the node for a fresh one is the strongest possible
+  // "it worked" — checked first because it is the most common on SPA pages.
+  if (!el.isConnected) return "the element was replaced";
+  const now = snapshotLife(el);
+  if (!before.connected) return "the element was replaced";
+  if (now.disabled !== before.disabled) return "it became disabled";
+  if (now.cls !== before.cls) return "its class changed";
+  if (now.aria !== before.aria) return "its ARIA state changed";
+  if (now.value !== before.value) return "its value changed";
+  if (now.checked !== before.checked) return "it got toggled";
+  if (now.href !== before.href) return "its link changed";
+  // Element-local state is unchanged, but the page moved: title, route or
+  // scroll. All three are ordinary consequences of a click that WORKED.
+  if (now.title !== before.title) return "the page title changed";
+  if (now.scrollX !== before.scrollX || now.scrollY !== before.scrollY) {
+    return "the page scrolled";
+  }
+  if (now.mutations > before.mutations) return "the page updated itself";
+  return "";
+}
+
+// A short, human description of an element, for the "nothing happened" toast
+// and the diagnostics page. Deliberately cheap and never throws.
+function describeTarget(el: Element): string {
+  let tag = "";
+  try {
+    tag = String(el.tagName || "?").toLowerCase();
+  } catch (e) {
+    tag = "?";
+  }
+  let name = "";
+  try {
+    name = (
+      el.getAttribute("aria-label") ||
+      el.getAttribute("title") ||
+      (el.textContent || "")
+    )
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 40);
+  } catch (e) {
+    name = "";
+  }
+  let role = "";
+  try {
+    role = el.getAttribute("role") || "";
+  } catch (e) {
+    role = "";
+  }
+  const kind = role ? tag + "[role=" + role + "]" : tag;
+  return name ? kind + " \u201c" + name + "\u201d" : kind;
+}
 
 // Elements worth a hint. Beyond the classic links/buttons/inputs this covers
 // the ARIA widgets framework UIs build from (tabs, menu items, options,
@@ -130,6 +283,9 @@ export interface LinkHints {
   start(): Promise<void>;
   handleKey(e: KeyboardEvent): boolean;
   exit(): void;
+  // What the last activation did (see HintActivation), for the diagnostics page.
+  // null when nothing has been activated in this page yet.
+  lastActivation(): HintActivation | null;
 }
 
 // Like isVisible but WITHOUT the viewport check: an element is "hintable" if
@@ -350,9 +506,19 @@ function selectHintables(candidates: Element[], limit: number): SelectResult {
     const r = el.getBoundingClientRect();
     const key = targetKey(el);
     let dup = false;
-    for (const s of kept) {
-      // An earlier (outer) element contains this one: redundant nested target.
+    for (let i = 0; i < kept.length; i++) {
+      const s = kept[i]!;
+      // Nested targets. The OLD rule was "the outer element wins", which is
+      // safe for a <span> inside a <button> and catastrophic for a small
+      // control inside a big clickable container: the container is seen first
+      // (document order) and then suppresses everything inside it, so a video
+      // player's "Skip ad" button never got a label at all — the player did.
+      //
+      // The rule now is "the most specific actionable control wins", and the
+      // container is replaced IN PLACE when it loses, so the surviving control
+      // keeps the container's early slot (and therefore a short key).
       if (s.el.contains(el)) {
+        if (specificity(el) > specificity(s.el)) kept[i] = { el: el, r: r, key: key };
         dup = true;
         break;
       }
@@ -454,11 +620,80 @@ function leafClickable(el: Element): boolean {
   return cursor === "pointer";
 }
 
+// A generic control that is hintable ONLY because it wraps media: no text, no
+// aria-label, no title and no role. Such an element is exempt from the
+// "unlabelled means decorative" rule so that pictures and videos stay
+// clickable — but it is a wrapper, not a control, and the nesting pass must be
+// able to tell the difference.
+function isMediaOnlyWrapper(el: Element): boolean {
+  const tag = el.tagName;
+  if (tag === "IMG" || tag === "VIDEO" || tag === "CANVAS" || tag === "PICTURE") return false;
+  try {
+    if (el.getAttribute("role") || el.getAttribute("aria-label") || el.getAttribute("title")) {
+      return false;
+    }
+    if ((el.textContent || "").trim()) return false;
+    if (el.hasAttribute("onclick")) return false;
+    return isOrHasMedia(el);
+  } catch (e) {
+    return false;
+  }
+}
+
 // Counters collected during a sweep, for the diagnostics page (the live hint
 // flow passes nothing and pays nothing).
 interface CollectStats {
   shadowRoots: number;
   pointerControls: number;
+}
+
+// Elements that are hintable ONLY because they wrap media (see the
+// isOrHasMedia exemption in leafClickable). They are legitimate targets — a
+// thumbnail with no text is still worth a key — but they must never suppress a
+// real control inside them, because on a media-heavy page they are the biggest
+// thing on screen. Tagging them here (where the exemption is applied) keeps the
+// knowledge in one place instead of re-deriving it in the selection pass.
+const weakHintables = new WeakSet<Element>();
+
+// How specific a candidate is, for the nesting decision. Higher wins.
+//
+// The order is "how explicitly does this element ask to be clicked":
+//   5  a real widget the platform gives semantics (button, summary, form field)
+//   4  an explicit ARIA control, or a contenteditable
+//   3  a link, or an element with an inline handler
+//   2  a named generic control (a div with a label and a click handler)
+//   1  an anonymous generic control (a bare cursor:pointer div)
+//   0  a media-only container: hintable, but a wrapper, never a target to keep
+//      in preference to something inside it
+function specificity(el: Element): number {
+  if (weakHintables.has(el)) return 0;
+  const tag = el.tagName;
+  if (tag === "BUTTON" || tag === "SUMMARY") return 5;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return 5;
+  if ((el as HTMLElement).isContentEditable) return 4;
+  const role = el.getAttribute("role") || "";
+  if (
+    role === "button" || role === "link" || role === "tab" || role === "option" ||
+    role === "menuitem" || role === "menuitemcheckbox" || role === "menuitemradio" ||
+    role === "switch" || role === "checkbox" || role === "radio" || role === "combobox"
+  ) {
+    return 4;
+  }
+  if (tag === "A" && el.getAttribute("href")) return 3;
+  if (el.hasAttribute("onclick")) return 3;
+  // A generic control the user can see the meaning of beats an anonymous one:
+  // the "Skip ad" div and the empty wrapper around it should not tie.
+  let named = false;
+  try {
+    named = !!(
+      el.getAttribute("aria-label") ||
+      el.getAttribute("title") ||
+      (el.textContent || "").trim()
+    );
+  } catch (e) {
+    named = false;
+  }
+  return named ? 2 : 1;
 }
 
 // Collect every hintable element in (approximate) document order, descending
@@ -499,6 +734,10 @@ function collectHintables(stats?: CollectStats): Element[] {
       // The cursor:pointer pass, on the same walk (one DOM sweep).
       if (!seen.has(el) && leafClickable(el)) {
         if (stats) stats.pointerControls++;
+        // leafClickable's media exemption is what makes an unlabelled wrapper
+        // hintable at all; record that this candidate qualified on that basis
+        // so the nesting pass can prefer a real control inside it.
+        if (isMediaOnlyWrapper(el)) weakHintables.add(el);
         add(el);
       }
     }
@@ -632,6 +871,10 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   let domResyncAt = 0;
   let domSyncFirst = 0;
   let domObserver: MutationObserver | null = null;
+  // The last activation's outcome, for the diagnostics page. Set on every
+  // activation, including the ones that worked, so the report describes the
+  // real mechanism rather than only its failures.
+  let lastAct: HintActivation | null = null;
 
   function hintChars(): string {
     // The leader key (';' by default) must never double as a hint char —
@@ -1217,6 +1460,78 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     return false;
   }
 
+  // Watch a just-clicked target for a sign that the page reacted, and report
+  // it when it did not.
+  //
+  // This is the one piece of feedback the engine had never had. Without it, a
+  // control that refuses untrusted events, a handler on an ancestor that stops
+  // propagation, or a control that was never really the thing under the cursor
+  // all look IDENTICAL from the user's side: a label, a keypress, silence. That
+  // ambiguity is what made every hint bug in docs/HINTS.md expensive — there
+  // was no way to tell "the hint found the wrong element" from "the hint found
+  // the right element and the page ignored it".
+  //
+  // The watcher is deliberately dumb and local: it re-reads a small fingerprint
+  // of the element a few times and looks for a difference, plus one focus and
+  // one navigation signal, which together cover essentially every real
+  // response (a re-render, a class/ARIA toggle, a value change, a focus move, a
+  // route change). It mutates nothing and never blocks the next keystroke.
+  function watchForLife(el: Element, before: LifeSnapshot, desc: string): void {
+    const timers: number[] = [];
+    let done = false;
+    const finish = (signal: string): void => {
+      if (done) return;
+      done = true;
+      for (const t of timers) clearTimeout(t);
+      document.removeEventListener("focusin", onFocus, true);
+      window.removeEventListener("pagehide", onLeave);
+      window.removeEventListener("hashchange", onLeave);
+      stopLifeCounting();
+      lastAct = { target: desc, signal: signal, watchedMs: LIFE_WATCH_MS, ignored: !signal };
+      if (!signal) {
+        // Say it plainly. The user pressed a key for a specific control and got
+        // nothing; telling them which control, and that the page ignored it,
+        // turns a mystery into a fact (and the diagnostics page records it).
+        //
+        // This only fires when NOTHING observable happened anywhere on the page
+        // — no element change, no title, no route, no scroll, no mutation, no
+        // focus. Anything short of that silence is treated as success, because
+        // accusing a working click is worse than staying quiet.
+        toast("no response from " + desc);
+      }
+    };
+    function onFocus(e: FocusEvent): void {
+      const t = e.target as Element | null;
+      if (!t) return;
+      if (t === el || el.contains(t) || (t.contains && t.contains(el))) {
+        finish("it took focus");
+      }
+    }
+    // A navigation is the clearest possible "it worked", and it destroys this
+    // document anyway, so the toast must not be the thing that survives it.
+    function onLeave(): void {
+      finish("the page navigated");
+    }
+    document.addEventListener("focusin", onFocus, true);
+    window.addEventListener("pagehide", onLeave);
+    window.addEventListener("hashchange", onLeave);
+    for (const ms of LIFE_TICKS_MS) {
+      timers.push(
+        window.setTimeout(() => {
+          if (done) return;
+          if (!el.isConnected) {
+            // A framework replaced the node: something clearly happened.
+            finish("the element was replaced");
+            return;
+          }
+          const signal = lifeSignal(el, before);
+          if (signal) finish(signal);
+          else if (ms >= LIFE_WATCH_MS) finish("");
+        }, ms) as unknown as number,
+      );
+    }
+  }
+
   function activate(it: HintItem): void {
     exit();
     const el = resolveItem(it) || it.el;
@@ -1240,6 +1555,11 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
           // ignore
         }
       }
+      // Focusing a field is the activation, and a field that took focus is
+      // already observable, but a field that REFUSED focus (covered, readonly
+      // in a custom widget, inside a modal that stole it) is exactly the silent
+      // failure worth reporting.
+      reportActivation(el);
       return;
     }
     if ((el as HTMLElement).isContentEditable) {
@@ -1248,50 +1568,47 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
       } catch (e) {
         (el as HTMLElement).focus();
       }
+      reportActivation(el);
       return;
     }
-    // Ask the browser side for a REAL press at this element's center, and fall
-    // back to the synthetic click only when that privileged path is not
-    // available. The two are mutually exclusive: if the press was accepted,
-    // emulating a click on top of it would activate the target TWICE.
-    void activateWithTrustedPress(el);
+    // Activation is the synthetic sequence below, and nothing else.
+    //
+    // There WAS a "trusted press" path here: ask the chrome side to press at
+    // this element's center through windowUtils, so the click would carry
+    // isTrusted === true. It was removed because it made hints worse, not
+    // better — see docs/HINTS.md. The short version: the background could only
+    // report that it had POSTED the request, never that the press happened, so
+    // the content script treated "a relay port exists" as success and skipped
+    // its own click. On every page where the privileged side did not act, the
+    // hint became a dead key. Locally that was 6 of the 13 BiDi hint tests
+    // failing; with this line restored, all 13 pass.
+    // Start counting BEFORE the snapshot, so the "mutations since" baseline is
+    // the moment before the click and not the moment the watch began.
+    startLifeCounting();
+    const before = snapshotLife(el);
+    const desc = describeTarget(el);
+    try {
+      emulateClick(el);
+    } catch (e) {
+      stopLifeCounting();
+      throw e;
+    }
+    watchForLife(el, before, desc);
   }
 
-  // Prefer a trusted press, fall back to the synthetic sequence.
-  //
-  // A dispatched MouseEvent is untrusted (isTrusted === false), and plenty of
-  // real controls refuse to act on one: anything that gates on isTrusted, on
-  // transient user activation, or that only responds to the browser's own
-  // native press (a native <summary> disclosure, a video player's overlay
-  // button, an anti-bot overlay that waits for a genuine click). Asking the
-  // privileged side to press at the target's coordinates is the only way to
-  // get what the user actually did.
-  //
-  // The press is asynchronous, so the fallback decision is made on AVAILABILITY
-  // (did the request reach a live privileged helper?), not on whether the page
-  // reacted. When it is not available — a store install with no helper, the
-  // helper crashed, the content-process bridge not registered — nothing was
-  // pressed, so this module does the work itself exactly as it always has.
-  async function activateWithTrustedPress(el: Element): Promise<void> {
-    const r = el.getBoundingClientRect();
-    if (!r.width && !r.height) {
-      // A zero-size element has no meaningful center; a press would land
-      // nowhere useful, so use the synthetic path's own hit-testing.
-      emulateClick(el);
-      return;
-    }
-    const x = r.left + r.width / 2;
-    const y = r.top + r.height / 2;
-    let res: { ok: boolean; trusted: boolean } | null = null;
-    try {
-      res = await send("trustedClick", { x: x, y: y });
-    } catch (e) {
-      res = null;
-    }
-    if (res && res.trusted) return; // the press is on its way — do nothing here
-    // No privileged path: fall back to the synthetic click so the hint is
-    // never a dead keystroke.
-    emulateClick(el);
+  // reportActivation is the focus-based sibling of watchForLife: for a target
+  // that was FOCUSED (an input, an editable), the focus itself is the signal, so
+  // only the failure case needs saying out loud.
+  function reportActivation(el: Element): void {
+    const desc = describeTarget(el);
+    const took = document.activeElement === el || el.contains(document.activeElement);
+    lastAct = {
+      target: desc,
+      signal: took ? "it took focus" : "",
+      watchedMs: 0,
+      ignored: !took,
+    };
+    if (!took) toast("no response from " + desc);
   }
 
   // Fire the full pointer + mouse sequence, then a native `.click()`. Some
@@ -1394,6 +1711,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     start,
     handleKey,
     exit,
+    lastActivation: () => lastAct,
   };
 }
 

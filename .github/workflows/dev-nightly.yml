@@ -38,6 +38,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Before building anything: are the COMMITTED artifacts consistent with the
+      # committed source? This is the gate that catches "I changed a source file
+      # and forgot to rebuild" — running the build first (as this workflow used
+      # to) would repair the tree in place and then report success, so the mistake
+      # could only ever be discovered later, by whoever downloaded a binary.
+      #
+      # Both the source fingerprint and the payload content hash are compared, so
+      # this fails for a stale dist/ AND for a stale installer/bin/ binary. It is
+      # cheap: no build, no Go, just hashing the tree.
+      - name: Committed artifacts are up to date
+        run: npm run check
+
       - name: Build dev extension (unsigned)
         run: npm run build
 
@@ -46,3 +58,8 @@ jobs:
 
       - name: Verify dist is self-contained
         run: node scripts/check-dist.ts
+
+      # After the build the check must still pass, which proves the build itself
+      # cannot leave an artifact behind that disagrees with the source.
+      - name: Build output is self-consistent
+        run: npm run check

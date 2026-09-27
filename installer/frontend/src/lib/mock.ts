@@ -90,17 +90,15 @@ function profileFor(req: Request) {
   return MACHINE.profiles.find((p) => p.dir === req.profileDir) ?? MACHINE.profiles[0]!;
 }
 
-// The profile-side chrome files, mirroring the installer's payload registry
-// (installer/internal/payload/registry.go).
-const CHROME_FILES = [
-  "chrome/userChrome.css",
-  "chrome/userChrome.uc.js",
-  "chrome/frame.js",
-  "chrome/corebootstrap.js",
-  "chrome/actor-boot.js",
-  "chrome/lazyfox-child.sys.mjs",
-  "chrome/lazyfox-parent.sys.mjs",
-];
+// The profile-side chrome files, read from the installer's own declaration
+// (installer/internal/payload/artifacts.json — the same file the Go payload
+// package embeds and the build stages from). This mock used to keep a private
+// copy of the list, which meant a new chrome file could appear in the real
+// install and not in the preview of it — the preview quietly lying about what
+// the installer does.
+import artifacts from "../../../internal/payload/artifacts.json";
+
+const CHROME_FILES = artifacts.chromeFiles.map((n) => `chrome/${n}`);
 
 function installChanges(profileDir: string, req: Request): ChangeInfo[] {
   const changes: ChangeInfo[] = [];

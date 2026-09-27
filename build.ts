@@ -17,12 +17,13 @@
 // users who clone don't need a Go toolchain to install.
 
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { zipStore } from "./scripts/amo-lib.ts";
 import { buildInstallerSet, type InstallerTarget } from "./scripts/installer-build.ts";
+import { TARGETS } from "./scripts/payload.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)));
 
@@ -149,33 +150,61 @@ if (DEV) {
   console.log(`[dev] packaging unsigned xpi -> dist/lazyfox2-${version}.xpi`);
   zipStore(join(root, "dist", "extension"), unsignedOut);
 
-  // Refresh THIS platform's dev installer so the binary you launch is always the
-  // one this build produced — the embedded payload can never be last week's. The
-  // staging + compile path is exactly the one `npm run build:installers` uses
-  // (scripts/build-dev-installers.ts), so host refreshes and full refreshes
-  // cannot drift; only the target list differs (LF_INSTALLER_TARGETS=host).
+  // Refresh the dev installers so the binaries in installer/bin/ are always the
+  // ones this build produced — the embedded payload can never be last week's.
+  //
+  // This used to rebuild only THIS platform's binary, which meant a plain
+  // `npm run build` on Windows quietly left the committed linux and darwin
+  // installers carrying the previous build: the tree looked "built", and anyone
+  // who grabbed those two got old code. The rule is now the simple one — after
+  // a build, every committed executable matches the tree, or the build failed.
+  //
+  // The other targets are cross-compiled terminal installers (no webview, no
+  // CGO), so this costs a couple of extra compiles rather than a second
+  // machine. Set LF_INSTALLER_TARGETS=host to build only this machine's binary
+  // when iterating in a hurry and nothing else consumes installer/bin/.
   //
   // This is a hard step on purpose: `npm run build` already needs the Go
-  // toolchain for the wasm core, so a failure here means the installer really is
-  // broken and silently shipping a stale binary is the bug we are fixing.
-  console.log("\n[installer] refreshing this platform's dev installer with the fresh payload…");
+  // toolchain for the wasm core, so a failure here means the installer really
+  // is broken and silently shipping a stale binary is the bug we are fixing.
+  console.log("\n[installer] refreshing the dev installers with the fresh payload…");
   run(process.execPath, [join(root, "scripts", "build-dev-installers.ts")], {
     cwd: root,
-    env: { ...process.env, LF_INSTALLER_TARGETS: "host" },
   });
 
+  // The RELEASE installers embed an AMO-signed add-on, so they can only be rebuilt
+  // when a signed xpi exists (stable Firefox refuses an unsigned one). When one
+  // does, they are refreshed here too — with the CURRENT chrome layer and the
+  // last signed add-on — so a plain build never leaves a committed binary
+  // carrying an old payload. When none exists they are left alone, and the
+  // reason is printed rather than left to be discovered later.
+  const signedXpis = existsSync(join(root, "dist"))
+    ? readdirSync(join(root, "dist")).filter((f) => /^lazyfox2-.*-signed\.xpi$/.test(f))
+    : [];
+  if (signedXpis.length > 0) {
+    console.log("\n[installer] refreshing the release installers (signed add-on: …" + signedXpis[signedXpis.length - 1] + ")…");
+    run(process.execPath, [join(root, "scripts", "build-release-installers.ts")], { cwd: root });
+  } else {
+    console.log(
+      "\n[installer] no signed add-on in dist/ yet, so the release installers were left alone:\n" +
+        "  they carry the last signed build, which is correct for their channel. Sign one\n" +
+        "  with `npm run submit` (or run `npm run build:release`) to refresh them.",
+    );
+  }
+
   console.log(`\nBuild complete. dist/ is ready to install (unsigned dev add-on).`);
-  console.log("Verified installer for this platform: installer/bin/ (fresh payload).");
+  console.log("Every committed installer was rebuilt from this payload — `npm run check` prints the table.");
   process.exit(0);
 }
 
-// `npm run build:installers` (node scripts/build-dev-installers.ts) builds the
-// committed per-OS DEV installer binaries (embed the unsigned xpi). It is a
-// separate step from `npm run build` on purpose: the per-OS binaries are
-// semantically "ship/dev" artifacts produced alongside the unsigned build, and
-// keeping them out of the fast dev loop avoids re-cross-compiling Go on every
-// iteration. Dev install flow handled by `npm run dev-install` (build:installers +
-// dev-install).
+// `npm run build:installers` (node scripts/build-dev-installers.ts) rebuilds the
+// committed per-OS DEV installer binaries (they embed the unsigned xpi), and is
+// what `npm run build` calls — so the standalone command and the build cannot
+// disagree about what a dev installer is. Running it on its own is for the
+// cases a build does not cover: a dist/ change that did not come from a build
+// (a hand-edited loader, a synced signed xpi), or rebuilding every platform
+// from a checkout whose host binary is already current. The dev install flow
+// itself is `npm run dev-install`.
 
 // Ensure a signed .xpi exists for the current extension version.
 //
@@ -221,11 +250,11 @@ const extensionVersion = JSON.parse(readFileSync(join(root, "dist", "extension",
 // repo checkout, no dist/ folder and no toolchain. Build it for every supported
 // platform into installer/bin/ so releases ship one native binary per OS:
 //   lazyfox-install-linux, lazyfox-install-darwin, lazyfox-install-windows.exe
-const INSTALLER_TARGETS: InstallerTarget[] = [
-  { goos: "linux", arch: "amd64", out: "lazyfox-install-linux" },
-  { goos: "darwin", arch: "arm64", out: "lazyfox-install-darwin" },
-  { goos: "windows", arch: "amd64", out: "lazyfox-install-windows.exe" },
-];
+const INSTALLER_TARGETS: InstallerTarget[] = TARGETS.map((t) => ({
+  goos: t.goos,
+  arch: t.arch,
+  out: t.releaseOut,
+}));
 
 // Stage the payloads the installer embeds and compile every target — through
 // the SAME function the dev installers use (scripts/installer-build.ts), so the

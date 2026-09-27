@@ -541,19 +541,7 @@ export function startTestServer(pages) {
         res.end("not found");
         return;
       }
-      // Optional on-disk fixture (e.g. a real-world page snapshot downloaded by
-      // scripts/bidi/fetch-fixtures.ts). A missing file 404s so the dependent
-      // test can skip cleanly instead of failing the whole run.
-      let body = page.body;
-      if (page.file) {
-        try {
-          body = readFileSync(resolve(ROOT, "scripts/bidi", page.file), "utf8");
-        } catch (e) {
-          res.writeHead(404);
-          res.end("fixture missing: " + page.file);
-          return;
-        }
-      }
+      const body = page.body;
       res.writeHead(page.status || 200, Object.assign(
         { "Content-Type": page.type || "text/html; charset=utf-8" },
         page.headers || {}

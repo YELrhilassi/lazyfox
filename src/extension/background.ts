@@ -391,27 +391,6 @@ async function handleMessage(msg: BgAction, sender: any) {
         );
       }
       return { ok: true };
-    case "trustedClick": {
-      // A hint activation asked for a REAL, trusted mouse press. Relay it to
-      // the chrome helper, which dispatches it through windowUtils in the
-      // content process. Unlike the status pushes, this one is a QUESTION: the
-      // content script must know whether the privileged press actually landed,
-      // because a "no" means it has to activate the target itself.
-      //
-      // The answer is deliberately about AVAILABILITY, not about the press
-      // having taken effect: the press is dispatched asynchronously once the
-      // helper receives it, and a synchronous answer cannot observe the
-      // target's own reaction. So `trusted` is true only when a live relay
-      // port for this window is present and the command was posted to it —
-      // the same liveness test requestChrome uses, and the same one that
-      // guarantees the post really reaches the helper rather than sitting in
-      // the queue. Anything else reports trusted:false so the caller falls
-      // back to its synthetic click instead of silently doing nothing.
-      const x = Number(data.x);
-      const y = Number(data.y);
-      if (!isFinite(x) || !isFinite(y)) return { ok: false, trusted: false };
-      return requestChromeReply("trustedClick", { x: x, y: y });
-    }
     case "sessionList":
       return sessionList();
     case "listSessionTabs":
@@ -795,27 +774,6 @@ function requestChrome(action: string, arg?: any): void {
 // queues: a request that has to wait for the relay to come up would be far too
 // late for a click (the user has already moved on), so "not connected yet" is
 // reported as unavailable and the caller falls back immediately.
-function requestChromeReply(action: string, arg?: any): Promise<{ ok: boolean; trusted: boolean }> {
-  return browser.tabs
-    .query({ currentWindow: true, active: true })
-    .then((ts: any[]) => {
-      const winId = ts && ts[0] ? ts[0].windowId : null;
-      if (winId == null) return { ok: false, trusted: false };
-      const port = relayPorts.get(winId);
-      if (!port) return { ok: false, trusted: false };
-      try {
-        port.postMessage({ type: "cmd", action: action, arg: arg !== undefined ? arg : "" });
-        return { ok: true, trusted: true };
-      } catch (e) {
-        // Dead port (its relay tab was removed) — the same cleanup
-        // requestChrome does, so the next attempt re-establishes the relay.
-        relayPorts.delete(winId);
-        return { ok: false, trusted: false };
-      }
-    })
-    .catch(() => ({ ok: false, trusted: false }));
-}
-
 // Push the fresh session summary to the chrome helper's status bar after a
 // session mutation that did NOT originate from the chrome helper itself (the
 // helper refreshes on its own actions; content-script and options actions would
