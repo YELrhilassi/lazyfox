@@ -31,6 +31,50 @@ So messaging is really **two separate channels**, with two separate fixes:
 | Helper ↔ background | both | throwaway `#lfc=` tabs | **persistent relay tab** (no tab churn, no create/remove race) — DONE |
 | Extension ↔ Go host | extension → host | scaffold stubs, not built, not wired | **built, installed with a native-messaging manifest, used via `host.ts`** — DONE |
 
+The relay is itself two buses, and the third message bus is the one still
+untidy:
+
+| Bus | Contract | Carries |
+|-----|----------|---------|
+| extension contexts → background | `BgApi` (`src/shared/protocol.ts`) | content script, command center, popup, options |
+| chrome helper ↔ background | `RelayApi` + `ChromeApi` | the relay tab's port |
+| background → content script | **none** — still bare `{ action: "..." }` objects | `startHints`, `focusFirstInput`, `pageReport` |
+
+## Stage 2 — typing the relay (`RelayApi` / `ChromeApi`) — DONE
+
+Goal: **an action nobody handles must be a compile error, not a silent no-op.**
+
+The relay was a second, completely untyped message bus. `requestBg(action:
+string, arg?: string)` met a background `handleRelayReq(action: string, arg:
+any)` that string-matched its way down a 30-branch if-chain. Nothing checked
+that the two ends agreed.
+
+This was not theoretical. `openDiagnostics` was sent by the chrome side and
+handled by nobody: the chain fell off the end and returned null in total
+silence. `;T` worked when the *content* script owned the keypress (that path
+goes through `send("openDiagnostics")`) and did **nothing** when the chrome
+helper owned it — an action that is broken only in half its entry points, with
+no error anywhere.
+
+`RelayApi` and `ChromeApi` in `src/shared/protocol.ts` now declare a request
+and response per action, and both dispatchers are tables keyed on
+`keyof RelayApi` / `keyof ChromeApi`, so a missing or renamed handler is a
+compile error. The two things that made the old code possible are gone:
+
+- **String-packed arguments.** Requests used to carry a bare string, which
+  forced `assignSessionMarker` and `sessionTabCopy`/`sessionTabMove` to join
+  their fields with `U+0001` and have the background re-split them by hand.
+  Requests now carry JSON on the wire, exactly as replies and commands
+  already did, and those separators are gone. The same change let
+  `restoreSplits` take `number[][]` rather than a JSON string.
+- **Silently-ignored pushes.** A command the helper did not recognise used to
+  fall out of `handleCmd` and vanish; the table makes that impossible.
+
+The typing also surfaced real dead behaviour: `moveTabBetweenSessions` returns
+a human-readable `note` ("no such tab", "same session") that the chrome side
+discarded, so a failed tab copy looked exactly like a successful one. Those two
+actions are now reply-bearing and the failure is toasted.
+
 ## Stage 1 — persistent relay (replaces throwaway `#lfc=` tabs) — DONE
 
 Goal: **zero tab churn**. One dedicated, hidden relay tab carries every

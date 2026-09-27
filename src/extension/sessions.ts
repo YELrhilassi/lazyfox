@@ -10,6 +10,7 @@
 
 import { core } from "../shared/core";
 import type { PopupItem, Session, SessionTab } from "../shared/types";
+import type { ChromeAction, ChromeReq } from "../shared/protocol";
 import { CC_URL, isUITab, realTabsInWindow } from "./tabs";
 import { reconcileStealth, stealthContainers, stealthCreateTab } from "./stealth";
 
@@ -23,8 +24,8 @@ const MAX_SESSION_MARKER = 9;
 // Chrome-helper hooks, injected by the background entry point.
 type ChromeHooks = {
   // `arg` may be any structured-cloneable value (the relay delivers objects
-  // as objects); restoreSplits passes a JSON string.
-  requestChrome: (action: string, arg?: any) => void;
+  // as objects).
+  requestChrome: <K extends ChromeAction>(action: K, arg?: ChromeReq<K>) => void;
   pushSessionState: () => void;
 };
 let requestChrome: ChromeHooks["requestChrome"] = () => {};
@@ -475,9 +476,11 @@ export async function restoreSession(name: string): Promise<{ ok: boolean; note?
     // Re-create native split groupings (groups of 1-based tab positions).
     const groups = await splitGroupsOfSession(s);
     if (groups.length) {
-      // requestChrome already encodeURIComponent's its arg; pre-encoding here
-      // would double-encode and break JSON.parse in the chrome helper.
-      requestChrome("restoreSplits", JSON.stringify(groups));
+      // The structured payload is the whole point of typing this channel: the
+      // split groupings travel as number[][], not as a JSON string the chrome
+      // side has to parse. (They used to be JSON.stringify'd here precisely
+      // because the wire was stringly-typed.)
+      requestChrome("restoreSplits", { groups: groups });
     }
     // Restore the active tab by saved index (deterministic tab order).
     const active = Math.min(Math.max(0, s.active || 0), ids.length - 1);
@@ -795,7 +798,7 @@ export async function resumeOnStartup(autoRestore: boolean | undefined): Promise
     if (await needsSplitRestore(cur, last)) {
       const groups = await splitGroupsOfSession(last);
       if (groups.length) {
-        requestChrome("restoreSplits", JSON.stringify(groups));
+        requestChrome("restoreSplits", { groups: groups });
       }
     }
     return;
@@ -811,7 +814,7 @@ export async function resumeOnStartup(autoRestore: boolean | undefined): Promise
     // restored window looks the way it was left (not flattened).
     const groups = await splitGroupsOfSession(last);
     if (groups.length) {
-      requestChrome("restoreSplits", JSON.stringify(groups));
+      requestChrome("restoreSplits", { groups: groups });
     }
     // Restore the active tab by its saved index (deterministic order).
     const active = Math.min(Math.max(0, last.active || 0), ids.length - 1);
