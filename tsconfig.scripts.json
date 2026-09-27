@@ -20,7 +20,11 @@
   // is browser-chrome-only and drags in Firefox chrome globals this config
   // knows nothing about. The store is still typechecked by tsconfig.json; only
   // the Node-side TEST of it is out of scope here, exactly as with page-text.
-  "exclude": ["scripts/test-page-text.ts", "scripts/test-store.ts"],
+  // scripts/test-render-escaping.ts is excluded for the same reason: it calls
+  // the real row renderers, which live in DOM modules, and their typechecking
+  // belongs to tsconfig.json. The renderers are still checked there; only the
+  // Node-side test of them is out of scope for this config.
+  "exclude": ["scripts/test-page-text.ts", "scripts/test-store.ts", "scripts/test-render-escaping.ts"],
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
