@@ -148,18 +148,6 @@ export type BgAction = {
 
 export type BgResult<K extends keyof BgApi> = BgApi[K]["res"];
 
-// Chrome helper -> background requests, carried by the #lfc=req.<action> tab.
-export type ReqAction =
-  | "alive"
-  | "startHints"
-  | "focusFirstInput"
-  | "openOptions"
-  | "openSetup"
-  | "openDiagnostics";
-
-// background -> content script actions.
-export type ContentAction = "startHints" | "focusFirstInput" | "pageReport";
-
 // Typed send() used by the content script, command center, popup and options.
 // Returns null when the background is unreachable or rejects. The data argument
 // is optional exactly for the no-request actions, so `send("tabs")` is legal

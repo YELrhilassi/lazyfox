@@ -93,11 +93,6 @@ export function isNativeTarget(t: { goos: string; arch: string }): boolean {
   return t.goos === HOST.goos && t.arch === HOST.goarch;
 }
 
-/** The dev target for the machine we are on, or null on an uncovered platform. */
-export function hostTarget(): TargetSpec | null {
-  return TARGETS.find(isNativeTarget) ?? null;
-}
-
 /** The file name a target's dev binary is committed under. */
 export function devOutFor(goos: string): string | null {
   return TARGETS.find((t) => t.goos === goos)?.devOut ?? null;
@@ -236,8 +231,6 @@ export function latestUnsignedXpi(root: string): string | null {
 }
 
 /* ---------- per-binary state (what each committed binary was built from) ---------- */
-
-export const STATE_FILE = join(ROOT, "installer", "bin", "payload-state.json");
 
 export interface BinaryState {
   /** Committed file name inside installer/bin/. */

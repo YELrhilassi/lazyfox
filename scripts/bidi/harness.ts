@@ -68,10 +68,6 @@ export function printHelp(config) {
   }
 }
 
-export function listSuites(config) {
-  printHelp(config);
-}
-
 // Turn the CLI args into a run selection. `enabled` is the set of groups whose
 // tests run (all groups for a full/default run); `only` is a substring filter
 // applied on top; `skipNames` is the legacy SKIP env exact-name list.

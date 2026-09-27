@@ -225,8 +225,6 @@ export function createCoreFacade(getApi: () => Promise<CoreApi>) {
     > => call((a) => a.sessionSummary(sessions, current)),
   };
 }
-export type CoreFacade = ReturnType<typeof createCoreFacade>;
-
 // The API object once it has been initialized (used for the synchronous hot
 // path by WkSession). Both backends call setCoreApi with their init promise.
 let apiPromise: Promise<CoreApi> | null = null;
