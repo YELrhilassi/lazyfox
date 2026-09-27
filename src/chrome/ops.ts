@@ -23,6 +23,7 @@ import {
 import { withConfig, type ChromeCfg } from "./config";
 import { toast } from "../shared/overlay";
 import type { ActionOps } from "../shared/ops";
+import type { RelayAction, RelayReq, RelayRes } from "../shared/protocol";
 import type { Config, PopupItem, SessionSummaryItem } from "../shared/types";
 
 declare const Services: any;
@@ -270,8 +271,8 @@ export interface ChromeOpsDeps {
   // requestReply / requestSessionState only run at action time, so a getter
   // resolves the construction cycle.
   getChannel(): {
-    requestBg(action: string, arg?: string): void;
-    requestReply(action: string, arg?: string): Promise<any>;
+    requestBg<K extends RelayAction>(action: K, arg?: RelayReq<K>): void;
+    requestReply<K extends RelayAction>(action: K, arg?: RelayReq<K>): Promise<RelayRes<K> | null>;
     requestSessionState(): Promise<void>;
     requestSessionTabs(name: string): Promise<PopupItem[]>;
     requestRecentlyClosed(): Promise<PopupItem[]>;
@@ -283,7 +284,11 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
   // Session + split actions relay to the extension background (which owns
   // browser.storage) through the #lfc=req channel, then refresh the status
   // bar's session list once the action lands.
-  const sessionAction = (action: string, arg?: string) => {
+  //
+  // The 900ms delay is not a guess about the network: the relay is a URL slot
+  // polled every 500ms, and the status-bar refresh is queued behind the action
+  // it is meant to reflect. It is a real ordering dependency, not a retry.
+  const sessionAction = <K extends RelayAction>(action: K, arg?: RelayReq<K>) => {
     deps.getChannel().requestBg(action, arg);
     setTimeout(() => void deps.getChannel().requestSessionState(), 900);
   };
@@ -532,9 +537,9 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       deps.getChannel().requestBg("alternateTab");
     },
     recentlyClosed: () => deps.getChannel().requestRecentlyClosed(),
-    restoreClosedTab: (key: string) => deps.getChannel().requestBg("restoreClosedTab", key),
+    restoreClosedTab: (key: string) => deps.getChannel().requestBg("restoreClosedTab", { key }),
     restoreAllClosed: () => deps.getChannel().requestBg("restoreAllClosed"),
-    removeHistory: (url: string) => deps.getChannel().requestBg("removeHistory", url),
+    removeHistory: (url: string) => deps.getChannel().requestBg("removeHistory", { url }),
     clearHistory: () => deps.getChannel().requestBg("clearHistory"),
     zoom: (delta: number, factor?: number) => {
       try {
@@ -667,18 +672,29 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       return items;
     },
     listSessionTabs: (name: string) => deps.getChannel().requestSessionTabs(name),
-    saveSession: (name: string) => sessionAction("saveSession", name),
-    newSession: (name: string) => sessionAction("newSession", name),
-    restoreSession: (name: string) => sessionAction("restoreSession", name),
-    deleteSession: (name: string) => sessionAction("deleteSession", name),
+    saveSession: (name: string) => sessionAction("saveSession", { name }),
+    newSession: (name: string) => sessionAction("newSession", { name }),
+    restoreSession: (name: string) => sessionAction("restoreSession", { name }),
+    deleteSession: (name: string) => sessionAction("deleteSession", { name }),
     switchSessionByMarker: (marker: number) =>
-      sessionAction("switchSessionByMarker", String(marker)),
+      sessionAction("switchSessionByMarker", { marker }),
     assignSessionMarker: (name: string, marker: number) =>
-      sessionAction("assignSessionMarker", name + "\u0001" + marker),
-    sessionTabCopy: (from: string, index: number, to: string) =>
-      sessionAction("sessionTabCopy", from + "\u0001" + index + "\u0001" + to),
-    sessionTabMove: (from: string, index: number, to: string) =>
-      sessionAction("sessionTabMove", from + "\u0001" + index + "\u0001" + to),
+      sessionAction("assignSessionMarker", { name, marker }),
+    // These two answer with a reason when they fail, so they use the
+    // reply path: a copy into a session that does not exist used to look
+    // exactly like one that worked.
+    sessionTabCopy: (from: string, index: number, to: string) => {
+      void deps.getChannel().requestReply("sessionTabCopy", { from, index, to }).then((r) => {
+        if (r && r.ok === false) toast("tab copy failed: " + (r.note || "unknown"));
+      });
+      setTimeout(() => void deps.getChannel().requestSessionState(), 900);
+    },
+    sessionTabMove: (from: string, index: number, to: string) => {
+      void deps.getChannel().requestReply("sessionTabMove", { from, index, to }).then((r) => {
+        if (r && r.ok === false) toast("tab move failed: " + (r.note || "unknown"));
+      });
+      setTimeout(() => void deps.getChannel().requestSessionState(), 900);
+    },
     splitTab: (orientation: "horizontal" | "vertical") => {
       if (!deps.split.splitCurrentTab(orientation)) {
         const api = typeof window.gBrowser.addTabSplitView === "function";

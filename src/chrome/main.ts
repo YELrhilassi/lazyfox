@@ -301,25 +301,23 @@ import { createTypingChannel } from "./typing";
     if (announcedAlive || aliveAckInFlight) return;
     if (!channel.ccBaseUrl()) return; // extension not ready yet; poll retries
     aliveAckInFlight = true;
-    // The arg carries the helper version, the active profile's user-facing
-    // name, its raw directory leaf and the content-process bridge state
-    // (\u0001-separated); the background stores them so the command-center footer,
-    // setup page and diagnostics page can show what is really installed.
-    void channel.requestReply(
-      "alive",
-      CHROME_HELPER_VERSION +
-        "\u0001" +
-        profileName +
-        "\u0001" +
-        profileDir +
-        "\u0001" +
-        (bridgeRegistered() ? "1" : "0")
-    ).then((ack: any) => {
-      aliveAckInFlight = false;
-      // requestReply resolves null on timeout/error; the ack object on success.
-      if (ack && ack.ok) announcedAlive = true;
-      // otherwise the next 500ms poll retries
-    });
+    // The arg carries the helper version, the active profile's user-facing name,
+    // its raw directory leaf and the content-process bridge state; the
+    // background stores them so the command-center footer, setup page and
+    // diagnostics page can show what is really installed.
+    void channel
+      .requestReply("alive", {
+        version: CHROME_HELPER_VERSION,
+        profileName: profileName,
+        profileDir: profileDir,
+        bridge: bridgeRegistered() ? "1" : "0",
+      })
+      .then((ack) => {
+        aliveAckInFlight = false;
+        // requestReply resolves null on timeout/error; the ack object on success.
+        if (ack && ack.ok) announcedAlive = true;
+        // otherwise the next 500ms poll retries
+      });
   }
   announceChromeAlive();
 

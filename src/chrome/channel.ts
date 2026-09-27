@@ -22,9 +22,9 @@
 import { mergeConfig, mergeHotkeys } from "../shared/config";
 import { openBookmarksPopup, openDownloadsPopup, openHistoryPopup, openSearchPopup, openTabsPopup, openUrlPopup, type PopupCtx } from "../shared/popups";
 import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
+import type { ChromeAction, ChromeReq, RelayAction, RelayReq, RelayRes } from "../shared/protocol";
 import { applyHoverRevealPref, type ChromeCfg } from "./config";
 import type { CacheCtl } from "./cache";
-import type { CacheMode } from "../shared/types";
 import type { DebugHandlers } from "./debug";
 import type { SplitView } from "./splitview";
 import type { StatusBarCtl } from "./statusbar";
@@ -68,7 +68,9 @@ export interface Channel {
   startRelay(): boolean;
   // Fire-and-forget request to the background (the alive announce, session
   // ops, ...). Returns whether the request was accepted by the relay.
-  requestBg(action: string, arg?: string): boolean;
+  // Typed against RelayApi: an unknown action, or an argument of the wrong
+  // shape, is a compile error rather than a message nobody handles.
+  requestBg<K extends RelayAction>(action: K, arg?: RelayReq<K>): boolean;
   // True once the relay has actually connected its port (ready), i.e.
   // requestBg is being delivered rather than buffered. Callers use this to
   // decide whether a fire-and-forget request actually reached the background
@@ -78,7 +80,7 @@ export interface Channel {
   relayReady(): boolean;
   // Request with a reply (the background's response resolves the promise).
   // Resolves null on timeout / relay failure — callers must tolerate that.
-  requestReply(action: string, arg?: string): Promise<any>;
+  requestReply<K extends RelayAction>(action: K, arg?: RelayReq<K>): Promise<RelayRes<K> | null>;
   requestSessionState(): Promise<void>;
   // Fetches one named session's tabs (for the sessions popup's right pane).
   requestSessionTabs(name: string): Promise<PopupItem[]>;
@@ -115,8 +117,10 @@ export function createChannel(deps: ChannelDeps): Channel {
   // rest queue here; the page never clobbers a pending request hash.
   let relayTab: { browser: any; tab: any } | null = null;
   let relayReady = false;
-  // Requests queued for the single URL slot (helper -> background).
-  let pendingReqs: Array<{ id: number; action: string; arg?: string }> = [];
+  // Requests queued for the single URL slot (helper -> background). The arg is
+  // a structured value from RelayApi, not a string: the wire JSON-encodes it
+  // exactly as it already did replies and commands.
+  let pendingReqs: Array<{ id: number; action: RelayAction; arg: unknown }> = [];
   // Reply waiters keyed by request id, resolved when the relay page writes the
   // `#lfr=rp.<id>.<json>` hash back into the tab URL.
   let relaySeq = 0;
@@ -351,8 +355,18 @@ export function createChannel(deps: ChannelDeps): Channel {
     if (cur.indexOf(RELAY_HASH_PREFIX) !== -1) return; // slot busy
     const next = pendingReqs.shift();
     if (!next) return;
-    const argEnc = next.arg != null ? "." + encodeURIComponent(next.arg) : "";
-    loadRelay(base + "relay.html" + RELAY_HASH_PREFIX + "rq." + next.id + "." + next.action + argEnc);
+    // Always send an arg, even an empty one: a uniform "rq.<id>.<action>.<json>"
+    // means the relay page never has to guess whether a missing tail meant
+    // "no argument" or "an empty string".
+    let json = "{}";
+    try {
+      json = JSON.stringify(next.arg == null ? {} : next.arg);
+    } catch (e) {
+      json = "{}";
+    }
+    loadRelay(
+      base + "relay.html" + RELAY_HASH_PREFIX + "rq." + next.id + "." + next.action + "." + encodeURIComponent(json)
+    );
   }
 
   // Poll the relay tab's URL (called from startRelay every 500ms): handle a
@@ -574,7 +588,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     return true;
   }
 
-  function requestBg(action: string, arg?: string): boolean {
+  function requestBg<K extends RelayAction>(action: K, arg?: RelayReq<K>): boolean {
     if (!ccBaseUrl()) return false;
     if (!startRelay()) return false;
     // Queue into the single URL slot; sendNextRelay drains it as the slot
@@ -582,7 +596,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     // are handled+cleared by pollRelayUrl). If the relay never comes up, drop
     // the entry after RELAY_TIMEOUT (the caller — e.g. the alive announce —
     // retries on its own schedule).
-    const entry = { id: 0, action: action, arg: arg };
+    const entry = { id: 0, action: action, arg: arg ?? {} };
     pendingReqs.push(entry);
     setTimeout(() => {
       const i = pendingReqs.indexOf(entry);
@@ -592,7 +606,10 @@ export function createChannel(deps: ChannelDeps): Channel {
     return true;
   }
 
-  function requestReply(action: string, arg?: string): Promise<any> {
+  // Resolves the background's reply, or null on timeout / relay failure —
+  // callers must tolerate null, because "the other end never answered" is a
+  // normal state for a channel that rides a browser tab's URL.
+  function requestReply<K extends RelayAction>(action: K, arg?: RelayReq<K>): Promise<RelayRes<K> | null> {
     return new Promise((resolve) => {
       const id = ++relaySeq;
       const timer = setTimeout(() => {
@@ -606,8 +623,7 @@ export function createChannel(deps: ChannelDeps): Channel {
         resolve(null);
         return;
       }
-      const entry = { id: id, action: action, arg: arg };
-      pendingReqs.push(entry);
+      pendingReqs.push({ id: id, action: action, arg: arg ?? {} });
       sendNextRelay();
     });
   }
@@ -617,115 +633,73 @@ export function createChannel(deps: ChannelDeps): Channel {
   // Commands the background pushes through the relay (native splits, status
   // pushes, ...). `arg` arrives structured-cloned: objects come through as
   // objects, strings as strings.
-  function handleCmd(action: string, arg: any): void {
-    if (action === "splitTab") {
-      try {
-        deps.split.splitCurrentTab("horizontal");
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "unsplit") {
-      try {
-        deps.split.unsplit();
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "switchPane") {
-      try {
-        deps.split.switchPane(parseInt(arg, 10) || 1);
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "swapSplitPanes") {
-      try {
-        deps.split.swapPane(parseInt(arg, 10) || 1);
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "moveToSplit") {
-      try {
-        deps.split.addTabToSplitByIndex(parseInt(arg, 10) || 0);
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "restoreSplits") {
+  // Commands the background pushes through the relay (native splits, status
+  // pushes, ...). The arg arrives structured-cloned, so what actually shows up
+  // here is exactly the request shape declared in ChromeApi.
+  //
+  // The dispatch is a table rather than an if-chain for one concrete reason: an
+  // if-chain silently ignores an action it does not recognise, so a rename on
+  // the background side turned into a push that did nothing and nobody could
+  // tell. A table typed over ChromeAction makes an unhandled action a compile
+  // error, and a removed action a compile error here too.
+  function handleCmd(action: string, arg: unknown): void {
+    const table: { [K in ChromeAction]: (req: ChromeReq<K>) => void } = {
+      splitTab: () => deps.split.splitCurrentTab("horizontal"),
+      unsplit: () => deps.split.unsplit(),
+      switchPane: (req) => deps.split.switchPane(req.dir >= 0 ? 1 : -1),
+      swapSplitPanes: (req) => deps.split.swapPane(req.dir >= 0 ? 1 : -1),
+      moveToSplit: (req) => deps.split.addTabToSplitByIndex(req.index),
       // Session restore finished opening tabs; re-create the native split
-      // groupings. `arg` is JSON of [[index, ...], ...] with 1-based
-      // positions over the SAVED tab list.
-      try {
-        deps.split.restoreSplits(String(arg));
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "sessionState") {
+      // groupings. Positions are 1-based over the SAVED tab list.
+      restoreSplits: (req) => deps.split.restoreSplits(req.groups),
       // Status-bar push/reply: the fresh session summary as an object.
-      deps.status.applySessionState(arg);
-      return;
-    }
-    if (action === "leaderState") {
-      // Content-script leader arm/disarm: cache it per tab-strip index so the
+      sessionState: (req) => deps.status.applySessionState(req),
+      // Content-script leader arm/disarm, cached per tab-strip index so the
       // window-level status bar can show the pulsing LEADER chevron on web
-      // pages.
-      const st = arg || {};
-      if (typeof st.index === "number" && st.index >= 0) {
-        deps.status.setContentLeader(st.index, !!st.active);
-      }
-      return;
-    }
-    if (action === "findState") {
-      // Content-script find-in-page count: cache it per tab-strip index so
-      // the window-level status bar shows the live match count on web pages.
-      const st = arg || {};
-      if (typeof st.index === "number" && st.index >= 0) {
-        deps.status.setContentFind(st.index, st.count || 0, st.cur || 0);
-      }
-      return;
-    }
-    if (action === "cacheGlobal") {
+      // pages, where the content script owns the leader key.
+      leaderState: (req) => {
+        if (req.index >= 0) deps.status.setContentLeader(req.index, !!req.active);
+      },
+      // Content-script find-in-page count, cached the same way.
+      findState: (req) => {
+        if (req.index >= 0) deps.status.setContentFind(req.index, req.count || 0, req.cur || 0);
+      },
       // Global page-cache mode pushed by the background's diagnostics page.
-      deps.cache.setGlobalMode((arg as CacheMode) || "normal");
-      return;
-    }
-    if (action === "cachePolicy") {
-      // Per-tab/session page-cache policy: { mode, tabIds }, tabIds aligned to
-      // the strip order the tab switcher already relies on.
-      const p = arg || {};
-      deps.cache.setPolicy((p.mode as CacheMode) || "normal", Array.isArray(p.tabIds) ? p.tabIds : []);
-      return;
+      cacheGlobal: (req) => deps.cache.setGlobalMode(req.mode || "normal"),
+      // Per-tab/session page-cache policy; tabIds aligned to the strip order
+      // the tab switcher already relies on.
+      cachePolicy: (req) =>
+        deps.cache.setPolicy(req.mode || "normal", Array.isArray(req.tabIds) ? req.tabIds : []),
+    };
+    const fn = table[action as ChromeAction];
+    if (!fn) return; // an action this build does not know: ignore, never throw
+    try {
+      fn((arg || {}) as never);
+    } catch (e) {
+      // A push that throws must not take the whole chrome helper down with it.
+      // Losing one status-bar update is survivable; losing the leader key is not.
     }
   }
 
 
   /* ===================== public request wrappers ===================== */
 
+  // The three read-only pulls the chrome UI makes, each with its reply already
+  // shaped by RelayApi. They survive the `Array.isArray` / object guards
+  // because the reply crosses a URL and a port: a truncated or half-parsed
+  // payload must degrade to an empty list, never to a render-time crash.
   function requestSessionState(): Promise<void> {
-    return requestReply("sessionState").then((state: any) => {
+    return requestReply("sessionState").then((state) => {
       if (state && typeof state === "object") deps.status.applySessionState(state);
     });
   }
 
   function requestSessionTabs(name: string): Promise<PopupItem[]> {
-    return requestReply("sessionTabs", name).then((items: any) =>
-      Array.isArray(items) ? (items as PopupItem[]) : []
-    );
+    return requestReply("sessionTabs", { name }).then((items) => (Array.isArray(items) ? items : []));
   }
 
   function requestRecentlyClosed(): Promise<PopupItem[]> {
-    return requestReply("recentlyClosed").then((items: any) =>
-      Array.isArray(items) ? (items as PopupItem[]) : []
-    );
+    return requestReply("recentlyClosed").then((items) => (Array.isArray(items) ? items : []));
   }
 
   /* ===================== real-tab channels (keys/state/cfg/open) ===================== */
