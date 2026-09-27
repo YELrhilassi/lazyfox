@@ -101,14 +101,6 @@ export async function subscribe(events) {
   return res;
 }
 
-export function onEvent(cb) {
-  if (!ws) return;
-  ws.on("message", (data) => {
-    const msg = JSON.parse(data.toString());
-    if (msg.type === "event") cb(msg);
-  });
-}
-
 // --- browser-level helpers ---
 
 export function startGecko({ profile } = {}) {
@@ -456,23 +448,6 @@ export async function focusPage(context) {
   }
 }
 
-export async function typeText(context, text) {
-  // One key event per character; printable chars are typed via their value.
-  const actions = [];
-  for (const ch of text) {
-    actions.push({ type: "keyDown", value: ch });
-    actions.push({ type: "keyUp", value: ch });
-  }
-  return send("input.performActions", {
-    context,
-    actions: [{ type: "key", id: "kbd", actions }],
-  });
-}
-
-export async function releaseKeys(context) {
-  return send("input.releaseActions", { context });
-}
-
 export function waitFor(fn, timeoutMs = 15000, interval = 120) {
   const start = Date.now();
   return new Promise((resolvePromise, reject) => {
@@ -495,38 +470,6 @@ export function waitFor(fn, timeoutMs = 15000, interval = 120) {
     };
     tick();
   });
-}
-
-export async function waitForContexts(count, timeoutMs = 15000) {
-  return waitFor(async () => {
-    const tree = await getTree();
-    const all = [];
-    const walk = (cs) => {
-      for (const c of cs) {
-        all.push(c);
-        if (c.children) walk(c.children);
-      }
-    };
-    walk(tree);
-    if (all.length >= count) return all;
-    return null;
-  }, timeoutMs);
-}
-
-export function contextId(c) {
-  return c.context || c.id;
-}
-
-export async function findContextByUrl(fragment, contexts) {
-  const all = [];
-  const walk = (cs) => {
-    for (const c of cs) {
-      all.push(c);
-      if (c.children) walk(c.children);
-    }
-  };
-  walk(contexts || (await getTree()));
-  return all.find((c) => (c.url || "").includes(fragment)) || null;
 }
 
 // --- tiny local HTTP server for content-script tests ---
@@ -614,6 +557,3 @@ export async function removeProfile(dir) {
   } catch {}
 }
 
-export function pathToFile(p) {
-  return pathToFileURL(p).href;
-}

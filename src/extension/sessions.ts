@@ -683,10 +683,6 @@ export function isRestoring(): boolean {
   return restoring;
 }
 
-export function setRestoring(v: boolean): void {
-  restoring = v;
-}
-
 export function scheduleAutosave(): void {
   if (restoring) return;
   if (autosaveTimer != null) clearTimeout(autosaveTimer);
