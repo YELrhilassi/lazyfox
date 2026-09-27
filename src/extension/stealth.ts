@@ -8,8 +8,7 @@
 // label a tab without an extra query.
 
 import { CC_URL } from "./tabs";
-
-const STEALTH_KEY = "lfStealth";
+import { readKey, writeKey, vArray, vString, type StealthRecord } from "./store";
 // cookieStoreIds WE own. A tab's cookieStoreId alone can't identify a stealth
 // tab (a user's own container would look identical), so snapshot/restore test
 // membership in this set.
@@ -18,19 +17,20 @@ export const stealthContainers = new Set<string>();
 const stealthTabs = new Map<number, string>();
 let stealthReconcile: Promise<void> | null = null;
 
-async function readStealth(): Promise<{ containers: string[] }> {
-  try {
-    const r = await browser.storage.local.get(STEALTH_KEY);
-    const v = r && r[STEALTH_KEY];
-    if (v && Array.isArray(v.containers)) return v as { containers: string[] };
-  } catch (e) {
-    // fall through
-  }
-  return { containers: [] };
+// A malformed container id is dropped rather than failing the whole record:
+// one bad id in the list should not orphan every other container this
+// extension owns (and therefore leak them — nothing else would ever wipe them).
+const vStealth = (raw: unknown): StealthRecord | undefined => {
+  if (!raw || typeof raw !== "object") return undefined;
+  return { containers: vArray(vString)((raw as { containers?: unknown }).containers) || [] };
+};
+
+async function readStealth(): Promise<StealthRecord> {
+  return readKey("lfStealth", vStealth, { containers: [] });
 }
 
-async function writeStealth(st: { containers: string[] }): Promise<void> {
-  await browser.storage.local.set({ [STEALTH_KEY]: st });
+async function writeStealth(st: StealthRecord): Promise<void> {
+  await writeKey("lfStealth", st);
 }
 
 async function persistStealth(): Promise<void> {

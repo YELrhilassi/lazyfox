@@ -479,6 +479,11 @@ html,body{margin:0}
      STILL be hintable (that is what the media exemption is for). */
   #lonely { width:120px; height:70px; margin-top:18px; cursor:pointer; background:#222; }
   #lonely img { width:100%; height:100%; }
+  /* A widget that tracks press state the way a player overlay does: a pointer
+     must be seen going down AND released before the control will act. This is
+     the shape that silently ignored every hint click while a plain link
+     worked, because a mouseup claiming buttons:1 never reads as a release. */
+
 </style></head>
 <body>
 <main>
@@ -491,9 +496,31 @@ html,body{margin:0}
     <button id="skipad" data-id="skipad" onclick="document.title='SKIPPED'">Skip ad <span data-id="skipad-inner">now</span></button>
   </div>
   <button id="deaf" data-id="deaf">Ignore me</button>
+
   <div id="lonely" data-id="lonely"><img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='70'%3E%3Crect width='120' height='70' fill='%23222'/%3E%3C/svg%3E"></div>
 </main>
 <script>
+  // Record what the LAST click on the skip button actually looked like from
+  // the page side — isTrusted, event.target, and the buttons value seen on
+  // mouseup. This turns "does YouTube-style trust checking break us" from a
+  // claim into a measurement the e2e suite can read, and it is the only way
+  // to tell a trust problem apart from a press-state problem.
+  window.__clicks = [];
+  (function () {
+    var b = document.getElementById("skipad");
+    ["pointerover","mouseover","pointermove","pointerdown","mousedown","pointerup","mouseup","click"].forEach(function (t) {
+      b.addEventListener(t, function (e) {
+        window.__clicks.push({
+          type: t,
+          trusted: e.isTrusted,
+          buttons: e.buttons,
+          detail: e.detail,
+          target: e.target && (e.target.id || e.target.tagName),
+        });
+      });
+    });
+  })();
+
   // Answer only a genuine press. The synthetic sequence a content script can
   // dispatch is untrusted, so this control does nothing — which is exactly the
   // case the user must be told about rather than left guessing. Wired at the
@@ -501,6 +528,70 @@ html,body{margin:0}
   document.getElementById("deaf").addEventListener("click", function (e) {
     if (e.isTrusted) document.title = "DEAF-PRESSED";
   });
+
+
+</script>
+</main>
+</body></html>`,
+  },
+  // Activation edge cases, on their own page so they cannot perturb the
+  // player fixtures' exact expected hint sets.
+  "/press": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>PRESS</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:#0b0b0f; color:#eee; }
+  main { padding:16px; }
+  /* A widget that tracks press state the way a player overlay does: a pointer
+     must be seen going down AND released before the control will act. This is
+     the shape that silently ignored every hint click while a plain link
+     worked, because a mouseup claiming buttons:1 never reads as a release. */
+  #pressy { display:block; width:170px; height:34px; margin-bottom:14px; background:#2b2b33;
+            color:#eee; border:1px solid #555; font:13px system-ui,sans-serif; cursor:pointer; }
+  #pressy[aria-pressed="true"] { background:#3a7; color:#000; }
+  /* Two controls whose hint keys share a prefix, so typing narrows instead of
+     activating and Enter becomes the only way to take the first match. */
+  .amb { display:block; width:170px; height:30px; margin-top:8px; background:#2a2a33;
+         color:#eee; border:1px solid #555; font:13px system-ui,sans-serif; }
+</style></head>
+<body>
+<main>
+  <button id="pressy" data-id="pressy" aria-pressed="false">Press me</button>
+  <a href="#amb1" class="amb" data-id="amb1">amb one</a>
+  <a href="#amb2" class="amb" data-id="amb2">amb two</a>
+  <a href="#l3" class="amb" data-id="l3">three</a>
+  <a href="#l4" class="amb" data-id="l4">four</a>
+  <a href="#l5" class="amb" data-id="l5">five</a>
+  <a href="#l6" class="amb" data-id="l6">six</a>
+  <a href="#l7" class="amb" data-id="l7">seven</a>
+  <a href="#l8" class="amb" data-id="l8">eight</a>
+  <a href="#l9" class="amb" data-id="l9">nine</a>
+  <a href="#l10" class="amb" data-id="l10">ten</a>
+  <a href="#l11" class="amb" data-id="l11">eleven</a>
+  <a href="#l12" class="amb" data-id="l12">twelve</a>
+</main>
+<script>
+  // A press-state machine, the shape every real player overlay uses. It only
+  // commits on a click that arrives while the widget believes a pointer went
+  // down and then came back up — and it decides that from event.buttons, which
+  // is the set of buttons CURRENTLY HELD. A sequence that reports buttons:1 on
+  // mouseup leaves it believing the button is still down, so the click is
+  // dropped. This is the bug the old emulateClick had, reproduced exactly.
+  (function () {
+    var el = document.getElementById("pressy");
+    var down = false;
+    el.addEventListener("mousedown", function (e) {
+      if (e.button === 0) down = true;
+    });
+    el.addEventListener("mouseup", function () {
+      // A real release has no buttons held.
+      if (down) down = false;
+    });
+    el.addEventListener("click", function () {
+      el.setAttribute("data-saw", down ? "still-down" : "released");
+      el.setAttribute("aria-pressed", "true");
+    });
+  })();
 </script>
 </main>
 </body></html>`,

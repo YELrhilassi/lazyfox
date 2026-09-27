@@ -28,7 +28,18 @@ export interface HintItem {
 export const HINT_CSS =
   ".hint{position:fixed;z-index:2147483646;background:#2ac3de;color:#16161e;" +
   "font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;padding:2px 5px;border-radius:4px;" +
-  "pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4),0 0 0 1px rgba(22,22,30,.55)}";
+  "pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4),0 0 0 1px rgba(22,22,30,.55)}" +
+  // The enter-affordance badge. It is sized off the SAME 12px/1 metric as .hint
+  // so a glance can compare it to a letter rather than having to judge two
+  // unrelated sizes: the point is to read as "a key you press", not as chrome.
+  // Fixed (not bottom-right) so it sits next to the labels rather than in the
+  // corner the browser UI occupies, and the same colours so it reads as part of
+  // the same overlay.
+  ".hint-enter{position:fixed;left:8px;bottom:8px;z-index:2147483647;background:#2ac3de;color:#16161e;" +
+  "font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;padding:2px 5px;border-radius:4px;" +
+  "pointer-events:none;white-space:pre;box-shadow:0 2px 6px rgba(0,0,0,.4),0 0 0 1px rgba(22,22,30,.55)}" +
+  // Off-screen hint labels are hidden, not moved; see the note in overlay.ts.
+  ".hint[style*='display:none'],.hint-off{display:none}";
 
 // Elements worth a hint. Beyond the classic links/buttons/inputs this covers
 // the ARIA widgets framework UIs build from (tabs, menu items, options,

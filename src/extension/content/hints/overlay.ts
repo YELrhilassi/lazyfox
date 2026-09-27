@@ -16,13 +16,28 @@ export interface HintOverlay {
   /** Remove the host and unmark the document. */
   unmount(): void;
   /**
+   * What the enter badge is currently showing, for the page report and the
+   * e2e harness. The badge lives in a CLOSED shadow root, so nothing outside
+   * can see it — which is the point (a page must not be able to read or
+   * restyle the overlay) but also means a test needs an honest accessor.
+   */
+  enterBadge(): { shown: boolean; glyph: string };
+  /**
    * Whether a node is the overlay's own host (or the host itself appeared in a
    * mutation record). The session's DOM watcher must ignore its own churn, and
    * the overlay is the only thing that knows what its host is.
    */
   isOwnNode(node: Node): boolean;
   /**
-   * Draw the labels for the items matching `typed`, then re-place them.
+   * Draw the labels for the items matching `typed`, then re-place them, then
+   * show or hide the enter-affordance badge.
+   *
+   * `needEnter` is true when the typed prefix still matches more than one item,
+   * so a further character is needed and the FIRST match can only be committed
+   * with Enter. That is the only state in which Enter does anything, and it is
+   * invisible otherwise — a user who types "ad" and waits has no way to know
+   * the hint system is holding two candidates.
+   *
    * Returns true when anything moved, which is how the session knows the page
    * is shifting and the fast tracking loop should keep running.
    */
@@ -30,14 +45,52 @@ export interface HintOverlay {
     items: HintItem[],
     typed: string,
     resolve: (it: HintItem) => Element | null,
+    needEnter: boolean,
   ): boolean;
 }
 
 export function createHintOverlay(): HintOverlay {
-  let host: (HTMLElement & { _box: HTMLElement }) | null = null;
+  let host: (HTMLElement & { _box: HTMLElement; _enter: HTMLElement }) | null = null;
+
+  // The ASCII return glyph. "⏎" is a real Unicode character, not a drawing of
+  // one: it renders identically at 12px in the hint font on every platform we
+  // target, and it cannot drift the way an SVG or a box-drawing sequence does.
+  // The trailing space is part of the glyph's advance width and is what keeps
+  // the arrow from touching the label box when they overlap on a narrow window.
+  const ENTER_GLYPH = "⏎ ";
+
+  // Show or hide the badge. It is created once and toggled, not recreated per
+  // keystroke, for the same reason the labels are reused: the session renders on
+  // every character, and churning a node per character is how a hint overlay
+  // ends up in the page's own MutationObserver.
+  function enterBadge(): { shown: boolean; glyph: string } {
+    return {
+      shown: !!host && !!host._enter && host._enter.style.display !== "none",
+      glyph: ENTER_GLYPH,
+    };
+  }
+
+  function setEnterBadge(on: boolean): void {
+    if (!host) return;
+    if (on) {
+      if (!host._enter) {
+        const b = document.createElement("span");
+        b.className = "hint-enter";
+        host._box.appendChild(b);
+        host._enter = b;
+      }
+      if (host._enter.textContent !== ENTER_GLYPH) host._enter.textContent = ENTER_GLYPH;
+      if (host._enter.style.display !== "none") host._enter.style.display = "";
+    } else if (host._enter && host._enter.style.display !== "none") {
+      host._enter.style.display = "none";
+    }
+  }
 
   function mount(): void {
-    host = document.createElement("div") as unknown as HTMLElement & { _box: HTMLElement };
+    host = document.createElement("div") as unknown as HTMLElement & {
+      _box: HTMLElement;
+      _enter: HTMLElement;
+    };
     host.id = "lazyfox-hints";
     const sh = host.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
@@ -62,8 +115,13 @@ export function createHintOverlay(): HintOverlay {
     items: HintItem[],
     typed: string,
     resolve: (it: HintItem) => Element | null,
+    needEnter: boolean,
   ): boolean {
     if (!host) return false;
+    // The badge is set BEFORE the return, so it survives the early exits below
+    // (no items, nothing visible) — those are exactly the states where the
+    // user most needs to know Enter is or is not the next move.
+    setEnterBadge(needEnter);
     for (const it of items) {
       if (it.key.indexOf(typed) !== 0 && it.label) {
         it.label.remove();
@@ -229,5 +287,5 @@ export function createHintOverlay(): HintOverlay {
     return host !== null && (node === host || node === host._box);
   }
 
-  return { mount, unmount, isOwnNode, render };
+  return { mount, unmount, enterBadge, isOwnNode, render };
 }

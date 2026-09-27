@@ -41,6 +41,10 @@ export interface LinkHints {
   // What the last activation did (see HintActivation), for the diagnostics page.
   // null when nothing has been activated in this page yet.
   lastActivation(): HintActivation | null;
+  // Whether the enter-affordance badge is up, and what it says. The badge only
+  // appears in the one state a user cannot otherwise detect (an ambiguous typed
+  // prefix), so it is part of the same self-report the diagnostics page reads.
+  enterBadge(): { shown: boolean; glyph: string };
 }
 
 export function createLinkHints(getHintChars: () => string): LinkHints {
@@ -446,8 +450,26 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
 
   // Draw the labels for the current batch and typed prefix. The one place the
   // session talks to the overlay.
+  //
+  // needEnter is the state the user cannot otherwise see: the next character
+  // will not activate anything, and Enter is the only way to take the first
+  // match. It has to be derived from EXACTLY the condition typeChar() uses to
+  // decide not to activate, or the badge promises an Enter that does nothing.
+  //
+  // That condition is subtler than "typed is not a complete key". typeChar
+  // activates on an exact match only when nothing else starts with it, so an
+  // exact match with a longer key extending it is still ambiguous — the user
+  // typed "a", one link is "a" and another is "ad", and neither fires until
+  // they commit. So: ambiguous means at least one match is longer than `typed`
+  // AND there is more than one candidate to choose between.
   function render(): boolean {
-    return overlay.render(items, typed, resolveItem);
+    const matches = items.filter((i) => i.key.indexOf(typed) === 0 && itemOnScreen(i));
+    const longer = matches.some((i) => i.key.length > typed.length);
+    // The typed.length guard is not redundant: an empty prefix matches
+    // everything, so without it the badge would be up from the moment ;f
+    // starts — telling the user to press Enter to choose, when they have not
+    // narrowed anything yet and any character is the right next move.
+    return overlay.render(items, typed, resolveItem, typed.length > 0 && longer && matches.length > 1);
   }
 
   // Whether a hint's element is currently within the viewport — the same test
@@ -572,6 +594,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   }
 
   return {
+    enterBadge: () => overlay.enterBadge(),
     get active() {
       return active;
     },
