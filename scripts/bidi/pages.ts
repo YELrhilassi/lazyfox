@@ -188,6 +188,30 @@ export const pages = {
   "/bodyscroll": {
     body: `<!DOCTYPE html><html><head><style>html{height:100%;overflow:hidden}body{height:100%;margin:0;overflow:auto}</style></head><body><div style="height:3000px">tall content</div></body></html>`,
   },
+  // A ChatGPT/dashboard-style shell: the document itself CANNOT scroll (it is
+  // pinned to the viewport), and all content lives in an inner overflow:auto
+  // pane. The scroll keys must target the pane, not the dead window scroller.
+  "/innerpane": {
+    body: `<!DOCTYPE html><html><head><style>
+html,body{height:100%;margin:0;overflow:hidden}
+#pane{height:100%;overflow:auto;background:#fff}
+#pane div{height:120px;margin:6px;background:#eef}
+</style></head><body><div id="pane">${Array.from({ length: 30 }, (_, i) => `<div>row ${i}</div>`).join("")}</div></body></html>`,
+  },
+  // A shell with BOTH a document scroller and a fixed scrollable sidebar, so
+  // `;F` has at least two real regions to cycle between.
+  "/twopanes": {
+    body: `<!DOCTYPE html><html><head><style>
+html,body{margin:0}
+#side{position:fixed;top:0;left:0;width:240px;height:100vh;overflow:auto;background:#f4f4f4}
+#side div{height:90px;margin:4px;background:#dde}
+#main{margin-left:260px}
+#main div{height:150px;margin:8px;background:#efe}
+</style></head><body>
+<div id="side">${Array.from({ length: 40 }, (_, i) => `<div>side ${i}</div>`).join("")}</div>
+<div id="main">${Array.from({ length: 40 }, (_, i) => `<div>main ${i}</div>`).join("")}</div>
+</body></html>`,
+  },
   "/framed": {
     headers: { "X-Frame-Options": "DENY" },
     body: `<!DOCTYPE html><title>FRAMED PAGE</title><h1 id="marker">Framed content</h1>`,
@@ -405,6 +429,116 @@ export const pages = {
 </div>
 </body></html>`,
   },
+  // A deliberately "UI-heavy" page reproducing the patterns real framework
+  // sites (YouTube/GitHub/Reddit) put in front of a hint system: a fixed header
+  // that occludes the top of the page, a local scrim covering a link, closed
+  // fly-out menus (`opacity:0` / `visibility:hidden` / `aria-hidden`
+  // containers), a `pointer-events:none` control, a nested button>span target,
+  // a button whose centre is under a small badge, a dense grid of tiny targets,
+  // a control inside an open shadow root, and a link far below the fold for the
+  // scroll re-hint test. Every interactive element carries a `data-id` so a test
+  // can map a hint position back to the element it belongs to.
+  "/uitest": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>UI Heavy</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; color:#111; background:#fff; }
+  .topbar { position:fixed; top:0; left:0; right:0; height:44px; background:#101828; color:#fff; z-index:999; }
+  main { padding:64px 24px 24px; max-width:900px; }
+  .row { margin:8px 0; }
+  .tiny { width:54px; height:22px; font-size:11px; }
+  #tinygrid { display:grid; grid-template-columns:repeat(4,54px); gap:6px; margin:12px 0; }
+  #scrimwrap { position:relative; height:110px; margin:14px 0; background:#eef; }
+  #covered-link { position:absolute; left:24px; top:30px; }
+  #scrim { position:absolute; inset:0; background:rgba(10,20,40,.6); z-index:5; }
+  #badgewrap { position:relative; height:56px; margin:14px 0; }
+  #body-visible { position:absolute; left:0; top:0; width:220px; height:48px; }
+  #badge { position:absolute; left:100px; top:16px; width:22px; height:22px; background:#e00; }
+  .menu { opacity:0; }
+  .vishide { visibility:hidden; }
+  .pe { pointer-events:none; }
+  .spacer { height:2600px; background:repeating-linear-gradient(45deg,#f6f6f6,#f6f6f6 12px,#ececec 12px,#ececec 24px); }
+  /* The late/overlay control floats (like a video player's ad button) so
+     inserting it never reflows the rest of the page — that is what lets a
+     test tell "the batch grew" apart from "the whole page moved". */
+  #latewrap { position:fixed; left:12px; bottom:12px; z-index:2000; }
+</style></head>
+<body>
+<div class="topbar">fixed header</div>
+<main>
+  <div class="row"><a id="visible-link" data-id="visible-link" href="#one">Visible Link</a><img id="thumb" data-id="thumb" alt="" style="width:44px;height:22px;cursor:pointer;background:#cde;vertical-align:middle;margin-left:8px" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='22'%3E%3Crect width='44' height='22' fill='%23cde'/%3E%3C/svg%3E" onclick="document.title='THUMB'"><video id="vid-thumb" data-id="vid-thumb" style="width:44px;height:22px;cursor:pointer;background:#dec;vertical-align:middle;margin-left:8px" onclick="document.title='VIDEO'"></video></div>
+  <div id="latewrap"></div>
+  <div class="row"><button id="nested-btn" data-id="nested-btn" onclick="document.title='NESTED-OUTER'">Save <span id="nested-span" data-id="nested-span" role="button" onclick="document.title='NESTED-INNER'">now</span></button></div>
+  <div class="row"><button id="act-btn" data-id="act-btn" onclick="document.title='ACTIVATED'">Act</button></div>
+  <div class="row"><input id="scroll-input" data-id="scroll-input" placeholder="type here"></div>
+  <div class="row menu"><a id="hidden-opacity-link" data-id="hidden-opacity-link" href="#op">opacity menu link</a></div>
+  <div class="row vishide"><a id="hidden-vis-link" data-id="hidden-vis-link" href="#vis">visibility hidden link</a></div>
+  <div class="row" aria-hidden="true"><a id="hidden-aria-link" data-id="hidden-aria-link" href="#aria">aria hidden link</a></div>
+  <div class="row"><button id="pe-none-btn" data-id="pe-none-btn" class="pe" onclick="document.title='PE'">pointer-events none</button></div>
+  <div id="scrimwrap"><a id="covered-link" data-id="covered-link" href="#cov">covered link</a><div id="scrim"></div></div>
+  <div class="row"><a id="nearby-link" data-id="nearby-link" href="#near">nearby link</a></div>
+  <div id="badgewrap"><button id="body-visible" data-id="body-visible" onclick="document.title='BODY'">Body with a badge over its centre</button><span id="badge"></span></div>
+  <div id="tinygrid"></div>
+  <div class="row"><lf-shadow-button id="shadow-btn"></lf-shadow-button></div>
+  <div class="spacer">scroll space</div>
+  <div class="row"><a id="deep-link" data-id="deep-link" href="#deep">Deep Link</a></div>
+</main>
+<script>
+  var g = document.getElementById("tinygrid");
+  for (var i = 0; i < 100; i++) {
+    var b = document.createElement("button");
+    b.className = "tiny";
+    b.textContent = String(i);
+    b.setAttribute("data-id", "tiny" + i);
+    b.addEventListener("click", (function (n) { return function () { document.title = "TINY" + n; }; })(i));
+    g.appendChild(b);
+  }
+  // Mimics a video player's "Skip ad" button: a control that does NOT exist
+  // when hints are built and is inserted later, mid-session. Tests call this
+  // after ;f to prove a late-appearing control still gets a working hint.
+  window.__addLateSkip = function () {
+    var w = document.getElementById("latewrap");
+    if (w.querySelector("#late-skip")) return true;
+    var b = document.createElement("button");
+    b.id = "late-skip";
+    b.setAttribute("data-id", "late-skip");
+    b.textContent = "Skip";
+    b.addEventListener("click", function () { document.title = "LATE-SKIP"; });
+    w.appendChild(b);
+    return true;
+  };
+  // Mimics a virtual-DOM re-render: the framework throws away the old node
+  // and mounts a brand new one in the same place. The hint must survive it
+  // (same key, still works) instead of going dead.
+  window.__replaceLateSkip = function () {
+    var old = document.getElementById("late-skip");
+    if (!old) return false;
+    var b = document.createElement("button");
+    b.id = "late-skip";
+    b.setAttribute("data-id", "late-skip");
+    b.textContent = "Skip";
+    b.addEventListener("click", function () { document.title = "LATE-SKIP-2"; });
+    old.parentNode.replaceChild(b, old);
+    return true;
+  };
+  customElements.define("lf-shadow-button", class extends HTMLElement {
+    connectedCallback() {
+      var sh = this.attachShadow({ mode: "open" });
+      var b = document.createElement("button");
+      b.textContent = "shadow action";
+      b.setAttribute("data-id", "shadow-inner");
+      b.addEventListener("click", function () { document.title = "SHADOW-CLICKED"; });
+      sh.appendChild(b);
+    }
+  });
+</script>
+</body></html>`,
+  },
+  // An OPTIONAL real-world snapshot of a UI-heavy page (GitHub's home by
+  // default) served verbatim from disk, for the hint stress test. Populate it
+  // with `npm run bidi:fixtures`; when the file is absent this path 404s and
+  // the test is skipped, so a network-less CI run still passes.
+  "/real": { file: "fixtures/github.html" },
   // A page that can enter DOM fullscreen (like an HTML5 video would) — the
   // status bar must hide the moment it does, and re-show on exit. The `f` key
   // triggers it so tests can send a real (trusted) key event, which Firefox

@@ -111,32 +111,47 @@ if (signable) {
 }
 
 if (!wroteSigned && !fs.existsSync(out)) {
-  // Find the most recent committed signed xpi in dist/ as a stopgap.
-  let candidates: string[];
+  // Find the most recent committed SIGNED xpi in dist/ as a stopgap.
+  //
+  // Only genuinely signed candidates count: an unsigned xpi in a `stable`
+  // installer is not "stable-Firefox-compatible", it simply refuses to load, so
+  // silently substituting one (and saying it was signed) would ship a broken
+  // installer. Signature is checked from the bytes, not the filename.
+  const distDir = path.join(root, "dist");
+  let candidates: string[] = [];
   try {
     candidates = fs
-      .readdirSync(path.join(root, "dist"))
+      .readdirSync(distDir)
       .filter((n) => /^lazyfox2-.*\.xpi$/.test(n))
-      .sort();
+      .filter((n) => path.resolve(path.join(distDir, n)) !== out)
+      .filter((n) => {
+        try {
+          return isSignedXpi(fs.readFileSync(path.join(distDir, n)));
+        } catch {
+          return false;
+        }
+      })
+      .sort(); // lazyfox2-<semver>… sorts by version for equal-width semvers
   } catch {
     candidates = [];
   }
-  candidates = candidates.filter((n) => path.resolve(path.join(root, "dist", n)) !== out);
   if (candidates.length) {
-    const last = path.join(root, "dist", candidates[candidates.length - 1]!);
+    const last = path.join(distDir, candidates[candidates.length - 1]!);
     fs.copyFileSync(last, out);
     const embedded = xpiVersion(fs.readFileSync(out));
     console.warn(
       `\n[amo] WARNING: no signed xpi for version ${version} yet. ` +
-        `Used ${path.basename(last)} (now ${path.basename(out)}) as an interim, signed, stable-Firefox-compatible add-on. ` +
+        `Used the committed signed ${path.basename(last)} (now ${path.basename(out)}) as an interim. ` +
         `Embedded extension version: ${embedded}, extension dir version: ${version}.\n` +
         `  Once the ${version} submission is reviewed/signed on AMO, re-run \`npm run build\` to embed the real signed xpi.`
     );
     process.exit(0);
   }
   console.error(
-    `[amo] no signed xpi for version ${version} and no committed xpi to fall back to. To sign you must set ` +
-      "AMO_API_KEY and AMO_API_SECRET, and this version must not already exist on AMO (upload it as a NEW version to re-sign).\n" +
+    `[amo] no signed xpi for version ${version} and no committed signed xpi to fall back to.\n` +
+      "  Refusing to embed an unsigned add-on in a stable installer: it would not load.\n" +
+      "  To sign, set AMO_API_KEY and AMO_API_SECRET, and make sure this version does not\n" +
+      "  already exist on AMO (upload it as a NEW version to re-sign).\n" +
       "  Or place a valid signed xpi at: " + out
   );
   process.exit(2);

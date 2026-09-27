@@ -1,9 +1,22 @@
 // Content-script tests on a normal web page: leader keys, popups, scroll keys,
 // link hints, zoom, find-in-page, and tab management from real content.
 
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { evalIn, getTree, waitFor, sleep, activate } from "../lib.ts";
 import { contextsOf } from "../helpers.ts";
 import { assert } from "../harness.ts";
+
+// Optional real-world snapshot for the hint stress test. Absent by default
+// (gitignored); `npm run bidi:fixtures` creates it. BIDI_REQUIRE_FIXTURES (set
+// by the nightly workflow only AFTER a successful download) turns a missing
+// snapshot into a failure, so a broken download cannot hide behind a skip —
+// while a normal offline run, which does not set it, skips cleanly.
+const HAS_REAL_FIXTURE = existsSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "github.html")
+);
+const REQUIRE_REAL_FIXTURE = process.env.BIDI_REQUIRE_FIXTURES === "true";
 
 export const group = "content";
 
@@ -35,16 +48,22 @@ export async function run(ctx) {
       return u && u.indexOf("addons.mozilla.org") !== -1 ? u : null;
     }, 30000).catch(() => null);
     assert(loaded, "addons.mozilla.org loaded, got " + String(loaded).slice(0, 60));
-    // A real command must be runnable there: if the content script was blocked
-    // (the restricted-domain list not emptied), `;` does nothing and no leader
-    // overlay appears. The content script injects at document_start, so the
-    // first `;` press is enough.
-    await ctx.press(ctx.tabA, ";");
-    const armed = await waitFor(async () => {
-      return (await ctx.hasHost(ctx.tabA, "lazyfox-leader")) ? true : null;
+    // The content script tags <html> with data-lf-content at document_start
+    // (the early handshake). Its presence IS proof the script runs on AMO:
+    // if the restricted-domain list were not emptied, Firefox would block the
+    // injection and the attribute would be absent. We assert the handshake
+    // rather than pressing keys because geckodriver refuses
+    // input.performActions on this page (it treats AMO as privileged scope),
+    // which made the old keypress-based assertion fail for harness reasons, not
+    // product ones.
+    const injected = await waitFor(async () => {
+      const v = await evalIn(
+        ctx.tabA,
+        `document.documentElement.getAttribute("data-lf-content")`
+      ).catch(() => "");
+      return v === "1" ? true : null;
     }, 10000).catch(() => null);
-    assert(armed, "leader opens on addons.mozilla.org (a command can run)");
-    await ctx.press(ctx.tabA, "Escape");
+    assert(injected, "content script injected on addons.mozilla.org");
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
   });
 
@@ -123,7 +142,7 @@ export async function run(ctx) {
     await evalIn(setupCtx.context, `browser.storage.local.remove("lfProfileName").then(() => true)`);
     await waitFor(async () => {
       const p = await evalIn(setupCtx.context, `(document.getElementById("profileName") || {}).textContent || ""`);
-      return p === "detected automatically" ? true : null;
+      return p === "detected by the installer, not by this page" ? true : null;
     }, 5000);
     const fb = JSON.parse(
       await evalIn(setupCtx.context, `JSON.stringify({
@@ -132,7 +151,7 @@ export async function run(ctx) {
       })`)
     );
     assert(
-      fb.profileName === "detected automatically",
+      fb.profileName === "detected by the installer, not by this page",
       "pre-install profile is shown as auto-detected (no hand-matching), got " + JSON.stringify(fb)
     );
     assert(
@@ -142,6 +161,60 @@ export async function run(ctx) {
     // Restore the stored name (the chrome helper keeps announcing it).
     await evalIn(setupCtx.context, `browser.storage.local.set({ lfProfileName: ${JSON.stringify(dump.lfProfileName)} }).then(() => true)`);
     await evalIn(setupCtx.context, `browser.tabs.remove(${setupTab.id})`).catch(() => {});
+  });
+
+  await t("setup page: the installed state and uninstall help appear only on a confirmed chrome signal", async () => {
+    // The page must never assume success. Prove the flip both ways: a confirmed
+    // chromeAlive shows the green state + uninstall help; clearing it returns to
+    // the honest todo state.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "I", { shift: true });
+    const setupTab = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      return ts.find((x) => (x.url || "").includes("setup.html")) || null;
+    }, 8000);
+    assert(setupTab, ";I opened a setup.html tab");
+    const setupCtx = contextsOf(await getTree()).find((c) => (c.url || "").includes("setup.html"));
+    assert(setupCtx, "found the setup page context");
+    const snap = () =>
+      evalIn(
+        setupCtx.context,
+        `JSON.stringify({
+          done: !document.getElementById("doneCard").hidden,
+          todo: !document.getElementById("todoCard").hidden,
+          uninst: !document.getElementById("uninstallCard").hidden,
+          profile: (document.getElementById("doneProfile") || {}).textContent || "",
+          unCmd: (document.getElementById("uninstallCmd") || {}).textContent || "",
+          title: (document.getElementById("pageTitle") || {}).textContent || "",
+        })`
+      );
+    // Baseline: no confirmed chrome layer in this profile.
+    await evalIn(setupCtx.context, `browser.storage.local.remove("chromeAlive").then(() => true)`);
+    await evalIn(setupCtx.context, `document.getElementById("verify").click(); true`);
+    const todo = await waitFor(async () => {
+      const s = JSON.parse(await snap());
+      return s.todo && !s.done && !s.uninst ? s : null;
+    }, 5000).catch(() => null);
+    assert(todo, "no confirmed chrome -> the todo state is shown, not the green one");
+    // Now pretend the helper announced itself.
+    await evalIn(
+      setupCtx.context,
+      `browser.storage.local.set({ chromeAlive: true, lfProfileName: "lf-e2e-profile", lfProfileDir: "/tmp/lf-e2e" }).then(() => true)`
+    );
+    await evalIn(setupCtx.context, `document.getElementById("verify").click(); true`);
+    const done = await waitFor(async () => {
+      const s = JSON.parse(await snap());
+      return s.done && !s.todo && s.uninst ? s : null;
+    }, 5000).catch(() => null);
+    assert(done, "a confirmed chrome signal flips to the installed state + uninstall help, got " + JSON.stringify(done));
+    assert(done.title.indexOf("set up") !== -1, "the title flips to the installed wording, got " + done.title);
+    assert(done.profile && done.profile.length > 0, "the done card names a profile, got " + JSON.stringify(done.profile));
+    assert(done.profile !== "the profile this window is using", "the done card shows the real profile, not a placeholder, got " + done.profile);
+    assert(done.unCmd.indexOf("uninstall") !== -1, "the uninstall command is shown, got " + done.unCmd);
+    // Cleanup: clear the simulated signal and close the page.
+    await evalIn(setupCtx.context, `browser.storage.local.remove("chromeAlive").then(() => true)`);
+    await evalIn(setupCtx.context, `browser.tabs.remove(${setupTab.id})`).catch(() => {});
+    await ctx.activateTab(ctx.tabA).catch(() => {});
   });
 
   await t("scroll keys j k d u gg G", async () => {
@@ -185,6 +258,143 @@ export async function run(ctx) {
       const max = await evalIn(ctx.tabA, `document.documentElement.scrollHeight - window.innerHeight`);
       return y > max - 5;
     });
+  });
+
+  await t("scroll: an inner overflow pane is the target when the document cannot scroll", async () => {
+    // The ChatGPT/dashboard shape: html,body pinned to the viewport (the
+    // document scroller is dead) and all content inside an overflow:auto pane.
+    // Before the scroll-target work, j/k/d/u moved nothing at all here.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/innerpane`);
+    await evalIn(
+      ctx.tabA,
+      `(document.getElementById("pane").scrollTop = 0, window.scrollTo(0, 0), document.activeElement && document.activeElement.blur(), true)`
+    );
+    await sleep(300);
+    await ctx.press(ctx.tabA, "j");
+    await ctx.press(ctx.tabA, "j");
+    const paneTop = await waitFor(async () => {
+      const p = await evalIn(ctx.tabA, `document.getElementById("pane").scrollTop`);
+      return p > 40 ? p : null;
+    }, 5000).catch(() => null);
+    assert(paneTop, "j scrolled the inner pane, got " + paneTop);
+    assert(
+      (await evalIn(ctx.tabA, `window.scrollY`)) === 0,
+      "the window itself never moved on a shell whose document cannot scroll"
+    );
+    // G -> bottom and gg -> top follow the same target.
+    await ctx.press(ctx.tabA, "G");
+    await waitFor(async () => {
+      const p = await evalIn(ctx.tabA, `document.getElementById("pane").scrollTop`);
+      const h = await evalIn(ctx.tabA, `document.getElementById("pane").scrollHeight`);
+      return p > h * 0.8 ? true : null;
+    }, 5000);
+    await ctx.press(ctx.tabA, "g");
+    await ctx.press(ctx.tabA, "g");
+    await waitFor(async () => {
+      const p = await evalIn(ctx.tabA, `document.getElementById("pane").scrollTop`);
+      return p <= 1 ? true : null;
+    }, 5000);
+  });
+
+  await t("scroll: ;F cycles the page's scroll regions and Esc returns to the document", async () => {
+    // A shell with both a document scroller and a fixed scrollable sidebar.
+    // Auto target is the document; ;F cycles to the sidebar (outlined), j now
+    // drives the sidebar; ;F again returns to the document; Esc resets.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/twopanes`);
+    await evalIn(
+      ctx.tabA,
+      `(document.getElementById("side").scrollTop = 0, window.scrollTo(0, 0), document.activeElement && document.activeElement.blur(), true)`
+    );
+    await sleep(300);
+    // Auto: the document scrolls.
+    await ctx.press(ctx.tabA, "j");
+    await ctx.press(ctx.tabA, "j");
+    const docY = await waitFor(async () => {
+      const y = await evalIn(ctx.tabA, `window.scrollY`);
+      return y > 40 ? y : null;
+    }, 5000).catch(() => null);
+    assert(docY, "auto target is the document scroller, got " + docY);
+    assert(
+      (await evalIn(ctx.tabA, `document.getElementById("side").scrollTop`)) === 0,
+      "the sidebar did not move before cycling"
+    );
+    // ;F cycles to the sidebar and outlines it.
+    await ctx.leaderPress(ctx.tabA, "F", { shift: true });
+    const outlined = await waitFor(async () =>
+      (await evalIn(ctx.tabA, `!!document.getElementById("lazyfox-scroll-target")`)) ? true : null, 5000
+    ).catch(() => null);
+    assert(outlined, ";F focused a region and drew the outline");
+    const yBefore = await evalIn(ctx.tabA, `window.scrollY`);
+    await ctx.press(ctx.tabA, "j");
+    await ctx.press(ctx.tabA, "j");
+    const sideTop = await waitFor(async () => {
+      const s = await evalIn(ctx.tabA, `document.getElementById("side").scrollTop`);
+      return s > 40 ? s : null;
+    }, 5000).catch(() => null);
+    assert(sideTop, "j scrolled the focused sidebar after ;F, got " + sideTop);
+    assert(
+      (await evalIn(ctx.tabA, `window.scrollY`)) === yBefore,
+      "the document stayed put while the sidebar was focused"
+    );
+    // ;F again returns to the document (sticky) and drops the outline.
+    await ctx.leaderPress(ctx.tabA, "F", { shift: true });
+    await waitFor(async () =>
+      !(await evalIn(ctx.tabA, `!!document.getElementById("lazyfox-scroll-target")`)) ? true : null, 5000
+    ).catch(() => null);
+    const y2 = await evalIn(ctx.tabA, `window.scrollY`);
+    await ctx.press(ctx.tabA, "j");
+    await waitFor(async () => {
+      const y = await evalIn(ctx.tabA, `window.scrollY`);
+      return y > y2 ? true : null;
+    }, 5000).catch(() => { throw new Error("document did not scroll after ;F returned to it"); });
+    // Esc resets to the automatic target and clears the outline.
+    await ctx.leaderPress(ctx.tabA, "F", { shift: true });
+    await waitFor(async () =>
+      (await evalIn(ctx.tabA, `!!document.getElementById("lazyfox-scroll-target")`)) ? true : null, 5000
+    ).catch(() => {});
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () =>
+      !(await evalIn(ctx.tabA, `!!document.getElementById("lazyfox-scroll-target")`)) ? true : null, 5000
+    ).catch(() => { throw new Error("Esc did not clear the scroll-region outline"); });
+  });
+
+  await t("page cache: the global switch applies, is reported, and narrow scopes refuse honestly", async () => {
+    const set = (mode) =>
+      evalIn(
+        ctx.probe,
+        `browser.runtime.sendMessage({ action: "cacheSet", data: { scope: "global", mode: ${JSON.stringify(mode)} } }).then(r => JSON.stringify(r && { ok: r.ok, mode: r.state && r.state.mode, scope: r.state && r.state.scope, error: r.error || "" }))`
+      );
+    // Narrow scopes are enforced by the privileged chrome helper. They must be
+    // HONEST in either case: with the helper they take effect (scope reported as
+    // this tab), without it they refuse with a real error — never a silent ok.
+    const narrow = JSON.parse(
+      await evalIn(
+        ctx.probe,
+        `browser.runtime.sendMessage({ action: "cacheSet", data: { scope: "tab", mode: "fresh" } }).then(r => JSON.stringify({ ok: r.ok, error: r.error || "", scope: r.state && r.state.scope, chrome: r.state && r.state.chromeSupported }))`
+      )
+    );
+    if (narrow.ok) {
+      assert(narrow.scope === "tab", "a live per-tab policy reports the tab scope: " + JSON.stringify(narrow));
+    } else {
+      assert(narrow.error && narrow.error.length > 0, "a refused per-tab policy explains why: " + JSON.stringify(narrow));
+    }
+    const off = JSON.parse(await set("off"));
+    assert(off.ok === true && off.scope === "global" && off.mode === "off", "global/off applied: " + JSON.stringify(off));
+    const enabled = await evalIn(
+      ctx.probe,
+      `browser.browserSettings.cacheEnabled.get({}).then(v => v.value)`
+    );
+    assert(enabled === false, "the browser's global cache switch is actually off, got " + enabled);
+    const fresh = JSON.parse(await set("fresh"));
+    assert(fresh.ok === true && fresh.mode === "fresh", "global/fresh applied: " + JSON.stringify(fresh));
+    // Restore Firefox's default so later tests are unaffected.
+    const normal = JSON.parse(await set("normal"));
+    assert(normal.ok === true && normal.mode === "normal" && normal.scope === "global", "restored to the default: " + JSON.stringify(normal));
+    const back = await evalIn(
+      ctx.probe,
+      `browser.browserSettings.cacheEnabled.get({}).then(v => v.value)`
+    );
+    assert(back === true, "the global cache switch is back on, got " + back);
   });
 
   await t("leader ;n opens a new tab from a web page", async () => {
@@ -273,16 +483,45 @@ export async function run(ctx) {
   await t("link hints: ] pages down to links below the fold", async () => {
     // Hints are viewport-only; ] must page through the document and re-hint
     // the next batch (here: the second input, hidden below a 3000px spacer).
+    //
+    // A single ] lands at a different offset for every window HEIGHT — at some
+    // sizes inp2 sits one pixel below the fold while the taller ta1 sharing its
+    // inline line is visible, so it is not in the batch yet. Page until inp2 is
+    // actually hinted, then activate it by whatever key it was given (never
+    // assume "a").
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await ctx.leaderPress(ctx.tabA, "f");
     await waitFor(async () => {
       const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
       return on === "1" ? true : null;
     }, 5000);
-    await ctx.press(ctx.tabA, "]");
-    await sleep(900); // scroll + re-hint settle
-    // inp2 is now the (only) hinted element -> its key is "a".
-    await ctx.press(ctx.tabA, "a");
+    // The hint key currently assigned to inp2, or null while it is out of view.
+    const keyForInp2 = () =>
+      evalIn(
+        ctx.tabA,
+        `(function(){
+          const host = document.getElementById("lazyfox-hints");
+          const raw = host && host.getAttribute("data-lf-pos");
+          if (!raw) return null;
+          const items = JSON.parse(raw);
+          const r = document.getElementById("inp2").getBoundingClientRect();
+          const x = Math.round(r.left), y = Math.round(r.top);
+          for (const it of items) if (Math.abs(it.x - x) <= 2 && Math.abs(it.y - y) <= 2) return it.key;
+          return null;
+        })()`
+      );
+    let key = null;
+    for (let i = 0; i < 12 && !key; i++) {
+      await ctx.press(ctx.tabA, "]");
+      await sleep(900); // scroll + re-hint settle
+      key = await keyForInp2();
+    }
+    assert(key, "inp2 was hinted after paging down with ]");
+    for (const ch of key) await ctx.press(ctx.tabA, ch);
+    // A single-char key that prefixes a longer one only narrows; Enter then
+    // activates the first match, which is inp2 (it precedes ta1/ce1 in DOM).
+    const stillActive = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+    if (stillActive === "1") await ctx.press(ctx.tabA, "Enter");
     await waitFor(async () => {
       const id = await evalIn(ctx.tabA, `document.activeElement && document.activeElement.id`);
       return id === "inp2" ? id : null;
@@ -292,6 +531,328 @@ export async function run(ctx) {
     // (;g back) starts from that history entry.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/target1`);
   });
+
+  // ---- Deep link-hints tests on a deliberately UI-heavy fixture ----
+  //
+  // The `data-id` on every interactive element of /uitest lets the harness map
+  // a broadcast hint position back to the element it was assigned to, so these
+  // tests assert *which* elements were hinted, not just how many.
+  const readHints = () =>
+    evalIn(
+      ctx.tabA,
+      `(function(){
+        const host = document.getElementById("lazyfox-hints");
+        const raw = host && host.getAttribute("data-lf-pos");
+        const pos = raw ? JSON.parse(raw) : [];
+        function collect(root, out) {
+          root.querySelectorAll("[data-id]").forEach((e) => out.push(e));
+          root.querySelectorAll("*").forEach((e) => { if (e.shadowRoot) collect(e.shadowRoot, out); });
+        }
+        const els = []; collect(document, els);
+        const out = [];
+        for (const p of pos) {
+          let id = null;
+          for (const el of els) {
+            const r = el.getBoundingClientRect();
+            if (Math.abs(Math.round(r.left) - p.x) <= 2 && Math.abs(Math.round(r.top) - p.y) <= 2) { id = el.getAttribute("data-id"); break; }
+          }
+          out.push({ key: p.key, id: id, x: p.x, y: p.y });
+        }
+        return out;
+      })()`
+    );
+  const readBoxes = () =>
+    evalIn(
+      ctx.tabA,
+      `(function(){
+        const host = document.getElementById("lazyfox-hints");
+        const raw = host && host.getAttribute("data-lf-box");
+        return raw ? JSON.parse(raw) : [];
+      })()`
+    );
+  const beginHints = async () => {
+    await ctx.leaderPress(ctx.tabA, "f");
+    await waitFor(async () => {
+      const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+      return on === "1" ? true : null;
+    }, 5000);
+    await waitFor(async () => {
+      const l = await readHints();
+      return l && l.length > 0 ? true : null;
+    }, 5000);
+  };
+  // Activate the hint currently assigned to `id`. Single-character keys can be
+  // a prefix of longer ones, in which case typing the key narrows instead of
+  // activating, so fall back to Enter (which activates the first match).
+  const activateHint = async (id) => {
+    const m = await readHints();
+    const h = m.find((x) => x.id === id);
+    assert(h, "no hint for " + id + " (hinted: " + m.map((x) => x.id).join(",") + ")");
+    for (const ch of h.key) await ctx.press(ctx.tabA, ch);
+    const still = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+    if (still === "1") await ctx.press(ctx.tabA, "Enter");
+    await sleep(200);
+  };
+
+  await t("link hints: hidden, inert and occluded elements are never hinted", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await sleep(200);
+    await beginHints();
+    const ids = (await readHints()).map((x) => x.id);
+    const must = ["visible-link", "nested-btn", "act-btn", "scroll-input", "nearby-link", "body-visible"];
+    for (const id of must) assert(ids.indexOf(id) !== -1, "expected a hint for " + id + " (got: " + ids.join(",") + ")");
+    const mustNot = ["hidden-opacity-link", "hidden-vis-link", "hidden-aria-link", "pe-none-btn", "covered-link"];
+    for (const id of mustNot) assert(ids.indexOf(id) === -1, "a non-actionable element was hinted: " + id);
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
+  await t("link hints: nested targets collapse and labels never overlap", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await sleep(200);
+    await beginHints();
+    const m = await readHints();
+    const ids = m.map((x) => x.id);
+    assert(ids.indexOf("nested-btn") !== -1, "the outer button must be hinted");
+    assert(ids.indexOf("nested-span") === -1, "the span inside the button must NOT be hinted separately");
+    const positions = {};
+    for (const h of m) {
+      const k = h.x + ":" + h.y;
+      assert(!positions[k], "two hints share one element position: " + k);
+      positions[k] = 1;
+    }
+    const boxes = await readBoxes();
+    assert(boxes.length === m.length, "one label box per hint (" + boxes.length + " vs " + m.length + ")");
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i];
+        const b = boxes[j];
+        const overlap = a.l < b.r + 1 && a.r > b.l - 1 && a.t < b.b + 1 && a.b > b.t - 1;
+        assert(!overlap, "hint labels overlap: " + a.key + " and " + b.key);
+      }
+    }
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
+  await t("link hints: activating never scrolls the page (button and input)", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    // Park the button just under the fixed header, the exact case where the old
+    // "scrollIntoView({block:center})" yanked the viewport upward.
+    await evalIn(
+      ctx.tabA,
+      `(function(){ const r = document.getElementById("act-btn").getBoundingClientRect(); window.scrollBy(0, Math.round(r.top - 60)); return window.scrollY; })()`
+    );
+    await sleep(250);
+    await beginHints();
+    const y0 = await evalIn(ctx.tabA, `window.scrollY`);
+    await activateHint("act-btn");
+    assert((await evalIn(ctx.tabA, `document.title`)) === "ACTIVATED", "the button was clicked");
+    assert((await evalIn(ctx.tabA, `window.scrollY`)) === y0, "no scroll on button activation");
+
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(
+      ctx.tabA,
+      `(function(){ const r = document.getElementById("scroll-input").getBoundingClientRect(); window.scrollBy(0, Math.round(r.top - 60)); return window.scrollY; })()`
+    );
+    await sleep(250);
+    await beginHints();
+    const y1 = await evalIn(ctx.tabA, `window.scrollY`);
+    await activateHint("scroll-input");
+    assert(
+      (await evalIn(ctx.tabA, `document.activeElement && document.activeElement.id`)) === "scroll-input",
+      "the input was focused"
+    );
+    assert((await evalIn(ctx.tabA, `window.scrollY`)) === y1, "no scroll on input focus");
+  });
+
+  await t("link hints: scrolling to a new section re-hints its links", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await sleep(200);
+    await beginHints();
+    const top = (await readHints()).map((x) => x.id);
+    assert(top.indexOf("visible-link") !== -1, "the top section is hinted first");
+    assert(top.indexOf("deep-link") === -1, "the link below the fold is not hinted at the top");
+    await evalIn(ctx.tabA, `window.scrollTo(0, document.body.scrollHeight); true`);
+    const bottom = await waitFor(async () => {
+      const ids = (await readHints()).map((x) => x.id);
+      return ids.indexOf("deep-link") !== -1 ? ids : null;
+    }, 6000);
+    assert(bottom.indexOf("visible-link") === -1, "the stale top-section hint is gone after scrolling");
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
+  await t("link hints: a dense grid yields unique, capped hints", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    // Bring the 100-button grid into view.
+    await evalIn(
+      ctx.tabA,
+      `(function(){ const r = document.getElementById("tinygrid").getBoundingClientRect(); window.scrollBy(0, Math.round(r.top - 60)); return window.scrollY; })()`
+    );
+    await sleep(250);
+    await beginHints();
+    const m = await readHints();
+    assert(m.length > 0 && m.length <= 80, "hint count is capped at 80, got " + m.length);
+    const positions = {};
+    for (const h of m) {
+      const k = h.x + ":" + h.y;
+      assert(!positions[k], "duplicate hint position: " + k);
+      positions[k] = 1;
+    }
+    const ids = m.map((x) => x.id).filter(Boolean);
+    assert(new Set(ids).size === ids.length, "each element is hinted at most once");
+    assert(ids.some((id) => /^tiny\d+$/.test(id)), "tiny grid buttons are hinted");
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
+  await t("link hints: a control inside an open shadow root is hinted and clicks", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(
+      ctx.tabA,
+      `(function(){ const r = document.getElementById("shadow-btn").getBoundingClientRect(); window.scrollBy(0, Math.round(r.top - 60)); return window.scrollY; })()`
+    );
+    await sleep(250);
+    await beginHints();
+    await activateHint("shadow-inner");
+    assert((await evalIn(ctx.tabA, `document.title`)) === "SHADOW-CLICKED", "the shadow-root button was clicked");
+  });
+
+  await t("link hints: clickable image and video thumbnails are hinted and click", async () => {
+    // Regression: the "no text/label ⇒ decorative" rule dropped cursor:pointer
+    // nodes that are real pictures/videos, so thumbnails became unclickable.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await sleep(200);
+    await beginHints();
+    const ids = (await readHints()).map((x) => x.id);
+    assert(ids.indexOf("thumb") !== -1, "the clickable <img> is hinted (got: " + ids.join(",") + ")");
+    assert(ids.indexOf("vid-thumb") !== -1, "the clickable <video> is hinted (got: " + ids.join(",") + ")");
+    await activateHint("thumb");
+    assert((await evalIn(ctx.tabA, `document.title`)) === "THUMB", "the image thumbnail was clicked");
+  });
+
+  await t("link hints: a control inserted after ;f gets a working hint", async () => {
+    // Regression: hints were a snapshot from `;f`, so a control that appears
+    // later (a video player's "Skip ad" button) had no hint, or a hint whose key
+    // did nothing. The DOM-change resync must re-collect and re-hint it.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await sleep(200);
+    await beginHints();
+    const before = (await readHints()).map((x) => x.id);
+    assert(before.indexOf("late-skip") === -1, "the late control is not hinted before it exists");
+    await evalIn(ctx.tabA, `window.__addLateSkip()`);
+    await waitFor(async () => {
+      const ids = (await readHints()).map((x) => x.id);
+      return ids.indexOf("late-skip") !== -1 ? ids : null;
+    }, 6000);
+    // The insertion re-keys the whole batch ONCE (the batch grew); wait until
+    // the late control's key is stable across two reads before activating, so
+    // the test presses the key the user would actually see.
+    let stable = null;
+    for (let i = 0; i < 10; i++) {
+      const h = (await readHints()).find((x) => x.id === "late-skip");
+      const key = h && h.key;
+      if (key && key === stable) break;
+      stable = key;
+      await sleep(300);
+    }
+    await activateHint("late-skip");
+    assert((await evalIn(ctx.tabA, `document.title`)) === "LATE-SKIP", "the late-inserted control was clicked");
+  });
+
+  await t("link hints: a framework re-render keeps the same key and still clicks", async () => {
+    // A virtual-DOM framework (YouTube's ad overlay, a React list) THROWS AWAY
+    // the button node and mounts a brand new one in its place. Previously the
+    // batch was re-keyed and the dead node was not re-resolved, so typing the
+    // label "did nothing". The replacement must inherit the key and activate.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await sleep(200);
+    await beginHints();
+    await evalIn(ctx.tabA, `window.__addLateSkip()`);
+    const first = await waitFor(async () => {
+      const h = (await readHints()).find((x) => x.id === "late-skip");
+      return h && h.key ? h : null;
+    }, 6000);
+    assert(first.key, "the late control is hinted");
+    await evalIn(ctx.tabA, `window.__replaceLateSkip()`);
+    // Type the key we already read, WITHOUT waiting for a re-hint, so this
+    // proves the dead node is re-resolved to its replacement rather than just
+    // re-keyed on the next sweep.
+    for (const ch of first.key) await ctx.press(ctx.tabA, ch);
+    const still = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+    if (still === "1") await ctx.press(ctx.tabA, "Enter");
+    await sleep(200);
+    assert(
+      (await evalIn(ctx.tabA, `document.title`)) === "LATE-SKIP-2",
+      "the re-rendered control was clicked using its original key"
+    );
+  });
+
+  await t("link hints: a late control does not reshuffle existing keys", async () => {
+    // Stability is what makes a churning framework page usable: a control that
+    // appears later must take a NEW key while every label already on screen
+    // keeps the key the user has just read.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await sleep(200);
+    await beginHints();
+    const before = await readHints();
+    const keysBefore = new Map(before.filter((h) => h.id).map((h) => [h.id, h.key]));
+    assert(keysBefore.size > 3, "the page starts with a real batch (" + keysBefore.size + ")");
+    await evalIn(ctx.tabA, `window.__addLateSkip()`);
+    const after = await waitFor(async () => {
+      const m = await readHints();
+      return m.find((x) => x.id === "late-skip") ? m : null;
+    }, 6000);
+    const used = new Set(after.map((h) => h.key));
+    assert(used.size === after.length, "every hint key is unique after the insertion");
+    let changed = 0;
+    for (const h of after) {
+      if (!h.id || h.id === "late-skip") continue;
+      const k = keysBefore.get(h.id);
+      if (k && k !== h.key) changed++;
+    }
+    assert(changed === 0, "no existing hint changed key (" + changed + " did)");
+    await ctx.press(ctx.tabA, "Escape");
+    await sleep(150);
+  });
+
+  if (HAS_REAL_FIXTURE) {
+    await t("link hints: stress a real-world page snapshot without errors", async () => {
+      await ctx.gotoPage(ctx.tabA, `${ctx.base}/real`);
+      await sleep(500);
+      // A live-looking snapshot can try to redirect/reload itself; if it did,
+      // there is nothing local to stress.
+      const here = await evalIn(ctx.tabA, `location.href.includes("/real")`).catch(() => false);
+      if (!here) return;
+      await beginHints();
+      const m = await readHints();
+      assert(m.length > 0 && m.length <= 80, "real page hints are capped (got " + m.length + ")");
+      const vp = await evalIn(ctx.tabA, `({w: window.innerWidth, h: window.innerHeight})`);
+      for (const h of m) {
+        assert(
+          h.x >= -2 && h.y >= -2 && h.x < vp.w && h.y < vp.h,
+          "every hint is anchored inside the viewport (" + h.x + "," + h.y + ")"
+        );
+      }
+      await ctx.press(ctx.tabA, "Escape");
+    });
+  } else if (REQUIRE_REAL_FIXTURE) {
+    await t("link hints: the real-page snapshot is required but was not downloaded", async () => {
+      assert(
+        false,
+        "BIDI_REQUIRE_FIXTURES=true but scripts/bidi/fixtures/github.html is missing — the snapshot download failed"
+      );
+    });
+  } else {
+    console.log("  skip link hints: real-world snapshot stress (run `npm run bidi:fixtures` to enable)");
+  }
+
+  // Restore the history entry the following ;g/;l test starts from.
+  await ctx.gotoPage(ctx.tabA, `${ctx.base}/target1`);
 
   await t(";g back and ;l forward", async () => {
     // tabA is on /target1 from the hints test; ;g must go back to the base page
@@ -462,6 +1023,117 @@ export async function run(ctx) {
     await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
     await ctx.press(ctx.tabA, "Escape");
     await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+  });
+
+  await t(";T opens the diagnostics page with a populated tab picker", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "T", { shift: true });
+    const diagTab = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      return ts.find((x) => (x.url || "").includes("diagnostics.html")) || null;
+    }, 8000);
+    assert(diagTab, ";T opened a diagnostics.html tab");
+    const all = contextsOf(await getTree());
+    const diagCtx = all.find((c) => (c.url || "").includes("diagnostics.html"));
+    assert(diagCtx, "found the diagnostics browsing context");
+    // The page asks the background for every tab and builds the picker; wait
+    // for that first refresh to land and assert it actually listed tabs.
+    const picked = await waitFor(async () => {
+      const n = await evalIn(
+        diagCtx.context,
+        `(document.getElementById("tabPick")||{options:{length:0}}).options.length`
+      );
+      return n > 1 ? n : null;
+    }, 10000).catch(() => null);
+    assert(picked && picked > 1, "diagnostics tab picker lists the open tabs, got " + picked);
+    await evalIn(ctx.probe, `browser.tabs.remove(${diagTab.id}).then(() => true)`).catch(() => {});
+    await ctx.activateTab(ctx.tabA).catch(() => {});
+  });
+
+  await t("diagnostics: the tab picker diagnoses any chosen tab, not just the last one", async () => {
+    // Open a distinctive page in a BACKGROUND tab, then diagnose IT through
+    // the picker while a different page (tabA) is the active one. This is the
+    // "inspect any tab" behaviour: the report must follow the picked tab.
+    const targetId = await evalIn(
+      ctx.probe,
+      `browser.tabs.create({ url: ${JSON.stringify(`${ctx.base}/target2`)}, active: false }).then(t => t.id)`
+    );
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "T", { shift: true });
+    const diagTab = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      return ts.find((x) => (x.url || "").includes("diagnostics.html")) || null;
+    }, 8000);
+    assert(diagTab, ";T opened a diagnostics.html tab");
+    const diagCtx = contextsOf(await getTree()).find((c) => (c.url || "").includes("diagnostics.html"));
+    assert(diagCtx, "found the diagnostics browsing context");
+    // Select the background tab in the page's own picker (what a user does).
+    const picked = await evalIn(
+      diagCtx.context,
+      `(() => {
+        const sel = document.getElementById("tabPick");
+        const opt = [...sel.options].find(o => (o.title || "").indexOf("target2") !== -1 || (o.textContent || "").indexOf("TARGET TWO") !== -1);
+        if (!opt) return null;
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event("change"));
+        return opt.value;
+      })()`
+    );
+    assert(picked && picked !== "auto", "the picker lists the background tab as an option, got " + picked);
+    // Its report must land, naming the picked tab's URL — not tabA's.
+    const shown = await waitFor(async () => {
+      const v = await evalIn(diagCtx.context, `(document.querySelector("#pageRows .row .v") || {}).textContent || ""`);
+      return v && v.indexOf("target2") !== -1 ? v : null;
+    }, 10000).catch(() => null);
+    assert(shown, "diagnostics reported the chosen tab's page, got " + JSON.stringify(shown));
+    // Cleanup: drop the target + diagnostics tabs and come back to tabA.
+    await evalIn(ctx.probe, `browser.tabs.remove(${targetId}).catch(() => true)`).catch(() => {});
+    await evalIn(ctx.probe, `browser.tabs.remove(${diagTab.id}).then(() => true)`).catch(() => {});
+    await ctx.activateTab(ctx.tabA).catch(() => {});
+  });
+
+  await t(";t tab switcher: the number key jumps to that tab", async () => {
+    // The picker shows each tab's 1-based strip position and its digit keys
+    // jump there, exactly like ;1-;9.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    // Make sure there is at least a second real tab to jump to.
+    if ((await ctx.tabsInfo()).filter((t) => ctx.isRealTab(t)).length < 2) {
+      await evalIn(
+        ctx.probe,
+        `browser.tabs.create({ url: ${JSON.stringify(`${ctx.base}/target2`)}, active: false }).then(t => t.id)`
+      );
+      await waitFor(async () =>
+        (await ctx.tabsInfo()).filter((t) => ctx.isRealTab(t)).length >= 2 ? true : null, 8000);
+    }
+    const list = (await ctx.tabsInfo()).filter((t) => ctx.isRealTab(t));
+    const second = list[1];
+    assert(second, "there is a tab 2 to jump to");
+    await ctx.activateTab(ctx.tabA).catch(() => {});
+    await sleep(300);
+    await ctx.leaderPress(ctx.tabA, "t");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.press(ctx.tabA, "2");
+    const jumped = await waitFor(async () => {
+      const a = await ctx.activeTabInfo();
+      return a && a.id === second.id ? a : null;
+    }, 8000).catch(() => null);
+    assert(jumped, "pressing 2 in the tab switcher jumped to tab 2");
+    await ctx.activateTab(ctx.tabA).catch(() => {});
+  });
+
+  await t(";? help popup filters as you type and Enter runs the match", async () => {
+    // The redesigned help popup searches by key/name/group; typing "zen"
+    // narrows to the ;z binding and Enter runs it (fullscreen toggles on).
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderPress(ctx.tabA, "?");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.typeIn(ctx.tabA, "zen");
+    await sleep(400);
+    await ctx.press(ctx.tabA, "Enter");
+    const fs = await waitFor(async () => (await evalIn(ctx.tabA, `window.fullScreen`)) ? true : null, 8000).catch(() => null);
+    assert(fs, "help search matched ;z and ran it (fullscreen on)");
+    await ctx.leaderPress(ctx.tabA, "z");
+    await waitFor(async () => !(await evalIn(ctx.tabA, `window.fullScreen`)) ? true : null, 8000);
   });
 
   await t(";y copy URL shows the toast without errors", async () => {
@@ -882,7 +1554,12 @@ export async function run(ctx) {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const before = await ctx.tabCount();
     await ctx.leaderPress(ctx.tabA, "x");
-    await waitFor(async () => (await ctx.tabCount()) === before - 1 ? true : null, 10000);
+    let afterClose = -1;
+    const closed = await waitFor(async () => {
+      afterClose = await ctx.tabCount();
+      return afterClose === before - 1 ? true : null;
+    }, 10000).catch(() => null);
+    assert(closed, ";x closed exactly one tab (before=" + before + ", after=" + afterClose + ")");
     // find a surviving content/CC context and reopen from there
     const t = await getTree();
     const cs = contextsOf(t);
@@ -890,14 +1567,33 @@ export async function run(ctx) {
     await ctx.activateTab(survivor.context);
     await sleep(300);
     await ctx.leaderPress(survivor.context, "v");
-    await waitFor(async () => (await ctx.tabCount()) === before ? true : null, 10000);
-    // restore a content context as tabA
+    let afterReopen = -1;
+    const reopened = await waitFor(async () => {
+      afterReopen = await ctx.tabCount();
+      return afterReopen === before ? true : null;
+    }, 10000).catch(() => null);
+    // Re-point tabA at a LIVE context BEFORE asserting, so a reopen failure
+    // can never cascade: every later test would otherwise run against the
+    // just-destroyed tabA and fail with "no such frame" instead of its own
+    // behaviour. Prefer a real content tab; fall back to the survivor.
     const t2 = await getTree();
     const cs2 = contextsOf(t2);
-    ctx.tabA = cs2.find((c) => c.url && c.url.includes("127.0.0.1"))
-      ? cs2.find((c) => c.url && c.url.includes("127.0.0.1")).context
-      : survivor.context;
-    await ctx.activateTab(ctx.tabA);
+    const contentCtx = cs2.find((c) => c.url && c.url.includes("127.0.0.1"));
+    ctx.tabA = contentCtx ? contentCtx.context : survivor.context;
+    await ctx.activateTab(ctx.tabA).catch(() => {});
+    let rc = "<none>";
+    if (!reopened) {
+      rc = await evalIn(
+        ctx.probe,
+        `browser.sessions.getRecentlyClosed({maxResults:20}).then(l => JSON.stringify(l.map(i => i.tab ? (i.tab.url||"") : "(window)")))`
+      ).catch(() => "<err>");
+    }
+    assert(
+      reopened,
+      ";v reopened the closed tab (before=" + before + ", afterClose=" + afterClose +
+        ", afterReopen=" + afterReopen + ", survivor=" + ((survivor && survivor.url) || "?") +
+        ", recently closed: " + rc + ")"
+    );
   });
 
   await t(";V recently-closed popup lists and restores a closed tab", async () => {
@@ -1078,5 +1774,42 @@ export async function run(ctx) {
     assert(again.length === total, "fresh ;f re-hinted everything (" + again.length + " === " + total + ")");
     await ctx.press(ctx.tabA, "Escape");
     await sleep(200);
+  });
+
+  await t("popup input never leaks to the page behind (keypress/keyup isolation)", async () => {
+    // Regression: an overlay swallows every keydown at the window capture
+    // phase, but Firefox still dispatches the keypress/keyup that follow a
+    // consumed keydown — so a page listening on those saw what the user typed
+    // into Lazyfox's own popup. Instrument the page, open a popup, type, and
+    // assert the page observed nothing.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await evalIn(ctx.tabA, `(() => {
+      window.__lfLeak = [];
+      for (const type of ["keypress", "keyup"]) {
+        window.addEventListener(type, (e) => window.__lfLeak.push(type + ":" + e.key), true);
+      }
+      return true;
+    })()`);
+    await ctx.leaderPress(ctx.tabA, "t");
+    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    // `;t` and the query characters all go through the popup's own input.
+    await ctx.typeIn(ctx.tabA, "jklmn");
+    const leak = await evalIn(ctx.tabA, `JSON.stringify(window.__lfLeak || [])`);
+    const seen = JSON.parse(leak || "[]");
+    assert(seen.length === 0, "the page observed no keypress/keyup, got " + leak);
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    // Control: with no overlay up the page DOES observe keys, so "nothing
+    // seen" above is a real result and not dead instrumentation.
+    await evalIn(ctx.tabA, `window.__lfLeak = []; true`);
+    await ctx.press(ctx.tabA, "a");
+    await ctx.press(ctx.tabA, "b");
+    const control = JSON.parse(
+      (await evalIn(ctx.tabA, `JSON.stringify(window.__lfLeak || [])`)) || "[]"
+    );
+    assert(
+      control.some((s) => s.indexOf(":a") !== -1) && control.some((s) => s.indexOf(":b") !== -1),
+      "control: the page sees keys when no overlay is up, got " + JSON.stringify(control)
+    );
   });
 }

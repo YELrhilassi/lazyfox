@@ -246,13 +246,24 @@ export async function toggleMute() {
 
 export async function reopenTab() {
   const closed = await browser.sessions.getRecentlyClosed({
-    maxResults: 10
+    maxResults: 20
   });
   for (const item of closed) {
-    if (item.tab) {
-      await browser.sessions.restore(item.tab.sessionId);
-      return { ok: true };
+    if (!item || !item.tab) continue;
+    const url = String((item.tab && item.tab.url) || "");
+    // Skip hidden plumbing — the relay bridge, throwaway #lfc= request tabs
+    // and the split-panel companion — so `;v` always reopens a real user tab.
+    // Firefox records EVERY close (including those) in SessionStore, so the
+    // "most recently closed" entry is often not a tab the user ever saw.
+    if (
+      url.indexOf("relay.html") !== -1 ||
+      url.indexOf("splitpanel.html") !== -1 ||
+      url.indexOf("#lfc=") !== -1
+    ) {
+      continue;
     }
+    await browser.sessions.restore(item.tab.sessionId);
+    return { ok: true };
   }
   return { ok: false };
 }

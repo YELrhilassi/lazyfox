@@ -146,6 +146,19 @@ export function createCtx(runtime) {
     }, timeoutMs);
   };
 
+  // Navigate with one retry. A browsingContext.navigate to a just-loaded
+  // extension page occasionally exceeds the 30s BiDi command timeout under
+  // load (e.g. right after the split suite unsplit a window). That is a harness
+  // timing hiccup, not a product failure, so retry once before giving up.
+  ctx.gotoUrl = async function gotoUrl(tab, url, wait = "complete") {
+    try {
+      return await navigate(tab, url, wait);
+    } catch (e) {
+      await sleep(500);
+      return await navigate(tab, url, wait);
+    }
+  };
+
   ctx.gotoPage = async function gotoPage(tab, url) {
     await navigate(tab, url, "complete");
     try {
@@ -313,6 +326,17 @@ export function createCtx(runtime) {
 
   ctx.hasHost = function hasHost(tab, id) {
     return evalIn(tab, `!!document.getElementById(${JSON.stringify(id)})`);
+  };
+
+  // Open a fresh real page tab and return its browsing context. Used to
+  // replace ctx.tabA after a test deliberately closes it (the destructive
+  // "closing a tab down to two" regression), so later suites in a full run
+  // still have a live tab to drive instead of a dead browsing-context id.
+  ctx.newPageTab = async function newPageTab(url) {
+    const p = await createTab();
+    await navigate(p, url, "complete");
+    await focusPage(p).catch(() => {});
+    return p;
   };
 
   ctx.makeProbeTab = async function makeProbeTab() {

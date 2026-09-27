@@ -133,6 +133,27 @@ feeds both the search hit list and the Go-backed yank mode), `splitpanel.ts`
    chrome helper directly, the content script by messaging the background.
 5. The result renders as a popup, a navigation, or a status-bar update.
 
+### Keyboard isolation
+
+While a Lazyfox surface owns the keyboard (a popup, the leader bar, link
+hints, the find widget, an armed one-shot capture), **nothing the user types
+may reach the page or the browser chrome behind it**. Swallowing `keydown`
+at the window capture phase is not enough on its own: Firefox still dispatches
+the `keypress`/`keyup` that follow a consumed `keydown`, so a page script
+listening on those saw keystrokes typed into Lazyfox's own search box (the
+"input leaks to the window behind it" bug), and on chrome-owned pages an
+unconsumed key could trip a browser shortcut behind the overlay.
+
+`shared/keyguard.ts` (`KeyGuard`) is the one place that closes the hole. A
+context records every keydown it consumed; the following keypress/keyup is
+then swallowed, and `keyGuard.clear()` drops the records when the window
+loses focus mid-key. Call `ownsTail` **unconditionally** for each keypress/
+keyup — short-circuiting past it leaves a stale record that would swallow a
+later, legitimate press of the same key while the user is typing. Scroll is
+isolated at the same time: a wheel on the backdrop is preventDefaulted, and
+the popup's own lists carry `overscroll-behavior:contain` so they never chain
+to the page.
+
 ## Principles
 
 - **One job per module.** Each file does one thing and is wired together by a

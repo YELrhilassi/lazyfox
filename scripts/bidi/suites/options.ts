@@ -1,6 +1,6 @@
 // Options page and action-popup tests.
 
-import { navigate, evalIn, waitFor, sleep, focusPage } from "../lib.ts";
+import { evalIn, waitFor, sleep, focusPage } from "../lib.ts";
 import { assert } from "../harness.ts";
 
 export const group = "options";
@@ -12,7 +12,7 @@ export async function run(ctx) {
 
   await t("options page loads and renders the form", async () => {
     const u = ctx.ccUrl.replace("commandcenter.html", "options.html");
-    await navigate(ctx.tabA, u, "complete");
+    await ctx.gotoUrl(ctx.tabA, u, "complete");
     await sleep(500);
     const f = await evalIn(ctx.tabA, `(() => {
       const q = (s) => document.querySelector(s);
@@ -47,7 +47,7 @@ export async function run(ctx) {
     // key (after browsingContext.navigate the URL bar can hold keyboard focus).
     const u = ctx.ccUrl.replace("commandcenter.html", "options.html");
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    await navigate(ctx.tabA, u, "complete");
+    await ctx.gotoUrl(ctx.tabA, u, "complete");
     await sleep(300);
     await focusPage(ctx.tabA).catch(() => {});
     await ctx.press(ctx.tabA, "Escape");
@@ -59,7 +59,7 @@ export async function run(ctx) {
 
   await t("popup page (action popup) renders", async () => {
     const u = ctx.ccUrl.replace("commandcenter.html", "popup.html");
-    await navigate(ctx.tabA, u, "complete");
+    await ctx.gotoUrl(ctx.tabA, u, "complete");
     await sleep(500);
     const f = await evalIn(ctx.tabA, `(() => {
       const q = (s) => document.querySelector(s);

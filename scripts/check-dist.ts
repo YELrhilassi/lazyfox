@@ -14,6 +14,9 @@ const REQUIRED = [
   "dist/chrome/userChrome.uc.js",
   "dist/chrome/corebootstrap.js",
   "dist/chrome/frame.js",
+  "dist/chrome/actor-boot.js",
+  "dist/chrome/lazyfox-child.sys.mjs",
+  "dist/chrome/lazyfox-parent.sys.mjs",
   "dist/chrome/userChrome.css",
   "dist/chrome/user.js",
   "dist/chrome/loader/config.js",
@@ -67,11 +70,43 @@ for (const p of EMBEDDED) {
   }
 }
 
-// The frame script must NOT carry the core; it is a message-manager shim.
-const frame = readFileSync(join(root, "dist/chrome/frame.js"), "utf8");
-if (frame.indexOf("WebAssembly") !== -1) {
-  console.error("check-dist: frame.js unexpectedly embeds the wasm core.");
-  process.exit(1);
+// The frame script must NOT carry the core; it is a message-manager shim. Nor
+// may the content-process actor bridge: it runs in web-content processes and
+// must stay tiny (the same rule the frame script follows).
+for (const p of ["dist/chrome/frame.js", "dist/chrome/actor-boot.js", "dist/chrome/lazyfox-child.sys.mjs", "dist/chrome/lazyfox-parent.sys.mjs"]) {
+  const text = readFileSync(join(root, p), "utf8");
+  if (text.indexOf("WebAssembly") !== -1) {
+    console.error(`check-dist: ${p} unexpectedly embeds the wasm core.`);
+    process.exit(1);
+  }
+}
+
+// The window actor modules are imported by Firefox and looked up BY EXPORT
+// NAME (LazyfoxChild / LazyfoxParent). A refactor that renames them would
+// silently disable the bridge, so guard the names here.
+for (const [p, name] of [
+  ["dist/chrome/lazyfox-child.sys.mjs", "LazyfoxChild"],
+  ["dist/chrome/lazyfox-parent.sys.mjs", "LazyfoxParent"],
+] as const) {
+  const text = readFileSync(join(root, p), "utf8");
+  if (text.indexOf(name) === -1 || text.indexOf("export") === -1) {
+    console.error(`check-dist: ${p} does not export ${name} (Firefox finds the actor class by that name).`);
+    process.exit(1);
+  }
+}
+
+// The loader must register the actor and map resource://lazyfox in the content
+// processes; losing either silently turns the bridge off.
+{
+  const loader = readFileSync(join(root, "dist/chrome/loader/config.js"), "utf8");
+  if (loader.indexOf('registerWindowActor("Lazyfox"') === -1) {
+    console.error("check-dist: the loader no longer registers the Lazyfox window actor.");
+    process.exit(1);
+  }
+  if (loader.indexOf("loadProcessScript") === -1) {
+    console.error("check-dist: the loader no longer installs the content-process resource mapping.");
+    process.exit(1);
+  }
 }
 
 // setup.html must reference the bundled setup.js.

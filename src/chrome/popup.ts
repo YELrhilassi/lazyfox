@@ -4,6 +4,7 @@
 // mounting/unmounting the popup, the chrome-native window resize popup, and
 // the single `currentPopup` slot so the key dispatcher can route Esc/arrows.
 
+import { backdropWheel } from "../shared/keyguard";
 import { PANEL_CSS, type PopupCtl } from "../shared/overlay";
 import { UI_FONT } from "../shared/theme";
 
@@ -26,6 +27,10 @@ export interface PopupHost {
   openResizePopup(): void;
   closeResize(): void;
   resizeOnKey(e: KeyboardEvent): boolean;
+  // Whether an event target lies inside the open popup's DOM (its input and
+  // rows). The key dispatcher uses this to tell "a key typed into the popup"
+  // from "a key aimed at the browser chrome behind it".
+  containsTarget(target: EventTarget | null): boolean;
   // Routes a key to the open popup's selector (used for keys the window
   // capture listener would otherwise consume first — Esc). Returns whether the
   // popup consumed it. Popups that don't expose onKey return false.
@@ -105,6 +110,16 @@ export function createPopupHost(): PopupHost {
     root.addEventListener("mousedown", (e) => {
       if (e.target === root) closePopup();
     });
+    // A wheel over the backdrop must not scroll the browser chrome / page
+    // behind the popup; wheels inside the panel scroll its own lists (which
+    // carry `overscroll-behavior:contain` so they never chain outward).
+    root.addEventListener(
+      "wheel",
+      (e) => {
+        if (backdropWheel(e.target, root)) e.preventDefault();
+      },
+      { passive: false }
+    );
     let ctl: PopupCtl;
     try {
       ctl = build(root);
@@ -216,5 +231,13 @@ export function createPopupHost(): PopupHost {
     resizeOnKey,
     handleKey: (e: KeyboardEvent) =>
       currentPopup && currentPopup.onKey ? currentPopup.onKey(e) : false,
+    containsTarget: (target: EventTarget | null) => {
+      if (!currentPopup || !target) return false;
+      try {
+        return currentPopup.root.contains(target as Node);
+      } catch (e) {
+        return false;
+      }
+    },
   };
 }

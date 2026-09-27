@@ -19,9 +19,11 @@ TOOLS="$ROOT/.tools"
 mkdir -p "$TOOLS"
 
 ARCH="$(uname -m)"
+# GECKO_ARCH mirrors geckodriver's own release-asset suffixes (linux64 /
+# linux-aarch64), which do NOT equal Go's GOARCH names.
 case "$ARCH" in
-  x86_64|amd64) GOARCH="amd64"; ACT_ARCH="x86_64" ;;
-  aarch64|arm64) GOARCH="arm64"; ACT_ARCH="arm64" ;;
+  x86_64|amd64) GOARCH="amd64"; ACT_ARCH="x86_64"; GECKO_ARCH="64" ;;
+  aarch64|arm64) GOARCH="arm64"; ACT_ARCH="arm64"; GECKO_ARCH="-aarch64" ;;
   *) echo "unsupported arch: $ARCH" >&2; exit 1 ;;
 esac
 
@@ -57,7 +59,7 @@ install_geckodriver() {
   [ -x "$TOOLS/geckodriver" ] && { echo "geckodriver: already installed"; return; }
   echo "→ installing geckodriver v0.37.1 ($GOARCH)"
   curl -fsSL -o /tmp/geckodriver.tar.gz \
-    "https://github.com/mozilla/geckodriver/releases/download/v0.37.1/geckodriver-v0.37.1-linux${GOARCH}.tar.gz"
+    "https://github.com/mozilla/geckodriver/releases/download/v0.37.1/geckodriver-v0.37.1-linux${GECKO_ARCH}.tar.gz"
   tar -xzf /tmp/geckodriver.tar.gz -C "$TOOLS" geckodriver
   chmod +x "$TOOLS/geckodriver"
   rm -f /tmp/geckodriver.tar.gz

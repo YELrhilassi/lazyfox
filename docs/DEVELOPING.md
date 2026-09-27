@@ -88,7 +88,10 @@ binary, so a dev installer refuses to masquerade as a signed one.
 
 | Command | What it does for you |
 |---------|----------------------|
-| `build` | make the unsigned dev xpi |
+| `build` | make the unsigned dev xpi **and refresh this platform's installer** |
+| `installer` | build, then open the installer window (add `-- --release`, `-- --no-build`) |
+| `build:installers` | rebuild every per-OS dev installer binary |
+| `build:release-installers` | rebuild the release installer binaries (needs a signed xpi) |
 | `dev-install` / `dev-install:clean` | build + install into Nightly/Dev |
 | `bump -- X.Y.Z` | bump the version everywhere at once |
 | `submit` | publish a version to AMO + rebuild dev installers |

@@ -170,6 +170,13 @@ const assets = [
   path.join(root, "installer", "bin", "lazyfox-install-linux"),
   path.join(root, "installer", "bin", "lazyfox-install-darwin"),
   path.join(root, "installer", "bin", "lazyfox-install-windows.exe"),
+  // The one-line installers. They download the binaries above and run them, so
+  // they must be published alongside — and they are uploaded under their base
+  // names, giving the stable one-liners:
+  //   curl -fsSL …/releases/latest/download/install.sh | sh
+  //   irm …/releases/latest/download/install.ps1 | iex
+  path.join(root, "installer", "scripts", "install.sh"),
+  path.join(root, "installer", "scripts", "install.ps1"),
   signedXpi,
 ].join(" ");
 shout("gh", ["release", "create", tag, "--title", `Lazyfox ${tag}`, "--notes", "Signed release for stable Firefox", ...assets.split(" ")]);

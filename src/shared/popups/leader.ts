@@ -48,6 +48,7 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     // digit capture, so it is wired by each context after makeLeaderActions.
     i: () => ctx.ops.focusFirstInput(),
     I: () => ctx.ops.openSetup(),
+    T: () => ctx.ops.openDiagnostics(),
     n: () => ctx.ops.newTab(),
     x: () => ctx.ops.closeTab(),
     v: () => ctx.ops.reopenTab(),
