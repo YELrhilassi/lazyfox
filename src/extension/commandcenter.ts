@@ -59,7 +59,10 @@ import { createStore } from "./commandcenter/state";
     openOptions: () => {
       try {
         browser.runtime.openOptionsPage();
-      } catch (e) {}
+      } catch (e) {
+        // openOptionsPage is unavailable in some contexts; the rest of the command
+        // center stays usable without it.
+      }
     },
     openSetup: () => void send("openSetup"),
     openPage: (url: string) => void send("openPage", { url }),
@@ -221,7 +224,10 @@ import { createStore } from "./commandcenter/state";
           refreshMeta();
         })
         .catch(() => {});
-    } catch (e) {}
+    } catch (e) {
+      // The runtime API is missing entirely in a stripped build. Nothing this
+      // block starts is essential; the rest of the command center still works.
+    }
     const renderMeta = (sess: string, prof: string): void => {
       const manifest = browser.runtime.getManifest();
       const parts: string[] = [];

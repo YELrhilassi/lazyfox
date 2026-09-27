@@ -184,7 +184,10 @@ async function openUI(which: string) {
       if (t.url && t.url.indexOf("#lfc=") !== -1) {
         await browser.tabs.update(tab.id, { url: stripHash(t.url) });
       }
-    } catch (e) {}
+    } catch (e) {
+      // The tab may already be gone (a closing #lfc= relay tab). Nothing to
+      // clean up then.
+    }
     return { ok: true, reused: true };
   }
   await browser.tabs.create({ url: CC_URL + "#lfc=" + hash, active: true });

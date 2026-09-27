@@ -1,6 +1,19 @@
 // skip 1st line
 lockPref("xpinstall.signatures.required", false);
 
+// Report a loader failure, and never throw while doing it.
+//
+// This is the fallback path of a fallback: everything it reports has already
+// failed, including possibly Services.console itself in a process that is not a
+// chrome window. An empty catch is correct here precisely BECAUSE there is
+// nothing left to try -- it used to be written out six times, which is why this
+// is now one function.
+function lfLog(msg) {
+  try {
+    Services.console.logStringMessage(msg);
+  } catch (x) {}
+}
+
 // resource://lazyfox/ -> <profile>/chrome, so the actor modules (and the frame
 // script) can be referenced by a stable URL. Substitutions are per process;
 // the content-process copy is installed by actor-boot.js below.
@@ -10,9 +23,7 @@ try {
     .QueryInterface(Ci.nsISubstitutingProtocolHandler);
   lfRes.setSubstitution("lazyfox", Services.io.newFileURI(Services.dirsvc.get("UChrm", Ci.nsIFile)));
 } catch (e) {
-  try {
-    Services.console.logStringMessage("lazyfox resource mapping: " + e);
-  } catch (x) {}
+  lfLog("lazyfox resource mapping: " + e);
 }
 
 function lfLoad(win) {
@@ -31,9 +42,7 @@ function lfLoad(win) {
     });
     win.__lazyfoxLoaded = true;
   } catch (e) {
-    try {
-      Services.console.logStringMessage("lazyfox userChrome.uc.js: " + e);
-    } catch (x) {}
+    lfLog("lazyfox userChrome.uc.js: " + e);
   }
 }
 
@@ -59,9 +68,7 @@ function lfLoad(win) {
   try {
     Services.ppmm.loadProcessScript("resource://lazyfox/actor-boot.js", true);
   } catch (e) {
-    try {
-      Services.console.logStringMessage("lazyfox process boot load: " + e);
-    } catch (x) {}
+    lfLog("lazyfox process boot load: " + e);
   }
 
   // Pre-flight: prove the modules are importable and export the classes the
@@ -77,9 +84,7 @@ function lfLoad(win) {
       throw new Error("actor modules did not export the expected classes");
     }
   } catch (e) {
-    try {
-      Services.console.logStringMessage("lazyfox actor preflight failed: " + e);
-    } catch (x) {}
+    lfLog("lazyfox actor preflight failed: " + e);
     return;
   }
 
@@ -98,9 +103,7 @@ function lfLoad(win) {
     ChromeUtils.registerWindowActor("Lazyfox", options);
     return;
   } catch (e) {
-    try {
-      Services.console.logStringMessage("lazyfox actor register (combined): " + e);
-    } catch (x) {}
+    lfLog("lazyfox actor register (combined): " + e);
   }
   // Retry without the keys the browser rejected, one family at a time.
   try {
@@ -117,9 +120,7 @@ function lfLoad(win) {
         allFrames: false,
       });
     } catch (e3) {
-      try {
-        Services.console.logStringMessage("lazyfox actor register failed: " + e3);
-      } catch (x2) {}
+      lfLog("lazyfox actor register failed: " + e3);
     }
   }
 })();
@@ -129,9 +130,15 @@ try {
     function (subject) {
       try {
         lfLoad(subject);
-      } catch (e) {}
+      } catch (e) {
+        // One window failing to load must not stop the observer firing for the
+        // next one; lfLoad is per-window and already reports its own errors.
+      }
     },
     "browser-delayed-startup-finished",
     false
   );
-} catch (e) {}
+} catch (e) {
+  // Services.obs is unavailable in a context that is not a chrome window
+  // (about: pages, the add-on manager). Nothing to observe, nothing to do.
+}
