@@ -79,7 +79,22 @@ export interface BgApi {
   copyUrl: { req: Record<string, never>; res: { url: string; title: string } };
   components: {
     req: Record<string, never>;
-    res: { extension: string; wasm: string; nativeHost: string | null; nativeProtocol: string | null; chromeHelper: string | null };
+    res: {
+      extension: string;
+      wasm: string;
+      nativeHost: string | null;
+      nativeProtocol: string | null;
+      chromeHelper: string | null;
+      /**
+       * Whether the chrome helper can see the Lazyfox window actor, as
+       * "ok" / "missing", or null when the helper has never announced and so
+       * has never been asked. Distinct from chromeHelper being null (the
+       * helper is not installed at all): the helper can be installed and
+       * still not reach the content process, and that is exactly the case
+       * that presents as "keys do nothing on this page".
+       */
+      bridge: "ok" | "missing" | null;
+    };
   };
   zoom: { req: { delta: number; factor?: number }; res: { factor?: number } };
   setConfig: { req: { config: Config }; res: { ok: boolean } };

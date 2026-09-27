@@ -21,7 +21,8 @@ import { createTabHandlers } from "./handlers/tabs";
 import { createWindowHandlers } from "./handlers/window";
 import type { BgActionName } from "./handlers/types";
 import type { CacheMode, PageReport } from "../shared/types";
-import { getConfig } from "./config";
+import { getConfig, setConfig } from "./config";
+import { readKey, writeKey, vBoolean, vString } from "./store";
 import { probeHostOnce } from "./host";
 import { CC_URL, getActiveTab, isCommandCenter, isUITab, stripHash, transientTabIds } from "./tabs";
 import {
@@ -79,21 +80,36 @@ const CHROME_PAGES: { [k: string]: string } = {
 // Components panel. Each piece is versioned independently (the extension, the
 // Go wasm core, the native host, and the chrome helper shipped by the
 // installer), so this reports all of them rather than a single number.
-async function componentsInfo() {
+// The return type is stated rather than inferred because the bridge ternary
+// infers as `string | null`, and the protocol narrows it to a union. Naming
+// it here means the shape is checked in ONE place, and a fourth component
+// added to the report without updating the protocol is a compile error instead
+// of a silently missing row.
+async function componentsInfo(): Promise<{
+  extension: string;
+  wasm: string;
+  nativeHost: string | null;
+  nativeProtocol: string | null;
+  chromeHelper: string | null;
+  bridge: "ok" | "missing" | null;
+}> {
   const [ext, wasm, host] = await Promise.all([
     Promise.resolve(browser.runtime.getManifest().version),
     core.version().catch(() => "?"),
     hostInfo().catch(() => null),
   ]);
-  const stored = await browser.storage.local
-    .get("chromeHelperVersion")
-    .catch(() => ({}));
+  const stored = await readKey("chromeHelperVersion", vString, "");
+  // The bridge flag is read HERE rather than only in the diagnostics page,
+  // because this is the report the diagnostics page renders. It was being
+  // written and never read at all, under a comment asserting otherwise.
+  const bridge = await readKey("lfBridge", vString, "");
   return {
     extension: ext,
     wasm: wasm,
     nativeHost: host && host.version ? String(host.version) : null,
     nativeProtocol: host && host.protocol ? String(host.protocol) : null,
-    chromeHelper: (stored && stored.chromeHelperVersion) || null,
+    chromeHelper: stored || null,
+    bridge: bridge === "1" ? "ok" : bridge === "0" ? "missing" : null,
   };
 }
 
@@ -606,15 +622,19 @@ const relayHandlers: { [K in RelayAction]: (req: RelayReq<K>) => Promise<RelayRe
   // profile is active even before any session has been saved.
   alive: (req) => {
     markChromeAlive();
-    const set: Record<string, string> = { chromeHelperVersion: req.version || "" };
-    if (req.profileName) set.lfProfileName = req.profileName;
-    if (req.profileDir) set.lfProfileDir = req.profileDir;
-    // Whether the chrome helper could see the Lazyfox window actor
-    // registered. The diagnostics page reports it, so a silently missing
-    // bridge is visible instead of being felt only as "keys do nothing on
-    // this page".
-    if (req.bridge !== undefined) set.lfBridge = req.bridge;
-    browser.storage.local.set(set).catch(() => {});
+    // Written key by key rather than as a loose Record<string, string>. The
+    // bulk form could not distinguish "the helper reported an empty profile
+    // name" from "the helper has not reported one yet", and could not be
+    // checked against the schema, so a typo in a key would have been a write
+    // that silently went nowhere. Optional fields stay absent rather than
+    // becoming "", which is a different value with the same falsiness.
+    void writeKey("chromeHelperVersion", req.version || "");
+    if (req.profileName) void writeKey("lfProfileName", req.profileName);
+    if (req.profileDir) void writeKey("lfProfileDir", req.profileDir);
+    // Whether the chrome helper can see the Lazyfox window actor registered.
+    // Surfaced in the components report above, so a silently missing bridge is
+    // visible instead of being felt only as "keys do nothing on this page".
+    if (req.bridge !== undefined) void writeKey("lfBridge", req.bridge);
     // A truthy ack so the helper can confirm the announce was really
     // delivered (and stop retrying). Without it the helper could only know a
     // fire-and-forget req was accepted/queued, not that chromeAlive landed.
@@ -625,7 +645,7 @@ const relayHandlers: { [K in RelayAction]: (req: RelayReq<K>) => Promise<RelayRe
   toggleWhichKey: async () => {
     const c = await getConfig();
     c.whichKey = !c.whichKey;
-    await browser.storage.local.set({ config: c });
+    await setConfig(c);
     return null;
   },
   // Best-effort: a tab with no content script (about:, an extension page, a
@@ -807,7 +827,7 @@ const cache = createCacheController({
 // sets it true again.
 browser.runtime.onStartup.addListener(() => {
   setChromeLayerAlive(false);
-  browser.storage.local.set({ chromeAlive: false }).catch(() => {});
+  void writeKey("chromeAlive", false);
   checkChromeLayerHealth();
   nudgeFreshInstall();
   void reconcileStealth();
@@ -944,25 +964,26 @@ browser.notifications.onClicked.addListener((id: string) => {
 // letting every chrome-only feature degrade to standalone mode with no sign.
 function markChromeAlive(): void {
   setChromeLayerAlive(true); // authoritative, before any async storage write
-  browser.storage.local
-    .set({ chromeAlive: true, chromeEverAlive: true })
-    .catch(() => {});
+  // Two keys, not one write: chromeAlive is the live flag the one-bar decision
+  // reads and must be set FIRST, before the historical flag. A single
+  // a single write is a single round trip, but batching them would mean the
+  // live flag waiting on the same write as a value nothing reads urgently.
+  void writeKey("chromeAlive", true);
+  void writeKey("chromeEverAlive", true);
   // Re-apply a page-cache policy the helper may have missed while down.
   void cache.resync();
 }
 
 function checkChromeLayerHealth(): void {
-  browser.storage.local
-    .get("chromeEverAlive")
-    .then((r: { chromeEverAlive?: boolean }) => {
+  void readKey("chromeEverAlive", vBoolean, false)
+    .then((ever) => {
       // Never loaded even once (fresh install, standalone-only user): the
       // extension alone is the intended state; the fresh-install nudge below
       // offers the full install once.
-      if (!r || !r.chromeEverAlive) return;
+      if (!ever) return;
       setTimeout(async () => {
         try {
-          const c = await browser.storage.local.get("chromeAlive");
-          if (c && c.chromeAlive) return; // the helper announced in time
+          if (await readKey("chromeAlive", vBoolean, false)) return; // announced in time
           await browser.notifications.create({
             type: "basic",
             iconUrl: browser.runtime.getURL("icons/icon96.png"),
@@ -993,14 +1014,15 @@ function checkChromeLayerHealth(): void {
 // the add-on alone is only half of Lazyfox. One-shot via setupNudgeShown so a
 // standalone-only user is not nagged again.
 function nudgeFreshInstall(): void {
-  browser.storage.local
-    .get(["chromeEverAlive", "setupNudgeShown"])
-    .then((r: { chromeEverAlive?: boolean; setupNudgeShown?: boolean }) => {
-      if (r.chromeEverAlive || r.setupNudgeShown) return;
+  void Promise.all([
+    readKey("chromeEverAlive", vBoolean, false),
+    readKey("setupNudgeShown", vBoolean, false),
+  ])
+    .then(([ever, shown]) => {
+      if (ever || shown) return;
       setTimeout(async () => {
         try {
-          const c = await browser.storage.local.get("chromeAlive");
-          if (c && c.chromeAlive) return; // the helper announced in time
+          if (await readKey("chromeAlive", vBoolean, false)) return; // announced in time
           await browser.notifications.create({
             type: "basic",
             iconUrl: browser.runtime.getURL("icons/icon96.png"),
@@ -1008,7 +1030,7 @@ function nudgeFreshInstall(): void {
             message:
               "The add-on works, but the toolbar-free UI needs a one-time setup. Click to open it.",
           });
-          await browser.storage.local.set({ setupNudgeShown: true });
+          await writeKey("setupNudgeShown", true);
         } catch (e) {
           // never let the check break startup
         }
