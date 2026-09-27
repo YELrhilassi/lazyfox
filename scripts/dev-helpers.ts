@@ -1,9 +1,14 @@
 import { readdirSync, existsSync, rmSync, readFileSync, writeFileSync, statSync } from 'fs';
-import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { join, basename, dirname, relative } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import {
+  payloadHash,
+  latestUnsignedXpi as payloadLatestUnsignedXpi,
+  readState,
+  sha256File as payloadSha256File,
+} from './payload.ts';
 
 const HELPERS_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -199,14 +204,10 @@ export function cleanDevProfiles(root: string): number {
 }
 
 // Latest unsigned xpi in a dist directory (lazyfox2-<ver>.xpi, not -signed).
+// The rule lives in payload.ts; this wrapper keeps the dist-dir call sites
+// working.
 export function latestUnsignedXpi(distDir: string): string | null {
-  let xpi = null;
-  for (const f of readdirSync(distDir)) {
-    if (!f.startsWith('lazyfox2-') || !f.endsWith('.xpi')) continue;
-    if (f.includes('-signed.')) continue;
-    xpi = join(distDir, f);
-  }
-  return xpi;
+  return payloadLatestUnsignedXpi(join(distDir, '..'));
 }
 
 // Known DEV-channel install dirs that are canonical on Linux. Kept exported as
@@ -272,78 +273,45 @@ const DEV_INSTALLER_BINARIES = {
   win32: 'lazyfox-install-dev-windows.exe',
 };
 
-// The chrome payload files that make an installer stale when they change. Kept
-// in sync with build.ts's CHROME_FILES + the two window-actor modules.
-const CHROME_PAYLOAD_FILES = [
-  'userChrome.css',
-  'userChrome.uc.js',
-  'frame.js',
-  'corebootstrap.js',
-  'actor-boot.js',
-  'lazyfox-child.sys.mjs',
-  'lazyfox-parent.sys.mjs',
-  'user.js',
-];
+// The chrome payload files that make an installer stale when they change, the
+// payload content hash, and the per-binary state file all live in payload.ts
+// now — that module reads the same artifacts.json the Go payload package embeds,
+// so there is exactly one list of chrome files in the whole repository and one
+// definition of "this binary matches the current build".
 
 // SHA-256 of a file's bytes ('' when unreadable).
 export function sha256File(p: string): string {
-  try {
-    return createHash('sha256').update(readFileSync(p)).digest('hex');
-  } catch {
-    return '';
-  }
+  return payloadSha256File(p);
 }
 
-// A CONTENT hash of the dev installer payload (the staged chrome files + the
-// unsigned xpi). mtimes are unusable here: a clone or `git checkout` stamps
-// every file — the committed installer binary included — with ~the same recent
-// time, so a binary built from an older commit passes a "newer than the
-// payload" test and is reused, silently installing the old build. Hashing the
-// bytes cannot be fooled that way.
+// A CONTENT hash of the dev installer payload. mtimes are unusable here: a clone
+// or `git checkout` stamps every file — the committed installer binary included
+// — with ~the same recent time, so a binary built from an older commit passes a
+// "newer than the payload" test and is reused, silently installing the old
+// build. Hashing the bytes cannot be fooled that way.
+//
+// Now defined once, in payload.ts, where it also covers the loader files and the
+// native host's source (neither of which this older copy ever hashed — a stale
+// embedded loader was therefore undetectable from here).
 export function devPayloadHash(root: string, xpi: string | null = null): string {
-  const h = createHash('sha256');
-  const add = (label: string, p: string): void => {
-    h.update(label);
-    h.update('\0');
-    h.update(sha256File(p));
-    h.update('\0');
-  };
-  for (const f of CHROME_PAYLOAD_FILES) add(f, join(root, 'dist/chrome', f));
-  add('loader/config.js', join(root, 'dist/chrome/loader/config.js'));
-  const ext = xpi || latestUnsignedXpi(join(root, 'dist'));
-  if (ext) add('xpi', ext);
-  return h.digest('hex');
+  return payloadHash(root, xpi);
 }
 
-// Sidecar stamp written next to a freshly built dev installer, recording BOTH
-// the payload hash and the binary's own hash. Tracking the binary hash too
-// means a `git checkout` that swaps the binary under an unchanged payload is
-// still detected as stale.
-export function devStampPath(binPath: string): string {
-  return binPath + '.stamp';
-}
-
-export function writeDevStamp(root: string, binPath: string, xpi: string | null = null): void {
-  try {
-    writeFileSync(
-      devStampPath(binPath),
-      JSON.stringify({ payload: devPayloadHash(root, xpi), bin: sha256File(binPath) }),
-      'utf8'
-    );
-  } catch {
-    // best effort; a missing stamp just means the next run rebuilds
-  }
-}
-
+// Sidecar stamps used to record what each dev installer was built from. They were
+// gitignored, which made them a local-only optimization with a second, weaker
+// definition of freshness. The build now writes the same information into the
+// COMMITTED installer/bin/payload-state.json (see payload.ts), so a clone, a
+// teammate and CI all see the same answer — and there is only one mechanism to
+// keep correct.
 function devInstallerIsFresh(root: string, binPath: string, xpi: string | null): boolean {
   if (!existsSync(binPath)) return false;
-  try {
-    const stamp = JSON.parse(readFileSync(devStampPath(binPath), 'utf8'));
-    if (!stamp || typeof stamp.payload !== 'string' || typeof stamp.bin !== 'string') return false;
-    return stamp.payload === devPayloadHash(root, xpi) && stamp.bin === sha256File(binPath);
-  } catch {
-    return false;
-  }
+  const state = readState(root);
+  const entry = state.binaries[basename(binPath)];
+  if (!entry) return false;
+  // The bytes on disk must be the bytes we recorded (catches a swapped or
+  // half-written binary), and the payload they were built from must still be
+  // today's (catches a rebuilt dist/ with a forgotten installer rebuild).
+  return entry.bin === sha256File(binPath) && entry.payload === devPayloadHash(root, xpi);
 }
 
 // Resolve the dev installer the scripts should invoke.

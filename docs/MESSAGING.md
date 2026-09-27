@@ -149,47 +149,29 @@ owns what only an external process can:
 - `docs/ARCHITECTURE.md` + `README.md` describe the persistent relay + native
   host picture (no more "throwaway relay tabs").
 
-## Trusted activation (link hints) — a real mouse press
+## Link hint activation — synthetic only (there was a trusted-press path)
 
-A hint activation normally fires a synthetic pointer/mouse sequence plus a
-native `.click()`. Those events are **untrusted** (`isTrusted === false`), and
-a stubborn minority of controls ignore them: anything gating on `isTrusted` or
-on transient user activation, and anything that only responds to the browser's
-own native press (a native `<summary>` disclosure, a video player's overlay
-button, an anti-bot overlay waiting for a genuine click).
+Hint activation fires a synthetic pointer/mouse sequence plus a native
+`.click()`, in the content process, and nothing else. There is no privileged
+press on the relay any more.
 
-So activation asks the browser side to press for real, and only falls back to
-the synthetic click when that path is not available.
+A trusted-press path existed: `trustedClick` carried the target's viewport
+coordinates extension → background → chrome helper → the tab's "Lazyfox" window
+actor, whose child half dispatched them through `windowUtils.sendMouseEvent`, so
+the page would see a click with `isTrusted === true`. It was removed because it
+made link hints *worse*, and the reason is worth remembering, because the
+mistake is easy to repeat: the background could only report that it had
+**posted** the request, never that a press had happened, so the content script
+read "a relay port exists" as success and skipped its own click. Every page where
+the privileged side did not act — no window actor registered, the command
+dropped, the helper absent — got a hint that did nothing at all. Six of the
+thirteen local BiDi hint tests failed; with the synthetic path they all pass.
 
-```
-hints.ts activate()
-  -> send("trustedClick", {x, y})            content -> background
-  -> requestChromeReply("trustedClick", ...)  background -> chrome helper
-  -> handleCmd("trustedClick")               channel.ts, on the helper
-  -> actor.sendAsyncMessage(...)             chrome -> content process
-  -> windowUtils.sendMouseEvent(...)         actor-child.ts, TRUSTED
-```
-
-Design notes:
-
-- **The press happens in the content process, not the parent.** Only the
-  window actor's child half is privileged *and* co-located with the widget.
-  The parent process cannot reach an out-of-process tab's content window at
-  all, so the helper cannot press there — it forwards the coordinates and the
-  child dispatches `mousemove`/`mousedown`/`mouseup`/`click` through
-  `windowUtils`, which is what makes them trusted.
-- **`trusted` reports AVAILABILITY, not effect.** The press is dispatched
-  asynchronously, so a synchronous answer cannot observe the page's reaction.
-  `trustedClick` resolves `{ok, trusted}` where `trusted` is true only when a
-  *live* relay port for the window took the command. It deliberately never
-  queues (unlike `requestChrome`): a click that waits for the relay to come up
-  is far too late, so "not connected yet" is reported as unavailable and the
-  content script falls back immediately.
-- **The two paths are mutually exclusive.** When the press is accepted the
-  content script does nothing, so a target is never activated twice.
-- Works on content-script pages as well as `about:`/error pages: the actor
-  child's "the content script owns this page" bail lives in `handleEvent`
-  (the key path), not in `receiveMessage`.
+If it is ever reintroduced, the rule is: **never report a privileged action as
+done from the sender's side of an asynchronous hop.** It needs a real reply from
+the chrome helper (nonce-correlated, with a short timeout), a per-tab cache of
+whether that reply ever arrives, and a synthetic fallback on anything but a
+confirmed press. See `docs/HINTS.md`.
 
 ## Out of scope (explicitly)
 

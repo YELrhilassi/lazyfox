@@ -402,7 +402,7 @@ same command — use the one that matches what you are doing:
 
 | I want to… | Run | What it does |
 |---|---|---|
-| Develop / try the latest changes | `npm run build` | **Unsigned** dev build (`__DEV__=true`), fast, no AMO. Produces `dist/lazyfox2-<ver>.xpi` for Nightly/Devedition. |
+| Develop / try the latest changes | `npm run sync` | **Unsigned** dev build (`__DEV__=true`), fast, no AMO. Produces `dist/lazyfox2-<ver>.xpi` for Nightly/Devedition **and** rebuilds every committed installer binary so none of them is stale. |
 | Install my fresh dev build into Nightly | `npm run dev-install` (or `npm run dev-install:clean`) | Builds + installs the unsigned dev xpi into a new profile. |
 | Start a new version | `npm run bump -- X.Y.Z` | Bump the version everywhere at once. |
 | Publish the next version to AMO | `npm run submit` | Packs the fresh build, uploads it to AMO as a **listed/public** version, and rebuilds the dev installers. Needs `AMO_API_KEY`/`SECRET` in `.env`. |

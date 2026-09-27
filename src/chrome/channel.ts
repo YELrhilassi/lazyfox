@@ -705,47 +705,8 @@ export function createChannel(deps: ChannelDeps): Channel {
       deps.cache.setPolicy((p.mode as CacheMode) || "normal", Array.isArray(p.tabIds) ? p.tabIds : []);
       return;
     }
-    if (action === "trustedClick") {
-      // A hint activation wants a REAL mouse press (the content script's own
-      // events are untrusted, and a few controls ignore those). Hand the
-      // coordinates to the selected tab's "Lazyfox" window actor, whose CHILD
-      // half runs privileged inside the content process and dispatches
-      // through windowUtils — the only place a press can be genuinely
-      // trusted, and the only one that works for an out-of-process tab (this
-      // parent process cannot reach a remote tab's content window at all).
-      trustedClickAt(arg || {});
-      return;
-    }
   }
 
-  // Dispatch a trusted press at viewport coordinates (x, y) in the selected
-  // tab. Best-effort and silent: the background has already told the content
-  // script this path is reachable, and a failure here (no actor, remote tab
-  // that cannot host one, coordinates out of range) must not throw into the
-  // relay's command loop.
-  function trustedClickAt(pt: { x: number; y: number }): void {
-    try {
-      const x = Number(pt.x);
-      const y = Number(pt.y);
-      if (!isFinite(x) || !isFinite(y)) return;
-      const browser = window.gBrowser && window.gBrowser.selectedBrowser;
-      if (!browser) return;
-      const bc = browser.browsingContext;
-      const wg = bc && bc.currentWindowGlobal;
-      if (!wg || !wg.getActor) return;
-      // getActor instantiates the parent half when it is registered and
-      // returns null when it is not — the same probe the alive announce uses.
-      const actor = wg.getActor("Lazyfox");
-      if (!actor || typeof actor.sendAsyncMessage !== "function") return;
-      // Forwarded to the child, which presses. sendAsyncMessage rather than
-      // sendQuery: there is nothing to wait for, and a query would just add a
-      // round trip to a click the user has already committed to.
-      actor.sendAsyncMessage("lazyfox-trusted-click", { x: x, y: y });
-    } catch (e) {
-      // No privileged path for this page — the content script's own synthetic
-      // click is the fallback, and it is already decided by now.
-    }
-  }
 
   /* ===================== public request wrappers ===================== */
 

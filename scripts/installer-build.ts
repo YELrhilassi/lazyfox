@@ -12,42 +12,35 @@
 // produced installer/frontend/dist.
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { buildWinRes } from "./winres.ts";
+import { xpiVersion } from "./amo-lib.ts";
+import {
+  HOST,
+  LOADER_FILES,
+  STAGED_CHROME_FILES,
+  isNativeTarget,
+  payloadHash,
+  relFromRoot,
+  sha256File,
+  sourceHash,
+  writeState,
+} from "./payload.ts";
 
-/**
- * Every profile-side chrome file Lazyfox ships. One list, used by every build
- * path, so a chrome file can never be missing from one of them (which would ship
- * a half-installed chrome layer).
- */
-export const CHROME_FILES = [
-  "userChrome.css",
-  "userChrome.uc.js",
-  "frame.js",
-  "corebootstrap.js",
-  "actor-boot.js",
-  "lazyfox-child.sys.mjs",
-  "lazyfox-parent.sys.mjs",
-  "user.js",
-];
+// The payload file list is NOT declared here any more: it lives in
+// installer/internal/payload/artifacts.json and is read through payload.ts,
+// which the Go payload package embeds as the very same file. One declaration, so
+// a chrome file can never be in the build but missing from the installer's
+// registry — which shipped a half-installed chrome layer exactly once already.
+export const CHROME_FILES = STAGED_CHROME_FILES;
+export { HOST, isNativeTarget };
 
 export interface InstallerTarget {
   goos: string;
   arch: string;
   /** File name inside installer/bin/. */
   out: string;
-}
-
-/** What `go build` calls this machine. */
-export const HOST = {
-  goos: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux",
-  goarch: process.arch === "arm64" ? "arm64" : process.arch === "ia32" ? "386" : "amd64",
-};
-
-/** isNative reports whether a target can be built with the graphical window here. */
-export function isNativeTarget(t: InstallerTarget): boolean {
-  return t.goos === HOST.goos && t.arch === HOST.goarch;
 }
 
 /**
@@ -157,12 +150,27 @@ export function buildInstallerSet(opts: {
     cpSync(join(root, "dist", "chrome", f), join(chromeDst, f));
   }
 
+  // The loader is staged from dist/ too, and this used to be the one payload with
+  // no automated path at all: data/loader/ held a COMMITTED copy that only a human
+  // remembered to update after editing src/static/chrome/loader/config.js. The
+  // embedded loader is what a downloaded binary installs, so a forgotten copy
+  // meant the shipped installer registered no window actor and half the UI was
+  // dead — behind a green build and a green test suite. Staging it on every build
+  // makes that state unreachable.
+  const loaderDst = join(payloadData, "loader");
+  mkdirSync(loaderDst, { recursive: true });
+  for (const f of LOADER_FILES) {
+    cpSync(join(root, "dist", "chrome", "loader", f), join(loaderDst, f));
+  }
+
   // Clear any stale extension tree, then copy the single xpi in.
   const extDst = join(payloadData, "extension");
   rmSync(extDst, { recursive: true, force: true });
   mkdirSync(extDst, { recursive: true });
   cpSync(opts.xpiPath, join(extDst, "lazyfox2.xpi"));
-  console.log(`${logPrefix} staged payload -> internal/payload/data/{chrome,extension/lazyfox2.xpi}`);
+  console.log(
+    `${logPrefix} staged payload -> internal/payload/data/{chrome,loader,extension/lazyfox2.xpi}`,
+  );
 
   // The front-end is embedded too, so it must exist before any Go compile.
   ensureFrontend(root);
@@ -198,6 +206,27 @@ export function buildInstallerSet(opts: {
     }
     const out = join(installerDir, "bin", t.out);
     buildInstaller({ installerDir, target: t, ldflags, out });
+
+    // Record what this binary was built from. That record (installer/bin/
+    // payload-state.json) is what lets `npm run check` prove by CONTENT, for
+    // every platform and without rebuilding anything, that no committed
+    // installer is carrying yesterday's payload.
+    //
+    // The add-on version is read out of the xpi itself rather than parsed from
+    // its file name: the release installers embed e.g.
+    // "lazyfox2-0.5.6-signed.xpi", and a name-based guess reported that as 0.0.0
+    // — which made a real record look like a broken one.
+    writeState(root, {
+      out: t.out,
+      channel: opts.channel,
+      goos: t.goos,
+      arch: t.arch,
+      xpi: relFromRoot(root, opts.xpiPath),
+      xpiVersion: xpiVersion(readFileSync(opts.xpiPath)),
+      payload: payloadHash(root, opts.xpiPath),
+      source: sourceHash(root),
+      bin: sha256File(out),
+    });
     console.log(`${logPrefix} ${t.goos}/${t.arch} -> installer/bin/${t.out}`);
   }
 }

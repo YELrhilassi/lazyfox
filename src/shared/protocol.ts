@@ -97,23 +97,6 @@ export interface BgApi {
   // to the chrome helper so its window-level status bar shows the find count
   // on web pages (where the content script owns the find widget).
   syncFind: { req: { cur: number; count: number }; res: { ok: boolean } };
-  // Content script -> background: activate a hint with a REAL, trusted mouse
-  // press at the target's viewport coordinates. The content script's own
-  // dispatched events are untrusted (isTrusted === false), which is what makes
-  // a few stubborn controls ignore them: widgets that gate on event.isTrusted,
-  // on user activation, or that only act on the browser's own native press
-  // (a native <summary> toggle, a video player's overlay button, an
-  // anti-bot overlay). This routes the press to the privileged browser side,
-  // which dispatches it through windowUtils so the page sees what a real
-  // click looks like. `trusted` is the availability answer the caller needs to
-  // decide whether to fall back to its synthetic click: it is false when no
-  // privileged helper is attached (store install, helper crashed, the
-  // content-process bridge not registered), and in that case nothing was
-  // pressed, so the caller must activate the target itself.
-  //
-  // The press is dispatched ASYNCHRONOUSLY on the browser side (it crosses the
-  // extension->chrome relay), so `ok` only means the request was accepted.
-  trustedClick: { req: { x: number; y: number }; res: { ok: boolean; trusted: boolean } };
   // Content script -> background: is the chrome layer (userChrome helper)
   // authoritatively alive? The content script must ONLY draw its standalone bar
   // when the background confirms the chrome layer is absent — never trust a
