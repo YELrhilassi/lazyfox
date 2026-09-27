@@ -75,6 +75,41 @@ a human-readable `note` ("no such tab", "same session") that the chrome side
 discarded, so a failed tab copy looked exactly like a successful one. Those two
 actions are now reply-bearing and the failure is toasted.
 
+## Stage 3 — one wire format, tested — DONE
+
+The three message shapes are packed into a URL fragment:
+
+```
+#lfr=rq.<id>.<action>.<jsonArg>   helper -> page -> background   (request)
+#lfr=rp.<id>.<jsonResult>        background -> page -> helper   (reply)
+#lfr=cm.<action>.<jsonArg>       background -> page -> helper   (command)
+```
+
+That format used to be hand-encoded and hand-parsed **independently on each
+side**: `channel.ts` wrote `rq` and read `rp`/`cm`, `relay.ts` wrote `rp`/`cm`
+and read `rq`. Each had its own `indexOf`/`slice` parsing, and nothing said so
+if the two drifted — the symptom being a message that simply never arrives, with
+no error anywhere, on the one channel whose entire job is to be hard to
+observe. It already had: the request direction carried a bare string while the
+reply direction carried JSON, which is what the U+0001 packing existed to
+work around.
+
+`shared/relay-wire.ts` is now the only implementation, used by both sides, with
+35 tests (`node scripts/test-relay-wire.ts`). The round trips are the point — anything one side
+encodes, the other must decode — but the robustness cases matter almost as much,
+because the message passes through a URL a browser may truncate, and a decoder
+that throws there takes down whatever was polling.
+
+Two latent bugs surfaced while writing those tests, both inherited from the
+hand-rolled parsers and both invisible because nothing currently violates them:
+
+- `encodeURIComponent` leaves `.` unescaped, so a command action name
+  containing a dot would be split at the wrong place and decode truncated. No
+  `ChromeAction` key has a dot today; a wire format should not depend on that
+  staying true. `encodeCommand` now escapes `.` explicitly.
+- `Number("")` is `0`, so a corrupt or truncated hash with no id decoded to
+  id 0 rather than being rejected. Ids must now match `/^\d+$/`.
+
 ## Stage 1 — persistent relay (replaces throwaway `#lfc=` tabs) — DONE
 
 Goal: **zero tab churn**. One dedicated, hidden relay tab carries every

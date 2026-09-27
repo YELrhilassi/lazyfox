@@ -19,10 +19,16 @@
 //                        over the port, then clears the hash)
 //       page  -> helper: the page rewrites its own URL (history.replaceState,
 //                        no reload) to
-//                        #lfr=rp.<id>.<jsonEnc>   (reply to a request)
-//                        #lfr=cm.<action>.<jsonEnc>  (background -> chrome cmd)
+//                        #lfr=rp.<id>.<jsonResult>  (reply to a request)
+//                        #lfr=cm.<action>.<jsonArg>  (background -> chrome cmd)
 //                        and the helper (which polls the tab URL every 500ms)
 //                        picks them up and clears the slot.
+//
+// The encoding and decoding of those three shapes live in
+// shared/relay-wire.ts, NOT here. The format used to be hand-parsed on each
+// side, so a change on one end could silently fail to match the other — and a
+// message that does not match on a URL-hash channel fails by never arriving,
+// which is close to undebuggable from the outside.
 //
 // The URL is a single slot: at most one message in flight at a time. This page
 // never clobbers a pending request hash (the helper's rq) — outbound replies/
@@ -30,13 +36,13 @@
 //
 // The page is deliberately tiny: it renders nothing and only shuttles messages,
 // so a hidden relay tab costs almost nothing.
+import { HASH_PREFIX, decodeRequest, encodeCommand, encodeReply, isRelayHash, relayFragment } from "../shared/relay-wire";
 (function () {
   "use strict";
   if (window.top !== window) return;
 
   let port: any = null;
   let portName = "lazyfox-relay";
-  const HASH_PREFIX = "#lfr=";
   const base = (() => {
     try {
       return location.href.split("#")[0];
@@ -86,7 +92,7 @@
   // the helper's rq (waiting for us to forward). The slot is otherwise free.
   function slotBusy(): boolean {
     try {
-      return location.hash.indexOf(HASH_PREFIX) !== -1;
+      return isRelayHash(location.hash);
     } catch (e) {
       return false;
     }
@@ -111,27 +117,8 @@
 
   // Forward a helper request (rq hash) over the port, then free the slot.
   function handleReqHash(frag: string): void {
-    // #lfr=rq.<id>.<action>.<jsonArg>
-    const rest = frag.slice(3);
-    const d1 = rest.indexOf(".");
-    if (d1 < 0) return;
-    const id = Number(rest.slice(0, d1));
-    const d2 = rest.indexOf(".", d1 + 1);
-    const action = d2 < 0 ? decodeURIComponent(rest.slice(d1 + 1)) : decodeURIComponent(rest.slice(d1 + 1, d2));
-    // Requests carry a JSON argument, exactly as replies and commands already
-    // did. A missing or unparseable tail becomes {} rather than a string: the
-    // background's handlers read named fields, and a bare string there used to
-    // be the reason several actions took "undefined" where they expected a
-    // name.
-    let arg: unknown = {};
-    const tail = d2 >= 0 ? rest.slice(d2 + 1) : "";
-    if (tail) {
-      try {
-        arg = JSON.parse(decodeURIComponent(tail));
-      } catch (e) {
-        arg = {};
-      }
-    }
+    const req = decodeRequest(frag);
+    if (!req) return;
     if (!port) {
       // No port yet (background still loading): drop — the helper's request
       // has its own timeout and retries (the announce loop / pollers).
@@ -139,7 +126,7 @@
       return;
     }
     try {
-      port.postMessage({ type: "req", id: id, action: action, arg: arg });
+      port.postMessage({ type: "req", id: req.id, action: req.action, arg: req.arg });
     } catch (e) {
       // ignore
     }
@@ -161,13 +148,13 @@
   function processHash(): void {
     try {
       const h = location.hash;
-      if (h.indexOf(HASH_PREFIX) !== 0) {
+      if (!isRelayHash(h)) {
         // Any non-relay hash (or none): the slot is free — flush anything the
         // helper hasn't picked up yet.
         flushPendingOut();
         return;
       }
-      const frag = h.slice(HASH_PREFIX.length);
+      const frag = relayFragment(h);
       if (frag.indexOf("rq.") === 0) handleReqHash(frag);
       // rp./cm. hashes are OUR OWN writes (awaiting the helper's read); the
       // helper clears them. Leave them alone.
@@ -220,14 +207,8 @@
 
   function encodeOutbound(msg: any): string | null {
     try {
-      if (msg.type === "resp") {
-        const json = msg.result !== undefined ? JSON.stringify(msg.result) : "null";
-        return "rp." + String(msg.id) + "." + encodeURIComponent(json);
-      }
-      if (msg.type === "cmd") {
-        const json = msg.arg !== undefined ? JSON.stringify(msg.arg) : "null";
-        return "cm." + encodeURIComponent(String(msg.action || "")) + "." + encodeURIComponent(json);
-      }
+      if (msg.type === "resp") return encodeReply(msg.id, msg.result);
+      if (msg.type === "cmd") return encodeCommand(String(msg.action || ""), msg.arg);
     } catch (e) {
       // ignore
     }

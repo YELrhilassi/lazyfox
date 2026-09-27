@@ -23,6 +23,7 @@ import { mergeConfig, mergeHotkeys } from "../shared/config";
 import { openBookmarksPopup, openDownloadsPopup, openHistoryPopup, openSearchPopup, openTabsPopup, openUrlPopup, type PopupCtx } from "../shared/popups";
 import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
 import type { ChromeAction, ChromeReq, RelayAction, RelayReq, RelayRes } from "../shared/protocol";
+import { HASH_PREFIX, decodeCommand, decodeReply, encodeRequest } from "../shared/relay-wire";
 import { applyHoverRevealPref, type ChromeCfg } from "./config";
 import type { CacheCtl } from "./cache";
 import type { DebugHandlers } from "./debug";
@@ -262,7 +263,8 @@ export function createChannel(deps: ChannelDeps): Channel {
 
   // ---- URL-slot relay (see the state comment above) ----------------------
 
-  const RELAY_HASH_PREFIX = "#lfr=";
+  // Declared once, in shared/relay-wire.ts, and used by the relay page too.
+  const RELAY_HASH_PREFIX = HASH_PREFIX;
 
   function relayBrowser(): any {
     const cached = relayTab;
@@ -355,17 +357,10 @@ export function createChannel(deps: ChannelDeps): Channel {
     if (cur.indexOf(RELAY_HASH_PREFIX) !== -1) return; // slot busy
     const next = pendingReqs.shift();
     if (!next) return;
-    // Always send an arg, even an empty one: a uniform "rq.<id>.<action>.<json>"
-    // means the relay page never has to guess whether a missing tail meant
-    // "no argument" or "an empty string".
-    let json = "{}";
-    try {
-      json = JSON.stringify(next.arg == null ? {} : next.arg);
-    } catch (e) {
-      json = "{}";
-    }
+    // The wire format is shared/relay-wire.ts, which the relay page also uses,
+    // so the two ends cannot drift apart.
     loadRelay(
-      base + "relay.html" + RELAY_HASH_PREFIX + "rq." + next.id + "." + next.action + "." + encodeURIComponent(json)
+      base + "relay.html" + RELAY_HASH_PREFIX + encodeRequest(next.id, next.action, next.arg)
     );
   }
 
@@ -383,45 +378,21 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
     const frag = spec.slice(i + RELAY_HASH_PREFIX.length);
     if (frag.indexOf("rq.") === 0) return; // our own pending request; page will clear it
-    if (frag.indexOf("rp.") === 0) {
-      // Reply hash: #lfr=rp.<id>.<encodeURIComponent(JSON result)>
-      const rest = frag.slice(3);
-      const dot = rest.indexOf(".");
-      if (dot < 0) {
-        clearRelayHash();
-        return;
-      }
-      const id = Number(rest.slice(0, dot));
-      let result: any = null;
-      try {
-        result = JSON.parse(decodeURIComponent(rest.slice(dot + 1)));
-      } catch (e) {
-        result = null;
-      }
-      const w = relayWaiters[id];
+    const reply = decodeReply(frag);
+    if (reply) {
+      const w = relayWaiters[reply.id];
       if (w) {
         clearTimeout(w.timer);
-        delete relayWaiters[id];
-        w.resolve(result);
+        delete relayWaiters[reply.id];
+        w.resolve(reply.result);
       }
       clearRelayHash();
       sendNextRelay();
       return;
     }
-    if (frag.indexOf("cm.") === 0) {
-      // Command hash: #lfr=cm.<action>.<encodeURIComponent(JSON arg)>
-      const rest = frag.slice(3);
-      const dot = rest.indexOf(".");
-      const action = dot < 0 ? decodeURIComponent(rest) : decodeURIComponent(rest.slice(0, dot));
-      let arg: any = null;
-      if (dot >= 0 && rest.slice(dot + 1)) {
-        try {
-          arg = JSON.parse(decodeURIComponent(rest.slice(dot + 1)));
-        } catch (e) {
-          arg = decodeURIComponent(rest.slice(dot + 1));
-        }
-      }
-      handleCmd(action, arg);
+    const cmd = decodeCommand(frag);
+    if (cmd) {
+      handleCmd(cmd.action, cmd.arg);
       clearRelayHash();
       sendNextRelay();
     }
