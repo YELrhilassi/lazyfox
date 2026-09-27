@@ -1,25 +1,15 @@
-// Popup primitives shared by every popup module: the PopupCtx adapter interface,
-// pure formatting helpers, and the makeSelector builder that turns a search+
-// render+pick into a live popup control.
+// Popup primitives shared by every popup module: the PopupCtx adapter interface
+// and the makeSelector builder that turns a search+render+pick into a live
+// popup control.
+//
+// The pure formatters that used to live here (fmtBytes, relTime, hostOfUrl)
+// moved to shared/format.ts: they have nothing to do with popups, and keeping
+// them here meant a content script that only wanted relTime had to import the
+// overlay and the ops surface to get it.
 import { esc } from "../dom";
 import { createSelector, type PopupCtl } from "../overlay";
 import type { ActionOps } from "../ops";
 import type { WkItem } from "../types";
-
-// Synchronous byte formatter for popup rows (the status bar path uses the Go
-// core's formatBytes; this mirrors it for the one-shot list render).
-export function fmtBytes(n: number): string {
-  if (!n || n < 0) return "";
-  if (n < 1024) return n + " B";
-  const units = ["KB", "MB", "GB", "TB"];
-  let f = n;
-  let i = -1;
-  while (f >= 1024 && i + 1 < units.length) {
-    f /= 1024;
-    i++;
-  }
-  return (Math.round(f * 10) / 10).toFixed(1).replace(/\.0$/, "") + " " + units[i];
-}
 
 export interface PopupCtx {
   ops: ActionOps;
@@ -83,28 +73,6 @@ export function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
     groupBy: opts.groupBy,
   });
   return { onKey: sel.onKey, refresh: sel.refresh, close: sel.close, focus: () => inputEl.focus() };
-}
-
-
-export function relTime(ts: number): string {
-  if (!ts) return "";
-  const m = Math.floor((Date.now() - ts) / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return m + "m ago";
-  const h = Math.floor(m / 60);
-  if (h < 24) return h + "h ago";
-  const d = Math.floor(h / 24);
-  if (d < 7) return d + "d ago";
-  const w = Math.floor(d / 7);
-  if (w < 5) return w + "w ago";
-  return Math.floor(d / 30) + "mo ago";
-}
-
-// Display host for the related-history index ("example.com" from a full URL),
-// stripping a leading "www." the same way the Go core's HostOf does.
-export function hostOfUrl(url: string): string {
-  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(url || "");
-  return ((m && m[1]) || "").replace(/^www\./, "");
 }
 
 // Host, time-bucket and relative-time formatting all live in the Go core

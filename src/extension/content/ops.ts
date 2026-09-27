@@ -12,7 +12,7 @@ import { TwoStep } from "../../shared/confirm";
 import { copyText } from "../../shared/dom";
 import { toast } from "../../shared/overlay";
 import type { ActionOps } from "../../shared/ops";
-import { relTime } from "../../shared/popups/kit";
+import { relTime } from "../../shared/format";
 import { send } from "../../shared/protocol";
 import type { Config, PopupItem } from "../../shared/types";
 import { openFindPopup, openResizePopup, type ContentPopupShell } from "./find";
