@@ -66,10 +66,6 @@ var LazyfoxChild = class extends BaseChild {
   }
   receiveMessage(msg) {
     if (!msg) return void 0;
-    if (msg.name === "lazyfox-trusted-click") {
-      this.pressAt(msg.data);
-      return void 0;
-    }
     if (msg.name !== "lazyfox-scroll") return void 0;
     try {
       const cw = this.contentWindow;
@@ -93,21 +89,6 @@ var LazyfoxChild = class extends BaseChild {
   // as-is. The sequence is move -> down -> up -> click: the move first because
   // some widgets track the pointer before accepting a press, and the click
   // last because that is the event which actually activates.
-  pressAt(data) {
-    try {
-      const x = Number(data && data.x);
-      const y = Number(data && data.y);
-      if (!isFinite(x) || !isFinite(y)) return;
-      const cw = this.contentWindow;
-      const utils = cw && cw.windowUtils;
-      if (!utils || typeof utils.sendMouseEvent !== "function") return;
-      const types = ["mousemove", "mousedown", "mouseup", "click"];
-      for (const type of types) {
-        utils.sendMouseEvent(type, x, y, 0, 1, 0);
-      }
-    } catch (e) {
-    }
-  }
 };
 export {
   LazyfoxChild

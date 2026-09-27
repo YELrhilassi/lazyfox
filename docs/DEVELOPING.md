@@ -16,12 +16,42 @@ by one command. CI is read-only on both.
 
 ```bash
 npm install          # once; checks toolchain (node + go)
-npm run build        # compile wasm + bundle the unsigned xpi into dist/
-npm run dev-install  # build + install into a fresh Nightly/Dev profile
+npm run sync         # build everything, refresh every installer, verify, print the table
+npm run dev-install  # install that build into a fresh Nightly/Dev profile
 npm run ci           # the full local test run (run before you push)
 ```
 
-That's it.
+That's it. `npm run sync` is the command that ends the "did I remember to rebuild
+the executables?" question: after it finishes, every committed installer binary
+is built from the current source, and it prints the proof.
+
+### The build cannot leave a stale executable behind
+
+`dist/` is committed, and so are the installer binaries in `installer/bin/`
+(users install from a downloaded binary, and a fresh clone must work without a
+Go toolchain). That makes "rebuild the payload but not the binaries" a real and
+invisible failure: the tree looks built, and the installer quietly installs the
+previous build. Three rules remove the possibility:
+
+- **A build rebuilds every executable.** `npm run build` refreshes all the dev
+  installers (all platforms — the non-host ones are cross-compiled terminal
+  installers) and the release installers whenever a signed add-on exists. The
+  only exceptions are opt-in: `LF_INSTALLER_TARGETS=host` for a fast iteration
+  build, and `--no-installers` when nothing consumes `installer/bin/`.
+- **Freshness is decided by content, not by timestamps.** Every build records
+  what it embedded in `installer/bin/payload-state.json` (the payload content
+  hash, the add-on, the binary's own hash). `npm run check` recomputes the hash
+  and compares, for every platform — which a clone, a `git checkout` or a
+  teammate's build cannot fool, unlike mtimes.
+- **`npm run check` fails the build, and can fix itself.** It also verifies the
+  payload staged for `//go:embed` is byte-identical to `dist/`, and runs this
+  machine's binary from a temp dir to confirm it really embeds a usable
+  add-on. `npm run check:fix` rebuilds whatever is stale and re-checks.
+
+The payload file list itself is declared once, in
+`installer/internal/payload/artifacts.json`, which the Go payload package
+`//go:embed`s and every build script reads. There is no second copy to forget
+to update.
 
 ## Releasing (the whole flow is two commands)
 
@@ -66,7 +96,7 @@ front of Developer Edition / Nightly users — and to exercise the installer fro
 the setup page exactly as those users do:
 
 ```bash
-npm run build && npm run build:installers   # unsigned xpi + dev installers (channel=nightly)
+npm run sync                              # unsigned xpi + every dev installer (channel=nightly)
 npm run ship:nightly                        # (re)publish the rolling `nightly` prerelease
 ```
 
@@ -79,8 +109,8 @@ browser — see `docs/INSTALLER-ANALYSIS.md`.
 The `--mode auto` installer (what that page's download runs) needs no decisions:
 it picks the channel-matched Firefox, the profile Firefox is actually using,
 and falls back to a dedicated Lazyfox-owned profile if necessary — then verifies
-what it wrote. `npm run build:installers` also stamps the channel into the
-binary, so a dev installer refuses to masquerade as a signed one.
+what it wrote. The installer build also stamps the channel into the binary, so
+a dev installer refuses to masquerade as a signed one.
 
 ---
 
@@ -88,9 +118,12 @@ binary, so a dev installer refuses to masquerade as a signed one.
 
 | Command | What it does for you |
 |---------|----------------------|
-| `build` | make the unsigned dev xpi **and refresh this platform's installer** |
+| `sync` | **the dev loop**: build, refresh every installer, verify, print the freshness table |
+| `sync:verify` | just the gate (typecheck + tests + freshness), no rebuild |
+| `check` / `check:fix` | is any committed installer stale? (fix = rebuild what is) |
+| `build` | make the unsigned dev xpi **and refresh every installer binary** |
 | `installer` | build, then open the installer window (add `-- --release`, `-- --no-build`) |
-| `build:installers` | rebuild every per-OS dev installer binary |
+| `build:installers` | rebuild every per-OS dev installer binary (what `build` already does) |
 | `build:release-installers` | rebuild the release installer binaries (needs a signed xpi) |
 | `dev-install` / `dev-install:clean` | build + install into Nightly/Dev |
 | `bump -- X.Y.Z` | bump the version everywhere at once |
@@ -157,6 +190,13 @@ npm run clean && npm run build
 ```
 
 `npm run clean` only removes regenerable products; it never touches source.
+For a from-scratch rebuild that also drops the *committed* artifacts (the dist/
+bundles, `installer/bin/*` and their payload records — the signed add-on xpis
+are never touched, they cannot be regenerated without AMO credentials):
+
+```bash
+npm run clean:all && npm run sync
+```
 
 ### 4. The version is one number, everywhere — bump it with the tool
 

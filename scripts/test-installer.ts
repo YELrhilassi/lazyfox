@@ -14,23 +14,17 @@ import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureFrontend } from "./installer-build.ts";
+import { STAGED_CHROME_FILES } from "./payload.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installerDir = join(root, "installer");
 
 // Payload staging dirs live inside the package that embeds them (Go resolves
-// //go:embed patterns relative to the package directory).
+// //go:embed patterns relative to the package directory). The file list is the
+// shared declaration (artifacts.json, via payload.ts) — the same one the build
+// stages from and the Go registry reads.
 const PAYLOAD_DATA = join(installerDir, "internal", "payload", "data");
-const CHROME_FILES = [
-  "userChrome.css",
-  "userChrome.uc.js",
-  "frame.js",
-  "corebootstrap.js",
-  "actor-boot.js",
-  "lazyfox-child.sys.mjs",
-  "lazyfox-parent.sys.mjs",
-  "user.js",
-];
+const CHROME_FILES = STAGED_CHROME_FILES;
 
 // Stage payloads if dist/ is available and the payload dir is missing/empty.
 const chromeDst = join(PAYLOAD_DATA, "chrome");

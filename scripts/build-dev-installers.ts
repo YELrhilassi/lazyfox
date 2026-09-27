@@ -18,16 +18,17 @@
 //                                       calls, so the installer you launch is
 //                                       always the one the build just produced
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildInstallerSet, type InstallerTarget } from "./installer-build.ts";
 import {
-  buildInstallerSet,
-  isNativeTarget,
   HOST,
-  type InstallerTarget,
-} from "./installer-build.ts";
-import { writeDevStamp } from "./dev-helpers.ts";
+  TARGETS as ALL_PLATFORM_TARGETS,
+  isNativeTarget,
+  latestUnsignedXpi,
+} from "./payload.ts";
+import { xpiVersion } from "./amo-lib.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installerDir = join(root, "installer");
@@ -39,33 +40,26 @@ if (!existsSync(distChrome) || !existsSync(distDir)) {
   process.exit(1);
 }
 
-// Latest UNsigned xpi (exclude the -signed artifacts).
-function latestUnsignedXpi() {
-  let xpi = null;
-  for (const f of readdirSync(join(root, "dist"))) {
-    if (!f.startsWith("lazyfox2-") || !f.endsWith(".xpi")) continue;
-    if (f.includes("-signed.")) continue;
-    xpi = join(root, "dist", f);
-  }
-  return xpi;
-}
-const unsignedXpi = latestUnsignedXpi();
+const unsignedXpi = latestUnsignedXpi(root);
 if (!unsignedXpi) {
   console.error("build-dev-installers: no unsigned xpi in dist/ — run `npm run build` first.");
   process.exit(1);
 }
 
-// Extension version tag (from the xpi filename) used for the Windows resource.
-const m = /lazyfox2-(\d+\.\d+\.\d+)\.xpi$/.exec(unsignedXpi);
-const latestUnsignedXpiVersion = m ? m[1]! : "0.0.0";
+// Extension version for the Windows resource, read out of the xpi itself rather
+// than guessed from its file name (the same rule the release path uses).
+const latestUnsignedXpiVersion = xpiVersion(readFileSync(unsignedXpi));
 
 console.log(`[dev-installer] embedding unsigned xpi: ${unsignedXpi}`);
 
-const ALL_TARGETS: InstallerTarget[] = [
-  { goos: "linux", arch: "amd64", out: "lazyfox-install-dev-linux" },
-  { goos: "darwin", arch: "arm64", out: "lazyfox-install-dev-darwin" },
-  { goos: "windows", arch: "amd64", out: "lazyfox-install-dev-windows.exe" },
-];
+// The target list is declared once, in installer/internal/payload/artifacts.json
+// (see scripts/payload.ts), not restated here: a fourth copy of "which platforms
+// ship an installer" is a fourth place to forget one.
+const ALL_TARGETS: InstallerTarget[] = ALL_PLATFORM_TARGETS.map((t) => ({
+  goos: t.goos,
+  arch: t.arch,
+  out: t.devOut,
+}));
 
 // Which binaries this run produces.
 //
@@ -90,7 +84,9 @@ if (ONLY === "host") {
 }
 console.log(`[dev-installer] building: ${TARGETS.map((t) => t.goos + "/" + t.arch + " -> " + t.out).join(", ")}`);
 
-// One staging + compile path, shared with the release installers.
+// One staging + compile path, shared with the release installers. It also writes
+// each binary's record into installer/bin/payload-state.json, which is what
+// `npm run check:installers` reads to prove no committed installer is stale.
 buildInstallerSet({
   root,
   installerDir,
@@ -100,11 +96,3 @@ buildInstallerSet({
   version: latestUnsignedXpiVersion,
   logPrefix: "[dev-installer]",
 });
-
-// Record a content stamp beside each binary just built, so ensureDevInstaller
-// can tell a fresh dev installer from a stale one by CONTENT (a git checkout
-// resets mtimes, which is how a stale binary used to look "newer" than the
-// payload and get reused).
-for (const t of TARGETS) {
-  writeDevStamp(root, join(installerDir, "bin", t.out), unsignedXpi);
-}

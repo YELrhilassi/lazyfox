@@ -474,7 +474,7 @@ import type { ContentPopupShell } from "./find";
         // The diagnostics page asks the ACTIVE tab's content script for a live
         // self-report. A rejection here is meaningful too (no content script on
         // this page), so the background turns it into "report: null".
-        return collectPageReport(scroll)
+        return collectPageReport(scroll, hints)
           .then((report) => ({ ok: true, report: report }))
           .catch(() => ({ ok: false, report: null }));
       }

@@ -11,8 +11,7 @@
 //   npm run ci              # build + unit tests + dist check + workflow lint
 //   npm run ci:bidi         # also run the BiDi end-to-end suite (needs a real
 //                           # Firefox + geckodriver, see below)
-//   npm run ci:hints        # link-hint tests only, with the real-page stress
-//                           # enabled when the snapshots can be downloaded
+//   npm run ci:hints        # the link-hint tests only (local pages, no network)
 //
 // Env (all optional; matches what the workflows set):
 //   BIDI_FIREFOX_BIN  path to a Firefox binary (default: a detected install)
@@ -38,22 +37,6 @@ function sh(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv } = {})
   }
 }
 
-// shSoft runs a command whose failure is a non-fatal signal — a best-effort
-// network step. Returns true when it succeeded. Used so a blocked network
-// degrades the real-page stress test to a skip instead of failing the run.
-function shSoft(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv } = {}): boolean {
-  console.log(`\n$ ${cmd} ${args.join(" ")}  (best effort)`);
-  try {
-    execFileSync(cmd, args, { cwd: root, stdio: "inherit", env: { ...process.env, CI: "1", ...opts.env } });
-    return true;
-  } catch (e) {
-    console.warn(`⚠️  best-effort step failed (continuing): ${cmd} ${args.join(" ")}`);
-    return false;
-  }
-}
-
-let fixturesOk = false;
-
 const steps: Array<[string, () => void]> = [
   ["actionlint workflows (static check)", () => {
     const al = join(root, ".tools", "actionlint");
@@ -77,30 +60,16 @@ function bidiEnv(): NodeJS.ProcessEnv {
   return { BIDI_HEADLESS: "1", ...(ff ? { FIREFOX_BIN: ff } : {}), GECKODRIVER: gecko };
 }
 
-// Best-effort: pull the real-page snapshots so the hint stress test can run.
-// A failure just leaves the stress test skipped.
-function fetchFixtures(): boolean {
-  return shSoft("node", ["scripts/bidi/fetch-fixtures.ts"]);
-}
-
 if (runBidi) {
-  steps.push(["fetch real-page snapshots (best effort)", () => {
-    fetchFixtures();
-  }]);
   steps.push(["BiDi end-to-end", () => {
     sh("node", ["scripts/bidi/test.ts"], { env: bidiEnv() });
   }]);
 }
 
 if (runHints) {
-  steps.push(["fetch real-page snapshots (best effort)", () => {
-    // Remember the outcome so the stress test is only *required* when the
-    // download actually worked (same contract as the nightly workflow).
-    fixturesOk = fetchFixtures();
-  }]);
-  steps.push(["BiDi link hints (real-page stress when snapshots are present)", () => {
+  steps.push(["BiDi link hints (local pages)", () => {
     sh("node", ["scripts/bidi/test.ts", "--suite", "content", "--only", "link hints:"], {
-      env: { ...bidiEnv(), BIDI_REQUIRE_FIXTURES: fixturesOk ? "true" : "false" },
+      env: bidiEnv(),
     });
   }]);
 }

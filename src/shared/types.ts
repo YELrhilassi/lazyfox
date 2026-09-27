@@ -213,6 +213,16 @@ export interface ScrollRegionInfo {
 
 // What the content script knows about the page it is running in. Produced on
 // demand by the diagnostics page — never collected in the background.
+// The outcome of the last link-hint activation, mirrored from the content
+// script's hint engine (see hints.ts). Kept here so the diagnostics page and
+// the browser tests can both read it.
+export interface HintActivation {
+  target: string;
+  signal: string;
+  watchedMs: number;
+  ignored: boolean;
+}
+
 export interface PageReport {
   ok: boolean;
   url: string;
@@ -228,6 +238,12 @@ export interface PageReport {
     probes: HintProbe[];
     shadowRoots: number;
     pointerControls: number;
+    // What the last hint activation actually did. This is the answer to "I
+    // pressed the key and nothing happened": it names the target and says
+    // whether the page reacted at all, so "the hint found the wrong element"
+    // and "the hint found the right one and the page ignored it" stop looking
+    // identical from the outside.
+    lastActivation: HintActivation | null;
   };
   scroll: {
     target: string;

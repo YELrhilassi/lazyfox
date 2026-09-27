@@ -25,9 +25,9 @@ Thumbs.db
 *.log
 core/js/core.wasm
 src/shared/wasm-embed.ts
-# Real-world page snapshots for the hint stress test (downloaded on demand by
-# scripts/bidi/fetch-fixtures.ts; not source, never committed).
-scripts/bidi/fixtures/
-# Content stamps beside the dev installer binaries: written by the build, used to
-# detect a stale installer by CONTENT (not mtime). Regenerated every build.
+# The installer binaries' payload records (installer/bin/payload-state.json) are
+# COMMITTED on purpose: they are what lets `npm run check` prove by content that
+# no committed installer is stale, in a fresh clone and in CI, without rebuilding
+# anything. Only the per-binary .stamp sidecars from the older mechanism are
+# ignored, so a checkout that still carries one does not show them as untracked.
 installer/bin/*.stamp

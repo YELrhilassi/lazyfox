@@ -1,22 +1,9 @@
 // Content-script tests on a normal web page: leader keys, popups, scroll keys,
 // link hints, zoom, find-in-page, and tab management from real content.
 
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { evalIn, getTree, waitFor, sleep, activate } from "../lib.ts";
 import { contextsOf } from "../helpers.ts";
 import { assert } from "../harness.ts";
-
-// Optional real-world snapshot for the hint stress test. Absent by default
-// (gitignored); `npm run bidi:fixtures` creates it. BIDI_REQUIRE_FIXTURES (set
-// by the nightly workflow only AFTER a successful download) turns a missing
-// snapshot into a failure, so a broken download cannot hide behind a skip —
-// while a normal offline run, which does not set it, skips cleanly.
-const HAS_REAL_FIXTURE = existsSync(
-  resolve(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "github.html")
-);
-const REQUIRE_REAL_FIXTURE = process.env.BIDI_REQUIRE_FIXTURES === "true";
 
 export const group = "content";
 
@@ -570,6 +557,28 @@ export async function run(ctx) {
         return raw ? JSON.parse(raw) : [];
       })()`
     );
+  // Ask the CONTENT SCRIPT for its page report through the extension realm of
+  // the probe tab. This is the diagnostics page's own data source, so these
+  // tests read exactly what a user would read — including the last activation.
+  const playerReport = async () => {
+    const raw = await evalIn(
+      ctx.probe,
+      `(async function () {
+         var tabs = await browser.tabs.query({});
+         for (const t of tabs) {
+           try {
+             var res = await browser.tabs.sendMessage(t.id, { action: "pageReport" });
+             var r = res && res.report;
+             if (r && r.url && r.url.indexOf("/playerlike") !== -1) {
+               return { act: r.hints.lastActivation, url: r.url };
+             }
+           } catch (e) { /* no content script in that tab */ }
+         }
+         return null;
+       })()`,
+    );
+    return raw || null;
+  };
   const beginHints = async () => {
     await ctx.leaderPress(ctx.tabA, "f");
     await waitFor(async () => {
@@ -605,6 +614,82 @@ export async function run(ctx) {
     const mustNot = ["hidden-opacity-link", "hidden-vis-link", "hidden-aria-link", "pe-none-btn", "covered-link"];
     for (const id of mustNot) assert(ids.indexOf(id) === -1, "a non-actionable element was hinted: " + id);
     await ctx.press(ctx.tabA, "Escape");
+  });
+
+
+  // The video-player shape: a big clickable media container with a small named
+  // control inside it. This is the regression test for the nesting rule — the
+  // container is hintable (the media exemption) and it used to suppress the
+  // button inside it, so "Skip ad" could never be reached by key.
+  await t("link hints: a control inside a clickable media container wins the hint", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/playerlike`);
+    await sleep(250);
+    await beginHints();
+    const ids = (await readHints()).map((x) => x.id);
+    assert(
+      ids.indexOf("skipad") !== -1,
+      "the button inside the player must be hinted (got: " + ids.join(",") + ")"
+    );
+    assert(
+      ids.indexOf("player") === -1,
+      "the container must NOT be hinted once the control inside it wins: " + ids.join(",")
+    );
+    assert(
+      ids.indexOf("skipad-inner") === -1,
+      "the span inside the button must not be hinted separately: " + ids.join(",")
+    );
+    assert(
+      ids.indexOf("lonely") !== -1,
+      "a media wrapper with nothing inside it is still hintable: " + ids.join(",")
+    );
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
+  // The other half of the feedback loop: when the page really does ignore the
+  // click, say so. Without this the failure is indistinguishable from "I pressed
+  // the wrong key", which is how a hint bug stays a mystery for days.
+  await t("link hints: a click the page ignores is reported, not silent", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/playerlike`);
+    await sleep(250);
+    await beginHints();
+    assert(
+      (await readHints()).some((h) => h.id === "deaf"),
+      "the isTrusted-gated control must be hinted"
+    );
+    await activateHint("deaf");
+    const act = await waitFor(async () => {
+      const r = await playerReport();
+      return r && r.act && r.act.ignored ? r.act : null;
+    }, 4000);
+    assert(
+      /ignore me/i.test(act.target),
+      "the report must name the control that was ignored (got: " + JSON.stringify(act) + ")"
+    );
+    const title = await evalIn(ctx.tabA, "document.title");
+    assert(title !== "DEAF-PRESSED", "the untrusted click must not have activated it");
+  });
+
+  // And the activation must actually work — with the new feedback, a click the
+  // page ignores is reported instead of being silent, so a passing test here
+  // also proves the reporting does not fire on a working click.
+  await t("link hints: the control inside the media container really activates", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/playerlike`);
+    await sleep(250);
+    await beginHints();
+    await activateHint("skipad");
+    const title = await waitFor(async () => {
+      const now = await evalIn(ctx.tabA, "document.title");
+      return now === "SKIPPED" ? now : null;
+    }, 3000).catch(async () => "timeout:" + String(await evalIn(ctx.tabA, "document.title")));
+    assert(title === "SKIPPED", "the button inside the player did not activate (title=" + title + ")");
+    // The same report, for the control that DID work: the feedback must not
+    // fire on a working click (a toast on every activation would be noise).
+    const seen = await playerReport();
+    assert(
+      seen && seen.act && !seen.act.ignored && /skip ad/i.test(seen.act.target),
+      "the report must record the working activation (got: " + JSON.stringify(seen) + ")"
+    );
+    assert(!!seen.act.signal, "a working activation must record what the page did");
   });
 
   await t("link hints: nested targets collapse and labels never overlap", async () => {
@@ -819,37 +904,6 @@ export async function run(ctx) {
     await ctx.press(ctx.tabA, "Escape");
     await sleep(150);
   });
-
-  if (HAS_REAL_FIXTURE) {
-    await t("link hints: stress a real-world page snapshot without errors", async () => {
-      await ctx.gotoPage(ctx.tabA, `${ctx.base}/real`);
-      await sleep(500);
-      // A live-looking snapshot can try to redirect/reload itself; if it did,
-      // there is nothing local to stress.
-      const here = await evalIn(ctx.tabA, `location.href.includes("/real")`).catch(() => false);
-      if (!here) return;
-      await beginHints();
-      const m = await readHints();
-      assert(m.length > 0 && m.length <= 80, "real page hints are capped (got " + m.length + ")");
-      const vp = await evalIn(ctx.tabA, `({w: window.innerWidth, h: window.innerHeight})`);
-      for (const h of m) {
-        assert(
-          h.x >= -2 && h.y >= -2 && h.x < vp.w && h.y < vp.h,
-          "every hint is anchored inside the viewport (" + h.x + "," + h.y + ")"
-        );
-      }
-      await ctx.press(ctx.tabA, "Escape");
-    });
-  } else if (REQUIRE_REAL_FIXTURE) {
-    await t("link hints: the real-page snapshot is required but was not downloaded", async () => {
-      assert(
-        false,
-        "BIDI_REQUIRE_FIXTURES=true but scripts/bidi/fixtures/github.html is missing — the snapshot download failed"
-      );
-    });
-  } else {
-    console.log("  skip link hints: real-world snapshot stress (run `npm run bidi:fixtures` to enable)");
-  }
 
   // Restore the history entry the following ;g/;l test starts from.
   await ctx.gotoPage(ctx.tabA, `${ctx.base}/target1`);
