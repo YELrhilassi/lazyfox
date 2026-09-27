@@ -96,6 +96,43 @@ of `as any` casts was 1. The genuine finding underneath it was different: 37
 `gBrowser` references with **no type at all** for the objects. That is now
 modelled.
 
+### DONE - the innerHTML audit came back CLEAN, which is now enforced
+22 innerHTML sites, every one interpolating a page-controlled string (a tab
+title, a URL, a filename from a Content-Disposition header, a history entry).
+Every site was already correct: `esc()` for text, `textContent` for structure
+where splitpanel builds the row once and fills it in, and `favicon()` which is
+safe by construction because it builds its URL from an encodeURIComponent'd
+hostname.
+
+The problem was not the code, it was that the correctness was a CONVENTION. One
+missing `esc()` in a row template and the failure is silent: it renders fine
+and executes only for a site with an adversarial title. So the renderers are
+now called directly with hostile payloads across every mode, and the output is
+inspected. A future field that skips escaping fails immediately.
+
+**A first attempt at this was a source-level lint and it was wrong.** It
+flagged any line concatenating a page-controlled field and produced twenty
+false positives on correct code. A red suite that cries wolf is worse than no
+suite, because it trains people to ignore red - that version would have been
+deleted within a week, taking the intent with it. The behavioural version
+cannot lie about the code, because a failure means the markup is actually
+wrong.
+
+**It also turned up a property I had backwards.** The test asserted that `esc()`
+is idempotent. It is not, and must not be: making it detect already-escaped
+input would let a page put a literal `&lt;` on screen and have it treated as
+safe. Over-escaping produces visible entity soup, which is a cosmetic bug you
+can see; under-escaping is a vulnerability you cannot. The test now asserts the
+safe direction and the comment says why, so the next person does not
+"simplify" it back.
+
+### DONE - a ghost-code scan, run after the fixes, came back empty
+The same scan that would have found `lfBridge` found nothing this time, and its
+two remaining hits were false positives (`seq` in host.ts is declared plus used
+once; `probeHostOnce` does have a caller). Recorded because "we looked and it
+was clean" is worth having written down, and because the scan is the thing to
+re-run after the next change.
+
 ---
 
 ## Structure
