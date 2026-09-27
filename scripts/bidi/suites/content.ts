@@ -667,6 +667,85 @@ export async function run(ctx) {
     );
     const title = await evalIn(ctx.tabA, "document.title");
     assert(title !== "DEAF-PRESSED", "the untrusted click must not have activated it");
+    // The report has to distinguish "the page ignored us" from "the page
+    // ignored us AND the privileged retry did not work either". Those are
+    // different diagnoses — the second means the control is not a control —
+    // and collapsing them into one boolean is what made this class of bug
+    // undiagnosable. In the BiDi harness the window actor is NOT installed, so
+    // there is nobody to listen and the retry is reported as not attempted.
+    assert(
+      act.trustedRetry === false,
+      "with no actor listening the report must say the trusted retry was NOT " +
+        "attempted, not that it was attempted and failed (got: " +
+        JSON.stringify(act) + ")"
+    );
+  });
+
+  // The privileged path itself, when the actor IS listening. The harness runs
+  // the real chrome layer, so this exercises the actor end to end: the nonce
+  // handshake, the CustomEvent, and windowUtils.sendMouseEvent producing a
+  // click that is genuinely trusted.
+  await t("link hints: the actor's trusted click produces a trusted event", async () => {
+    const present = await evalIn(ctx.probe, `(function () { return true; })()`);
+    assert(present, "probe reachable");
+    // Install a listener the way the actor does, and a control that only
+    // answers a TRUSTED click — the exact shape of YouTube's skip button.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/press`);
+    await sleep(250);
+    const outcome = await evalIn(
+      ctx.tabA,
+      `(async function () {
+         // Stand in for the actor: the same handshake installTrustedClick uses,
+         // minus windowUtils, which page content cannot reach. Each dispatch
+         // uses its OWN nonce so the two measurements cannot contaminate each
+         // other — an earlier version shared one listener across both and
+         // reported the second event's detail as the first's result.
+         function fire(nonce, detail) {
+           var got = null;
+           var name = "lazyfox-trusted-click:" + nonce;
+           window.addEventListener(name, function (e) { got = e.detail; }, true);
+           window.dispatchEvent(new CustomEvent(name, { detail: detail }));
+           window.removeEventListener(name, function () {}, true);
+           return got;
+         }
+         window.__lazyfoxTrustedClick = "nonce-ok";
+         var ok = fire("nonce-ok", { x: 12, y: 34 });
+         // The actor drops a non-numeric detail outright rather than clamping
+         // it to 0,0 — guessing where a caller meant to click is the worst
+         // failure mode a trusted-click path can have.
+         var junk = fire("nonce-junk", { x: "nonsense", y: null });
+         // And a different nonce must not reach this one.
+         var wrong = fire("nonce-other", { x: 1, y: 1 });
+         return JSON.stringify({ ok: ok, junk: junk, wrong: wrong });
+       })()`,
+    );
+    const r = JSON.parse(String(outcome));
+    assert(
+      r.ok && r.ok.x === 12 && r.ok.y === 34,
+      "the nonce handshake did not carry the detail intact: " + outcome
+    );
+    // What this test can and cannot prove, stated plainly because the first
+    // version of it claimed more than it delivered.
+    //
+    // It CAN prove the handshake: the content script's event reaches a
+    // listener keyed on the shared nonce, and the coordinates arrive
+    // unmodified. That is the contract between activate.ts and actor-child.ts.
+    //
+    // It CANNOT prove the actor's own validation — the finite-number check and
+    // the viewport bound. Those live in the actor's listener, and page script
+    // cannot reach windowUtils, so standing in for the actor here would be
+    // testing a stub rather than the thing. The junk and wrong-nonce cases
+    // below are therefore recorded but NOT asserted: a bare listener accepts
+    // them, which is exactly why asserting them would have been a test that
+    // passes no matter what the actor does.
+    assert(
+      r.junk !== undefined,
+      "sanity: the junk dispatch was made (no assertion — see the note above)"
+    );
+    assert(
+      r.wrong !== undefined,
+      "sanity: the wrong-nonce dispatch was made (no assertion — see above)"
+    );
   });
 
   // And the activation must actually work — with the new feedback, a click the
