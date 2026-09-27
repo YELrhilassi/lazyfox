@@ -15,7 +15,7 @@
 //     relay rides URL hashes:
 //
 //       helper -> page : helper navigates the tab to
-//                        #lfr=rq.<id>.<action>.<argEnc>  (this page forwards it
+//                        #lfr=rq.<id>.<action>.<jsonArg>  (this page forwards it
 //                        over the port, then clears the hash)
 //       page  -> helper: the page rewrites its own URL (history.replaceState,
 //                        no reload) to
@@ -111,14 +111,27 @@
 
   // Forward a helper request (rq hash) over the port, then free the slot.
   function handleReqHash(frag: string): void {
-    // #lfr=rq.<id>.<action>.<argEnc>
+    // #lfr=rq.<id>.<action>.<jsonArg>
     const rest = frag.slice(3);
     const d1 = rest.indexOf(".");
     if (d1 < 0) return;
     const id = Number(rest.slice(0, d1));
     const d2 = rest.indexOf(".", d1 + 1);
     const action = d2 < 0 ? decodeURIComponent(rest.slice(d1 + 1)) : decodeURIComponent(rest.slice(d1 + 1, d2));
-    const arg = d2 >= 0 && rest.slice(d2 + 1) ? decodeURIComponent(rest.slice(d2 + 1)) : "";
+    // Requests carry a JSON argument, exactly as replies and commands already
+    // did. A missing or unparseable tail becomes {} rather than a string: the
+    // background's handlers read named fields, and a bare string there used to
+    // be the reason several actions took "undefined" where they expected a
+    // name.
+    let arg: unknown = {};
+    const tail = d2 >= 0 ? rest.slice(d2 + 1) : "";
+    if (tail) {
+      try {
+        arg = JSON.parse(decodeURIComponent(tail));
+      } catch (e) {
+        arg = {};
+      }
+    }
     if (!port) {
       // No port yet (background still loading): drop — the helper's request
       // has its own timeout and retries (the announce loop / pollers).

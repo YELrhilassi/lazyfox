@@ -46,7 +46,7 @@ export interface SplitView {
   unsplit(): boolean;
   switchPane(dir: number): boolean;
   swapPane(dir: number): boolean;
-  restoreSplits(json: string): void;
+  restoreSplits(groups: number[][]): void;
   activeSplitView(): any;
   rememberSplit(): void;
 }
@@ -638,9 +638,8 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // window.gBrowser.tabs directly would be shifted by those transient tabs
   // (and any pinned tabs the restore left in front), pairing the wrong tabs
   // or none at all.
-  function restoreSplits(json: string): void {
+  function restoreSplits(groups: number[][]): void {
     try {
-      const groups = JSON.parse(json) as number[][];
       if (!Array.isArray(groups) || !groups.length) return;
       // The restore re-opened the saved tabs in saved order, so the strip IS
       // the saved order right now. Snapshot it, form every group, then pin

@@ -9,7 +9,8 @@
 
 import { ensureCore, core } from "../shared/core";
 import { hostInfo } from "./host";
-import type { BgAction } from "../shared/protocol";
+import type { BgAction, ChromeAction, ChromeReq, RelayAction, RelayReq, RelayRes } from "../shared/protocol";
+import type { CacheMode } from "../shared/types";
 import { getConfig } from "./config";
 import { probeHostOnce } from "./host";
 import { CC_URL, getActiveTab, isCommandCenter, isUITab, realTabsInWindow, stripHash, transientTabIds } from "./tabs";
@@ -420,15 +421,15 @@ async function handleMessage(msg: BgAction, sender: any) {
       requestChrome("unsplit");
       return { ok: true };
     case "sessionSwitchPane":
-      requestChrome("switchPane", String(data.dir > 0 ? 1 : -1));
+      requestChrome("switchPane", { dir: data.dir > 0 ? 1 : -1 });
       return { ok: true };
     case "sessionSwapPane":
-      requestChrome("swapSplitPanes", String(data.dir > 0 ? 1 : -1));
+      requestChrome("swapSplitPanes", { dir: data.dir > 0 ? 1 : -1 });
       return { ok: true };
     case "sessionSplitAddTabByIndex": {
       const n = Number(data && data.index);
       if (!(n >= 1 && n <= 9)) return { ok: false, note: "tab number must be 1-9" };
-      requestChrome("moveToSplit", String(n));
+      requestChrome("moveToSplit", { index: n });
       return { ok: true };
     }
     case "splitPanelTabs": {
@@ -449,7 +450,7 @@ async function handleMessage(msg: BgAction, sender: any) {
     case "moveTabToSplit": {
       const n = Number(data && data.index);
       if (!(n >= 1 && n <= 9)) return { ok: false };
-      requestChrome("moveToSplit", String(n));
+      requestChrome("moveToSplit", { index: n });
       return { ok: true };
     }
     case "toggleWhichKey": {
@@ -507,9 +508,9 @@ browser.commands.onCommand.addListener((name: string) => {
   } else if (name === "split-horizontal") {
     requestChrome("splitTab");
   } else if (name === "split-next-pane") {
-    requestChrome("switchPane", "1");
+    requestChrome("switchPane", { dir: 1 });
   } else if (name === "split-prev-pane") {
-    requestChrome("switchPane", "-1");
+    requestChrome("switchPane", { dir: -1 });
   } else if (name === "unsplit") {
     requestChrome("unsplit");
   }
@@ -713,7 +714,10 @@ browser.tabs.onUpdated.addListener((tabId: number, _info: any, tab: any) => {
 // fall through to ensure+queue when it isn't, and keep retrying until the
 // port is actually delivering (or the TTL expires, so a stale command can
 // never fire late).
-function requestChrome(action: string, arg?: any): void {
+// Typed against ChromeApi, so a push whose payload does not match what the
+// chrome side destructures is a compile error rather than a status bar that
+// silently stops updating.
+function requestChrome<K extends ChromeAction>(action: K, arg?: ChromeReq<K>): void {
   browser.tabs
     .query({ currentWindow: true, active: true })
     .then((ts: any[]) => {
@@ -724,7 +728,10 @@ function requestChrome(action: string, arg?: any): void {
         const port = relayPorts.get(winId);
         if (!port) return false;
         try {
-          port.postMessage({ type: "cmd", action: action, arg: arg !== undefined ? arg : "" });
+          // Always an object, never "": the chrome side reads named fields, and
+          // a command that arrives as an empty string reads as undefined for
+          // every one of them.
+          port.postMessage({ type: "cmd", action: action, arg: arg === undefined ? {} : arg });
           return true;
         } catch (e) {
           // The port is dead (its relay tab was removed); drop it so the next
@@ -811,146 +818,163 @@ function pushFindStateToChrome(index: number, count: number, cur: number): void 
 // dedicated "alive" announce can race the extension still loading on a cold
 // start; every other request (e.g. the startup sessionState poll) covers that
 // window.
-async function handleRelayReq(action: string, arg: any): Promise<any> {
-  if (action !== "alive") markChromeAlive();
-  if (action === "alive") {
+// The relay request handlers, one per action in RelayApi.
+//
+// This used to be a 30-branch if-chain over a bare string, which had two
+// costs that only showed up at runtime: an action nobody handled fell off
+// the end and returned null in total silence (that is exactly how
+// `openDiagnostics` shipped broken — the chrome side sent it, the content
+// script's own send() worked, so the only symptom was that `;T` did nothing
+// when the chrome helper owned the key), and the arguments arrived as
+// U+0001-packed strings that had to be re-parsed by hand at each site.
+//
+// As a table over RelayAction, a missing handler is a compile error and a
+// handler's argument is the declared request type.
+const relayHandlers: { [K in RelayAction]: (req: RelayReq<K>) => Promise<RelayRes<K>> | RelayRes<K> } = {
+  // The chrome helper announces its version AND the active profile's
+  // user-facing name + raw directory leaf. Store the version so the options
+  // Components panel can report it independently of the extension, and the
+  // profile so the command-center footer and setup page can show which
+  // profile is active even before any session has been saved.
+  alive: (req) => {
     markChromeAlive();
-    // The chrome helper announces its version AND the active profile's
-    // user-facing name + raw directory leaf (\u0001-separated) as the arg.
-    // Store the version so the options Components panel can report it
-    // independently of the extension, and the profile so the command-center
-    // footer and setup page can show which profile is active even before any
-    // session has been saved.
-    if (arg) {
-      const parts = String(arg).split("\u0001");
-      const set: Record<string, string> = { chromeHelperVersion: parts[0] || "" };
-      if (parts[1]) set.lfProfileName = parts[1];
-      if (parts[2]) set.lfProfileDir = parts[2];
-      // parts[3] is the content-process bridge state ("1"/"0"): whether the
-      // chrome helper could see the Lazyfox window actor registered. The
-      // diagnostics page reports it, so a silently missing bridge is visible
-      // instead of being felt only as "keys do nothing on this page".
-      if (parts[3] !== undefined) set.lfBridge = parts[3] === "1" ? "1" : "0";
-      browser.storage.local.set(set).catch(() => {});
-    }
-    // Return a truthy ack so the helper can confirm the announce was really
+    const set: Record<string, string> = { chromeHelperVersion: req.version || "" };
+    if (req.profileName) set.lfProfileName = req.profileName;
+    if (req.profileDir) set.lfProfileDir = req.profileDir;
+    // Whether the chrome helper could see the Lazyfox window actor
+    // registered. The diagnostics page reports it, so a silently missing
+    // bridge is visible instead of being felt only as "keys do nothing on
+    // this page".
+    if (req.bridge !== undefined) set.lfBridge = req.bridge;
+    browser.storage.local.set(set).catch(() => {});
+    // A truthy ack so the helper can confirm the announce was really
     // delivered (and stop retrying). Without it the helper could only know a
     // fire-and-forget req was accepted/queued, not that chromeAlive landed.
     return { ok: true };
-  }
-  if (action === "toggleWhichKey") {
-    // The chrome helper flipped its own cached copy; flip storage to match so
-    // content scripts, the command center and options agree.
+  },
+  // The chrome helper flipped its own cached copy; flip storage to match so
+  // content scripts, the command center and options agree.
+  toggleWhichKey: async () => {
     const c = await getConfig();
     c.whichKey = !c.whichKey;
     await browser.storage.local.set({ config: c });
     return null;
-  }
-  if (action === "startHints" || action === "focusFirstInput") {
-    const t = await getActiveTab();
-    if (!t) return null;
-    try {
-      await browser.tabs.sendMessage(t.id, { action: action });
-    } catch (e) {}
-    return null;
-  }
-  if (action === "openOptions") {
+  },
+  // Best-effort: a tab with no content script (about:, an extension page, a
+  // restricted domain) is a normal outcome, not an error to surface.
+  startHints: () => relayToContent("startHints"),
+  focusFirstInput: () => relayToContent("focusFirstInput"),
+  openOptions: async () => {
     try {
       await browser.runtime.openOptionsPage();
-    } catch (e) {}
+    } catch (e) {
+      // ignore
+    }
     return null;
-  }
-  if (action === "openSetup") {
+  },
+  openSetup: async () => {
     await openSetupTab();
     return null;
-  }
-  if (action === "stealthOpen") {
-    // The result ({ ok, error }) is returned to the helper, which toasts the
-    // outcome so a failure is never silent.
-    return stealthOpen(() => pushSessionStateToChrome());
-  }
-  if (action === "sessionState") {
-    // Round-trip for the chrome helper's status bar: the fresh summary.
-    return sessionState();
-  }
-  if (action === "sessionTabs") {
-    // Round-trip for the chrome helper's sessions popup right pane.
-    return sessionTabs(String(arg || ""));
-  }
-  if (action === "saveSession") {
-    await saveSession(String(arg || ""));
+  },
+  // Was missing entirely: the chrome side sent this and the chain fell
+  // through, so `;T` did nothing unless the content script owned the key.
+  openDiagnostics: async () => {
+    await openDiagnosticsTab();
     return null;
-  }
-  if (action === "newSession") {
-    await newSession(String(arg || ""));
-    return null;
-  }
-  if (action === "restoreSession") {
-    await restoreSession(String(arg || ""));
-    return null;
-  }
-  if (action === "alternateTab") {
-    await alternateTabOp();
-    return null;
-  }
-  if (action === "restoreClosedTab") {
-    await restoreClosedTab(String(arg || ""));
-    return null;
-  }
-  if (action === "restoreAllClosed") {
-    await restoreAllClosedTabs();
-    return null;
-  }
-  if (action === "reopenTab") {
-    // The chrome helper's ;v routes here (rather than calling
-    // gBrowser.undoCloseTab locally) so it goes through the same filtered
-    // reopen as the content script: SessionStore's "most recently closed" is
-    // usually a hidden plumbing tab, which this skips.
-    return reopenTab();
-  }
-  if (action === "recentlyClosed") {
-    // Reply for the chrome helper's recently-closed popup.
-    return recentlyClosed();
-  }
-  if (action === "removeHistory") {
-    await removeHistory(String(arg || ""));
-    return null;
-  }
-  if (action === "clearHistory") {
-    await clearHistory();
-    return null;
-  }
-  if (action === "deleteSession") {
-    await deleteSession(String(arg || ""));
-    return null;
-  }
-  if (action === "switchSessionByMarker") {
-    await switchSessionByMarker(parseInt(String(arg || "0"), 10));
-    return null;
-  }
-  if (action === "assignSessionMarker") {
-    const raw = String(arg || "");
-    const sep = raw.indexOf("\u0001");
-    const nm = sep < 0 ? raw : raw.slice(0, sep);
-    const mk = sep < 0 ? 0 : parseInt(raw.slice(sep + 1), 10);
-    await assignSessionMarker(nm, mk);
-    return null;
-  }
-  if (action === "sessionTabCopy" || action === "sessionTabMove") {
-    const raw = String(arg || "");
-    const p1 = raw.indexOf("\u0001");
-    const p2 = p1 < 0 ? -1 : raw.indexOf("\u0001", p1 + 1);
-    const from = p1 < 0 ? raw : raw.slice(0, p1);
-    const idx = p1 < 0 ? -1 : p2 < 0 ? parseInt(raw.slice(p1 + 1), 10) : parseInt(raw.slice(p1 + 1, p2), 10);
-    const to = p2 < 0 ? "" : raw.slice(p2 + 1);
-    await moveTabBetweenSessions(from, idx, to, action === "sessionTabCopy" ? "copy" : "move");
-    return null;
-  }
-  if (action === "quit") {
+  },
+  quit: async () => {
     await quitBrowser();
     return null;
+  },
+  // The result ({ ok, error }) goes back so the helper can toast the outcome
+  // instead of swallowing it.
+  stealthOpen: () => stealthOpen(() => pushSessionStateToChrome()),
+  // Read-only pulls for the chrome-side UI.
+  sessionState: () => sessionState(),
+  sessionTabs: (req) => sessionTabs(req.name),
+  recentlyClosed: () => recentlyClosed(),
+  // Routed here rather than calling gBrowser.undoCloseTab locally so it goes
+  // through the same filtered reopen as the content script: SessionStore's
+  // "most recently closed" is usually a hidden plumbing tab, which this skips.
+  reopenTab: () => reopenTab(),
+  // Session + tab mutations. Fire-and-forget; the helper refreshes the
+  // status bar itself once the action has landed.
+  saveSession: async (req) => {
+    await saveSession(req.name);
+    return null;
+  },
+  newSession: async (req) => {
+    await newSession(req.name);
+    return null;
+  },
+  restoreSession: async (req) => {
+    await restoreSession(req.name);
+    return null;
+  },
+  deleteSession: async (req) => {
+    await deleteSession(req.name);
+    return null;
+  },
+  switchSessionByMarker: async (req) => {
+    await switchSessionByMarker(req.marker);
+    return null;
+  },
+  assignSessionMarker: async (req) => {
+    await assignSessionMarker(req.name, req.marker);
+    return null;
+  },
+  sessionTabCopy: (req) => moveTabBetweenSessions(req.from, req.index, req.to, "copy"),
+  sessionTabMove: (req) => moveTabBetweenSessions(req.from, req.index, req.to, "move"),
+  // Tab strip / history actions the helper cannot do itself.
+  alternateTab: async () => {
+    await alternateTabOp();
+    return null;
+  },
+  restoreClosedTab: async (req) => {
+    await restoreClosedTab(req.key);
+    return null;
+  },
+  restoreAllClosed: async () => {
+    await restoreAllClosedTabs();
+    return null;
+  },
+  removeHistory: async (req) => {
+    await removeHistory(req.url);
+    return null;
+  },
+  clearHistory: async () => {
+    await clearHistory();
+    return null;
+  },
+};
+
+// Forward a request to the active tab's content script. Typed as returning the
+// two actions it can carry, so the two `relayToContent` entries above stay
+// honest about which actions they claim to handle.
+async function relayToContent(action: "startHints" | "focusFirstInput"): Promise<null> {
+  const t = await getActiveTab();
+  if (!t) return null;
+  try {
+    await browser.tabs.sendMessage(t.id, { action: action });
+  } catch (e) {
+    // No content script in that tab. Normal, and not worth a toast.
   }
   return null;
+}
+
+function handleRelayReq(action: string, arg: unknown): Promise<unknown> {
+  const fn = relayHandlers[action as RelayAction] as ((req: unknown) => unknown) | undefined;
+  if (!fn) {
+    // A helper newer than this background, or vice versa. Answering null keeps
+    // the helper's request/reply from hanging until its timeout.
+    return Promise.resolve(null);
+  }
+  // markChromeAlive() ran for EVERY action in the old chain (it was above
+  // the first branch), which is what let any traffic from the helper latch
+  // the chrome layer as alive. Keep that: the announce is the reliable
+  // signal, but a live request is evidence too.
+  if (action !== "alive") markChromeAlive();
+  return Promise.resolve(fn((arg || {}) as never)).then((r) => (r === undefined ? null : r));
 }
 
 browser.tabs.onActivated.addListener((info: any) => {
@@ -996,7 +1020,15 @@ function setChromeLayerAlive(v: boolean): void {
 // so whenever it comes alive we re-push the stored policy (a policy set while
 // the helper was down would otherwise never take effect).
 const cache = createCacheController({
-  requestChrome: (action, arg) => requestChrome(action, arg),
+  requestChrome: (action, arg) => {
+    // cache.ts pushes only the two actions declared here; the cast is confined
+    // to this one adapter rather than spread over requestChrome's signature.
+    if (action === "cacheGlobal") requestChrome("cacheGlobal", { mode: (arg as CacheMode) || "normal" });
+    else if (action === "cachePolicy") {
+      const p = (arg || {}) as { mode?: CacheMode; tabIds?: number[] };
+      requestChrome("cachePolicy", { mode: p.mode || "normal", tabIds: Array.isArray(p.tabIds) ? p.tabIds : [] });
+    }
+  },
   isChromeAlive: () => chromeLayerAlive,
 });
 
