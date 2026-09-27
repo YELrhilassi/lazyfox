@@ -221,6 +221,20 @@ export interface HintActivation {
   signal: string;
   watchedMs: number;
   ignored: boolean;
+  /**
+   * Whether the privileged (trusted-click) retry was attempted after the page
+   * showed no reaction. Tri-state on purpose:
+   *
+   *   undefined — the click worked, or was never ignored, so no retry happened
+   *   false     — the page ignored us AND no actor was listening, so the
+   *               privileged path was never tried (standalone mode, or a page
+   *               where the chrome layer is not installed)
+   *   true      — the privileged path WAS tried and the page still did nothing
+   *
+   * The last case is the interesting one: it means the control is not a
+   * control, and no amount of event synthesis will reach it.
+   */
+  trustedRetry?: boolean;
 }
 
 export interface PageReport {
