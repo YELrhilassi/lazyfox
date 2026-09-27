@@ -8,6 +8,12 @@
   // scripts/bidi/ is a test harness that talks to the raw (untyped) WebDriver
   // BiDi protocol, so it is excluded here: its values are protocol messages,
   // and forcing types on them would be a lie.
+  //
+  // scripts/test-page-text.ts is excluded for the opposite reason: it unit-tests
+  // a DOM module (the page-text walk), so it needs the DOM lib this config
+  // deliberately omits. The module itself is still typechecked — by
+  // tsconfig.json, which is the config that owns the browser tree.
+  "exclude": ["scripts/test-page-text.ts"],
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
