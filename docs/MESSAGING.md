@@ -114,10 +114,11 @@ owns what only an external process can:
   a piped EOF can't race a reply out of existence), `host.info`/`ping`/`diag`
   only. Unknown methods return a proper JSON-RPC error.
 - `build.ts` and `scripts/build-dev-installers.ts` build `lazyfox-host` for
-  each installer target into `installer/payload/native-host/<goos>/`, embedded
+  each installer target into `installer/internal/payload/data/native-host/<goos>/`,
+  embedded
   into the installer binary (bare downloaded installers can install the full
   stack). The current-platform host also goes to `build/native-host/`.
-- `installer/host_install.go` — during install: writes the host binary to a
+- `installer/internal/ops/nativehost.go` — during install: writes the host binary to a
   user-writable path (`~/.local/bin` on Unix, `%LOCALAPPDATA%\Lazyfox` on
   Windows) and the native-messaging manifest into the OS-native location
   (Linux `~/.mozilla/native-messaging-hosts/`, macOS
@@ -147,6 +148,48 @@ owns what only an external process can:
   deliberate real-tab channels, not throwaway churn.
 - `docs/ARCHITECTURE.md` + `README.md` describe the persistent relay + native
   host picture (no more "throwaway relay tabs").
+
+## Trusted activation (link hints) — a real mouse press
+
+A hint activation normally fires a synthetic pointer/mouse sequence plus a
+native `.click()`. Those events are **untrusted** (`isTrusted === false`), and
+a stubborn minority of controls ignore them: anything gating on `isTrusted` or
+on transient user activation, and anything that only responds to the browser's
+own native press (a native `<summary>` disclosure, a video player's overlay
+button, an anti-bot overlay waiting for a genuine click).
+
+So activation asks the browser side to press for real, and only falls back to
+the synthetic click when that path is not available.
+
+```
+hints.ts activate()
+  -> send("trustedClick", {x, y})            content -> background
+  -> requestChromeReply("trustedClick", ...)  background -> chrome helper
+  -> handleCmd("trustedClick")               channel.ts, on the helper
+  -> actor.sendAsyncMessage(...)             chrome -> content process
+  -> windowUtils.sendMouseEvent(...)         actor-child.ts, TRUSTED
+```
+
+Design notes:
+
+- **The press happens in the content process, not the parent.** Only the
+  window actor's child half is privileged *and* co-located with the widget.
+  The parent process cannot reach an out-of-process tab's content window at
+  all, so the helper cannot press there — it forwards the coordinates and the
+  child dispatches `mousemove`/`mousedown`/`mouseup`/`click` through
+  `windowUtils`, which is what makes them trusted.
+- **`trusted` reports AVAILABILITY, not effect.** The press is dispatched
+  asynchronously, so a synchronous answer cannot observe the page's reaction.
+  `trustedClick` resolves `{ok, trusted}` where `trusted` is true only when a
+  *live* relay port for the window took the command. It deliberately never
+  queues (unlike `requestChrome`): a click that waits for the relay to come up
+  is far too late, so "not connected yet" is reported as unavailable and the
+  content script falls back immediately.
+- **The two paths are mutually exclusive.** When the press is accepted the
+  content script does nothing, so a target is never activated twice.
+- Works on content-script pages as well as `about:`/error pages: the actor
+  child's "the content script owns this page" bail lives in `handleEvent`
+  (the key path), not in `receiveMessage`.
 
 ## Out of scope (explicitly)
 

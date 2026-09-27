@@ -7,21 +7,27 @@
 
 // Style sheet used by both the shadow-DOM popups (content) and the chrome
 // helper's plain-DOM popups (chrome.ts injects the same text into its root).
+import { backdropWheel } from "./keyguard";
 import { UI_FONT } from "./theme";
 
 export const PANEL_CSS = `
 .lf-popup{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;
   justify-content:center;background:rgba(8,8,14,.4);font-family:${UI_FONT};}
+@keyframes lfIn{from{opacity:0;transform:translateY(6px) scale(.99)}to{opacity:1;transform:none}}
 .lf-panel{width:640px;max-width:92vw;max-height:82vh;display:flex;flex-direction:column;overflow:hidden;
-  background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;
-  box-shadow:0 24px 70px rgba(0,0,0,.6);}
-.lf-title{padding:10px 16px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7aa2f7;
-  border-bottom:1px solid #2a2f45;flex:none;}
-.lf-main{display:flex;flex:1;overflow:hidden;}
-.lf-list{flex:1;overflow-y:auto;padding:4px 0;}
+  background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:12px;
+  box-shadow:0 24px 70px rgba(0,0,0,.6),0 2px 0 rgba(255,255,255,.03) inset;
+  animation:lfIn .12s ease-out;}
+@media (prefers-reduced-motion:reduce){.lf-panel{animation:none;}}
+.lf-title{padding:11px 16px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7aa2f7;
+  background:#1a1a26;border-bottom:1px solid #2a2f45;flex:none;}
+.lf-main{display:flex;flex:1;min-height:0;overflow:hidden;}
+.lf-list{flex:1;overflow-y:auto;padding:4px 0;overscroll-behavior:contain;
+  scrollbar-width:thin;scrollbar-color:#3b4261 transparent;scrollbar-gutter:stable;}
 .lf-list::-webkit-scrollbar{width:8px;}
 .lf-list::-webkit-scrollbar-thumb{background:#3b4261;border-radius:4px;}
-.lf-item{padding:8px 16px;cursor:pointer;border-left:3px solid transparent;line-height:1.35;}
+.lf-item{padding:8px 16px;cursor:pointer;border-left:3px solid transparent;line-height:1.35;
+  transition:background .08s ease;}
 .lf-item:hover{background:#252a3a;}
 .lf-item.lf-tab{padding:4px 14px;}
 .lf-item .t{font-size:13px;color:#c0caf5;}
@@ -30,7 +36,11 @@ export const PANEL_CSS = `
 .lf-item.selected .t{color:#ffffff;}
 .lf-empty{padding:26px;text-align:center;color:#565f89;font-size:12px;flex:1;}
 .lf-input{flex:none;background:#16161e;border:none;border-top:1px solid #2a2f45;color:#c0caf5;
-  padding:12px 16px;font-family:inherit;font-size:14px;outline:none;}
+  padding:12px 16px;font-family:inherit;font-size:14px;outline:none;caret-color:#7aa2f7;
+  transition:box-shadow .1s ease,background .1s ease;}
+.lf-input::placeholder{color:#565f89;}
+.lf-input::selection{background:#3b4261;color:#ffffff;}
+.lf-input:focus{background:#1a1a24;box-shadow:inset 3px 0 0 #7aa2f7;}
 .lf-input.lf-cmd{color:#565f89;}
 .lf-input.lf-cmd::placeholder{color:#3b4261;}
 .lf-foot{flex:none;padding:8px 16px;font-size:11px;color:#565f89;border-top:1px solid #2a2f45;
@@ -41,10 +51,13 @@ export const PANEL_CSS = `
 .lf-col:last-child{border-right:none;}
 .lf-col-head{padding:6px 14px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#7aa2f7;
   border-bottom:1px solid #2a2f45;flex:none;}
-.lf-tabs{flex:1;overflow-y:auto;padding:4px 0;}
+.lf-tabs{flex:1;overflow-y:auto;padding:4px 0;overscroll-behavior:contain;
+  scrollbar-width:thin;scrollbar-color:#3b4261 transparent;}
 .lf-tabs .lf-item.active{border-left-color:#9ece6a;}
 .lf-tabs-empty{padding:26px 16px;text-align:center;color:#565f89;font-size:12px;}
 .lf-hgroup{flex:none;padding:10px 16px 4px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#7aa2f7;display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;}
+.lf-ghead{flex:none;padding:9px 16px 3px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#7aa2f7;background:#1a1a26;position:sticky;top:0;z-index:1;}
+.lf-ghead:first-child{padding-top:6px;}
 .lf-hgroup::before{content:"";width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid #565f89;transition:transform .08s ease;flex:none;}
 .lf-hgroup.lf-collapsed::before{transform:rotate(-90deg);}
 .lf-hgroup:hover{color:#9ece6a;}
@@ -61,7 +74,8 @@ export const PANEL_CSS = `
 .lf-rel .t{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .lf-rel .s{display:flex;gap:8px;align-items:center;min-width:0;}
 .lf-detail{flex:none;overflow:hidden;padding:14px 16px 10px;font-size:12px;color:#c0caf5;}
-.lf-related{flex:1;overflow-y:auto;border-top:1px solid #2a2f45;padding:8px 16px 12px;min-height:0;}
+.lf-related{flex:1;overflow-y:auto;border-top:1px solid #2a2f45;padding:8px 16px 12px;min-height:0;
+  overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#3b4261 transparent;}
 .lf-related-head{padding:8px 2px 4px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#7aa2f7;}
 .lf-related-empty{padding:16px 2px;color:#565f89;font-size:11px;}
 .lf-detail-title{font-size:14px;line-height:1.3;color:#ffffff;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -120,6 +134,11 @@ export interface SelectorOpts<T> {
   // raw input value instead of racing the in-flight search.
   onEnter?: (value: string, item: T | null) => boolean;
   onChange?: (idx: number, item: T | null, count: number) => void;
+  // Optional grouping: when an item's group differs from the previous item's,
+  // a sticky header row is inserted before it. Headers are display-only
+  // (not selectable, not clickable), so selection and pick semantics are
+  // unchanged.
+  groupBy?: (item: T) => string;
 }
 
 export interface SelectorCtl {
@@ -238,6 +257,17 @@ export function openPopup(
       else host.remove();
     }
   });
+  // A wheel event that lands on the backdrop must not scroll the page behind
+  // the popup. Wheels inside the panel are left alone: its scrollable lists
+  // scroll normally, and `overscroll-behavior:contain` keeps them from chaining
+  // to the page once they reach an end.
+  root.addEventListener(
+    "wheel",
+    (e) => {
+      if (backdropWheel(e.target, root)) e.preventDefault();
+    },
+    { passive: false }
+  );
 
   let ctl: PopupCtl | null = null;
   try {
@@ -289,7 +319,18 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
     opts.emptyEl.style.display = "none";
     const frag = document.createDocumentFragment();
     const cls = "lf-item" + (opts.itemClass ? " " + opts.itemClass : "");
+    let lastGroup = "";
     shown.forEach((item, i) => {
+      if (opts.groupBy) {
+        const g = opts.groupBy(item) || "";
+        if (i === 0 || g !== lastGroup) {
+          const head = document.createElement("div");
+          head.className = "lf-ghead";
+          head.textContent = g || "Other";
+          frag.appendChild(head);
+          lastGroup = g;
+        }
+      }
       const div = document.createElement("div");
       div.className = cls + (i === idx ? " selected" : "");
       div.innerHTML = opts.render(item);

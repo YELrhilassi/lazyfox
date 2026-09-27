@@ -125,7 +125,7 @@ sanctioned extension ↔ external-process channel.
 
 Right now it owns **only** `host.info` / `host.ping` / `host.diag` — health and
 diagnostics; `background.ts` calls `probeHostOnce()` in dev. It exposes nothing
-user-facing yet. It is genuinely optional: `installer/host_install.go` treats a
+user-facing yet. It is genuinely optional: `installer/internal/ops` treats a
 missing host as non-fatal, and `host.ts` degrades cleanly when it is absent
 (the normal case for store installs). Treat it as **infrastructure for future
 system-level features** (synthetic input, window management beyond
@@ -148,7 +148,7 @@ from `about:debugging` on **Nightly / Developer Edition** with no review, and
 ## One installer per channel — stable vs Nightly/Developer Edition
 
 The installer is a **single Go binary per OS**, but it is built for exactly one
-**channel**, stamped at build time (`-X main.embeddedChannel=…`):
+**channel**, stamped at build time (`-X lazyfox/installer/internal/fx.EmbeddedChannel=…`):
 
 | Channel | Built by | Embeds | Targets | Published as |
 |---------|----------|--------|---------|--------------|
@@ -169,6 +169,41 @@ they got. `npm run ship:nightly` publishes/updates the rolling `nightly`
 prerelease in place (dev installers + unsigned xpi); it needs no AMO access and
 never touches `master`.
 
+### The channel boundary is enforced once, not hoped for
+
+A channel build only ever *touches* its own channel, and that is a property of
+the code rather than a promise in the docs. `fx.Scan(channel)` builds a
+channel-scoped `fx.View` — this channel's Firefox installs, and only the profiles
+that belong to them (compatibility.ini's `LastAppDir`) or that this channel's
+installer created itself — and **every** front-end resolves its targets through
+that view: the CLI, the installer window and the TUI.
+
+That is what fixes the confusing behaviour where a dev installer offered to
+install into stable Firefox (or the reverse). Practically:
+
+- `--mode list` prints what the build will target *and* names what it ignores.
+- An explicit `--firefox-dir` or `--profile` outside the channel is **refused**
+  with a message naming the channel the build targets; there is no silent
+  cross-channel fallback.
+- An unusual/portable install that detection missed is still accepted (by path),
+  provided it is recognisably a real Firefox of this channel.
+
+### Profile policy
+
+Where an install lands is fixed per channel, stated in both UIs, and decided in
+one place (`fx.PlanInstall`):
+
+| Channel | Target profile |
+|---------|----------------|
+| **nightly** | **Always** its own disposable `dev-<8hex>` profile, created if absent. Your everyday Developer Edition profile is never modified. |
+| **stable** | The profile Firefox is actually using. A Lazyfox-owned `lazyfox-<8hex>` profile is created **only** when there is none. |
+
+Uninstall matches that: it **offers** to delete a Lazyfox-created profile instead
+of deleting it unasked (`--delete-profile` accepts), refuses to touch any profile
+without the `.lazyfox-profile` marker, and restores the classic `Default=1` flag on
+a surviving profile — so a plain uninstall cannot leave a user with no default
+profile and a profile chooser instead of their browser.
+
 ## The hands-off install — `--mode auto`, and what it guarantees
 
 The one-click flow (and what the setup page's installer runs) is `--mode auto`.
@@ -177,24 +212,66 @@ It is built to require **zero decisions from the user**:
 1. **Pick the Firefox for the channel.** Among detected installs it prefers one
    whose flavor matches the channel, then one that has a profile, then the most
    recently used. (`--firefox-dir` overrides it.)
-2. **Pick the profile Firefox actually uses — no prompting.** `selectActiveProfile`
-   prefers the profile that is **locked right now** (Firefox is running it),
-   then the install's `Default=` pin, then the most recently used profile of that
-   install, then any Lazyfox-owned profile, then the newest overall. The user is
-   never asked to “match this name in the list”.
-3. **Dedicated-profile fallback.** If the real profile is locked, not writable,
-   or the install does not verify, `ensureDedicatedProfile` creates a fresh
-   profile Lazyfox **owns** (`<8hex>.lazyfox` / `<8hex>.lazyfox-nightly`,
-   carrying a `.lazyfox-profile` marker), registers it in `profiles.ini`, and
-   pins it as the install's default. It owns nothing of the user's.
+2. **Pick the profile, per the channel policy above — no prompting.** A dev build
+   always lands in its own `dev-<8hex>` profile. A stable build uses the profile
+   Firefox is actually using: the one **locked right now**, else the install's
+   `Default=` pin, else the most recently used of that install. The user is never
+   asked to “match this name in the list”.
+3. **Dedicated-profile fallback.** If the target profile is locked, not writable,
+   or the install does not verify, `EnsureDedicatedProfile` creates a fresh
+   profile Lazyfox **owns** (`dev-<8hex>` / `lazyfox-<8hex>`, carrying a
+   `.lazyfox-profile` marker that records the channel), registers it in
+   `profiles.ini`, and pins it as the install's default. It owns nothing of the
+   user's, and the stable and dev installers can never adopt each other's.
 4. **Verify on disk, then tell the truth.** `verifyInstall` checks the xpi,
    `chrome/*`, and the managed `user.js` prefs are present, and reports the
    add-on as *pending enable* (it imports on the next launch) rather than
 telling the user nothing happened. Failures trigger the dedicated fallback.
-5. **Uninstall cleans up after itself.** `--mode uninstall` finds the
-   Lazyfox-owned profile automatically and removes it (and its `profiles.ini`
-   entries) — but **only** a profile carrying the marker; a user's own profile
-   is never deleted. `--keep-profile` opts out.
+5. **Uninstall suggests, then acts only on request.** `--mode uninstall` finds
+   the Lazyfox-owned profile automatically and *offers* to delete it (with its
+   `profiles.ini` entries) — `--delete-profile` accepts the offer. Only a profile
+   carrying the marker can ever be deleted; a user's own profile is left alone,
+   and the classic `Default=1` flag is restored on whatever profile survives.
+   A dev build makes the offer explicit, because a `dev-<hash>` profile exists
+   only to run Lazyfox and is otherwise dead weight.
+
+### The flashing-console bug (fixed)
+
+One reported symptom — “while installing I see many, many cmd windows flash very
+quickly, and the software wasn't installed at all” — had a single cause. The
+installer is a GUI-subsystem exe, and the old Windows process control shelled out
+to `powershell`, `tasklist` and `taskkill` to find and close Firefox. Each of
+those is a console program, so each spawned its own console window; and the
+“has Firefox gone?” check was a `tasklist` poll every 250 ms for up to 20 s, i.e.
+dozens of windows — after which a slow Firefox exit was reported as
+“Firefox is still running … run the installer again”, aborting the install.
+
+That path is now Win32 only (`internal/platform/firefoxproc_windows.go`): a
+thread snapshot for the process list, `TerminateProcess` to close Firefox, and a
+kernel wait on the process handle plus the profile lock to know it is really
+gone. No console windows, no polling race, and a genuine failure now says so
+instead of blaming the user's Firefox.
+
+### And the real reason it claimed to install nothing (fixed)
+
+The companion bug was the *lock test*. Firefox locks the profile by taking an OS
+lock on `parent.lock` and leaves the file itself on disk after it exits, so
+“does `parent.lock` exist?” answers yes for every profile the browser has ever
+opened. Measured on a real profile store: **five profiles carry a `parent.lock`,
+exactly one had a live holder.**
+
+With the old existence check, every install believed Firefox was running:
+
+- it closed Firefox unbidden (via the flashing consoles above),
+- it **skipped enabling the add-on**, because that step is only safe while
+  Firefox is closed,
+- and then it reported failure — “Firefox is still running with this profile and
+  did not close” — when the phantom lock never cleared.
+
+That is the “it said it installed but the software wasn't installed at all”.
+`platform.ProfileLocked` now tests the lock rather than the file
+(`LockFileEx` on Windows via an exclusive re-open, `flock` on Unix), so a stale
+lock file costs nothing and a running Firefox is still detected correctly.
 
 ## How to tell which mode you are in
 

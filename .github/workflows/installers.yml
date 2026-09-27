@@ -1,0 +1,72 @@
+name: Installers - native builds
+
+# Builds the Lazyfox installer ON each platform, so every one gets the real
+# graphical installer window.
+#
+# Why this job exists: the window is the operating system's own webview, and
+# Wails' macOS and Linux backends reach it through CGO and the system webkit
+# libraries. Those binaries cannot be cross-compiled, so the one-machine release
+# flow produces the terminal installer for the platforms it is not running on.
+# This workflow fills that gap natively.
+#
+# It uploads workflow artifacts only. Releases are still created by exactly one
+# place (`npm run ship`); this job never pushes, tags or publishes.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev-nightly]
+
+jobs:
+  installer:
+    name: ${{ matrix.name }} installer
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux
+            artifact: lazyfox-install-dev-linux
+          - os: macos-14
+            name: darwin
+            artifact: lazyfox-install-dev-darwin
+          - os: windows-2022
+            name: windows
+            artifact: lazyfox-install-dev-windows.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Repo modules (root + installer) require Go 1.26; must match go.mod.
+          go-version: "1.26"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Wails' Linux backend links WebKitGTK through CGO.
+      - name: Install webview build dependencies (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Build dist and the installers
+        run: npm run build
+
+      - name: Build the dev installers
+        run: npm run build:installers
+
+      - name: Upload this platform's installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: installer/bin/${{ matrix.artifact }}
+          if-no-files-found: error

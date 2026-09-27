@@ -3,50 +3,76 @@
 <head>
 <meta charset="utf-8">
 <meta name="color-scheme" content="dark">
-<title>Lazyfox — finish the setup</title>
+<title>Lazyfox — setup</title>
 <link rel="stylesheet" href="setup.css">
 </head>
 <body id="lazyfox-setup">
   <div class="wrap">
     <header class="head">
       <div class="logo"><img id="logoImg" alt="Lazyfox"></div>
-      <h1>Finish setting up Lazyfox</h1>
-      <p class="tagline">The add-on already works on web pages. One small installer unlocks the full experience — hidden browser bars, the status line, and the <span class="kbd">;</span> keys on every page.</p>
+      <h1 id="pageTitle">Finish setting up Lazyfox</h1>
+      <p class="tagline" id="pageTagline">The add-on already runs on web pages. One small installer unlocks the full experience — the toolbar-free window, the status line, and the <span class="kbd">;</span> keys everywhere.</p>
     </header>
 
-    <section class="card status" id="statusCard">
-      <div class="status-line"><span class="dot" id="dot"></span><span id="statusText">checking…</span><button class="ghost" id="verify">Check again</button></div>
-    </section>
-
-    <section class="card">
-      <h2>Which profile gets it</h2>
-      <p>The installer asks which Firefox profile to add Lazyfox to. It runs on the profile this window is using right now, and that's the one to pick:</p>
-      <div class="prof-line">
-        <span class="pf-icon">&#x1F5C3;&#xFE0F;</span>
-        <div>
-          <div id="profileName">loading&#x2026;</div>
-          <div class="muted" id="profileDir"></div>
-        </div>
+    <!-- Verified state: the full Lazyfox chrome is running. -->
+    <section class="card status ok" id="doneCard" hidden>
+      <div class="status-line"><span class="dot on"></span><span><b>The full Lazyfox is installed and running.</b></span><button class="ghost" id="verify">Check again</button></div>
+      <div class="done-grid">
+        <div><div class="mini-k">Add-on</div><div class="mini-v" id="doneExt">—</div></div>
+        <div><div class="mini-k">Window chrome</div><div class="mini-v" id="doneChrome">—</div></div>
+        <div><div class="mini-k">Profile</div><div class="mini-v" id="doneProfile">—</div></div>
       </div>
     </section>
 
-    <section class="card">
-      <h2>Three quick steps</h2>
-      <ol class="steps" id="steps">
-        <li><b>Download the installer</b>
-          <p>One small file for <b id="osName" style="color:var(--fg)">your system</b>. It is safe and open-source.</p>
-          <a class="dl" id="dl">Download the installer</a>
-          <p class="muted" id="channelNote"></p>
-        </li>
-        <li><b>Run it</b><p>Run the downloaded file with the command below for <b id="osName2" style="color:var(--fg)">your system</b> (you may be asked once for an admin password):</p>
-          <p><code id="runCmd" class="cmd"></code></p>
-        </li>
-        <li><b>Restart Firefox</b><p>Quit fully and open it again. That&rsquo;s it &mdash; Lazyfox will be ready.</p></li>
-      </ol>
-      <p class="muted" id="dlNote">The installer is self-contained (no dependencies) and never touches your passwords, bookmarks or other add-ons.</p>
+    <!-- Not-yet state: the chrome layer is missing. -->
+    <section class="card status warn" id="todoCard">
+      <div class="status-line"><span class="dot" id="dot"></span><span id="statusText">checking…</span><button class="ghost" id="verify2">Check again</button></div>
     </section>
 
-    <p class="footer">Everything is reversible &mdash; run the installer&rsquo;s <code>uninstall</code> option any time. Your bookmarks, history, passwords and other add-ons stay exactly as they are.</p>
+    <!-- Profile: honest about what the extension can and cannot see. -->
+    <section class="card" id="profileCard">
+      <h2>Which Firefox profile this is</h2>
+      <div class="prof-line">
+        <span class="pf-icon">&#x1F5C3;&#xFE0F;</span>
+        <div>
+          <div id="profileName">checking…</div>
+          <div class="muted" id="profileDir"></div>
+        </div>
+      </div>
+      <p class="muted" id="profileNote"></p>
+    </section>
+
+    <!-- Install steps (not-yet state). -->
+    <section class="card" id="installCard">
+      <h2>Install — three steps</h2>
+      <ol class="steps" id="steps">
+        <li><b>Download the installer</b>
+          <p>One small file for <b id="osName" style="color:var(--fg)">your system</b>. It is open-source and self-contained.</p>
+          <a class="dl" id="dl" href="#">Download the installer</a>
+          <p class="muted" id="channelNote"></p>
+        </li>
+        <li><b>Run it</b>
+          <p>It lists every Firefox profile it finds and marks the one this window is using. Run the command below for <b id="osName2" style="color:var(--fg)">your system</b> (it asks once for an admin password to place the loader next to Firefox):</p>
+          <p><code id="runCmd" class="cmd"></code></p>
+        </li>
+        <li><b>Restart Firefox</b>
+          <p>Quit fully and open it again. This page flips to green on its own — press <span class="kbd">Check again</span> if it does not.</p>
+        </li>
+      </ol>
+      <p class="muted">The installer never touches your passwords, bookmarks or other add-ons. It can be removed at any time.</p>
+    </section>
+
+    <!-- Uninstall help (verified state). -->
+    <section class="card" id="uninstallCard" hidden>
+      <h2>Uninstall</h2>
+      <p>To remove Lazyfox and return Firefox to normal, run the same installer and choose <b>Remove Lazyfox</b> (or run it with the <code>uninstall</code> argument). It removes only files Lazyfox added — your bookmarks, history, passwords, cookies and other add-ons stay exactly as they are.</p>
+      <p><a class="dl ghost" id="dl2" href="#">Download the installer</a></p>
+      <p class="muted">Then run:</p>
+      <p><code id="uninstallCmd" class="cmd"></code></p>
+      <p class="muted" id="uninstallNote"></p>
+    </section>
+
+    <p class="footer">Everything is reversible. Your data is never touched.</p>
   </div>
 
 <script src="setup.js"></script>

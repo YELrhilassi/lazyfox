@@ -17,12 +17,12 @@
 // users who clone don't need a Go toolchain to install.
 
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { zipStore } from "./scripts/amo-lib.ts";
-import { buildWinRes } from "./scripts/winres.ts";
+import { buildInstallerSet, type InstallerTarget } from "./scripts/installer-build.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)));
 
@@ -31,10 +31,24 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)));
 // them out entirely (__DEV__=false), keeping dist/ free of debug output.
 const DEV = process.argv.includes("--dev");
 
-const BUNDLES = [
+interface Bundle {
+  in: string;
+  out: string;
+  // "esm" is required for the two JS window actor modules: Firefox imports the
+  // file as a module and looks for the exported class by name (LazyfoxChild /
+  // LazyfoxParent). Left unminified so an actor failure is readable in the
+  // browser console.
+  format?: "iife" | "esm";
+  minify?: boolean;
+}
+
+const BUNDLES: Bundle[] = [
   { in: "src/chrome/main.ts", out: "dist/chrome/userChrome.uc.js" },
   { in: "src/chrome/corebootstrap.ts", out: "dist/chrome/corebootstrap.js" },
   { in: "src/chrome/frame.ts", out: "dist/chrome/frame.js" },
+  { in: "src/chrome/actor-boot.ts", out: "dist/chrome/actor-boot.js", minify: false },
+  { in: "src/chrome/actor-child.ts", out: "dist/chrome/lazyfox-child.sys.mjs", format: "esm", minify: false },
+  { in: "src/chrome/actor-parent.ts", out: "dist/chrome/lazyfox-parent.sys.mjs", format: "esm", minify: false },
   { in: "src/extension/content/main.ts", out: "dist/extension/content.js" },
   { in: "src/extension/background.ts", out: "dist/extension/background.js" },
   { in: "src/extension/commandcenter.ts", out: "dist/extension/commandcenter.js" },
@@ -44,6 +58,7 @@ const BUNDLES = [
   { in: "src/extension/optionskeys.ts", out: "dist/extension/optionskeys.js" },
   { in: "src/extension/popup.ts", out: "dist/extension/popup.js" },
   { in: "src/extension/setup.ts", out: "dist/extension/setup.js" },
+  { in: "src/extension/diagnostics.ts", out: "dist/extension/diagnostics.js" },
 ];
 
 /* ---------- 1. wasm core ---------- */
@@ -78,11 +93,11 @@ for (const b of BUNDLES) {
     entryPoints: [join(root, b.in)],
     bundle: true,
     outfile,
-    format: "iife",
+    format: b.format || "iife",
     platform: "browser",
     target: ["firefox115"],
     define: { __DEV__: DEV ? "true" : "false" },
-    minify: true,
+    minify: b.minify !== false,
     logLevel: "info",
   });
   console.log(`[bundle] ${b.in} -> ${b.out}`);
@@ -123,16 +138,34 @@ console.log("[static] src/static/{extension,chrome} -> dist/");
 
 /* ---------- 4. dev add-on / signed add-on + installer binary ---------- */
 
-// In --dev mode we short-circuit the production release steps (AMO signing and
-// the standalone installer binary rebuild). The dev installers consume the
-// freshly built UNSIGNED xpi directly from dist/extension, so there is no need
-// to contact AMO or recompile installer/bin every dev iteration.
+// In --dev mode we skip the production release steps (AMO signing and the
+// cross-platform RELEASE binaries). We do NOT skip the installer entirely: this
+// platform's dev installer is rebuilt from the fresh payload (see below). A dev
+// build that left the installer binary stale is exactly how a launched installer
+// ends up erroring or installing an old chrome layer.
 if (DEV) {
   const version = JSON.parse(readFileSync(join(root, "dist", "extension", "manifest.json"), "utf8")).version;
   const unsignedOut = join(root, "dist", `lazyfox2-${version}.xpi`);
   console.log(`[dev] packaging unsigned xpi -> dist/lazyfox2-${version}.xpi`);
   zipStore(join(root, "dist", "extension"), unsignedOut);
+
+  // Refresh THIS platform's dev installer so the binary you launch is always the
+  // one this build produced — the embedded payload can never be last week's. The
+  // staging + compile path is exactly the one `npm run build:installers` uses
+  // (scripts/build-dev-installers.ts), so host refreshes and full refreshes
+  // cannot drift; only the target list differs (LF_INSTALLER_TARGETS=host).
+  //
+  // This is a hard step on purpose: `npm run build` already needs the Go
+  // toolchain for the wasm core, so a failure here means the installer really is
+  // broken and silently shipping a stale binary is the bug we are fixing.
+  console.log("\n[installer] refreshing this platform's dev installer with the fresh payload…");
+  run(process.execPath, [join(root, "scripts", "build-dev-installers.ts")], {
+    cwd: root,
+    env: { ...process.env, LF_INSTALLER_TARGETS: "host" },
+  });
+
   console.log(`\nBuild complete. dist/ is ready to install (unsigned dev add-on).`);
+  console.log("Verified installer for this platform: installer/bin/ (fresh payload).");
   process.exit(0);
 }
 
@@ -180,79 +213,42 @@ const extensionVersion = JSON.parse(readFileSync(join(root, "dist", "extension",
 
 // The interactive installer is a single Go binary (replaces the per-OS shell
 // installers). It is built fully self-contained: before compiling, the chrome
-// helper payload and the signed add-on xpi are staged into installer/payload/
-// and embedded with go:embed, so the shipped binary can do a COMPLETE install
+// helper payload and the signed add-on xpi are staged into
+// installer/internal/payload/data/ (beside the package that embeds them — Go
+// resolves //go:embed relative to the package dir) and embedded with go:embed,
+// so the shipped binary can do a COMPLETE install
 // (profile chrome files, user.js merge, signed add-on install, loader) with no
 // repo checkout, no dist/ folder and no toolchain. Build it for every supported
 // platform into installer/bin/ so releases ship one native binary per OS:
 //   lazyfox-install-linux, lazyfox-install-darwin, lazyfox-install-windows.exe
-const INSTALLER_TARGETS = [
+const INSTALLER_TARGETS: InstallerTarget[] = [
   { goos: "linux", arch: "amd64", out: "lazyfox-install-linux" },
   { goos: "darwin", arch: "arm64", out: "lazyfox-install-darwin" },
   { goos: "windows", arch: "amd64", out: "lazyfox-install-windows.exe" },
 ];
 
-// Stage the payloads the installer embeds (profile chrome files + user.js, and
-// the signed add-on xpi). These are intermediate build inputs only — the
-// binaries in installer/bin/ carry the embedded copies — so they are excluded
-// from git (see installer/.gitignore). The loader is embedded separately from
-// the committed installer/payload/loader/ and is not re-staged here.
-const stagePayload = () => {
-  const chromeSrc = join(root, "dist", "chrome");
-  const chromeDst = join(root, "installer", "payload", "chrome");
-  mkdirSync(chromeDst, { recursive: true });
-  for (const f of ["userChrome.css", "userChrome.uc.js", "frame.js", "corebootstrap.js", "user.js"]) {
-    cpSync(join(chromeSrc, f), join(chromeDst, f));
-  }
-  // Signed add-on: clear any stale tree staged by older builds, then copy the
-  // signed xpi in as the single extension payload.
-  const extDst = join(root, "installer", "payload", "extension");
-  rmSync(extDst, { recursive: true, force: true });
-  mkdirSync(extDst, { recursive: true });
-  cpSync(join(root, "dist", `lazyfox2-${extensionVersion}.xpi`), join(extDst, "lazyfox2.xpi"));
-  console.log(`[installer] staged payloads -> installer/payload/chrome + extension/lazyfox2.xpi (v${extensionVersion})`);
-};
-
-stagePayload();
-mkdirSync(join(root, "installer", "bin"), { recursive: true });
-for (const t of INSTALLER_TARGETS) {
-  // Stage the native host binary for THIS installer target (each installer
-  // binary embeds the host for its own platform — the host is compiled
-  // together with the installer so a bare downloaded installer can install
-  // the full stack). The host is optional at runtime, but the installer
-  // payload must exist or the go:embed below fails to compile.
-  const hostExe = t.goos === "windows" ? "lazyfox-host.exe" : "lazyfox-host";
-  const hostDst = join(root, "installer", "payload", "native-host", t.goos, hostExe);
-  mkdirSync(dirname(hostDst), { recursive: true });
-  try {
-    run("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", hostDst, "."], {
-      cwd: join(root, "native-host"),
-      env: { ...process.env, GOOS: t.goos, GOARCH: t.arch },
-    });
-    console.log(`[installer] staged native host for ${t.goos}/${t.arch}`);
-  } catch (e) {
-    console.warn("[installer] native host build failed for " + t.goos + "; installer will skip the host step: " + String(e instanceof Error && e.message ? e.message : e));
-    writeFileSync(hostDst, ""); // placeholder so go:embed compiles; installNativeHost checks for empty bytes
-  }
-  const out = join(root, "installer", "bin", t.out);
-  // Windows ships the interactive GUI wizard: embed the manifest + icon
-  // resource (go-winres) and link as a GUI-subsystem binary so double-clicking
-  // opens the wizard instead of flashing a console window. Best-effort: a
-  // missing resource degrades to the default icon, not a build failure.
-  // Stamp the channel: these are the RELEASE installers, so they carry the
-  // AMO-signed build and target stable Firefox. The dev installers
-  // (scripts/build-dev-installers.ts) stamp "nightly" instead.
-  let ldflags = "-s -w -X main.embeddedChannel=stable";
-  if (t.goos === "windows") {
-    buildWinRes(join(root, "installer"), extensionVersion);
-    ldflags += " -H windowsgui";
-  }
-  run("go", ["build", "-trimpath", `-ldflags=${ldflags}`, "-o", out, "."], {
-    cwd: join(root, "installer"),
-    env: { ...process.env, GOOS: t.goos, GOARCH: t.arch },
-  });
-  console.log(`[installer] ${t.goos}/${t.arch} -> installer/bin/${t.out}`);
-}
+// Stage the payloads the installer embeds and compile every target — through
+// the SAME function the dev installers use (scripts/installer-build.ts), so the
+// two can never stage different files. The chrome list lives there too.
+//
+// These staged files are intermediate build inputs only: the binaries in
+// installer/bin/ carry the embedded copies, so they are gitignored. The loader
+// is embedded separately from the committed internal/payload/data/loader/.
+//
+// `dist/lazyfox2-<version>.xpi` is the canonical add-on: amo-sign.ts above has
+// made it the signed artifact for this version (or, failing that, left the most
+// recent committed signed xpi in its place and said so).
+buildInstallerSet({
+  root,
+  installerDir: join(root, "installer"),
+  targets: INSTALLER_TARGETS,
+  // The RELEASE installers carry the signed build and target stable Firefox;
+  // the dev installers (scripts/build-dev-installers.ts) stamp "nightly".
+  channel: "stable",
+  xpiPath: join(root, "dist", `lazyfox2-${extensionVersion}.xpi`),
+  version: extensionVersion,
+  logPrefix: "[installer]",
+});
 
 console.log("\nBuild complete. dist/ is ready to install.");
 

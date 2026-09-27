@@ -5,90 +5,70 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"lazyfox/installer/internal/config"
+	"lazyfox/installer/internal/fx"
+	"lazyfox/installer/internal/ops"
+	"lazyfox/installer/internal/payload"
+	"lazyfox/installer/internal/platform"
+	"lazyfox/installer/internal/tui"
 )
 
-// config carries parsed command-line options plus the environment-derived
-// defaults surfaced to the TUI.
-type config struct {
-	// Non-interactive operation (skip the TUI).
-	action        string // "", "install", "uninstall", "loader-only", "loader-remove", "help", "list"
-	profile       string
-	firefoxDir    string
-	noExt         bool
-	noLaunch      bool
-	removeLoader  bool
-	keepDisabled  bool
-	keepDedicated bool // do not remove a Lazyfox-owned dedicated profile on uninstall
-	force         bool
-	password      string  // for sudo (non-interactive loader ops)
-	xpiPath       string  // install this unsigned xpi instead of the embedded signed build (dev)
-	channel       channel // stable | nightly (defaults to this build's channel)
-	dedicated     bool    // force a Lazyfox-owned dedicated profile
-	statusFile    string  // elevated child reports its outcome here (Windows UAC)
-	// TUI defaults.
-	hasProfileArg bool
-	// tui forces the terminal UI on Windows (default there is the GUI wizard).
-	tui bool
-}
-
-// parseArgs interprets the command line. On success handled=true means the
-// process should return without opening the TUI (help printed, or a
-// non-interactive action performed has not happened yet — the action itself is
-// returned in cfg).
-func parseArgs(rc *repoContext, args []string) (cfg config, handled bool, err error) {
+// parseArgs turns the command line into a config.Config. handled=true means the
+// process should exit without opening a front-end (help was printed, or a
+// non-interactive action already ran).
+func parseArgs(args []string) (cfg config.Config, handled bool, err error) {
 	fs := flag.NewFlagSet("lazyfox", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
 	profile := fs.String("profile", "", "Firefox profile directory to use")
 	ffdir := fs.String("firefox-dir", "", "Firefox installation directory")
-	action := fs.String("mode", "", "auto|install|uninstall|loader-only|loader-remove|list")
-	var noExt, noLaunch, removeLoader, keepDisabled, keepDedicated, force, help, tui bool
-	fs.BoolVar(&noExt, "no-extension", false, "skip the WebExtension build/install")
+	mode := fs.String("mode", "", "auto|install|uninstall|loader-only|loader-remove|list")
+	xpiPath := fs.String("xpi", "", "install this unsigned xpi instead of the embedded build (dev)")
+	chFlag := fs.String("channel", "", "stable|nightly — which Firefox channel to target (default: this build's channel)")
+
+	var noExt, noLaunch, removeLoader, keepDisabled, deleteProfile, force, help, tui bool
+	fs.BoolVar(&noExt, "no-extension", false, "skip the WebExtension install")
 	fs.BoolVar(&noLaunch, "no-launch", false, "do not relaunch Firefox after install")
 	fs.BoolVar(&removeLoader, "remove-loader", false, "also remove the chrome loader (uninstall)")
 	fs.BoolVar(&keepDisabled, "keep-extension-disabled", false, "only disable the add-on, keep the xpi")
-	fs.BoolVar(&keepDedicated, "keep-profile", false, "keep a Lazyfox-created dedicated profile on uninstall")
+	fs.BoolVar(&deleteProfile, "delete-profile", false, "on uninstall, also delete the profile Lazyfox created")
 	fs.BoolVar(&force, "force", false, "force a chrome-loader (re)install/removal")
-	fs.BoolVar(&tui, "tui", false, "use the terminal UI instead of the GUI wizard (Windows only)")
+	fs.BoolVar(&tui, "tui", false, "use the terminal installer instead of the window")
 	fs.BoolVar(&help, "h", false, "show help")
 	fs.BoolVar(&help, "help", false, "show help")
-	fs.StringVar(&cfg.password, "sudo-pass", "", "sudo password for non-interactive loader ops")
-	fs.StringVar(&cfg.statusFile, "status", "", "write the operation outcome to this file (elevated child reporting)")
-	xpiPath := fs.String("xpi", "", "install this unsigned xpi instead of the embedded signed build (dev)")
-	chFlag := fs.String("channel", "", "stable|nightly — which Firefox channel to target (default: this build's channel)")
-	fs.BoolVar(&cfg.dedicated, "dedicated", false, "install into a dedicated Lazyfox-owned profile instead of your own")
+	fs.StringVar(&cfg.Password, "sudo-pass", "", "sudo password for non-interactive loader ops")
+	fs.StringVar(&cfg.StatusFile, "status", "", "write the operation outcome to this file (elevated child reporting)")
+	fs.BoolVar(&cfg.Dedicated, "dedicated", false, "create/use a dedicated Lazyfox profile instead of your own")
 	fs.Usage = func() { printUsage(fs) }
 
-	// Also accept the legacy single-dash flags (-Profile, -NoExtension, …) for
-	// drop-in compatibility by translating them before flag.Parse.
-	translated := translateLegacyFlags(args)
+	// The legacy single-dash flags (-Profile, -NoExtension, …) are translated
+	// before parsing so drop-in callers keep working.
+	if err := fs.Parse(translateLegacyFlags(args)); err != nil {
+		return cfg, true, nil // flag already printed an error/usage
+	}
 
-	if err := fs.Parse(translated); err != nil {
-		return cfg, true, nil // flag pkg already printed an error/usage
-	}
-	cfg.profile = *profile
-	cfg.firefoxDir = *ffdir
-	cfg.noExt = noExt
-	cfg.noLaunch = noLaunch
-	cfg.removeLoader = removeLoader
-	cfg.keepDisabled = keepDisabled
-	cfg.keepDedicated = keepDedicated
-	cfg.force = force
-	cfg.hasProfileArg = *profile != ""
-	cfg.action = *action
-	cfg.xpiPath = *xpiPath
+	cfg.Profile = *profile
+	cfg.FirefoxDir = *ffdir
+	cfg.NoExt = noExt
+	cfg.NoLaunch = noLaunch
+	cfg.RemoveLoader = removeLoader
+	cfg.KeepDisabled = keepDisabled
+	cfg.DeleteProfile = deleteProfile
+	cfg.Force = force
+	cfg.HasProfileArg = *profile != ""
+	cfg.XpiPath = *xpiPath
+	cfg.TUI = tui
+	cfg.Channel = fx.ParseChannel(fx.EmbeddedChannel)
 	if strings.TrimSpace(*chFlag) != "" {
-		cfg.channel = parseChannel(*chFlag)
-	} else {
-		cfg.channel = parseChannel(embeddedChannel)
+		cfg.Channel = fx.ParseChannel(*chFlag)
 	}
-	cfg.tui = tui
 
 	// A bare positional argument is the profile (legacy CLI convention).
 	if pos := fs.Args(); len(pos) > 0 {
-		if cfg.profile == "" {
-			cfg.profile = pos[0]
-			cfg.hasProfileArg = true
+		if cfg.Profile == "" {
+			cfg.Profile = pos[0]
+			cfg.HasProfileArg = true
 			pos = pos[1:]
 		}
 		if len(pos) > 0 {
@@ -101,14 +81,34 @@ func parseArgs(rc *repoContext, args []string) (cfg config, handled bool, err er
 		return cfg, true, nil
 	}
 
-	if cfg.action != "" {
-		// Non-interactive action requested.
-		if err := runNonInteractive(rc, cfg); err != nil {
+	cfg.Action = parseMode(*mode)
+	if cfg.Action != config.Interactive {
+		src := payload.Locate(executablePaths()...)
+		if err := runNonInteractive(src, cfg); err != nil {
 			return cfg, true, err
 		}
 		return cfg, true, nil
 	}
 	return cfg, false, nil
+}
+
+func parseMode(mode string) config.Action {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "auto":
+		return config.Auto
+	case "install":
+		return config.Install
+	case "uninstall":
+		return config.Uninstall
+	case "loader-only":
+		return config.LoaderOnly
+	case "loader-remove":
+		return config.LoaderRemove
+	case "list":
+		return config.List
+	default:
+		return config.Interactive
+	}
 }
 
 // translateLegacyFlags converts the old shell-style flags to their modern
@@ -141,191 +141,251 @@ func translateLegacyFlags(args []string) []string {
 }
 
 func printUsage(fs *flag.FlagSet) {
-	fmt.Fprintf(fs.Output(), `Lazyfox installer — a single cross-platform tool.
+	fmt.Fprintf(fs.Output(), `Lazyfox installer.
 
-Without options the interactive installer opens: on Windows a native GUI
-wizard (pass --tui to force the terminal TUI), on Linux/macOS the terminal
-TUI. It detects your platform, every Firefox installation and every profile,
-then guides you through install or uninstall.
+This build handles one Firefox channel only: a dev build (Developer Edition /
+Nightly) or a stable build. It never touches the other one.
+
+No options: opens the installer window (same on Windows, Linux and macOS).
+--tui uses the terminal installer instead.
 
 Flags:
 `)
 	fs.PrintDefaults()
 	fmt.Fprintf(fs.Output(), `
 Examples:
-  lazyfox-install                  open the interactive installer
-  lazyfox-install --mode auto      hands-off: detect Firefox + profile, install, verify
-                                   (falls back to a dedicated Lazyfox profile if needed)
-  lazyfox-install --mode auto --dedicated
-                                   force the dedicated Lazyfox-owned profile
-  lazyfox-install --mode auto --channel nightly
-                                   target Developer Edition / Nightly
-  lazyfox-install --profile "…"    preset the profile for the TUI
-  lazyfox-install --mode install --profile "…" --firefox-dir "…"
-  lazyfox-install --mode install --profile "…" --xpi "…/lazyfox2-0.5.3.xpi" --no-launch
+  lazyfox-install                             open the installer window
+  lazyfox-install --tui                       terminal installer instead
+  lazyfox-install --mode auto                 no prompts: detect, install, verify
+  lazyfox-install --mode list                 show what this build targets
+  lazyfox-install --mode uninstall --delete-profile
   lazyfox-install --mode loader-only --firefox-dir "…"
-  lazyfox-install --mode uninstall --profile "…"
-                                   remove Lazyfox (a dedicated Lazyfox profile is
-                                   removed too unless you pass --keep-profile)
-  lazyfox-install --mode list
 
-Note: the legacy flags -Profile, -NoExtension, -NoLaunch, -ChromeLoaderOnly,
--FirefoxDir, -RemoveChromeLoader also work for drop-in compat.
+The legacy flags -Profile, -NoExtension, -NoLaunch, -ChromeLoaderOnly,
+-FirefoxDir and -RemoveChromeLoader still work.
 `)
 }
 
-// runNonInteractive executes a requested action without the TUI, using the
-// plain terminal printer.
-func runNonInteractive(rc *repoContext, cfg config) error {
-	rep := plainReporter{}
+// startInteractive opens the chosen front-end. The window is the default on
+// every platform because it needs no terminal at all — a GUI-subsystem Windows
+// exe double-clicked, a desktop launch and a terminal session all reach it. The
+// terminal installer is opt-in with --tui and requires a terminal, since drawing
+// it without one produces escape-code garbage instead of an installer.
+func startInteractive(src *payload.Source, cfg config.Config) error {
+	if cfg.TUI {
+		if !platform.TerminalInteractive() {
+			return fmt.Errorf("--tui needs a terminal; run without it to get the installer window")
+		}
+		return tui.Run(src, cfg)
+	}
+	return runGUI(src, cfg)
+}
 
-	switch cfg.action {
-	case "list":
-		installs := detectFirefoxInstalls()
-		profiles := detectFirefoxProfiles()
-		fmt.Printf("Installer channel: %s\n", cfg.channel.String())
-		fmt.Println("\nFirefox installations:")
-		for _, fi := range installs {
-			fmt.Printf("  %s\n    exec: %s\n    dir : %s\n", fi.Label, fi.Exec, fi.Dir)
-		}
-		if len(installs) == 0 {
-			fmt.Println("  (none detected)")
-		}
-		fmt.Println("\nFirefox profiles:")
-		for _, p := range profiles {
-			fmt.Printf("  %s  %s\n", p.label(), p.Dir)
-		}
-		if len(profiles) == 0 {
-			fmt.Println("  (none detected)")
-		}
-		return nil
+// runNonInteractive executes a requested action without any UI.
+//
+// Every action resolves its targets through fx.Scan, so it can only ever see
+// this installer's own channel.
+func runNonInteractive(src *payload.Source, cfg config.Config) error {
+	rep := ops.Plain{}
 
-	case "loader-only":
-		ff := pickFishFromDir(rc, cfg)
-		if ff == nil {
-			return fmt.Errorf("could not resolve a Firefox installation (use --firefox-dir)")
-		}
-		pw := func() (string, bool, error) { return cfg.password, cfg.password != "", nil }
-		err := InstallChromeLoader(rc, rep, ff, cfg.force, pw)
-		// The parent (UAC elevation caller) watches this file for the outcome.
-		writeElevatedStatus(cfg.statusFile, err)
-		return err
+	switch cfg.Action {
+	case config.List:
+		return listTargets(src, cfg)
 
-	case "loader-remove":
-		ff := pickFishFromDir(rc, cfg)
-		if ff == nil {
-			return fmt.Errorf("could not resolve a Firefox installation (use --firefox-dir)")
-		}
-		pw := func() (string, bool, error) { return cfg.password, cfg.password != "", nil }
-		err := removeChromeLoader(rc, rep, UninstallOptions{Install: ff}, pw)
-		writeElevatedStatus(cfg.statusFile, err)
-		return err
+	case config.Auto:
+		return runAuto(src, cfg)
 
-	case "auto":
-		return runAuto(rc, cfg)
-
-	case "install":
-		prof := pickProfile(rc, cfg)
-		if prof == nil {
-			return fmt.Errorf("no profile: pass --profile or run the TUI to choose one")
+	case config.LoaderOnly, config.LoaderRemove:
+		view := fx.Scan(cfg.Channel)
+		ff, err := pickInstall(view, cfg)
+		if err != nil {
+			return err
 		}
-		ff := pickFish(rc, cfg, prof)
-		pw := func() (string, bool, error) { return cfg.password, cfg.password != "", nil }
-		return runInstall(rc, rep, InstallOptions{
+		var opErr error
+		if cfg.Action == config.LoaderOnly {
+			opErr = ops.InstallChromeLoader(src, rep, ff, cfg.Force, passwordProvider(cfg))
+		} else {
+			opErr = ops.RemoveChromeLoader(src, rep, ff, passwordProvider(cfg))
+		}
+		platform.WriteElevatedStatus(cfg.StatusFile, opErr) // the UAC parent watches this
+		return opErr
+
+	case config.Install:
+		view := fx.Scan(cfg.Channel)
+		install, err := pickInstall(view, cfg)
+		if err != nil {
+			return err
+		}
+		prof, err := planProfile(rep, view, install, cfg)
+		if err != nil {
+			return err
+		}
+		rep.Note("Channel: %s", cfg.Channel.Label())
+		return ops.Run(src, rep, ops.InstallOptions{
 			Profile:      prof,
-			Install:      ff,
-			UseExtension: !cfg.noExt,
-			UseLaunch:    !cfg.noLaunch,
-			ForceLoader:  cfg.force,
-			XpiPath:      cfg.xpiPath,
-		}, pw)
+			Install:      install,
+			UseExtension: !cfg.NoExt,
+			UseLaunch:    !cfg.NoLaunch,
+			ForceLoader:  cfg.Force,
+			XpiPath:      cfg.XpiPath,
+		}, passwordProvider(cfg))
 
-	case "uninstall":
-		prof := pickProfile(rc, cfg)
-		if !cfg.hasProfileArg {
-			// No explicit profile: prefer a Lazyfox-owned dedicated profile, since
-			// that is what a hands-off install created. Never removes a user profile
-			// (removeDedicatedProfile refuses anything without our marker).
-			for _, p := range detectFirefoxProfiles() {
-				if isLazyfoxOwnedProfile(p.Dir) {
-					prof = p
-					break
-				}
-			}
-		}
-		if prof == nil {
-			return fmt.Errorf("no profile: pass --profile or run the TUI to choose one")
-		}
-		ff := pickFish(rc, cfg, prof)
-		pw := func() (string, bool, error) { return cfg.password, cfg.password != "", nil }
-		return runUninstall(rc, rep, UninstallOptions{
-			Profile:                   prof,
-			Install:                   ff,
-			RemoveLoader:              cfg.removeLoader,
-			KeepExtensionDisabledOnly: cfg.keepDisabled,
-			RemoveDedicated:           !cfg.keepDedicated,
-		}, pw)
+	case config.Uninstall:
+		view := fx.Scan(cfg.Channel)
+		return runUninstall(src, rep, view, cfg)
 
 	default:
-		return fmt.Errorf("unknown mode: %s", cfg.action)
+		return fmt.Errorf("unknown mode")
 	}
 }
 
-// pickFish resolves a FirefoxInstall from CLI flags or auto-detection.
-func pickFishFromDir(rc *repoContext, cfg config) *FirefoxInstall {
-	installs := detectFirefoxInstalls()
-	if cfg.firefoxDir != "" {
-		for _, fi := range installs {
-			if fi.Dir == cfg.firefoxDir || fi.Exec == cfg.firefoxDir {
-				return fi
-			}
-		}
-		// Accept a raw dir/exec even if not auto-detected.
-		return &FirefoxInstall{Exec: cfg.firefoxDir, Dir: cfg.firefoxDir, Flavor: flavorStable}
+// pickInstall resolves the Firefox install for the requested action, keeping the
+// channel boundary: an explicit path for the other channel's Firefox is refused
+// rather than honoured.
+func pickInstall(view fx.View, cfg config.Config) (*fx.Install, error) {
+	ff := view.Install(cfg.FirefoxDir)
+	if ff != nil {
+		return ff, nil
 	}
-	if len(installs) > 0 {
-		return installs[0]
+	if cfg.FirefoxDir != "" && !view.Empty() {
+		return nil, fx.ErrForeignInstall(cfg.FirefoxDir, cfg.Channel)
+	}
+	return nil, fx.ErrNoChannelInstall(cfg.Channel)
+}
+
+// planProfile is the install's profile policy, expressed once (PlanInstall) and
+// then reported: a dev install always gets its own disposable profile; a stable
+// install uses the profile Firefox actually uses and only creates one when there
+// is none.
+func planProfile(rep ops.Reporter, view fx.View, install *fx.Install, cfg config.Config) (*fx.Profile, error) {
+	if cfg.HasProfileArg {
+		prof := view.Profile(cfg.Profile)
+		if prof == nil {
+			if platform.IsDir(cfg.Profile) {
+				return nil, fx.ErrForeignProfile(cfg.Profile)
+			}
+			return nil, fx.ErrNoProfile
+		}
+		return prof, nil
+	}
+	plan, err := fx.PlanInstall(install, view.Profiles, cfg.Channel)
+	if err != nil {
+		return nil, err
+	}
+	rep.Note("%s", plan.Reason)
+	return plan.Profile, nil
+}
+
+// runUninstall removes the install and then *suggests* deleting the profile
+// Lazyfox created, rather than deleting it — a profile is the one thing here
+// that cannot be backed up, so a mistyped command must not destroy it.
+func runUninstall(src *payload.Source, rep ops.Reporter, view fx.View, cfg config.Config) error {
+	var prof *fx.Profile
+	if cfg.HasProfileArg {
+		prof = view.Profile(cfg.Profile)
+	} else if owned := view.OwnedProfile(); owned != nil {
+		// No explicit profile: prefer the one Lazyfox created, since that is
+		// what an installer-managed install used. Never a user profile.
+		prof = owned
+	} else {
+		prof = view.Profile("")
+	}
+	if prof == nil {
+		return fx.ErrNoProfile
+	}
+
+	install := view.Install(cfg.FirefoxDir)
+	owned := fx.IsLazyfoxOwnedProfile(prof.Dir)
+
+	if owned && !cfg.DeleteProfile {
+		rep.Note("%s is Lazyfox-owned. Kept for now.", prof.Name)
+	}
+	if err := ops.RunUninstall(src, rep, ops.UninstallOptions{
+		Profile:                   prof,
+		Install:                   install,
+		RemoveLoader:              cfg.RemoveLoader,
+		KeepExtensionDisabledOnly: cfg.KeepDisabled,
+		RemoveDedicated:           cfg.DeleteProfile && owned,
+	}, passwordProvider(cfg)); err != nil {
+		return err
+	}
+
+	// Offer the follow-up only when there is something to offer: a dev profile
+	// exists purely for Lazyfox and is otherwise dead weight, so removing it is
+	// the natural end of the story.
+	if owned && !cfg.DeleteProfile {
+		rep.Note("To delete it: lazyfox-install --mode uninstall --delete-profile")
 	}
 	return nil
 }
 
-// pickFish resolves the best Firefox install for a profile.
-func pickFish(rc *repoContext, cfg config, prof *FirefoxProfile) *FirefoxInstall {
-	installs := detectFirefoxInstalls()
-	if cfg.firefoxDir != "" {
-		for _, fi := range installs {
-			if fi.Dir == cfg.firefoxDir || fi.Exec == cfg.firefoxDir {
-				return fi
-			}
+// listTargets prints what this build targets, and explicitly what it ignores —
+// the channel boundary made visible.
+//
+// It also reports where this binary's install payload comes from and whether it
+// is usable. That makes `lazyfox-install --mode list` a one-command health check
+// for a built installer — the exact question "did the compiler embed the current
+// payload?" — instead of discovering it only when a launch or an install fails.
+func listTargets(src *payload.Source, cfg config.Config) error {
+	view := fx.Scan(cfg.Channel)
+
+	fmt.Printf("Installer channel: %s — %s\n", cfg.Channel.String(), cfg.Channel.Label())
+	fmt.Printf("Payload: %s\n", src.Origin())
+	payloadErr := src.Usable()
+	if payloadErr == nil {
+		if src.AddonAvailable() {
+			fmt.Println("  add-on payload : present (the installer can add the extension)")
+		} else {
+			fmt.Println("  add-on payload : MISSING — only the chrome loader could be installed")
 		}
-		return &FirefoxInstall{Exec: cfg.firefoxDir, Dir: cfg.firefoxDir, Flavor: flavorStable}
+	} else {
+		fmt.Println("  payload check  : FAILED")
 	}
-	if len(installs) == 0 {
-		return nil
+	fmt.Println("\nFirefox for this channel:")
+	for _, fi := range view.Installs {
+		fmt.Printf("  %s\n    exec: %s\n    dir : %s\n", fi.Label, fi.Exec, fi.Dir)
 	}
-	// Prefer an install whose flavor matches the profile's flavor.
-	for _, fi := range installs {
-		if prof != nil && fi.Flavor == prof.Flavor {
-			return fi
+	if len(view.Installs) == 0 {
+		fmt.Println("  (none — nothing for this installer to do here)")
+	}
+	var others []*fx.Install
+	for _, fi := range fx.Installs() {
+		if !cfg.Channel.Matches(fi.Flavor) {
+			others = append(others, fi)
 		}
 	}
-	return installs[0]
+	if len(others) > 0 {
+		fmt.Println("\nIgnored (other channel — never touched):")
+		for _, fi := range others {
+			fmt.Printf("  %s\n", fi.Label)
+		}
+	}
+
+	fmt.Println("\nFirefox profiles for this channel:")
+	for _, p := range view.Profiles {
+		owned := ""
+		if fx.IsLazyfoxOwnedProfile(p.Dir) {
+			owned = "  [Lazyfox-owned: " + fx.OwnedProfileChannel(p.Dir).String() + "]"
+		}
+		fmt.Printf("  %s  %s%s\n", p.Label(), p.Dir, owned)
+	}
+	if len(view.Profiles) == 0 {
+		fmt.Println("  (none — the installer would create its own)")
+	}
+	// Return the payload failure LAST so the report above still prints, but a
+	// broken binary exits non-zero: a health check that cannot fail is useless.
+	return payloadErr
 }
 
-// pickProfile resolves a profile from CLI flags or auto-detection.
-func pickProfile(rc *repoContext, cfg config) *FirefoxProfile {
-	profiles := detectFirefoxProfiles()
-	if cfg.profile != "" {
-		for _, p := range profiles {
-			if p.Dir == cfg.profile {
-				return p
-			}
-		}
-		real := resolveReal(cfg.profile)
-		if isDir(real) {
-			return &FirefoxProfile{Dir: real, Name: real, Flavor: flavorStable}
-		}
-		return nil
+// passwordProvider supplies the non-interactive sudo password, if given.
+func passwordProvider(cfg config.Config) ops.PasswordProvider {
+	return func() (string, bool, error) { return cfg.Password, cfg.Password != "", nil }
+}
+
+func executablePaths() []string {
+	var out []string
+	if exe, err := os.Executable(); err == nil {
+		out = append(out, exe)
 	}
-	return pickDefaultProfile(profiles)
+	return out
 }

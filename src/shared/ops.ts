@@ -69,6 +69,9 @@ export interface ActionOps {
   openResize(): void;
   // Open the "complete the installation" page (store add-on -> profile patch).
   openSetup(): void;
+  // Open the diagnostics & performance page: live page diagnosis, the
+  // framework-site detection report, efficiency metering and resource use.
+  openDiagnostics(): void;
 
   // ---- sessions (tmux-style) ----
   listSessions(q: string): Promise<PopupItem[]>;

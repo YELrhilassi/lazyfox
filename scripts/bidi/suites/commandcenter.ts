@@ -40,7 +40,11 @@ export async function run(ctx) {
       return f.core ? f : null;
     }, 10000);
     const f = await ctx.ccFacts(ctx.tabA);
-    assert(f.core === "0.5.1", "LazyfoxCore.version() = " + f.core);
+    // The Go wasm core and the extension are versioned together (the bump
+    // script updates both), so compare against the manifest rather than a
+    // literal — a hardcoded string here went stale on the last release.
+    const want = await evalIn(ctx.probe, `browser.runtime.getManifest().version`).catch(() => "");
+    assert(f.core === want, "LazyfoxCore.version() = " + f.core + " (manifest " + want + ")");
     await ctx.press(ctx.tabA, "Escape");
   });
 
@@ -520,11 +524,23 @@ export async function run(ctx) {
     await ctx.openCC(ctx.tabA);
     await ctx.activateTab(ctx.tabA);
     await sleep(400);
+    // Each step waits for an exact tab-count delta; capture the observed count
+    // on timeout so a failure names the step instead of a bare "waitFor".
+    const waitCount = async (want: number, step: string) => {
+      let seen = -1;
+      try {
+        await waitFor(async () => {
+          seen = await ctx.tabCount();
+          return seen === want ? true : null;
+        }, 10000);
+      } catch (e) {
+        throw new Error(step + ": wanted " + want + " tabs, saw " + seen);
+      }
+    };
     // ;n — new tab, redirected to the command center
     const before = await ctx.tabCount();
     await ctx.leaderPress(ctx.tabA, "n");
-    await waitFor(async () => (await ctx.tabCount()) === before + 1 ? true : null, 10000);
-    assert((await ctx.tabCount()) === before + 1, "new tab created");
+    await waitCount(before + 1, ";n new tab");
     await sleep(600);
     assert((await ctx.ccTabs()).length >= 1, "new tab redirected to command center");
     // ;c — duplicate the active tab (tabA after the activate below)
@@ -532,20 +548,26 @@ export async function run(ctx) {
     await sleep(300);
     const before2 = await ctx.tabCount();
     await ctx.leaderPress(ctx.tabA, "c");
-    await waitFor(async () => (await ctx.tabCount()) === before2 + 1 ? true : null, 10000);
-    assert((await ctx.tabCount()) === before2 + 1, "duplicate created a tab");
+    await waitCount(before2 + 1, ";c duplicate");
     // ;x — the duplicate is active (chrome selects it); close it, keep tabA
     const before3 = await ctx.tabCount();
     await ctx.leaderPressNoFocus("x");
-    await waitFor(async () => (await ctx.tabCount()) === before3 - 1 ? true : null, 10000);
-    assert((await ctx.tabCount()) === before3 - 1, "tab closed");
+    await waitCount(before3 - 1, ";x close");
     // ;v — reopen the closed tab
     await ctx.activateTab(ctx.tabA);
     await sleep(300);
     const before4 = await ctx.tabCount();
     await ctx.leaderPress(ctx.tabA, "v");
-    await waitFor(async () => (await ctx.tabCount()) === before4 + 1 ? true : null, 10000);
-    assert((await ctx.tabCount()) === before4 + 1, "reopened closed tab");
+    try {
+      await waitCount(before4 + 1, ";v reopen");
+    } catch (e) {
+      // On failure, show what SessionStore actually offers to reopen.
+      const rc = await evalIn(
+        ctx.probe,
+        `browser.sessions.getRecentlyClosed({maxResults:20}).then(l => JSON.stringify(l.map(i => i.tab ? (i.tab.url||"") : "(window)")))`
+      ).catch(() => "<err>");
+      throw new Error(String((e && e.message) || e) + "; recently closed: " + rc);
+    }
     await ctx.activateTab(ctx.tabA);
   });
 
@@ -718,5 +740,18 @@ export async function run(ctx) {
       await sleep(400);
     }
     await ctx.activateTab(ctx.probe);
+    // tabA was closed above, so its browsing-context id is dead. Re-point it at
+    // a fresh real page: the content/sessions/split suites that follow drive
+    // ctx.tabA, and running the FULL suite (commandcenter -> content -> ...)
+    // would otherwise fail every downstream test with "no such frame".
+    ctx.tabA = await ctx.newPageTab(`${ctx.base}/`);
+    // Prove the reassignment took: the new tabA must be a live, drivable page,
+    // so the next suite starts from a real tab (this is what the full-run
+    // regression hinged on).
+    const href = await evalIn(ctx.tabA, `location.href`).catch(() => "");
+    assert(
+      href && href.indexOf("127.0.0.1") !== -1,
+      "ctx.tabA re-pointed at a live page tab for the suites that follow, got " + href
+    );
   });
 }

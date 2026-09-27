@@ -114,6 +114,10 @@ export interface PopupItem {
   // helper's `id` is its internal strip index, which is what its actions
   // address — the real id is carried here so the popup can show it).
   realId?: number;
+  // The tab's jump number (1-based strip position), the same identity `;1`-`;9`
+  // use. Set by the tab list in both contexts; the tab popup shows it and its
+  // digit keys jump to it.
+  number?: number;
   url?: string;
   title?: string;
   subtitle?: string;
@@ -185,6 +189,87 @@ export interface Session {
   // "a:b,c:d" pairs of 0-based tab indices. Authoritative for restore; the
   // per-tab splitViewId remains only as a fallback for pre-encoding sessions.
   splits?: string;
+}
+
+// One hinted element in a page report: enough for a human to see WHY a control
+// was or was not detected and whether a click would land, without ever firing a
+// click (which would have side effects).
+export interface HintProbe {
+  tag: string;
+  role: string;
+  name: string;
+  href: boolean;
+  cursor: string;
+  reachable: boolean;
+  reason: string;
+}
+
+// A scroll region as the scroll controller sees it.
+export interface ScrollRegionInfo {
+  label: string;
+  clientHeight: number;
+  scrollHeight: number;
+}
+
+// What the content script knows about the page it is running in. Produced on
+// demand by the diagnostics page — never collected in the background.
+export interface PageReport {
+  ok: boolean;
+  url: string;
+  title: string;
+  readyState: string;
+  // Hint pipeline: how many candidates were found and how many survived each
+  // filter, then a sample of survivors with the reason they are (or are not)
+  // clickable. This is the "why isn't this button detected" answer.
+  hints: {
+    candidates: number;
+    hinted: number;
+    rejected: { hidden: number; covered: number; duplicate: number };
+    probes: HintProbe[];
+    shadowRoots: number;
+    pointerControls: number;
+  };
+  scroll: {
+    target: string;
+    custom: boolean;
+    regions: ScrollRegionInfo[];
+  };
+  editor: string;
+  perf: {
+    domNodes: number;
+    fps: number;
+    heapMB: number | null;
+    resources: number;
+    transferKB: number;
+    // Resources the browser answered from a cache (no bytes on the wire) vs.
+    // fetched over the network — a real, page-level cache-hit picture.
+    cachedResources: number;
+    networkResources: number;
+    loadMs: number;
+    domContentLoadedMs: number;
+  };
+}
+
+// Page-cache policy Lazyfox can impose, per scope. Firefox's own cache is
+// global, so only the "global" scope maps to a real browser setting; the
+// narrower scopes are enforced by the privileged chrome helper, which can add
+// `Cache-Control: no-cache` to the requests of specific tabs. That is why a
+// per-tab policy can only work when the chrome layer is installed.
+export type CacheScope = "global" | "session" | "tab";
+export type CacheMode = "normal" | "fresh" | "off";
+
+export interface CacheState {
+  // The scope/mode currently in force.
+  scope: CacheScope;
+  mode: CacheMode;
+  // Whether the browser exposes the global cache switch (browserSettings).
+  globalSupported: boolean;
+  // Whether the chrome helper is alive and can enforce the per-tab scopes.
+  chromeSupported: boolean;
+  // Tabs the current session/tab policy covers (empty for a global policy).
+  tabIds: number[];
+  // Short human sentence describing exactly what is in force right now.
+  note: string;
 }
 
 // One row of the status bar's session list. Carries only names, markers and

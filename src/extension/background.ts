@@ -35,6 +35,7 @@ import {
   zoom
 } from "./windowops";
 import { openDownload, openDownloadLocation, removeDownload, retryDownload, downloadsList } from "./downloads";
+import { createCacheController } from "./cache";
 import { reconcileStealth, removeStealthContainerForTab, stealthOpen } from "./stealth";
 import {
   assignSessionMarker,
@@ -390,6 +391,27 @@ async function handleMessage(msg: BgAction, sender: any) {
         );
       }
       return { ok: true };
+    case "trustedClick": {
+      // A hint activation asked for a REAL, trusted mouse press. Relay it to
+      // the chrome helper, which dispatches it through windowUtils in the
+      // content process. Unlike the status pushes, this one is a QUESTION: the
+      // content script must know whether the privileged press actually landed,
+      // because a "no" means it has to activate the target itself.
+      //
+      // The answer is deliberately about AVAILABILITY, not about the press
+      // having taken effect: the press is dispatched asynchronously once the
+      // helper receives it, and a synchronous answer cannot observe the
+      // target's own reaction. So `trusted` is true only when a live relay
+      // port for this window is present and the command was posted to it —
+      // the same liveness test requestChrome uses, and the same one that
+      // guarantees the post really reaches the helper rather than sitting in
+      // the queue. Anything else reports trusted:false so the caller falls
+      // back to its synthetic click instead of silently doing nothing.
+      const x = Number(data.x);
+      const y = Number(data.y);
+      if (!isFinite(x) || !isFinite(y)) return { ok: false, trusted: false };
+      return requestChromeReply("trustedClick", { x: x, y: y });
+    }
     case "sessionList":
       return sessionList();
     case "listSessionTabs":
@@ -461,6 +483,21 @@ async function handleMessage(msg: BgAction, sender: any) {
       return stealthOpen(() => pushSessionStateToChrome());
     case "openSetup":
       return openSetupTab();
+    case "openDiagnostics":
+      return openDiagnosticsTab();
+    case "pageReport":
+      // Ask a tab's content script for a live self-report. A page with no
+      // content script (about:/error pages, restricted domains) throws here —
+      // that is an answer, not a failure, so it comes back as report: null.
+      return pageReport(data);
+    case "diagnoseTabs":
+      return diagnoseTabs();
+    case "cacheState":
+      return cache.cacheState();
+    case "cacheSet":
+      return cache.cacheSet(data.scope, data.mode);
+    case "hardReload":
+      return cache.hardReload();
     case "quit":
       return quitBrowser();
     case "sessionState":
@@ -752,6 +789,33 @@ function requestChrome(action: string, arg?: any): void {
     .catch(() => {});
 }
 
+// Ask the chrome helper to do something only it can, and learn whether it was
+// actually reachable. Same delivery path as requestChrome, but resolves true
+// only when a LIVE port for the current window took the command. It never
+// queues: a request that has to wait for the relay to come up would be far too
+// late for a click (the user has already moved on), so "not connected yet" is
+// reported as unavailable and the caller falls back immediately.
+function requestChromeReply(action: string, arg?: any): Promise<{ ok: boolean; trusted: boolean }> {
+  return browser.tabs
+    .query({ currentWindow: true, active: true })
+    .then((ts: any[]) => {
+      const winId = ts && ts[0] ? ts[0].windowId : null;
+      if (winId == null) return { ok: false, trusted: false };
+      const port = relayPorts.get(winId);
+      if (!port) return { ok: false, trusted: false };
+      try {
+        port.postMessage({ type: "cmd", action: action, arg: arg !== undefined ? arg : "" });
+        return { ok: true, trusted: true };
+      } catch (e) {
+        // Dead port (its relay tab was removed) — the same cleanup
+        // requestChrome does, so the next attempt re-establishes the relay.
+        relayPorts.delete(winId);
+        return { ok: false, trusted: false };
+      }
+    })
+    .catch(() => ({ ok: false, trusted: false }));
+}
+
 // Push the fresh session summary to the chrome helper's status bar after a
 // session mutation that did NOT originate from the chrome helper itself (the
 // helper refreshes on its own actions; content-script and options actions would
@@ -804,6 +868,11 @@ async function handleRelayReq(action: string, arg: any): Promise<any> {
       const set: Record<string, string> = { chromeHelperVersion: parts[0] || "" };
       if (parts[1]) set.lfProfileName = parts[1];
       if (parts[2]) set.lfProfileDir = parts[2];
+      // parts[3] is the content-process bridge state ("1"/"0"): whether the
+      // chrome helper could see the Lazyfox window actor registered. The
+      // diagnostics page reports it, so a silently missing bridge is visible
+      // instead of being felt only as "keys do nothing on this page".
+      if (parts[3] !== undefined) set.lfBridge = parts[3] === "1" ? "1" : "0";
       browser.storage.local.set(set).catch(() => {});
     }
     // Return a truthy ack so the helper can confirm the announce was really
@@ -873,6 +942,13 @@ async function handleRelayReq(action: string, arg: any): Promise<any> {
   if (action === "restoreAllClosed") {
     await restoreAllClosedTabs();
     return null;
+  }
+  if (action === "reopenTab") {
+    // The chrome helper's ;v routes here (rather than calling
+    // gBrowser.undoCloseTab locally) so it goes through the same filtered
+    // reopen as the content script: SessionStore's "most recently closed" is
+    // usually a hidden plumbing tab, which this skips.
+    return reopenTab();
   }
   if (action === "recentlyClosed") {
     // Reply for the chrome helper's recently-closed popup.
@@ -958,6 +1034,14 @@ function setChromeLayerAlive(v: boolean): void {
   chromeLayerAlive = v;
 }
 
+// Page-cache policy controller. The chrome helper enforces the per-tab scopes,
+// so whenever it comes alive we re-push the stored policy (a policy set while
+// the helper was down would otherwise never take effect).
+const cache = createCacheController({
+  requestChrome: (action, arg) => requestChrome(action, arg),
+  isChromeAlive: () => chromeLayerAlive,
+});
+
 // Chrome helper absent unless it pings "alive" on window startup; clear the gate
 // so a stale flag never permanently disables content-side handling. Since
 // content scripts must never trust a racy storage write for the one-bar
@@ -990,6 +1074,94 @@ function openSetupTab(): Promise<{ ok: boolean }> {
     .catch(() => ({ ok: false, error: "tab failed" } as { ok: boolean }));
 }
 
+// Open the diagnostics & performance page. Same tab-reuse rule as ;I: from the
+// command center the tab is replaced in place, from a real page a new tab opens
+// so the user's page is never lost.
+function openDiagnosticsTab(): Promise<{ ok: boolean }> {
+  const url = browser.runtime.getURL("diagnostics.html");
+  return getActiveTab()
+    .then((t) => {
+      if (t && t.id && isCommandCenter(t)) {
+        return browser.tabs.update(t.id, { url: url, active: true });
+      }
+      return browser.tabs.create({ url: url, active: true });
+    })
+    .then(() => ({ ok: true }))
+    .catch(() => ({ ok: false, error: "tab failed" } as { ok: boolean }));
+}
+
+// The diagnostics page is itself an extension tab, so "the active tab" is
+// usually the diagnostics page — which has no content script, and would always
+// report null. Track the most recent tab that is a REAL web page (not the
+// relay, the split panel, or any extension page) and report on that instead,
+// falling back to the active tab when it is itself a real page.
+const EXT_BASE = browser.runtime.getURL("");
+let lastPageTabId: number | null = null;
+function isWebPageTab(t: any): boolean {
+  const url = (t && t.url) || "";
+  if (!url) return false;
+  if (url.indexOf(EXT_BASE) === 0) return false; // extension UI page
+  if (url.indexOf("relay.html") !== -1 || url.indexOf("splitpanel.html") !== -1) return false;
+  // about:/error/restricted pages are real answers too (they report null),
+  // so they count as page tabs — the diagnostics page then says WHY.
+  return true;
+}
+browser.tabs.onActivated.addListener((info: any) => {
+  browser.tabs
+    .get(info.tabId)
+    .then((t: any) => {
+      if (isWebPageTab(t)) lastPageTabId = info.tabId;
+    })
+    .catch(() => {});
+});
+
+// The live page report. With no tabId it reports the active tab, or the last
+// real page tab (since the diagnostics page itself is an extension tab); a
+// tabId targets any specific tab. Returns { report: null } when the tab has no
+// content script at all, which is itself the most useful diagnostic answer on
+// about:/error/restricted/extension pages.
+function pageReport(data?: { tabId?: number }): Promise<{ report: unknown; tabId: number | null }> {
+  const want = data && typeof data.tabId === "number" ? data.tabId : null;
+  return getActiveTab()
+    .then(async (active) => {
+      let t: any = null;
+      if (want != null) {
+        t = await browser.tabs.get(want).catch(() => null);
+      } else if (active && isWebPageTab(active)) {
+        t = active;
+      } else if (lastPageTabId != null) {
+        t = await browser.tabs.get(lastPageTabId).catch(() => null);
+      }
+      if (!t || !t.id) return { report: null, tabId: want };
+      try {
+        const res = await browser.tabs.sendMessage(t.id, { action: "pageReport" });
+        return { report: (res && res.report) || null, tabId: t.id };
+      } catch (e) {
+        return { report: null, tabId: t.id };
+      }
+    })
+    .catch(() => ({ report: null, tabId: want }));
+}
+
+// Every tab in the current window, in strip order, for the diagnostics tab
+// picker. Deliberately unfiltered (unlike `tabs`): diagnosing an about:/error/
+// extension page is exactly the case the picker exists for.
+async function diagnoseTabs(): Promise<{ tabs: { id: number; title: string; url: string; active: boolean }[] }> {
+  try {
+    const tabs = await browser.tabs.query({ currentWindow: true });
+    return {
+      tabs: (tabs || []).map((t: any) => ({
+        id: t.id,
+        title: t.title || t.url || "about:blank",
+        url: t.url || "",
+        active: !!t.active,
+      })),
+    };
+  } catch (e) {
+    return { tabs: [] };
+  }
+}
+
 // The chrome-down notification opens the setup page so the user can re-run the
 // installer (or finish a fresh install) in one click.
 const CHROME_NOTIF = "lf-chrome-down";
@@ -1008,6 +1180,8 @@ function markChromeAlive(): void {
   browser.storage.local
     .set({ chromeAlive: true, chromeEverAlive: true })
     .catch(() => {});
+  // Re-apply a page-cache policy the helper may have missed while down.
+  void cache.resync();
 }
 
 function checkChromeLayerHealth(): void {

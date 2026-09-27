@@ -351,6 +351,7 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       const item: PopupItem = {
         id: real, // real-tab index — what the chrome ops address
         realId: tabIds[i], // true Firefox tab id, for display
+        number: real + 1, // jump number shown in the tab switcher (";1"-";9")
         title: t.label || uri || "",
         url: uri,
         active: !!t.selected,
@@ -485,16 +486,13 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       window.focus();
     },
     reopenTab: () => {
-      try {
-        window.undoCloseTab();
-      } catch (e) {
-        try {
-          const sb = ChromeUtils.importESModule("resource:///modules/sessionstore/SessionStore.sys.mjs");
-          sb.SessionStore.undoCloseTab(window);
-        } catch (e2) {
-          // give up
-        }
-      }
+      // Route through the extension rather than gBrowser.undoCloseTab().
+      // SessionStore records EVERY tab close, including Lazyfox's own hidden
+      // plumbing (the relay bridge, throwaway #lfc= request tabs, the split
+      // companion), so the chrome-local undo frequently restored one of those
+      // instead of the user's tab — which is why ;v appeared to do nothing on
+      // the command center. The background's reopenTab skips that plumbing.
+      deps.getChannel().requestBg("reopenTab");
     },
     duplicateTab: () => {
       const t = window.gBrowser.duplicateTab(window.gBrowser.selectedTab);
@@ -626,6 +624,9 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     },
     openSetup: () => {
       deps.getChannel().requestBg("openSetup");
+    },
+    openDiagnostics: () => {
+      deps.getChannel().requestBg("openDiagnostics");
     },
     openTarget: (which: string) => {
       const ABOUT: Record<string, string> = {

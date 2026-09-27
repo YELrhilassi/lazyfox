@@ -6,9 +6,11 @@
 // the wiring — each concern lives in its own module.
 
 import { dbg } from "../shared/dev";
+import { KeyGuard } from "../shared/keyguard";
 import { LeaderController } from "../shared/leader";
 import { toast } from "../shared/overlay";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
+import { createCacheCtl } from "./cache";
 import { createChannel, type Channel } from "./channel";
 import { applyHoverRevealPref, loadCfg, persistCfg, type ChromeCfg } from "./config";
 import { ensureChromeCore, initChromeCore } from "./core";
@@ -65,6 +67,10 @@ import { createTypingChannel } from "./typing";
   /* ===================== modules ===================== */
 
   const popup = createPopupHost();
+  // Tracks the keys the chrome helper has consumed so their keypress/keyup
+  // tails are swallowed too (see shared/keyguard.ts): a page or browser surface
+  // behind an overlay must never observe a keystroke aimed at Lazyfox.
+  const keyGuard = new KeyGuard();
 
   // Late-bound references: the modules below are mutually dependent (split
   // needs the channel's base URL, the channel needs split/status), so each is
@@ -165,14 +171,25 @@ import { createTypingChannel } from "./typing";
   // The chrome-level key dispatch (leader/popups/hotkeys/typing guard), set
   // up below but referenced here so the #lfc=keys channel can drive it. The
   // closure resolves at call time (after init), so ordering is safe.
-  let chromeKeyDown: (e: {
-    key: string;
-    ctrlKey: boolean;
-    altKey: boolean;
-    shiftKey: boolean;
-    metaKey: boolean;
-    isComposing: boolean;
-  }) => boolean = () => false;
+  let chromeKeyDown: (
+    e: {
+      key: string;
+      ctrlKey: boolean;
+      altKey: boolean;
+      shiftKey: boolean;
+      metaKey: boolean;
+      isComposing: boolean;
+    },
+    // True for a key forwarded by the content-process window actor (see
+    // actor-parent.ts). Those can only come from pages the extension's content
+    // script cannot reach, so the "web pages belong to the content script" gate
+    // below must not decline them.
+    fromActor?: boolean
+  ) => boolean = () => false;
+
+  // Per-tab / per-session page-cache enforcement. The pool of bypassable tabs
+  // is keyed off the status bar's live tab-id snapshot (strip order).
+  const cache = createCacheCtl({ getTabIds: () => status.getTabIds() });
 
   channel = createChannel({
     ctx,
@@ -181,6 +198,7 @@ import { createTypingChannel } from "./typing";
     status,
     cfg,
     debug,
+    cache,
     keys: { dispatch: (e) => chromeKeyDown(e) },
   });
 
@@ -220,6 +238,11 @@ import { createTypingChannel } from "./typing";
       }
       return false;
     }, 3000);
+  // ;F / ;B (cycle scroll region) are implemented by the content script, which
+  // owns page scrolling on web content. They appear in the shared which-key
+  // table, so answer them here with a clear note instead of a silent no-op.
+  leaderActions["F"] = () => toast("scroll regions: web pages only");
+  leaderActions["B"] = () => toast("scroll regions: web pages only");
 
   // Warm the wasm core so the first leader press is already synchronous.
   ensureChromeCore()
@@ -255,6 +278,23 @@ import { createTypingChannel } from "./typing";
   // fire-and-forget announce could be accepted-while-queued and then dropped
   // (relay not ready yet), silently leaving chromeAlive=false forever and
   // every restored web page drawing its own bar on top of the window one.
+  // Is the "Lazyfox" JS window actor (the content-process bridge — see
+  // actor-child.ts / actor-parent.ts) registered in this browser? Asking the
+  // selected tab's window global for the actor instantiates it when it exists
+  // and throws when it does not, which is the only reliable check from the
+  // chrome side. It is reported with the alive announce so the diagnostics page
+  // can tell "the browser never registered the bridge" from "the bridge is
+  // fine, this particular page just has no content script".
+  function bridgeRegistered(): boolean {
+    try {
+      const bc = window.gBrowser.selectedBrowser.browsingContext;
+      const wg = bc && bc.currentWindowGlobal;
+      return !!(wg && wg.getActor && wg.getActor("Lazyfox"));
+    } catch (e) {
+      return false;
+    }
+  }
+
   let announcedAlive = false;
   let aliveAckInFlight = false;
   function announceChromeAlive(): void {
@@ -262,10 +302,19 @@ import { createTypingChannel } from "./typing";
     if (!channel.ccBaseUrl()) return; // extension not ready yet; poll retries
     aliveAckInFlight = true;
     // The arg carries the helper version, the active profile's user-facing
-    // name and its raw directory leaf (\u0001-separated); the background
-    // stores all three so the command-center footer and setup page can show
-    // the profile this window is running under.
-    void channel.requestReply("alive", CHROME_HELPER_VERSION + "\u0001" + profileName + "\u0001" + profileDir).then((ack: any) => {
+    // name, its raw directory leaf and the content-process bridge state
+    // (\u0001-separated); the background stores them so the command-center footer,
+    // setup page and diagnostics page can show what is really installed.
+    void channel.requestReply(
+      "alive",
+      CHROME_HELPER_VERSION +
+        "\u0001" +
+        profileName +
+        "\u0001" +
+        profileDir +
+        "\u0001" +
+        (bridgeRegistered() ? "1" : "0")
+    ).then((ack: any) => {
       aliveAckInFlight = false;
       // requestReply resolves null on timeout/error; the ack object on success.
       if (ack && ack.ok) announcedAlive = true;
@@ -425,7 +474,7 @@ import { createTypingChannel } from "./typing";
   // whether the key was consumed — the capture listener then
   // preventDefaults/stops propagation, and the channel skips dispatching to
   // content.
-  chromeKeyDown = (e) => {
+  chromeKeyDown = (e, fromActor) => {
     if (e.isComposing) return false;
 
     // Web pages are the content script's territory (its own leader, popups,
@@ -433,7 +482,9 @@ import { createTypingChannel } from "./typing";
     // window listener (some builds do), never consume them here — the content
     // script already let them through or handled them. The chrome helper only
     // owns keys on its own pages (command center, about:, extension pages).
-    if (!chromeOwnsKeys() && !popup.isOpen()) return false;
+    // An actor-forwarded key is the exception: the actor only speaks for pages
+    // with no content script, so there is no other owner to defer to.
+    if (!fromActor && !chromeOwnsKeys() && !popup.isOpen()) return false;
 
     // A chrome popup is open: Esc closes it first (before the page/window).
     if (popup.isOpen()) {
@@ -447,7 +498,16 @@ import { createTypingChannel } from "./typing";
         return true;
       }
       if (popup.resizeOnKey(e as KeyboardEvent)) return true;
-      return false;
+      // Confine the keyboard to the popup. A key whose target lies in the
+      // popup (its input/rows) is left to the popup's own listener; a key aimed
+      // anywhere else must not reach the browser chrome behind the overlay
+      // (a stray arrow could move focus out of the popup, `/` could open
+      // quick-find). Channel-driven keys carry no target and are dispatched
+      // straight to the popup input by the caller — leave them alone.
+      const target = (e as { target?: EventTarget | null }).target;
+      if (target == null) return false;
+      if (popup.containsTarget(target)) return false;
+      return true;
     }
 
     const typingNow = typing.focusedIsTyping(e as KeyboardEvent);
@@ -461,7 +521,11 @@ import { createTypingChannel } from "./typing";
     // about: page's search box hold focus but no text — `;` there must still
     // arm the leader so commands work without a click or Esc first).
     if (leader!.active || leader!.hasPending()) {
-      if (typingNow && !(typingValue === "" && (isCommandCenterTab() || isAboutPage()))) {
+      if (
+        typingNow &&
+        !(typingValue === "" && (isCommandCenterTab() || isAboutPage())) &&
+        !isChromeUiFocus(e as KeyboardEvent)
+      ) {
         if (leader!.active) leader!.hide();
         if (leader!.hasPending()) leader!.cancelPending();
         return false;
@@ -487,16 +551,23 @@ import { createTypingChannel } from "./typing";
     }
 
     // Typing in an editable (a page input, the command center's own input, the
-    // URL bar): never intercept — the leader key types like any other. The one
-    // exception is an EMPTY focused field on a Lazyfox-owned page (the command
-    // center's home input, an about: page's search box): `;` there arms the
-    // leader so commands work without a mouse click or an Esc first. The URL
-    // bar is deliberately excluded (isAboutPage is false for it).
+    // URL bar): never intercept — the leader key types like any other. The
+    // exceptions are:
+    //   * an EMPTY focused field on a Lazyfox-owned page (the command center's
+    //     home input, an about: page's search box): `;` arms the leader so
+    //     commands work without a click or Esc first; and
+    //   * the browser's own URL bar sitting on an about:/error page. After a
+    //     failed navigation Firefox hands focus to the URL bar with the typed
+    //     text, and the "typing wins" rule then swallowed the leader key on the
+    //     very page it is supposed to rescue you from — the user sat on an
+    //     error page unable to do anything. Only the leader key is excepted:
+    //     every other character still edits the URL, so ordinary typing is
+    //     untouched.
     if (typingNow) {
       if (
         e.key === leaderKey() &&
         !e.ctrlKey && !e.altKey && !e.metaKey &&
-        typingValue === "" &&
+        (typingValue === "" || isChromeUiFocus(e as KeyboardEvent)) &&
         (isCommandCenterTab() || isAboutPage())
       ) {
         leader!.show();
@@ -541,6 +612,52 @@ import { createTypingChannel } from "./typing";
       return true;
     }
     return false;
+  };
+
+  /* ============== content-process actor bridge ============== */
+
+  // Keys forwarded by the "Lazyfox" JS window actor (see actor-parent.ts /
+  // actor-child.ts) arrive here. They run through the very same dispatcher as
+  // keys typed into the browser window, so the leader, its popups, find and Esc
+  // behave identically on pages the extension's content script cannot reach:
+  // about: pages, the error page after a bad URL, and restricted domains.
+  //
+  // When the dispatcher declines the key and it is a vim scroll key, the return
+  // value tells the content process to scroll itself — the browser process
+  // cannot reach into a remote page's DOM, so the child has to do it.
+  let actorLastG = 0;
+  window.__lazyfoxActorKey = (data) => {
+    if (!data || typeof data.key !== "string") return null;
+    const key = data.key;
+    const handled = chromeKeyDown(
+      {
+        key: key,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: !!data.shift,
+        metaKey: false,
+        isComposing: false,
+      },
+      true
+    );
+    if (handled) return null;
+    if (cfg.config.scrollKeys === false) return null;
+    const page = Math.max(120, Math.round((data.vh || 600) * 0.5));
+    if (key === "j") return { scrollY: 60 };
+    if (key === "k") return { scrollY: -60 };
+    if (key === "d") return { scrollY: page };
+    if (key === "u") return { scrollY: -page };
+    if (key === "G") return { goto: "bottom" };
+    if (key === "g") {
+      const now = Date.now();
+      if (now - actorLastG < 600) {
+        actorLastG = 0;
+        return { goto: "top" };
+      }
+      actorLastG = now;
+      return null;
+    }
+    return null;
   };
 
   // Tell the command-center page `;f` was pressed. The page decides: on the
@@ -621,6 +738,21 @@ import { createTypingChannel } from "./typing";
       target.dispatchEvent(new ctor("keyup", opts));
     } catch (e) {
       // page unreachable — nothing to forward (safe no-op)
+    }
+  }
+
+  // Is focus in the browser's OWN chrome UI (the URL bar, the find bar) rather
+  // than in page content? A chrome UI editable is the only way an element that
+  // is a genuine typing target has the browser-chrome `document` as its
+  // ownerDocument — page editables belong to the content document, and the
+  // <browser> wrapper is never itself a typing target (see typing.ts). Used to
+  // let the leader key through the URL bar on about:/error pages.
+  function isChromeUiFocus(e: KeyboardEvent): boolean {
+    try {
+      const t = typing.focusedTypingTarget(e);
+      return !!(t && t.ownerDocument === document);
+    } catch (err) {
+      return false;
     }
   }
 
@@ -716,9 +848,30 @@ import { createTypingChannel } from "./typing";
         e.preventDefault();
         e.stopImmediatePropagation();
       }
+      // Record every key the chrome helper consumed so its keypress/keyup tail
+      // is swallowed too — keydown's preventDefault does not cancel them.
+      if (e.defaultPrevented) keyGuard.consume(e);
     },
     true
   );
+
+  // keypress/keyup do NOT obey the keydown's preventDefault, so a key the
+  // helper consumed would still surface as a browser shortcut behind the
+  // overlay. Swallow the tail of every consumed key, and anything aimed
+  // outside an open popup while it owns the keyboard.
+  function onKeyTail(e: KeyboardEvent): void {
+    // Always reconcile the guard (never short-circuit): a key we consumed once
+    // must have its record cleared by the tail that follows, or a later,
+    // legitimate press of the same key while typing would be swallowed too.
+    const escapePopup = popup.isOpen() && !popup.containsTarget(e.target);
+    const tail = keyGuard.ownsTail(e);
+    if (escapePopup || tail) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }
+  window.addEventListener("keypress", onKeyTail, true);
+  window.addEventListener("keyup", onKeyTail, true);
 
   // Firefox's native typeahead quick-find is bound to the `keypress` of `/`
   // and `'`, so it fires even after the leader has consumed the `keydown`.
@@ -744,6 +897,10 @@ import { createTypingChannel } from "./typing";
     // moves focus through the window), so close only on a real deactivation of
     // the OS window — checked on the next tick, after the switch settles.
     typing.reset();
+    // The window lost focus mid-key: no keyup is coming for anything the
+    // helper consumed, so drop the records rather than let them swallow a
+    // later, legitimate press of the same key.
+    keyGuard.clear();
     setTimeout(() => {
       try {
         if (Services.focus.activeWindow === window) return;

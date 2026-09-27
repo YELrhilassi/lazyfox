@@ -5,7 +5,7 @@
 //   - background -> content script (startHints / focusFirstInput)
 // One table, typed request and response per action, so the send() helper and
 // the background handler cannot drift.
-import type { Config, PopupItem, Session, SessionSummaryItem, TabInfo } from "./types";
+import type { CacheMode, CacheScope, CacheState, Config, PageReport, PopupItem, Session, SessionSummaryItem, TabInfo } from "./types";
 
 export interface WindowSize {
   width: number;
@@ -55,6 +55,24 @@ export interface BgApi {
   retryDownload: { req: { id: string }; res: { ok: boolean; error?: string; resumed?: boolean } };
   stealthOpen: { req: Record<string, never>; res: { ok: boolean; error?: string } };
   openSetup: { req: Record<string, never>; res: { ok: boolean } };
+  // Open the diagnostics & performance page (the "special page": live page
+  // diagnosis, framework-site detection report, efficiency metering).
+  openDiagnostics: { req: Record<string, never>; res: { ok: boolean } };
+  // Live page report from a tab's content script. With no tabId it reports the
+  // active tab (or the last real page tab, since the diagnostics page is
+  // itself an extension tab); pass a tabId to diagnose any specific tab. null
+  // means the tab has no content script at all (about:/error pages, restricted
+  // domains, extension pages) — which is itself the diagnostic answer.
+  pageReport: { req: { tabId?: number }; res: { report: PageReport | null; tabId: number | null } };
+  // Every tab in the current window the diagnostics page can target, in strip
+  // order, so the page can offer a tab picker.
+  diagnoseTabs: { req: Record<string, never>; res: { tabs: { id: number; title: string; url: string; active: boolean }[] } };
+  // Page-cache policy: the diagnostics page reads the current policy here and
+  // changes it through cacheSet. See CacheState for what each scope can do.
+  cacheState: { req: Record<string, never>; res: CacheState };
+  cacheSet: { req: { scope: CacheScope; mode: CacheMode }; res: { ok: boolean; state?: CacheState; error?: string } };
+  // Reload the active tab bypassing its HTTP cache (Firefox's "hard reload").
+  hardReload: { req: Record<string, never>; res: { ok: boolean } };
   quit: { req: Record<string, never>; res: { ok: boolean } };
   zen: { req: Record<string, never>; res: { zen: boolean } };
   mute: { req: Record<string, never>; res: { muted: boolean } };
@@ -79,6 +97,23 @@ export interface BgApi {
   // to the chrome helper so its window-level status bar shows the find count
   // on web pages (where the content script owns the find widget).
   syncFind: { req: { cur: number; count: number }; res: { ok: boolean } };
+  // Content script -> background: activate a hint with a REAL, trusted mouse
+  // press at the target's viewport coordinates. The content script's own
+  // dispatched events are untrusted (isTrusted === false), which is what makes
+  // a few stubborn controls ignore them: widgets that gate on event.isTrusted,
+  // on user activation, or that only act on the browser's own native press
+  // (a native <summary> toggle, a video player's overlay button, an
+  // anti-bot overlay). This routes the press to the privileged browser side,
+  // which dispatches it through windowUtils so the page sees what a real
+  // click looks like. `trusted` is the availability answer the caller needs to
+  // decide whether to fall back to its synthetic click: it is false when no
+  // privileged helper is attached (store install, helper crashed, the
+  // content-process bridge not registered), and in that case nothing was
+  // pressed, so the caller must activate the target itself.
+  //
+  // The press is dispatched ASYNCHRONOUSLY on the browser side (it crosses the
+  // extension->chrome relay), so `ok` only means the request was accepted.
+  trustedClick: { req: { x: number; y: number }; res: { ok: boolean; trusted: boolean } };
   // Content script -> background: is the chrome layer (userChrome helper)
   // authoritatively alive? The content script must ONLY draw its standalone bar
   // when the background confirms the chrome layer is absent — never trust a
@@ -131,10 +166,16 @@ export type BgAction = {
 export type BgResult<K extends keyof BgApi> = BgApi[K]["res"];
 
 // Chrome helper -> background requests, carried by the #lfc=req.<action> tab.
-export type ReqAction = "alive" | "startHints" | "focusFirstInput" | "openOptions" | "openSetup";
+export type ReqAction =
+  | "alive"
+  | "startHints"
+  | "focusFirstInput"
+  | "openOptions"
+  | "openSetup"
+  | "openDiagnostics";
 
 // background -> content script actions.
-export type ContentAction = "startHints" | "focusFirstInput";
+export type ContentAction = "startHints" | "focusFirstInput" | "pageReport";
 
 // Typed send() used by the content script, command center, popup and options.
 // Returns null when the background is unreachable or rejects. The data argument

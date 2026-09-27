@@ -1,0 +1,113 @@
+@import "tailwindcss";
+
+/* One dark theme, no toggle: the window is an installer, and a single
+   deliberate appearance beats one that changes with the OS mid-flow. The
+   `.dark` scope is kept so a light theme is a token change, not a rewrite. */
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.625rem;
+
+  --background: oklch(0.16 0.004 285);
+  --foreground: oklch(0.97 0.002 285);
+
+  --card: oklch(0.2 0.004 285);
+  --card-foreground: oklch(0.97 0.002 285);
+
+  --popover: oklch(0.2 0.004 285);
+  --popover-foreground: oklch(0.97 0.002 285);
+
+  /* The brand accent: a warm fox orange, used only for the primary action and
+     selection, so the window stays calm and one thing clearly means "do it". */
+  --primary: oklch(0.72 0.16 55);
+  --primary-foreground: oklch(0.19 0.03 55);
+
+  --secondary: oklch(0.26 0.004 285);
+  --secondary-foreground: oklch(0.97 0.002 285);
+
+  --muted: oklch(0.24 0.004 285);
+  --muted-foreground: oklch(0.7 0.004 285);
+
+  --accent: oklch(0.26 0.004 285);
+  --accent-foreground: oklch(0.97 0.002 285);
+
+  --destructive: oklch(0.62 0.19 25);
+  --destructive-foreground: oklch(0.98 0.01 25);
+
+  --success: oklch(0.7 0.15 155);
+  --warning: oklch(0.78 0.14 80);
+
+  --border: oklch(0.3 0.004 285);
+  --input: oklch(0.32 0.004 285);
+  --ring: oklch(0.72 0.16 55);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* The window is not a web page: nothing should drag into it, and text
+     selection is on for paths only. */
+  body {
+    user-select: none;
+    cursor: default;
+  }
+  code,
+  .selectable {
+    user-select: text;
+    cursor: text;
+  }
+  button {
+    cursor: pointer;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 999px;
+  }
+}

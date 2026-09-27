@@ -40,6 +40,10 @@ function isTypingTarget(t: unknown): boolean {
 export interface TypingChannel {
   focusedIsTyping(e: KeyboardEvent): boolean;
   focusedTypingValue(e: KeyboardEvent): string;
+  // The element that actually holds focus, whichever signal found it (null when
+  // focus is not in an editable). Used to tell the browser's own URL bar from a
+  // page's editable — see isChromeUiFocus in main.ts.
+  focusedTypingTarget(e: KeyboardEvent): Element | null;
   reset(): void;
 }
 
@@ -161,6 +165,7 @@ export function createTypingChannel(): TypingChannel {
   return {
     focusedIsTyping,
     focusedTypingValue,
+    focusedTypingTarget,
     reset: () => {
       contentTyping = false;
     },

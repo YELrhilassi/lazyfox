@@ -21,6 +21,7 @@
     "storage",
     "contextualIdentities",
     "browsingData",
+    "browserSettings",
     "cookies",
     "notifications",
     "tabHide",
