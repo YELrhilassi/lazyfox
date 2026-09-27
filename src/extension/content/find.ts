@@ -17,6 +17,7 @@ import { coreReady, coreSync, type CoreApi } from "../../shared/core";
 import { copyText, removeHtmlAttr, setHtmlAttr } from "../../shared/dom";
 import { RectOverlay, manualTextKey, toast, type PopupCtl } from "../../shared/overlay";
 import { send } from "../../shared/protocol";
+import { cleanQuery, isWs, walkPageText } from "./page-text";
 
 export interface ContentPopupShell {
   open(html: string, build: (root: HTMLElement) => PopupCtl): PopupCtl;
@@ -104,94 +105,7 @@ interface FindHit {
   pieces: FindPiece[];
 }
 
-const FIND_SKIP = new Set([
-  "SCRIPT", "STYLE", "TEXTAREA", "NOSCRIPT", "SELECT", "IFRAME", "TITLE",
-  "TEMPLATE", "OBJECT", "EMBED",
-]);
-
-// Components whose text is never content: nav chrome, mastheads, footers,
-// sidebars, form controls, buttons, dialogs — and anything explicitly marked
-// aria-hidden. buildYankText excludes them from the flat text, so a multi-line
-// visual selection can never sweep in "Show all"-style chips, site chrome, or
-// decorative labels: the yanked text is the page's real content tree, not
-// whatever happened to sit between two cursor positions.
-const YANK_CHROME = new Set([
-  "NAV", "HEADER", "FOOTER", "ASIDE", "FORM", "BUTTON", "SELECT",
-  "TEXTAREA", "INPUT", "MENU", "MENUITEM", "TOOLBAR", "DIALOG",
-]);
-
-const CHROME_ROLES = new Set([
-  "button", "navigation", "menubar", "menu", "menuitem", "tablist", "tab",
-  "search", "banner", "contentinfo", "complementary", "dialog", "toolbar",
-  "form",
-]);
-
-// Memoized chrome-component test: walking ancestors per element is O(depth),
-// and the full-page scans (buildYankText / buildFindText) run repeatedly on
-// lazy-loading pages, so the per-element verdict is cached. An element moved
-// from content into chrome after being cached would be stale, but that is
-// vanishingly rare on real pages and the scan is best-effort anyway.
-const chromeCache = new WeakMap<Element, boolean>();
-
-// True when the element is part of a chrome component (self, ancestor tag, or
-// role/aria-hidden on the way up).
-function isChromeNode(el: Element): boolean {
-  const hit = chromeCache.get(el);
-  if (hit !== undefined) return hit;
-  let cur: Element | null = el;
-  let res = false;
-  while (cur) {
-    if (YANK_CHROME.has(cur.tagName)) {
-      res = true;
-      break;
-    }
-    const r = cur.getAttribute ? cur.getAttribute("role") : null;
-    if (r && CHROME_ROLES.has(r.toLowerCase())) {
-      res = true;
-      break;
-    }
-    const ah = cur.getAttribute ? cur.getAttribute("aria-hidden") : null;
-    if (ah === "true") {
-      res = true;
-      break;
-    }
-    cur = cur.parentElement;
-  }
-  chromeCache.set(el, res);
-  return res;
-}
-
-// Whether an element is rendered at all (display:none / content-visibility:
-// hidden subtrees are not real content). checkVisibility accounts for CSS
-// overrides of the hidden attribute, so a framework page that marks a
-// container hidden in markup but shows it via CSS still keeps its text.
-// content-visibility:auto content counts as visible (it renders on scroll).
-const visible = (el: Element): boolean => {
-  try {
-    const h = el as HTMLElement;
-    if (typeof h.checkVisibility === "function") return h.checkVisibility();
-    if (h.hidden) return false;
-    if (h.style && h.style.display === "none") return false;
-    return true;
-  } catch (e) {
-    // Be conservative: include the text rather than lose it.
-    return true;
-  }
-};
-
 /* ---------- page text model for the Go yank core ---------- */
-
-// Block-level elements: entering or leaving one inserts a synthetic '\n' in
-// the flat yank text, so the Go core's line motions (j/k/gg/G/yy/ip) see a
-// rendered document instead of one endless run-on line. Inline elements
-// (span/a/strong/...) contribute no breaks, exactly like CSS flow.
-const YANK_BLOCK = new Set([
-  "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DD", "DIV", "DL", "DT",
-  "FIELDSET", "FIGCAPTION", "FIGURE", "FOOTER", "FORM", "H1", "H2", "H3",
-  "H4", "H5", "H6", "HEADER", "HR", "LI", "MAIN", "NAV", "OL", "P",
-  "PRE", "SECTION", "TABLE", "TBODY", "TD", "TFOOT", "TH", "THEAD", "TR",
-  "UL",
-]);
 
 // One flat-text segment: the text node it came from and its [start, end)
 // offsets in the flat string (UTF-16 units). Used to map the Go core's
@@ -205,97 +119,31 @@ interface YankSeg {
 // Flattens the page into one string for the Go yank core. Open shadow roots
 // are pierced (framework custom elements like Reddit's <faceplate-*> keep
 // their rendered text there, so window.find-style DOM walks miss it), and
-// synthetic '\n' are inserted at block boundaries so line motions work.
+// synthetic newlines go in at block boundaries so the core's line motions
+// work. Chrome components are excluded, so a visual selection cannot sweep
+// in "Show all" chips or site furniture.
 function buildYankText(): { text: string; segs: YankSeg[] } {
-  const body = document.body || document.documentElement;
   let text = "";
   const segs: YankSeg[] = [];
-  const nl = () => {
+  const nl = (): void => {
     if (text && !text.endsWith("\n")) text += "\n";
   };
-  // Iterative walk (explicit stack, no depth cap): framework pages nest
-  // content 40+ divs deep (Google's AI Overview, React apps), so a fixed
-  // recursion limit silently drops real text — words like "blood" in an AI
-  // Overview were invisible to search. Chrome components (nav, buttons,
-  // headers/footers, sidebars, aria-hidden) are excluded: selection must
-  // operate on the page's content tree, not on whatever chrome sits between
-  // two cursor positions. Per-node errors skip one node instead of aborting
-  // the whole scan; a char budget bounds pathological pages.
-  const MAX_CHARS = 4 * 1024 * 1024;
-  interface YkSt {
-    n: Node | null;
-    chrome: boolean;
-    block: boolean;
-    root: boolean;
-  }
-  const stack: YkSt[] = [{ n: body, chrome: false, block: false, root: true }];
-  while (stack.length) {
-    if (text.length > MAX_CHARS) break;
-    const st = stack.pop()!;
-    try {
-      if (st.n === null) {
-        // Leaving a block element: its newline closes the rendered line.
-        nl();
-        continue;
-      }
-      const n = st.n;
-      if (n.nodeType === Node.TEXT_NODE) {
-        if (st.chrome) continue;
-        const p = n.parentElement;
-        if (p && FIND_SKIP.has(p.tagName)) continue;
-        const data = (n as Text).data || "";
-        if (!data.trim()) continue;
-        segs.push({ node: n as Text, start: text.length, end: text.length + data.length });
-        text += data;
-        continue;
-      }
-      if (n.nodeType !== Node.ELEMENT_NODE) {
-        // Document/ShadowRoot: walk children without block semantics.
-        const kids = (n as ParentNode).childNodes;
-        for (let i = kids.length - 1; i >= 0; i--) {
-          stack.push({ n: kids[i]!, chrome: st.chrome, block: false, root: false });
-        }
-        continue;
-      }
-      const el = n as HTMLElement;
-      const tag = el.tagName;
-      if (FIND_SKIP.has(tag)) continue;
-      let chrome = st.chrome;
-      if (!chrome) chrome = isChromeNode(el);
-      if (chrome) continue; // chrome subtree: skip entirely
-      if (!st.root && !visible(el)) continue;
-      if (tag === "BR") {
-        nl();
-        continue;
-      }
-      const block = YANK_BLOCK.has(tag);
-      if (block) nl();
-      // Shadow DOM replaces the light children visually: walk the shadow tree
-      // instead so the yank text matches what is actually rendered.
-      let kids: NodeList;
-      const sr = el.shadowRoot;
-      if (sr && sr.mode === "open") kids = sr.childNodes;
-      else kids = el.childNodes;
-      // Leave-sentinel first (it pops AFTER the children), children reversed.
-      if (block) stack.push({ n: null, chrome: chrome, block: true, root: false });
-      for (let i = kids.length - 1; i >= 0; i--) {
-        stack.push({ n: kids[i]!, chrome: chrome, block: false, root: false });
-      }
-    } catch (e) {
-      // One bad node must not abort the scan: skip it and keep walking.
-    }
-  }
+  walkPageText({
+    excludeChrome: true,
+    onEdge: nl,
+    onText: (node, data) => {
+      // Yank appends verbatim, so a whitespace-only node would contribute a
+      // space the rendered page does not have. Find needs those nodes to
+      // collapse; yank does not.
+      if (!data.trim()) return;
+      segs.push({ node: node, start: text.length, end: text.length + data.length });
+      text += data;
+    },
+  });
   return { text: text, segs: segs };
 }
 
-/* ---------- flat search text + query cleaning ---------- */
-
-// Normalizes a search query the same way buildFindText normalizes the page:
-// nbsp -> space, any whitespace run -> one space, edges trimmed. Searching
-// "lazy  fox" or "lazy\u00A0fox" therefore finds "lazy fox" on the page.
-function cleanQuery(q: string): string {
-  return q.replace(/\u00A0/g, " ").replace(/[ \t\r\n]+/g, " ").trim();
-}
+/* ---------- flat search text ---------- */
 
 // One segment of the flat search text: the source text node and which flat
 // offsets came from it. noff is the node offset of flat position `start`, so
@@ -306,10 +154,6 @@ interface FindSeg {
   end: number;
   noff: number;
 }
-
-// Whitespace predicate for the find-text walk (space, tab, LF, CR, nbsp).
-const isWs = (cc: number): boolean =>
-  cc === 32 || cc === 9 || cc === 10 || cc === 13 || cc === 0xa0;
 
 // Builds the page's visible text as ONE normalized string, walking open
 // shadow roots (Reddit-style custom elements keep their text there). Unlike
@@ -328,13 +172,13 @@ const isWs = (cc: number): boolean =>
 function buildFindText(
   onShadow?: (sr: ShadowRoot) => void
 ): { text: string; segs: FindSeg[] } {
-  const body = document.body || document.documentElement;
   let text = "";
   const segs: FindSeg[] = [];
   let lastOff = -1;
 
   // Block edge: never matchable, and swallows an adjacent space ("lazy " +
-  // <p> + "fox" reads "lazy\u0001fox", not "lazy fox" — no cross-paragraph hits).
+  // <p> + "fox" reads "lazy\u0001fox", not "lazy fox" -- so results never
+  // span paragraphs).
   const blockEdge = (): void => {
     if (!text) return;
     if (text[text.length - 1] === "\u0001") return;
@@ -345,94 +189,48 @@ function buildFindText(
     text += "\u0001";
   };
 
-  // Iterative walk, same robustness as buildYankText: no depth cap (deeply
-  // nested framework text must be findable), per-node error isolation, and a
-  // char budget for pathological pages.
-  const MAX_CHARS = 4 * 1024 * 1024;
-  interface FdSt {
-    n: Node | null;
-    block: boolean;
-    root: boolean;
-  }
-  const stack: FdSt[] = [{ n: body, block: false, root: true }];
-  while (stack.length) {
-    if (text.length > MAX_CHARS) break;
-    const st = stack.pop()!;
-    try {
-      if (st.n === null) {
-        // Leaving a block element: its sentinel terminates the block edge.
-        blockEdge();
-        continue;
-      }
-      const n = st.n;
-      if (n.nodeType === Node.TEXT_NODE) {
-        const p = n.parentElement;
-        if (p && FIND_SKIP.has(p.tagName)) continue;
-        const data = (n as Text).data || "";
-        const len = data.length;
-        let i = 0;
-        while (i < len) {
-          const c = data.charCodeAt(i);
-          if (isWs(c)) {
-            // Whitespace run: at most ONE space in the flat text (collapse).
-            const l = text[text.length - 1];
-            if (l !== " " && l !== "\u0001") {
-              text += " ";
-              segs.push({ node: n as Text, start: text.length - 1, end: text.length, noff: i });
-              lastOff = i;
-            }
-            while (i < len && isWs(data.charCodeAt(i))) i++;
-            continue;
+  walkPageText({
+    // Find does NOT exclude chrome components: a user searching for a
+    // button's label should find that button.
+    onEdge: blockEdge,
+    onShadowRoot: (sr) => {
+      if (onShadow) onShadow(sr);
+    },
+    onText: (n, data) => {
+      // Text nodes are folded as whitespace/non-whitespace RUNS, not
+      // character by character: the old per-char loop pushed one segment
+      // per character (millions of small allocations on a 4MB page).
+      const len = data.length;
+      let i = 0;
+      while (i < len) {
+        const c = data.charCodeAt(i);
+        if (isWs(c)) {
+          // Whitespace run: at most ONE space in the flat text.
+          const l = text[text.length - 1];
+          if (l !== " " && l !== "\u0001") {
+            text += " ";
+            segs.push({ node: n, start: text.length - 1, end: text.length, noff: i });
+            lastOff = i;
           }
-          // Non-whitespace run [i, j): one segment (or extend the previous
-          // segment when it is the same node and contiguous).
-          const runStart = i;
-          while (i < len && !isWs(data.charCodeAt(i))) i++;
-          const runLen = i - runStart;
-          const s = segs[segs.length - 1];
-          if (s && s.node === n && lastOff === runStart - 1) {
-            s.end = text.length + runLen;
-          } else {
-            segs.push({ node: n as Text, start: text.length, end: text.length + runLen, noff: runStart });
-          }
-          text += data.slice(runStart, i);
-          lastOff = i - 1;
+          while (i < len && isWs(data.charCodeAt(i))) i++;
+          continue;
         }
-        continue;
-      }
-      if (n.nodeType !== Node.ELEMENT_NODE) {
-        const kids = (n as ParentNode).childNodes;
-        for (let i = kids.length - 1; i >= 0; i--) {
-          stack.push({ n: kids[i]!, block: false, root: false });
+        // Non-whitespace run [i, j): one segment, or an extension of the
+        // previous one when it is the same node and contiguous.
+        const runStart = i;
+        while (i < len && !isWs(data.charCodeAt(i))) i++;
+        const runLen = i - runStart;
+        const s = segs[segs.length - 1];
+        if (s && s.node === n && lastOff === runStart - 1) {
+          s.end = text.length + runLen;
+        } else {
+          segs.push({ node: n, start: text.length, end: text.length + runLen, noff: runStart });
         }
-        continue;
+        text += data.slice(runStart, i);
+        lastOff = i - 1;
       }
-      const el = n as HTMLElement;
-      const tag = el.tagName;
-      if (FIND_SKIP.has(tag)) continue;
-      if (!st.root && !visible(el)) continue;
-      if (tag === "BR") {
-        blockEdge();
-        continue;
-      }
-      const block = YANK_BLOCK.has(tag);
-      if (block) blockEdge();
-      let kids: NodeList;
-      const sr = el.shadowRoot;
-      if (sr && sr.mode === "open") {
-        if (onShadow) onShadow(sr);
-        kids = sr.childNodes;
-      } else {
-        kids = el.childNodes;
-      }
-      if (block) stack.push({ n: null, block: true, root: false });
-      for (let i = kids.length - 1; i >= 0; i--) {
-        stack.push({ n: kids[i]!, block: false, root: false });
-      }
-    } catch (e) {
-      // One bad node must not abort the scan: skip it and keep walking.
-    }
-  }
+    },
+  });
   return { text: text, segs: segs };
 }
 
