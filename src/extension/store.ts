@@ -58,6 +58,22 @@ export interface StoreSpec {
   lfStealth: StealthRecord;
   cachePolicy: CachePolicy;
   setupNudgeShown: boolean;
+  /**
+   * Whether the chrome helper has EVER announced, across all launches. Distinct
+   * from chromeAlive (is it alive right now): this one distinguishes "never
+   * worked" from "worked and has now stopped", which is the difference between
+   * "install the chrome layer" and "Firefox updated and broke the loader".
+   * That is exactly the Firefox 155 silent-death failure (bug 1974213), so it
+   * earns its own key rather than being folded into the live flag.
+   */
+  chromeEverAlive: boolean;
+  /**
+   * Whether the chrome helper can see the Lazyfox window actor registered
+   * ("1" / "0"). Stored but previously never read — the write site's comment
+   * claimed the diagnostics page surfaced it, and nothing did. It is now part
+   * of the components report, which is what makes the comment true.
+   */
+  lfBridge: string;
 }
 
 export interface StealthRecord {

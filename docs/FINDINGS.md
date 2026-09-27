@@ -168,10 +168,31 @@ status bar and `relay.html` vanilla.
 `openFindPopup`), `history.ts` 644 (`openHistoryPopup`), `sessions.ts` 454
 (`openSessionsPopup`), `hints/session.ts` 537.
 
-### OPEN — `background.ts` still reads `storage.local` directly
-The store exists; `background.ts` (10 sites), `commandcenter`, `options` and
-`setup` are not yet on it. Two keys are missing from the schema entirely:
-`chromeEverAlive` and `lfBridge`.
+### PARTIAL — the typed store
+Done: the 12-key schema, `sessions.ts` (12 sites, now zero direct reads),
+`cache.ts`, `stealth.ts`, `config.ts`, and `background.ts` (10 sites).
+Still direct: `commandcenter` (4), `options` (2), `setup` (2).
+
+### DONE — `lfBridge` was written and never read, under a false comment
+The write site said "The diagnostics page reports it, so a silently missing
+bridge is visible instead of being felt only as keys do nothing on this page."
+Nothing read it. It is now in the components report with its own diagnostics
+row. The failure it describes is real and worth the row: the helper can be
+installed, announce itself, and still fail to register its window actor — in
+which case every chrome-only feature works and the page is simply dead to the
+keyboard, which is indistinguishable from a broken page.
+
+### DONE — the key scan that found 12 keys found the wrong 12
+`chromeEverAlive` and `lfBridge` were both missing, because the scan matched
+string literals and const declarations and these two were written through a
+bulk `set` object and a multi-key `get`. A scan that missed two the first
+time cannot be trusted to have found all fourteen, so the test now ASSERTS the
+count and names both, rather than enumerating whatever the scan found.
+
+They are also genuinely different keys and must not be merged:
+`chromeEverAlive` is what distinguishes "never worked" from "worked and has
+now stopped" — the Firefox-update silent-death failure (bug 1974213) — which
+one boolean cannot express.
 
 ### OPEN — the Go core's largest file is untested at the seams
 `core/yank.go` is 652 lines and the largest single unit of task-heavy logic. The
