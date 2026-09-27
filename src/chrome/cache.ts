@@ -116,7 +116,8 @@ export function createCacheCtl(deps: CacheDeps): CacheCtl {
         const i = ids.indexOf(id);
         if (i < 0 || i >= tabs.length) continue;
         try {
-          const bid = tabs[i].linkedBrowser && tabs[i].linkedBrowser.browserId;
+          const tab = tabs[i];
+          const bid = tab && tab.linkedBrowser && tab.linkedBrowser.browserId;
           if (bid != null) next.add(bid);
         } catch (e) {
           // ignore
