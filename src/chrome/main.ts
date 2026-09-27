@@ -831,8 +831,16 @@ import { createTypingChannel } from "./typing";
       const cw = window.gBrowser.selectedBrowser.contentWindow;
       const doc = cw && cw.document;
       const ae = doc && doc.activeElement;
-      if (ae && ae !== doc.body && ae !== doc.documentElement && typeof ae.blur === "function") {
-        ae.blur();
+      // activeElement is typed Element, but blur only exists on HTMLElement
+      // (SVGElement and MathMLElement have no blur). The typeof guard was
+      // already there and load-bearing; the cast only says so to the checker.
+      if (
+        ae &&
+        ae !== doc.body &&
+        ae !== doc.documentElement &&
+        typeof (ae as HTMLElement).blur === "function"
+      ) {
+        (ae as HTMLElement).blur();
       }
     } catch (e) {
       // cross-process or dead — nothing to blur

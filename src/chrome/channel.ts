@@ -156,7 +156,8 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
     for (const t of window.gBrowser.tabs) {
       try {
-        const s = t.linkedBrowser.currentURI.spec;
+        const lb = t.linkedBrowser;
+        const s = lb && lb.currentURI ? lb.currentURI.spec : "";
         if (s.indexOf("moz-extension://") !== 0) continue;
         // Any extension page tab works — commandcenter, relay, setup, options.
         if (
@@ -197,7 +198,7 @@ export function createChannel(deps: ChannelDeps): Channel {
         if (!b) continue;
         let isRelay = false;
         try {
-          isRelay = b.currentURI.spec.indexOf("relay.html") !== -1;
+          isRelay = !!b.currentURI && b.currentURI.spec.indexOf("relay.html") !== -1;
         } catch (e) {
           // ignore
         }
