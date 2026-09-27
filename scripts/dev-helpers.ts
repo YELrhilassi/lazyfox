@@ -1,6 +1,7 @@
-import { readdirSync, existsSync, rmSync, readFileSync, writeFileSync, mkdirSync, cpSync, statSync } from 'fs';
+import { readdirSync, existsSync, rmSync, readFileSync, writeFileSync, statSync } from 'fs';
+import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
-import { join, basename, dirname } from 'path';
+import { join, basename, dirname, relative } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
@@ -34,13 +35,18 @@ export function isDevProfileDirName(name: string): boolean {
 // Find the on-disk profile directory for a given Firefox profile NAME (e.g.
 // "lfxdev-1787983262378"). Scans the root sorted by recency; returns the match.
 export function findProfileDirByName(root: string, name: string): string | null {
-  const candidates = readdirSync(root).filter((entry) => {
-    const dot = entry.indexOf('.');
-    if (dot === -1) return false;
-    return entry.slice(dot + 1) === name;
-  });
-  if (candidates.length === 0) return null;
-  return join(root, candidates[candidates.length - 1]!);
+  // Modern Firefox stores new profiles under a `Profiles/` subdirectory, while
+  // older installs (and some dev profiles) keep them at the root. Scan both.
+  for (const dir of [root, join(root, 'Profiles')]) {
+    if (!existsSync(dir)) continue;
+    const candidates = readdirSync(dir).filter((entry) => {
+      const dot = entry.indexOf('.');
+      if (dot === -1) return false;
+      return entry.slice(dot + 1) === name;
+    });
+    if (candidates.length > 0) return join(dir, candidates[candidates.length - 1]!);
+  }
+  return null;
 }
 
 // Lazyfox artifacts a profile may carry (the extension xpi + the chrome layer +
@@ -63,8 +69,12 @@ function profileIsDevLed(profileDir: string): boolean {
   } catch {
     return false;
   }
-  const base = appDir.replace(/\/browser\/?$/, '').replace(/\/$/, '');
-  return DEV_FIREFOX_DIRS.some((d) => base === d);
+  // Normalise separators + case so this works on Windows too (LastAppDir is
+  // stored with backslashes there, e.g. "C:\\Program Files\\Firefox Developer
+  // Edition\\browser").
+  const norm = (s: string): string => s.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+  const base = norm(appDir).replace(/\/browser$/, '');
+  return DEV_FIREFOX_DIRS.includes(base) || DEV_FIREFOX_DIR_MARKERS.test(base);
 }
 
 function removeLazyfoxFromProfile(profileDir: string): boolean {
@@ -199,11 +209,47 @@ export function latestUnsignedXpi(distDir: string): string | null {
   return xpi;
 }
 
+// Known DEV-channel install dirs that are canonical on Linux. Kept exported as
+// before (some callers/tests reference it directly).
 export const DEV_FIREFOX_DIRS = ['/opt/firefox-nightly', '/opt/firefox-dev'];
 
+// Name markers for a DEV-channel install, matched against a profile's
+// normalised LastAppDir. This recognises Developer Edition / Nightly on ANY
+// platform (Windows "...\Firefox Developer Edition", macOS "...app"), so a
+// profile last used on another OS is still correctly treated as dev-led. The
+// user's stable Firefox (".../firefox" or ".../Mozilla Firefox") never matches.
+const DEV_FIREFOX_DIR_MARKERS = /firefox developer edition|firefox nightly|\/firefox-dev$|\/firefox-nightly$/;
+
+// Current-platform dev install dirs, in preference order, for locating the
+// browser `dev-install` should install into.
+function localFirefoxDirs(): string[] {
+  if (process.platform === 'win32') {
+    const pf = process.env['ProgramFiles'] || 'C:\\Program Files';
+    const pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const local = process.env['LOCALAPPDATA'] || '';
+    const named = (base: string): string[] => [
+      join(base, 'Firefox Developer Edition'),
+      join(base, 'Firefox Nightly'),
+    ];
+    return [...named(pf), ...named(pf86), ...(local ? named(local) : [])];
+  }
+  if (process.platform === 'darwin') {
+    return [
+      '/Applications/Firefox Developer Edition.app/Contents/MacOS',
+      '/Applications/Firefox Nightly.app/Contents/MacOS',
+    ];
+  }
+  return [...DEV_FIREFOX_DIRS];
+}
+
+// The browser binary inside a Firefox install dir on this platform.
+export function devFirefoxBinary(dir: string): string {
+  return join(dir, process.platform === 'win32' ? 'firefox.exe' : 'firefox');
+}
+
 export function findFirefoxDir(): string | null {
-  for (const dir of DEV_FIREFOX_DIRS) {
-    if (existsSync(join(dir, 'firefox'))) return dir;
+  for (const dir of localFirefoxDirs()) {
+    if (existsSync(devFirefoxBinary(dir))) return dir;
   }
   return null;
 }
@@ -226,49 +272,121 @@ const DEV_INSTALLER_BINARIES = {
   win32: 'lazyfox-install-dev-windows.exe',
 };
 
-// Resolve the dev installer the scripts should invoke. Prefers the committed
-// per-OS dev binary; if the current platform has no committed binary, builds a
-// host-form one embedding the fresh unsigned xpi (fallback for unusual hosts).
+// The chrome payload files that make an installer stale when they change. Kept
+// in sync with build.ts's CHROME_FILES + the two window-actor modules.
+const CHROME_PAYLOAD_FILES = [
+  'userChrome.css',
+  'userChrome.uc.js',
+  'frame.js',
+  'corebootstrap.js',
+  'actor-boot.js',
+  'lazyfox-child.sys.mjs',
+  'lazyfox-parent.sys.mjs',
+  'user.js',
+];
+
+// SHA-256 of a file's bytes ('' when unreadable).
+export function sha256File(p: string): string {
+  try {
+    return createHash('sha256').update(readFileSync(p)).digest('hex');
+  } catch {
+    return '';
+  }
+}
+
+// A CONTENT hash of the dev installer payload (the staged chrome files + the
+// unsigned xpi). mtimes are unusable here: a clone or `git checkout` stamps
+// every file — the committed installer binary included — with ~the same recent
+// time, so a binary built from an older commit passes a "newer than the
+// payload" test and is reused, silently installing the old build. Hashing the
+// bytes cannot be fooled that way.
+export function devPayloadHash(root: string, xpi: string | null = null): string {
+  const h = createHash('sha256');
+  const add = (label: string, p: string): void => {
+    h.update(label);
+    h.update('\0');
+    h.update(sha256File(p));
+    h.update('\0');
+  };
+  for (const f of CHROME_PAYLOAD_FILES) add(f, join(root, 'dist/chrome', f));
+  add('loader/config.js', join(root, 'dist/chrome/loader/config.js'));
+  const ext = xpi || latestUnsignedXpi(join(root, 'dist'));
+  if (ext) add('xpi', ext);
+  return h.digest('hex');
+}
+
+// Sidecar stamp written next to a freshly built dev installer, recording BOTH
+// the payload hash and the binary's own hash. Tracking the binary hash too
+// means a `git checkout` that swaps the binary under an unchanged payload is
+// still detected as stale.
+export function devStampPath(binPath: string): string {
+  return binPath + '.stamp';
+}
+
+export function writeDevStamp(root: string, binPath: string, xpi: string | null = null): void {
+  try {
+    writeFileSync(
+      devStampPath(binPath),
+      JSON.stringify({ payload: devPayloadHash(root, xpi), bin: sha256File(binPath) }),
+      'utf8'
+    );
+  } catch {
+    // best effort; a missing stamp just means the next run rebuilds
+  }
+}
+
+function devInstallerIsFresh(root: string, binPath: string, xpi: string | null): boolean {
+  if (!existsSync(binPath)) return false;
+  try {
+    const stamp = JSON.parse(readFileSync(devStampPath(binPath), 'utf8'));
+    if (!stamp || typeof stamp.payload !== 'string' || typeof stamp.bin !== 'string') return false;
+    return stamp.payload === devPayloadHash(root, xpi) && stamp.bin === sha256File(binPath);
+  } catch {
+    return false;
+  }
+}
+
+// Resolve the dev installer the scripts should invoke.
+//
+// The committed per-OS dev binary is reused ONLY when it is newer than every
+// payload input — otherwise it would silently install a stale chrome layer (the
+// exact "the build did not use the new payload" bug). When it is stale or
+// missing, the host installer is rebuilt through the SAME script
+// `npm run build:installers` uses, so there is one staging + compile path and no
+// duplicated (and previously wrong) payload directories.
 export function ensureDevInstaller(
   root: string,
   { rebuild = false, xpi = null }: { rebuild?: boolean; xpi?: string | null } = {}
 ): string {
   const binDir = join(root, 'installer/bin');
   const perOs = DEV_INSTALLER_BINARIES[process.platform as keyof typeof DEV_INSTALLER_BINARIES];
+  const committed = perOs ? join(binDir, perOs) : null;
+  const hostForm = join(binDir, process.platform === 'win32' ? 'lazyfox-install.exe' : 'lazyfox-install');
 
-  if (perOs) {
-    const committed = join(binDir, perOs);
-    if (existsSync(committed)) return committed; // fresh clone: instant, no go needed
-  }
+  const fresh = !!committed && devInstallerIsFresh(root, committed, xpi);
+  if (!rebuild && fresh) return committed!;
 
-  // Uncovered platform (or missing committed binary): build a host-form
-  // dev installer on demand, embedding the latest unsigned xpi.
-  const installerDir = join(root, 'installer');
-  const out = join(binDir, 'lazyfox-install');
-  if (!rebuild && existsSync(out)) return out;
-
-  // Stage chrome profile payloads (same set build.ts stages).
-  const chromeSrc = join(root, 'dist/chrome');
-  const chromeDst = join(installerDir, 'payload/chrome');
-  mkdirSync(chromeDst, { recursive: true });
-  for (const f of ['userChrome.css', 'userChrome.uc.js', 'frame.js', 'corebootstrap.js', 'user.js']) {
-    cpSync(join(chromeSrc, f), join(chromeDst, f));
-  }
-
-  const extDst = join(installerDir, 'payload/extension');
-  mkdirSync(extDst, { recursive: true });
-  const extSrc = xpi || latestUnsignedXpi(join(root, 'dist'));
-  if (!extSrc || !existsSync(extSrc)) {
-    throw new Error(`ensureDevInstaller: no xpi to embed (${extSrc || 'none'}) — run npm run build first`);
-  }
-  cpSync(extSrc, join(extDst, 'lazyfox2.xpi'));
-
-  mkdirSync(binDir, { recursive: true });
-  execFileSync('go', ['build', '-trimpath', '-ldflags=-s -w', '-o', out, '.'], {
-    cwd: installerDir,
+  // (Re)build this machine's dev installer with the current payload. The script
+  // stages into installer/internal/payload/data/ (where //go:embed reads) and
+  // compiles the native window on the host platform.
+  console.log(
+    '[dev-installer] ' +
+      (rebuild
+        ? 'rebuild requested'
+        : committed && existsSync(committed)
+          ? 'committed installer is stale (payload or binary changed)'
+          : 'no committed installer for this platform') +
+      ' — rebuilding it from the fresh build…',
+  );
+  execFileSync(process.execPath, [join(root, 'scripts', 'build-dev-installers.ts')], {
+    cwd: root,
     stdio: 'inherit',
+    env: { ...process.env, LF_INSTALLER_TARGETS: 'host' },
   });
-  return out;
+
+  if (committed && existsSync(committed)) return committed;
+  if (existsSync(hostForm)) return hostForm;
+  throw new Error('ensureDevInstaller: the dev installer rebuild produced no binary in installer/bin');
 }
 
 // ---- profiles.ini editing (make the dev profile the default) ----------------
@@ -422,9 +540,13 @@ export function setDefaultDevProfile(
   const iniPath = join(root, 'profiles.ini');
   if (!existsSync(iniPath)) return false;
 
-  // Use the relative profile dir name (e.g. "q3w093wu.lfxdev-...") to match how
-  // Firefox stores Profile Path= / Install Default= values.
-  const relPath = basename(profilePath);
+  // Use the profile dir's path relative to the profiles root (e.g.
+  // "q3w093wu.lfxdev-...", or "Profiles/q3w093wu.lfxdev-..." on the modern
+  // Windows layout) to match how Firefox stores Profile Path= / Install
+  // Default= values. Callers may also pass a bare dir name.
+  const relPath = profilePath.startsWith(root)
+    ? relative(root, profilePath).replace(/\\/g, '/')
+    : basename(profilePath);
 
   let ini = readFileSync(iniPath, 'utf8');
   ini = ini.replace(/^StartWithLastProfile=0$/m, 'StartWithLastProfile=1');

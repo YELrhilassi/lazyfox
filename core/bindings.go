@@ -53,6 +53,9 @@ var Bindings = []WkItem{
 
 	// ---- Tools ----
 	{Key: "f", Label: "Link hints", Group: "Tools"},
+	{Key: "F", Label: "Scroll target: next region", Group: "Tools"},
+	{Key: "B", Label: "Scroll target: previous region", Group: "Tools"},
+	{Key: "T", Label: "Diagnostics & performance", Group: "Tools"},
 	{Key: "w", Label: "Resize window", Group: "Tools"},
 	{Key: "/", Label: "Find in page", Group: "Tools"},
 	{Key: "?", Label: "Keybindings help", Group: "Tools"},

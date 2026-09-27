@@ -12,12 +12,13 @@
 // Env: DEV_NO_DEFAULT=1 to skip making the profile the default.
 
 import { execSync } from "child_process";
-import { resolve, dirname, join } from "path";
+import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
   findProfileDirByName,
   latestUnsignedXpi,
   findFirefoxDir,
+  devFirefoxBinary,
   setDefaultDevProfile,
   profilesRoot,
   ensureDevInstaller,
@@ -60,9 +61,10 @@ async function main() {
   const ffDir = findFirefoxDir();
   if (!ffDir) {
     console.error(`${YELLOW}No Firefox Nightly/Developer Edition found${NC}`);
+    console.error(`${YELLOW}Install it, or set a custom path in DEV_FIREFOX_DIRS (scripts/dev-helpers.ts).${NC}`);
     process.exit(1);
   }
-  const firefoxBin = join(ffDir, "firefox");
+  const firefoxBin = devFirefoxBinary(ffDir);
   console.log(`  ${GREEN}firefox :${NC} ${ffDir}`);
   console.log(`  ${GREEN}xpi    :${NC} ${xpi}`);
 

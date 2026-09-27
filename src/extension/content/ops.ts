@@ -47,11 +47,13 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     },
     listTabs: async (q: string) => {
       const r = await send("tabs");
-      let tabs: PopupItem[] = ((r && r.tabs) || []).map((t) => ({
+      let tabs: PopupItem[] = ((r && r.tabs) || []).map((t, i) => ({
         ...t,
         // The background's id IS the real Firefox tab id; carry it as realId
         // too so the popup can display it (chrome's id is a strip index).
         realId: t.id,
+        // Strip position (1-based): the same number ;1-;9 address.
+        number: i + 1,
       }));
       const ql = q.trim().toLowerCase();
       if (ql) {
@@ -170,6 +172,7 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
       });
     },
     openSetup: () => void send("openSetup"),
+    openDiagnostics: () => void send("openDiagnostics"),
     dismissDownload: (_key?: string) => {
       // The content-script bar does not render download progress (the chrome
       // helper's window bar owns that); nothing to dismiss here.

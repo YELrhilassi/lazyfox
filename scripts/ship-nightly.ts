@@ -94,12 +94,21 @@ if (!version) {
 if (!version) fail("could not determine the version (dist/extension/manifest.json / package.json).");
 console.log(`[nightly] version: ${version}`);
 
+// The unsigned xpi for this version — referenced by name, not by position, so
+// adding another release asset cannot silently make the signed-check below read
+// the wrong file.
+const unsignedXpi = path.join(root, "dist", `lazyfox2-${version}.xpi`);
+
 // 2. Require the artifacts to exist. Dev installers + the unsigned xpi.
 const assets = [
   path.join(root, "installer", "bin", "lazyfox-install-dev-linux"),
   path.join(root, "installer", "bin", "lazyfox-install-dev-darwin"),
   path.join(root, "installer", "bin", "lazyfox-install-dev-windows.exe"),
-  path.join(root, "dist", `lazyfox2-${version}.xpi`),
+  // The one-line installers, published under their base names so the nightly
+  // pipes work:  …/releases/download/nightly/install.sh  /  install.ps1
+  path.join(root, "installer", "scripts", "install.sh"),
+  path.join(root, "installer", "scripts", "install.ps1"),
+  unsignedXpi,
 ];
 const missing = assets.filter((p) => !fs.existsSync(p));
 if (missing.length) {
@@ -109,7 +118,7 @@ if (missing.length) {
   );
 }
 // The unsigned xpi must actually be unsigned — never ship the -signed file here.
-const xpiBytes = fs.readFileSync(assets[3]!);
+const xpiBytes = fs.readFileSync(unsignedXpi);
 if (xpiBytes.includes(Buffer.from("META-INF/mozilla.rsa"))) {
   fail(
     `dist/lazyfox2-${version}.xpi looks SIGNED — a nightly must carry the unsigned dev build.`,

@@ -60,6 +60,7 @@ export function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
   extraKeys?: (e: KeyboardEvent, sel: { empty: boolean; item: T | null; refresh(): void }) => boolean;
   onEnter?: (value: string, item: T | null) => boolean;
   onChange?: (idx: number, item: T | null, count: number) => void;
+  groupBy?: (item: T) => string;
 }): PopupCtl {
   const listEl = root.querySelector(".lf-list") as HTMLElement;
   const inputEl = root.querySelector(".lf-input") as HTMLInputElement;
@@ -79,6 +80,7 @@ export function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
     extraKeys: opts.extraKeys,
     onEnter: opts.onEnter,
     onChange: opts.onChange,
+    groupBy: opts.groupBy,
   });
   return { onKey: sel.onKey, refresh: sel.refresh, close: sel.close, focus: () => inputEl.focus() };
 }

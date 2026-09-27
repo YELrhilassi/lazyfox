@@ -8,13 +8,16 @@ import { mergeConfig } from "../../shared/config";
 import { ensureCore } from "../../shared/core";
 import { isTypingTarget } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
+import { KeyGuard } from "../../shared/keyguard";
 import { LeaderController } from "../../shared/leader";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/popups";
 import { send } from "../../shared/protocol";
 import type { Config } from "../../shared/types";
+import { collectPageReport } from "./diagnostics";
 import { createLinkHints, focusFirstInput } from "./hints";
 import { createContentOps } from "./ops";
+import { createScrollController } from "./scroll";
 import type { ContentPopupShell } from "./find";
 
 (function () {
@@ -26,15 +29,30 @@ import type { ContentPopupShell } from "./find";
     // ignore
   }
 
+  // Handshake for the browser-level helper: its content-process bridge keys
+  // off this attribute to tell "a Lazyfox content script owns this page" from
+  // the pages it must cover itself (about:/error pages, restricted sites).
+  // Set before anything else can throw so it is always visible.
+  try {
+    document.documentElement.setAttribute("data-lf-content", "1");
+  } catch (e) {
+    // ignore
+  }
+
   let config: Config = mergeConfig(undefined);
 
   function loadConfig() {
-    void browser.storage.local.get("config").then(
-      (r: { config?: Partial<Config> }) => {
-        if (r && r.config) config = mergeConfig(r.config);
-      },
-      () => {}
-    );
+    try {
+      void browser.storage.local.get("config").then(
+        (r: { config?: Partial<Config> }) => {
+          if (r && r.config) config = mergeConfig(r.config);
+        },
+        () => {}
+      );
+    } catch (e) {
+      // A storage hiccup must never take the keyboard handling down with it.
+      if (__DEV__) dbg("config load failed", (e && (e as Error).message) || String(e));
+    }
   }
   loadConfig();
 
@@ -42,13 +60,17 @@ import type { ContentPopupShell } from "./find";
   // keys, hint chars, open-in-new-tab). The status bar is NOT the content
   // script's to draw — the chrome helper owns the single window-level bar, and
   // standalone extension mode shows no bar at all.
-  browser.storage.onChanged.addListener(
-    (changes: { config?: { newValue?: Partial<Config> } }, area: string) => {
-      if (area === "local" && changes.config) {
-        config = mergeConfig(changes.config.newValue || {});
+  try {
+    browser.storage.onChanged.addListener(
+      (changes: { config?: { newValue?: Partial<Config> } }, area: string) => {
+        if (area === "local" && changes.config) {
+          config = mergeConfig(changes.config.newValue || {});
+        }
       }
-    }
-  );
+    );
+  } catch (e) {
+    // ignore — live config is a convenience, not a requirement
+  }
 
   /* ===================== link hints ===================== */
 
@@ -133,45 +155,57 @@ import type { ContentPopupShell } from "./find";
       return false;
     }, 3000);
   // ;+1-9 = move tab N into the current split view.
-  leaderActions["+"] = () =>
-    leader.armPending((k) => {
-      if (/^[1-9]$/.test(k)) {
-        contentOps.splitAddTabByIndex(Number(k));
-        return true;
-      }
-      return false;
-    }, 3000);
-
+  leaderActions["+"] =
+    () =>
+      leader.armPending((k) => {
+        if (/^[1-9]$/.test(k)) {
+          contentOps.splitAddTabByIndex(Number(k));
+          return true;
+        }
+        return false;
+      }, 3000);
+  // ;F / ;B = cycle the scroll target among the page's scroll regions (the
+  // document scroller, then each pane/sidebar largest-first). The plain scroll
+  // keys keep working on whatever is focused, and cycling back to "window"
+  // restores the automatic behaviour. Content-only: chrome-owned pages have no
+  // page scroll regions to cycle.
+  leaderActions["F"] = () => scroll.cycle(1);
+  leaderActions["B"] = () => scroll.cycle(-1);
 
   /* ==================== scroll keys ==================== */
+
+  // The scroll target: the document scroller by default, an inner pane when the
+  // document cannot scroll (ChatGPT-style shells), or whichever region the user
+  // cycled to with ;F / ;B (sidebars and secondary panes).
+  const scroll = createScrollController();
 
   let lastG = false;
   function handleScrollKeys(e: KeyboardEvent): boolean {
     if (config.scrollKeys === false) return false;
     const k = e.key;
     if (k === "j") {
-      window.scrollBy(0, 60);
+      scroll.scrollLines(1);
       return true;
     }
     if (k === "k") {
-      window.scrollBy(0, -60);
+      scroll.scrollLines(-1);
       return true;
     }
     if (k === "d") {
-      window.scrollBy(0, Math.max(120, window.innerHeight * 0.5));
+      scroll.scrollPage(1);
       return true;
     }
     if (k === "u") {
-      window.scrollBy(0, -Math.max(120, window.innerHeight * 0.5));
+      scroll.scrollPage(-1);
       return true;
     }
     if (k === "G") {
-      window.scrollTo(0, document.documentElement.scrollHeight || document.body.scrollHeight);
+      scroll.toBottom();
       return true;
     }
     if (k === "g") {
       if (lastG) {
-        window.scrollTo(0, 0);
+        scroll.toTop();
         lastG = false;
       } else {
         lastG = true;
@@ -246,6 +280,9 @@ import type { ContentPopupShell } from "./find";
       if (hints.active) hints.exit();
       if (leader.active) leader.hide();
       if (leader.hasPending()) leader.handlePending("Escape");
+      // Return the scroll keys to the automatic target (document scroller on
+      // ordinary pages) so a cycled sidebar can never trap them.
+      if (scroll.isCustom()) scroll.reset();
       // Unfocus whatever element holds focus (an input, a button, a link) so
       // the page returns to its default state.
       const ae = document.activeElement;
@@ -343,26 +380,69 @@ import type { ContentPopupShell } from "./find";
       }
     });
 
-  window.addEventListener("keydown", onKeyDown, true);
-  // Firefox's native typeahead quick-find is bound to the `keypress` of `/`
-  // and `'`, so it fires even after the leader has consumed the `keydown`
-  // (the keydown preventDefault does not cancel the keypress). Suppress it
-  // outside text fields so `;/` opens the Lazyfox find popup, not the native
-  // find bar.
+  // True while any Lazyfox surface owns the keyboard: a popup (including the
+  // find widget and the resize panel), the leader bar, an armed one-shot
+  // capture, or live link hints.
+  function overlayOwnsKeys(): boolean {
+    return !!currentPopup || hints.active || leader.active || leader.hasPending();
+  }
+
+  const keyGuard = new KeyGuard();
+
   window.addEventListener(
-    "keypress",
+    "keydown",
     (e) => {
-      if (e.key !== "/" && e.key !== "'") return;
-      if (!isTypingTarget(e.target as Element)) {
-        e.preventDefault();
-        e.stopPropagation();
+      // A page-specific exception (a hostile handler, an unexpected element)
+      // must not take down key handling for the whole session: catch it, keep
+      // the listener, and let the next key try again.
+      try {
+        onKeyDown(e);
+      } catch (err) {
+        if (__DEV__) dbg("keydown handler threw", (err && (err as Error).message) || String(err));
       }
+      // Remember every key we consumed so its keypress/keyup tail is swallowed
+      // too (see keyguard.ts). Without this the keystroke a user types into a
+      // Lazyfox popup still reaches page scripts that listen on keypress/keyup
+      // — the input leaking to the page behind the popup.
+      if (e.defaultPrevented) keyGuard.consume(e);
     },
     true
   );
 
+  // keypress/keyup do NOT obey the keydown's preventDefault, so swallowing
+  // keydown alone is not enough. Swallow the tail of every key we consumed,
+  // and everything at all while an overlay owns the keyboard, so nothing the
+  // user types into Lazyfox can leak to the page behind it.
+  function onKeyTail(e: KeyboardEvent): void {
+    // Always reconcile the guard (never short-circuit): a key we consumed once
+    // must have its record cleared by the tail that follows, or a later,
+    // legitimate press of the same key while typing would be swallowed too.
+    const tail = keyGuard.ownsTail(e);
+    if (overlayOwnsKeys() || tail) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return;
+    }
+    // Firefox's native typeahead quick-find is bound to the `keypress` of `/`
+    // and `'`, so it fires even after the leader has consumed the `keydown`.
+    // Suppress it outside text fields so `;/` opens the Lazyfox find popup,
+    // not the native find bar.
+    if (e.type === "keypress" && (e.key === "/" || e.key === "'")) {
+      if (!isTypingTarget(e.target as Element)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }
+  }
+  window.addEventListener("keypress", onKeyTail, true);
+  window.addEventListener("keyup", onKeyTail, true);
+
 
   window.addEventListener("blur", () => {
+    // The window lost focus mid-key: no keyup is coming for anything we
+    // consumed, so drop the records instead of letting them swallow a later
+    // press of the same key.
+    keyGuard.clear();
     if (currentPopup) closePopup();
     if (hints.active) hints.exit();
     if (leader.active) leader.hide();
@@ -389,6 +469,14 @@ import type { ContentPopupShell } from "./find";
       if (msg && msg.action === "focusFirstInput") {
         focusFirstInput();
         return Promise.resolve({ ok: true });
+      }
+      if (msg && msg.action === "pageReport") {
+        // The diagnostics page asks the ACTIVE tab's content script for a live
+        // self-report. A rejection here is meaningful too (no content script on
+        // this page), so the background turns it into "report: null".
+        return collectPageReport(scroll)
+          .then((report) => ({ ok: true, report: report }))
+          .catch(() => ({ ok: false, report: null }));
       }
       return undefined;
     }
