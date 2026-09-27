@@ -28,7 +28,7 @@
     "clean": "node scripts/clean.ts",
     "clean:all": "node scripts/clean.ts --all",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json --noEmit && npm --prefix installer/frontend run typecheck",
-    "test": "go test ./core/ && node scripts/test-dev-helpers.ts && node scripts/test-keyguard.ts && node scripts/test-payload.ts && node scripts/test-installer.ts && node scripts/check-dist.ts && node scripts/check-installer-payload.ts",
+    "test": "go test ./core/ && node scripts/test-history-related.ts && node scripts/test-dev-helpers.ts && node scripts/test-keyguard.ts && node scripts/test-payload.ts && node scripts/test-installer.ts && node scripts/check-dist.ts && node scripts/check-installer-payload.ts",
     "ci": "node scripts/ci.ts",
     "ci:bidi": "node scripts/ci.ts --bidi",
     "ci:hints": "node scripts/ci.ts --hints",

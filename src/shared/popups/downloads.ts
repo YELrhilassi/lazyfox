@@ -2,7 +2,8 @@
 // failed/paused downloads, copy-link, and progress bars.
 import { copyText, esc } from "../dom";
 import type { PopupItem } from "../types";
-import { basePanel, makeSelector, fmtBytes, type PopupCtx } from "./kit";
+import { basePanel, makeSelector, type PopupCtx } from "./kit";
+import { fmtBytes } from "../format";
 
 export function openDownloadsPopup(ctx: PopupCtx): void {
   let panelRoot: HTMLElement | null = null;
