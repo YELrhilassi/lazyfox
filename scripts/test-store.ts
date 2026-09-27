@@ -148,11 +148,28 @@ const keys: string[] = [
   "config", "chromeAlive", "chromeHelperVersion", "chromeBindings",
   "lfProfileName", "lfProfileDir", "lfSessions", "lfCurrentSession",
   "lfLastSession", "lfStealth", "cachePolicy", "setupNudgeShown",
+  "chromeEverAlive", "lfBridge",
 ];
-check("the schema has 12 keys", keys.length === 12);
-for (const k of keys) {
-  check(`schema key ${k} has a validator or is unused`, typeof k === "string");
-}
+// The original scan for this list MISSED two keys — chromeEverAlive and
+// lfBridge — because it matched string literals and const declarations, and
+// these two were written through a bulk `set` object and a multi-key get. The
+// count is asserted rather than assumed for exactly that reason: a scan that
+// missed two the first time cannot be trusted to have found all fourteen.
+check("the schema has 14 keys", keys.length === 14);
+check("the schema records the ever-alive flag", keys.indexOf("chromeEverAlive") !== -1);
+check("the schema records the content-bridge flag", keys.indexOf("lfBridge") !== -1);
+
+// chromeEverAlive and chromeAlive are different questions and must not be
+// collapsed: one distinguishes "never worked" from "worked and stopped",
+// which is the Firefox-update silent-death failure. A single flag cannot.
+check("chromeAlive and chromeEverAlive are separate keys",
+  keys.indexOf("chromeAlive") !== keys.indexOf("chromeEverAlive"));
+
+// lfBridge is "1"/"0" from the wire, not a boolean, and vBoolean would reject
+// it — so a reader using the wrong validator silently gets the fallback, which
+// for a diagnostics row means "not reported yet" forever.
+check("lfBridge is stored as a string, not coerced to boolean",
+  vString("1") === "1" && vBoolean("1") === undefined);
 
 console.log(`${pass} passed, ${fails.length} failed`);
 if (fails.length) {
