@@ -78,11 +78,19 @@ var LazyfoxChild = class extends BaseChild {
     }
     return void 0;
   }
+  // NOTE: this used to be a trustedClick() built on windowUtils, and removing
+  // it during the trusted-press revert left this comment describing a function
+  // that no longer exists. It is kept, deliberately, as the design note for the
+  // fix that is still needed — see docs/HINTS.md section 2.0, which now has the
+  // measurement that says it is needed.
+  //
   // Dispatch the full press through windowUtils, which is what makes the events
   // TRUSTED: isTrusted is true, user activation is granted, and the browser's
   // own default activation behaviour runs (a native <summary> toggle, a form
   // submit, a checkbox). A content-script-dispatched MouseEvent cannot do any
-  // of that, which is exactly why stubborn controls need this path.
+  // of that, which is exactly why stubborn controls need this path — and the
+  // e2e suite has since measured that our current path produces isTrusted
+  // FALSE even via HTMLElement.click(), so the escalation is not optional.
   //
   // The coordinates are viewport-relative (what getBoundingClientRect reports),
   // and sendMouseEvent takes them offset from the window, so they are used

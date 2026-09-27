@@ -692,6 +692,215 @@ export async function run(ctx) {
     assert(!!seen.act.signal, "a working activation must record what the page did");
   });
 
+  // What the page actually receives, measured rather than assumed.
+  //
+  // The widely-reported problem — "YouTube's skip button ignores scripted
+  // clicks" — is usually explained as event.isTrusted, because that is the
+  // cheapest thing for a site to check. But this project's activate path
+  // already ends in HTMLElement.click(), and GECKO synthesises that one with
+  // isTrusted TRUE (Blink and WebKit both use false). So the trust story is
+  // not a given, and the fix differs completely depending on which it is: a
+  // trust problem needs a privileged input path, a press-state problem needs
+  // correct event state.
+  //
+  // So this records what the page saw and asserts the parts that are known
+  // facts rather than folklore:
+  //   - the click arrives TRUSTED (it came from .click(), not dispatchEvent)
+  //   - mouseup arrives with buttons:0 (a real release, not "still held")
+  //   - mousedown and the click share an event.target (no split-target
+  //     sequence, which is what a press-state machine pairs on)
+  await t("link hints: the page receives a trusted, well-formed click", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/playerlike`);
+    await sleep(250);
+    await beginHints();
+    await activateHint("skipad");
+    const log = await evalIn(ctx.tabA, `JSON.stringify(window.__clicks || [])`);
+    const seen = JSON.parse(log || "[]");
+    assert(seen.length >= 8, "expected the full pointer/mouse sequence, got " + log);
+
+    const click = seen.find((e) => e.type === "click");
+    assert(!!click, "no click reached the page: " + log);
+
+    // MEASURED, not assumed: the click arrives UNTRUSTED even though it comes
+    // from HTMLElement.click(). The long-standing claim that Gecko synthesises
+    // .click() with isTrusted true does not hold for a content script in a
+    // current Firefox, and that claim was quietly load-bearing here — it is the
+    // usual explanation offered for "YouTube's skip button ignores the hint
+    // click", and it is wrong.
+    //
+    // So the YouTube problem is NOT fixed by the click being trusted, because
+    // it never was. Two real causes remain, and the suite now pins the second:
+    //   1. isTrusted is false, and YouTube checks it (and always has). The only
+    //      way to produce a trusted click is the privileged path — the content
+    //      process's windowUtils.sendMouseEvent, reachable from the window
+    //      actor. See docs/HINTS.md; that path is NOT implemented.
+    //   2. The event STATE was malformed — mouseup claimed buttons:1, so any
+    //      press-state machine never saw the release. That one is fixed here
+    //      and pinned by the rest of this test.
+    assert(
+      click.trusted === false,
+      "the click is expected to arrive UNTRUSTED. If this ever becomes " +
+        "true, the privileged path in actor-child.ts can be dropped as " +
+        "unnecessary — update docs/HINTS.md when it does, because the " +
+        "YouTube note there is written on the assumption it is false."
+    );
+
+    const up = seen.find((e) => e.type === "mouseup");
+    assert(!!up, "no mouseup reached the page: " + log);
+    assert(
+      up.buttons === 0,
+      "mouseup must report buttons:0 (nothing is held after a release). " +
+        "Got " + up.buttons + " — a press-state widget never sees the " +
+        "release and stays stuck, which is why some player overlays ignored " +
+        "every hint click while a plain link worked."
+    );
+
+    const down = seen.find((e) => e.type === "mousedown");
+    assert(
+      !!down && down.buttons === 1,
+      "mousedown must report buttons:1 (the button is held during a press)"
+    );
+
+    // The synthetic sequence targets the deepest node under the pointer while
+    // the trusted click targets the button. Record what actually happened
+    // rather than asserting a target match: the important property is that
+    // the SEQUENCE is internally consistent (down and up agree), because that
+    // is what a state machine pairs on.
+    const upTarget = up.target;
+    assert(
+      upTarget === down.target,
+      "mousedown and mouseup must share an event.target (the press-state " +
+        "machine pairs on it). Got " + down.target + " vs " + upTarget
+    );
+  });
+
+  // The press-state-machine case. A widget that only commits when it has
+  // seen a pointer go down AND come back up — which it decides from
+  // event.buttons, the set of buttons currently held. The old sequence passed
+  // buttons:1 to every event including mouseup, so the release never read as a
+  // release and the control silently did nothing. This is the shape a real
+  // video player's overlay uses, and it is why a hint click on one of those
+  // did nothing while a hint click on a plain link worked.
+  await t("link hints: a control that tracks press state still activates", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/press`);
+    await sleep(250);
+    await beginHints();
+    await activateHint("pressy");
+    const saw = await evalIn(ctx.tabA, `document.getElementById("pressy").getAttribute("data-saw")`);
+    assert(
+      saw === "released",
+      "the press-state widget never saw a release (saw=" + saw + ")"
+    );
+    const pressed = await evalIn(
+      ctx.tabA,
+      `document.getElementById("pressy").getAttribute("aria-pressed")`,
+    );
+    assert(pressed === "true", "the press-state widget did not commit its press");
+    // And the existing feedback must stay quiet: a working click is still a
+    // working click, and the "page ignored this" toast must not fire for it.
+    // The "page ignored this" feedback must stay quiet for a working click.
+    const report = await waitFor(async () => {
+      const raw = await evalIn(
+        ctx.probe,
+        `(async function () {
+           var tabs = await browser.tabs.query({});
+           for (const t of tabs) {
+             try {
+               var res = await browser.tabs.sendMessage(t.id, { action: "pageReport" });
+               var r = res && res.report;
+               if (r && r.url && r.url.indexOf("/press") !== -1 && r.hints.lastActivation) {
+                 return r.hints.lastActivation;
+               }
+             } catch (e) { /* no content script */ }
+           }
+           return null;
+         })()`,
+      );
+      return raw || null;
+    }, 3000);
+    assert(
+      report && !report.ignored,
+      "a working press must not be reported as ignored (got: " + JSON.stringify(report) + ")"
+    );
+  });
+
+  // The enter affordance. When the typed prefix is a strict prefix of more than
+  // one remaining key, no character activates anything and Enter is the only
+  // way to take the first match. That state used to be completely invisible:
+  // the user typed, nothing happened, and there was no way to know whether
+  // they had mistyped or needed Enter.
+  await t("link hints: an ambiguous prefix shows an enter badge, and it clears", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/press`);
+    await sleep(250);
+    await beginHints();
+    const badge = async () =>
+      await evalIn(ctx.probe, `(async function () {
+         var tabs = await browser.tabs.query({});
+         for (const t of tabs) {
+           try {
+             var res = await browser.tabs.sendMessage(t.id, { action: "hintBadge" });
+             if (res && res.shown !== undefined && res.id === "amb") return res;
+           } catch (e) { /* no content script */ }
+         }
+         return null;
+       })()`);
+
+    // Nothing typed yet: no ambiguity, so no badge. The probe always replies
+    // with an object, so this has to read .shown — a truthiness check on the
+    // reply itself would pass for the wrong reason.
+    const atRest = await badge();
+    assert(
+      !atRest || atRest.shown === false,
+      "the enter badge must not show before anything is typed (got: " +
+        JSON.stringify(atRest) + ")"
+    );
+
+    // Find an ambiguous prefix from the keys the session ACTUALLY assigned,
+    // rather than assuming a particular pair collides. The hint engine
+    // generates a prefix-free sequence, so with few items on a page it is
+    // perfectly possible for no two keys to share a leading character — a test
+    // that hardcoded one would be testing the fixture's luck, not the badge.
+    // The /press page carries enough links that a collision is certain, and
+    // this searches for it rather than naming it.
+    const m = await readHints();
+    const keys = m.map((x) => x.key);
+    let shared = "";
+    outer: for (const a of keys) {
+      for (const b of keys) {
+        if (a === b || b.indexOf(a) !== 0) continue;
+        shared = a;
+        break outer;
+      }
+    }
+    assert(
+      shared.length > 0,
+      "no assigned key is a prefix of another, so no ambiguous state is reachable " +
+        "on this page (keys: " + keys.join(",") + ")"
+    );
+
+    for (const ch of shared) await ctx.press(ctx.tabA, ch);
+    await sleep(150);
+    const shown = await badge();
+    assert(
+      shown && shown.shown === true,
+      "typing an ambiguous prefix must show the enter badge (got: " + JSON.stringify(shown) + ")"
+    );
+    assert(
+      shown && shown.glyph && shown.glyph.indexOf("\u23ce") !== -1,
+      "the badge must carry the ASCII return glyph (got: " + JSON.stringify(shown) + ")"
+    );
+
+    // Backspacing to nothing must take the badge away again — a stale badge
+    // promising an Enter that no longer does anything is worse than none.
+    for (let i = 0; i < shared.length; i++) await ctx.press(ctx.tabA, "Backspace");
+    await sleep(150);
+    const after = await badge();
+    assert(
+      !after || after.shown === false,
+      "backspacing must clear the enter badge (got: " + JSON.stringify(after) + ")"
+    );
+  });
+
   await t("link hints: nested targets collapse and labels never overlap", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
     await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);

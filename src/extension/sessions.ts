@@ -13,10 +13,14 @@ import type { PopupItem, Session, SessionTab } from "../shared/types";
 import type { ChromeAction, ChromeReq } from "../shared/protocol";
 import { CC_URL, isUITab, realTabsInWindow } from "./tabs";
 import { reconcileStealth, stealthContainers, stealthCreateTab } from "./stealth";
-
-const SESSIONS_KEY = "lfSessions";
-const CURRENT_SESSION_KEY = "lfCurrentSession";
-const LAST_SESSION_KEY = "lfLastSession";
+import {
+  readKey,
+  writeKey,
+  removeKey,
+  readKeyOr,
+  vString,
+  vRecordOf,
+} from "./store";
 // Sessions keep EVERY tab in the window (no cap — switching sessions must never
 // drop tabs). Markers are the only 1-9 constraint, like tmux windows.
 const MAX_SESSION_MARKER = 9;
@@ -36,19 +40,43 @@ export function bindChromeHooks(h: ChromeHooks): void {
   pushSessionState = h.pushSessionState;
 }
 
+// A session validates on its tabs alone: a session with a corrupt tab list is
+// unusable, but one with a missing marker or a stale updatedAt is still
+// perfectly restorable, and dropping it would lose the user's tabs over a
+// cosmetic field. The old reader accepted any object and trusted it wholesale,
+// so a profile with one malformed session handed a caller a shape the rest of
+// the code does not expect.
+function vSession(raw: unknown): Session | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const s = raw as Partial<Session>;
+  if (!Array.isArray(s.tabs)) return undefined;
+  return {
+    name: typeof s.name === "string" ? s.name : "",
+    marker: typeof s.marker === "number" ? s.marker : 0,
+    tabs: s.tabs,
+    active: typeof s.active === "number" ? s.active : 0,
+    windowState: typeof s.windowState === "string" ? s.windowState : "",
+    updatedAt: typeof s.updatedAt === "number" ? s.updatedAt : 0,
+    splits: typeof s.splits === "string" ? s.splits : "",
+  };
+}
+
+const vSessions = vRecordOf(vSession);
+
 async function readSessions(): Promise<Record<string, Session>> {
-  try {
-    const r = await browser.storage.local.get(SESSIONS_KEY);
-    const v = r && r[SESSIONS_KEY];
-    if (v && typeof v === "object") return v as Record<string, Session>;
-  } catch (e) {
-    // fall through
-  }
-  return {};
+  return readKey("lfSessions", vSessions, {});
 }
 
 async function writeSessions(all: Record<string, Session>): Promise<void> {
-  await browser.storage.local.set({ [SESSIONS_KEY]: all });
+  await writeKey("lfSessions", all);
+}
+
+async function readCurrentSessionName(): Promise<string> {
+  return readKey("lfCurrentSession", vString, "");
+}
+
+async function writeCurrentSessionName(name: string): Promise<void> {
+  await writeKey("lfCurrentSession", name);
 }
 
 async function snapshotWindow(): Promise<{
@@ -232,9 +260,8 @@ async function autosaveCurrentSession(
       updatedAt: Date.now(),
       splits: snap.splits
     };
-    const r = await browser.storage.local.get(CURRENT_SESSION_KEY);
-    const name = r && r[CURRENT_SESSION_KEY];
-    if (name && typeof name === "string" && all[name]) {
+    const name = await readCurrentSessionName();
+    if (name && all[name]) {
       const existing = all[name];
       all[name] = {
         name: name,
@@ -246,9 +273,9 @@ async function autosaveCurrentSession(
         splits: snap.splits
       };
       await writeSessions(all);
-      await browser.storage.local.set({ [LAST_SESSION_KEY]: all[name] });
+      await writeKey("lfLastSession", all[name]);
     } else {
-      await browser.storage.local.set({ [LAST_SESSION_KEY]: recovery });
+      await writeKey("lfLastSession", recovery);
     }
   } catch (e) {
     // ignore — checkpoint is best-effort
@@ -361,15 +388,8 @@ export async function moveTabBetweenSessions(
   // If the source or target is the current session, mirror the edit in the
   // live window (see liveWindowSideEffects) so the autosave converges on the
   // intended result instead of undoing it.
-  const cur = await browser.storage.local.get(CURRENT_SESSION_KEY);
-  await liveWindowSideEffects(
-    srcName,
-    dstName,
-    tab,
-    i,
-    mode,
-    cur && cur[CURRENT_SESSION_KEY]
-  );
+  const curName = await readCurrentSessionName();
+  await liveWindowSideEffects(srcName, dstName, tab, i, mode, curName || undefined);
   return { ok: true };
 }
 
@@ -423,10 +443,8 @@ export async function saveSession(name: string): Promise<{ ok: boolean; session?
   };
   all[nm] = session;
   await writeSessions(all);
-  await browser.storage.local.set({
-    [CURRENT_SESSION_KEY]: nm,
-    [LAST_SESSION_KEY]: session
-  });
+  await writeKey("lfCurrentSession", nm);
+  await writeKey("lfLastSession", session);
   pushSessionState();
   return { ok: true, session };
 }
@@ -487,7 +505,7 @@ export async function restoreSession(name: string): Promise<{ ok: boolean; note?
     if (ids[active] != null) {
       await browser.tabs.update(ids[active], { active: true }).catch(() => {});
     }
-    await browser.storage.local.set({ [CURRENT_SESSION_KEY]: s.name });
+    await writeCurrentSessionName(s.name);
     pushSessionState();
     return { ok: true };
   } finally {
@@ -545,13 +563,11 @@ export async function deleteSession(name: string): Promise<{ ok: boolean; note?:
     // Deleting the CURRENT session would otherwise leave the status bar
     // pointing at a ghost name until the next Firefox restart — drop the
     // pointer so it falls back to "default" immediately.
-    try {
-      const r = await browser.storage.local.get(CURRENT_SESSION_KEY);
-      if (r && r[CURRENT_SESSION_KEY] === nm) {
-        await browser.storage.local.remove(CURRENT_SESSION_KEY);
-      }
-    } catch (e) {
-      // ignore
+    // Deleting the CURRENT session would otherwise leave the status bar
+    // pointing at a ghost name. The read is a plain get because the value is
+    // compared, not interpreted, so it needs no validator.
+    if ((await readKey("lfCurrentSession", vString, "")) === nm) {
+      await removeKey("lfCurrentSession");
     }
     pushSessionState();
     return { ok: true, note: "deleted" };
@@ -601,13 +617,7 @@ export async function sessionState(): Promise<{
   await reconcileStealth();
   const allTabs = await browser.tabs.query({ currentWindow: true });
   const all = await readSessions();
-  let name = "default";
-  try {
-    const r = await browser.storage.local.get(CURRENT_SESSION_KEY);
-    if (r && r[CURRENT_SESSION_KEY]) name = String(r[CURRENT_SESSION_KEY]);
-  } catch (e) {
-    // ignore
-  }
+  const name = (await readCurrentSessionName()) || "default";
   const cur = all[name];
   const marker = cur ? cur.marker || 0 : 0;
   // Numbering keys off REAL tabs only, so the status-bar tab index/count never
@@ -772,10 +782,9 @@ export async function resumeOnStartup(autoRestore: boolean | undefined): Promise
   // back in the SAME session; fall back to the crash-recovery "last" snapshot
   // for unnamed windows. Reading storage FIRST means a fresh launch (nothing
   // saved yet) returns immediately instead of paying a fixed startup delay.
-  const r = await browser.storage.local.get([CURRENT_SESSION_KEY, LAST_SESSION_KEY]);
-  let last = r && r[LAST_SESSION_KEY];
-  const curName = r && r[CURRENT_SESSION_KEY];
-  if (curName && typeof curName === "string") {
+  let last = await readKeyOr("lfLastSession", vSession);
+  const curName = await readCurrentSessionName();
+  if (curName) {
     const all = await readSessions();
     const cur = all[curName];
     if (cur && cur.tabs && cur.tabs.length) last = cur;

@@ -13,7 +13,14 @@
   // a DOM module (the page-text walk), so it needs the DOM lib this config
   // deliberately omits. The module itself is still typechecked — by
   // tsconfig.json, which is the config that owns the browser tree.
-  "exclude": ["scripts/test-page-text.ts"],
+  //
+  // scripts/test-store.ts is excluded for a near-identical reason: it unit-tests
+  // a browser module (the storage schema), and store.ts reaches the `browser`
+  // global, which is declared ambiently in src/shared/globals.d.ts. That file
+  // is browser-chrome-only and drags in Firefox chrome globals this config
+  // knows nothing about. The store is still typechecked by tsconfig.json; only
+  // the Node-side TEST of it is out of scope here, exactly as with page-text.
+  "exclude": ["scripts/test-page-text.ts", "scripts/test-store.ts"],
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
