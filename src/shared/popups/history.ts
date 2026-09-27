@@ -4,7 +4,8 @@ import { core } from "../core";
 import { esc } from "../dom";
 import type { HistoryRow, PopupItem } from "../types";
 import { manualTextKey } from "../overlay";
-import { relTime, hostOfUrl, type PopupCtx } from "./kit";
+import { type PopupCtx } from "./kit";
+import { createRelatedIndex, type RelatedRow } from "./history-related";
 
 export function openHistoryPopup(ctx: PopupCtx): void {
   // Raw history items are fetched once; the Go core turns them into organized
@@ -33,74 +34,19 @@ export function openHistoryPopup(ctx: PopupCtx): void {
 
   // Related-history index, built once from the cached snapshot so the right
   // pane can answer "same site" and "similar title" instantly per selection.
-  interface HistDoc {
-    url: string;
-    title: string;
-    time: number;
-    host: string;
-    tokens: string[];
-  }
-  let docs: HistDoc[] = [];
-  let byHost: Record<string, number[]> = {};
-  let wordIndex: Record<string, number[]> = {};
-  interface RelatedRow {
-    url: string;
-    title: string;
-    host: string;
-    rel: string;
-    section: string;
-  }
+  // The ranking itself lives in history-related.ts: it is pure computation
+  // over plain data, and the only part of this popup that can be tested
+  // without driving a browser.
+  const related = createRelatedIndex();
   let relatedRows: RelatedRow[] = [];
   let relIdx = 0;
   let lastPrimary = -1;
-
-  const STOP = new Set([
-    "the", "and", "for", "with", "that", "this", "from", "your", "into",
-    "are", "was", "were", "have", "has", "had", "not", "but", "all", "can",
-    "com", "org", "net", "www", "http", "https", "html", "page",
-  ]);
-  const tokenize = (s: string): string[] => {
-    const out: string[] = [];
-    const seen = new Set<string>();
-    for (const p of (s || "").toLowerCase().split(/[^a-z0-9]+/)) {
-      if (p.length >= 3 && !STOP.has(p) && !seen.has(p)) {
-        seen.add(p);
-        out.push(p);
-      }
-    }
-    return out;
-  };
-
-  const buildRelatedIndex = () => {
-    docs = all.map((it) => ({
-      url: it.url || "",
-      title: it.title || it.url || "",
-      time: it.time || 0,
-      host: hostOfUrl(it.url || ""),
-      tokens: [],
-    }));
-    docs.forEach((d) => {
-      d.tokens = tokenize(d.title + " " + d.host);
-    });
-    byHost = {};
-    wordIndex = {};
-    const order = docs.map((_, i) => i).sort((a, b) => docs[b]!.time - docs[a]!.time);
-    for (const i of order) {
-      const h = docs[i]!.host;
-      (byHost[h] || (byHost[h] = [])).push(i);
-    }
-    for (let i = 0; i < docs.length; i++) {
-      for (const t of docs[i]!.tokens) {
-        (wordIndex[t] || (wordIndex[t] = [])).push(i);
-      }
-    }
-  };
 
   const ensureLoaded = (): Promise<void> => {
     if (!loaded) {
       loaded = ctx.ops.history("").then((items) => {
         all = (items || []).filter((it) => it && it.url);
-        buildRelatedIndex();
+        related.build(all);
       });
     }
     return loaded;
@@ -207,36 +153,6 @@ export function openHistoryPopup(ctx: PopupCtx): void {
       const currentRow = (): HistoryRow | null => {
         const ri = currentRowIndex();
         return ri >= 0 ? rows[ri] || null : null;
-      };
-
-      const relatedFor = (it: HistoryRow): RelatedRow[] => {
-        if (!it || !docs.length) return [];
-        const seen = new Set<string>([it.url]);
-        const out: RelatedRow[] = [];
-        const add = (j: number, section: string) => {
-          const d = docs[j];
-          if (!d || seen.has(d.url)) return;
-          seen.add(d.url);
-          out.push({ url: d.url, title: d.title || d.url, host: d.host, rel: relTime(d.time), section: section });
-        };
-        for (const j of byHost[it.host] || []) {
-          if (out.length >= 4) break;
-          add(j, "Same site");
-        }
-        const scores = new Map<number, number>();
-        for (const t of tokenize(it.title)) {
-          for (const j of wordIndex[t] || []) {
-            if (docs[j] && !seen.has(docs[j]!.url)) scores.set(j, (scores.get(j) || 0) + 1);
-          }
-        }
-        const cands = Array.from(scores.entries()).sort(
-          (a, b) => b[1] - a[1] || docs[b[0]]!.time - docs[a[0]]!.time
-        );
-        for (const [j] of cands) {
-          if (out.length >= 8) break;
-          add(j, "Related");
-        }
-        return out.slice(0, 8);
       };
 
       const setStatus = () => {
@@ -349,7 +265,7 @@ export function openHistoryPopup(ctx: PopupCtx): void {
           relatedEl.appendChild(empty);
           return;
         }
-        relatedRows = relatedFor(it);
+        relatedRows = related.for(it);
         if (relIdx >= relatedRows.length) relIdx = Math.max(0, relatedRows.length - 1);
         if (!relatedRows.length) {
           const empty = document.createElement("div");
@@ -520,7 +436,7 @@ export function openHistoryPopup(ctx: PopupCtx): void {
           disarmAll();
           ctx.ops.removeHistory(url);
           all = all.filter((a) => a.url !== url);
-          buildRelatedIndex();
+          related.build(all);
           organize();
           return;
         }
@@ -540,9 +456,10 @@ export function openHistoryPopup(ctx: PopupCtx): void {
           disarmAll();
           ctx.ops.clearHistory();
           all = [];
-          docs = [];
-          byHost = {};
-          wordIndex = {};
+          // Clear the related index through its own API rather than reaching
+          // into the documents it indexed — the popup has no business knowing
+          // how the ranking is stored.
+          related.build([]);
           rows = [];
           idx = 0;
           render();
