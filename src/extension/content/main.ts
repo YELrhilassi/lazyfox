@@ -470,6 +470,9 @@ import type { ContentPopupShell } from "./find";
         focusFirstInput();
         return Promise.resolve({ ok: true });
       }
+      if (msg && msg.action === "hintBadge") {
+        return Promise.resolve({ ok: true, id: "amb", ...hints.enterBadge() });
+      }
       if (msg && msg.action === "pageReport") {
         // The diagnostics page asks the ACTIVE tab's content script for a live
         // self-report. A rejection here is meaningful too (no content script on

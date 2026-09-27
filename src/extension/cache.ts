@@ -15,17 +15,12 @@
 // re-pushed to the chrome helper whenever the helper announces itself alive.
 
 import type { CacheMode, CacheScope, CacheState } from "../shared/types";
+import { readKey, writeKey, vTabIds, type CachePolicy } from "./store";
 import { sessionState } from "./sessions";
 
-interface CachePolicy {
-  scope: CacheScope;
-  mode: CacheMode;
-  // Tabs the session/tab policy covers. Empty for a global policy.
-  tabIds: number[];
-}
-
-const POLICY_KEY = "cachePolicy";
-
+// The key and the shape are declared in ./store; the default stays here,
+// next to the code that uses it, because "what a fresh profile does" is a
+// policy decision rather than a schema fact.
 const DEFAULT_POLICY: CachePolicy = { scope: "global", mode: "normal", tabIds: [] };
 
 interface CacheDeps {
@@ -34,29 +29,29 @@ interface CacheDeps {
 }
 
 // Read the stored policy, tolerating a missing/corrupt value.
+//
+// The validation used to be inline and is now the store's, so it is stated
+// once. Note the behaviour it had to preserve: scope and mode fall back
+// INDEPENDENTLY (a record with a valid mode but a garbage scope kept the mode),
+// and tabIds is sanitised rather than rejected — a profile written by an older
+// build with numeric strings still gets a usable policy, which matters because
+// "the cache policy reset itself" is a bug report, not a graceful degradation.
+const vPolicy = (raw: unknown): CachePolicy | undefined => {
+  if (!raw || typeof raw !== "object") return undefined;
+  const p = raw as { scope?: unknown; mode?: unknown; tabIds?: unknown };
+  return {
+    scope: (p.scope as CacheScope) || "global",
+    mode: (p.mode as CacheMode) || "normal",
+    tabIds: vTabIds(p.tabIds) || [],
+  };
+};
+
 async function readPolicy(): Promise<CachePolicy> {
-  try {
-    const r = await browser.storage.local.get(POLICY_KEY);
-    const p = r && r[POLICY_KEY];
-    if (p && typeof p === "object") {
-      return {
-        scope: (p.scope as CacheScope) || "global",
-        mode: (p.mode as CacheMode) || "normal",
-        tabIds: Array.isArray(p.tabIds) ? p.tabIds.map(Number).filter((n: number) => n > 0) : [],
-      };
-    }
-  } catch (e) {
-    // ignore
-  }
-  return { ...DEFAULT_POLICY };
+  return readKey("cachePolicy", vPolicy, { ...DEFAULT_POLICY });
 }
 
 async function writePolicy(p: CachePolicy): Promise<void> {
-  try {
-    await browser.storage.local.set({ [POLICY_KEY]: p });
-  } catch (e) {
-    // ignore
-  }
+  await writeKey("cachePolicy", p);
 }
 
 function globalCacheSwitch(): { get(v: boolean): Promise<void> } | null {

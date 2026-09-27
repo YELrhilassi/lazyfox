@@ -56,12 +56,59 @@ say so, with a nonce, a timeout, and a fallback.
 
 ## 2. Why the YouTube ad "Skip" button was never really fixed
 
+### 2.0 MEASURED: the trust theory is wrong, and so was the folklore behind it
+
+This is now settled by test rather than argument, and the answer overturns the
+assumption the whole trusted-press attempt rested on.
+
+The e2e suite records what the page actually receives
+(`link hints: the page receives a trusted, well-formed click`, fixture
+`/playerlike`): the full pointer/mouse sequence plus the click, with
+`isTrusted`, `event.target`, `buttons` and `detail` for each.
+
+The result: **the click arrives with `isTrusted: false`**, even though the
+activator ends in `HTMLElement.click()`.
+
+That matters because the widely-repeated claim — "Gecko synthesises
+`element.click()` with `isTrusted` true, Blink and WebKit use false" — does
+not hold for a content script in a current Firefox. It was load-bearing here:
+it is the usual explanation offered for "YouTube's skip button ignores the hint
+click", and it is simply not true of our path. If that claim is load-bearing
+anywhere else in this codebase, it is worth re-measuring there too.
+
+So there are two distinct problems, and they need different fixes:
+
+| # | Cause | Status |
+|---|---|---|
+| 1 | `isTrusted` is false, and YouTube checks it (it always has) | **NOT FIXED** — needs the privileged path below |
+| 2 | The event *state* was malformed, so press-state machines never fired | **FIXED** — see 2.5 |
+
+**The remaining fix for #1 is a privileged input path, not a cleverer
+synthetic event.** There is exactly one way to produce a genuinely trusted
+click from inside the browser: `nsIDOMWindowUtils.sendMouseEvent` in the
+content process. The window actor already runs there with `Services` and
+`windowUtils` available (see `src/chrome/actor-child.ts`, which uses
+`windowUtils` to dispatch trusted *keys*), so the plumbing exists — the
+`sendMouseEvent` call for clicks does not.
+
+`actor-child.ts` currently carries an **orphaned comment block** describing
+exactly that missing function: it documents a move → down → up → click
+sequence and then ends with no function under it, left over from the
+trusted-press removal. Treat it as the design note for the fix and not as
+working code.
+
+The wiring would be: hints → background → relay port → chrome helper → actor →
+`windowUtils.sendMouseEvent`. That is four hops and a real latency budget, so
+it should be a **fallback**, not the default: try the cheap synthetic path
+first, and escalate only when the activation watcher reports that the page did
+not react. The watcher already exists for exactly that purpose, so the
+escalation trigger is already in place.
+
 The trusted press was aimed at exactly this button, on the theory that it
-refuses untrusted events. That theory was never tested, and the local evidence
-says it is at best a minor effect. The button is a real `<button>` with a click
-listener, and a synthetic `click()` on a `<button>` runs its activation
-behaviour. The things that actually stop a hint from working on a player overlay
-are in the **discovery** pipeline, and every one of them is silent.
+refuses untrusted events. That theory was never tested — and 2.0 above shows it
+was the wrong theory. The things that actually stop a hint from working on a
+player overlay are in the **discovery** pipeline, and every one of them is
+silent.
 
 The pipeline is: collect → in viewport → CSS-visible → *reachable* (not
 occluded) → not a nested/duplicate target → first 80 in document order.
@@ -100,7 +147,33 @@ named generic control > an anonymous one, with a media-only wrapper ranked below
 all of them), and the container is replaced *in place* when it loses so the
 surviving control keeps the container's early slot and its short key.
 
-### 2.2 Occlusion is a veto, and it is decided by five sample points
+### 2.2 The event state was malformed (fixed)
+
+Independent of trust, the synthetic sequence described a press that never
+happened. One `MouseEventInit` was shared by all seven events, with
+`buttons: 1` and `detail: 1` throughout.
+
+`buttons` is the set of buttons **currently held down** — it is the field a
+press-state machine reads. Sending `buttons: 1` on `mouseup` says the button
+is still down, so any widget tracking "is a pointer currently down" never sees
+the release and is left in a pressed state no later click can satisfy. `detail`
+is the click count and is 0 for the hover events.
+
+`emulateClick` now sends per-phase state: `buttons` 0 for over/move, 1 for
+down, 0 for up; `detail` 0 for over/move, 1 for the press and click.
+
+The sequence also targets the deepest node under the pointer while the trusted
+click targets the button itself, which is a deliberate mismatch (see the note
+in `activate.ts`): the sequence needs a real target, the click needs to be
+trusted, and `.click()` cannot be given a different target without giving up
+the trust bit. What matters is that the *sequence* is internally consistent —
+down and up share an `event.target` — which is what a state machine pairs on,
+and the suite now pins that.
+
+Regression fixture: `/press`, a button that only commits when it has seen a
+press go down and come back up, deciding purely from `event.buttons`.
+
+### 2.3 Occlusion is a veto, and it is decided by five sample points
 
 `reachable()` samples the centre and four inset corners; if none of them hit the
 element (or a descendant/ancestor of it), the element is dropped as "covered".
@@ -115,7 +188,7 @@ rejects. Two further weaknesses:
 - `deepHit()` pierces **open** shadow roots only. A control inside a closed
   shadow root is unreachable by construction and is dropped.
 
-### 2.3 The 80-hint cap is first-come in document order
+### 2.4 The 80-hint cap is first-come in document order
 
 `MAX_HINTS = 80` and the batch is the first 80 in document order. On a
 UI-heavy home page those are the header, the sidebar and the first rows. Anything
@@ -126,12 +199,12 @@ blind. There is no "N more" signal.
 `collectHintables()` also stops after `MAX_SCAN = 14000` nodes in document
 order, so on a very large page the sweep can end before it reaches the player.
 
-### 2.4 `all_frames: false`
+### 2.5 `all_frames: false`
 
 The content script does not run in iframes. Any control inside an ad iframe, an
 embedded widget or a third-party player is not hintable, by construction.
 
-### 2.5 Activation is fire-and-forget, so failure is invisible (fixed)
+### 2.6 Activation is fire-and-forget, so failure is invisible (fixed)
 
 `emulateClick()` fires a pointer/mouse sequence at the element's centre (to the
 deepest node under the pointer) and then a native `.click()` on the element. If
@@ -271,3 +344,28 @@ Until (1) exists, the privileged path is strictly worse than the synthetic one.
 `content` suite runs in one browser session (it passes in isolation, and fails
 identically on an unmodified checkout — same tab counts, same recently-closed
 list). Not a hint problem, and not caused by anything here.
+
+## 5. The enter affordance (added)
+
+When the typed prefix is a strict prefix of a remaining key *and* more than one
+candidate still matches, no character activates anything — Enter is the only way
+to take the first match. That state was invisible: the user typed, nothing
+happened, and there was no way to tell a mistyped prefix from a deliberate
+narrowing step. A small `⏎` badge now sits bottom-left while it holds, sized
+off the same 12px/1 metric as the hint labels so it reads as "a key you press"
+rather than as chrome.
+
+The condition is derived from exactly the predicate `typeChar()` uses to decide
+*not* to activate, which is subtler than it looks: an exact match is still
+ambiguous when a longer key extends it. Typing "a" where one link is "a" and
+another is "ad" activates nothing, so the badge must be up. An earlier
+version of this check only tested "typed is not a complete key" and stayed
+silent in exactly that case — caught by the suite, which derives an ambiguous
+prefix from the keys actually assigned rather than hardcoding one, because the
+engine generates a prefix-free sequence and with few items on a page no two
+keys need collide.
+
+The badge is created once and toggled, like the labels, so typing does not churn
+a node per keystroke in the page's own MutationObserver. Backspacing to nothing
+takes it away: a stale badge promising an Enter that no longer does anything is
+worse than no badge.
