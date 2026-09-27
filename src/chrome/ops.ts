@@ -26,6 +26,8 @@ import type { ActionOps } from "../shared/ops";
 import type { RelayAction, RelayReq, RelayRes } from "../shared/protocol";
 import type { Config, PopupItem, SessionSummaryItem } from "../shared/types";
 
+
+
 declare const Services: any;
 declare const Cc: any;
 declare const Ci: any;
@@ -338,32 +340,35 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     let real = 0;
     for (let i = 0; i < tabs.length; i++) {
       const t = tabs[i];
-      try {
-        const spec =
-          t.linkedBrowser && t.linkedBrowser.currentURI
-            ? t.linkedBrowser.currentURI.spec
-            : "";
-        if (isRelayTabUrl(spec)) continue;
-      } catch (e) {
-        // ignore
-      }
+      // A tab can be a dead wrapper mid-collapse, in which case ANY property
+      // read throws — so the URI is read inside the try and the whole row is
+      // skipped if it throws. That was the reason for the two separate reads;
+      // one read now serves both the relay filter and the row's url.
+      if (!t) continue;
       let uri = "";
       try {
-        uri = (t.linkedBrowser && t.linkedBrowser.currentURI && t.linkedBrowser.currentURI.spec) || "";
+        const lb = t.linkedBrowser;
+        uri = (lb && lb.currentURI && lb.currentURI.spec) || "";
+        if (isRelayTabUrl(uri)) continue;
       } catch (e) {
-        // ignore
+        continue;
       }
+
+      // The guard above and the catch that `continue`s together establish that
+      // `t` is a live tab; naming it `tab` keeps the row readable and stops the
+      // narrowing question from being re-litigated on every field.
+      const tab = t;
       const item: PopupItem = {
         id: real, // real-tab index — what the chrome ops address
         realId: tabIds[i], // true Firefox tab id, for display
         number: real + 1, // jump number shown in the tab switcher (";1"-";9")
-        title: t.label || uri || "",
+        title: tab.label || uri || "",
         url: uri,
-        active: !!t.selected,
-        pinned: !!t.pinned,
-        muted: !!t.muted,
+        active: !!tab.selected,
+        pinned: !!tab.pinned,
+        muted: !!tab.muted,
         stealth: !!stealthFlags[i],
-        favIconUrl: (t.getAttribute && t.getAttribute("image")) || "",
+        favIconUrl: tab.getAttribute("image") || "",
       };
       real++;
       if (!ql || ((item.title || "") + " " + (item.url || "")).toLowerCase().indexOf(ql) !== -1) {
@@ -501,6 +506,9 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     },
     duplicateTab: () => {
       const t = window.gBrowser.duplicateTab(window.gBrowser.selectedTab);
+      // duplicateTab returns null on failure; assigning null would throw on
+      // the next read of selectedTab rather than here, where it is reportable.
+      if (!t) { toast("could not duplicate tab"); return; }
       window.gBrowser.selectedTab = t;
       window.focus();
     },
