@@ -212,7 +212,7 @@ export interface RelayApi {
   sessionState: { req: Record<string, never>; res: RelaySessionState };
   sessionTabs: { req: { name: string }; res: PopupItem[] };
   recentlyClosed: { req: Record<string, never>; res: PopupItem[] };
-  reopenTab: { req: Record<string, never>; res: { ok: boolean; restored?: number | null } | null };
+  reopenTab: { req: Record<string, never>; res: { ok: boolean } };
   // Session + tab mutations. Each is fire-and-forget; the helper refreshes the
   // status bar itself once the action has landed.
   saveSession: { req: { name: string }; res: null };

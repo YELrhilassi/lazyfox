@@ -10,32 +10,31 @@
 import { ensureCore, core } from "../shared/core";
 import { hostInfo } from "./host";
 import type { BgAction, ChromeAction, ChromeReq, RelayAction, RelayReq, RelayRes } from "../shared/protocol";
-import type { CacheMode } from "../shared/types";
+import { createDiagnosticsHandlers } from "./handlers/diagnostics";
+import { createDownloadHandlers } from "./handlers/downloads";
+import { createHistoryHandlers } from "./handlers/history";
+import { createSearchHandlers } from "./handlers/search";
+import { createSessionHandlers } from "./handlers/sessions";
+import { createSplitHandlers } from "./handlers/split";
+import { createSyncHandlers } from "./handlers/sync";
+import { createTabHandlers } from "./handlers/tabs";
+import { createWindowHandlers } from "./handlers/window";
+import type { BgActionName } from "./handlers/types";
+import type { CacheMode, PageReport } from "../shared/types";
 import { getConfig } from "./config";
 import { probeHostOnce } from "./host";
-import { CC_URL, getActiveTab, isCommandCenter, isUITab, realTabsInWindow, stripHash, transientTabIds } from "./tabs";
-import { bookmarksSearch, doSearch, historySearch, searchUrlFor, suggestSearch, suggestUrls } from "./search";
+import { CC_URL, getActiveTab, isCommandCenter, isUITab, stripHash, transientTabIds } from "./tabs";
 import {
-  activateTabByIndex,
   alternateTab as alternateTabOp,
   clearHistory,
   forgetTab,
-  getWindowSize,
-  moveWindow,
   noteTabActivation,
   recentlyClosed,
   removeHistory,
   reopenTab,
-  resizeWindow,
   restoreAllClosedTabs,
-  restoreClosedTab,
-  tabsInWindow,
-  toggleMaximize,
-  toggleMute,
-  toggleZen,
-  zoom
+  restoreClosedTab
 } from "./windowops";
-import { openDownload, openDownloadLocation, removeDownload, retryDownload, downloadsList } from "./downloads";
 import { createCacheController } from "./cache";
 import { reconcileStealth, removeStealthContainerForTab, stealthOpen } from "./stealth";
 import {
@@ -51,7 +50,6 @@ import {
   saveSession,
   scheduleAutosave,
   scheduleSnapshot,
-  sessionList,
   sessionState,
   sessionTabs,
   moveTabBetweenSessions,
@@ -193,296 +191,71 @@ async function openUI(which: string) {
   return { ok: true };
 }
 
-async function handleMessage(msg: BgAction, sender: any) {
-  // `data` stays loose: each case reads only the fields its action declares.
-  const data: any = msg.data || {};
-  switch (msg.action) {
-    case "searchSuggest":
-      return suggestSearch(data.q);
-    case "urlSuggest":
-      return suggestUrls(data.q);
-    case "components":
-      return componentsInfo();
-    case "tabs":
-      return tabsInWindow();
-    case "activateTab":
-      await browser.tabs.update(data.id, { active: true });
-      await browser.windows.update((await getActiveTab()).windowId, {
-        focused: true
-      });
-      return { ok: true };
-    case "activateTabAt":
-      if (data.last) {
-        const tabs = await realTabsInWindow();
-        const t = tabs[tabs.length - 1];
-        if (!t) return { ok: false };
-        await browser.tabs.update(t.id, { active: true });
-        await browser.windows.update(t.windowId, { focused: true });
-        return { ok: true };
-      }
-      return activateTabByIndex(data.index || 1);
-    case "moveTab": {
-      const tabs = await browser.tabs.query({ currentWindow: true });
-      const idx = tabs.findIndex((t: any) => t.id === data.id);
-      if (idx < 0) return { ok: false };
-      const dir = data.dir > 0 ? 1 : -1;
-      const ni = Math.max(0, Math.min(tabs.length - 1, idx + dir));
-      if (ni !== idx) await browser.tabs.move(data.id, { index: ni });
-      return { ok: true };
-    }
-    case "moveActiveTab": {
-      const tabs = await browser.tabs.query({ currentWindow: true });
-      const idx = tabs.findIndex((t: any) => t.active);
-      if (idx < 0) return { ok: false };
-      const dir = data.dir > 0 ? 1 : -1;
-      const ni = Math.max(0, Math.min(tabs.length - 1, idx + dir));
-      if (ni !== idx) await browser.tabs.move(tabs[idx]!.id, { index: ni });
-      return { ok: true };
-    }
-    case "closeTab": {
-      // Removing the window's LAST tab closes the whole window (and Firefox, if
-      // it's the only window). Guard it: report `last` so callers can ask for
-      // confirmation, and only actually close on a second press (force).
-      const targetId = data.id != null ? data.id : (await getActiveTab())?.id;
-      const tabs = await realTabsInWindow();
-      const isLast =
-        tabs.length <= 1 && targetId != null && tabs[0] && tabs[0].id === targetId;
-      if (isLast && !data.force) {
-        return { ok: true, last: true };
-      }
-      if (targetId != null) await browser.tabs.remove(targetId);
-      return { ok: true, last: false };
-    }
-    case "newTab":
-      // A new tab is the command center, never a stray about:blank.
-      await browser.tabs.create({ url: CC_URL, active: true });
-      return { ok: true };
-    case "reopenTab":
-      return reopenTab();
-    case "alternateTab":
-      return alternateTabOp();
-    case "recentlyClosed":
-      return { items: await recentlyClosed() };
-    case "restoreClosedTab":
-      return restoreClosedTab(data.key);
-    case "restoreAllClosed":
-      return restoreAllClosedTabs();
-    case "removeHistory":
-      return removeHistory(data.url);
-    case "clearHistory":
-      return clearHistory();
-    case "duplicateTab": {
-      const tab = await getActiveTab();
-      if (tab) await browser.tabs.duplicate(tab.id);
-      return { ok: true };
-    }
-    case "reload": {
-      const tab = await getActiveTab();
-      if (tab) await browser.tabs.reload(tab.id);
-      return { ok: true };
-    }
-    case "back": {
-      const tab = await getActiveTab();
-      if (tab) await browser.tabs.goBack(tab.id);
-      return { ok: true };
-    }
-    case "forward": {
-      const tab = await getActiveTab();
-      if (tab) await browser.tabs.goForward(tab.id);
-      return { ok: true };
-    }
-    case "openUrl":
-      return openUrl(data.url, data.newTab);
-    case "openPage":
-      return openPage(data.url);
-    case "openUI":
-      return openUI(data.which);
-    case "search": {
-      const q = (data.query || "").trim();
-      if (!q) return { ok: false };
-      // ;S (newTab === false) replaces the current tab; ;s defers to config.
-      if (data.newTab === false) {
-        const tab = await getActiveTab();
-        if (tab) await browser.tabs.update(tab.id, { url: await searchUrlFor(q), active: true });
-        return { ok: true };
-      }
-      return doSearch(q);
-    }
-    case "searchInPlace": {
-      const q = (data.query || "").trim();
-      if (!q) return { ok: false };
-      const tab = await getActiveTab();
-      if (tab) await browser.tabs.update(tab.id, { url: await searchUrlFor(q), active: true });
-      return { ok: true };
-    }
-    case "windowSize":
-      return getWindowSize();
-    case "resizeWindow":
-      return resizeWindow(data.dx || 0, data.dy || 0);
-    case "moveWindow":
-      return moveWindow(data.dx || 0, data.dy || 0);
-    case "maximize":
-      return toggleMaximize();
-    case "history":
-      return historySearch(data.q);
-    case "bookmarks":
-      return bookmarksSearch(data.q);
-    case "downloads":
-      return downloadsList();
-    case "openDownload":
-      return openDownload(data.id);
-    case "removeDownload":
-      return removeDownload(data.id);
-    case "openDownloadLocation":
-      return openDownloadLocation(data.id);
-    case "retryDownload":
-      return retryDownload(data.id);
-    case "zen":
-      return toggleZen();
-    case "zoom":
-      return zoom(data.delta || 0, data.factor);
-    case "mute":
-      return toggleMute();
-    case "copyUrl": {
-      const tab = await getActiveTab();
-      if (!tab) return { url: "", title: "" };
-      return { url: tab.url || "", title: tab.title || "" };
-    }
-    case "setConfig":
-      await browser.storage.local.set({ config: data.config });
-      return { ok: true };
-    case "syncTyping":
-      if (sender && sender.tab && sender.tab.id != null) {
-        try {
-          await browser.sessions.setTabValue(
-            sender.tab.id,
-            "lfTyping",
-            data.typing ? "1" : "0"
-          );
-        } catch (e) {}
-      }
-      return { ok: true };
-    case "syncLeader":
-      // The chrome helper's window-level status bar needs to know when the
-      // content-script leader is armed on a web page (the chrome helper's
-      // own leader never arms there — the content script owns the keys).
-      // Relay it through the transient #lfc= leaderState push (the same
-      // channel pushSessionStateToChrome uses): the chrome helper caches it
-      // per tab-strip index and shows the LEADER chevron for that tab.
-      if (sender && sender.tab && sender.tab.id != null) {
-        pushLeaderStateToChrome(
-          typeof sender.tab.index === "number" ? sender.tab.index : -1,
-          !!data.active
-        );
-      }
-      return { ok: true };
-    case "syncFind":
-      // Live find-in-page count from the content script's find widget,
-      // relayed to the chrome helper's window-level status bar the same way
-      // leaderState rides (findState.<b64>.<nonce> per tab-strip index).
-      // count -1 = the widget closed (hide the segment); 0 = no matches.
-      if (sender && sender.tab && sender.tab.id != null) {
-        const c = Number(data.count);
-        pushFindStateToChrome(
-          typeof sender.tab.index === "number" ? sender.tab.index : -1,
-          isNaN(c) ? -1 : c,
-          Math.max(0, Number(data.cur) || 0)
-        );
-      }
-      return { ok: true };
-    case "sessionList":
-      return sessionList();
-    case "listSessionTabs":
-      return { items: await sessionTabs(data.name || "") };
-    case "sessionSave":
-      return saveSession(data.name);
-    case "sessionNew":
-      return newSession(data.name);
-    case "sessionRestore":
-      return restoreSession(data.name);
-    case "sessionDelete":
-      return deleteSession(data.name);
-    case "sessionSwitchByMarker":
-      return switchSessionByMarker(data.marker);
-    case "sessionAssignMarker":
-      return assignSessionMarker(data.name, data.marker);
-    case "sessionTabCopy":
-      return moveTabBetweenSessions(data.from, data.index, data.to, "copy");
-    case "sessionTabMove":
-      return moveTabBetweenSessions(data.from, data.index, data.to, "move");
-    case "sessionSplit":
-      // Native splits are the chrome helper's domain (gBrowser.addTabSplitView);
-      // relay the request over the persistent relay.
-      requestChrome("splitTab");
-      return { ok: true };
-    case "sessionUnsplit":
-      requestChrome("unsplit");
-      return { ok: true };
-    case "sessionSwitchPane":
-      requestChrome("switchPane", { dir: data.dir > 0 ? 1 : -1 });
-      return { ok: true };
-    case "sessionSwapPane":
-      requestChrome("swapSplitPanes", { dir: data.dir > 0 ? 1 : -1 });
-      return { ok: true };
-    case "sessionSplitAddTabByIndex": {
-      const n = Number(data && data.index);
-      if (!(n >= 1 && n <= 9)) return { ok: false, note: "tab number must be 1-9" };
-      requestChrome("moveToSplit", { index: n });
-      return { ok: true };
-    }
-    case "splitPanelTabs": {
-      // Number REAL tabs only (skip splitpanel + #lfc=), so the list's numbers
-      // match ;+N and never shift when a companion pane is added/removed.
-      const tabs = await realTabsInWindow();
-      return {
-        tabs: tabs.map((t: any, i: number) => ({
-          index: i + 1,
-          id: t.id,
-          url: t.url || "",
-          title: t.title || "",
-          active: !!t.active,
-          inSplit: typeof t.splitViewId === "number" && t.splitViewId >= 0
-        }))
-      };
-    }
-    case "moveTabToSplit": {
-      const n = Number(data && data.index);
-      if (!(n >= 1 && n <= 9)) return { ok: false };
-      requestChrome("moveToSplit", { index: n });
-      return { ok: true };
-    }
-    case "toggleWhichKey": {
-      const c = await getConfig();
-      c.whichKey = !c.whichKey;
-      await browser.storage.local.set({ config: c });
-      return { whichKey: !!c.whichKey };
-    }
-    case "stealthOpen":
-      return stealthOpen(() => pushSessionStateToChrome());
-    case "openSetup":
-      return openSetupTab();
-    case "openDiagnostics":
-      return openDiagnosticsTab();
-    case "pageReport":
-      // Ask a tab's content script for a live self-report. A page with no
-      // content script (about:/error pages, restricted domains) throws here —
-      // that is an answer, not a failure, so it comes back as report: null.
-      return pageReport(data);
-    case "diagnoseTabs":
-      return diagnoseTabs();
-    case "cacheState":
-      return cache.cacheState();
-    case "cacheSet":
-      return cache.cacheSet(data.scope, data.mode);
-    case "hardReload":
-      return cache.hardReload();
-    case "quit":
-      return quitBrowser();
-    case "sessionState":
-      return sessionState();
-    default:
-      return { ok: false, error: "unknown action" };
-  }
+// The message handlers, composed from one table per domain.
+//
+// This was a single 292-line switch with 70 case labels. It is now a
+// composition of tables in src/extension/handlers/, each typed over BgApi, so
+// the compiler knows every handler's request and response shape and each
+// domain can be read on its own.
+//
+// The `default` is still here for a message from an OLD client (a stale
+// extension page, a helper that survived an update) — but an action declared
+// in BgApi and not handled here no longer reaches it: `missing` below is a
+// compile error in that case. That was the whole point; the runtime default is
+// now only a courtesy to versions that disagree.
+const handlers = {
+  ...createTabHandlers({
+    reopenTab: () => reopenTab(),
+    alternateTab: () => alternateTabOp(),
+  }),
+  ...createSearchHandlers({ openUrl, openPage, openUI }),
+  ...createHistoryHandlers(),
+  ...createDownloadHandlers(),
+  ...createWindowHandlers(),
+  ...createSessionHandlers({
+    // Also refreshes the chrome helper's status bar, so it stays here rather
+    // than in sessions.ts (which has no way to push to the helper).
+    saveSession: (name: string) => saveSession(name),
+  }),
+  ...createSplitHandlers({ requestChrome }),
+  ...createDiagnosticsHandlers({
+    componentsInfo,
+    pageReport,
+    diagnoseTabs,
+    openSetupTab,
+    openDiagnosticsTab,
+    cacheState: () => cache.cacheState(),
+    cacheSet: (scope, mode) => cache.cacheSet(scope, mode),
+    hardReload: () => cache.hardReload(),
+    quitBrowser,
+  }),
+  ...createSyncHandlers({
+    pushLeaderStateToChrome,
+    pushFindStateToChrome,
+    stealthOpen,
+    pushSessionStateToChrome,
+  }),
+};
+
+// Compile-time completeness check. If an action is added to BgApi and not
+// handled above, MissingActions stops being `never`, `Record<Missing, never>`
+// stops being `{}`, and this line stops typechecking. That is the guarantee the
+// old switch could not make: there, a missing case compiled fine and returned
+// `{ ok: false, error: "unknown action" }` at runtime.
+type MissingActions = Exclude<BgActionName, keyof typeof handlers>;
+const _everyActionIsHandled: Record<MissingActions, never> = {};
+void _everyActionIsHandled;
+
+async function handleMessage(msg: BgAction, sender: unknown) {
+  // The cast is confined to these two lines. Everywhere else the table's type
+  // does the work: each handler receives exactly the request its action declares
+  // and must return exactly the declared response.
+  const fn = handlers[msg.action] as ((d: unknown, s: unknown) => unknown) | undefined;
+  // Unreachable for any action in BgApi (see the completeness check above). It
+  // exists for a client older than this background: a stale extension page, or a
+  // relay tab left over from before an update.
+  if (!fn) return { ok: false, error: "unknown action" };
+  return fn((msg.data || {}) as never, sender);
 }
 
 browser.runtime.onMessage.addListener((msg: BgAction, sender: any) => {
@@ -1102,7 +875,16 @@ browser.tabs.onActivated.addListener((info: any) => {
 // tabId targets any specific tab. Returns { report: null } when the tab has no
 // content script at all, which is itself the most useful diagnostic answer on
 // about:/error/restricted/extension pages.
-function pageReport(data?: { tabId?: number }): Promise<{ report: unknown; tabId: number | null }> {
+// Ask a tab's content script to describe itself.
+//
+// The reply crosses the background->content bus, which is still the one message
+// path in the codebase with no shared contract (docs/MESSAGING.md), so the value
+// arrives unvalidated. It is cast to the declared PageReport here rather than
+// left `unknown`: the diagnostics page renders it against that shape, and an
+// honest cast is a place to look, whereas `unknown` would push the problem into
+// every consumer. The alternative — a real contract for that bus — is noted in
+// the docs as the remaining gap.
+function pageReport(data?: { tabId?: number }): Promise<{ report: PageReport | null; tabId: number | null }> {
   const want = data && typeof data.tabId === "number" ? data.tabId : null;
   return getActiveTab()
     .then(async (active) => {
@@ -1117,7 +899,7 @@ function pageReport(data?: { tabId?: number }): Promise<{ report: unknown; tabId
       if (!t || !t.id) return { report: null, tabId: want };
       try {
         const res = await browser.tabs.sendMessage(t.id, { action: "pageReport" });
-        return { report: (res && res.report) || null, tabId: t.id };
+        return { report: ((res && res.report) || null) as PageReport | null, tabId: t.id };
       } catch (e) {
         return { report: null, tabId: t.id };
       }
