@@ -84,6 +84,60 @@ export interface CoreApi {
   ): { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
 }
 
+/**
+ * One status-store mutation. A discriminated union rather than a string tag and
+ * an args array: the whole point of batching is that the operations are known
+ * at compile time, and a tuple of unknown[] would throw that away — every
+ * caller would be free to pass the wrong arity and get a runtime no-op.
+ */
+export type StatusOp =
+  | { kind: "session"; state: unknown }
+  | { kind: "tab"; selected: number; tabIndex: number; tabCount: number }
+  | { kind: "ui"; popup: boolean; leader: boolean }
+  | { kind: "leader"; index: number; active: boolean }
+  | { kind: "find"; index: number; cur: number; count: number }
+  | { kind: "stealth"; on: boolean }
+  | { kind: "downloads"; fresh: DownloadEntry[] }
+  | { kind: "dismiss"; keys: string[] };
+
+/**
+ * Apply every op synchronously against an already-resolved core.
+ *
+ * Exported because the chrome helper's own status path builds a batch and needs
+ * the same mapping, and because a second applier would be exactly the drift
+ * this change exists to prevent.
+ */
+export function applyStatusOps(a: CoreApi, ops: StatusOp[]): void {
+  for (const op of ops) {
+    switch (op.kind) {
+      case "session":
+        a.statusSession(JSON.stringify(op.state || {}));
+        break;
+      case "tab":
+        a.statusTab(op.selected, op.tabIndex, op.tabCount);
+        break;
+      case "ui":
+        a.statusUi(op.popup, op.leader);
+        break;
+      case "leader":
+        a.statusLeader(op.index, op.active);
+        break;
+      case "find":
+        a.statusFind(op.index, op.cur, op.count);
+        break;
+      case "stealth":
+        a.statusStealth(op.on);
+        break;
+      case "downloads":
+        a.statusDownloads(JSON.stringify(op.fresh || []));
+        break;
+      case "dismiss":
+        a.statusDismiss(JSON.stringify(op.keys || []));
+        break;
+    }
+  }
+}
+
 declare global {
   interface Window {
     LazyfoxCore?: CoreApi;
@@ -213,6 +267,36 @@ export function createCoreFacade(getApi: () => Promise<CoreApi>) {
       call((a) => {
         a.statusDismiss(JSON.stringify(keys || []));
       }),
+    /**
+     * Apply several status-store updates and return the resulting snapshot, in
+     * ONE call.
+     *
+     * This exists because the obvious composition — three setters, then a
+     * statusSnapshot() read — was both slow and, in a way that mattered,
+     * wrong. Each setter goes through getApi().then(...), so three pushes plus
+     * a read is five microtask hops before the bar repaints, on a path that
+     * runs on every TabSelect and every leader keystroke. Worse, those hops are
+     * an AWAIT BOUNDARY: two callers pushing at once could interleave, so one
+     * caller's paint could read a snapshot in which the other's half of the
+     * state had landed and the rest had not. The store is meant to be the
+     * single source of truth, and a snapshot torn between two writers is the
+     * opposite of that.
+     *
+     * Every setter in the Go core is synchronous and returns void. The
+     * asynchrony was never in the core; it was an artefact of resolving the
+     * API per call. Resolving once and applying the whole batch without
+     * yielding makes the mutations atomic with respect to each other AND to the
+     * snapshot read that follows.
+     *
+     * Falls back to the per-op path if the core is not ready yet, so a caller
+     * that fires before init still works — it just pays the old cost.
+     */
+    statusBatch: (ops: StatusOp[]): Promise<StatusBarData> =>
+      getApi().then((a) => {
+        applyStatusOps(a, ops);
+        return JSON.parse(a.statusSnapshot());
+      }),
+
     statusSnapshot: (): Promise<StatusBarData> =>
       call((a) => JSON.parse(a.statusSnapshot())),
     downloadsList: (): Promise<DownloadEntry[]> =>

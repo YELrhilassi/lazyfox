@@ -12,7 +12,7 @@
 // owns the single window-level bar for every tab; when it is absent (stand-
 // alone extension mode) there is simply no bar.
 
-import { core } from "../shared/core";
+import { core, type StatusOp } from "../shared/core";
 import { StatusBar, type StatusBarData } from "../shared/statusbar";
 import { updateDownloads } from "./downloads";
 import type { ChromeCfg } from "./config";
@@ -108,7 +108,16 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   // transition can never leave the bar over full-screen content.
   async function paint(): Promise<void> {
     try {
-      const snap = await core.statusSnapshot();
+      paintSnapshot(await core.statusSnapshot());
+    } catch (e) {
+      // a mid-collapse render must never escape
+    }
+  }
+
+  // Paint an already-read snapshot. Split out of paint() so the batch path can
+  // hand over the snapshot it just read instead of reading it a second time.
+  function paintSnapshot(snap: StatusBarData): void {
+    try {
       lastSnap = snap;
       const cfg = deps.getConfig();
       if (cfg.config.statusBar === false || isFullscreen()) {
@@ -123,11 +132,24 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     }
   }
 
-  // Push several store updates, then paint once — the store is the single
-  // source of truth, so every render reads a coherent snapshot.
-  function pushAndPaint(updates: Promise<void>[]): void {
-    void Promise.all(updates)
-      .then(() => paint())
+  // Push several store updates and repaint, atomically.
+  //
+  // This used to take an array of promises, Promise.all them, and then call
+  // paint() — which reads the snapshot back. That is five microtask hops
+  // between a keystroke and a repaint, on a path that runs on every TabSelect
+  // and every leader key, and it is worse than slow: each of those hops is an
+  // await boundary, so two concurrent pushes could interleave and one paint
+  // could read a snapshot where the other's updates had half landed. The store
+  // is the single source of truth precisely so that cannot happen, and the
+  // composition was quietly breaking that guarantee.
+  //
+  // statusBatch applies the whole batch synchronously against the resolved core
+  // and returns the snapshot from the same call, so there is no window in
+  // which another writer can slip in.
+  function pushAndPaint(ops: StatusOp[]): void {
+    void core
+      .statusBatch(ops)
+      .then((snap) => paintSnapshot(snap))
       .catch(() => {});
   }
 
@@ -170,9 +192,9 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
         selStealth = !!(lastSnap && lastSnap.activeStealth);
       }
       pushAndPaint([
-        core.statusTab(sel, (realSel < 0 ? 0 : realSel) + 1, liveCount),
-        core.statusUi(ui.popup, ui.leader),
-        core.statusStealth(selStealth),
+        { kind: "tab", selected: sel, tabIndex: (realSel < 0 ? 0 : realSel) + 1, tabCount: liveCount },
+        { kind: "ui", popup: ui.popup, leader: ui.leader },
+        { kind: "stealth", on: selStealth },
       ]);
     } catch (e) {
       // ignore — mid-collapse reads can throw
@@ -206,7 +228,7 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
       state = state || {};
       const ui = deps.getUi();
       pushAndPaint([
-        core.statusSession({
+        { kind: "session", state: {
           name: state.name ? String(state.name) : "default",
           marker: state.marker ? Number(state.marker) : 0,
           inSplit: !!state.inSplit,
@@ -217,20 +239,21 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
           sessions: Array.isArray(state.sessions) ? state.sessions : [],
           tabIds: Array.isArray(state.tabIds) ? state.tabIds : [],
           stealthFlags: Array.isArray(state.stealthFlags) ? state.stealthFlags : [],
-        }),
+        } },
         // Re-derive the stealth badge from the fresh flags + current selection
         // (the background's activeStealth can race the tab becoming selected).
-        core.statusStealth(
-          (() => {
+        {
+          kind: "stealth",
+          on: (() => {
             try {
               const sel = window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
               return sel >= 0 && !!(state.stealthFlags && state.stealthFlags[sel]);
             } catch (e) {
               return !!(lastSnap && lastSnap.activeStealth);
             }
-          })()
-        ),
-        core.statusUi(ui.popup, ui.leader),
+          })(),
+        },
+        { kind: "ui", popup: ui.popup, leader: ui.leader },
       ]);
     } catch (e) {
       // ignore
@@ -248,13 +271,13 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     getStealthFlags: () =>
       lastSnap && lastSnap.stealthFlags ? lastSnap.stealthFlags.slice() : [],
     setActiveStealth: (on) => {
-      pushAndPaint([core.statusStealth(on)]);
+      pushAndPaint([{ kind: "stealth", on }]);
     },
     setContentLeader: (index, active) => {
-      pushAndPaint([core.statusLeader(index, active)]);
+      pushAndPaint([{ kind: "leader", index, active }]);
     },
     setContentFind: (index, count, cur) => {
-      pushAndPaint([core.statusFind(index, cur, count)]);
+      pushAndPaint([{ kind: "find", index, cur, count }]);
     },
     mounted: () => chromeStatusBar.mounted,
     dlActive: () =>
