@@ -196,17 +196,32 @@ export function manualTextKey(e: KeyboardEvent, input: HTMLInputElement): boolea
       input.value = input.value.slice(0, s) + input.value.slice(en);
       try {
         input.setSelectionRange(s, s);
-      } catch (err) {}
+      } catch (err) {
+              // setSelectionRange throws on input types that do not support a
+              // text selection (number, email). The edit is already applied; only
+              // the caret ends up in the wrong place, which is recoverable by the
+              // next keystroke.
+      }
     } else if (k === "Backspace" && !atStart) {
       input.value = input.value.slice(0, s - 1) + input.value.slice(en);
       try {
         input.setSelectionRange(s - 1, s - 1);
-      } catch (err) {}
+      } catch (err) {
+              // setSelectionRange throws on input types that do not support a
+              // text selection (number, email). The edit is already applied; only
+              // the caret ends up in the wrong place, which is recoverable by the
+              // next keystroke.
+      }
     } else if (k === "Delete" && !atEnd) {
       input.value = input.value.slice(0, s) + input.value.slice(en + 1);
       try {
         input.setSelectionRange(s, s);
-      } catch (err) {}
+      } catch (err) {
+              // setSelectionRange throws on input types that do not support a
+              // text selection (number, email). The edit is already applied; only
+              // the caret ends up in the wrong place, which is recoverable by the
+              // next keystroke.
+      }
     }
     input.dispatchEvent(new Event("input", { bubbles: true }));
     return true;
@@ -215,7 +230,12 @@ export function manualTextKey(e: KeyboardEvent, input: HTMLInputElement): boolea
     input.value = input.value.slice(0, s) + k + input.value.slice(en);
     try {
       input.setSelectionRange(s + 1, s + 1);
-    } catch (err) {}
+    } catch (err) {
+            // setSelectionRange throws on input types that do not support a
+            // text selection (number, email). The edit is already applied; only
+            // the caret ends up in the wrong place, which is recoverable by the
+            // next keystroke.
+    }
     input.dispatchEvent(new Event("input", { bubbles: true }));
     return true;
   }

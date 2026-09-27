@@ -205,7 +205,11 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
     input.value = input.value.slice(0, s) + k + input.value.slice(en);
     try {
       input.setSelectionRange(s + 1, s + 1);
-    } catch (err) {}
+    } catch (err) {
+      // setSelectionRange throws on input types that do not support selection
+      // (number, email). The character is already inserted; only the caret
+      // position is then wrong.
+    }
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }
 

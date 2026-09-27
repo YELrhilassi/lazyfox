@@ -323,7 +323,10 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
               try {
                 spec = t.linkedBrowser && t.linkedBrowser.currentURI
                   ? t.linkedBrowser.currentURI.spec : "";
-              } catch (e) {}
+              } catch (e) {
+                // Same reason as the channel's tab walk: a tab can be torn down
+                // mid-enumeration, and a tab with no readable URL is simply not a match.
+              }
               return {
                 i: i,
                 u: (spec.split("?")[0] || "").replace(/^moz-extension:\/\/[^/]+\//, "ext:").slice(-40),
