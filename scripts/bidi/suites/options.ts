@@ -57,6 +57,74 @@ export async function run(ctx) {
     }, 10000);
   });
 
+  // The write path went through the typed store in this batch, and nothing
+  // else in the suite covered it: a save that silently wrote nothing, or wrote
+  // under a key the reader does not use, would leave every other test green.
+  await t("options page: save persists and survives a reload", async () => {
+    const u = ctx.ccUrl.replace("commandcenter.html", "options.html");
+    await ctx.gotoUrl(ctx.tabA, u, "complete");
+    await sleep(400);
+    await evalIn(ctx.tabA, `(() => {
+      document.querySelector("#leader").value = ",";
+      document.querySelector("#save").click();
+      return true;
+    })()`);
+    // The confirmation is set by the Promise.all over both store writes, so
+    // waiting for it is waiting for the writes, not for the click handler.
+    await waitFor(async () => {
+      const s = await evalIn(ctx.tabA, `document.querySelector("#status").textContent`);
+      return s === "saved" ? true : null;
+    }, 5000);
+    const stored = await evalIn(ctx.tabA, `browser.storage.local.get("config").then((r) => r.config.leader)`);
+    assert(stored === ",", "the write landed under the config key the reader uses, got " + JSON.stringify(stored));
+
+    await ctx.gotoUrl(ctx.tabA, u, "complete");
+    await sleep(400);
+    const back = await evalIn(ctx.tabA, `document.querySelector("#leader").value`);
+    assert(back === ",", "the reloaded page reads back what it wrote, got " + JSON.stringify(back));
+
+    // Put it back: a suite that leaves a changed preference behind makes every
+    // later run depend on the order the tests happen to run in.
+    await evalIn(ctx.tabA, `browser.storage.local.get("config").then((r) => {
+      const c = r.config; c.leader = ";";
+      return browser.storage.local.set({ config: c });
+    })`);
+  });
+
+  // Per-field validation is the new behaviour, and the assertion that matters
+  // is the one about what SURVIVES: a corrupt field must fall back to its
+  // default without taking the user's valid fields down with it.
+  await t("options page: a corrupt config field falls back, the rest survives", async () => {
+    const u = ctx.ccUrl.replace("commandcenter.html", "options.html");
+    await evalIn(ctx.tabA, `browser.storage.local.get("config").then((r) => {
+      const c = r.config || {};
+      c.leader = ",";
+      c.statusBarPosition = "sideways";
+      c.scrollKeys = "yes-please";
+      c.apps = "open.spotify.com";
+      return browser.storage.local.set({ config: c });
+    })`);
+    await ctx.gotoUrl(ctx.tabA, u, "complete");
+    await sleep(400);
+    const f = await evalIn(ctx.tabA, `(() => {
+      const q = (s) => document.querySelector(s);
+      return {
+        leader: q("#leader").value,
+        position: q("#statusBarPosition").value,
+        scrollKeys: q("#scrollKeys").checked,
+        appRows: document.querySelectorAll("#appsList .app-row").length,
+        rendered: document.body.innerText.length,
+      };
+    })()`);
+    assert(f.leader === ",", "a valid field next to a corrupt one survives: " + JSON.stringify(f.leader));
+    assert(f.position === "bottom", "the corrupt position falls back to the default, got " + f.position);
+    assert(f.scrollKeys === true, "the corrupt boolean falls back to the default, got " + f.scrollKeys);
+    assert(f.appRows > 0, "a corrupt apps array falls back to the default tiles, got " + f.appRows);
+    assert(f.rendered > 0, "the page rendered at all");
+
+    await evalIn(ctx.tabA, `browser.storage.local.remove("config")`);
+  });
+
   await t("popup page (action popup) renders", async () => {
     const u = ctx.ccUrl.replace("commandcenter.html", "popup.html");
     await ctx.gotoUrl(ctx.tabA, u, "complete");
