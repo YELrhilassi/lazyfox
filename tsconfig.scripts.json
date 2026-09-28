@@ -30,11 +30,18 @@
   // test also stops this config reaching find/text.ts at all, because nothing
   // else here imports it — which is the intent. find/text.ts is typechecked by
   // tsconfig.json, like every module in the browser tree.
+  //
+  // scripts/test-chrome-keys.ts is the fifth: it tests chrome/keys.ts, the
+  // synthetic #lfc=keys channel, which reaches Firefox chrome globals
+  // (Services, window, Cu) that only src/chrome's ambient declarations name.
+  // The module and the test's DOM-free parts are still typechecked by
+  // tsconfig.json; only the Node-side test of it is out of scope here.
   "exclude": [
     "scripts/test-page-text.ts",
     "scripts/test-store.ts",
     "scripts/test-render-escaping.ts",
-    "scripts/test-find-text.ts"
+    "scripts/test-find-text.ts",
+    "scripts/test-chrome-keys.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",
