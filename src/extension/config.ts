@@ -1,22 +1,21 @@
 // Config access for the background context: read the stored partial config and
 // merge it over the shared defaults. Failures fall back to the defaults so a
 // corrupt or missing value never breaks startup.
+//
+// The stored config is a PARTIAL — the defaults live in shared/config and are
+// merged over it — but it is still VALIDATED, per field, by the store's
+// vConfig. This file used to carry its own permissive `vPartialConfig` with a
+// comment claiming "mergeConfig rejects the individual fields". That was false:
+// mergeConfig is a shallow Object.assign and rejects nothing at all. The
+// comment documented a safety that did not exist, which is worse than having
+// no comment, because it is a reason to not add the check.
 
 import { mergeConfig } from "../shared/config";
 import type { Config } from "../shared/types";
-import { readKey, writeKey } from "./store";
-
-// The stored config is a PARTIAL — the defaults live in shared/config and are
-// merged over it — so the validator deliberately accepts any object and lets
-// mergeConfig reject the individual fields. Validating it here too would mean
-// two places that have to agree about which fields exist.
-const vPartialConfig = (raw: unknown): Record<string, unknown> | undefined => {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-  return raw as Record<string, unknown>;
-};
+import { readKey, writeKey, vConfig } from "./store";
 
 export async function getConfig(): Promise<Config> {
-  const stored = await readKey("config", vPartialConfig, {});
+  const stored = await readKey("config", vConfig, {});
   return mergeConfig(stored);
 }
 

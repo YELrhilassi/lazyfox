@@ -30,7 +30,7 @@
 // get, exactly as before; what changed is that the call sites are typed and
 // the failure handling is stated in one place instead of copied.
 
-import type { CacheMode, CacheScope, Config, Session } from "../shared/types";
+import type { CacheMode, CacheScope, Config, QuickApp, Session, SessionTab } from "../shared/types";
 
 /** Declares the schema. Every entry is (key, validator, fallback). */
 export interface StoreSpec {
@@ -210,6 +210,118 @@ export const vTabIds: Validator<number[]> = (raw) => {
   const out = raw.filter((n): n is number => typeof n === "number" && n > 0);
   return out;
 };
+
+/** One quick-launch tile, validated field by field. */
+function vQuickApp(raw: unknown): QuickApp | undefined {
+  if (!isObject(raw)) return undefined;
+  if (typeof raw.id !== "string" || typeof raw.name !== "string") return undefined;
+  if (typeof raw.url !== "string" || typeof raw.enabled !== "boolean") return undefined;
+  return { id: raw.id, name: raw.name, url: raw.url, enabled: raw.enabled };
+}
+
+const vStatusBarPosition: Validator<"top" | "bottom"> = (raw) =>
+  raw === "top" || raw === "bottom" ? raw : undefined;
+
+/**
+ * The per-field table for `config`, which is the one key where a WRONG field is
+ * worse than a missing one, so the table earns its keep.
+ *
+ * `mergeConfig` is a shallow `Object.assign` over the defaults: it copies
+ * whatever is stored on top of the default without looking at it. So a corrupt
+ * `apps` was not a fallback, it was a live crash — `appItems` calls
+ * `apps.filter(...)`, and a profile where `apps` had been hand-edited into a
+ * string took the whole home grid down with "apps.filter is not a function".
+ * The options page had its own `Array.isArray(c.apps)` guard and the command
+ * center had none, which is precisely the divergence a schema exists to remove.
+ *
+ * Validation is per FIELD rather than all-or-nothing, because config is stored
+ * partial by design. A config with one corrupt field should still yield the
+ * user's leader and hint characters. A field that fails its check is DROPPED,
+ * so the default wins for that one field and every valid field survives.
+ */
+const CONFIG_FIELDS: Record<string, (raw: unknown) => unknown> = {
+  leader: vString,
+  hintChars: vString,
+  scrollKeys: vBoolean,
+  openInNewTab: vBoolean,
+  hoverReveal: vBoolean,
+  whichKey: vBoolean,
+  statusBar: vBoolean,
+  statusBarPosition: vStatusBarPosition,
+  autoRestore: vBoolean,
+  apps: vArray(vQuickApp),
+};
+
+export const vConfig: Validator<Partial<Config>> = (raw) => {
+  if (!isObject(raw)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [field, check] of Object.entries(CONFIG_FIELDS)) {
+    // Absent is not corrupt. config is stored partial, so a missing key must
+    // stay missing for mergeConfig's defaults to apply.
+    if (!(field in raw)) continue;
+    const v = check(raw[field]);
+    if (v !== undefined) out[field] = v;
+  }
+  return out as Partial<Config>;
+};
+
+/**
+ * A tab inside a session. Validated on the one field the restore path cannot
+ * work without: a session holding a tab with no `url` hands the tab opener an
+ * `undefined` and the user watches the restore stop halfway.
+ */
+function vSessionTab(raw: unknown): SessionTab | undefined {
+  if (!isObject(raw)) return undefined;
+  if (typeof raw.url !== "string" || raw.url === "") return undefined;
+  // Only the keys that carry information. Writing `splitViewId: undefined`
+  // into every tab would be harmless (every reader tests it for truthiness) but
+  // it changes the shape of a value the writer never produced, and this
+  // validator runs on the READ path — so it would rewrite the user's stored
+  // sessions' shape on the next write-back for no reason.
+  const tab: SessionTab = {
+    url: raw.url,
+    title: typeof raw.title === "string" ? raw.title : "",
+    pinned: raw.pinned === true,
+  };
+  if (typeof raw.splitViewId === "number") tab.splitViewId = raw.splitViewId;
+  if (raw.stealth === true) tab.stealth = true;
+  return tab;
+}
+
+/**
+ * A session validates on its tabs alone: a session with a corrupt tab list is
+ * unusable, but one with a missing marker or a stale `updatedAt` is still
+ * perfectly restorable, and dropping it would lose the user's tabs over a
+ * cosmetic field. The pre-schema reader accepted any object and trusted it
+ * wholesale, so a single malformed session handed callers a shape the rest of
+ * the code does not expect.
+ *
+ * It lives here rather than in sessions.ts because `lfSessions` and
+ * `lfLastSession` are two schema keys holding the same type, and the validator
+ * has to be the same for both — otherwise a checkpoint and a session list
+ * disagree about what a Session is, which is a class of bug nothing else in
+ * the file could see.
+ */
+export const vSession: Validator<Session> = (raw) => {
+  if (!isObject(raw)) return undefined;
+  const tabs = vArray(vSessionTab)(raw.tabs);
+  if (tabs === undefined) return undefined;
+  return {
+    name: typeof raw.name === "string" ? raw.name : "",
+    marker: typeof raw.marker === "number" ? raw.marker : 0,
+    tabs,
+    active: typeof raw.active === "number" ? raw.active : 0,
+    windowState: typeof raw.windowState === "string" ? raw.windowState : "",
+    updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : 0,
+    splits: typeof raw.splits === "string" ? raw.splits : "",
+  };
+};
+
+export const vSessions: Validator<Record<string, Session>> = vRecordOf(vSession);
+
+export const vStealth: Validator<StealthRecord> = (raw) => ({
+  containers: vArray(vString)(isObject(raw) ? raw.containers : undefined) || [],
+});
 
 export type { Config, Session, CacheScope, CacheMode };
 

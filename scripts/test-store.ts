@@ -5,6 +5,12 @@
 //
 // Run: node --experimental-strip-types scripts/test-store.ts
 
+// Registered before anything else: the resolve hook is what lets this file
+// import a src/ module that uses extensionless specifiers, so the assertions
+// below can call the REAL appItems() rather than a paraphrase of it.
+import { register } from "node:module";
+register("./ts-resolve-hook.mjs", import.meta.url);
+
 import {
   vString,
   vBoolean,
@@ -12,10 +18,15 @@ import {
   vArray,
   vRecordOf,
   vTabIds,
+  vConfig,
+  vSession,
+  vSessions,
+  vStealth,
   readKey,
   writeKey,
   removeKey,
 } from "../src/extension/store.ts";
+import { mergeConfig } from "../src/shared/config.ts";
 
 let pass = 0;
 const fails: string[] = [];
@@ -23,10 +34,26 @@ function check(name: string, cond: boolean) {
   if (cond) pass++;
   else fails.push(name);
 }
+// Deep equality that does not care about key ORDER. Plain JSON.stringify
+// comparison turns every assertion about an object into a second, invisible
+// constraint on the order its keys happen to be written in — and the failure
+// message then reads as being about key order, which is not what is under test.
+function stable(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(stable);
+  if (v && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(v as Record<string, unknown>).sort()) {
+      out[k] = stable((v as Record<string, unknown>)[k]);
+    }
+    return out;
+  }
+  return v;
+}
 function eq<T>(name: string, got: T, want: T) {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (ok) pass++;
-  else fails.push(`${name}: got ${JSON.stringify(got)} want ${JSON.stringify(want)}`);
+  const g = JSON.stringify(stable(got));
+  const w = JSON.stringify(stable(want));
+  if (g === w) pass++;
+  else fails.push(`${name}: got ${g} want ${w}`);
 }
 
 // --- vString -------------------------------------------------------------
@@ -170,6 +197,90 @@ check("chromeAlive and chromeEverAlive are separate keys",
 // for a diagnostics row means "not reported yet" forever.
 check("lfBridge is stored as a string, not coerced to boolean",
   vString("1") === "1" && vBoolean("1") === undefined);
+
+// --- vConfig: per-field, not all-or-nothing -------------------------------
+// The failure this prevents is a crash, not a wrong value, so the assertion is
+// written as the crash: feed the validator what a hand-edited profile really
+// holds and then call the code that used to blow up.
+eq("vConfig keeps a fully valid config", vConfig({
+  leader: ",", hintChars: "asdf", scrollKeys: true, openInNewTab: false,
+  hoverReveal: true, whichKey: false, statusBar: true,
+  statusBarPosition: "top", autoRestore: true,
+  apps: [{ id: "a", name: "A", url: "https://a", enabled: true }],
+}), {
+  leader: ",", hintChars: "asdf", scrollKeys: true, openInNewTab: false,
+  hoverReveal: true, whichKey: false, statusBar: true,
+  statusBarPosition: "top", autoRestore: true,
+  apps: [{ id: "a", name: "A", url: "https://a", enabled: true }],
+});
+
+eq("vConfig drops a corrupt field and keeps the rest", vConfig({
+  leader: ",", scrollKeys: "yes-please", statusBarPosition: "sideways",
+}), { leader: "," });
+
+eq("vConfig leaves a partial config partial", vConfig({ leader: "," }), { leader: "," });
+eq("vConfig rejects a non-object", vConfig("nope"), undefined);
+eq("vConfig rejects an array", vConfig([1, 2]), undefined);
+eq("vConfig rejects undefined", vConfig(undefined), undefined);
+
+// An empty object is a VALID (if useless) config, not a rejection: rejecting it
+// would send the caller to the fallback and hide the fact that the user has
+// genuinely chosen the defaults.
+eq("vConfig accepts {}", vConfig({}), {});
+
+// Dropping a bad app tile rather than the whole array: losing one tile is
+// recoverable, losing the user's configured apps is not.
+eq("vConfig drops one malformed app", vConfig({
+  apps: [
+    { id: "a", name: "A", url: "https://a", enabled: true },
+    { id: "b", name: "B", url: "https://b" },
+    "not an app",
+  ],
+}), { apps: [{ id: "a", name: "A", url: "https://a", enabled: true }] });
+
+// The real regression: a profile where apps is a string. Before the validator
+// this reached appItems and threw "apps.filter is not a function", which took
+// the entire home grid down. After it, the field is dropped and the default
+// apps come back. The call is made for real, through the real function.
+g.browser = { runtime: { sendMessage: () => Promise.resolve({}) } };
+const { appItems } = await import("../src/extension/commandcenter/data.ts");
+const recovered = appItems(mergeConfig(vConfig({ apps: "open.spotify.com" })).apps);
+check("a corrupt apps field no longer takes the home grid down", Array.isArray(recovered));
+check("a corrupt apps field falls back to the default tiles", recovered.length > 0);
+check("the default tiles are the real ones", recovered.some((i) => i.url === "https://open.spotify.com"));
+
+// An empty apps array is a deliberate user choice (every tile switched off) and
+// must survive, so the home grid goes empty rather than resurrecting defaults.
+eq("vConfig keeps an explicitly emptied app list", vConfig({ apps: [] }), { apps: [] });
+
+// --- vSession / vSessions ------------------------------------------------
+const goodSession = {
+  name: "work", marker: 1, active: 0, windowState: "maximized",
+  updatedAt: 123, splits: "1:2", tabs: [{ url: "https://a", title: "A", pinned: true }],
+};
+eq("vSession round-trips a valid session", vSession(goodSession), goodSession);
+check("vSession rejects a session with no tabs", vSession({ name: "work" }) === undefined);
+check("vSession rejects a non-object", vSession("work") === undefined);
+// A session with tabs but no marker is still restorable, so it must survive:
+// dropping it would lose the user's tabs over a cosmetic field.
+eq("vSession keeps a session missing only cosmetic fields",
+  vSession({ tabs: [{ url: "https://a" }] }),
+  { name: "", marker: 0, tabs: [{ url: "https://a", title: "", pinned: false }],
+    active: 0, windowState: "", updatedAt: 0, splits: "" });
+// A tab with no url hands the tab opener an undefined and the restore stops
+// halfway, so that tab is dropped and the rest of the session still restores.
+eq("vSession drops a url-less tab but keeps the session", (vSession({
+  tabs: [{ url: "https://a" }, { title: "orphan" }, 7],
+}) as { tabs: unknown[] }).tabs.length, 1);
+check("vSessions drops one bad session and keeps the good ones",
+  Object.keys(vSessions({ work: goodSession, broken: { name: "x" } })!).length === 1);
+
+// --- vStealth ------------------------------------------------------------
+eq("vStealth keeps valid container ids", vStealth({ containers: ["a", "b"] }), { containers: ["a", "b"] });
+eq("vStealth drops a malformed id without failing the record",
+  vStealth({ containers: ["a", 3, null, "b"] }), { containers: ["a", "b"] });
+eq("vStealth turns a corrupt record into an empty set", vStealth("nope"), { containers: [] });
+eq("vStealth turns a missing record into an empty set", vStealth(undefined), { containers: [] });
 
 console.log(`${pass} passed, ${fails.length} failed`);
 if (fails.length) {
