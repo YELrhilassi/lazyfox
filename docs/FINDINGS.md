@@ -228,6 +228,45 @@ found and fixed by hand, which is the best evidence it was worth doing.
 loop inside keypress handlers. Now modelled in `chrome/tabs.ts`, with the
 version-gated split-view members distinguished from the universal ones.
 
+### DONE — the 1038-line find closure
+`openFindPopup` was one function containing a page-text cache, a search over
+it, a second mode with its own key grammar (yank), a scroll-position stack,
+and three overlays. It is now `find/text` (pure, unit-tested), `find/model`
+(cache + search), `find/yank` (the mode), `find/scroll`, `find/overlays`, and a
+389-line `find.ts` that only wires them together and owns the four elements,
+the one render, and the key dispatch.
+
+The split is along the line that matters: what is a CACHE of the page, what is
+a SEARCH over it, what is a MODE, and what is pure arithmetic. Those have
+different invalidation rules, and inside one function the two ways they can go
+wrong — a cache a keystroke invalidated (re-walking a 4MB document per
+character) and a search that outlived its cache (counting matches against text
+that is no longer on the page) — are indistinguishable to read.
+
+Three behaviours were latent traps the split made visible:
+
+  - `piecesForSegs` with a non-positive range returned a ZERO-WIDTH piece
+    rather than nothing. No caller could reach it (a match always has a
+    length), but a `Range` with `start === end` draws no highlight while the
+    count badge still says there is one — a silent zero, which is worse than
+    an empty list. Guarded, with the reason written down.
+
+  - `y` (copy the current match) flashed what it copied. Extracting the flash
+    helpers into `find/overlays` and dropping the call in passing would have
+    made a successful copy indistinguishable from a no-op on a page with no
+    visible selection, so the call now sits next to the copy it belongs to.
+
+  - `onCommit` has to run BEFORE the jump, not after. It records the position
+    the user is leaving; called after `scrollIntoView` it would record the
+    destination and ctrl+o back would do nothing. The comment says so, because
+    the natural order reads backwards.
+
+The wiring also had to break a cycle between the scroll memory, the session
+and yank mode. The first version passed a closure over `yank` into the scroll
+memory while `yank` was still being declared — safe in practice, since no
+scroll event can fire during synchronous setup, but a trap to read. It is now
+an explicit `ignoreForeignScroll()` flag set at the mode change.
+
 ### DONE — the last eight direct reads
 The last eight direct `storage.local` reads are gone: `commandcenter`,
 `options`, `setup`, `content/main` and the two `sync` handlers. Every
@@ -261,10 +300,12 @@ pays for a framework runtime. Plan: split `src/shared/popups/` into a components
 tree and a zero-dependency core sharing the data layer; leave the hint labels,
 status bar and `relay.html` vanilla.
 
-### OPEN — the remaining god files
-`channel.ts` 1045, `main.ts` 1059, `ops.ts` 761, `find.ts` 1333 (1038-line
-`openFindPopup`), `history.ts` 644 (`openHistoryPopup`), `sessions.ts` 454
-(`openSessionsPopup`), `hints/session.ts` 537.
+### PARTIAL — the remaining god files
+`find.ts` was 1333, with a 1038-line `openFindPopup` closure holding ~35
+mutable locals; it is now 389 lines of wiring over five modules (below).
+Still large: `channel.ts` 1045, `main.ts` 1059, `ops.ts` 761, `history.ts` 644
+(`openHistoryPopup`), `sessions.ts` 454 (`openSessionsPopup`), `hints/session.ts`
+537.
 
 ### DONE — `lfBridge` was written and never read, under a false comment
 The write site said "The diagnostics page reports it, so a silently missing

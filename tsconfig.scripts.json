@@ -24,7 +24,18 @@
   // the real row renderers, which live in DOM modules, and their typechecking
   // belongs to tsconfig.json. The renderers are still checked there; only the
   // Node-side test of them is out of scope for this config.
-  "exclude": ["scripts/test-page-text.ts", "scripts/test-store.ts", "scripts/test-render-escaping.ts"],
+  //
+  // scripts/test-find-text.ts is the fourth of these: it tests find/text.ts,
+  // whose segment tables are typed as DOM Text nodes. Note that excluding the
+  // test also stops this config reaching find/text.ts at all, because nothing
+  // else here imports it — which is the intent. find/text.ts is typechecked by
+  // tsconfig.json, like every module in the browser tree.
+  "exclude": [
+    "scripts/test-page-text.ts",
+    "scripts/test-store.ts",
+    "scripts/test-render-escaping.ts",
+    "scripts/test-find-text.ts"
+  ],
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
