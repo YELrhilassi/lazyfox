@@ -3,11 +3,18 @@
 // core). Also owns the quick-launch web-app editor (config.apps). The keyboard
 // handling for this page lives in optionskeys.ts.
 
-import { CHROME_HOTKEY_DEFAULTS, CONFIG_DEFAULTS, defaultApps } from "../shared/config";
+import {
+  CHROME_HOTKEY_DEFAULTS,
+  CONFIG_DEFAULTS,
+  defaultApps,
+  mergeConfig,
+  mergeHotkeys,
+} from "../shared/config";
+import { readKey, writeKey, vConfig, vStringMap } from "./store";
 import { core } from "../shared/core";
 import { favicon } from "../shared/dom";
 import { send } from "../shared/protocol";
-import type { QuickApp } from "../shared/types";
+import type { ChromeHotkeys, Config, QuickApp } from "../shared/types";
 
 (function () {
   "use strict";
@@ -24,7 +31,11 @@ import type { QuickApp } from "../shared/types";
   const saveBtn = document.getElementById("save") as HTMLButtonElement;
   const statusEl = document.getElementById("status") as HTMLSpanElement;
 
-  const CH_KEYS = Object.keys(CHROME_HOTKEY_DEFAULTS);
+  // Cast, not a lie: CHROME_HOTKEY_DEFAULTS is typed, and the cast recovers
+  // the literal key union Object.keys() widens to string. Without it the whole
+  // bindings table is indexed by plain string and a typo in a key name is
+  // invisible — which is exactly what the typed store was supposed to stop.
+  const CH_KEYS = Object.keys(CHROME_HOTKEY_DEFAULTS) as (keyof ChromeHotkeys)[];
   const chEls: { [k: string]: HTMLInputElement } = {};
   for (const k of CH_KEYS) {
     chEls[k] = document.getElementById("ch" + k[0]!.toUpperCase() + k.slice(1)) as HTMLInputElement;
@@ -123,16 +134,19 @@ import type { QuickApp } from "../shared/types";
     (appsList.lastElementChild!.querySelector(".name") as HTMLInputElement).focus();
   });
 
-  function chBindingsFromForm() {
-    const bindings: { [k: string]: string } = {};
+  function chBindingsFromForm(): Record<string, string> {
+    const bindings: Record<string, string> = {};
     for (const k of CH_KEYS) {
-      bindings[k] =
-        (chEls[k]!.value || "").trim() || CHROME_HOTKEY_DEFAULTS[k as keyof typeof CHROME_HOTKEY_DEFAULTS];
+      bindings[k] = (chEls[k]!.value || "").trim() || CHROME_HOTKEY_DEFAULTS[k];
     }
     return bindings;
   }
 
-  function formConfig() {
+  // The return type is the point of this annotation. Without it the ternary
+  // below widens statusBarPosition to string, writeKey then refuses the whole
+  // object, and the options page becomes the one page that cannot save — which
+  // is where a silently-corrupt preference is most expensive.
+  function formConfig(): Partial<Config> {
     return {
       leader: leader.value || CONFIG_DEFAULTS.leader,
       hintChars: hintChars.value || CONFIG_DEFAULTS.hintChars,
@@ -188,8 +202,13 @@ import type { QuickApp } from "../shared/types";
     set("cChrome", c.chromeHelper);
   });
 
-  browser.storage.local.get(["config", "chromeBindings"]).then((r: any) => {
-    const c = Object.assign({}, CONFIG_DEFAULTS, r.config || {});
+  Promise.all([
+    readKey("config", vConfig, {}),
+    readKey("chromeBindings", vStringMap, {}),
+  ]).then(([storedConfig, storedBindings]) => {
+    // mergeConfig rather than a hand-rolled Object.assign: the defaults then
+    // live in exactly one file, and this page cannot drift from it.
+    const c = mergeConfig(storedConfig);
     leader.value = c.leader;
     hintChars.value = c.hintChars;
     scrollKeys.checked = c.scrollKeys !== false;
@@ -200,10 +219,13 @@ import type { QuickApp } from "../shared/types";
     statusBarPosition.value = c.statusBarPosition === "top" ? "top" : "bottom";
     autoRestore.checked = c.autoRestore !== false;
     // Apps: fall back to defaults when absent (linked by reference via spread).
-    const apps: QuickApp[] = Array.isArray(c.apps) && c.apps.length ? c.apps : defaultApps();
+    // An explicitly emptied app list is a valid user choice, so "empty"
+    // cannot mean "corrupt" — but vConfig has already guaranteed the array, so
+    // the only remaining question is whether there is anything in it.
+    const apps: QuickApp[] = c.apps.length ? c.apps : defaultApps();
     appsList.textContent = "";
     apps.forEach((a) => addAppRow(a));
-    const cb = Object.assign({}, CHROME_HOTKEY_DEFAULTS, r.chromeBindings || {});
+    const cb = mergeHotkeys(storedBindings);
     for (const k of CH_KEYS) {
       chEls[k]!.value = cb[k];
     }
@@ -218,15 +240,18 @@ import type { QuickApp } from "../shared/types";
   }
 
   saveBtn.addEventListener("click", () => {
-    browser.storage.local
-      .set({
-        config: formConfig(),
-        chromeBindings: chBindingsFromForm()
-      })
-      .then(() => {
-        statusEl.textContent = "saved";
-        setTimeout(() => (statusEl.textContent = ""), 1500);
-      });
+    // Two keys, so Promise.all rather than two awaits in series: the save
+    // button waits on both anyway and the round trips are independent. The
+    // store writers are best-effort, so the "saved" confirmation below is
+    // shown either way — same as the old .set() would have been swallowed, but
+    // now the swallow has one documented home.
+    void Promise.all([
+      writeKey("config", formConfig()),
+      writeKey("chromeBindings", chBindingsFromForm()),
+    ]).then(() => {
+      statusEl.textContent = "saved";
+      setTimeout(() => (statusEl.textContent = ""), 1500);
+    });
     pushChromeBindings();
   });
 })();

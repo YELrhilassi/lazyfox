@@ -11,7 +11,9 @@
 // syncTyping stores its flag in the tab's session value rather than pushing it,
 // because the typing state has to survive the content script being torn down and
 // rebuilt (a bfcache restore, a virtual-DOM navigation).
-import { getConfig } from "../config";
+import { mergeConfig } from "../../shared/config";
+import { getConfig, setConfig } from "../config";
+import { vConfig } from "../store";
 import type { Domain } from "./types";
 // The actions this domain owns. The list is the contract: background.ts unions
 // every domain's list and requires the result to cover BgApi exactly, so a new
@@ -68,15 +70,23 @@ export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
     },
 
     setConfig: async (data) => {
-      await browser.storage.local.set({ config: data.config });
+      // Validated on the way IN, not only on the way out. This is the one
+      // config write in the system whose payload arrives over a message
+      // boundary, so it is the one write that can store a shape the writers
+      // never produce. Rejecting here means a bad payload is simply not
+      // applied, instead of becoming a value that has to be defended against
+      // at every one of the ~20 read sites forever after.
+      const c = vConfig(data.config);
+      if (!c) return { ok: false, error: "config is not an object" };
+      await setConfig(mergeConfig(c));
       return { ok: true };
     },
 
     toggleWhichKey: async () => {
       const c = await getConfig();
       c.whichKey = !c.whichKey;
-      await browser.storage.local.set({ config: c });
-      return { whichKey: !!c.whichKey };
+      await setConfig(c);
+      return { whichKey: c.whichKey };
     },
 
     stealthOpen: () => deps.stealthOpen(() => void deps.pushSessionStateToChrome()),

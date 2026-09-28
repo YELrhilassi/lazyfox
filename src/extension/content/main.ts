@@ -13,6 +13,7 @@ import { LeaderController } from "../../shared/leader";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/popups";
 import { send } from "../../shared/protocol";
+import { readKey, vConfig } from "../store";
 import type { Config } from "../../shared/types";
 import { collectPageReport } from "./diagnostics";
 import { createLinkHints, focusFirstInput } from "./hints";
@@ -43,12 +44,9 @@ import type { ContentPopupShell } from "./find";
 
   function loadConfig() {
     try {
-      void browser.storage.local.get("config").then(
-        (r: { config?: Partial<Config> }) => {
-          if (r && r.config) config = mergeConfig(r.config);
-        },
-        () => {}
-      );
+      void readKey("config", vConfig, {}).then((c) => {
+        config = mergeConfig(c);
+      });
     } catch (e) {
       // A storage hiccup must never take the keyboard handling down with it.
       if (__DEV__) dbg("config load failed", (e && (e as Error).message) || String(e));

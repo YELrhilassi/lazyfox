@@ -13,14 +13,7 @@ import type { PopupItem, Session, SessionTab } from "../shared/types";
 import type { ChromeAction, ChromeReq } from "../shared/protocol";
 import { CC_URL, isUITab, realTabsInWindow } from "./tabs";
 import { reconcileStealth, stealthContainers, stealthCreateTab } from "./stealth";
-import {
-  readKey,
-  writeKey,
-  removeKey,
-  readKeyOr,
-  vString,
-  vRecordOf,
-} from "./store";
+import { readKey, writeKey, removeKey, readKeyOr, vString, vSession, vSessions } from "./store";
 // Sessions keep EVERY tab in the window (no cap — switching sessions must never
 // drop tabs). Markers are the only 1-9 constraint, like tmux windows.
 const MAX_SESSION_MARKER = 9;
@@ -39,29 +32,6 @@ export function bindChromeHooks(h: ChromeHooks): void {
   requestChrome = h.requestChrome;
   pushSessionState = h.pushSessionState;
 }
-
-// A session validates on its tabs alone: a session with a corrupt tab list is
-// unusable, but one with a missing marker or a stale updatedAt is still
-// perfectly restorable, and dropping it would lose the user's tabs over a
-// cosmetic field. The old reader accepted any object and trusted it wholesale,
-// so a profile with one malformed session handed a caller a shape the rest of
-// the code does not expect.
-function vSession(raw: unknown): Session | undefined {
-  if (!raw || typeof raw !== "object") return undefined;
-  const s = raw as Partial<Session>;
-  if (!Array.isArray(s.tabs)) return undefined;
-  return {
-    name: typeof s.name === "string" ? s.name : "",
-    marker: typeof s.marker === "number" ? s.marker : 0,
-    tabs: s.tabs,
-    active: typeof s.active === "number" ? s.active : 0,
-    windowState: typeof s.windowState === "string" ? s.windowState : "",
-    updatedAt: typeof s.updatedAt === "number" ? s.updatedAt : 0,
-    splits: typeof s.splits === "string" ? s.splits : "",
-  };
-}
-
-const vSessions = vRecordOf(vSession);
 
 async function readSessions(): Promise<Record<string, Session>> {
   return readKey("lfSessions", vSessions, {});

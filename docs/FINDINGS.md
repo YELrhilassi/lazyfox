@@ -64,6 +64,38 @@ The preferred search API failing sent the user to a hardcoded `google.com`, so
 a DuckDuckGo user silently got Google on exactly the occasions the good path
 failed. Now routes through `searchUrlFor`.
 
+### DONE — a corrupt `apps` took the whole home grid down
+`appItems` calls `apps.filter(...)` on whatever `mergeConfig` returned, and
+`mergeConfig` is a shallow `Object.assign` that copies stored values over the
+defaults without looking at them. A profile where `config.apps` had been
+hand-edited into a string threw `apps.filter is not a function` in the middle of
+the command center's startup. The options page had its own
+`Array.isArray(c.apps)` guard; the command center had none. Two readers, one
+rule, one of them wrong — which is the failure a schema is supposed to make
+impossible rather than merely unlikely.
+
+Config is now validated per field on the way in and on the way out. A field
+that fails its check is dropped so the default wins for that field alone, and
+every valid field survives. The test asserts the real thing — the corrupt value
+goes through the real `appItems()`, and the grid comes back with the real
+default tiles — because a test of the validator alone would still pass if the
+validator were fine and the call site were not.
+
+### DONE — `setConfig` wrote an unvalidated message payload across a boundary
+`setConfig` is a background action, so its `config` argument arrives over a
+message boundary from another extension context, and it was written straight to
+storage. Everything downstream then had to be ready for a shape the writers
+never produce. It is validated now, so a bad payload is simply not applied
+instead of becoming a value to defend against at every read site forever.
+
+### DONE — the options page could not have saved, and the typechecker said so
+`formConfig()` had no return type, so the `"top" : "bottom"` ternary widened
+`statusBarPosition` to `string` and the store's `writeKey` rejected the whole
+object. Against `browser.storage.local.set` (which takes `any`) it compiled
+silently. The same wiring exposed `CH_KEYS` being a plain `string[]`, which
+meant a typo in a hotkey key name was invisible — the exact class of bug the
+typed store was introduced to stop.
+
 ---
 
 ## Measurement corrections (a claim that turned out to be wrong)
@@ -126,6 +158,20 @@ can see; under-escaping is a vulnerability you cannot. The test now asserts the
 safe direction and the comment says why, so the next person does not
 "simplify" it back.
 
+### DONE — a comment documented a safety that did not exist
+`extension/config.ts` read config through a permissive `vPartialConfig` and
+explained why: "Validating it here too would mean two places that have to agree
+about which fields exist", adding that `mergeConfig` "rejects the individual
+fields". Both halves were wrong. `mergeConfig` is `Object.assign` and rejects
+nothing, and the second place to agree about the fields no longer needed to
+exist — the store is now that one place. A comment is not a safety net, and one
+that argues *against* adding a check is worse than no comment at all, because
+it reads as a settled decision.
+
+This is the second time in this log that a comment described behaviour the code
+did not have; the first was `lfBridge`. Both were found the same way: by
+reading what the comment claims, then reading the code it claims it about.
+
 ### DONE - a ghost-code scan, run after the fixes, came back empty
 The same scan that would have found `lfBridge` found nothing this time, and its
 two remaining hits were false positives (`seq` in host.ts is declared plus used
@@ -182,6 +228,21 @@ found and fixed by hand, which is the best evidence it was worth doing.
 loop inside keypress handlers. Now modelled in `chrome/tabs.ts`, with the
 version-gated split-view members distinguished from the universal ones.
 
+### DONE — the last eight direct reads
+The last eight direct `storage.local` reads are gone: `commandcenter`,
+`options`, `setup`, `content/main` and the two `sync` handlers. Every
+persisted key now has exactly one validating reader, and the two validators
+that had drifted into their own modules (`vSession`, `vStealth`) moved into
+the schema — `lfSessions` and `lfLastSession` are two keys holding the same
+type, and the validator has to be the same for both.
+
+Wiring it up paid for itself twice more before the typecheck was clean: the
+corrupt-`apps` crash and the unsaveable options page above were both found by
+the schema rather than by reading.
+
+The options suite grew two tests, because the save path it now covers had none,
+and a save that silently writes nothing leaves every other test green.
+
 ### DONE — an orphaned comment describing a deleted function
 `actor-child.ts` carried a design note for a `windowUtils` trusted click that
 was removed during the trusted-press revert, left reading as working code.
@@ -204,11 +265,6 @@ status bar and `relay.html` vanilla.
 `channel.ts` 1045, `main.ts` 1059, `ops.ts` 761, `find.ts` 1333 (1038-line
 `openFindPopup`), `history.ts` 644 (`openHistoryPopup`), `sessions.ts` 454
 (`openSessionsPopup`), `hints/session.ts` 537.
-
-### PARTIAL — the typed store
-Done: the 12-key schema, `sessions.ts` (12 sites, now zero direct reads),
-`cache.ts`, `stealth.ts`, `config.ts`, and `background.ts` (10 sites).
-Still direct: `commandcenter` (4), `options` (2), `setup` (2).
 
 ### DONE — `lfBridge` was written and never read, under a false comment
 The write site said "The diagnostics page reports it, so a silently missing
