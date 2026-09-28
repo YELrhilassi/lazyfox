@@ -25,6 +25,8 @@ import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
 import type { ChromeAction, ChromeReq, RelayAction, RelayReq, RelayRes } from "../shared/protocol";
 import { HASH_PREFIX, decodeCommand, decodeReply, encodeRequest } from "../shared/relay-wire";
 import { applyHoverRevealPref, type ChromeCfg } from "./config";
+import { handleKeys } from "./keys";
+import { createTabGuard } from "./tabguard";
 import type { CacheCtl } from "./cache";
 import type { DebugHandlers } from "./debug";
 import type { SplitView } from "./splitview";
@@ -399,155 +401,16 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
   }
 
-  // Real user tabs only: alive, and not the hidden relay. The just-closed
-  // tab is excluded separately (lastClosedTabs): Firefox keeps a closing tab
-  // in gBrowser.tabs while it tears down, and steering the selection onto that
-  // dying wrapper is exactly the blank-gray-page dead end (with two tabs the
-  // strip is [A, relay, B], so closing B selects the relay and the guard must
-  // NOT "fix" it by selecting B again). We deliberately do NOT filter on
-  // t.closing here: session restore marks EVERY tab closing during its
-  // close-all phase, and treating that as "no real tabs" made the guard open
-  // a command-center tab for each pass, corrupting the restored window.
-  const lastClosedTabs = new Set<any>();
-  function realUserTabs(): any[] {
-    return Array.from(window.gBrowser.tabs).filter((t: any) => {
-      try {
-        if (Cu && Cu.isDeadWrapper(t)) return false;
-        if (lastClosedTabs.has(t)) return false;
-        const spec =
-          t.linkedBrowser && t.linkedBrowser.currentURI
-            ? t.linkedBrowser.currentURI.spec
-            : "";
-        return spec.indexOf("relay.html") === -1;
-      } catch (e) {
-        return false;
-      }
-    });
-  }
-
-  // Delayed stranded-recovery. When no real tab remains, the window may be
-  // mid-restore (its close-all phase leaves only the relay for a moment) or
-  // genuinely stranded (the user closed the last real tab). Recover on a
-  // delayed pass: if a real tab reappears first (restore proceeded), just
-  // steer; only when the window is STILL relay-only do we open a fresh
-  // command-center tab. One in-flight pass, ever.
-  let recoveryTimer: any = null;
-  function scheduleStrandedRecovery(): void {
-    if (recoveryTimer) return;
-    recoveryTimer = setTimeout(() => {
-      recoveryTimer = null;
-      try {
-        const real = realUserTabs();
-        if (real.length) {
-          ensureRealTabSelected(); // restore proceeded — just steer if needed
-          return;
-        }
-        let onlyRelay = true;
-        try {
-          for (const t of Array.from(window.gBrowser.tabs) as any[]) {
-            const spec =
-              t.linkedBrowser && t.linkedBrowser.currentURI
-                ? t.linkedBrowser.currentURI.spec
-                : "";
-            if (spec.indexOf("relay.html") === -1) {
-              onlyRelay = false;
-              break;
-            }
-          }
-        } catch (e) {
-          onlyRelay = false;
-        }
-        if (onlyRelay) {
-          const base = ccBaseUrl();
-          if (base) {
-            const tab = window.gBrowser.addTab(base + "commandcenter.html", {
-              inBackground: false,
-              skipAnimation: true,
-              triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-            });
-            if (tab) window.gBrowser.selectedTab = tab;
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
-    }, 700);
-  }
-
-  // Firefox may select the adjacent tab AFTER a close — which can be the
-  // hidden relay (blank, keys dead) or a wrapper still being torn down
-  // (blank gray content, nothing renderable). Never leave the user stranded:
-  // on the next tick, if the selected tab is not a real user tab, steer to
-  // the last real tab; if no real tab remains, defer to the delayed recovery
-  // (a restore in progress must not be clobbered with a new tab).
-  function ensureRealTabSelected(): void {
-    try {
-      const sel = window.gBrowser.selectedTab;
-      const real = realUserTabs();
-      if (!real.length) {
-        scheduleStrandedRecovery();
-        return;
-      }
-      let selBad = false;
-      try {
-        if (Cu && Cu.isDeadWrapper(sel)) selBad = true;
-      } catch (e) {
-        selBad = true;
-      }
-      if (!selBad) {
-        try {
-          const s =
-            sel && sel.linkedBrowser && sel.linkedBrowser.currentURI
-              ? sel.linkedBrowser.currentURI.spec
-              : "";
-          if (s.indexOf("relay.html") !== -1) selBad = true;
-        } catch (e) {
-          selBad = true;
-        }
-      }
-      if (selBad) window.gBrowser.selectedTab = real[real.length - 1];
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // The 500ms poll alone leaves a window where the relay sits selected after
-  // Firefox auto-selects an adjacent tab on a close (the white flash / blank
-  // dead end). Hook the tab container so selection is corrected on the same
-  // tick. Idempotent; guards against double-hooking.
-  let tabEventsHooked = false;
-  function hookTabSelectionGuard(): void {
-    if (tabEventsHooked) return;
-    tabEventsHooked = true;
-    try {
-      const container = window.gBrowser && window.gBrowser.tabContainer;
-      if (!container) return;
-      container.addEventListener("TabSelect", () => ensureRealTabSelected());
-      container.addEventListener("TabClose", (e: any) => {
-        // Remember the exact tab that closed: while it tears down it still
-        // sits in gBrowser.tabs, and steering onto it is the blank dead end.
-        const closed = e && e.target;
-        if (closed) {
-          lastClosedTabs.add(closed);
-          setTimeout(() => lastClosedTabs.delete(closed), 3000);
-        }
-        // Firefox may select the adjacent tab (possibly the relay or a dying
-        // wrapper) AFTER the close event; steer on the next tick once
-        // selection has settled, and check again once the removal completes.
-        setTimeout(() => {
-          ensureRealTabSelected();
-          setTimeout(() => ensureRealTabSelected(), 250);
-        }, 0);
-      });
-    } catch (e) {
-      // ignore
-    }
-  }
+  // The tab-selection guard (what a real user tab is, same-tick steering
+  // after a close, delayed stranded recovery) lives in tabguard.ts. It is
+  // created here, hooked once from startRelay, and consulted by relayDebug
+  // and nothing else.
+  const tabGuard = createTabGuard({ ccBaseUrl });
 
   function startRelay(): boolean {
     if (!ccBaseUrl()) return false;
     let r = resolveRelayTab();
-    hookTabSelectionGuard();
+    tabGuard.hook();
     if (!r) {
       // No relay yet: create the tab; requests queue until it exists.
       createRelayTab();
@@ -555,7 +418,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
     relayReady = true;
     dedupeRelayTabs();
-    ensureRealTabSelected();
+    tabGuard.ensureRealTabSelected();
     pollRelayUrl();
     return true;
   }
@@ -750,215 +613,10 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
   }
 
-  // Apply the Shift modifier to a printable key the way a real keyboard does
-  // (the harness asks for `;|` as key "\\" + shift, `;+` as "=" + shift). The
-  // real key path has Firefox compute the shifted character; the synthetic
-  // #lfc=keys path must do it itself or the leader sees "\\" instead of "|".
-  function shiftedKey(key: string): string {
-    if (key.length !== 1) return key;
-    if (key >= "a" && key <= "z") return key.toUpperCase();
-    const map: Record<string, string> = {
-      "`": "~", "1": "!", "2": "@", "3": "#", "4": "$", "5": "%",
-      "6": "^", "7": "&", "8": "*", "9": "(", "0": ")",
-      "-": "_", "=": "+", "[": "{", "]": "}", "\\": "|",
-      ";": ":", "'": "\"", ",": "<", ".": ">", "/": "?",
-    };
-    return map[key] || key;
-  }
-
-  // Key names -> DOM_VK_ key codes for sendKeyEvent (printable chars use
-  // charCode with keyCode 0).
-  const SPECIAL_KEYS: Record<string, number> = {
-    Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46,
-    ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
-    Home: 36, End: 35, PageUp: 33, PageDown: 34, Space: 32,
-  };
-
-  // Synthesize a key sequence through the trusted input path (sendKeyEvent),
-  // so the chrome document's capture-phase keydown listener AND the focused
-  // page see exactly what a real key produces. The e2e harness drives the
-  // command center this way because geckodriver's BiDi input is rejected on
-  // moz-extension ("privileged scope") contexts and Marionette keys never
-  // reach the chrome window's listener (so the helper's leader/popups — the
-  // real user code path — would never see the leader key).
-  // Build a synthetic KeyboardEvent matching a key spec, dispatching through
-  // the normal DOM path so a page's window/document keydown listeners see it.
-  // The constructor comes from the TARGET window's realm: an event created
-  // with the chrome window's KeyboardEvent and dispatched into a content
-  // document is invisible to the page's listeners (its internal Window is the
-  // creator's), which is exactly what broke cross-realm dispatch.
-  function buildKeyEvent(
-    type: string,
-    ev: { key: string; shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean },
-    ctor: typeof KeyboardEvent = KeyboardEvent
-  ): KeyboardEvent {
-    const keyCode = SPECIAL_KEYS[ev.key] !== undefined ? SPECIAL_KEYS[ev.key] : ev.key.length === 1 ? ev.key.toUpperCase().charCodeAt(0) : 0;
-    const charCode = ev.key.length === 1 ? ev.key.charCodeAt(0) : 0;
-    return new ctor(type, {
-      key: ev.key,
-      code: ev.key,
-      keyCode,
-      which: keyCode || charCode,
-      charCode,
-      bubbles: true,
-      cancelable: true,
-      shiftKey: ev.shiftKey,
-      ctrlKey: ev.ctrlKey,
-      altKey: ev.altKey,
-      metaKey: ev.metaKey,
-    });
-  }
-
-  // Synthetic (untrusted) key events never run the browser's native text
-  // insertion, which pages rely on for typing. Emulate it exactly: only when
-  // the keydown was NOT defaultPrevented (the page left the default action
-  // to the browser) and the target is a text field, insert the character.
-  function maybeInsertText(
-    target: Element | null,
-    ev: { key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean },
-    notCanceled: boolean
-  ): void {
-    if (!notCanceled || !target) return;
-    if (ev.key.length !== 1 || ev.ctrlKey || ev.altKey || ev.metaKey) return;
-    try {
-      const tag = String(target.tagName || "").replace(/^.*:/, "").toUpperCase();
-      const input = tag === "INPUT" || tag === "TEXTAREA"
-        ? (target as HTMLInputElement)
-        : target.closest && target.closest("input, textarea")
-          ? (target.closest("input, textarea") as HTMLInputElement)
-          : null;
-      if (!input || input.readOnly || input.disabled) return;
-      const s = input.selectionStart == null ? input.value.length : input.selectionStart;
-      const en = input.selectionEnd == null ? input.value.length : input.selectionEnd;
-      input.value = input.value.slice(0, s) + ev.key + input.value.slice(en);
-      try {
-        input.setSelectionRange(s + 1, s + 1);
-      } catch (e) {
-        // ignore
-      }
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // Deliver an unconsumed key to wherever focus lives: the chrome popup input
-  // when a popup is open, otherwise the target tab's content (the command
-  // center). This mirrors what a real key would do after the chrome capture
-  // listener lets it through. `targetTab` is the tab the harness asked to
-  // address (defaults to the selected tab) — the chrome-level dispatch runs on
-  // the REAL selection (so relative actions like ;[/;] switch the actual active
-  // pane), but a key the chrome layer lets through lands in the addressed tab.
-  function dispatchToFocused(
-    ev: {
-      key: string;
-      shiftKey: boolean;
-      ctrlKey: boolean;
-      altKey: boolean;
-      metaKey: boolean;
-    },
-    targetTab: any
-  ): void {
-    try {
-      const popupInput = document.querySelector(".lf-input") as HTMLElement | null;
-      if (popupInput) {
-        // No keypress: the editor inserts text natively on a trusted keypress,
-        // so a synthetic one would double-insert alongside maybeInsertText.
-        // Neither the command center nor the popups listen to keypress.
-        const notCanceled = popupInput.dispatchEvent(buildKeyEvent("keydown", ev));
-        popupInput.dispatchEvent(buildKeyEvent("keyup", ev));
-        maybeInsertText(popupInput, ev, notCanceled);
-        return;
-      }
-    } catch (e) {
-      // fall through to content
-    }
-    try {
-      const tab = targetTab || (window.gBrowser && window.gBrowser.selectedTab);
-      const cw = tab && tab.linkedBrowser && tab.linkedBrowser.contentWindow;
-      if (cw && cw.document) {
-        const ctor = (cw as { KeyboardEvent?: typeof KeyboardEvent }).KeyboardEvent || KeyboardEvent;
-        const target = cw.document.activeElement || cw.document.documentElement;
-        // No keypress (see the popup path): a synthetic keypress with a
-        // charCode makes the editor insert the text natively, double-inserting
-        // alongside maybeInsertText.
-        const notCanceled = target.dispatchEvent(buildKeyEvent("keydown", ev, ctor));
-        target.dispatchEvent(buildKeyEvent("keyup", ev, ctor));
-        maybeInsertText(target, ev, notCanceled);
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  function handleKeys(browser: any, rest: string, setHash: (b: any, h: string) => void): void {
-    // Reply loop guard: our own reply hash (keys.ok.<nonce>) re-enters via
-    // onLocationChange. base64 payloads never start with "ok."/"err.".
-    if (rest.startsWith("ok.") || rest.startsWith("err.")) return;
-    const dot = rest.indexOf(".");
-    const payload = dot < 0 ? rest : rest.slice(0, dot);
-    const nonce = dot < 0 ? "" : rest.slice(dot + 1);
-    let req: { idx?: number; keys?: Array<{ k: string; shift?: boolean; ctrl?: boolean; alt?: boolean; meta?: boolean }> } = {};
-    try {
-      const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
-      req = JSON.parse(new TextDecoder().decode(bytes));
-    } catch (e) {
-      setHash(browser, "#lfc=keys.err." + nonce);
-      return;
-    }
-    const seq = Array.isArray(req.keys) ? req.keys : [];
-    const errReply = (e: unknown): void => {
-      try {
-        const msg = String((e && (e as Error).message) || e);
-        const st = String((e && (e as Error).stack) || "").split("\n").slice(0, 2).join(" @ ");
-        Services.console.logStringMessage("lfc keys error: " + msg + " @ " + st);
-        setHash(browser, "#lfc=keys.err." + btoa(msg + " @ " + st).replace(/=+$/g, "") + "." + nonce);
-      } catch (e2) {
-        setHash(browser, "#lfc=keys.err." + nonce);
-      }
-    };
-    // Resolve the tab the harness addressed (idx -1 means the selected tab).
-    // The chrome key dispatch runs on the REAL current selection, so leader
-    // actions that are relative to the active pane (;[/;], ;+N, ;|) work on
-    // whatever pane is actually active; only keys the chrome layer lets through
-    // (typing) are routed to the addressed tab's content. Never force-select
-    // req.idx here: that would reset the active pane mid-split and make ;[ /
-    // ;] switch from the wrong pane (and it undid ;c's selection of the copy).
-    let targetTab: any = window.gBrowser && window.gBrowser.selectedTab;
-    try {
-      if (typeof req.idx === "number" && req.idx >= 0 && window.gBrowser.tabs[req.idx]) {
-        targetTab = window.gBrowser.tabs[req.idx];
-      }
-    } catch (e) {
-      // ignore
-    }
-    let i = 0;
-    const step = (): void => {
-      if (i >= seq.length) {
-        setHash(browser, "#lfc=keys.ok." + nonce);
-        return;
-      }
-      const k = seq[i++] || { k: "" };
-      try {
-        const ev = {
-          key: k.shift ? shiftedKey(k.k) : k.k,
-          ctrlKey: !!k.ctrl,
-          altKey: !!k.alt,
-          shiftKey: !!k.shift,
-          metaKey: !!k.meta,
-          isComposing: false,
-        };
-        const consumed = deps.keys.dispatch(ev);
-        if (!consumed) dispatchToFocused(ev, targetTab);
-      } catch (e) {
-        errReply(e);
-        return;
-      }
-      setTimeout(step, 20);
-    };
-    step();
-  }
-
+  // The #lfc=keys channel — the e2e harness's synthetic key path (shift
+  // maps, VK codes, cross-realm event construction, text-insert emulation,
+  // reply nonce) — lives in keys.ts. It touches no relay state; its only
+  // channel-side input is deps.keys.dispatch, passed through below.
   function handleLfc(browser: any, payload: string): void {
     const idx = payload.indexOf(".");
     const cmd = idx < 0 ? payload : payload.slice(0, idx);
@@ -972,7 +630,7 @@ export function createChannel(deps: ChannelDeps): Channel {
       return;
     }
     if (cmd === "keys") {
-      handleKeys(browser, rest, setHash);
+      handleKeys(deps.keys, browser, rest, setHash);
       return;
     }
     if (cmd === "cfg") {

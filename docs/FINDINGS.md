@@ -300,12 +300,32 @@ pays for a framework runtime. Plan: split `src/shared/popups/` into a components
 tree and a zero-dependency core sharing the data layer; leave the hint labels,
 status bar and `relay.html` vanilla.
 
+### DONE — the 1045-line channel closure, split along who owns the window
+`createChannel` held three concerns that share nothing but the chrome window:
+the URL-slot relay bridge, the tab-selection guard, and the synthetic-key
+channel the e2e harness drives. It is now 703 lines of relay + wiring over
+two modules:
+
+  - `chrome/keys.ts` — the `#lfc=keys` path: the shift map, the DOM_VK_ table,
+    cross-realm event construction, text-insert emulation and the reply nonce.
+    It touches no relay state; its only channel-side input is the key dispatch.
+  - `chrome/tabguard.ts` — what counts as a real user tab, the same-tick
+    steering after a close, and the delayed stranded recovery.
+
+The split is along the line that matters: what RELAY STATE each piece may
+touch. The keys channel and the tab guard can be read — and, for their pure
+parts, tested — without understanding the single-slot URL protocol at all;
+nothing else in the file can. 18 checks now pin the keys arithmetic, including
+the pair the harness actually depends on (`\\` + shift is `|` for `;|`, `=` +
+shift is `+` for `;+`) and the direction it must NOT go: multi-char key NAMES
+pass through untouched, so `Enter` + shift stays `Enter`.
+
 ### PARTIAL — the remaining god files
 `find.ts` was 1333, with a 1038-line `openFindPopup` closure holding ~35
 mutable locals; it is now 389 lines of wiring over five modules (below).
-Still large: `channel.ts` 1045, `main.ts` 1059, `ops.ts` 761, `history.ts` 644
-(`openHistoryPopup`), `sessions.ts` 454 (`openSessionsPopup`), `hints/session.ts`
-537.
+`channel.ts` was 1045; it is now 703 (above). Still large: `main.ts` 1059,
+`ops.ts` 761, `history.ts` 644 (`openHistoryPopup`), `sessions.ts` 454
+(`openSessionsPopup`), `hints/session.ts` 537.
 
 ### DONE — `lfBridge` was written and never read, under a false comment
 The write site said "The diagnostics page reports it, so a silently missing
