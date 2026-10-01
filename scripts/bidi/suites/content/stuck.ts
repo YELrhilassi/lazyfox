@@ -96,28 +96,13 @@ export async function run(ctx: any): Promise<void> {
     });
   }
 
-  // The reported reproduction, kept as a test because it reaches the error
-  // page by the real user path rather than by navigating to a URL that
-  // happens to fail: ;o, type a bare word with no domain, and Firefox cannot
-  // resolve it.
-  await t(";o to a bare word with no domain leaves the keyboard working", async () => {
-    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    await ctx.leaderPress(ctx.tabA, "o");
-    await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 8000);
-    await ctx.press(ctx.tabA, "Enter");
-    await waitFor(async () => {
-      const u = await ctx.tabUrl().catch(() => "");
-      return u && !u.startsWith(ctx.base) ? u : null;
-    }, 20000).catch(() => {});
-    const landed = await ctx.tabUrl().catch(() => "");
-    assert(!landed.startsWith(ctx.base),
-      "the bare word left the test server (landed on " + JSON.stringify(landed) + ")");
-    await ctx.sendKeys(ctx.tabA, [{ k: ";" }]);
-    const s = await chromeArms();
-    assert(s, "the chrome helper armed the leader after an unresolvable name (url " +
-      JSON.stringify(landed) + ")");
-    await disarm();
-  });
+  // The originally reported route — ;o, then one bare word like "doodle" — is
+  // no longer a dead end at all: `;o` now searches a bare word instead of
+  // normalizing it to https://doodle, so it never reaches an error page. The
+  // guard for that lives in suites/content/popups.ts (";o with a bare word
+  // searches instead of navigating to a dead host") because it is a property of
+  // the popup, not of the error pages covered above. The error pages still
+  // need covering: a URL can still fail for reasons a search cannot avoid.
 
   // The fix is a PRESENCE check rather than a list of known URLs, so these
   // are here to prove the rule generalises past about:neterror to the rest of
