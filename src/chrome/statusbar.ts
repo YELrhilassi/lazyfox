@@ -242,17 +242,23 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     // The decision (including the raw-strip-index rule) lives in
     // shared/statusbar.ts and is unit-tested there.
     try {
-      chromeStatusBar.setLeaderSignal(
-        leaderSignalOn({
-          prefix: leaderPrefix,
-          uiLeader: deps.getUi().leader,
-          contentArmed: contentLeaderArmed,
-          contentIndex: contentLeaderIndex,
-          // `sel` is the raw strip index, the same coordinate
-          // contentLeaderIndex is pushed in.
-          selectedStrip: sel,
-        })
-      );
+      const on = leaderSignalOn({
+        prefix: leaderPrefix,
+        uiLeader: deps.getUi().leader,
+        contentArmed: contentLeaderArmed,
+        contentIndex: contentLeaderIndex,
+        // `sel` is the raw strip index, the same coordinate
+        // contentLeaderIndex is pushed in.
+        selectedStrip: sel,
+      });
+      // Same reason as setLeaderSignal: write the store in the same tick, so
+      // the snapshot this repaint is about to produce already agrees with it.
+      try {
+        core.statusLeaderSignal(on, leaderPrefix);
+      } catch (e) {
+        // ignore
+      }
+      chromeStatusBar.setLeaderSignal(on);
     } catch (e) {
       // ignore — a dead view must not break key dispatch
     }
@@ -341,6 +347,14 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
       contentLeaderIndex = index;
       contentLeaderArmed = !!active;
       if (index === selectedStripIndex()) {
+        // Keep the store's own leader state in step with the direct paint
+        // (see setLeaderSignal): a later store repaint must not be able to
+        // resurrect the value this push just replaced.
+        try {
+          core.statusLeaderSignal(!!active, "");
+        } catch (e) {
+          // ignore
+        }
         chromeStatusBar.setLeaderSignal(!!active);
       }
       pushAndPaint([{ kind: "leader", index, active }]);
@@ -348,8 +362,22 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     // The far-right indicator for the chrome helper's OWN leader. Painted
     // synchronously on the view — the store roundtrip would trail the key
     // press by several await hops and land visibly late.
+    //
+    // The synchronous core write is what keeps that fast path HONEST. Painting
+    // only the view left the Go store holding the previous value, and the next
+    // store repaint (any TabSelect, any poll) re-read that stale state and lit
+    // the chevron again — so a `;` press followed by Esc could leave the
+    // indicator on forever, which is exactly the "out of sync with the key"
+    // symptom. `statusLeaderSignal` returns void, so it lands in the same tick
+    // as the keypress: the store is authoritative, the view just follows it
+    // immediately instead of waiting for the round trip.
     setLeaderSignal: (armed) => {
       leaderPrefix = armed ? ";" : "";
+      try {
+        core.statusLeaderSignal(armed, leaderPrefix);
+      } catch (e) {
+        // a wasm that is not up yet must not break key dispatch
+      }
       chromeStatusBar.setLeaderSignal(armed);
     },
     setContentFind: (index, count, cur) => {
