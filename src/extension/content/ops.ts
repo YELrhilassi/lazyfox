@@ -10,6 +10,7 @@
 
 import { TwoStep } from "../../shared/confirm";
 import { copyText } from "../../shared/dom";
+import { faviconFor } from "../../shared/favicon";
 import { toast } from "../../shared/overlay";
 import type { ActionOps } from "../../shared/ops";
 import { relTime } from "../../shared/format";
@@ -54,6 +55,13 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         realId: t.id,
         // Strip position (1-based): the same number ;1-;9 address.
         number: i + 1,
+        // "id NN" in the row subtitle was debug noise; the favicon and the
+        // URL are what a user reads.
+        subtitle: undefined,
+        // Firefox only knows favIconUrl after the page's favicon loads; a
+        // fresh or favicon-less page would show nothing. Fall back to the
+        // derived https favicon (same rule as the chrome helper's rows).
+        favIconUrl: /^https?:/i.test(t.favIconUrl || "") ? t.favIconUrl : faviconFor(t.url),
       }));
       const ql = q.trim().toLowerCase();
       if (ql) {
@@ -113,8 +121,16 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     reopenTab: () => void send("reopenTab"),
     duplicateTab: () => void send("duplicateTab"),
     reload: () => void send("reload"),
-    back: () => void send("back"),
-    forward: () => void send("forward"),
+    back: () => {
+      void send("back").then((r) => {
+        if (r && (r as { atRoot?: boolean }).atRoot) toast("start of history");
+      });
+    },
+    forward: () => {
+      void send("forward").then((r) => {
+        if (r && (r as { atEnd?: boolean }).atEnd) toast("end of history");
+      });
+    },
     activateTab: (id: number) => void send("activateTab", { id: id }),
     tabNav: (dir: number) => {
       void send("tabs").then((r) => {

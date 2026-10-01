@@ -68,6 +68,22 @@ async function renderInstall(): Promise<{ components: boolean }> {
     c && c.chromeHelper ? "ok" : "warn",
     true,
   ]);
+  // Whether the helper reached the CONTENT process. This is separate from the
+  // row above and earns its own line: the helper can be installed, announce
+  // itself, and still fail to register its window actor — in which case
+  // chrome-only features work, the bar works, and the page is simply dead to
+  // the keyboard. That failure presents as "keys do nothing here", so it has
+  // to be visible somewhere or it is indistinguishable from a broken page.
+  items.push([
+    "Content bridge",
+    c && c.bridge === "ok"
+      ? "actor registered in the content process"
+      : c && c.bridge === "missing"
+        ? "the window actor did not register — leader keys are dead in page content"
+        : "not reported yet",
+    c && c.bridge === "ok" ? "ok" : c && c.bridge === "missing" ? "bad" : "",
+    true,
+  ]);
   rows(host, items);
   return { components: !!c };
 }

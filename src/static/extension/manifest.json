@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lazyfox",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "Firefox with the browsing UI stripped away — tabs, split view, sessions, link hints, find-in-page, search and a status bar, all behind one key: ;",
   "homepage_url": "https://github.com/YELrhilassi/lazyfox",
   "license": "MIT",

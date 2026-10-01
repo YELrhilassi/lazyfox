@@ -39,6 +39,10 @@ export interface ChromeBrowser {
   /** Unique, stable for the browser element's lifetime. Used as the fallback
    *  id in the strip planner's id space (see idOf in splitview). */
   readonly browserId?: number | null;
+  /** Session-history edges on the selected browser (undefined while the
+   *  history is not readable, e.g. mid-navigation). */
+  readonly canGoBack?: boolean;
+  readonly canGoForward?: boolean;
   currentURI?: ChromeURI;
   /** The content window, reachable only from chrome. */
   readonly contentWindow?: Window | null;

@@ -9,6 +9,7 @@
 // a page that shifts under the hints (carousel slide, lazy image, layout shift)
 // must never leave badges floating where the links used to be.
 import { HINT_CSS, type HintItem, type HintLabel } from "./selectors";
+import { mirrorFlag } from "../../../shared/observability";
 
 export interface HintOverlay {
   /** Create the host and mark the document as hinted. */
@@ -100,11 +101,10 @@ export function createHintOverlay(): HintOverlay {
     sh.appendChild(box);
     host._box = box;
     document.documentElement.appendChild(host);
-    try {
-      document.documentElement.setAttribute("data-lf-hints", "1");
-    } catch (e) {
-      // ignore
-    }
+    // The one cross-world signal that hints are up: the labels live in a closed
+    // shadow root, and the page main world cannot even read an isolated-world
+    // event detail (Xray), so a shared attribute on <html> is the only channel.
+    mirrorFlag("hints", true);
   }
 
   // Render the labels for the items whose key matches the typed prefix.
@@ -268,11 +268,7 @@ export function createHintOverlay(): HintOverlay {
   }
 
   function unmount(): void {
-    try {
-      document.documentElement.removeAttribute("data-lf-hints");
-    } catch (e) {
-      // ignore
-    }
+    mirrorFlag("hints", false);
     if (host) {
       host.remove();
       host = null;

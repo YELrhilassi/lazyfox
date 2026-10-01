@@ -93,6 +93,24 @@ export interface Lfc {
 }
 
 // A tab row as returned by the background (and mirrored by the chrome helper).
+// One row of the active tab's navigation stack (the navigation popup).
+export interface NavEntry {
+  url: string;
+  title: string;
+}
+
+// The active tab's history-stack shape, pushed into the Go status store by
+// the owning context and rendered by the status bar + navigation popup.
+export interface NavState {
+  canBack: boolean;
+  canForward: boolean;
+  // 0-based index of the current entry within the stack; count the total.
+  index: number;
+  count: number;
+  // The stack itself, oldest first, current included.
+  entries?: NavEntry[];
+}
+
 export interface TabInfo {
   id: number;
   title: string;
@@ -221,6 +239,20 @@ export interface HintActivation {
   signal: string;
   watchedMs: number;
   ignored: boolean;
+  /**
+   * Whether the privileged (trusted-click) retry was attempted after the page
+   * showed no reaction. Tri-state on purpose:
+   *
+   *   undefined — the click worked, or was never ignored, so no retry happened
+   *   false     — the page ignored us AND no actor was listening, so the
+   *               privileged path was never tried (standalone mode, or a page
+   *               where the chrome layer is not installed)
+   *   true      — the privileged path WAS tried and the page still did nothing
+   *
+   * The last case is the interesting one: it means the control is not a
+   * control, and no amount of event synthesis will reach it.
+   */
+  trustedRetry?: boolean;
 }
 
 export interface PageReport {

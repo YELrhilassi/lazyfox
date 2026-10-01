@@ -1,249 +1,35 @@
 // The chrome helper's ActionOps implementation: everything the shared leader
 // actions and popups need, using chrome APIs (gBrowser, Places, Downloads,
-// SearchSuggestionController) directly. Search/data functions are async so the
-// shared popup engine can consume them uniformly.
+// SearchSuggestionController) directly.
 //
-// Built by createChromeOps(deps): every capability that needs another module
-// (the #lfc= channel, the native split view, the popup host, the status bar,
-// config) is injected, so nothing is monkey-patched onto a singleton after the
-// fact. The only late-bound dependency is the channel (created after ops
-// because the channel wraps the popup context that wraps ops) — it is resolved
-// through a getter that only runs at action time.
+// The implementation is split by domain into src/chrome/ops/:
+//   primitives.ts — tab identity, native URL loading, native data sources
+//   tabs.ts       — the tab strip actions + the tab switcher rows
+//   sessions.ts   — session CRUD (relayed) + native split-view actions
+//   ui.ts         — find bar, resize popup, downloads, stealth, zen, toggles
+//
+// This file composes those domains into the single ActionOps object. Every
+// capability that needs another module (the relay channel, the native split
+// view, the popup host, the status bar, config) is injected; the only
+// late-bound dependency is the channel (created after ops because the channel
+// wraps the popup context that wraps ops) — it is resolved through a getter
+// that only runs at action time.
 
 import { core } from "../shared/core";
-import { isRelayTabUrl } from "../shared/transient";
-import {
-  dismissDownload as dismissBarNotifications,
-  listDownloads,
-  openDownload as launchDownload,
-  openDownloadLocation as revealDownload,
-  removeDownload as eraseDownload,
-  retryDownload as restartDownload
-} from "./downloads";
-import { withConfig, type ChromeCfg } from "./config";
-import { toast } from "../shared/overlay";
 import type { ActionOps } from "../shared/ops";
-import type { RelayAction, RelayReq, RelayRes } from "../shared/protocol";
 import type { Config, PopupItem, SessionSummaryItem } from "../shared/types";
-
-
-
-declare const Services: any;
-declare const Cc: any;
-declare const Ci: any;
-declare const ChromeUtils: any;
-declare const ZoomManager: any;
-
-// Armed close: when ;x would remove the window's LAST tab (closing the whole
-// window), the first press arms a confirmation and a second press within 2.5s
-// actually closes.
-let closeArmed = false;
-let closeTimer: ReturnType<typeof setTimeout> | null = null;
-function disarmClose() {
-  closeArmed = false;
-  if (closeTimer) {
-    clearTimeout(closeTimer);
-    closeTimer = null;
-  }
-}
-
-function sysPrincipal() {
-  return Services.scriptSecurityManager.getSystemPrincipal();
-}
-
-// Open an arbitrary URL natively (switchToTabHavingURI / addTab). This is the
-// ONLY path that can load about: pages — the tabs API rejects them with
-// "Illegal URL". Used by openTarget for the known chrome pages and by the
-// #lfc=open.u.<b64> channel for arbitrary about: URLs.
-function openUrlNative(url: string): boolean {
-  try {
-    if (typeof (window as any).switchToTabHavingURI === "function") {
-      (window as any).switchToTabHavingURI(url, true, {});
-    } else {
-      const tab = window.gBrowser.addTab(url, { triggeringPrincipal: sysPrincipal() });
-      window.gBrowser.selectedTab = tab;
-    }
-    window.focus();
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-// Real (user) tabs in strip order: skip the split-panel companion and the
-// persistent relay so tab numbers stay stable across splits/unsplits. A real
-// tab carrying a momentary #lfc=keys/state hash is NOT transient — it must
-// keep its number (a shared predicate guarantees the chrome and the extension
-// agree). Dead wrappers (a tab torn down mid-collapse) are skipped, never
-// counted: any property access on them throws "can't access dead object".
-function realTabs(): any[] {
-  const out: any[] = [];
-  for (const t of window.gBrowser.tabs) {
-    try {
-      if (Cu && Cu.isDeadWrapper(t)) continue;
-      const spec =
-        t && t.linkedBrowser && t.linkedBrowser.currentURI
-          ? t.linkedBrowser.currentURI.spec
-          : "";
-      if (isRelayTabUrl(spec)) continue;
-      out.push(t);
-    } catch (e) {
-      // a half-torn-down tab is not a user tab
-    }
-  }
-  return out;
-}
-
-// Mirrors the Go core's NormalizeUrl (scheme-less input gets https://). Any
-// caller can hand loadUrl raw user text (the URL popup's onEnter fallback, a
-// history item, etc.); a scheme-less string would otherwise make addTab/loadURI
-// fail, leaving a blank tab that never navigates.
-function loadableUrl(url: string): string {
-  const t = (url || "").trim();
-  if (!t) return t;
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t)) return t;
-  return "https://" + t;
-}
-
-function loadUrl(url: string, newTab: boolean | undefined): void {
-  url = loadableUrl(url);
-  if (!url) return;
-  const openInNewTab = () => {
-    try {
-      const p = JSON.parse(Services.prefs.getStringPref("lazyfox.chrome.config", "{}"));
-      return (p as Config).openInNewTab !== false;
-    } catch (e) {
-      return true;
-    }
-  };
-  // newTab === true forces a new tab, newTab === false forces the current tab
-  // (replace it), undefined defers to the openInNewTab config.
-  const forceNew = newTab === undefined ? openInNewTab() : newTab;
-  const browser = window.gBrowser.selectedBrowser;
-  // The command center (home page) and blank/home tabs navigate in place: an
-  // open there should reuse the tab instead of stacking up extra ones. This
-  // matches the background's openUrl, which replaces the home page in place.
-  let onHome = false;
-  try {
-    const u = browser && browser.currentURI ? browser.currentURI.spec : "";
-    onHome = u.indexOf("commandcenter.html") !== -1 || /^about:(home|newtab|blank)$/i.test(u);
-  } catch (e) {
-    onHome = false;
-  }
-  if (onHome || forceNew === false) {
-    // Navigate the current tab in place. gBrowser.loadURI is long gone, and
-    // the <browser> element's loadURI() now takes an nsIURI — passing a
-    // string throws, which used to fall through to addTab (so ;O / ;S and
-    // opening from the home page wrongly spawned a new tab).
-    // fixupAndLoadURIString is the supported string-loading path; it is a
-    // no-op fixup for our already-normalized URLs.
-    const navInPlace = (): boolean => {
-      try {
-        if (typeof browser.fixupAndLoadURIString === "function") {
-          browser.fixupAndLoadURIString(url, { triggeringPrincipal: sysPrincipal() });
-          return true;
-        }
-        const uri = Services.io.newURI(url);
-        browser.loadURI(uri, { triggeringPrincipal: sysPrincipal() });
-        return true;
-      } catch (e) {
-        console.error("lazyfox in-place load failed", e);
-        return false;
-      }
-    };
-    if (navInPlace()) {
-      window.focus();
-      return;
-    }
-  }
-  window.gBrowser.selectedTab = window.gBrowser.addTab(url, { triggeringPrincipal: sysPrincipal() });
-  window.focus();
-}
-
-/* ---------- native data sources ---------- */
-
-// Search suggestions from the default engine.
-function suggestSearch(q: string): Promise<PopupItem[]> {
-  return new Promise<PopupItem[]>((resolve) => {
-    const text = (q || "").trim();
-    const entries: PopupItem[] = [];
-    if (!text) {
-      resolve(entries);
-      return;
-    }
-    entries.push({
-      kind: "search",
-      title: "Search the web for \u201C" + text + "\u201D",
-      query: text,
-    });
-    try {
-      const SC = ChromeUtils.importESModule(
-        "resource://gre/modules/SearchSuggestionController.sys.mjs"
-      ).SearchSuggestionController;
-      Services.search.getDefault().then((engine: any) => {
-        const c = new SC();
-        c.maxLocalResults = 5;
-        c.maxRemoteResults = 4;
-        c.fetch(text, false, engine)
-          .then((res: any) => {
-            const out: string[] = [];
-            for (const s of (res && res.remote) || []) out.push(s);
-            for (const s of (res && res.local) || []) {
-              if (out.indexOf(s) === -1) out.push(s);
-            }
-            for (const s of out.slice(0, 9)) {
-              entries.push({ kind: "search", title: "Search \u201C" + s + "\u201D", query: s });
-            }
-            resolve(entries);
-          })
-          .catch(() => resolve(entries));
-      }).catch(() => resolve(entries));
-    } catch (e) {
-      resolve(entries);
-    }
-  });
-}
-
-function histItems(text: string, maxResults: number): Array<{ title: string; url: string; time: number }> {
-  const PlacesUtils = ChromeUtils.importESModule(
-    "resource://gre/modules/PlacesUtils.sys.mjs"
-  ).PlacesUtils;
-  const query = PlacesUtils.history.getNewQuery();
-  if (text) query.searchTerms = text;
-  const opts = PlacesUtils.history.getNewQueryOptions();
-  opts.maxResults = maxResults;
-  opts.queryType = opts.QUERY_TYPE_HISTORY;
-  opts.sortingMode = Ci.nsINavHistoryQueryOptions.SORT_BY_DATE_DESCENDING;
-  const root = PlacesUtils.history.executeQuery(query, opts).root;
-  root.containerOpen = true;
-  const out: Array<{ title: string; url: string; time: number }> = [];
-  for (let i = 0; i < root.childCount; i++) {
-    const n = root.getChild(i);
-    if (n.type !== n.RESULT_TYPE_URI || !n.uri) continue;
-    out.push({ title: n.title || n.uri, url: n.uri, time: n.time || 0 });
-  }
-  root.containerOpen = false;
-  return out;
-}
-
-function doSearch(query: string, replace = false): void {
-  const q = (query || "").trim();
-  if (!q) return;
-  // ;S (replace) opens the results in the current tab; ;s defers to config.
-  const open = (url: string) => loadUrl(url, replace ? false : undefined);
-  try {
-    Services.search.getDefault().then((engine: any) => {
-      const sub = engine.getSubmission(q);
-      open(sub.uri.spec);
-    }).catch(() => {
-      open("https://www.google.com/search?q=" + encodeURIComponent(q));
-    });
-  } catch (e) {
-    open("https://www.google.com/search?q=" + encodeURIComponent(q));
-  }
-}
-
-/* ---------- the ops factory ---------- */
+import type { ChromeCfg } from "./config";
+import type { RelayAction, RelayReq, RelayRes } from "../shared/protocol";
+import {
+  doSearch,
+  histItems,
+  loadUrl,
+  openUrlNative,
+  suggestSearch,
+} from "./ops/primitives";
+import { buildTabRows, createTabOps } from "./ops/tabs";
+import { createSessionOps, createSplitOps } from "./ops/sessions";
+import { createUiOps } from "./ops/ui";
 
 export interface ChromeOpsDeps {
   // Native split view operations (splitview.ts).
@@ -283,32 +69,47 @@ export interface ChromeOpsDeps {
 }
 
 export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
-  // Session + split actions relay to the extension background (which owns
-  // browser.storage) through the #lfc=req channel, then refresh the status
-  // bar's session list once the action lands.
-  //
-  // The 900ms delay is not a guess about the network: the relay is a URL slot
-  // polled every 500ms, and the status-bar refresh is queued behind the action
-  // it is meant to reflect. It is a real ordering dependency, not a retry.
-  const sessionAction = <K extends RelayAction>(action: K, arg?: RelayReq<K>) => {
-    deps.getChannel().requestBg(action, arg);
-    setTimeout(() => void deps.getChannel().requestSessionState(), 900);
-  };
+  const tabs = createTabOps({
+    requestBg: (action) => deps.getChannel().requestBg(action),
+  });
+  const tabOps = tabs;
+  const sessions = createSessionOps(
+    () => deps.getChannel(),
+    deps.status
+  );
+  const splits = createSplitOps(deps.split);
+  const ui = createUiOps({
+    cfg: deps.cfg,
+    persistCfg: deps.persistCfg,
+    applyHoverRevealPref: deps.applyHoverRevealPref,
+    popup: deps.popup,
+    // Lazy, like the tabs ops above: the channel is created AFTER ops (it
+    // needs the popup context that wraps ops), so calling deps.getChannel()
+    // here at construction time captures undefined and every later
+    // requestBg/requestReply dies with "A.channel is undefined". Resolving
+    // the getter inside the wrappers defers to action time, when the channel
+    // exists.
+    channel: {
+      requestBg: (action, arg) => deps.getChannel().requestBg(action, arg),
+      requestReply: (action) => deps.getChannel().requestReply(action),
+    },
+  });
 
   return {
     searchSuggest: (q: string) => suggestSearch(q),
+
     urlSuggest: async (q: string) => {
       const text = (q || "").trim();
       const entries: PopupItem[] = [];
       if (!text) return entries;
       // Normalize exactly like the background path (core.normalizeUrl) so the
       // picked row always carries a loadable URL. Passing raw scheme-less text
-      // to gBrowser.addTab/loadURI fails (e.g. a bare word like a session name),
-      // which leaves a blank tab that never navigates.
+      // to gBrowser.addTab/loadURI fails (e.g. a bare word like a session
+      // name), which leaves a blank tab that never navigates.
       let url = text;
       try {
         url = await core.normalizeUrl(text);
-      } catch (e) {
+      } catch {
         // keep raw text on core failure
       }
       entries.push({ kind: "url", title: "Open URL", subtitle: url, url: url });
@@ -318,70 +119,30 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
         for (const u of ranked) {
           entries.push({ kind: "page", title: u.title || u.url, subtitle: u.url, url: u.url });
         }
-      } catch (e) {
+      } catch {
         // Keep the "Open URL" entry even if ranking fails.
       }
       return entries;
     },
+
     listTabs: async (q: string) => {
       // Refresh the status bar's tab ids + stealth flags first so the rows
       // carry the true Firefox tab id and the stealth badge.
       await deps.getChannel().requestSessionState();
-    const ql = (q || "").trim().toLowerCase();
-    const out: PopupItem[] = [];
-    const tabIds = deps.status.getTabIds();
-    const stealthFlags = deps.status.getStealthFlags();
-    const tabs = window.gBrowser.tabs;
-    // Rows are numbered over REAL tabs only (id = real-tab index), so the
-    // popup's activate/close/move and the ;N jump share one identity space:
-    // a transient tab (split panel, #lfc= channel) never shifts a row's
-    // number relative to ;1-9. tabIds/stealthFlags are keyed by RAW strip
-    // index from the background, so the display fields keep the raw index.
-    let real = 0;
-    for (let i = 0; i < tabs.length; i++) {
-      const t = tabs[i];
-      // A tab can be a dead wrapper mid-collapse, in which case ANY property
-      // read throws — so the URI is read inside the try and the whole row is
-      // skipped if it throws. That was the reason for the two separate reads;
-      // one read now serves both the relay filter and the row's url.
-      if (!t) continue;
-      let uri = "";
-      try {
-        const lb = t.linkedBrowser;
-        uri = (lb && lb.currentURI && lb.currentURI.spec) || "";
-        if (isRelayTabUrl(uri)) continue;
-      } catch (e) {
-        continue;
-      }
+      return buildTabRows(deps.status, q);
+    },
 
-      // The guard above and the catch that `continue`s together establish that
-      // `t` is a live tab; naming it `tab` keeps the row readable and stops the
-      // narrowing question from being re-litigated on every field.
-      const tab = t;
-      const item: PopupItem = {
-        id: real, // real-tab index — what the chrome ops address
-        realId: tabIds[i], // true Firefox tab id, for display
-        number: real + 1, // jump number shown in the tab switcher (";1"-";9")
-        title: tab.label || uri || "",
-        url: uri,
-        active: !!tab.selected,
-        pinned: !!tab.pinned,
-        muted: !!tab.muted,
-        stealth: !!stealthFlags[i],
-        favIconUrl: tab.getAttribute("image") || "",
-      };
-      real++;
-      if (!ql || ((item.title || "") + " " + (item.url || "")).toLowerCase().indexOf(ql) !== -1) {
-        out.push(item);
-      }
-    }
-    return out;
-  },
     history: (q: string) => {
       const text = (q || "").trim();
-      return Promise.resolve(histItems(text, text ? 80 : 1000));
+      return Promise.resolve(histItems(text, text ? 80 : 1000).map((h) => ({
+        kind: "history" as const,
+        title: h.title,
+        url: h.url,
+        time: h.time,
+      })));
     },
     bookmarks: async (q: string) => {
+      const ChromeUtils: any = (window as any).ChromeUtils;
       try {
         const PlacesUtils = ChromeUtils.importESModule(
           "resource://gre/modules/PlacesUtils.sys.mjs"
@@ -405,242 +166,47 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
         });
         walk([tree]);
         return out.slice(0, 100);
-      } catch (e) {
+      } catch {
         return [];
       }
     },
-    downloads: (q: string) => {
-      const ql = q.trim().toLowerCase();
-      // The merged cache lives in the Go store; this is the popup's read.
-      return listDownloads().then((cache) =>
-        cache
-          .slice(0, 120)
-          .map((d) => ({
-            kind: "download",
-            key: d.id,
-            filename: d.filename,
-            path: d.path,
-            url: d.url,
-            state: d.state,
-            received: d.received,
-            total: d.total,
-            speed: d.speed,
-            progress:
-              d.total > 0
-                ? Math.max(0, Math.min(100, Math.round((d.received / d.total) * 100)))
-                : -1,
-          }))
-          .filter(
-            (d) =>
-              !ql ||
-              ((d.filename || "") + " " + (d.path || "") + " " + (d.url || "")).toLowerCase().indexOf(ql) !== -1
-          )
-      );
-    },
+    downloads: (q: string) => ui.downloads(q),
 
     openUrl: (url: string, newTab?: boolean) => loadUrl(url, newTab),
     search: (query: string, newTab?: boolean) => doSearch(query, newTab === false),
-    newTab: () => {
-      // Open the command center directly instead of about:newtab + the
-      // chrome_url_overrides redirect: an addTab("about:newtab") carrying the
-      // system principal bypasses the override (and the background's
-      // maybeConvertHome never sees a content-principal newtab load), which
-      // left a dead about:newtab tab after `;n`.
-      const base = deps.getChannel().ccBaseUrl();
-      const url = base ? base + "commandcenter.html" : "about:newtab";
-      const tab = window.gBrowser.addTab(url, {
-        triggeringPrincipal: base ? sysPrincipal() : undefined,
-      });
-      if (tab) window.gBrowser.selectedTab = tab;
-      window.focus();
-    },
-    closeTab: (id?: number) => {
-      if (id == null) {
-        // Closing the last tab closes the window — confirm before doing it.
-        if (realTabs().length <= 1) {
-          if (closeArmed) {
-            disarmClose();
-            window.gBrowser.removeCurrentTab();
-            return;
-          }
-          closeArmed = true;
-          closeTimer = setTimeout(disarmClose, 2500);
-          toast("last tab — press ;x again to close the window");
-          return;
-        }
-        window.gBrowser.removeCurrentTab();
-        return;
-      }
-      // id is a REAL-tab index (same space as ;N and the popup rows); skip
-      // transient tabs so a split panel never shifts closing by number.
-      const t = realTabs()[id];
-      if (t) {
-        if (t.selected) window.gBrowser.removeCurrentTab();
-        else window.gBrowser.removeTab(t);
-      }
-    },
-    moveTab: (id: number, dir: number) => {
-      const t = realTabs()[id];
-      if (!t) return;
-      const tabs = window.gBrowser.tabs;
-      const i = tabs.indexOf(t);
-      const ni = i + (dir > 0 ? 1 : -1);
-      if (ni >= 0 && ni < tabs.length) window.gBrowser.moveTabTo(t, ni);
-    },
-    moveActiveTab: (dir: number) => {
-      const tabs = realTabs();
-      const i = tabs.indexOf(window.gBrowser.selectedTab);
-      if (i < 0) return;
-      const ni = i + (dir > 0 ? 1 : -1);
-      if (ni >= 0 && ni < tabs.length) window.gBrowser.moveTabTo(window.gBrowser.selectedTab, ni);
-      window.focus();
-    },
-    reopenTab: () => {
-      // Route through the extension rather than gBrowser.undoCloseTab().
-      // SessionStore records EVERY tab close, including Lazyfox's own hidden
-      // plumbing (the relay bridge, throwaway #lfc= request tabs, the split
-      // companion), so the chrome-local undo frequently restored one of those
-      // instead of the user's tab — which is why ;v appeared to do nothing on
-      // the command center. The background's reopenTab skips that plumbing.
-      deps.getChannel().requestBg("reopenTab");
-    },
-    duplicateTab: () => {
-      const t = window.gBrowser.duplicateTab(window.gBrowser.selectedTab);
-      // duplicateTab returns null on failure; assigning null would throw on
-      // the next read of selectedTab rather than here, where it is reportable.
-      if (!t) { toast("could not duplicate tab"); return; }
-      window.gBrowser.selectedTab = t;
-      window.focus();
-    },
-    reload: () => window.gBrowser.reload(),
-    back: () => window.gBrowser.goBack(),
-    forward: () => window.gBrowser.goForward(),
-    activateTab: (id: number) => {
-      // REAL-tab index (the popup rows and ;N use the same space), so a
-      // transient split panel never misaligns the numbers.
-      const t = realTabs()[id];
-      if (t) {
-        window.gBrowser.selectedTab = t;
-        window.focus();
-      }
-    },
-    tabNav: (dir: number) => {
-      const tabs = realTabs();
-      if (!tabs.length) return;
-      let cur = tabs.indexOf(window.gBrowser.selectedTab);
-      if (cur < 0) cur = dir > 0 ? -1 : 0;
-      const next = (cur + dir + tabs.length) % tabs.length;
-      window.gBrowser.selectedTab = tabs[next];
-      window.focus();
-    },
-    tabJump: (n: number) => {
-      const tabs = realTabs();
-      if (!tabs.length) return;
-      const idx = n === 9 ? tabs.length - 1 : Math.min(Math.max(0, n - 1), tabs.length - 1);
-      window.gBrowser.selectedTab = tabs[idx];
-      window.focus();
-    },
-    alternateTab: () => {
-      // The background tracks the per-window activation order and flips back.
-      deps.getChannel().requestBg("alternateTab");
-    },
+    newTab: () => tabs.newTab(() => deps.getChannel().ccBaseUrl()),
+    closeTab: (id?: number) => tabs.closeTab(id),
+    moveTab: (id: number, dir: number) => tabs.moveTab(id, dir),
+    moveActiveTab: (dir: number) => tabs.moveActiveTab(dir),
+    reopenTab: () => tabs.reopenTab(),
+    duplicateTab: () => tabs.duplicateTab(),
+    reload: () => tabOps.reload(),
+    back: () => tabOps.back(),
+    forward: () => tabOps.forward(),
+    activateTab: (id: number) => tabs.activateTab(id),
+    tabNav: (dir: number) => tabs.tabNav(dir),
+    tabJump: (n: number) => tabs.tabJump(n),
+    alternateTab: () => tabs.alternateTab(),
     recentlyClosed: () => deps.getChannel().requestRecentlyClosed(),
     restoreClosedTab: (key: string) => deps.getChannel().requestBg("restoreClosedTab", { key }),
     restoreAllClosed: () => deps.getChannel().requestBg("restoreAllClosed"),
     removeHistory: (url: string) => deps.getChannel().requestBg("removeHistory", { url }),
     clearHistory: () => deps.getChannel().requestBg("clearHistory"),
-    zoom: (delta: number, factor?: number) => {
-      try {
-        const b = window.gBrowser.selectedBrowser;
-        if (factor != null) {
-          ZoomManager.setZoomForBrowser(b, Math.max(0.3, Math.min(5, factor)));
-        } else {
-          ZoomManager.setZoomForBrowser(b, Math.max(0.3, Math.min(5, ZoomManager.getZoomForBrowser(b) + delta)));
-        }
-      } catch (e) {
-        // ignore
-      }
-    },
-    openDownload: (key: string) => {
-      void launchDownload(key).then((ok) => {
-        if (!ok) toast("could not open download");
-      });
-    },
-    openDownloadLocation: (key: string) => {
-      void revealDownload(key).then((ok) => {
-        if (!ok) toast("could not reveal download");
-      });
-    },
-    removeDownload: (key: string) => {
-      void eraseDownload(key).then((ok) => {
-        toast(ok ? "download removed" : "could not remove download");
-      });
-    },
-    retryDownload: (key: string) => {
-      void restartDownload(key).then((ok) => {
-        toast(ok ? "retrying download" : "nothing to retry");
-      });
-    },
-    dismissDownload: (key?: string) => {
-      dismissBarNotifications(key);
-    },
-    stealthOpen: () => {
-      // The background opens the isolated tab and returns the outcome; toast
-      // it so a failure is never silent.
-      void deps.getChannel().requestReply("stealthOpen").then((r: any) => {
-        if (r && r.ok === true) toast("stealth tab opened");
-        else toast("stealth tab failed: " + ((r && r.error) || "unknown"));
-      });
-    },
-    copyUrl: () => {
-      const url = window.gBrowser.currentURI && window.gBrowser.currentURI.spec;
-      if (!url) return;
-      try {
-        Cc["@mozilla.org/widget/clipboardhelper;1"]
-          .getService(Ci.nsIClipboardHelper)
-          .copyString(url);
-        toast("copied URL");
-      } catch (e) {
-        // ignore
-      }
-    },
-    muteTab: () => {
-      // tab.muted is a getter-only property in current Firefox and the legacy
-      // toggleMute/toggleMuteTab helpers are gone — the muted attribute on the
-      // xul:tab element is the state the getter reflects.
-      const tab = window.gBrowser.selectedTab;
-      if (!tab) return;
-      try {
-        if (tab.hasAttribute("muted")) tab.removeAttribute("muted");
-        else tab.setAttribute("muted", "true");
-      } catch (e) {
-        // ignore
-      }
-    },
-    zen: () => {
-      window.fullScreen = !window.fullScreen;
-    },
-    toggleReveal: () => {
-      const next = withConfig(deps.cfg, { hoverReveal: !deps.cfg.config.hoverReveal });
-      deps.cfg.config = next.config;
-      deps.persistCfg(deps.cfg, deps.cfg.config);
-      deps.applyHoverRevealPref(deps.cfg);
-      toast("toolbar reveal: " + (deps.cfg.config.hoverReveal ? "on" : "off"));
-    },
-    focusFirstInput: () => {
-      // Chrome cannot focus inputs in remote content; ask the background to
-      // relay to the content script.
-      deps.getChannel().requestBg("focusFirstInput");
-    },
-    startHints: () => {
-      deps.getChannel().requestBg("startHints");
-    },
-    openSetup: () => {
-      deps.getChannel().requestBg("openSetup");
-    },
-    openDiagnostics: () => {
-      deps.getChannel().requestBg("openDiagnostics");
-    },
+    zoom: (delta: number, factor?: number) => tabs.zoom(delta, factor),
+    openDownload: (key: string) => ui.openDownload(key),
+    removeDownload: (key: string) => ui.removeDownload(key),
+    openDownloadLocation: (key: string) => ui.openDownloadLocation(key),
+    retryDownload: (key: string) => ui.retryDownload(key),
+    dismissDownload: (key?: string) => ui.dismissDownload(key),
+    stealthOpen: () => ui.stealthOpen(),
+    copyUrl: () => tabs.copyUrl(),
+    muteTab: () => tabs.muteTab(),
+    zen: () => ui.zen(),
+    toggleReveal: () => ui.toggleReveal(),
+    toggleWhichKey: () => ui.toggleWhichKey(),
+    quit: () => ui.quit(),
+    focusFirstInput: () => ui.focusFirstInput(),
+    startHints: () => ui.startHints(),
     openTarget: (which: string) => {
       const ABOUT: Record<string, string> = {
         preferences: "about:preferences",
@@ -654,115 +220,44 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       const base = fragIdx < 0 ? which : which.slice(0, fragIdx);
       const frag = fragIdx < 0 ? "" : which.slice(fragIdx);
       const url = ABOUT[base];
-      if (!url) return false;
-      return openUrlNative(url + frag);
+      if (!url) return;
+      openUrlNative(url + frag);
     },
     openUrlNative: (url: string) => openUrlNative(url),
-    // Sessions on chrome-only pages relay through the #lfc=req channel to the
-    // extension background (which owns browser.storage).
-    listSessions: async (q: string) => {
-      // Await a fresh status-bar refresh so the list reflects a just-completed
-      // save/delete instead of the stale cache (the sessions popup reads this
-      // list right after a mutation).
-      await deps.getChannel().requestSessionState();
-      const ql = (q || "").trim().toLowerCase();
-      let items: PopupItem[] = deps.status.getInfo().sessions.map((s) => ({
-        kind: "session",
-        title: s.name,
-        marker: s.marker || 0,
-        subtitle:
-          (s.marker ? "marker " + s.marker + " \u00b7 " : "") +
-          (s.tabCount || 0) +
-          " tabs" +
-          (s.splitCount ? " \u00b7 " + s.splitCount + " split" : ""),
-      }));
-      if (ql) items = items.filter((s) => (s.title || "").toLowerCase().indexOf(ql) !== -1);
-      return items;
-    },
-    listSessionTabs: (name: string) => deps.getChannel().requestSessionTabs(name),
-    saveSession: (name: string) => sessionAction("saveSession", { name }),
-    newSession: (name: string) => sessionAction("newSession", { name }),
-    restoreSession: (name: string) => sessionAction("restoreSession", { name }),
-    deleteSession: (name: string) => sessionAction("deleteSession", { name }),
-    switchSessionByMarker: (marker: number) =>
-      sessionAction("switchSessionByMarker", { marker }),
-    assignSessionMarker: (name: string, marker: number) =>
-      sessionAction("assignSessionMarker", { name, marker }),
-    // These two answer with a reason when they fail, so they use the
-    // reply path: a copy into a session that does not exist used to look
-    // exactly like one that worked.
-    sessionTabCopy: (from: string, index: number, to: string) => {
-      void deps.getChannel().requestReply("sessionTabCopy", { from, index, to }).then((r) => {
-        if (r && r.ok === false) toast("tab copy failed: " + (r.note || "unknown"));
-      });
-      setTimeout(() => void deps.getChannel().requestSessionState(), 900);
-    },
-    sessionTabMove: (from: string, index: number, to: string) => {
-      void deps.getChannel().requestReply("sessionTabMove", { from, index, to }).then((r) => {
-        if (r && r.ok === false) toast("tab move failed: " + (r.note || "unknown"));
-      });
-      setTimeout(() => void deps.getChannel().requestSessionState(), 900);
-    },
-    splitTab: (orientation: "horizontal" | "vertical") => {
-      if (!deps.split.splitCurrentTab(orientation)) {
-        const api = typeof window.gBrowser.addTabSplitView === "function";
-        toast(api ? "could not split (pinned tab or stale split state)" : "native split needs Firefox 149+");
-      }
-    },
-    unsplitTab: () => {
-      if (!deps.split.unsplit()) toast("not in a split view");
-    },
-    switchSplitPane: (dir: number) => {
-      if (!deps.split.switchPane(dir)) toast("not in a split view");
-    },
-    swapSplitPane: (dir: number) => {
-      if (!deps.split.swapPane(dir)) toast("not in a split view");
-    },
-    splitAddTabByIndex: (n: number) => {
-      if (!deps.split.addTabToSplitByIndex(n)) toast("no split view to move into");
-    },
-    toggleWhichKey: () => {
-      const next = withConfig(deps.cfg, { whichKey: deps.cfg.config.whichKey === false });
-      deps.cfg.config = next.config;
-      deps.persistCfg(deps.cfg, deps.cfg.config);
-      // Keep the background's stored config in step (the chrome helper only
-      // caches a copy).
-      deps.getChannel().requestBg("toggleWhichKey");
-      toast("which-key: " + (deps.cfg.config.whichKey !== false ? "on" : "off"));
-    },
-    quit: () => {
-      deps.getChannel().requestBg("quit");
-    },
+
+    openFind: () => ui.openFind(),
+    openResize: () => ui.openResize(),
+    openSetup: () => ui.openSetup(),
+    openDiagnostics: () => ui.openDiagnostics(),
+
+    listSessions: (q: string) => sessions.listSessions(q),
+    listSessionTabs: (name: string) => sessions.listSessionTabs(name),
+    saveSession: (name: string) => sessions.saveSession(name),
+    newSession: (name: string) => sessions.newSession(name),
+    restoreSession: (name: string) => sessions.restoreSession(name),
+    deleteSession: (name: string) => sessions.deleteSession(name),
+    switchSessionByMarker: (marker: number) => sessions.switchSessionByMarker(marker),
+    assignSessionMarker: (name: string, marker: number) => sessions.assignSessionMarker(name, marker),
+    sessionTabCopy: (from: string, index: number, to: string) => sessions.sessionTabCopy(from, index, to),
+    sessionTabMove: (from: string, index: number, to: string) => sessions.sessionTabMove(from, index, to),
+    splitTab: (orientation: "horizontal" | "vertical") => splits.splitTab(orientation),
+    unsplitTab: () => splits.unsplitTab(),
+    switchSplitPane: (dir: number) => splits.switchSplitPane(dir),
+    swapSplitPane: (dir: number) => splits.swapSplitPane(dir),
+    splitAddTabByIndex: (n: number) => splits.splitAddTabByIndex(n),
     sessionState: () => {
-      const tabs = window.gBrowser.tabs;
+      const tabsAll = window.gBrowser.tabs;
       let idx = 1;
-      const sel = tabs.indexOf(window.gBrowser.selectedTab);
+      const sel = tabsAll.indexOf(window.gBrowser.selectedTab);
       if (sel >= 0) idx = sel + 1;
       return Promise.resolve({
         name: "default",
         marker: 0,
         tabIndex: idx,
-        tabCount: tabs.length,
+        tabCount: tabsAll.length,
         inSplit: false,
         sessions: [],
       });
     },
-    openFind: () => {
-      try {
-        const fb = window.gFindBar || document.getElementById("FindToolbar");
-        if (fb) {
-          fb.open();
-          return;
-        }
-      } catch (e) {
-        // fall through
-      }
-      try {
-        window.gBrowser.getFindBar().then((b: any) => b.open()).catch(() => toast("find bar unavailable"));
-      } catch (e) {
-        toast("find bar unavailable");
-      }
-    },
-    openResize: () => deps.popup.openResizePopup(),
   };
 }

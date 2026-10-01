@@ -23,6 +23,21 @@ export function leaderCombo(e: KeyboardEvent): string {
   return mods.length ? mods.join("+") + "+" + k : k;
 }
 
+// Two-key leader sequences: `;<first>;<final>` style prefixes, e.g. `;ly` =
+// "yank the link target" vs the plain `;y` copy-URL. Each sequence maps its
+// first key to the table of final keys. Sequences fire only when no plain
+// binding with the same key exists (the plain table wins — `;l` is still
+// "forward"), so registering a sequence does not break an existing binding.
+export interface LeaderSequence {
+  final: Record<string, () => void>;
+  timeoutMs?: number;
+}
+
+// Populated by the host (main.ts / content main.ts) after makeLeaderActions —
+// module-level because the leader controller consults it in handleKey.
+export const leaderSequences: Record<string, LeaderSequence> = {};
+const SEQUENCES = leaderSequences;
+
 export const WK_CSS =
   ".wk{position:fixed;right:24px;bottom:30px;z-index:2147483646;" +
   "width:360px;max-width:94vw;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:8px;" +
@@ -47,20 +62,40 @@ type LeaderHost = HTMLElement & { _sh: ShadowRoot };
 export class LeaderController {
   readonly wk = new WkSession();
   active = false;
+  // The keys pressed since the leader armed, so a sequence (`;l` waiting for
+  // its final key) can be rendered by the far-right status-bar indicator.
+  // Empty while only the bare leader is armed.
+  prefix = "";
   private host: LeaderHost | null = null;
   private lazyBindings: WkItem[] = [];
   private bindingsLoaded: Promise<WkItem[]> | null = null;
   private pendingFn: ((k: string) => boolean) | null = null;
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  // Runs when an armed capture times out unused: a sequence head may share
+  // its key with a plain binding (;b bookmarks vs ;b<final>), so a lone
+  // press must still run the plain action instead of dying silently.
+  private pendingTimeoutFn: (() => void) | null = null;
 
+  // The leader action dispatcher built from each context's ops adapter.
+  private run: (key: string) => void;
+  // Whether the overlay is allowed by config.
+  private enabled: () => boolean;
+  // Fired whenever the leader arms or disarms, so hosts can reflect the
+  // state immediately (the chrome helper re-renders its status bar the
+  // moment `;` is pressed instead of waiting for the 500ms poll).
+  private onChange?: () => void;
+
+  // Explicit fields rather than TypeScript parameter properties: strip-only
+  // TypeScript loaders (the unit tests) cannot compile parameter properties.
   constructor(
-    private run: (key: string) => void,
-    private enabled: () => boolean,
-    // Fired whenever the leader arms or disarms, so hosts can reflect the
-    // state immediately (the chrome helper re-renders its status bar the
-    // moment `;` is pressed instead of waiting for the 500ms poll).
-    private onChange?: () => void
-  ) {}
+    run: (key: string) => void,
+    enabled: () => boolean,
+    onChange?: () => void
+  ) {
+    this.run = run;
+    this.enabled = enabled;
+    this.onChange = onChange;
+  }
 
   /** True while a one-shot key capture is armed (e.g. "session 1-9" after ;'). */
   hasPending(): boolean {
@@ -68,12 +103,17 @@ export class LeaderController {
   }
 
   /** Arms a one-shot key capture. The next key is handed to fn (which returns
-   * whether it consumed the key); it auto-disarms after timeoutMs. */
-  armPending(fn: (k: string) => boolean, timeoutMs = 3000): void {
+   * whether it consumed the key); it auto-disarms after timeoutMs, running
+   * onTimeout (if given) when it expires unused. */
+  armPending(fn: (k: string) => boolean, timeoutMs = 3000, onTimeout?: () => void): void {
     this.pendingFn = fn;
+    this.pendingTimeoutFn = onTimeout || null;
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
     this.pendingTimer = setTimeout(() => {
       this.pendingFn = null;
+      const to = this.pendingTimeoutFn;
+      this.pendingTimeoutFn = null;
+      if (to) to();
     }, timeoutMs);
   }
 
@@ -81,6 +121,7 @@ export class LeaderController {
   handlePending(k: string): boolean {
     const fn = this.pendingFn;
     this.pendingFn = null;
+    this.pendingTimeoutFn = null;
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
       this.pendingTimer = null;
@@ -94,6 +135,7 @@ export class LeaderController {
    * on the next digit). */
   cancelPending(): void {
     this.pendingFn = null;
+    this.pendingTimeoutFn = null;
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
       this.pendingTimer = null;
@@ -138,6 +180,7 @@ export class LeaderController {
 
   show(): void {
     this.active = true;
+    this.prefix = "";
     if (this.onChange) this.onChange();
     if (!this.enabled()) return; // overlay disabled — keys are still captured below
     if (!this.host) {
@@ -157,6 +200,7 @@ export class LeaderController {
 
   hide(): void {
     this.active = false;
+    this.prefix = "";
     if (this.onChange) this.onChange();
     if (this.host) this.host._sh.querySelector(".wk")!.classList.remove("on");
   }
@@ -196,6 +240,35 @@ export class LeaderController {
     }
     if (k === "Escape") {
       this.hide();
+      return true;
+    }
+    // Two-key sequences: the first key of a registered sequence arms a
+    // one-shot capture for the second instead of running an action. The
+    // prefix shows in the status-bar indicator meanwhile (`;l` …).
+    const combo = leaderCombo(e);
+    const seq = SEQUENCES[combo];
+    if (seq) {
+      this.prefix = combo;
+      if (this.onChange) this.onChange();
+      this.armPending((k2) => {
+        this.prefix = "";
+        if (this.onChange) this.onChange();
+        const fn = seq.final[k2];
+        if (!fn) return false; // not a sequence tail — nothing consumed
+        fn();
+        return true;
+      }, seq.timeoutMs, () => {
+        // Timed out unused. The head key may itself carry a plain binding
+        // (;b = bookmarks shares its head with a ;b… sequence), so run
+        // the plain action — registering a sequence must not break it. Only
+        // while the leader is still up: dismissing the leader cancels the
+        // intent, and a stray timer must never fire an action into a page.
+        if (!this.active) return;
+        this.prefix = "";
+        if (this.onChange) this.onChange();
+        this.run(combo);
+      });
+      // Keep the overlay up as a reminder when it is shown.
       return true;
     }
     if (this.shown()) {

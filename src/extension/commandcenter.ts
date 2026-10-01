@@ -7,6 +7,7 @@
 import { mergeConfig } from "../shared/config";
 import { core, ensureCore } from "../shared/core";
 import { send } from "../shared/protocol";
+import { readKey, vBoolean, vConfig, vStealth, vString } from "./store";
 import type { QuickApp } from "../shared/types";
 import { openItem } from "./commandcenter/data";
 import { createKeyHandler } from "./commandcenter/keys";
@@ -36,8 +37,8 @@ import { createStore } from "./commandcenter/state";
   function getApps(): QuickApp[] {
     return apps;
   }
-  void browser.storage.local.get("config").then((r: any) => {
-    apps = mergeConfig(r && r.config).apps;
+  void readKey("config", vConfig, {}).then((c) => {
+    apps = mergeConfig(c).apps;
     renderer.refresh();
   });
   browser.storage.onChanged.addListener((changes: any, area: any) => {
@@ -238,9 +239,14 @@ import { createStore } from "./commandcenter/state";
       meta.innerHTML = parts.join(" &middot; ");
     };
     const refreshMeta = (): void => {
-      void browser.storage.local.get(["lfCurrentSession", "lfProfileName"]).then((r: any) => {
-        renderMeta((r && r.lfCurrentSession) || "", (r && r.lfProfileName) || "");
-      });
+      // Two keys, so this is the one place the store's one-key-at-a-time
+      // rule is worth bending: the meta line is one string assembled from
+      // both, and an extra storage round-trip to render half of it would be
+      // the only cost. Read in parallel, never sequentially.
+      void Promise.all([
+        readKey("lfCurrentSession", vString, ""),
+        readKey("lfProfileName", vString, ""),
+      ]).then(([sess, prof]) => renderMeta(sess, prof));
     };
     refreshMeta();
     browser.storage.onChanged.addListener((changes: any, area: any) => {
@@ -261,7 +267,7 @@ import { createStore } from "./commandcenter/state";
     installBtn.addEventListener("click", () => void send("openSetup"));
   }
   if (banner) {
-    void browser.storage.local.get("chromeAlive").then((r: any) => refreshInstallBanner(r.chromeAlive));
+    void readKey("chromeAlive", vBoolean, false).then(refreshInstallBanner);
     browser.storage.onChanged.addListener((changes: any, area: any) => {
       if (area === "local" && changes.chromeAlive) refreshInstallBanner(!!changes.chromeAlive.newValue);
     });
@@ -313,9 +319,8 @@ import { createStore } from "./commandcenter/state";
       const tabs = await browser.tabs.query({ active: true, currentWindow: true });
       const t = tabs && tabs[0];
       if (!t || !t.cookieStoreId || t.cookieStoreId === "firefox-default") return;
-      const r = await browser.storage.local.get("lfStealth");
-      const containers = r && r.lfStealth && r.lfStealth.containers;
-      if (Array.isArray(containers) && containers.indexOf(t.cookieStoreId) !== -1) {
+      const { containers } = await readKey("lfStealth", vStealth, { containers: [] });
+      if (containers.indexOf(t.cookieStoreId) !== -1) {
         document.documentElement.classList.add("lf-stealth");
       }
     } catch (e) {

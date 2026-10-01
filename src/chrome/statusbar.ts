@@ -12,8 +12,8 @@
 // owns the single window-level bar for every tab; when it is absent (stand-
 // alone extension mode) there is simply no bar.
 
-import { core } from "../shared/core";
-import { StatusBar, type StatusBarData } from "../shared/statusbar";
+import { core, type StatusOp } from "../shared/core";
+import { StatusBar, leaderSignalOn, type StatusBarData } from "../shared/statusbar";
 import { updateDownloads } from "./downloads";
 import type { ChromeCfg } from "./config";
 
@@ -51,6 +51,9 @@ export interface StatusBarCtl {
   // helper's own leader never arms — by resolving this per-index state in the
   // Go store against the current selection.
   setContentLeader(index: number, active: boolean): void;
+  // The far-right leader indicator for this context's own leader. Paints
+  // synchronously (see shared/statusbar.ts) so it tracks the keypress exactly.
+  setLeaderSignal(armed: boolean): void;
   // Content-script find-in-page state by tab-strip index (pushed by the
   // background on every count change). Same resolution as the leader chevron.
   setContentFind(index: number, count: number, cur: number): void;
@@ -70,6 +73,26 @@ export interface StatusBarCtl {
 
 export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   const chromeStatusBar = new StatusBar(true, "#browser");
+  // The leader prefix typed so far in the current sequence ("" when idle,
+  // ";" after a bare leader press, "l" after `;l`). Set by the composition
+  // root whenever the leader arms, shows a key, or disarms.
+  let leaderPrefix = "";
+  // The content script's leader state, as last pushed by the background, plus
+  // the tab-strip index it belongs to. Mirrors the store so the indicator can
+  // be repainted synchronously (the store roundtrip is too slow for a keypress).
+  let contentLeaderIndex = -1;
+  let contentLeaderArmed = false;
+  // The selected tab's RAW strip index. This is the coordinate the background
+  // pushes content-leader state in (sender.tab.index) and the one the Go store
+  // resolves leaderByIndex against — NOT the real-tab index, which counts only
+  // visible tabs and would disagree whenever plumbing tabs exist.
+  function selectedStripIndex(): number {
+    try {
+      return window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
+    } catch (e) {
+      return -1;
+    }
+  }
   // Clicking a download notification on the bar dismisses just that one (the
   // popup list keeps it). Dismissal is store state — the Go store owns it.
   chromeStatusBar.setDownloadDismiss((key) => {
@@ -108,7 +131,16 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   // transition can never leave the bar over full-screen content.
   async function paint(): Promise<void> {
     try {
-      const snap = await core.statusSnapshot();
+      paintSnapshot(await core.statusSnapshot());
+    } catch (e) {
+      // a mid-collapse render must never escape
+    }
+  }
+
+  // Paint an already-read snapshot. Split out of paint() so the batch path can
+  // hand over the snapshot it just read instead of reading it a second time.
+  function paintSnapshot(snap: StatusBarData): void {
+    try {
       lastSnap = snap;
       const cfg = deps.getConfig();
       if (cfg.config.statusBar === false || isFullscreen()) {
@@ -123,11 +155,24 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     }
   }
 
-  // Push several store updates, then paint once — the store is the single
-  // source of truth, so every render reads a coherent snapshot.
-  function pushAndPaint(updates: Promise<void>[]): void {
-    void Promise.all(updates)
-      .then(() => paint())
+  // Push several store updates and repaint, atomically.
+  //
+  // This used to take an array of promises, Promise.all them, and then call
+  // paint() — which reads the snapshot back. That is five microtask hops
+  // between a keystroke and a repaint, on a path that runs on every TabSelect
+  // and every leader key, and it is worse than slow: each of those hops is an
+  // await boundary, so two concurrent pushes could interleave and one paint
+  // could read a snapshot where the other's updates had half landed. The store
+  // is the single source of truth precisely so that cannot happen, and the
+  // composition was quietly breaking that guarantee.
+  //
+  // statusBatch applies the whole batch synchronously against the resolved core
+  // and returns the snapshot from the same call, so there is no window in
+  // which another writer can slip in.
+  function pushAndPaint(ops: StatusOp[]): void {
+    void core
+      .statusBatch(ops)
+      .then((snap) => paintSnapshot(snap))
       .catch(() => {});
   }
 
@@ -149,9 +194,20 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   // key dispatch (a ;| split collapses the window while the bar re-renders),
   // so a dead tab or a half-torn-down window must degrade to best-effort.
   function compute(): void {
+    // The raw strip index, read defensively and SEPARATELY. It is the one
+    // volatile input the leader indicator needs, and it is exactly what throws
+    // when the window is mid-collapse — so it gets its own guarded read that
+    // falls back to -1 ("selection not readable"), which leaderSignalOn
+    // already handles by falling back to the other signals. Reading it here
+    // rather than inside the batch try/catch below is what lets the indicator
+    // still be repainted when the rest of the batch gives up.
+    let sel = -1;
     try {
-      const tabs = window.gBrowser.tabs;
-      const sel = tabs.indexOf(window.gBrowser.selectedTab);
+      sel = window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
+    } catch (e) {
+      // mid-collapse; -1 is the documented "unreadable" coordinate
+    }
+    try {
       const real = deps.realTabs();
       const liveCount = real.length;
       const realSel = real.indexOf(window.gBrowser.selectedTab);
@@ -170,12 +226,35 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
         selStealth = !!(lastSnap && lastSnap.activeStealth);
       }
       pushAndPaint([
-        core.statusTab(sel, (realSel < 0 ? 0 : realSel) + 1, liveCount),
-        core.statusUi(ui.popup, ui.leader),
-        core.statusStealth(selStealth),
+        { kind: "tab", selected: sel, tabIndex: (realSel < 0 ? 0 : realSel) + 1, tabCount: liveCount },
+        { kind: "ui", popup: ui.popup, leader: ui.leader },
+        { kind: "stealth", on: selStealth },
       ]);
     } catch (e) {
-      // ignore — mid-collapse reads can throw
+      // ignore — mid-collapse reads can throw. The leader indicator below is
+      // deliberately OUTSIDE this guard: it is the one signal the user reads
+      // as "did my key land", so a stale value here is the exact bug it
+      // exists to prevent.
+    }
+    // The far-right indicator rides OUTSIDE the store batch: it is painted
+    // directly on the view so a `;` press lights it with zero async hops, and
+    // it is repainted even when the batch above could not run.
+    // The decision (including the raw-strip-index rule) lives in
+    // shared/statusbar.ts and is unit-tested there.
+    try {
+      chromeStatusBar.setLeaderSignal(
+        leaderSignalOn({
+          prefix: leaderPrefix,
+          uiLeader: deps.getUi().leader,
+          contentArmed: contentLeaderArmed,
+          contentIndex: contentLeaderIndex,
+          // `sel` is the raw strip index, the same coordinate
+          // contentLeaderIndex is pushed in.
+          selectedStrip: sel,
+        })
+      );
+    } catch (e) {
+      // ignore — a dead view must not break key dispatch
     }
   }
 
@@ -206,7 +285,7 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
       state = state || {};
       const ui = deps.getUi();
       pushAndPaint([
-        core.statusSession({
+        { kind: "session", state: {
           name: state.name ? String(state.name) : "default",
           marker: state.marker ? Number(state.marker) : 0,
           inSplit: !!state.inSplit,
@@ -217,20 +296,21 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
           sessions: Array.isArray(state.sessions) ? state.sessions : [],
           tabIds: Array.isArray(state.tabIds) ? state.tabIds : [],
           stealthFlags: Array.isArray(state.stealthFlags) ? state.stealthFlags : [],
-        }),
+        } },
         // Re-derive the stealth badge from the fresh flags + current selection
         // (the background's activeStealth can race the tab becoming selected).
-        core.statusStealth(
-          (() => {
+        {
+          kind: "stealth",
+          on: (() => {
             try {
               const sel = window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
               return sel >= 0 && !!(state.stealthFlags && state.stealthFlags[sel]);
             } catch (e) {
               return !!(lastSnap && lastSnap.activeStealth);
             }
-          })()
-        ),
-        core.statusUi(ui.popup, ui.leader),
+          })(),
+        },
+        { kind: "ui", popup: ui.popup, leader: ui.leader },
       ]);
     } catch (e) {
       // ignore
@@ -248,13 +328,32 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     getStealthFlags: () =>
       lastSnap && lastSnap.stealthFlags ? lastSnap.stealthFlags.slice() : [],
     setActiveStealth: (on) => {
-      pushAndPaint([core.statusStealth(on)]);
+      pushAndPaint([{ kind: "stealth", on }]);
     },
     setContentLeader: (index, active) => {
-      pushAndPaint([core.statusLeader(index, active)]);
+      // Keep the store authoritative (it resolves which index is selected),
+      // but light the indicator the moment the state arrives. On a web page
+      // the content script owns the leader and this push has already crossed
+      // content -> background -> relay tab -> here, so routing the *pixel*
+      // through the Go batch as well left the chevron visibly trailing the key
+      // press. Paint directly for the selected tab; the batch repaint that
+      // follows just confirms the same decision.
+      contentLeaderIndex = index;
+      contentLeaderArmed = !!active;
+      if (index === selectedStripIndex()) {
+        chromeStatusBar.setLeaderSignal(!!active);
+      }
+      pushAndPaint([{ kind: "leader", index, active }]);
+    },
+    // The far-right indicator for the chrome helper's OWN leader. Painted
+    // synchronously on the view — the store roundtrip would trail the key
+    // press by several await hops and land visibly late.
+    setLeaderSignal: (armed) => {
+      leaderPrefix = armed ? ";" : "";
+      chromeStatusBar.setLeaderSignal(armed);
     },
     setContentFind: (index, count, cur) => {
-      pushAndPaint([core.statusFind(index, cur, count)]);
+      pushAndPaint([{ kind: "find", index, cur, count }]);
     },
     mounted: () => chromeStatusBar.mounted,
     dlActive: () =>
