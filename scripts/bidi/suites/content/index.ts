@@ -11,6 +11,7 @@ import * as indicator from "./indicator.ts";
 import * as sequences from "./sequences.ts";
 import * as tabsmodal from "./tabsmodal.ts";
 import * as stuck from "./stuck.ts";
+import * as held from "./held.ts";
 
 export const group = "content";
 
@@ -29,4 +30,5 @@ export async function run(ctx: any): Promise<void> {
   // request that never answers, so anything after them would be starting from
   // a context-less tab.
   await stuck.run(ctx);
+  await held.run(ctx);
 }
