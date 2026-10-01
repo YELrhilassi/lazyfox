@@ -327,9 +327,41 @@ import type { ContentPopupShell } from "./find";
     if (e.key === config.leader) {
       e.preventDefault();
       e.stopImmediatePropagation();
+      // Auto-repeat is the whole reason a held leader used to misbehave: the
+      // OS re-fires keydown several times a second, and each one re-armed the
+      // leader, so holding it to run two actions in a row tore the sequence
+      // apart between them. A repeated leader keydown carries no new intent,
+      // so it is dropped entirely.
+      if (e.repeat) return;
+      // Held down: bindings run and the leader stays armed, so `;` then
+      // back/forward (or close-tab twice) costs one keystroke per action.
+      leader.sticky = true;
       leader.show();
     }
   }
+
+  // Releasing the leader clears the HOLD, not the leader itself.
+  //
+  // This distinction is the whole trick, and getting it wrong breaks the
+  // feature it was meant to add: a tap is keydown *and* keyup, so hiding on
+  // release disarms the leader instantly and `;` then a binding stops
+  // working at all. Releasing must therefore leave the leader armed exactly
+  // as it always has been after a tap.
+  //
+  // What changes is only that the leader is no longer STICKY: the next
+  // binding runs and disarms as usual, instead of chaining.
+  window.addEventListener(
+    "keyup",
+    (e) => {
+      try {
+        if (e.key !== config.leader) return;
+        leader.sticky = false;
+      } catch (err) {
+        // ignore
+      }
+    },
+    true
+  );
 
   function syncTypingAttr() {
     const ae = document.activeElement;

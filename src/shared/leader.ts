@@ -76,6 +76,28 @@ export class LeaderController {
   // press must still run the plain action instead of dying silently.
   private pendingTimeoutFn: (() => void) | null = null;
 
+  // Whether the leader key is PHYSICALLY held down right now. A held key
+  // repeats at the OS auto-repeat rate, so without this the leader would be
+  // torn down and re-armed several times a second — the exact opposite of
+  // what holding it is for. While set, a binding runs and the leader stays
+  // armed, so consecutive actions in one family (back/forward, closing tabs)
+  // cost one keystroke each with no second leader press. See the hosts, which
+  // own the keydown/keyup that drives this.
+  sticky = false;
+
+  // While the leader is held, a binding runs WITHOUT disarming. The prefix is
+  // cleared either way so a sequence never bleeds into the next action.
+  private runOrStay(combo: string): void {
+    if (this.sticky) {
+      this.prefix = "";
+      if (this.onChange) this.onChange();
+      this.run(combo);
+      return;
+    }
+    this.hide();
+    this.run(combo);
+  }
+
   // The leader action dispatcher built from each context's ops adapter.
   private run: (key: string) => void;
   // Whether the overlay is allowed by config.
@@ -298,8 +320,7 @@ export class LeaderController {
         return true;
       }
     }
-    this.hide();
-    this.run(leaderCombo(e));
+    this.runOrStay(leaderCombo(e));
     return true;
   }
 
