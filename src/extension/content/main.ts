@@ -157,6 +157,36 @@ import type { ContentPopupShell } from "./find";
   // Clear any stale leader state this tab carried from a previous page (the
   // leader starts disarmed on every fresh load).
   void send("syncLeader", { active: false });
+  // Report IN. The chrome helper has to know whether this page is covered by a
+  // content script before it may claim or yield the keys and the screen, and
+  // it cannot find out for itself: `selectedBrowser.contentDocument` is null
+  // for every out-of-process tab, so reading this page's own beacon from the
+  // parent always fails. Without this push the helper judged ownership by URL
+  // alone, which is the dead-keyboard bug — during a slow load, and on the
+  // error page Firefox shows for a bad host, nothing owned the keys at all.
+  //
+  // The URL travels with the report so the helper can throw the answer away
+  // the moment this tab navigates, rather than trusting it until reload.
+  const reportPresence = (active: boolean) => {
+    let href = "";
+    try {
+      href = location.href;
+    } catch (e) {
+      // ignore — an unreadable location simply reports no URL
+    }
+    void send("syncContent", { active, url: href });
+  };
+  reportPresence(true);
+  // ...and report OUT, so presence cannot outlive this document. `pagehide`
+  // rather than `unload`: it is the one both a real navigation and a bfcache
+  // eviction fire, and `unload` is unreliable on mobile and in some unload
+  // paths. A missed report is self-limiting anyway — the helper discards any
+  // answer whose URL no longer matches the tab.
+  try {
+    window.addEventListener("pagehide", () => reportPresence(false), { capture: true });
+  } catch (e) {
+    // ignore — presence is re-derived on the next load regardless
+  }
   // Two-key sequences for web pages (chrome helper registers its own table).
   // The nav-stack popup is a PLAIN binding on the shifted keys — ;G / ;L open
   // it right away, ;g / ;l stay back/forward. See the note in chrome/main.ts:
@@ -227,6 +257,19 @@ import type { ContentPopupShell } from "./find";
       try {
         if (currentPopup.onKey && currentPopup.onKey(e)) return;
       } catch (err) {
+        // Closing is the right recovery — a popup whose key handler throws
+        // cannot be driven and must not stay on screen swallowing keys. But
+        // closing SILENTLY is how a popup that throws on every keystroke can
+        // look like "the key did nothing": there is no trace, and the failure
+        // is attributed to whatever the user was trying to do. Say so, in the
+        // dev console the e2e harness audits, and nowhere else.
+        if (__DEV__) {
+          try {
+            console.error("lazyfox popup key handler threw", err);
+          } catch (x) {
+            // ignore — logging must never become the new failure
+          }
+        }
         closePopup();
         return;
       }

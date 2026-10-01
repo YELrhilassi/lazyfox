@@ -39,6 +39,19 @@ export function basePanel(title: string, placeholder: string, foot: string): str
   );
 }
 
+// A panel with NO search field, for popups whose only inputs are the quick
+// keys themselves (the tab-position chooser). Rendering a disabled text box
+// there would claim there is something to type when there is not, and it
+// would steal the digits the popup is actually driven by.
+export function keyPanel(title: string, placeholder: string, foot: string): string {
+  return (
+    "<div class='lf-panel'><div class='lf-title'>" + esc(title) + "</div>" +
+    "<div class='lf-main'><div class='lf-list'></div>" +
+    "<div class='lf-empty' style='display:none'>" + esc(placeholder) + "</div></div>" +
+    "<div class='lf-foot'>" + (foot || "") + "</div></div>"
+  );
+}
+
 export function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
   search(q: string): Promise<T[]>;
   render(item: T): string;
@@ -53,7 +66,15 @@ export function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
   groupBy?: (item: T) => string;
 }): PopupCtl {
   const listEl = root.querySelector(".lf-list") as HTMLElement;
-  const inputEl = root.querySelector(".lf-input") as HTMLInputElement;
+  // A keyPanel has no input. The selector's text handling is written against
+  // an input element, so give it a detached one: it stays an empty string
+  // forever (every key the popup cares about is consumed by extraKeys before
+  // the manual-text path runs), and focusing it below is a no-op because it is
+  // not in the document. That keeps the one list engine serving both panel
+  // shapes instead of forking a second copy for key-only popups.
+  const inputEl =
+    (root.querySelector(".lf-input") as HTMLInputElement | null) ||
+    document.createElement("input");
   const emptyEl = root.querySelector(".lf-empty") as HTMLElement;
   const sel = createSelector<T>({
     listEl,
@@ -72,7 +93,14 @@ export function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
     onChange: opts.onChange,
     groupBy: opts.groupBy,
   });
-  return { onKey: sel.onKey, refresh: sel.refresh, close: sel.close, focus: () => inputEl.focus() };
+  return {
+    onKey: sel.onKey,
+    refresh: sel.refresh,
+    close: sel.close,
+    focus: () => {
+      if (inputEl.isConnected) inputEl.focus();
+    },
+  };
 }
 
 // Host, time-bucket and relative-time formatting all live in the Go core

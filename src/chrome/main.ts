@@ -30,7 +30,13 @@ import { focusCommandCenterContent } from "./commandcenterfocus";
 import { ensureChromeCore, initChromeCore } from "./core";
 import { createDebug, type DebugHandlers } from "./debug";
 import { createChromeKeyDown } from "./keysdispatch";
-import { chromeOwnsKeys, isCommandCenterTab } from "./keystate";
+import {
+  chromeOwnsKeys,
+  chromeOwnsSurfaces,
+  isCommandCenterTab,
+  noteContentPresent,
+  forgetContentFrom,
+} from "./keystate";
 import { createChromeOps } from "./ops";
 import { createPopupHost } from "./popup";
 import { createScrollKeys } from "./scrollkeys";
@@ -93,6 +99,7 @@ import { createTypingChannel } from "./typing";
     getState: () => ({
       hasPopup: () => popup.isOpen(),
       leaderActive: () => !!(leader && leader.active),
+      chromeOwnsKeys: () => chromeOwnsKeys(window),
       leaderPending: () => !!(leader && leader.hasPending()),
       lastAction: () => lastAction,
       lastMoveDebug: () => lastMoveDebug,
@@ -226,7 +233,15 @@ import { createTypingChannel } from "./typing";
         lastAction = k;
         runLeaderAction(leaderActions, k);
       },
-      () => cfg.config.whichKey !== false,
+      // The overlay may only paint while the chrome helper owns the page. On a
+      // web page the content script owns the leader and paints its own overlay
+      // there; without this gate the chrome one — a persistent host that only
+      // loses its `on` class — stayed lit behind it, so switching from an
+      // about:/command-center tab to a web page left TWO which-key overlays on
+      // screen at once, one of them permanently stale. `enabled()` is the same
+      // predicate the key path uses, so the pixels and the keyboard can never
+      // disagree about who is in charge.
+      () => cfg.config.whichKey !== false && chromeOwnsSurfaces(window),
       // Re-render the status bar the instant the leader arms/disarms so its
       // far-right indicator appears immediately (the 500ms poll would lag a
       // fast ;<key> press). The indicator works even when the which-key
@@ -323,8 +338,9 @@ import { createTypingChannel } from "./typing";
   channel = createChannel({
     ctx,
     ops: chromeOps as unknown as { openTarget(which: string): boolean; openUrlNative(url: string): boolean; openResize(): void },
-    split,
+split,
     status,
+    setContentPresent: noteContentPresent,
     cfg,
     debug,
     cache,
@@ -399,8 +415,52 @@ import { createTypingChannel } from "./typing";
   });
 
   try {
+    // Presence is cached by tab POSITION, and removing a tab slides every tab
+    // above it down one slot. Without this the map drifts by one per close, and
+    // a stale "a content script is here" would be attributed to whatever page
+    // inherited the slot — the helper would then defer on a page it should own,
+    // which is the dead keyboard again, one tab-closing session later.
+    window.gBrowser.tabContainer.addEventListener("TabClose", (e: Event) => {
+      try {
+        forgetContentFrom(Number((e as unknown as { index?: number }).index));
+      } catch (err) {
+        // ignore
+      }
+    });
+  } catch {
+    // ignore
+  }
+
+  try {
     window.gBrowser.tabContainer.addEventListener("TabSelect", () => {
       typing.reset();
+      // Standing down is a TAB-SWITCH obligation, not a keypress one. The
+      // which-key overlay and the popup are persistent hosts that only lose
+      // their `on` class when something explicitly hides them, so switching
+      // from a chrome-owned tab (about:, command center) onto a web page left
+      // the chrome overlay lit for as long as the window lived — with the
+      // content script's overlay painting over it. Two which-key panels at
+      // once, one of them a ghost that never went away.
+      //
+      // Both are torn down together because they are one decision: this window
+      // no longer owns this tab.
+      //
+      // The leader is fully HIDDEN, not merely unpainted, and the reason it is
+      // safe to do that took checking: on a tab this window does not own, the
+      // dispatcher returns before it ever consults `l.active`, so a stale
+      // armed leader cannot swallow a key the content script is about to see.
+      // Leaving it armed was worse than useless — the status bar's leader
+      // indicator reads that flag, so a web page showed a permanently lit
+      // leader chevron while the content script's leader was dark.
+      try {
+        if (!chromeOwnsSurfaces(window)) {
+          leader!.hide();
+          if (popup.isOpen()) popup.close();
+        }
+      } catch (e) {
+        // ignore — a mid-collapse read must not break the tab switch
+      }
+      status.compute();
     });
   } catch {
     // ignore
@@ -511,6 +571,20 @@ import { createTypingChannel } from "./typing";
   setInterval(() => {
     alive.announce(); // once the extension URL resolves, tell it we're here
     channel.startRelay();
+    // Stand down surfaces this window no longer owns. TabSelect covers a tab
+    // switch, but a NAVIGATION WITHIN the selected tab does not fire it — and
+    // that is the other way the chrome which-key overlay outlived its page:
+    // arm it on the command center, navigate that same tab to a web page, and
+    // the chrome overlay stayed lit under the content script's own. Polling is
+    // the honest catch-all for an ownership change nothing else announces, and
+    // it costs one attribute read when nothing needs doing.
+    try {
+      if (!chromeOwnsSurfaces(window) && (leader!.active || leader!.hasPending())) {
+        leader!.hide();
+      }
+    } catch (e) {
+      // ignore
+    }
     status.update();
     status.compute();
   }, 500);

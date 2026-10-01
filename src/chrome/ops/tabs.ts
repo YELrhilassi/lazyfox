@@ -7,6 +7,7 @@ import { toast } from "../../shared/overlay";
 import { faviconFor } from "../../shared/favicon";
 import type { PopupItem } from "../../shared/types";
 import { closeCurrentTabWithConfirm, realTabs } from "./primitives";
+import { tabRowMatches } from "../../shared/tabjump";
 
 declare const ZoomManager: any;
 
@@ -182,7 +183,6 @@ export function buildTabRows(
   },
   q: string
 ): PopupItem[] {
-  const ql = (q || "").trim().toLowerCase();
   const out: PopupItem[] = [];
   const tabIds = status.getTabIds();
   const stealthFlags = status.getStealthFlags();
@@ -221,7 +221,7 @@ export function buildTabRows(
       favIconUrl: /^https?:/i.test(rawIcon) ? rawIcon : faviconFor(uri),
     };
     real++;
-    if (!ql || ((item.title || "") + " " + (item.url || "")).toLowerCase().indexOf(ql) !== -1) {
+    if (tabRowMatches(item, q)) {
       out.push(item);
     }
   }

@@ -15,6 +15,12 @@ import type { ChromeCfg } from "./config";
 export interface DebugState {
   hasPopup(): boolean;
   leaderActive(): boolean;
+  // The helper's own verdict on whether it owns the selected tab. Exposed
+  // because ownership is the gate on every surface decision (keys AND pixels),
+  // and a disagreement between what the helper believes and what it paints is
+  // otherwise invisible from outside: the symptom is a ghost overlay with
+  // nothing in the state explaining why it stayed.
+  chromeOwnsKeys(): boolean;
   leaderPending(): boolean;
   lastAction(): string | null;
   lastMoveDebug(): string | null;
@@ -216,7 +222,13 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
         const panels = Array.from(document.querySelectorAll(".lf-panel"));
         popupInfo = {
           current: st.hasPopup(),
-          wkOn: document.querySelectorAll(".wk.on").length,
+          // Which-key overlays lit in this document. Counted from the leader
+          // controller's own mirror, NOT from `.wk.on`: the overlay host attaches
+          // a CLOSED shadow root, so a querySelectorAll from here cannot see
+          // inside it and always answered 0 — an instrument that could not see
+          // the thing it existed to detect, which is how two overlays on screen
+          // at once went unnoticed.
+          wkOn: document.documentElement.getAttribute("data-lf-whichkey") === "1" ? 1 : 0,
           rootInputs: document.querySelectorAll(".lf-popup .lf-input").length,
           panels: panels.map((p) => ({                    title: (p.querySelector(".lf-title") || {}).textContent || "",
                     hasInput: !!p.querySelector(".lf-input"),
@@ -281,6 +293,18 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
         hoverReveal: Services.prefs.getBoolPref("lazyfox.hoverReveal", false),
         toolboxHover: hover,
         leaderActive: st.leaderActive(),
+        chromeOwnsKeys: st.chromeOwnsKeys(),
+        // The selected tab's URL, so an ownership verdict can be checked
+        // against the page it was made about rather than inferred.
+        selUrl: (() => {
+          try {
+            const b = (window as any).gBrowser.selectedBrowser;
+            const u = b && b.currentURI;
+            return u ? String(u.spec) : "?";
+          } catch (e) {
+            return "err " + String(e);
+          }
+        })(),
         mutedCount: mutedCount,
         lastAction: st.lastAction(),
         lastMoveDebug: st.lastMoveDebug(),

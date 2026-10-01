@@ -6,6 +6,7 @@
 // dispatcher built from each context's ops adapter) and `enabled()` (whether
 // the overlay is allowed by config).
 import { core } from "./core";
+import { mirrorFlag } from "./observability";
 import { UI_FONT } from "./theme";
 import type { WkItem } from "./types";
 import { WkSession, wkBodyHtml, wkFootHtml } from "./wk";
@@ -209,6 +210,37 @@ export class LeaderController {
     return this.host !== null && this.enabled();
   }
 
+  /**
+   * Tears the overlay down without touching the armed state.
+   *
+   * The overlay host is persistent — it keeps its DOM node and merely loses its
+   * `on` class — because rebuilding it per press is both slower and the reason
+   * a lost-ownership overlay can outlive the page that justified it. So the
+   * honest answer for "a surface you do not own" is "not on screen", not "on
+   * screen until the next keypress happens to hide it".
+   *
+   * Splitting this from hide() is what lets the two failures be treated
+   * differently. Losing OWNERSHIP calls for hide(), because a leader that stays
+   * armed on a tab this window does not own keeps the status bar's indicator
+   * lit forever. Turning the overlay off by CONFIG calls for unpaint(), because
+   * the user still wants `;` to work — only the reference panel is unwanted —
+   * and hiding would silently break the keymap.
+   */
+  unpaint(): void {
+    if (this.host) {
+      const box = this.host._sh.querySelector(".wk");
+      if (box) box.classList.remove("on");
+    }
+    // The mirror is the only externally visible signal that this overlay is on
+    // screen. It cannot be read out of the DOM instead: the host attaches a
+    // CLOSED shadow root, so `querySelectorAll(".wk.on")` from the page or the
+    // chrome document returns nothing at all, no matter what is painted inside.
+    // That made the debug snapshot's overlay count structurally always zero,
+    // which is how a doubled overlay went unnoticed — the instrument could
+    // not see the thing it existed to detect.
+    mirrorFlag("whichkey", false);
+  }
+
   private async render(): Promise<void> {
     if (!this.host) return;
     const total = await this.wk.pageCount();
@@ -231,7 +263,14 @@ export class LeaderController {
     this.active = true;
     this.prefix = "";
     if (this.onChange) this.onChange();
-    if (!this.enabled()) return; // overlay disabled — keys are still captured below
+    if (!this.enabled()) {
+      // Overlay disabled by config, OR this context does not own the page any
+      // more. Either way the honest state is "nothing on screen" — returning
+      // here without touching the host is what stops a stale overlay from
+      // outliving the page that justified it.
+      this.unpaint();
+      return;
+    }
     if (!this.host) {
       this.host = document.createElement("div") as unknown as LeaderHost;
       this.host.id = "lazyfox-leader";
@@ -245,13 +284,14 @@ export class LeaderController {
     this.wk.reset();
     void this.render();
     this.host._sh.querySelector(".wk")!.classList.add("on");
+    mirrorFlag("whichkey", true);
   }
 
   hide(): void {
     this.active = false;
     this.prefix = "";
     if (this.onChange) this.onChange();
-    if (this.host) this.host._sh.querySelector(".wk")!.classList.remove("on");
+    this.unpaint();
   }
 
   private async runSel(): Promise<void> {
