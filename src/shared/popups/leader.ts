@@ -70,7 +70,13 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     "6": () => ctx.ops.tabJump(6),
     "7": () => ctx.ops.tabJump(7),
     "8": () => ctx.ops.tabJump(8),
+    // Every digit now means its own position; ;9 is tab 9 like the rest.
     "9": () => ctx.ops.tabJump(9),
+    // Last tab gets its own key. It used to ride on ;9, which made ;9 behave
+    // unlike every other digit once a window passed nine tabs — the kind of
+    // special case that makes a keymap feel arbitrary. `$` is the vim end-of-
+    // line mnemonic, is free at top level, and is a single keystroke.
+    "$": () => ctx.ops.tabJump(0),
     "=": () => ctx.ops.zoom(0.2),
     "-": () => ctx.ops.zoom(-0.2),
     "0": () => ctx.ops.zoom(0, 1),
