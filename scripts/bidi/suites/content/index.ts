@@ -10,6 +10,7 @@ import * as find from "./find.ts";
 import * as indicator from "./indicator.ts";
 import * as sequences from "./sequences.ts";
 import * as tabsmodal from "./tabsmodal.ts";
+import * as stuck from "./stuck.ts";
 
 export const group = "content";
 
@@ -24,4 +25,8 @@ export async function run(ctx: any): Promise<void> {
   await indicator.run(ctx);
   await sequences.run(ctx);
   await tabsmodal.run(ctx);
+  // Last on purpose: these tests leave the browser on about: pages and on a
+  // request that never answers, so anything after them would be starting from
+  // a context-less tab.
+  await stuck.run(ctx);
 }
