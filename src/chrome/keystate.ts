@@ -30,10 +30,43 @@ export function chromeOwnsKeys(win: Window): boolean {
     const u = b && b.currentURI;
     if (!u) return true;
     const s = u.spec || "";
-    if (/^https?:/i.test(s) || /^file:/i.test(s)) return false;
+    // A web URL is the content script's territory ONLY once that script has
+    // actually arrived. Judging by URL alone left a dead zone that made the
+    // whole browser feel broken: from the moment a navigation starts until the
+    // content script is injected, currentURI is already the target https:// URL
+    // while no content script exists. The chrome helper deferred, nothing else
+    // answered, and every Lazyfox key was dead — for as long as the site took
+    // to send its first byte. On a slow or hanging host that is forever, and
+    // because session restore reopens the same tab it survived a relaunch.
+    //
+    // The same window covers failures: while a DNS/connection error is being
+    // resolved the tab still reports the requested URL, so Firefox's own
+    // "Server Not Found" page inherited the same dead zone before about:
+    // neterror ever became currentURI.
+    //
+    // So defer to the content script only when it says it is here. It sets
+    // data-lf-content at document_start, before anything else can throw.
+    if (/^https?:/i.test(s) || /^file:/i.test(s)) return !contentScriptPresent(b);
     return true;
   } catch {
     return true;
+  }
+}
+
+/**
+ * Whether the selected tab's document carries a Lazyfox content script.
+ *
+ * An unreadable document (cross-origin, mid-teardown, not created yet) counts
+ * as "no content script": that is the case the caller is asking about, and
+ * answering "yes, someone else has it" there is what strands the user.
+ */
+export function contentScriptPresent(browser: unknown): boolean {
+  try {
+    const doc = (browser as { contentDocument?: Document | null })?.contentDocument;
+    const el = doc && doc.documentElement;
+    return !!(el && el.getAttribute("data-lf-content") === "1");
+  } catch {
+    return false;
   }
 }
 

@@ -26,6 +26,7 @@
 
 import { strict as assert } from "node:assert";
 import { SPECIAL_KEYS, shiftedKey } from "../src/chrome/keys.ts";
+import { chromeOwnsKeys } from "../src/chrome/keystate.ts";
 
 let passed = 0;
 function ok(name: string, cond: boolean): void {
@@ -66,6 +67,81 @@ eq("ArrowLeft is 37", SPECIAL_KEYS["ArrowLeft"], 37);
 ok(
   "every named code is the exact DOM_VK_ number, not a plausible guess",
   Object.values(SPECIAL_KEYS).every((n) => Number.isInteger(n) && n > 0)
+);
+
+// --- who owns the keyboard on a given tab -------------------------------
+//
+// chromeOwnsKeys decides whether the chrome helper may consume a key or must
+// defer to the content script. Judging that by URL alone stranded the user on
+// a dead keyboard: between a navigation starting and the content script being
+// injected, currentURI is already the target https:// URL while no content
+// script exists, so chrome deferred and nothing answered. A slow or hanging
+// host made that window arbitrarily long, and session restore reproduced it
+// on every relaunch. So ownership is decided by the content script's PRESENCE,
+// not by the shape of the URL.
+//
+// These cases are the whole regression, pinned here because none of them can
+// be reproduced on demand in a live browser.
+
+// A fake selected browser: a URL plus an optional content document carrying
+// (or not carrying) the content script's presence beacon.
+function tab(spec: string, content?: { beacon?: string } | null) {
+  const doc =
+    content === undefined || content === null
+      ? content === null
+        ? null
+        : undefined
+      : {
+          documentElement: {
+            getAttribute: (n: string) => (n === "data-lf-content" ? (content.beacon ?? null) : null),
+          },
+        };
+  return {
+    currentURI: { spec },
+    get contentDocument() {
+      return doc;
+    },
+  };
+}
+function win(t: unknown) {
+  return { gBrowser: { selectedBrowser: t } } as unknown as Window;
+}
+
+ok(
+  "a LOADING https page (URL set, no document yet) still gets the chrome helper",
+  chromeOwnsKeys(win(tab("https://slow.example/loading")))
+);
+ok(
+  "a loading page whose document exists but has no content script does too",
+  chromeOwnsKeys(win(tab("https://slow.example/loading", { beacon: null })))
+);
+ok(
+  "a https page WITH the content script present defers to it",
+  !chromeOwnsKeys(win(tab("https://example.com/", { beacon: "1" })))
+);
+ok(
+  "a file: page without a content script is the chrome helper's",
+  chromeOwnsKeys(win(tab("file:///C:/x.html", { beacon: null })))
+);
+ok(
+  "a file: page WITH the content script defers to it",
+  !chromeOwnsKeys(win(tab("file:///C:/x.html", { beacon: "1" })))
+);
+ok(
+  "about:neterror and other about: pages are always the chrome helper's",
+  chromeOwnsKeys(win(tab("about:neterror", { beacon: null }))) &&
+    chromeOwnsKeys(win(tab("about:blank")))
+);
+ok(
+  "an unreadable document counts as 'no content script', never as 'someone else has it'",
+  chromeOwnsKeys(
+    win({
+      currentURI: { spec: "https://example.com/" },
+      get contentDocument(): Document {
+        throw new Error("cross-origin");
+      },
+    })
+  )
 );
 
 console.log(`\n${passed} checks passed.`);

@@ -9,7 +9,7 @@ import { ensureCore } from "../../shared/core";
 import { isTypingTarget } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { KeyGuard } from "../../shared/keyguard";
-import { LeaderController, leaderSequences } from "../../shared/leader";
+import { LeaderController } from "../../shared/leader";
 import { openNavPopup } from "../../shared/popups/nav";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
 import { mirrorFlag } from "../../shared/observability";
@@ -158,11 +158,12 @@ import type { ContentPopupShell } from "./find";
   // leader starts disarmed on every fresh load).
   void send("syncLeader", { active: false });
   // Two-key sequences for web pages (chrome helper registers its own table).
-  // The nav-stack popup owns ;G / ;L (shift) — plain ;g / ;l stay back/forward.
-  Object.assign(leaderSequences, {
-    G: { final: { k: () => openNavPopup(ctx) } },
-    L: { final: { k: () => openNavPopup(ctx) } },
-  });
+  // The nav-stack popup is a PLAIN binding on the shifted keys — ;G / ;L open
+  // it right away, ;g / ;l stay back/forward. See the note in chrome/main.ts:
+  // it was briefly a ;G-then-k sequence, which made the advertised binding do
+  // nothing at all.
+  leaderActions["G"] = () => openNavPopup(ctx);
+  leaderActions["L"] = () => openNavPopup(ctx);
   // ;' = quick switch: capture the next digit and jump to the marked session.
   leaderActions["'"] = () =>
     leader.armPending((k) => {
