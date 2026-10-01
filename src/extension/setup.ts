@@ -13,6 +13,7 @@
 // and points at the installer, which lists them for real.
 
 import { send } from "../shared/protocol";
+import { readKey, vBoolean, vString } from "./store";
 
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
 
@@ -100,8 +101,11 @@ async function renderDone(): Promise<void> {
 
 async function readProfile(): Promise<{ name: string; dir: string }> {
   try {
-    const r = await browser.storage.local.get(["lfProfileName", "lfProfileDir"]);
-    return { name: (r && r.lfProfileName) || "", dir: (r && r.lfProfileDir) || "" };
+    const [name, dir] = await Promise.all([
+      readKey("lfProfileName", vString, ""),
+      readKey("lfProfileDir", vString, ""),
+    ]);
+    return { name, dir };
   } catch (e) {
     return { name: "", dir: "" };
   }
@@ -133,8 +137,7 @@ async function renderProfile(): Promise<void> {
 
 async function readAlive(): Promise<boolean> {
   try {
-    const r = await browser.storage.local.get("chromeAlive");
-    return r && r.chromeAlive === true;
+    return readKey("chromeAlive", vBoolean, false);
   } catch (e) {
     return false;
   }

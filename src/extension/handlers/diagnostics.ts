@@ -14,12 +14,18 @@ import type { Domain } from "./types";
 type Owns = "components" | "openSetup" | "openDiagnostics" | "quit" | "pageReport" | "diagnoseTabs" | "cacheState" | "cacheSet" | "hardReload";
 
 export interface DiagnosticsDeps {
+  // The shape is declared here as well as in the protocol because this dep is
+  // injected, and the compiler caught the two drifting apart the moment
+  // `bridge` was added: the injected implementation is the one that has to
+  // carry it, and without this signature it would have compiled fine and
+  // rendered "not reported yet" forever.
   componentsInfo(): Promise<{
     extension: string;
     wasm: string;
     nativeHost: string | null;
     nativeProtocol: string | null;
     chromeHelper: string | null;
+    bridge: "ok" | "missing" | null;
   }>;
   pageReport(data?: { tabId?: number }): Promise<{ report: PageReport | null; tabId: number | null }>;
   diagnoseTabs(): Promise<{ tabs: { id: number; title: string; url: string; active: boolean }[] }>;

@@ -43,7 +43,7 @@ let profile = "";
 let server: any = null;
 let ctx: any = null;
 
-async function boot(port: number) {
+async function boot() {
   const srv = await startTestServer(pages);
   server = srv.server;
   const base = `http://127.0.0.1:${srv.port}`;
@@ -107,7 +107,6 @@ async function main() {
 
   // 3. Command-center search example: type a query, show suggestions.
   await ctx.press(ccTab, "i").catch(() => {}); // focus the input
-  const demoUrl = `${base}/demo`;
   await ctx.typeIn(ccTab, "https://").catch(() => {});
   await sleep(200);
   await captureScreenshot(ccTab, resolve(OUT, "home-search.png"));

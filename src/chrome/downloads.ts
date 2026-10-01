@@ -104,7 +104,13 @@ async function snapshot(): Promise<DownloadEntry[]> {
 // poller can decide how to degrade.
 export async function updateDownloads(): Promise<number> {
   const fresh = await snapshot();
-  await core.statusDownloads(fresh);
+  // Batched rather than a bare setter: the poller runs on an interval for the
+  // whole life of the window, and going through the per-call path means an
+  // await boundary between the store write and the snapshot the status bar
+  // reads back — a window in which a TabSelect push could interleave. The
+  // store is the single source of truth, so a download update and a tab update
+  // must not be able to tear.
+  await core.statusBatch([{ kind: "downloads", fresh }]);
   return fresh.length;
 }
 
@@ -117,7 +123,9 @@ export async function listDownloads(): Promise<DownloadEntry[]> {
 // them). With no key, every bar-visible notification is dismissed; with a
 // key, just that one. Dismissal is store state.
 export function dismissDownload(key?: string): Promise<void> {
-  return core.statusDismiss(key != null ? [key] : []);
+  return core
+    .statusBatch([{ kind: "dismiss", keys: key != null ? [key] : [] }])
+    .then(() => undefined);
 }
 
 export async function openDownload(key: string): Promise<boolean> {

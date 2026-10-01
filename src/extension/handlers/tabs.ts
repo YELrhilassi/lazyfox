@@ -7,11 +7,12 @@
 // hidden plumbing tabs.
 import { CC_URL, getActiveTab, realTabsInWindow } from "../tabs";
 import { activateTabByIndex, tabsInWindow } from "../windowops";
+import type { NavEntry } from "../../shared/types";
 import type { Domain } from "./types";
 // The actions this domain owns. The list is the contract: background.ts unions
 // every domain's list and requires the result to cover BgApi exactly, so a new
 // action cannot be declared without someone deciding which domain answers it.
-type Owns = "tabs" | "activateTab" | "activateTabAt" | "moveTab" | "moveActiveTab" | "closeTab" | "newTab" | "duplicateTab" | "reload" | "back" | "forward" | "copyUrl" | "reopenTab" | "alternateTab";
+type Owns = "tabs" | "activateTab" | "activateTabAt" | "moveTab" | "moveActiveTab" | "closeTab" | "newTab" | "duplicateTab" | "reload" | "back" | "forward" | "navStack" | "navGoto" | "copyUrl" | "reopenTab" | "alternateTab";
 
 export interface TabDeps {
   // The filtered reopen: skips the relay tab and the splitpanel companion, so
@@ -101,14 +102,80 @@ export function createTabHandlers(deps: TabDeps): Domain<Owns> {
 
     back: async () => {
       const tab = await getActiveTab();
-      if (tab) await browser.tabs.goBack(tab.id);
+      if (!tab) return { ok: false };
+      const can = await browser.tabs.callPageMethod?.(tab.id, "canGoBack").catch?.(() => false) ?? true;
+      if (!can) return { ok: true, atRoot: true };
+      await browser.tabs.goBack(tab.id);
       return { ok: true };
     },
 
     forward: async () => {
       const tab = await getActiveTab();
-      if (tab) await browser.tabs.goForward(tab.id);
+      if (!tab) return { ok: false };
+      const can = await browser.tabs.callPageMethod?.(tab.id, "canGoForward").catch?.(() => false) ?? true;
+      if (!can) return { ok: true, atEnd: true };
+      await browser.tabs.goForward(tab.id);
       return { ok: true };
+    },
+
+    // The active tab's navigation stack, oldest-first with the current entry
+    // included. Session history is a privileged API (browser.sessionStore),
+    // so this runs in the background.
+    navStack: async () => {
+      const tab = await getActiveTab();
+      if (!tab || tab.id == null) return { canBack: false, canForward: false, index: 0, entries: [] };
+      try {
+        // tabSessions (Firefox's sessionStore API via sessions.getTabValue is
+        // not the history); the real path is `browser.sessionStore` in older
+        // APIs but today the supported surface is:
+        const ss = (browser as any).sessionStore;
+        if (ss && ss.getTabState) {
+          const raw = ss.getTabState(tab.id);
+          const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+          const entriesRaw = parsed?.entries || [];
+          const index = typeof parsed?.index === "number" ? parsed.index - 1 : Math.max(0, entriesRaw.length - 1);
+          const entries: NavEntry[] = entriesRaw.map((e: any) => ({
+            url: e.url || "",
+            title: e.title || e.url || "",
+          }));
+          return {
+            canBack: index > 0,
+            canForward: index < entries.length - 1,
+            index,
+            entries,
+          };
+        }
+      } catch {
+        // fall through to the minimal answer
+      }
+      return {
+        canBack: false,
+        canForward: false,
+        index: 0,
+        entries: [{ url: tab.url || "", title: tab.title || tab.url || "" }],
+      };
+    },
+
+    // Jump to a stack position by walking back/forward the needed steps.
+    // Walking rather than a single "goto" is what Firefox's tabs API offers;
+    // each step is instant from the user's perspective (bfcache).
+    navGoto: async (data) => {
+      const tab = await getActiveTab();
+      if (!tab || tab.id == null) return { ok: false };
+      // data.index is the DELTA (negative = back steps, positive = forward)
+      // computed by the popup against the stack it just showed.
+      const steps = Number(data.index);
+      if (!isFinite(steps) || steps === 0) return { ok: true };
+      try {
+        if (steps < 0) {
+          for (let i = 0; i < -steps; i++) await browser.tabs.goBack(tab.id);
+        } else {
+          for (let i = 0; i < steps; i++) await browser.tabs.goForward(tab.id);
+        }
+        return { ok: true };
+      } catch {
+        return { ok: false };
+      }
     },
 
     copyUrl: async () => {

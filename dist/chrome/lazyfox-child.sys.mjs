@@ -25,10 +25,41 @@ var LazyfoxChild = class extends BaseChild {
     this.leaderUntil = 0;
   }
   actorCreated() {
+    this.installTrustedClick();
     void this.sendQuery("lazyfox-config", null).then((cfg) => {
       if (cfg && typeof cfg.leader === "string" && cfg.leader) this.leaderKey = cfg.leader;
     }).catch(() => {
     });
+  }
+  // Listen for the content script's trusted-click request. See the long note
+  // below for why this exists and what bounds it.
+  installTrustedClick() {
+    const doc = this.document;
+    const cw = this.contentWindow;
+    if (!doc || !cw) return;
+    try {
+      const utils = cw.windowUtils;
+      if (!utils || typeof utils.sendMouseEvent !== "function") return;
+      const nonce = Math.random().toString(36).slice(2) + "-" + Math.random().toString(36).slice(2);
+      cw.__lazyfoxTrustedClick = nonce;
+      const type = "lazyfox-trusted-click:" + nonce;
+      const listener = (ev) => {
+        const detail = ev.detail;
+        if (!detail) return;
+        const x = Number(detail.x);
+        const y = Number(detail.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        if (x < 0 || y < 0 || x > cw.innerWidth || y > cw.innerHeight) return;
+        try {
+          utils.sendMouseEvent("mousemove", x, y, 0, 0, 0, false);
+          utils.sendMouseEvent("mousedown", x, y, 0, 1, 0, false);
+          utils.sendMouseEvent("mouseup", x, y, 0, 1, 0, false);
+        } catch (e) {
+        }
+      };
+      cw.addEventListener(type, listener, true);
+    } catch (e) {
+    }
   }
   handleEvent(event) {
     if (event.type !== "keydown") return;
@@ -78,25 +109,52 @@ var LazyfoxChild = class extends BaseChild {
     }
     return void 0;
   }
-  // NOTE: this used to be a trustedClick() built on windowUtils, and removing
-  // it during the trusted-press revert left this comment describing a function
-  // that no longer exists. It is kept, deliberately, as the design note for the
-  // fix that is still needed — see docs/HINTS.md section 2.0, which now has the
-  // measurement that says it is needed.
+  // --- Trusted click -----------------------------------------------------
   //
-  // Dispatch the full press through windowUtils, which is what makes the events
-  // TRUSTED: isTrusted is true, user activation is granted, and the browser's
-  // own default activation behaviour runs (a native <summary> toggle, a form
-  // submit, a checkbox). A content-script-dispatched MouseEvent cannot do any
-  // of that, which is exactly why stubborn controls need this path — and the
-  // e2e suite has since measured that our current path produces isTrusted
-  // FALSE even via HTMLElement.click(), so the escalation is not optional.
+  // Why this exists, in one paragraph because it is load-bearing: a site can
+  // tell a real user click from a scripted one by reading event.isTrusted, and
+  // YouTube's ad "Skip" button does exactly that. The e2e suite has MEASURED
+  // that our content-script path produces isTrusted FALSE even when it ends in
+  // HTMLElement.click() — the widely-repeated claim that Gecko synthesises
+  // .click() as trusted does not hold for a content script in a current
+  // Firefox. So no amount of cleverness in the synthetic sequence fixes it:
+  // the only way to produce a genuinely trusted click from inside the browser
+  // is nsIDOMWindowUtils.sendMouseEvent, and the only code in this project
+  // that can reach it is this actor, which is privileged and already runs in
+  // the content process.
   //
-  // The coordinates are viewport-relative (what getBoundingClientRect reports),
-  // and sendMouseEvent takes them offset from the window, so they are used
-  // as-is. The sequence is move -> down -> up -> click: the move first because
-  // some widgets track the pointer before accepting a press, and the click
-  // last because that is the event which actually activates.
+  // How the content script reaches it: a DOM CustomEvent. That is deliberately
+  // NOT a background message round trip. The alternative — content script ->
+  // background -> relay port -> chrome -> actor — is four process hops and a
+  // timeout budget to deliver two numbers, and it would only be reliable on
+  // pages where the relay tab can be opened at all. A CustomEvent is in-process
+  // and synchronous, so the trusted click lands in the same task the user's
+  // keystroke started.
+  //
+  // SECURITY. This is a channel from a content script to a privileged click
+  // synthesiser, and it deserves to be taken seriously rather than waved at:
+  // any page can dispatch this event and get a trusted click at coordinates of
+  // its choosing. In practice the blast radius is small — the page could
+  // already call .click() on itself, and the coordinates are in its own
+  // document — but "isTrusted becomes forgeable by page script" is not nothing.
+  // Three things bound it, and each is load-bearing:
+  //
+  //   1. The event name carries a per-installation random token, stashed on
+  //      the window by THIS code. A page can read it, so this is obfuscation
+  //      rather than authentication — it stops a page that ships a static
+  //      "skip YouTube ads" payload, which is the realistic case, and nothing
+  //      more. It is honestly described as such rather than as a defence.
+  //   2. The listener is installed on the window with capture, and refuses any
+  //      event whose detail does not parse as a finite in-viewport point. A
+  //      malformed or oversized detail is dropped rather than clamped.
+  //   3. It is only ever SENT by the content script after the user has
+  //      pressed a hint key. Nothing in this codebase dispatches it
+  //      speculatively, and there is no timer, retry or pref that does so.
+  //
+  // Coordinates are viewport-relative (what getBoundingClientRect reports) and
+  // sendMouseEvent expects exactly that, so they are passed through as-is.
+  // Gecko synthesises the click itself from a mousedown/mouseup pair, so there
+  // is no fourth event to send — sending one would double-activate.
 };
 export {
   LazyfoxChild
