@@ -252,14 +252,86 @@ were briefly registered as `;G`+`k` sequences.
 
 ---
 
-## 8. Open questions before implementation
+## 8. Decisions (user, 2026-09-30)
 
-1. Do you want the category sub-keys to reuse the original key (`;W|`), or
-   renumber them (`;W 1`, `;W 2`, …)? Reusing keeps muscle memory; renumbering
-   is easier to scan. My draft assumes reuse.
-2. Should `;W` be available while a split is live, and `;Z` on any page? (My
-   assumption: yes to both, no special-casing.)
-3. For the tab chooser, is `Esc` the only cancel, or should a second `;`
-   press cancel too? (I would do both — `;` is already the "start over" key.)
-4. **The `;9` = last tab collision above** — option (a), (b) or (c). This one
-   blocks the tab work and I would rather you pick it than have me guess.
+1. **Sub-keys reuse the original key** (`;W|`, `;Z=`). Where a sub-key is *not*
+   ergonomic as-is, it gets redesigned rather than inherited — see the split
+   and zoom keys below.
+2. **`;W` and `;Z` are available everywhere**, including while a split is live.
+   No special-casing by context.
+3. **Two cancel keys, not one.** `Esc` stays, because it is what every other
+   popup uses and muscle memory expects it. It is joined by a dedicated cancel
+   key, because `Esc` genuinely does collide with page behaviour — a site
+   using `Esc` to close its own overlay should not also close a Lazyfox popup,
+   and today it does.
+4. **`;9` becomes tab 9 like every other digit**, and "last tab" moves to its
+   own key. A different kind of command should not be spelled like a position.
+
+### Sub-keys that get redesigned rather than reused
+
+Reusing the original key is the default, but three of them do not survive the
+move and should be re-spelled:
+
+| Was | Becomes | Why |
+| --- | --- | --- |
+| `;\` unsplit | `;W u` | a bare backslash is hard to read and easy to fat-finger |
+| `;+` move tab into split | `;W m` | `+` requires Shift and means nothing here |
+| `;Z =` / `;Z -` / `;Z 0` | `;Z i` / `;Z o` / `;Z r` | `= - 0` are numeric-row keys; letters are easier to reach mid-sequence |
+
+The split *navigation* keys keep themselves, because `{ } [ ]` are already
+mnemonic for left/right and prev/next and read well next to a category:
+`;W {` swap left, `;W }` swap right, `;W [` prev pane, `;W ]` next pane,
+`;W ,` / `;W .` move tab left/right, `;W |` split.
+
+---
+
+## 9. Held leader key
+
+Decided alongside the cancel key, because the two are the same idea: **you
+should not have to hit the leader again to repeat an action.**
+
+Holding `;` must register the leader **once**. A held key repeats at the OS
+auto-repeat rate, so naively holding `;` would tear the leader down and
+re-arm it several times a second — the opposite of the intent.
+
+So the leader ignores `keydown` events that are auto-repeat (same key, no
+meaningful `timeStamp` advance, or an explicit repeat flag where the platform
+provides one), and instead treats a held leader as **sticky**:
+
+```
+hold ;            -> arm the leader once
+press g           -> back
+press l           -> forward        (leader still held, no second ; press)
+press cancel      -> dismiss
+release ;         -> disarm
+```
+
+This is what makes consecutive same-family actions cheap — `;g ;l` back and
+forward repeatedly, or `;x` closing several tabs — without a keystroke per
+action. It also gives the cancel key a natural home: **hold `;` and press
+cancel** to dismiss without ever giving up the leader.
+
+Two consequences to build deliberately, not discover later:
+
+- Releasing `;` must disarm even if no key followed it.
+- The cancel key while the leader is held must **not** fall through to the
+  page's own `Esc` handling.
+
+---
+
+## 10. Cancel key
+
+`Esc` remains one of the two. The other is chosen to be:
+
+- unreachable by a page (so it cannot collide with page behaviour),
+- not currently bound at top level,
+- one keystroke, easy to reach.
+
+Candidates considered: `;q` is taken (which-key toggle). `q` alone cannot be
+the bare cancel because the leader is the entry point. The proposal is a
+dedicated key alongside `Esc` in the popup chrome, chosen to sit near where
+the hand already is after `;`.
+
+**Implementation note:** the cancel must be handled by the Lazyfox key
+dispatcher *before* the page sees it, and must `preventDefault` +
+`stopImmediatePropagation` so the page never receives it.
