@@ -14,8 +14,35 @@ import { WkSession, wkBodyHtml, wkFootHtml } from "./wk";
 // reflected in e.key for printable characters ("p" vs "P", "|" vs "\\"), so it
 // is deliberately left out of the prefix; Ctrl/Alt/Meta are prepended so a
 // binding can be "leader+Ctrl+key" as well as "leader+key".
-export function leaderCombo(e: KeyboardEvent): string {
-  const mods: string[] = [];
+/**
+ * The cancel chord: Escape, or Ctrl+G.
+ *
+ * Escape is the key every popup, every site and every muscle memory expects,
+ * so it stays. But it is also the most contested key on the web — a site that
+ * binds it to close its own cookie banner, player or menu fights a Lazyfox
+ * popup for the same keystroke, and the user cannot tell which one just
+ * closed. Ctrl+G is the universal abort (emacs' abort-prefix, vim's Ctrl+[):
+ * a chord rather than a character, so it can never be typed into a field and
+ * no page receives it as text, and it is far from anything sites bind. It
+ * also works with the leader still held, which is how a sequence is backed
+ * out of without giving up the key.
+ *
+ * Shared so both contexts agree — the content script and the chrome helper
+ * must not disagree about which keystroke dismisses.
+ */
+export function isCancel(e: {
+  key: string;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  metaKey?: boolean;
+}): boolean {
+  if (e.key === "Escape") return true;
+  // Ctrl+G only: Ctrl+Alt+G and friends belong to the site, and a cancel the
+  // user has to aim precisely is not a cancel.
+  return !!(e.ctrlKey && !e.altKey && !e.metaKey && (e.key === "g" || e.key === "G"));
+}
+
+export function leaderCombo(e: KeyboardEvent): string {  const mods: string[] = [];
   if (e.ctrlKey) mods.push("Ctrl");
   if (e.altKey) mods.push("Alt");
   if (e.metaKey) mods.push("Meta");
