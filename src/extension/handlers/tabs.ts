@@ -12,7 +12,7 @@ import type { Domain } from "./types";
 // The actions this domain owns. The list is the contract: background.ts unions
 // every domain's list and requires the result to cover BgApi exactly, so a new
 // action cannot be declared without someone deciding which domain answers it.
-type Owns = "tabs" | "activateTab" | "activateTabAt" | "moveTab" | "moveActiveTab" | "closeTab" | "newTab" | "duplicateTab" | "reload" | "back" | "forward" | "navStack" | "navGoto" | "copyUrl" | "reopenTab" | "alternateTab";
+type Owns = "tabs" | "tabCount" | "activateTab" | "activateTabAt" | "moveTab" | "moveActiveTab" | "closeTab" | "newTab" | "duplicateTab" | "reload" | "back" | "forward" | "navStack" | "navGoto" | "copyUrl" | "reopenTab" | "alternateTab";
 
 export interface TabDeps {
   // The filtered reopen: skips the relay tab and the splitpanel companion, so
@@ -27,6 +27,12 @@ export interface TabDeps {
 export function createTabHandlers(deps: TabDeps): Domain<Owns> {
   return {
     tabs: () => tabsInWindow(),
+
+    // The count only — no per-tab rows. This is on the `;1` hot path, where
+    // the only question is whether the digit is a prefix of more than one tab
+    // number, and building every row to answer it would be visible latency on
+    // the most-used binding in the app.
+    tabCount: async () => ({ count: (await realTabsInWindow()).length }),
 
     activateTab: async (data) => {
       await browser.tabs.update(data.id, { active: true });

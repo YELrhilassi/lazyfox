@@ -113,6 +113,7 @@ const handlers = {
   }),
   ...createSyncHandlers({
     pushLeaderStateToChrome,
+    pushContentStateToChrome,
     pushFindStateToChrome,
     stealthOpen,
     pushSessionStateToChrome,
@@ -179,6 +180,11 @@ function pushLeaderStateToChrome(index: number, active: boolean): void {
 
 // Relay the content script's find-in-page count to the chrome helper so its
 // window-level status bar shows "🔍 cur/count" on web pages.
+function pushContentStateToChrome(index: number, active: boolean, url: string): void {
+  if (index < 0) return;
+  requestChrome("contentState", { index, active, url });
+}
+
 function pushFindStateToChrome(index: number, count: number, cur: number): void {
   if (index < 0) return;
   requestChrome("findState", { index, count, cur });

@@ -24,6 +24,7 @@ import {
   doSearch,
   histItems,
   loadUrl,
+  realTabs,
   openUrlNative,
   suggestSearch,
 } from "./ops/primitives";
@@ -186,6 +187,9 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     activateTab: (id: number) => tabs.activateTab(id),
     tabNav: (dir: number) => tabs.tabNav(dir),
     tabJump: (n: number) => tabs.tabJump(n),
+    // Synchronous here: the chrome helper reads the strip directly, so a
+    // digit press never waits on a message round trip to learn the tab count.
+    tabCount: async () => realTabs().length,
     alternateTab: () => tabs.alternateTab(),
     recentlyClosed: () => deps.getChannel().requestRecentlyClosed(),
     restoreClosedTab: (key: string) => deps.getChannel().requestBg("restoreClosedTab", { key }),

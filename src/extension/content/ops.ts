@@ -17,6 +17,7 @@ import { relTime } from "../../shared/format";
 import { send } from "../../shared/protocol";
 import type { Config, PopupItem } from "../../shared/types";
 import { openFindPopup, openResizePopup, type ContentPopupShell } from "./find";
+import { tabRowMatches } from "../../shared/tabjump";
 
 export interface ContentOpsDeps {
   shell: ContentPopupShell;
@@ -63,14 +64,8 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         // derived https favicon (same rule as the chrome helper's rows).
         favIconUrl: /^https?:/i.test(t.favIconUrl || "") ? t.favIconUrl : faviconFor(t.url),
       }));
-      const ql = q.trim().toLowerCase();
-      if (ql) {
-        tabs = tabs.filter(
-          (t) =>
-            (t.title || "").toLowerCase().indexOf(ql) !== -1 ||
-            (t.url || "").toLowerCase().indexOf(ql) !== -1
-        );
-      }
+      const ql = q.trim();
+      if (ql) tabs = tabs.filter((t) => tabRowMatches(t, ql));
       return tabs;
     },
     history: async (q: string) => {
@@ -159,6 +154,12 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     tabJump: (n: number) => {
       if (n === 0) void send("activateTabAt", { last: true });
       else void send("activateTabAt", { index: n });
+    },
+    // Count only, no per-tab rows: the digit press that asks this must not
+    // wait for every tab's title, url and favicon to be collected first.
+    tabCount: async () => {
+      const r = await send("tabCount");
+      return (r && r.count) || 0;
     },
     alternateTab: () => {
       void send("alternateTab");

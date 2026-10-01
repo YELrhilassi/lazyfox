@@ -60,12 +60,8 @@ type Ctl = {
   cancelPending(): void;
 };
 
-function makeLeader(runs: string[]): Ctl {
-  return new LeaderController(
-    (k) => runs.push(k),
-    () => true, // overlay "enabled" — irrelevant, the constructor needs it
-    () => {}
-  ) as unknown as Ctl;
+function makeLeader(runs: string[], enabled: () => boolean = () => true): Ctl {
+  return new LeaderController((k) => runs.push(k), enabled, () => {}) as unknown as Ctl;
 }
 
 /* ---------- leaderCombo sanity (the prefix keys come from it) ---------- */
@@ -164,6 +160,66 @@ eq("shift folds into the combo via e.key", leaderCombo(key("B", { shift: true })
   l.active = true;
   ok("a key with no sequence is consumed by the plain path", l.handleKey(key("t")) === true);
   eq("the plain action ran", runs.join(","), "t");
+}
+
+/* ---------- unpaint: losing ownership must clear the pixels ---------- */
+//
+// The which-key overlay is a PERSISTENT host that only loses its `on` class on
+// hide(). That is why a stale overlay can outlive the page that justified it:
+// arm the leader on the command center, switch to a web page, and nothing in
+// the old path ever took the class off — so the chrome panel stayed lit behind
+// the content script's own. The user saw two which-key panels at once, one
+// permanently stale.
+//
+// unpaint() is the fix, and it is deliberately NOT hide(): disarming would
+// swallow keys the content script is about to handle. The two contexts must
+// fight over who owns the pixels, never over who owns the keyboard.
+
+{
+  const l = makeLeader([]);
+  // No DOM in this process, so there is no host: unpaint must be a safe no-op
+  // rather than a throw, because it runs from a tab-switch handler where an
+  // exception would take the tab switch with it.
+  l.active = true;
+  l.unpaint();
+  ok("unpaint with no host is a no-op, not a throw", l.active === true);
+  l.unpaint();
+  ok("unpaint is idempotent", l.active === true);
+}
+
+/* ---------- show() on a context that may not paint ---------- */
+//
+// enabled() is false for two reasons: the user turned the overlay off, and this
+// context does not own the page. Both must leave nothing on screen — and
+// neither may disarm, because keys are still captured either way.
+
+{
+  const l = makeLeader([], () => false);
+  l.show();
+  ok("show() with painting disabled still arms (keys are captured)", l.active === true);
+  l.hide();
+}
+
+/* ---------- holding the leader: release must not disarm ---------- */
+//
+// A tap is keydown AND keyup, so a release handler that hid the leader would
+// disarm it instantly and `;` + any binding would stop working everywhere.
+// Release ends the HOLD, never the leader. This got it wrong once already.
+
+{
+  const runs: string[] = [];
+  const l = makeLeader(runs);
+  l.sticky = false;
+  l.active = true;
+  // simulate the press
+  l.sticky = true;
+  // one binding off the held leader
+  l.handleKey(key("g"));
+  eq("the held leader ran the binding", runs.join(","), "g");
+  ok("the held leader stays armed after a binding", l.active === true);
+  l.sticky = false; // the release
+  ok("release clears the hold", l.sticky === false);
+  ok("release does NOT disarm the leader", l.active === true);
 }
 
 // Table cleanup so other test files sharing the process stay unaffected.

@@ -98,9 +98,12 @@ export function openUrlPopup(ctx: PopupCtx, replace = false): void {
 
 
 export function openTabsPopup(ctx: PopupCtx): void {
-  // The picker shows each tab's jump number on the left. Digits 1-9 jump
-  // straight to the matching tab while the search box is empty (matching the
-  // `;1`-`;9` bindings); once you type into the box, digits filter as usual.
+  // The picker shows each tab's jump number on the left, and typing digits
+  // narrows by that number rather than by the text of the title. The two are
+  // the same idea the leader uses, so `;t` `1` `1` lands on tab 11 exactly as
+  // `;11` does. When the digits resolve to a single tab the popup switches to
+  // it on the last digit — the same "one keystroke when it is unambiguous"
+  // rule the leader follows, and the reason a search box is not needed here.
   ctx.open(
     basePanel(
       "Tabs",
@@ -109,8 +112,9 @@ export function openTabsPopup(ctx: PopupCtx): void {
         "<span class='lf-badge'>x</span> close &middot; <span class='lf-badge'>h/l</span> move &middot; " +
         "<span class='lf-badge'>Esc</span> close"
     ),
-    (root) =>
-      makeSelector<PopupItem>(ctx, root, {
+    (root) => {
+      const inputEl = root.querySelector(".lf-input") as HTMLInputElement | null;
+      return makeSelector<PopupItem>(ctx, root, {
         debounceMs: 40,
         itemClass: "lf-tab",
         emptyText: "no tabs",
@@ -120,9 +124,10 @@ export function openTabsPopup(ctx: PopupCtx): void {
         vimNav: true,
         search: (q) => ctx.ops.listTabs(q),
         render: (t) => {
-          // t.number is the 1-based strip position, the same identity ;1-;9
-          // address. Only the first nine get a number (there is no ;10).
-          const n = t.number != null && t.number <= 9 ? '<span class="lf-marker">' + t.number + "</span>" : "";
+          // t.number is the 1-based strip position, the same identity the
+          // digit bindings address. Every tab gets one now: past nine, the
+          // number is still reachable, as a longer digit sequence.
+          const n = t.number != null ? '<span class="lf-marker">' + t.number + "</span>" : "";
           return (
             "<div class='t'>" +
             n +
@@ -143,17 +148,18 @@ export function openTabsPopup(ctx: PopupCtx): void {
           ctx.close();
           if (t.id != null) ctx.ops.activateTab(t.id);
         },
+        // The digits resolve to exactly one tab: go there without waiting for
+        // an Enter. This is the tab popup's half of the shared rule — the
+        // leader's other half is the chooser, and both ask the same planner.
+        onChange: (_idx, item, count) => {
+          const q = ((inputEl && inputEl.value) || "").trim();
+          if (!/^[0-9]+$/.test(q) || count !== 1 || !item) return;
+          ctx.close();
+          if (item.id != null) ctx.ops.activateTab(item.id);
+        },
         extraKeys: (e, sel) => {
           const k = e.key;
           if (!sel.empty || sel.item == null || sel.item.id == null) return false;
-          // 1-9 jump straight to that tab, exactly like ;1-;9 (the picker
-          // shows the number on each row).
-          if (k >= "1" && k <= "9") {
-            e.preventDefault();
-            ctx.close();
-            ctx.ops.tabJump(Number(k));
-            return true;
-          }
           // Mutating actions re-query twice: once immediately (the content
           // path's send() has already landed by the time it resolves) and
           // once after a short delay (the chrome path's native close/move is
@@ -182,7 +188,8 @@ export function openTabsPopup(ctx: PopupCtx): void {
           }
           return false;
         },
-      })
+      });
+    }
   );
 }
 
