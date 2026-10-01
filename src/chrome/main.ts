@@ -20,7 +20,7 @@ import { KeyGuard } from "../shared/keyguard";
 import { LeaderController } from "../shared/leader";
 import { toast } from "../shared/overlay";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
-import { leaderSequences } from "../shared/leader";
+
 import { openNavPopup } from "../shared/popups/nav";
 import { createAliveAnnounce, detectProfile } from "./alive";
 import { createCacheCtl } from "./cache";
@@ -227,12 +227,18 @@ import { createTypingChannel } from "./typing";
         }
         return false;
       }, 3000);
-    // The nav-stack popup gets its OWN keys, never shared with a plain
-    // binding: ;G / ;L (shift) — ;g and ;l stay back/forward unshadowed.
-    Object.assign(leaderSequences, {
-      G: { final: { k: () => openNavPopup(ctx) } }, // ;Gk = history stack
-      L: { final: { k: () => openNavPopup(ctx) } }, // ;Lk = forward stack
-    });
+    // The nav-stack popup is a PLAIN binding on the SHIFTED keys: ;G / ;L open
+    // it immediately, while ;g / ;l stay back/forward.
+    //
+    // It used to be a two-key sequence (;G then k) so that the shifted keys
+    // could "never shadow" a plain binding. But Shift already makes G a
+    // different key from g, so the extra key bought nothing — and cost the
+    // whole feature. Pressing ;G armed a one-shot capture, showed nothing, and
+    // on timeout fell through to a plain `G` action that does not exist. The
+    // which-key table has advertised ";G = back history stack" throughout, so
+    // the menu promised a key that did nothing.
+    leaderActions["G"] = () => openNavPopup(ctx);
+    leaderActions["L"] = () => openNavPopup(ctx);
     // ;+1-9 = move tab N into the current split view.
     leaderActions["+"] = () =>
       leader!.armPending((k) => {
