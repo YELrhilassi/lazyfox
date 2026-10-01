@@ -1,7 +1,14 @@
-// Package main is the WebAssembly entry point. It exposes the pure core
-// package to JavaScript as a single synchronous API object named
-// "LazyfoxCore". Every context (chrome helper, content script, background,
-// command center, options) loads the same core.wasm and talks to this object.
+// Package main is the WebAssembly entry point.
+//
+// It compiles the pure core package into a single synchronous API object named
+// "LazyfoxCore" on the JS global. Every context (chrome helper, content
+// script, background, command center, options) loads the same core.wasm and
+// talks to this object.
+//
+// Exports are declared in one table (exportsTable) instead of one set() block
+// per function: adding a core function is one table entry, and the argument
+// decoding lives in four helpers (argStr/argInt/argI64/argBool) instead of
+// being repeated at every call site.
 package main
 
 import (
@@ -11,7 +18,13 @@ import (
 	"syscall/js"
 )
 
-const version = "0.5.7"
+const version = "0.5.8"
+
+// ---------------------------------------------------------------------------
+// JS value construction helpers
+// ---------------------------------------------------------------------------
+// JS value construction helpers
+// ---------------------------------------------------------------------------
 
 func obj() js.Value { return js.Global().Get("Object").New() }
 
@@ -30,6 +43,21 @@ func intArray(ns []int) js.Value {
 	}
 	return a
 }
+
+func intPairArray(pairs [][2]int) js.Value {
+	a := js.Global().Get("Array").New(len(pairs))
+	for i, p := range pairs {
+		pair := js.Global().Get("Array").New(2)
+		pair.SetIndex(0, p[0])
+		pair.SetIndex(1, p[1])
+		a.SetIndex(i, pair)
+	}
+	return a
+}
+
+// ---------------------------------------------------------------------------
+// Record <-> JS conversions
+// ---------------------------------------------------------------------------
 
 func wkItemObj(it core.WkItem) js.Value {
 	o := obj()
@@ -106,27 +134,6 @@ func lfcObj(l core.Lfc) js.Value {
 	return o
 }
 
-func intSlice(v js.Value) []int {
-	n := v.Length()
-	out := make([]int, 0, n)
-	for i := 0; i < n; i++ {
-		out = append(out, v.Index(i).Int())
-	}
-	return out
-}
-
-func strSlice(v js.Value) []string {
-	if v.IsUndefined() || v.IsNull() {
-		return nil
-	}
-	n := v.Length()
-	out := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		out = append(out, v.Index(i).String())
-	}
-	return out
-}
-
 func stripMovesArray(moves []core.StripMove) js.Value {
 	a := js.Global().Get("Array").New(len(moves))
 	for i, m := range moves {
@@ -149,14 +156,11 @@ func splitPairs(v js.Value) []core.SplitPair {
 }
 
 func splitPairsArray(splits []core.SplitPair) js.Value {
-	a := js.Global().Get("Array").New(len(splits))
+	pairs := make([][2]int, len(splits))
 	for i, p := range splits {
-		pair := js.Global().Get("Array").New(2)
-		pair.SetIndex(0, p.A)
-		pair.SetIndex(1, p.B)
-		a.SetIndex(i, pair)
+		pairs[i] = [2]int{p.A, p.B}
 	}
-	return a
+	return intPairArray(pairs)
 }
 
 func downloadObj(d core.Download) js.Value {
@@ -306,287 +310,205 @@ func recoveryRows(items []core.RecoveryRow) js.Value {
 	return a
 }
 
-func main() {
-	api := obj()
-	set := func(name string, fn func(js.Value, []js.Value) interface{}) {
-		api.Set(name, js.FuncOf(fn))
+func stringArrayInput(v js.Value) [][]string {
+	n := v.Length()
+	out := make([][]string, n)
+	for i := 0; i < n; i++ {
+		out[i] = strSlice(v.Index(i))
 	}
+	return out
+}
 
-	set("version", func(this js.Value, args []js.Value) interface{} { return version })
+// ---------------------------------------------------------------------------
+// JS argument decoding helpers
+// ---------------------------------------------------------------------------
 
-	set("bindings", func(this js.Value, args []js.Value) interface{} {
-		return bindingsArray()
-	})
+func strSlice(v js.Value) []string {
+	if v.IsUndefined() || v.IsNull() {
+		return nil
+	}
+	n := v.Length()
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, v.Index(i).String())
+	}
+	return out
+}
 
-	set("normalizeUrl", func(this js.Value, args []js.Value) interface{} {
-		s := ""
-		if len(args) > 0 {
-			s = args[0].String()
-		}
-		return core.NormalizeUrl(s)
-	})
+func intSlice(v js.Value) []int {
+	n := v.Length()
+	out := make([]int, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, v.Index(i).Int())
+	}
+	return out
+}
 
-	set("isLikelyUrl", func(this js.Value, args []js.Value) interface{} {
-		s := ""
-		if len(args) > 0 {
-			s = args[0].String()
-		}
-		return core.IsLikelyUrl(s)
-	})
+func argStr(args []js.Value, i int) string {
+	if i < len(args) {
+		return args[i].String()
+	}
+	return ""
+}
 
-	set("rankVisited", func(this js.Value, args []js.Value) interface{} {
+func argInt(args []js.Value, i int) int {
+	if i < len(args) {
+		return args[i].Int()
+	}
+	return 0
+}
+
+func argI64(args []js.Value, i int) int64 {
+	if i < len(args) {
+		return int64(args[i].Int())
+	}
+	return 0
+}
+
+func argBool(args []js.Value, i int) bool {
+	if i < len(args) {
+		return args[i].Truthy()
+	}
+	return false
+}
+
+func argIntSlice(args []js.Value, i int) []int {
+	if i < len(args) && !args[i].IsUndefined() && !args[i].IsNull() {
+		return intSlice(args[i])
+	}
+	return nil
+}
+
+func argStrSlice(args []js.Value, i int) []string {
+	if i < len(args) && !args[i].IsUndefined() && !args[i].IsNull() {
+		return strSlice(args[i])
+	}
+	return nil
+}
+
+func argSplitPairs(args []js.Value, i int) []core.SplitPair {
+	if i < len(args) && !args[i].IsUndefined() && !args[i].IsNull() {
+		return splitPairs(args[i])
+	}
+	return nil
+}
+
+func argJSONArray(args []js.Value, i int, out interface{}) bool {
+	if i >= len(args) {
+		return false
+	}
+	return json.Unmarshal([]byte(argStr(args, i)), out) == nil
+}
+
+// ---------------------------------------------------------------------------
+// Export table
+// ---------------------------------------------------------------------------
+
+type jsExport struct {
+	name string
+	fn   func(args []js.Value) interface{}
+}
+
+var exportsTable = []jsExport{
+	{"version", func([]js.Value) interface{} { return version }},
+
+	{"bindings", func([]js.Value) interface{} { return bindingsArray() }},
+
+	{"normalizeUrl", func(args []js.Value) interface{} { return core.NormalizeUrl(argStr(args, 0)) }},
+	{"isLikelyUrl", func(args []js.Value) interface{} { return core.IsLikelyUrl(argStr(args, 0)) }},
+
+	{"rankVisited", func(args []js.Value) interface{} {
 		if len(args) < 2 {
 			return visitedArray(nil)
 		}
-		q := args[1].String()
-		return visitedArray(core.RankVisited(visitedItems(args[0]), q))
-	})
+		return visitedArray(core.RankVisited(visitedItems(args[0]), argStr(args, 1)))
+	}},
 
-	set("makeHints", func(this js.Value, args []js.Value) interface{} {
-		n := 0
-		if len(args) > 0 {
-			n = args[0].Int()
-		}
+	{"makeHints", func(args []js.Value) interface{} {
 		chars := "asdfjklgh"
 		if len(args) > 1 {
-			chars = args[1].String()
+			chars = argStr(args, 1)
 		}
-		return strArray(core.MakeHints(n, chars))
-	})
+		return strArray(core.MakeHints(argInt(args, 0), chars))
+	}},
 
-	set("wkPageCount", func(this js.Value, args []js.Value) interface{} { return core.WkPageCount() })
+	{"wkPageCount", func([]js.Value) interface{} { return core.WkPageCount() }},
+	{"wkPageSlice", func(args []js.Value) interface{} { return wkPageObj(core.WkPageSlice(argInt(args, 0))) }},
+	{"wkClampSel", func(args []js.Value) interface{} { return core.WkClampSel(argInt(args, 0), argInt(args, 1)) }},
+	{"wkFlip", func(args []js.Value) interface{} { return core.WkFlip(argInt(args, 0), argInt(args, 1)) }},
+	{"wkNav", func(args []js.Value) interface{} {
+		return core.WkNav(argInt(args, 0), argInt(args, 1), argInt(args, 2))
+	}},
 
-	set("wkPageSlice", func(this js.Value, args []js.Value) interface{} {
-		page := 0
-		if len(args) > 0 {
-			page = args[0].Int()
-		}
-		return wkPageObj(core.WkPageSlice(page))
-	})
-
-	set("wkClampSel", func(this js.Value, args []js.Value) interface{} {
-		sel, page := 0, 0
-		if len(args) > 0 {
-			sel = args[0].Int()
-		}
-		if len(args) > 1 {
-			page = args[1].Int()
-		}
-		return core.WkClampSel(sel, page)
-	})
-
-	set("wkFlip", func(this js.Value, args []js.Value) interface{} {
-		page, dir := 0, 0
-		if len(args) > 0 {
-			page = args[0].Int()
-		}
-		if len(args) > 1 {
-			dir = args[1].Int()
-		}
-		return core.WkFlip(page, dir)
-	})
-
-	set("wkNav", func(this js.Value, args []js.Value) interface{} {
-		sel, page, dir := 0, 0, 0
-		if len(args) > 0 {
-			sel = args[0].Int()
-		}
-		if len(args) > 1 {
-			page = args[1].Int()
-		}
-		if len(args) > 2 {
-			dir = args[2].Int()
-		}
-		return core.WkNav(sel, page, dir)
-	})
-
-	set("lfcParse", func(this js.Value, args []js.Value) interface{} {
-		s := ""
-		if len(args) > 0 {
-			s = args[0].String()
-		}
-		return lfcObj(core.LfcParse(s))
-	})
-	set("lfcOpen", func(this js.Value, args []js.Value) interface{} {
-		target := ""
-		closeTab := false
-		if len(args) > 0 {
-			target = args[0].String()
-		}
-		if len(args) > 1 {
-			closeTab = args[1].Truthy()
-		}
-		return core.LfcOpen(target, closeTab)
-	})
-	set("lfcCfg", func(this js.Value, args []js.Value) interface{} {
-		nonce, payload := "", ""
-		if len(args) > 0 {
-			nonce = args[0].String()
-		}
-		if len(args) > 1 {
-			payload = args[1].String()
-		}
-		return core.LfcCfg(nonce, payload)
-	})
-	set("lfcReq", func(this js.Value, args []js.Value) interface{} {
-		action, arg := "", ""
-		if len(args) > 0 {
-			action = args[0].String()
-		}
-		if len(args) > 1 {
-			arg = args[1].String()
-		}
-		return core.LfcReq(action, arg)
-	})
-	set("lfcOk", func(this js.Value, args []js.Value) interface{} {
-		nonce := ""
-		if len(args) > 0 {
-			nonce = args[0].String()
-		}
-		return core.LfcOk(nonce)
-	})
-	set("lfcErr", func(this js.Value, args []js.Value) interface{} {
-		nonce := ""
-		if len(args) > 0 {
-			nonce = args[0].String()
-		}
-		return core.LfcErr(nonce)
-	})
+	{"lfcParse", func(args []js.Value) interface{} { return lfcObj(core.LfcParse(argStr(args, 0))) }},
+	{"lfcOpen", func(args []js.Value) interface{} { return core.LfcOpen(argStr(args, 0), argBool(args, 1)) }},
+	{"lfcCfg", func(args []js.Value) interface{} { return core.LfcCfg(argStr(args, 0), argStr(args, 1)) }},
+	{"lfcReq", func(args []js.Value) interface{} { return core.LfcReq(argStr(args, 0), argStr(args, 1)) }},
+	{"lfcOk", func(args []js.Value) interface{} { return core.LfcOk(argStr(args, 0)) }},
+	{"lfcErr", func(args []js.Value) interface{} { return core.LfcErr(argStr(args, 0)) }},
 
 	// ---- session manager (tmux-style) ----
 
-	set("assignSessionMarker", func(this js.Value, args []js.Value) interface{} {
-		taken := []int(nil)
-		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
-			taken = intSlice(args[0])
-		}
-		return core.AssignSessionMarker(taken)
-	})
-
-	set("encodeSplits", func(this js.Value, args []js.Value) interface{} {
+	{"assignSessionMarker", func(args []js.Value) interface{} { return core.AssignSessionMarker(argIntSlice(args, 0)) }},
+	{"encodeSplits", func(args []js.Value) interface{} {
 		if len(args) == 0 || args[0].IsUndefined() || args[0].IsNull() {
 			return ""
 		}
 		return core.EncodeSplits(splitPairs(args[0]))
-	})
-
-	set("decodeSplits", func(this js.Value, args []js.Value) interface{} {
-		s := ""
-		if len(args) > 0 {
-			s = args[0].String()
-		}
-		splits, err := core.DecodeSplits(s)
+	}},
+	{"decodeSplits", func(args []js.Value) interface{} {
+		splits, err := core.DecodeSplits(argStr(args, 0))
 		if err != nil {
 			return splitPairsArray(nil)
 		}
 		return splitPairsArray(splits)
-	})
-
-	set("sessionSummary", func(this js.Value, args []js.Value) interface{} {
+	}},
+	{"sessionSummary", func(args []js.Value) interface{} {
 		sessions := []core.SessionSummaryInput(nil)
 		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
 			sessions = sessionSummaryInput(args[0])
 		}
-		current := ""
-		if len(args) > 1 {
-			current = args[1].String()
-		}
-		return sessionSummaryArray(core.SessionSummary(sessions, current))
-	})
-
-	set("splitPairsOf", func(this js.Value, args []js.Value) interface{} {
-		ids := []int(nil)
-		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
-			ids = intSlice(args[0])
-		}
-		return splitPairsArray(core.SplitPairsOf(ids))
-	})
+		return sessionSummaryArray(core.SessionSummary(sessions, argStr(args, 1)))
+	}},
+	{"splitPairsOf", func(args []js.Value) interface{} { return splitPairsArray(core.SplitPairsOf(argIntSlice(args, 0))) }},
 
 	// ---- history / recovery organization ----
 
-	set("organizeHistory", func(this js.Value, args []js.Value) interface{} {
+	{"organizeHistory", func(args []js.Value) interface{} {
 		items := []core.HistoryItem(nil)
 		if len(args) > 0 {
 			items = historyItems(args[0])
 		}
-		query := ""
-		if len(args) > 1 {
-			query = args[1].String()
-		}
-		now := int64(0)
-		if len(args) > 2 {
-			now = int64(args[2].Int())
-		}
-		tz := 0
-		if len(args) > 3 {
-			tz = args[3].Int()
-		}
-		return historyRows(core.OrganizeHistory(items, query, now, tz))
-	})
-
-	set("organizeRecovery", func(this js.Value, args []js.Value) interface{} {
+		return historyRows(core.OrganizeHistory(items, argStr(args, 1), argI64(args, 2), argInt(args, 3)))
+	}},
+	{"organizeRecovery", func(args []js.Value) interface{} {
 		items := []core.RecoveryItem(nil)
 		if len(args) > 0 {
 			items = recoveryItems(args[0])
 		}
-		now := int64(0)
-		if len(args) > 1 {
-			now = int64(args[1].Int())
-		}
-		return recoveryRows(core.OrganizeRecovery(items, now))
-	})
+		return recoveryRows(core.OrganizeRecovery(items, argI64(args, 1)))
+	}},
 
-	// ---- page yank (neovim-style motions/text objects over parsed page text) ----
+	// ---- page yank (neovim-style motions over parsed page text) ----
 
-	set("yankParse", func(this js.Value, args []js.Value) interface{} {
-		text := ""
-		if len(args) > 0 {
-			text = args[0].String()
-		}
-		lines, lineStart, total := core.YankParse(text)
+	{"yankParse", func(args []js.Value) interface{} {
+		lines, lineStart, total := core.YankParse(argStr(args, 0))
 		o := obj()
 		o.Set("lines", lines)
 		o.Set("total", total)
 		o.Set("lineStart", intArray(lineStart))
 		return o
-	})
-
-	set("yankMotion", func(this js.Value, args []js.Value) interface{} {
-		op, arg := "", ""
-		line, col := 0, 0
-		if len(args) > 0 {
-			op = args[0].String()
-		}
-		if len(args) > 1 {
-			arg = args[1].String()
-		}
-		if len(args) > 2 {
-			line = args[2].Int()
-		}
-		if len(args) > 3 {
-			col = args[3].Int()
-		}
-		l, c := core.YankMotion(op, arg, line, col)
+	}},
+	{"yankMotion", func(args []js.Value) interface{} {
+		l, c := core.YankMotion(argStr(args, 0), argStr(args, 1), argInt(args, 2), argInt(args, 3))
 		o := obj()
 		o.Set("line", l)
 		o.Set("col", c)
 		return o
-	})
-
-	set("yankObject", func(this js.Value, args []js.Value) interface{} {
-		op := ""
-		line, col := 0, 0
-		if len(args) > 0 {
-			op = args[0].String()
-		}
-		if len(args) > 1 {
-			line = args[1].Int()
-		}
-		if len(args) > 2 {
-			col = args[2].Int()
-		}
+	}},
+	{"yankObject", func(args []js.Value) interface{} {
 		o := obj()
-		if sl, sc, el, ec, ok := core.YankObject(op, line, col); ok {
+		if sl, sc, el, ec, ok := core.YankObject(argStr(args, 0), argInt(args, 1), argInt(args, 2)); ok {
 			o.Set("ok", true)
 			o.Set("sl", sl)
 			o.Set("sc", sc)
@@ -596,209 +518,133 @@ func main() {
 			o.Set("ok", false)
 		}
 		return o
-	})
+	}},
 
-	set("formatBytes", func(this js.Value, args []js.Value) interface{} {
-		n := int64(0)
-		if len(args) > 0 {
-			n = int64(args[0].Int())
-		}
-		return core.FormatBytes(n)
-	})
+	// ---- download formatting / merging ----
 
-	set("formatSpeed", func(this js.Value, args []js.Value) interface{} {
-		n := int64(0)
-		if len(args) > 0 {
-			n = int64(args[0].Int())
-		}
-		return core.FormatSpeed(n)
-	})
-
-	set("downloadProgress", func(this js.Value, args []js.Value) interface{} {
-		received, total := int64(0), int64(0)
-		if len(args) > 0 {
-			received = int64(args[0].Int())
-		}
-		if len(args) > 1 {
-			total = int64(args[1].Int())
-		}
-		return core.Progress(received, total)
-	})
-
-	set("mergeDownloads", func(this js.Value, args []js.Value) interface{} {
-		prev, fresh := []core.Download(nil), []core.Download(nil)
-		if len(args) > 0 {
-			prev = downloadsInput(args[0])
-		}
-		if len(args) > 1 {
-			fresh = downloadsInput(args[1])
-		}
-		return downloadsArray(core.MergeDownloads(prev, fresh))
-	})
-
-	set("activeDownloads", func(this js.Value, args []js.Value) interface{} {
-		downloads := []core.Download(nil)
-		if len(args) > 0 {
-			downloads = downloadsInput(args[0])
-		}
-		return downloadsArray(core.ActiveDownloads(downloads))
-	})
-
-	set("splitPartnerOf", func(this js.Value, args []js.Value) interface{} {
-		splits := []core.SplitPair(nil)
-		if len(args) > 0 && !args[0].IsUndefined() && !args[0].IsNull() {
-			splits = splitPairs(args[0])
-		}
-		i := 0
-		if len(args) > 1 {
-			i = args[1].Int()
-		}
-		return core.SplitPartnerOf(splits, i)
-	})
+	{"formatBytes", func(args []js.Value) interface{} { return core.FormatBytes(argI64(args, 0)) }},
+	{"formatSpeed", func(args []js.Value) interface{} { return core.FormatSpeed(argI64(args, 0)) }},
+	{"downloadProgress", func(args []js.Value) interface{} { return core.Progress(argI64(args, 0), argI64(args, 1)) }},
+	{"mergeDownloads", func(args []js.Value) interface{} {
+		return downloadsArray(core.MergeDownloads(downloadsInput(args[0]), downloadsInput(args[1])))
+	}},
+	{"activeDownloads", func(args []js.Value) interface{} {
+		return downloadsArray(core.ActiveDownloads(downloadsInput(args[0])))
+	}},
+	{"splitPartnerOf", func(args []js.Value) interface{} {
+		return core.SplitPartnerOf(argSplitPairs(args, 0), argInt(args, 1))
+	}},
 
 	// ---- split-view strip planner (native split view ordering) ----
 
-	set("coalescePair", func(this js.Value, args []js.Value) interface{} {
+	{"coalescePair", func(args []js.Value) interface{} {
 		if len(args) < 3 {
 			return strArray(nil)
 		}
-		return strArray(core.CoalescePair(strSlice(args[0]), args[1].String(), args[2].String()))
-	})
-
-	set("coalesceIntoGroup", func(this js.Value, args []js.Value) interface{} {
+		return strArray(core.CoalescePair(strSlice(args[0]), argStr(args, 1), argStr(args, 2)))
+	}},
+	{"coalesceIntoGroup", func(args []js.Value) interface{} {
 		if len(args) < 3 {
 			return strArray(nil)
 		}
-		return strArray(core.CoalesceIntoGroup(strSlice(args[0]), strSlice(args[1]), args[2].String()))
-	})
-
-	set("planStrip", func(this js.Value, args []js.Value) interface{} {
+		return strArray(core.CoalesceIntoGroup(strSlice(args[0]), strSlice(args[1]), argStr(args, 2)))
+	}},
+	{"planStrip", func(args []js.Value) interface{} {
 		if len(args) < 2 {
 			return stripMovesArray(nil)
 		}
-		groups := [][]string(nil)
+		var groups [][]string
 		if len(args) > 2 && !args[2].IsUndefined() && !args[2].IsNull() {
-			groups = make([][]string, args[2].Length())
-			for i := 0; i < args[2].Length(); i++ {
-				groups[i] = strSlice(args[2].Index(i))
-			}
+			groups = stringArrayInput(args[2])
 		}
 		return stripMovesArray(core.PlanStrip(strSlice(args[0]), strSlice(args[1]), groups))
-	})
+	}},
 
-	// ---- status store (single source of truth for the status bar) ----
+	// ---- status store: the single source of truth for the status bar ----
+	// Events flow IN through these setters (JSON for structured payloads); the
+	// render model flows OUT through statusSnapshot.
 
-	// Session state blob from the background: name, marker, split state,
-	// session pills, tab ids + stealth flags (for the tab switcher).
-	set("statusSession", func(this js.Value, args []js.Value) interface{} {
-		if len(args) == 0 {
-			return nil
-		}
+	{"statusSession", func(args []js.Value) interface{} {
 		var p core.SessionPatch
-		if err := json.Unmarshal([]byte(args[0].String()), &p); err == nil {
+		if json.Unmarshal([]byte(argStr(args, 0)), &p) == nil {
 			core.StatusApplySession(p)
 		}
 		return nil
-	})
-
-	// Live selection: raw strip index (0-based), display index (1-based over
-	// real tabs) and the real tab count.
-	set("statusTab", func(this js.Value, args []js.Value) interface{} {
-		if len(args) < 3 {
-			return nil
-		}
-		core.StatusSetTab(args[0].Int(), args[1].Int(), args[2].Int())
+	}},
+	{"statusTab", func(args []js.Value) interface{} {
+		core.StatusSetTab(argInt(args, 0), argInt(args, 1), argInt(args, 2))
 		return nil
-	})
-
-	// Raw chrome-side UI signals that decide the bar mode: popup open, chrome
-	// leader armed.
-	set("statusUi", func(this js.Value, args []js.Value) interface{} {
-		popup := false
-		leader := false
-		if len(args) > 0 {
-			popup = args[0].Bool()
-		}
-		if len(args) > 1 {
-			leader = args[1].Bool()
-		}
-		core.StatusSetUi(popup, leader)
+	}},
+	{"statusUi", func(args []js.Value) interface{} {
+		core.StatusSetUi(argBool(args, 0), argBool(args, 1))
 		return nil
-	})
-
-	// Content-script leader arm state for one tab-strip index.
-	set("statusLeader", func(this js.Value, args []js.Value) interface{} {
-		index, active := 0, false
-		if len(args) > 0 {
-			index = args[0].Int()
-		}
-		if len(args) > 1 {
-			active = args[1].Bool()
-		}
-		core.StatusSetLeader(index, active)
+	}},
+	{"statusLeader", func(args []js.Value) interface{} {
+		core.StatusSetLeader(argInt(args, 0), argBool(args, 1))
 		return nil
-	})
-
-	// Find-in-page state for one tab-strip index; count < 0 clears it.
-	set("statusFind", func(this js.Value, args []js.Value) interface{} {
-		index, cur, count := 0, 0, -1
-		if len(args) > 0 {
-			index = args[0].Int()
-		}
-		if len(args) > 1 {
-			cur = args[1].Int()
-		}
+	}},
+	{"statusFind", func(args []js.Value) interface{} {
+		count := -1
 		if len(args) > 2 {
-			count = args[2].Int()
+			count = argInt(args, 2)
 		}
-		core.StatusSetFind(index, cur, count)
+		core.StatusSetFind(argInt(args, 0), argInt(args, 1), count)
 		return nil
-	})
-
-	// Live stealth badge of the selected tab (derived from its container).
-	set("statusStealth", func(this js.Value, args []js.Value) interface{} {
-		on := false
-		if len(args) > 0 {
-			on = args[0].Bool()
-		}
-		core.StatusSetStealth(on)
+	}},
+	{"statusStealth", func(args []js.Value) interface{} {
+		core.StatusSetStealth(argBool(args, 0))
 		return nil
-	})
-
-	// Fresh download snapshot from Firefox (JSON []Download). The store merges
-	// it, carries dismissed flags, seeds history and derives speed.
-	set("statusDownloads", func(this js.Value, args []js.Value) interface{} {
-		if len(args) == 0 {
-			return nil
+	}},
+	// The far-right leader indicator: armed + the prefix typed so far.
+	{"statusLeaderSignal", func(args []js.Value) interface{} {
+		core.StatusSetLeaderSignal(argBool(args, 0), argStr(args, 1))
+		return nil
+	}},
+	// The active tab's history-stack shape (back/forward availability + the
+	// stack entries for the navigation popup). Rides in as JSON like the
+	// session patch.
+	{"statusNav", func(args []js.Value) interface{} {
+		var n core.NavState
+		if argJSONArray(args, 0, &n) {
+			core.StatusSetNav(n)
 		}
+		return nil
+	}},
+	{"statusDownloads", func(args []js.Value) interface{} {
 		var fresh []core.Download
-		if err := json.Unmarshal([]byte(args[0].String()), &fresh); err == nil {
+		if argJSONArray(args, 0, &fresh) {
 			core.StatusSetDownloads(fresh)
 		}
 		return nil
-	})
-
-	// Dismiss download notification(s) on the bar. Empty array = all.
-	set("statusDismiss", func(this js.Value, args []js.Value) interface{} {
-		keys := []string(nil)
-		if len(args) > 0 {
-			_ = json.Unmarshal([]byte(args[0].String()), &keys)
-		}
+	}},
+	{"statusDismiss", func(args []js.Value) interface{} {
+		var keys []string
+		_ = argJSONArray(args, 0, &keys)
 		core.StatusDismiss(keys)
 		return nil
-	})
-
-	// The render model the single view paints (JSON StatusModel).
-	set("statusSnapshot", func(this js.Value, args []js.Value) interface{} {
+	}},
+	{"statusSnapshot", func([]js.Value) interface{} {
 		b, _ := json.Marshal(core.StatusSnapshot())
 		return string(b)
-	})
-
-	// The merged download cache (newest first) for the downloads popup.
-	set("downloadsList", func(this js.Value, args []js.Value) interface{} {
+	}},
+	{"downloadsList", func([]js.Value) interface{} {
 		b, _ := json.Marshal(core.StatusDownloads())
 		return string(b)
-	})
+	}},
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+func main() {
+	api := obj()
+	for _, e := range exportsTable {
+		fn := e.fn
+		api.Set(e.name, js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			return fn(args)
+		}))
+	}
 
 	js.Global().Set("LazyfoxCore", api)
 

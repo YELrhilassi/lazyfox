@@ -1,5 +1,6 @@
 import { esc } from "../dom";
 import { core } from "../core";
+import { faviconHtml } from "../favicon";
 import type { PopupItem } from "../types";
 import { basePanel, makeSelector, type PopupCtx } from "./kit";
 
@@ -91,6 +92,10 @@ export function openTabsPopup(ctx: PopupCtx): void {
         debounceMs: 40,
         itemClass: "lf-tab",
         emptyText: "no tabs",
+        // j/k walk the list while the input is empty — the tab switcher's
+        // arrow keys move the selection regardless (handled unconditionally
+        // in the selector), but vim-style letters match the rest of the app.
+        vimNav: true,
         search: (q) => ctx.ops.listTabs(q),
         render: (t) => {
           // t.number is the 1-based strip position, the same identity ;1-;9
@@ -103,9 +108,11 @@ export function openTabsPopup(ctx: PopupCtx): void {
             (t.pinned ? "\uD83D\uDCCC " : "") +
             (t.muted ? "\uD83D\uDD07 " : "") +
             (t.stealth ? "\uD83D\uDD75 " : "") +
-            esc(t.title || "") +
+            "<span class='txt'>" + esc(t.title || "") + "</span>" +
+            // Favicon pinned to the far right of the row; nothing at all
+            // when the tab has none.
+            faviconHtml(t.favIconUrl) +
             "</div><div class='s'>" +
-            (t.realId != null ? "id " + t.realId + " \u00b7 " : "") +
             esc(t.url || "") +
             "</div>"
           );
@@ -125,22 +132,30 @@ export function openTabsPopup(ctx: PopupCtx): void {
             ctx.ops.tabJump(Number(k));
             return true;
           }
+          // Mutating actions re-query twice: once immediately (the content
+          // path's send() has already landed by the time it resolves) and
+          // once after a short delay (the chrome path's native close/move is
+          // async, so the immediate refresh can still show the old strip).
+          const refreshSoon = () => {
+            sel.refresh();
+            setTimeout(sel.refresh, 250);
+          };
           if (k === "x") {
             e.preventDefault();
             ctx.ops.closeTab(sel.item.id);
-            sel.refresh();
+            refreshSoon();
             return true;
           }
           if (k === "l" || k === "]") {
             e.preventDefault();
             ctx.ops.moveTab(sel.item.id, 1);
-            sel.refresh();
+            refreshSoon();
             return true;
           }
           if (k === "h" || k === "[") {
             e.preventDefault();
             ctx.ops.moveTab(sel.item.id, -1);
-            sel.refresh();
+            refreshSoon();
             return true;
           }
           return false;

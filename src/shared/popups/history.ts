@@ -2,8 +2,10 @@
 // modes, armed delete/clear, and the related-history index.
 import { core } from "../core";
 import { esc } from "../dom";
+import { faviconFor, faviconHtml } from "../favicon";
 import type { HistoryRow, PopupItem } from "../types";
 import { manualTextKey } from "../overlay";
+import { publishListState } from "../observability";
 import { type PopupCtx } from "./kit";
 import { createRelatedIndex, type RelatedRow } from "./history-related";
 
@@ -306,6 +308,16 @@ export function openHistoryPopup(ctx: PopupCtx): void {
         ctx.ops.openUrl(r.url, undefined);
       };
 
+      // The two-pane history popup lives in a closed shadow root, so nothing
+      // outside it can read the rows. Publish the same composed, bubbling
+      // contract the shared overlay's popups use (shared/observability.ts) so
+      // page-level observers — and the e2e harness — can follow this popup's
+      // render and selection without reaching into the shadow DOM. The history
+      // popup builds its own rows instead of using the shared selector, so this
+      // is the one place it has to publish for itself.
+      const publishHistoryState = () =>
+        publishListState(listEl, inputEl, visible().length, idx);
+
       const render = () => {
         listEl.textContent = "";
         const vis = visible();
@@ -316,6 +328,7 @@ export function openHistoryPopup(ctx: PopupCtx): void {
           relatedEl.textContent = "";
           updateFoot();
           markCols();
+          publishHistoryState();
           return;
         }
         emptyEl.style.display = "none";
@@ -355,9 +368,10 @@ export function openHistoryPopup(ctx: PopupCtx): void {
           row.className =
             "lf-item lf-hist" + (vi === idx ? " selected" : "") + (armed ? " lf-armed" : "");
           row.innerHTML =
-            "<div class='t'>" + esc(it.title || it.url) + "</div>" +
+            "<div class='t'><span class='txt'>" + esc(it.title || it.url) + "</span></div>" +
             "<div class='s'><span class='lf-host'>" + esc(it.host) + "</span>" +
             "<span class='lf-url'>" + esc(it.url) + "</span>" +
+            faviconHtml(faviconFor(it.url)) +
             "<span class='lf-time'>" + esc(it.rel) + "</span></div>";
           row.addEventListener("mousedown", (ev) => {
             ev.preventDefault();
@@ -381,6 +395,7 @@ export function openHistoryPopup(ctx: PopupCtx): void {
         drawRelated();
         updateFoot();
         markCols();
+        publishHistoryState();
       };
 
       const move = (d: number) => {
@@ -635,10 +650,10 @@ export function openHistoryPopup(ctx: PopupCtx): void {
         refresh: () => {
           void ensureLoaded().then(() => organize());
         },
-        close: () => {},
-        focus: () => inputEl.focus(),
+        close: () => {},        focus: () => inputEl.focus(),
       };
     }
   );
 }
+
 
