@@ -189,6 +189,34 @@ export function createCtx(runtime): any {
     await focusPage(tab).catch(() => {});
   };
 
+  // Start a navigation WITHOUT waiting for it to finish, and make sure the
+  // tab is selected. gotoPage blocks on "complete", which is exactly the
+  // thing the stuck-page tests cannot wait for: the page under test is one
+  // that never completes.
+  ctx.navigateNoWait = async function navigateNoWait(tab, url) {
+    await navigate(tab, url, "none").catch(() => {});
+    await activate(tab).catch(() => {});
+  };
+
+  // The selected tab's current URL, read from the tab list rather than from
+  // the document. Works even where there is no document at all — which is the
+  // only place these tests look.
+  ctx.tabUrl = async function tabUrl() {
+    const ts = await ctx.tabsInfo();
+    const hit = ts.find((t: any) => t.active) || ts[0];
+    return (hit && hit.url) || "";
+  };
+
+  // A SPECIFIC tab's current URL, matched by browsing context. tabUrl reads
+  // whichever tab is selected, which is wrong for a test that opens its own
+  // tab and then needs to know what that tab is showing.
+  ctx.tabUrlOf = async function tabUrlOf(tab) {
+    const ts = await ctx.tabsInfo();
+    const id = typeof tab === "string" ? tab : tab && (tab.id || tab.context);
+    const hit = ts.find((t: any) => t.id === id || t.context === id) || ts.find((t: any) => t.active);
+    return (hit && hit.url) || "";
+  };
+
   // Press the leader key, wait for it to be armed (the command center shows
   // "LZ›" in the mode tag), then press the binding key.
   ctx.tryArm = async function tryArm(tab, timeoutMs) {
