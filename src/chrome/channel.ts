@@ -43,6 +43,8 @@ export interface ChannelDeps {
   };
   split: SplitView;
   status: StatusBarCtl;
+  // Records that a tab's own content script is running (see noteContentPresent).
+  setContentPresent(index: number, active: boolean, url: string): void;
   cfg: ChromeCfg;
   debug: DebugHandlers;
   // Per-tab / per-session page-cache enforcement (the global scope is owned by
@@ -494,6 +496,11 @@ export function createChannel(deps: ChannelDeps): Channel {
       // pages, where the content script owns the leader key.
       leaderState: (req) => {
         if (req.index >= 0) deps.status.setContentLeader(req.index, !!req.active);
+      },
+      // "A content script is running in this tab", pushed by the tab itself.
+      // The helper cannot work this out on its own — see noteContentPresent.
+      contentState: (req) => {
+        if (req.index >= 0) deps.setContentPresent(req.index, !!req.active, String(req.url || ""));
       },
       // Content-script find-in-page count, cached the same way.
       findState: (req) => {

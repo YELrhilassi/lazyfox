@@ -26,7 +26,14 @@
 
 import { strict as assert } from "node:assert";
 import { SPECIAL_KEYS, shiftedKey } from "../src/chrome/keys.ts";
-import { chromeOwnsKeys } from "../src/chrome/keystate.ts";
+import {
+  chromeOwnsKeys,
+  chromeOwnsSurfaces,
+  contentScriptPresent,
+  noteContentPresent,
+  forgetContentFrom,
+  resetContentPresence,
+} from "../src/chrome/keystate.ts";
 
 let passed = 0;
 function ok(name: string, cond: boolean): void {
@@ -77,71 +84,184 @@ ok(
 // injected, currentURI is already the target https:// URL while no content
 // script exists, so chrome deferred and nothing answered. A slow or hanging
 // host made that window arbitrarily long, and session restore reproduced it
-// on every relaunch. So ownership is decided by the content script's PRESENCE,
-// not by the shape of the URL.
+// on every relaunch. So ownership is decided by the content script's PRESENCE.
 //
-// These cases are the whole regression, pinned here because none of them can
+// Those cases are the whole regression, pinned here because none of them can
 // be reproduced on demand in a live browser.
 
-// A fake selected browser: a URL plus an optional content document carrying
-// (or not carrying) the content script's presence beacon.
-function tab(spec: string, content?: { beacon?: string } | null) {
-  const doc =
-    content === undefined || content === null
-      ? content === null
-        ? null
-        : undefined
-      : {
-          documentElement: {
-            getAttribute: (n: string) => (n === "data-lf-content" ? (content.beacon ?? null) : null),
-          },
-        };
+// A fake window: a URL plus a strip of tabs, one of them selected. The strip
+// position IS the key presence is cached under — the same coordinate the
+// status bar's leader/find states use.
+function tab(spec: string) {
+  return { currentURI: { spec } };
+}
+function winAt(urls: string[], selected: number) {
+  const tabs = urls.map((u) => ({ currentURI: { spec: u } }));
   return {
-    currentURI: { spec },
-    get contentDocument() {
-      return doc;
-    },
-  };
+    gBrowser: { tabs, selectedBrowser: tabs[selected], selectedTab: tabs[selected] },
+  } as unknown as Window;
 }
-function win(t: unknown) {
-  return { gBrowser: { selectedBrowser: t } } as unknown as Window;
-}
+const one = (u: string) => winAt([u], 0);
+
+// Reported by the page itself. A tab whose script has not reported is treated
+// as having no script — that is the rescue case, and it must stay the default.
+resetContentPresence();
 
 ok(
-  "a LOADING https page (URL set, no document yet) still gets the chrome helper",
-  chromeOwnsKeys(win(tab("https://slow.example/loading")))
+  "a LOADING https page (no content script reported yet) is the chrome helper's",
+  chromeOwnsKeys(one("https://slow.example/loading"))
+);
+noteContentPresent(0, true, "https://slow.example/loading");
+ok(
+  "once the page reports in, the chrome helper defers to it",
+  !chromeOwnsKeys(one("https://slow.example/loading"))
 );
 ok(
-  "a loading page whose document exists but has no content script does too",
-  chromeOwnsKeys(win(tab("https://slow.example/loading", { beacon: null })))
-);
-ok(
-  "a https page WITH the content script present defers to it",
-  !chromeOwnsKeys(win(tab("https://example.com/", { beacon: "1" })))
-);
-ok(
-  "a file: page without a content script is the chrome helper's",
-  chromeOwnsKeys(win(tab("file:///C:/x.html", { beacon: null })))
-);
-ok(
-  "a file: page WITH the content script defers to it",
-  !chromeOwnsKeys(win(tab("file:///C:/x.html", { beacon: "1" })))
+  "a file: page is judged the same way as https",
+  (() => {
+    resetContentPresence();
+    const before = chromeOwnsKeys(one("file:///C:/x.html"));
+    noteContentPresent(0, true, "file:///C:/x.html");
+    return before && !chromeOwnsKeys(one("file:///C:/x.html"));
+  })()
 );
 ok(
   "about:neterror and other about: pages are always the chrome helper's",
-  chromeOwnsKeys(win(tab("about:neterror", { beacon: null }))) &&
-    chromeOwnsKeys(win(tab("about:blank")))
+  chromeOwnsKeys(one("about:neterror")) && chromeOwnsKeys(one("about:blank"))
+);
+// A report must never make an about: page belong to the content script: there
+// is no script there to report, so any such report is stale by definition.
+ok(
+  "a report cannot hand an about: page to the content script",
+  (() => {
+    noteContentPresent(0, true, "about:blank");
+    return chromeOwnsKeys(one("about:blank"));
+  })()
+);
+
+// The failure that made this whole model necessary, and which the first
+// implementation got wrong in a subtler way: presence was read off the page
+// with `selectedBrowser.contentDocument`, which is null for every
+// out-of-process tab. So the read ALWAYS failed, ownership always fell back to
+// "the URL looks like web, so nobody has it", and the dead keyboard came back
+// wearing a different hat. The fix is that the tab reports in — which is only
+// honest if a stale report is discarded rather than trusted.
+ok(
+  "a report for a URL the tab has since navigated away from is discarded",
+  (() => {
+    resetContentPresence();
+    noteContentPresent(0, true, "https://a.example/");
+    return chromeOwnsKeys(one("https://b.example/"));
+  })()
 );
 ok(
-  "an unreadable document counts as 'no content script', never as 'someone else has it'",
-  chromeOwnsKeys(
-    win({
-      currentURI: { spec: "https://example.com/" },
-      get contentDocument(): Document {
-        throw new Error("cross-origin");
-      },
-    })
-  )
+  "an empty reported URL is not evidence of presence",
+  (() => {
+    resetContentPresence();
+    noteContentPresent(0, true, "");
+    return chromeOwnsKeys(one("https://a.example/"));
+  })()
 );
+ok(
+  "a reported-then-torn-down script hands the tab back",
+  (() => {
+    resetContentPresence();
+    noteContentPresent(0, true, "https://a.example/");
+    const whilePresent = !chromeOwnsKeys(one("https://a.example/"));
+    noteContentPresent(0, false, "https://a.example/");
+    return whilePresent && chromeOwnsKeys(one("https://a.example/"));
+  })()
+);
+ok(
+  "presence is per tab, not global",
+  (() => {
+    resetContentPresence();
+    noteContentPresent(1, true, "https://b.example/");
+    const w = winAt(["https://a.example/", "https://b.example/"], 0);
+    return chromeOwnsKeys(w) && !chromeOwnsKeys(winAt(["https://a.example/", "https://b.example/"], 1));
+  })()
+);
+// Indices are POSITIONS. A close slides every tab above it down one slot, so
+// without forgetting, a stale "script is here" is inherited by whichever page
+// took the slot — and the helper then defers on a page it should own, which is
+// the same dead keyboard one tab-closing session later.
+ok(
+  "closing a tab forgets its report so no page inherits it",
+  (() => {
+    resetContentPresence();
+    noteContentPresent(0, true, "https://a.example/");
+    noteContentPresent(1, true, "https://b.example/");
+    forgetContentFrom(0);
+    // Tab 0 closed; the page formerly at 1 is now at 0 with no report.
+    const w = winAt(["https://b.example/"], 0);
+    return chromeOwnsKeys(w);
+  })()
+);
+ok(
+  "an unreadable selection is never reported as 'someone else has it'",
+  (() => {
+    resetContentPresence();
+    return chromeOwnsKeys({
+      gBrowser: {
+        tabs: [],
+        get selectedTab(): never {
+          throw new Error("mid-collapse");
+        },
+        get selectedBrowser(): never {
+          throw new Error("mid-collapse");
+        },
+      },
+    } as unknown as Window);
+  })()
+);
+
+// --- who may PAINT -------------------------------------------------------
+//
+// The same ownership question, asked about pixels instead of keys, and it is a
+// separate predicate because the answers must not drift apart: the keyboard
+// can be the content script's while a chrome overlay is still on screen.
+//
+// That combination is not hypothetical. The which-key overlay is a persistent
+// host that only loses its `on` class when something explicitly hides it, so
+// arming the leader on the command center and then switching to a web page
+// left the chrome overlay lit for the life of the window, with the content
+// script's overlay painting on top. The user saw two which-key panels at once,
+// one of them permanently stale. Gating painting on ownership is what makes
+// "at most one overlay" true by construction rather than by luck.
+
+ok(
+  "the chrome helper may paint on an about: page",
+  chromeOwnsSurfaces(one("about:neterror"))
+);
+ok(
+  "the chrome helper may NOT paint on a page the content script owns",
+  (() => {
+    resetContentPresence();
+    noteContentPresent(0, true, "https://example.com/");
+    return !chromeOwnsSurfaces(one("https://example.com/"));
+  })()
+);
+ok(
+  "ownership flips together for keys and pixels when the script arrives",
+  (() => {
+    resetContentPresence();
+    // Read BEFORE reporting in — the window is live, so re-reading it after
+    // the report would show the new answer twice and prove nothing.
+    const w = one("https://example.com/");
+    const hadKeys = chromeOwnsKeys(w);
+    const hadPaint = chromeOwnsSurfaces(w);
+    noteContentPresent(0, true, "https://example.com/");
+    return hadKeys && hadPaint && !chromeOwnsKeys(w) && !chromeOwnsSurfaces(w);
+  })()
+);
+ok(
+  "a stale report does not restore the chrome helper's right to paint",
+  (() => {
+    resetContentPresence();
+    noteContentPresent(0, true, "https://old.example/");
+    return chromeOwnsSurfaces(one("https://new.example/"));
+  })()
+);
+resetContentPresence();
 
 console.log(`\n${passed} checks passed.`);

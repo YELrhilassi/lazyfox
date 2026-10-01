@@ -315,6 +315,36 @@ export function createCtx(runtime): any {
   // dispatch (leader, popups, hotkeys) and forwards unconsumed keys to the
   // tab's content. `tab` is the BiDi context id; null targets the currently
   // selected tab.
+  // Evaluate an expression in the probe tab's extension realm — the only
+  // place `browser.*` APIs exist. Several tests need to set a tab up (open
+  // one, close one) before pressing a key, and threading the probe id through
+  // every call site buried that detail.
+  ctx.probeEval = function probeEval(expr) {
+    return evalIn(ctx.probe, expr);
+  };
+
+  // Call a background handler from the probe tab's extension realm.
+  //
+  // The harness's own plumbing is not invisible to the product: the probe tab
+  // carries a momentary #lfc= hash while a key is being synthesized, and a
+  // command center tab is a real user tab as far as tab numbering is
+  // concerned. So a test CANNOT derive "which tab is number 11" from the raw
+  // tab list and be sure it matches what `;11` will jump to. Asking the
+  // background is the only numbering the product itself will use.
+  ctx.bgCall = function bgCall(action: string, data: unknown = {}) {
+    return evalIn(
+      ctx.probe,
+      `browser.runtime.sendMessage({ action: ${JSON.stringify(action)}, data: ${JSON.stringify(data)} })`
+    ).catch(() => null);
+  };
+
+  // The window's tabs in the order the PRODUCT numbers them: what `;N` jumps
+  // to. Derived from the background so it can never disagree with a binding.
+  ctx.numberedTabs = async function numberedTabs(): Promise<any[]> {
+    const r = await ctx.bgCall("tabs");
+    return (r && r.tabs) || [];
+  };
+
   ctx.sendKeys = async function sendKeys(tab, keys) {
     let idx = -1;
     if (tab) {
@@ -715,11 +745,30 @@ export function createCtx(runtime): any {
   // pages run in-process under automation, so the chrome window's capture
   // listener sees their keys; remote web content does not reach it.
   ctx.chromeOwnsLeader = async function chromeOwnsLeader(tab) {
+    // Must agree with the PRODUCT's rule (chromeOwnsKeys), or the harness
+    // presses keys down the wrong path and the failure reads as a product bug.
+    // The product defers to the content script only when it is actually
+    // present, which makes EVERY non-http(s)/file page — all about: pages
+    // included — the chrome helper's. This list used to stop at about:newtab,
+    // so a test on about:blank sent its keys into the page, where nothing
+    // listened, and the leader silently never armed.
     try {
       const u = await evalIn(tab, `location.href`);
-      return /moz-extension:|about:newtab|commandcenter\.html/.test(u || "");
+      const s = u || "";
+      if (/^https?:/i.test(s) || /^file:/i.test(s)) {
+        // http(s)/file belongs to the content script ONLY once it has
+        // actually arrived — the same presence test the product makes. Judging
+        // by URL alone is what stranded the user on a dead keyboard during a
+        // slow load, and a harness that repeated the mistake would call that
+        // correct behaviour.
+        return !(await evalIn(tab, `document.documentElement.getAttribute("data-lf-content") === "1"`).catch(() => false));
+      }
+      return true;
     } catch (e) {
-      return false;
+      // An unreadable context is the chrome helper's, matching the product's
+      // own rule: an unreadable document must never be reported as "someone
+      // else already has it".
+      return true;
     }
   };
 

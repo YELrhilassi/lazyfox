@@ -18,10 +18,11 @@ import type { Domain } from "./types";
 // The actions this domain owns. The list is the contract: background.ts unions
 // every domain's list and requires the result to cover BgApi exactly, so a new
 // action cannot be declared without someone deciding which domain answers it.
-type Owns = "syncTyping" | "syncLeader" | "syncFind" | "setConfig" | "toggleWhichKey" | "stealthOpen";
+type Owns = "syncTyping" | "syncLeader" | "syncContent" | "syncFind" | "setConfig" | "toggleWhichKey" | "stealthOpen";
 
 export interface SyncDeps {
   pushLeaderStateToChrome(index: number, active: boolean): void;
+  pushContentStateToChrome(index: number, active: boolean, url: string): void;
   pushFindStateToChrome(index: number, count: number, cur: number): void;
   stealthOpen(onDone: () => void): Promise<{ ok: boolean; error?: string }>;
   pushSessionStateToChrome(): Promise<void>;
@@ -49,6 +50,23 @@ export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
       const tab = (sender as { tab?: { id?: number; index?: number } } | undefined)?.tab;
       if (tab && tab.id != null) {
         deps.pushLeaderStateToChrome(typeof tab.index === "number" ? tab.index : -1, !!data.active);
+      }
+      return { ok: true };
+    },
+
+    syncContent: (data, sender) => {
+      // The tab's own content script is the only party that can say whether it
+      // is running — the chrome helper's attempt to look is structurally
+      // impossible (contentDocument is null out of process). Relayed with the
+      // URL the script saw so the helper can discard the answer the moment the
+      // tab navigates somewhere else, instead of acting on a stale one.
+      const tab = (sender as { tab?: { id?: number; index?: number } } | undefined)?.tab;
+      if (tab && tab.id != null) {
+        deps.pushContentStateToChrome(
+          typeof tab.index === "number" ? tab.index : -1,
+          !!data.active,
+          String(data.url || "")
+        );
       }
       return { ok: true };
     },

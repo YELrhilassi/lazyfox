@@ -19,6 +19,11 @@ export interface BgApi {
   searchSuggest: { req: { q: string }; res: { entries: PopupItem[] } };
   urlSuggest: { req: { q: string }; res: { entries: PopupItem[] } };
   tabs: { req: Record<string, never>; res: { tabs: TabInfo[] } };
+  // How many real tabs the window holds. Separate from `tabs` because the
+  // multi-digit tab jump needs only the count, and it is on the hot path: a
+  // digit press must not pay for every tab's title, url and favicon to learn
+  // whether `;1` is ambiguous.
+  tabCount: { req: Record<string, never>; res: { count: number } };
   activateTab: { req: { id: number }; res: { ok: boolean } };
   activateTabAt: { req: { index?: number; last?: boolean }; res: { ok: boolean; title?: string } };
   moveTab: { req: { id: number; dir: number }; res: { ok: boolean } };
@@ -111,6 +116,19 @@ export interface BgApi {
   // script owns the leader key and the chrome helper's own leader never
   // arms).
   syncLeader: { req: { active: boolean }; res: { ok: boolean } };
+  // "A Lazyfox content script is running in this tab", pushed at boot and torn
+  // down on pagehide. This exists because the chrome helper cannot work the
+  // question out for itself: `selectedBrowser.contentDocument` is null for
+  // every out-of-process tab, so reading the page's `data-lf-content` beacon
+  // from the parent ALWAYS fails, and ownership silently fell back to "the URL
+  // looks like a web page, so nobody has it". That is the dead keyboard the
+  // whole presence model was written to prevent — it just moved from the URL
+  // test to the DOM test. The tab's own script is the only thing that can
+  // answer, so it answers.
+  syncContent: {
+    req: { active: boolean; url: string };
+    res: { ok: boolean };
+  };
   // Content script -> background: live find-in-page state (1-based current
   // match, 0 = nothing walked to yet; total matches). The background relays it
   // to the chrome helper so its window-level status bar shows the find count
@@ -293,6 +311,7 @@ export interface ChromeApi {
   restoreSplits: { req: { groups: number[][] }; res: void };
   sessionState: { req: RelaySessionState; res: void };
   leaderState: { req: { index: number; active: boolean }; res: void };
+  contentState: { req: { index: number; active: boolean; url: string }; res: void };
   findState: { req: { index: number; count: number; cur: number }; res: void };
   cacheGlobal: { req: { mode: CacheMode }; res: void };
   cachePolicy: { req: { mode: CacheMode; tabIds: number[] }; res: void };

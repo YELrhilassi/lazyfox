@@ -31,6 +31,10 @@ export interface ActionOps {
   activateTab(id: number): void;
   tabNav(dir: number): void;
   tabJump(n: number): void;
+  // How many real tabs the window holds. Kept apart from listTabs because the
+  // multi-digit tab jump needs only this to decide whether a digit is
+  // ambiguous, and it is asked on every digit press.
+  tabCount(): Promise<number>;
   // Jump to the previously-active tab; pressing it again jumps back (a
   // two-tab toggle like Vim's Ctrl+^).
   alternateTab(): void;
