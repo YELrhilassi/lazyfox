@@ -16,7 +16,7 @@
 //   6. the command center in command mode / chrome scroll keys / the leader key
 
 import { KeyGuard } from "../shared/keyguard";
-import { LeaderController } from "../shared/leader";
+import { LeaderController, isCancel } from "../shared/leader";
 import {
   blurFocusedElement,
   signalCommandCenterFind
@@ -93,9 +93,11 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // with no content script, so there is no other owner to defer to.
     if (!fromActor && !chromeOwnsKeys(win) && !popup.isOpen()) return false;
 
-    // A chrome popup is open: Esc closes it first (before the page/window).
+    // A chrome popup is open: Esc closes it first (before the page/window),
+    // and so does Ctrl+G — the shared predicate, so the chrome popup and the
+    // content-script popup can never disagree about what dismisses them.
     if (popup.isOpen()) {
-      if (e.key === "Escape") {
+      if (isCancel(e)) {
         if (popup.resizeOnKey(e as KeyboardEvent)) return true;
         // Let the popup consume Esc itself (e.g. the sessions popup cancels a
         // pending copy/move target picker) before closing it.
@@ -150,6 +152,20 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     if (e.key === "Escape") {
       if (!isCommandCenterTab(win)) blurFocusedElement(win);
       return false;
+    }
+
+    // Ctrl+G backs out of an armed leader without giving up the key. Escape
+    // cannot: it is deliberately NOT consumed for a chrome page, because the
+    // page itself receives it (see the comment above), so there was no way to
+    // cancel a sequence that also worked while the leader was held.
+    if (
+      l.active &&
+      e.ctrlKey && !e.altKey && !e.metaKey &&
+      (e.key === "g" || e.key === "G")
+    ) {
+      l.hide();
+      if (l.hasPending()) l.cancelPending();
+      return true;
     }
 
     // Typing in an editable: never intercept — the leader key types like any

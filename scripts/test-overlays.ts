@@ -27,6 +27,7 @@ register("./ts-resolve-hook.mjs", import.meta.url);
 const { faviconFor, faviconHtml } = await import("../src/shared/favicon.ts");
 const { manualTextKey } = await import("../src/shared/manualtext.ts");
 const { leaderSignalOn } = await import("../src/shared/statusbar.ts");
+const { isCancel } = await import("../src/shared/leader.ts");
 
 let passed = 0;
 function ok(name: string, cond: boolean): void {
@@ -325,5 +326,31 @@ ok("an unreadable selection still honors the store flag", sig({ uiLeader: true, 
 ok("a truthy non-boolean content flag still lights it", sig({ contentArmed: 1 as unknown as boolean, contentIndex: 0, selectedStrip: 0 }) === true);
 ok("a truthy non-boolean store flag still lights it", sig({ uiLeader: 1 as unknown as boolean }) === true);
 ok("the result is a real boolean, never a truthy value", typeof sig({ prefix: ";" }) === "boolean");
+
+/* ---------- isCancel: the two cancel keys ---------- */
+//
+// Esc stays because everything expects it, but it is the most contested key
+// on the web — a site that binds it to close its own banner, player or menu
+// fights a Lazyfox popup for the same keystroke. Ctrl+G is the second cancel:
+// a chord, so it can never be typed into a field and no page receives it as
+// text. These pin the exact boundaries, because "close on Esc" quietly
+// becoming "close on any key with a modifier" would break real sites.
+
+const cancelKev = (k: string, mods: Partial<{ ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean }> = {}) => ({
+  key: k,
+  ctrlKey: !!mods.ctrlKey,
+  altKey: !!mods.altKey,
+  metaKey: !!mods.metaKey,
+  shiftKey: !!mods.shiftKey,
+});
+
+ok("Escape cancels", isCancel(cancelKev("Escape")));
+ok("Ctrl+G cancels", isCancel(cancelKev("g", { ctrlKey: true })));
+ok("Ctrl+Shift+G cancels too (same physical chord)", isCancel(cancelKev("G", { ctrlKey: true })));
+ok("a bare g does NOT cancel", !isCancel(cancelKev("g")));
+ok("Shift+G alone does NOT cancel", !isCancel(cancelKev("G", { shiftKey: true })));
+ok("Ctrl+Alt+G does NOT cancel — Alt combos belong to the site", !isCancel(cancelKev("g", { ctrlKey: true, altKey: true })));
+ok("Meta+G does NOT cancel", !isCancel(cancelKev("g", { metaKey: true })));
+ok("other Ctrl chords do NOT cancel", !isCancel(cancelKev("c", { ctrlKey: true })) && !isCancel(cancelKev("w", { ctrlKey: true })));
 
 console.log(`\n${passed} checks passed.`);
