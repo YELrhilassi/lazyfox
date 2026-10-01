@@ -36,12 +36,23 @@
   // (Services, window, Cu) that only src/chrome's ambient declarations name.
   // The module and the test's DOM-free parts are still typechecked by
   // tsconfig.json; only the Node-side test of it is out of scope here.
+  //
+  // scripts/test-overlays.ts is the sixth: it tests favicon.ts and
+  // manualtext.ts, whose signatures speak in DOM types (KeyboardEvent,
+  // HTMLInputElement) this DOM-less config cannot name. The modules are still
+  // typechecked by tsconfig.json.
+  //
+  // scripts/test-leader-sequences.ts is the seventh, for the same reason: it
+  // drives LeaderController.handleKey with synthetic KeyboardEvent-shaped
+  // objects, and leader.ts's public surface is typed against the DOM.
   "exclude": [
     "scripts/test-page-text.ts",
     "scripts/test-store.ts",
     "scripts/test-render-escaping.ts",
     "scripts/test-find-text.ts",
-    "scripts/test-chrome-keys.ts"
+    "scripts/test-chrome-keys.ts",
+    "scripts/test-overlays.ts",
+    "scripts/test-leader-sequences.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

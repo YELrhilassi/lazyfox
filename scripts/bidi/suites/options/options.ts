@@ -1,19 +1,15 @@
-// Options page and action-popup tests.
-
-import { evalIn, waitFor, sleep, focusPage } from "../lib.ts";
-import { assert } from "../harness.ts";
-
-export const group = "options";
-
-export async function run(ctx) {
-  const t = (name, fn) => ctx.runTest(group, name, fn);
-
-  console.log("\n== Options and popup pages ==");
-
+// options tests (options). Split verbatim from the original
+// options.ts monolith — behavior unchanged, timing fixed separately.
+import { evalIn, focusPage, waitFor } from "../../lib.ts";
+import { assert } from "../../harness.ts";
+export async function run(ctx: any): Promise<void> {
+  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("options", name, fn);
   await t("options page loads and renders the form", async () => {
     const u = ctx.ccUrl.replace("commandcenter.html", "options.html");
     await ctx.gotoUrl(ctx.tabA, u, "complete");
-    await sleep(500);
+    // The form hydrates asynchronously (config load -> input values); wait
+    // for the leader input to be POPULATED, not merely present.
+    await ctx.waitExpr(ctx.tabA, `(document.querySelector("#leader")||{value:""}).value.length > 0`, true, 8000);
     const f = await evalIn(ctx.tabA, `(() => {
       const q = (s) => document.querySelector(s);
       return {
@@ -40,7 +36,6 @@ export async function run(ctx) {
     assert(f.autoRestore === true, "autoRestore checked");
     assert(f.save === true, "save button present");
   });
-
   await t("options page: Esc goes back", async () => {
     // Re-navigate from a known page so the options page has a clean history
     // entry to go back to, then move focus into the page before sending the
@@ -48,7 +43,7 @@ export async function run(ctx) {
     const u = ctx.ccUrl.replace("commandcenter.html", "options.html");
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await ctx.gotoUrl(ctx.tabA, u, "complete");
-    await sleep(300);
+    await ctx.waitExpr(ctx.tabA, `!!document.querySelector("#leader")`, true, 8000);
     await focusPage(ctx.tabA).catch(() => {});
     await ctx.press(ctx.tabA, "Escape");
     await waitFor(async () => {
@@ -56,14 +51,13 @@ export async function run(ctx) {
       return u2 && u2.includes(ctx.base) ? u2 : null;
     }, 10000);
   });
-
   // The write path went through the typed store in this batch, and nothing
   // else in the suite covered it: a save that silently wrote nothing, or wrote
   // under a key the reader does not use, would leave every other test green.
   await t("options page: save persists and survives a reload", async () => {
     const u = ctx.ccUrl.replace("commandcenter.html", "options.html");
     await ctx.gotoUrl(ctx.tabA, u, "complete");
-    await sleep(400);
+    await ctx.waitExpr(ctx.tabA, `!!document.querySelector("#leader")`, true, 8000);
     await evalIn(ctx.tabA, `(() => {
       document.querySelector("#leader").value = ",";
       document.querySelector("#save").click();
@@ -77,12 +71,10 @@ export async function run(ctx) {
     }, 5000);
     const stored = await evalIn(ctx.tabA, `browser.storage.local.get("config").then((r) => r.config.leader)`);
     assert(stored === ",", "the write landed under the config key the reader uses, got " + JSON.stringify(stored));
-
     await ctx.gotoUrl(ctx.tabA, u, "complete");
-    await sleep(400);
+    await ctx.waitExpr(ctx.tabA, `(document.querySelector("#leader")||{value:""}).value.length > 0`, true, 8000);
     const back = await evalIn(ctx.tabA, `document.querySelector("#leader").value`);
     assert(back === ",", "the reloaded page reads back what it wrote, got " + JSON.stringify(back));
-
     // Put it back: a suite that leaves a changed preference behind makes every
     // later run depend on the order the tests happen to run in.
     await evalIn(ctx.tabA, `browser.storage.local.get("config").then((r) => {
@@ -90,7 +82,6 @@ export async function run(ctx) {
       return browser.storage.local.set({ config: c });
     })`);
   });
-
   // Per-field validation is the new behaviour, and the assertion that matters
   // is the one about what SURVIVES: a corrupt field must fall back to its
   // default without taking the user's valid fields down with it.
@@ -105,7 +96,7 @@ export async function run(ctx) {
       return browser.storage.local.set({ config: c });
     })`);
     await ctx.gotoUrl(ctx.tabA, u, "complete");
-    await sleep(400);
+    await ctx.waitExpr(ctx.tabA, `(document.querySelector("#leader")||{value:""}).value.length > 0`, true, 8000);
     const f = await evalIn(ctx.tabA, `(() => {
       const q = (s) => document.querySelector(s);
       return {
@@ -121,21 +112,6 @@ export async function run(ctx) {
     assert(f.scrollKeys === true, "the corrupt boolean falls back to the default, got " + f.scrollKeys);
     assert(f.appRows > 0, "a corrupt apps array falls back to the default tiles, got " + f.appRows);
     assert(f.rendered > 0, "the page rendered at all");
-
     await evalIn(ctx.tabA, `browser.storage.local.remove("config")`);
-  });
-
-  await t("popup page (action popup) renders", async () => {
-    const u = ctx.ccUrl.replace("commandcenter.html", "popup.html");
-    await ctx.gotoUrl(ctx.tabA, u, "complete");
-    await sleep(500);
-    const f = await evalIn(ctx.tabA, `(() => {
-      const q = (s) => document.querySelector(s);
-      return {
-        body: document.body ? document.body.innerText.replace(/\\s+/g, " ").trim().slice(0, 120) : "",
-        links: [...document.querySelectorAll("a,button")].map((a) => a.textContent.trim()).filter(Boolean).slice(0, 8),
-      };
-    })()`);
-    assert(f.body.length > 0, "popup body renders: " + f.body);
   });
 }

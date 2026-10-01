@@ -9,7 +9,7 @@
 //   - src/static/extension/manifest.json (the extension manifest source of
 //     truth — build.ts copies src/static/extension → dist/, so bump the source
 //     manifest, then `npm run build` propagates it into dist/extension)
-//   - src/chrome/main.ts                 (CHROME_HELPER_VERSION, surfaced on the
+//   - src/chrome/alive.ts                (CHROME_HELPER_VERSION, surfaced on the
 //     Components page)
 //   - core/js/main.go                    (the Go core's `version`, returned by
 //     core.version() and surfaced in the command center / status bar)
@@ -75,9 +75,9 @@ for (const f of ["package.json", "package-lock.json"]) {
   console.log(`bumped ${path.relative(root, p)} → ${next}`);
 }
 
-// 4. src/chrome/main.ts: CHROME_HELPER_VERSION = "x.y.z".
+// 4. src/chrome/alive.ts: CHROME_HELPER_VERSION = "x.y.z".
 {
-  const p = path.join(root, "src/chrome/main.ts");
+  const p = path.join(root, "src/chrome/alive.ts");
   const s = fs.readFileSync(p, "utf8");
   const re = /(CHROME_HELPER_VERSION\s*=\s*")[^"]+(")/;
   if (re.test(s)) {

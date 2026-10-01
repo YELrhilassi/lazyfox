@@ -93,6 +93,24 @@ export interface Lfc {
 }
 
 // A tab row as returned by the background (and mirrored by the chrome helper).
+// One row of the active tab's navigation stack (the navigation popup).
+export interface NavEntry {
+  url: string;
+  title: string;
+}
+
+// The active tab's history-stack shape, pushed into the Go status store by
+// the owning context and rendered by the status bar + navigation popup.
+export interface NavState {
+  canBack: boolean;
+  canForward: boolean;
+  // 0-based index of the current entry within the stack; count the total.
+  index: number;
+  count: number;
+  // The stack itself, oldest first, current included.
+  entries?: NavEntry[];
+}
+
 export interface TabInfo {
   id: number;
   title: string;

@@ -1,6 +1,7 @@
 // Recently-closed popup.
 import { core } from "../core";
 import { esc } from "../dom";
+import { faviconFor, faviconHtml } from "../favicon";
 import type { RecoveryRow } from "../types";
 import { basePanel, makeSelector, type PopupCtx } from "./kit";
 
@@ -56,7 +57,7 @@ export function openRecentlyClosedPopup(ctx: PopupCtx): void {
             );
           }
           return (
-            "<div class='t'>" + esc(r.title) + "</div>" +
+            "<div class='t'><span class='txt'>" + esc(r.title) + "</span>" + faviconHtml(faviconFor(r.url)) + "</div>" +
             "<div class='s'><span class='lf-host'>" + esc(r.host || r.url || "") + "</span>" +
             (r.rel ? "<span class='lf-time'>" + esc(r.rel) + "</span>" : "") +
             "</div>"

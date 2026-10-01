@@ -147,8 +147,8 @@ if (setupJs.indexOf("latest/download") === -1 || setupJs.indexOf("download/night
     "package.json": jsonVersion("package.json"),
     "src/static/extension/manifest.json": jsonVersion("src/static/extension/manifest.json"),
     "dist/extension/manifest.json": jsonVersion("dist/extension/manifest.json"),
-    "src/chrome/main.ts (CHROME_HELPER_VERSION)": match(
-      read("src/chrome/main.ts"),
+    "src/chrome/alive.ts (CHROME_HELPER_VERSION)": match(
+      read("src/chrome/alive.ts"),
       /CHROME_HELPER_VERSION\s*=\s*"([^"]+)"/
     ),
     "core/js/main.go (core version)": match(read("core/js/main.go"), /const version\s*=\s*"([^"]+)"/),

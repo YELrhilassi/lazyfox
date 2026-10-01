@@ -1,7 +1,7 @@
 import "../vendor/wasm_exec.js";
 import { WASM_BASE64 } from "./wasm-embed";
-import type { StatusBarData } from "./statusbar";
-import type { DownloadEntry, HistoryRow, Lfc, RecoveryRow, VisitedItem, WkItem, WkPage } from "./types";
+import { createCoreFacade } from "./corefacade";
+import type { DownloadEntry, HistoryRow, Lfc, NavState, RecoveryRow, VisitedItem, WkItem, WkPage } from "./types";
 
 // The Go core (core.wasm) is compiled to a single wasm module and exposed to
 // JS as the "LazyfoxCore" object. Every Lazyfox context uses this facade; the
@@ -74,6 +74,10 @@ export interface CoreApi {
   statusLeader(index: number, active: boolean): void;
   statusFind(index: number, cur: number, count: number): void;
   statusStealth(on: boolean): void;
+  // The far-right leader indicator: armed + the prefix typed so far.
+  statusLeaderSignal(armed: boolean, prefix: string): void;
+  // The active tab's history-stack shape (JSON NavState).
+  statusNav(nav: string): void;
   statusDownloads(fresh: string): void;
   statusDismiss(keys: string): void;
   statusSnapshot(): string;
@@ -97,6 +101,8 @@ export type StatusOp =
   | { kind: "leader"; index: number; active: boolean }
   | { kind: "find"; index: number; cur: number; count: number }
   | { kind: "stealth"; on: boolean }
+  | { kind: "leaderSignal"; armed: boolean; prefix: string }
+  | { kind: "nav"; nav: NavState }
   | { kind: "downloads"; fresh: DownloadEntry[] }
   | { kind: "dismiss"; keys: string[] };
 
@@ -127,6 +133,12 @@ export function applyStatusOps(a: CoreApi, ops: StatusOp[]): void {
         break;
       case "stealth":
         a.statusStealth(op.on);
+        break;
+      case "leaderSignal":
+        a.statusLeaderSignal(op.armed, op.prefix);
+        break;
+      case "nav":
+        a.statusNav(JSON.stringify(op.nav || { canBack: false, canForward: false, index: 0, count: 0 }));
         break;
       case "downloads":
         a.statusDownloads(JSON.stringify(op.fresh || []));
@@ -160,155 +172,10 @@ export async function initCoreIn(scope: any): Promise<CoreApi> {
   return api;
 }
 
-// Builds a promise-returning facade over the CoreApi. getApi() is consulted on
-// every call so a context can swap in a different backend (e.g. the chrome
-// helper's sandbox core) without changing the call sites.
-export function createCoreFacade(getApi: () => Promise<CoreApi>) {
-  const call = <T>(fn: (a: CoreApi) => T): Promise<T> => getApi().then(fn);
-  return {
-    version: (): Promise<string> => call((a) => a.version()),
-    bindings: (): Promise<WkItem[]> => call((a) => a.bindings()),
-    normalizeUrl: (t: string): Promise<string> => call((a) => a.normalizeUrl(t)),
-    isLikelyUrl: (t: string): Promise<boolean> => call((a) => a.isLikelyUrl(t)),
-    rankVisited: (items: VisitedItem[], q: string): Promise<VisitedItem[]> =>
-      call((a) => a.rankVisited(items, q)),
-    makeHints: (n: number, chars: string): Promise<string[]> =>
-      call((a) => a.makeHints(n, chars)),
-    wkPageCount: (): Promise<number> => call((a) => a.wkPageCount()),
-    wkPageSlice: (p: number): Promise<WkPage> => call((a) => a.wkPageSlice(p)),
-    wkClampSel: (s: number, p: number): Promise<number> =>
-      call((a) => a.wkClampSel(s, p)),
-    wkFlip: (p: number, d: number): Promise<number> => call((a) => a.wkFlip(p, d)),
-    wkNav: (s: number, p: number, d: number): Promise<number> =>
-      call((a) => a.wkNav(s, p, d)),
-    lfcParse: (f: string): Promise<Lfc> => call((a) => a.lfcParse(f)),
-    lfcOpen: (t: string, c: boolean): Promise<string> =>
-      call((a) => a.lfcOpen(t, c)),
-    lfcCfg: (n: string, e: string): Promise<string> => call((a) => a.lfcCfg(n, e)),
-    lfcReq: (act: string, arg: string): Promise<string> =>
-      call((a) => a.lfcReq(act, arg)),
-    lfcOk: (n: string): Promise<string> => call((a) => a.lfcOk(n)),
-    lfcErr: (n: string): Promise<string> => call((a) => a.lfcErr(n)),
-    assignSessionMarker: (taken: number[]): Promise<number> =>
-      call((a) => a.assignSessionMarker(taken)),
-    organizeHistory: (
-      items: { url: string; title: string; time: number }[],
-      query: string,
-      now: number,
-      tzOffsetMinutes: number
-    ): Promise<HistoryRow[]> =>
-      call((a) => a.organizeHistory(items, query, now, tzOffsetMinutes)),
-    organizeRecovery: (
-      items: { key: string; kind: string; title: string; url: string; tabCount: number; time: number }[],
-      now: number
-    ): Promise<RecoveryRow[]> =>
-      call((a) => a.organizeRecovery(items, now)),
-    splitPairsOf: (ids: number[]): Promise<[number, number][]> =>
-      call((a) => a.splitPairsOf(ids)),
-    encodeSplits: (pairs: [number, number][]): Promise<string> =>
-      call((a) => a.encodeSplits(pairs)),
-    decodeSplits: (encoded: string): Promise<[number, number][]> =>
-      call((a) => a.decodeSplits(encoded)),
-    splitPartnerOf: (pairs: [number, number][], i: number): Promise<number> =>
-      call((a) => a.splitPartnerOf(pairs, i)),
-    coalescePair: (pre: string[], anchor: string, partner: string): Promise<string[]> =>
-      call((a) => a.coalescePair(pre, anchor, partner)),
-    coalesceIntoGroup: (pre: string[], members: string[], tab: string): Promise<string[]> =>
-      call((a) => a.coalesceIntoGroup(pre, members, tab)),
-    planStrip: (current: string[], desired: string[], groups: string[][]): Promise<[string, number][]> =>
-      call((a) => a.planStrip(current, desired, groups)),
-    yankParse: (text: string): Promise<{ lines: number; total: number; lineStart: number[] }> =>
-      call((a) => a.yankParse(text)),
-    yankMotion: (op: string, arg: string, line: number, col: number): Promise<{ line: number; col: number }> =>
-      call((a) => a.yankMotion(op, arg, line, col)),
-    yankObject: (
-      op: string,
-      line: number,
-      col: number
-    ): Promise<{ ok: boolean; sl: number; sc: number; el: number; ec: number }> =>
-      call((a) => a.yankObject(op, line, col)),
-    formatBytes: (n: number): Promise<string> => call((a) => a.formatBytes(n)),
-    formatSpeed: (n: number): Promise<string> => call((a) => a.formatSpeed(n)),
-    downloadProgress: (received: number, total: number): Promise<number> =>
-      call((a) => a.downloadProgress(received, total)),
-    mergeDownloads: (prev: DownloadEntry[], fresh: DownloadEntry[]): Promise<DownloadEntry[]> =>
-      call((a) => a.mergeDownloads(prev, fresh)),
-    activeDownloads: (downloads: DownloadEntry[]): Promise<DownloadEntry[]> =>
-      call((a) => a.activeDownloads(downloads)),
-    statusSession: (state: unknown): Promise<void> =>
-      call((a) => {
-        a.statusSession(JSON.stringify(state || {}));
-      }),
-    statusTab: (selected: number, tabIndex: number, tabCount: number): Promise<void> =>
-      call((a) => {
-        a.statusTab(selected, tabIndex, tabCount);
-      }),
-    statusUi: (popup: boolean, leader: boolean): Promise<void> =>
-      call((a) => {
-        a.statusUi(popup, leader);
-      }),
-    statusLeader: (index: number, active: boolean): Promise<void> =>
-      call((a) => {
-        a.statusLeader(index, active);
-      }),
-    statusFind: (index: number, cur: number, count: number): Promise<void> =>
-      call((a) => {
-        a.statusFind(index, cur, count);
-      }),
-    statusStealth: (on: boolean): Promise<void> =>
-      call((a) => {
-        a.statusStealth(on);
-      }),
-    statusDownloads: (fresh: DownloadEntry[]): Promise<void> =>
-      call((a) => {
-        a.statusDownloads(JSON.stringify(fresh || []));
-      }),
-    statusDismiss: (keys: string[]): Promise<void> =>
-      call((a) => {
-        a.statusDismiss(JSON.stringify(keys || []));
-      }),
-    /**
-     * Apply several status-store updates and return the resulting snapshot, in
-     * ONE call.
-     *
-     * This exists because the obvious composition — three setters, then a
-     * statusSnapshot() read — was both slow and, in a way that mattered,
-     * wrong. Each setter goes through getApi().then(...), so three pushes plus
-     * a read is five microtask hops before the bar repaints, on a path that
-     * runs on every TabSelect and every leader keystroke. Worse, those hops are
-     * an AWAIT BOUNDARY: two callers pushing at once could interleave, so one
-     * caller's paint could read a snapshot in which the other's half of the
-     * state had landed and the rest had not. The store is meant to be the
-     * single source of truth, and a snapshot torn between two writers is the
-     * opposite of that.
-     *
-     * Every setter in the Go core is synchronous and returns void. The
-     * asynchrony was never in the core; it was an artefact of resolving the
-     * API per call. Resolving once and applying the whole batch without
-     * yielding makes the mutations atomic with respect to each other AND to the
-     * snapshot read that follows.
-     *
-     * Falls back to the per-op path if the core is not ready yet, so a caller
-     * that fires before init still works — it just pays the old cost.
-     */
-    statusBatch: (ops: StatusOp[]): Promise<StatusBarData> =>
-      getApi().then((a) => {
-        applyStatusOps(a, ops);
-        return JSON.parse(a.statusSnapshot());
-      }),
+// The promise facade lives in corefacade.ts, built from one method table so
+// adding a core function is one interface entry + one table entry.
+export type { CoreFacade } from "./corefacade";
 
-    statusSnapshot: (): Promise<StatusBarData> =>
-      call((a) => JSON.parse(a.statusSnapshot())),
-    downloadsList: (): Promise<DownloadEntry[]> =>
-      call((a) => JSON.parse(a.downloadsList())),
-    sessionSummary: (
-      sessions: { name: string; marker: number; tabCount: number; splits: string; legacySplitTabs: number }[],
-      current: string
-    ): Promise<
-      { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[]
-    > => call((a) => a.sessionSummary(sessions, current)),
-  };
-}
 // The API object once it has been initialized (used for the synchronous hot
 // path by WkSession). Both backends call setCoreApi with their init promise.
 let apiPromise: Promise<CoreApi> | null = null;

@@ -1,5 +1,6 @@
 // Bookmarks popup.
 import { esc } from "../dom";
+import { faviconFor, faviconHtml } from "../favicon";
 import type { PopupItem } from "../types";
 import { basePanel, makeSelector, type PopupCtx } from "./kit";
 
@@ -17,7 +18,7 @@ export function openBookmarksPopup(ctx: PopupCtx): void {
         emptyText: "type to search bookmarks",
         search: (q) => ctx.ops.bookmarks(q),
         render: (it) =>
-          "<div class='t'>" + esc(it.title || "") + "</div>" +
+          "<div class='t'><span class='txt'>" + esc(it.title || "") + "</span>" + faviconHtml(faviconFor(it.url)) + "</div>" +
           "<div class='s'>" + esc(it.url || "") + "</div>",
         onPick: (it) => {
           ctx.close();

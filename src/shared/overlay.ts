@@ -4,109 +4,13 @@
 // chrome and navigate it with the same keys. The only difference is where the
 // key events come from (content intercepts them at the window capture handler;
 // the chrome helper binds a keydown listener on the input element).
-
-// Style sheet used by both the shadow-DOM popups (content) and the chrome
-// helper's plain-DOM popups (chrome.ts injects the same text into its root).
+//
+// The style sheets live in overlaycss.ts; overlay.ts is behavior only.
 import { backdropWheel } from "./keyguard";
-import { UI_FONT } from "./theme";
+import { PANEL_CSS, TOAST_CSS } from "./overlaycss";
+import { mirror, publishListState } from "./observability";
 
-export const PANEL_CSS = `
-.lf-popup{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;
-  justify-content:center;background:rgba(8,8,14,.4);font-family:${UI_FONT};}
-@keyframes lfIn{from{opacity:0;transform:translateY(6px) scale(.99)}to{opacity:1;transform:none}}
-.lf-panel{width:640px;max-width:92vw;max-height:82vh;display:flex;flex-direction:column;overflow:hidden;
-  background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:12px;
-  box-shadow:0 24px 70px rgba(0,0,0,.6),0 2px 0 rgba(255,255,255,.03) inset;
-  animation:lfIn .12s ease-out;}
-@media (prefers-reduced-motion:reduce){.lf-panel{animation:none;}}
-.lf-title{padding:11px 16px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7aa2f7;
-  background:#1a1a26;border-bottom:1px solid #2a2f45;flex:none;}
-.lf-main{display:flex;flex:1;min-height:0;overflow:hidden;}
-.lf-list{flex:1;overflow-y:auto;padding:4px 0;overscroll-behavior:contain;
-  scrollbar-width:thin;scrollbar-color:#3b4261 transparent;scrollbar-gutter:stable;}
-.lf-list::-webkit-scrollbar{width:8px;}
-.lf-list::-webkit-scrollbar-thumb{background:#3b4261;border-radius:4px;}
-.lf-item{padding:8px 16px;cursor:pointer;border-left:3px solid transparent;line-height:1.35;
-  transition:background .08s ease;}
-.lf-item:hover{background:#252a3a;}
-.lf-item.lf-tab{padding:4px 14px;}
-.lf-item .t{font-size:13px;color:#c0caf5;}
-.lf-item .s{font-size:11px;color:#565f89;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.lf-item.selected{background:#292e42;border-left-color:#7aa2f7;}
-.lf-item.selected .t{color:#ffffff;}
-.lf-empty{padding:26px;text-align:center;color:#565f89;font-size:12px;flex:1;}
-.lf-input{flex:none;background:#16161e;border:none;border-top:1px solid #2a2f45;color:#c0caf5;
-  padding:12px 16px;font-family:inherit;font-size:14px;outline:none;caret-color:#7aa2f7;
-  transition:box-shadow .1s ease,background .1s ease;}
-.lf-input::placeholder{color:#565f89;}
-.lf-input::selection{background:#3b4261;color:#ffffff;}
-.lf-input:focus{background:#1a1a24;box-shadow:inset 3px 0 0 #7aa2f7;}
-.lf-input.lf-cmd{color:#565f89;}
-.lf-input.lf-cmd::placeholder{color:#3b4261;}
-.lf-foot{flex:none;padding:8px 16px;font-size:11px;color:#565f89;border-top:1px solid #2a2f45;
-  display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
-.lf-panel.wide{width:820px;max-width:94vw;}
-.lf-split{display:flex;flex:1;overflow:hidden;}
-.lf-col{display:flex;flex-direction:column;flex:1 1 50%;min-width:0;border-right:1px solid #2a2f45;}
-.lf-col:last-child{border-right:none;}
-.lf-col-head{padding:6px 14px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#7aa2f7;
-  border-bottom:1px solid #2a2f45;flex:none;}
-.lf-tabs{flex:1;overflow-y:auto;padding:4px 0;overscroll-behavior:contain;
-  scrollbar-width:thin;scrollbar-color:#3b4261 transparent;}
-.lf-tabs .lf-item.active{border-left-color:#9ece6a;}
-.lf-tabs-empty{padding:26px 16px;text-align:center;color:#565f89;font-size:12px;}
-.lf-hgroup{flex:none;padding:10px 16px 4px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#7aa2f7;display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;}
-.lf-ghead{flex:none;padding:9px 16px 3px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#7aa2f7;background:#1a1a26;position:sticky;top:0;z-index:1;}
-.lf-ghead:first-child{padding-top:6px;}
-.lf-hgroup::before{content:"";width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid #565f89;transition:transform .08s ease;flex:none;}
-.lf-hgroup.lf-collapsed::before{transform:rotate(-90deg);}
-.lf-hgroup:hover{color:#9ece6a;}
-.lf-hcount{font-size:9px;color:#565f89;background:#16161e;border:1px solid #2a2f45;border-radius:8px;padding:0 6px;letter-spacing:0;}
-.lf-hkey{display:inline-block;min-width:15px;text-align:center;background:#16161e;border:1px solid #414868;
-  border-radius:4px;padding:0 4px;margin-right:2px;color:#2ac3de;font-size:9px;letter-spacing:0;}
-.lf-hgroup.lf-arm .lf-hkey{color:#16161e;background:#2ac3de;border-color:#2ac3de;}
-.lf-collapsed-hint{padding:20px 16px;text-align:center;color:#565f89;font-size:12px;}
-.lf-hist .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.lf-hist .s{display:flex;gap:8px;align-items:center;min-width:0;}
-.lf-host{color:#7aa2f7;flex:none;}
-.lf-url{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#565f89;}
-.lf-time{color:#565f89;margin-left:auto;flex:none;}
-.lf-rel .t{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.lf-rel .s{display:flex;gap:8px;align-items:center;min-width:0;}
-.lf-detail{flex:none;overflow:hidden;padding:14px 16px 10px;font-size:12px;color:#c0caf5;}
-.lf-related{flex:1;overflow-y:auto;border-top:1px solid #2a2f45;padding:8px 16px 12px;min-height:0;
-  overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#3b4261 transparent;}
-.lf-related-head{padding:8px 2px 4px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#7aa2f7;}
-.lf-related-empty{padding:16px 2px;color:#565f89;font-size:11px;}
-.lf-detail-title{font-size:14px;line-height:1.3;color:#ffffff;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.lf-detail-host{font-size:11px;color:#2ac3de;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.lf-detail-url{font-size:11px;color:#7aa2f7;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.lf-detail-meta{font-size:11px;color:#565f89;margin-bottom:2px;}
-.lf-col.active{background:rgba(122,162,247,.05);}
-.lf-col.active .lf-col-head{color:#9ece6a;}
-.lf-status{flex:1;color:#7aa2f7;}
-.lf-badge{color:#7aa2f7;}
-.kbd{display:inline-block;min-width:26px;text-align:center;background:#16161e;border:1px solid #414868;
-  border-bottom-width:2px;border-radius:5px;padding:1px 7px;margin-right:8px;color:#7aa2f7;font-size:12px;}
-.lf-native-tag{display:inline-block;font-size:9px;letter-spacing:.06em;text-transform:uppercase;
-  background:#292e42;color:#9aa5ce;border-radius:4px;padding:1px 6px;margin-right:8px;vertical-align:1px;}
-.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#7aa2f7;margin-right:6px;}
-.dot.new{background:#9ece6a;border-radius:2px;}
-.lf-marker{display:inline-block;min-width:16px;text-align:center;background:#16161e;border:1px solid #414868;
-  border-radius:4px;padding:0 4px;margin-right:8px;color:#2ac3de;font-size:11px;}
-.lf-item.selected.lf-armed{background:#3a1f2a;border-left-color:#f7768e;}
-.lf-item.selected.lf-armed .t{color:#f7768e;}
-.lf-arm{color:#f7768e;font-weight:700;font-size:11px;}
-.dl-state{display:inline-block;font-size:9px;letter-spacing:.05em;text-transform:uppercase;
-  background:#292e42;color:#9aa5ce;border-radius:4px;padding:0 6px;margin-left:8px;vertical-align:1px;}
-.dl-pct{color:#7aa2f7;font-size:12px;margin-left:8px;font-weight:700;}
-.dl-bar{height:3px;background:#16161e;border-radius:2px;margin-top:5px;overflow:hidden;}
-.dl-fill{height:100%;background:#7aa2f7;border-radius:2px;}
-.dl-fill.done{background:#9ece6a;}
-.dl-fill.fail{background:#f7768e;}
-.hint{position:fixed;z-index:2147483646;background:#2ac3de;color:#16161e;font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;
-  padding:2px 5px;border-radius:4px;pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4);}
-`;
+export { PANEL_CSS, TOAST_CSS } from "./overlaycss";
 
 export interface SelectorOpts<T> {
   listEl: HTMLElement;
@@ -147,100 +51,11 @@ export interface SelectorCtl {
   close(): void;
 }
 
-// Paste the clipboard into an input at the cursor, mirroring what the browser's
-// native Ctrl+V would do. Needed for content-script popups, whose window-level
-// capture listener prevents default on every keydown (the manualText model), so
-// the native paste action never runs. Reads text over the async clipboard API;
-// the extension holds the clipboardRead permission.
-function pasteClipboard(input: HTMLInputElement): void {
-  try {
-    const read =
-      (navigator.clipboard && typeof navigator.clipboard.readText === "function")
-        ? navigator.clipboard.readText()
-        : Promise.resolve("");
-    void read
-      .then((txt) => {
-        if (!txt) return;
-        const s = input.selectionStart == null ? input.value.length : input.selectionStart;
-        const en = input.selectionEnd == null ? input.value.length : input.selectionEnd;
-        input.value = input.value.slice(0, s) + txt + input.value.slice(en);
-        try {
-          input.setSelectionRange(s + txt.length, s + txt.length);
-        } catch (err) { /* ignore */ }
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-      })
-      .catch(() => { /* clipboard denied — swallow */ });
-  } catch (e) {
-    // ignore
-  }
-}
-
-// Manual text insertion for popups where the window-capture keydown handler
-// preventDefaults every key before the input sees it (the content-script
-// model). Handles Backspace/Delete, printable characters, and Ctrl+V (native
-// paste never runs, so read the clipboard and insert at the cursor). Returns
-// true when the key was consumed.
-export function manualTextKey(e: KeyboardEvent, input: HTMLInputElement): boolean {
-  const k = e.key;
-  const s = input.selectionStart == null ? input.value.length : input.selectionStart;
-  const en = input.selectionEnd == null ? input.value.length : input.selectionEnd;
-  const sel = s !== en;
-  const atEnd = s >= input.value.length;
-  const atStart = s <= 0;
-  if (e.ctrlKey && !e.altKey && !e.metaKey && (k === "v" || k === "V")) {
-    pasteClipboard(input);
-    return true;
-  }
-  if (k === "Backspace" || k === "Delete") {
-    if (sel) {
-      input.value = input.value.slice(0, s) + input.value.slice(en);
-      try {
-        input.setSelectionRange(s, s);
-      } catch (err) {
-              // setSelectionRange throws on input types that do not support a
-              // text selection (number, email). The edit is already applied; only
-              // the caret ends up in the wrong place, which is recoverable by the
-              // next keystroke.
-      }
-    } else if (k === "Backspace" && !atStart) {
-      input.value = input.value.slice(0, s - 1) + input.value.slice(en);
-      try {
-        input.setSelectionRange(s - 1, s - 1);
-      } catch (err) {
-              // setSelectionRange throws on input types that do not support a
-              // text selection (number, email). The edit is already applied; only
-              // the caret ends up in the wrong place, which is recoverable by the
-              // next keystroke.
-      }
-    } else if (k === "Delete" && !atEnd) {
-      input.value = input.value.slice(0, s) + input.value.slice(en + 1);
-      try {
-        input.setSelectionRange(s, s);
-      } catch (err) {
-              // setSelectionRange throws on input types that do not support a
-              // text selection (number, email). The edit is already applied; only
-              // the caret ends up in the wrong place, which is recoverable by the
-              // next keystroke.
-      }
-    }
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    return true;
-  }
-  if (k && k.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
-    input.value = input.value.slice(0, s) + k + input.value.slice(en);
-    try {
-      input.setSelectionRange(s + 1, s + 1);
-    } catch (err) {
-            // setSelectionRange throws on input types that do not support a
-            // text selection (number, email). The edit is already applied; only
-            // the caret ends up in the wrong place, which is recoverable by the
-            // next keystroke.
-    }
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    return true;
-  }
-  return false;
-}
+// The manual-text editing model (paste/undo/insertion for content-script
+// popups) lives in manualtext.ts; imported here for the selector's manual
+// path and re-exported so existing importers keep working.
+import { manualTextKey } from "./manualtext";
+export { manualTextKey };
 
 const HOST_CSS =
   "all:initial;position:fixed;inset:0;z-index:2147483647;display:block;";
@@ -370,16 +185,11 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
     if (sel) sel.scrollIntoView({ block: "nearest" });
     if (opts.onChange) opts.onChange(idx, shown[idx] || null, shown.length);
     // The popup lives in a closed shadow root, so nothing outside it can read
-    // the rows directly. Dispatch a composed, bubbling event on the list so
-    // page-level observers (and the e2e harness) can see the current selection
-    // and item count without reaching into the shadow DOM.
-    list.dispatchEvent(
-      new CustomEvent("lazyfox:list", {
-        bubbles: true,
-        composed: true,
-        detail: { count: shown.length, idx, q: opts.inputEl.value || "" },
-      })
-    );
+    // the rows. Publish the selection as a composed, bubbling event on the list
+    // so page-level observers (and the e2e harness) can follow the popup without
+    // reaching into the shadow DOM. See shared/observability.ts for the
+    // contract and why the detail carries no row content.
+    publishListState(list, opts.inputEl, shown.length, idx);
   }
 
   function search(q: string) {
@@ -410,9 +220,71 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
     render();
   }
 
+  // Caret movement inside the popup input, applied by hand because the
+  // selector consumes the key event in BOTH paths (chrome binds keydown on
+  // the input; content preventDefaults at the window). mode "word" moves in
+  // delimiter-delimited chunks — what URLs and titles are made of. With
+  // shift held it extends the selection like a native shift+arrow.
+  function moveCaret(dir: number, mode: "char" | "word", extend: boolean): void {
+    const input = opts.inputEl;
+    const v = input.value || "";
+    const s = input.selectionStart == null ? v.length : input.selectionStart;
+    const e = input.selectionEnd == null ? v.length : input.selectionEnd;
+    // An anchor for shift-extend: on the first extend, freeze the edge the
+    // caret is moving away from; without shift, collapse first.
+    let anchor: number;
+    if (extend) {
+      anchor = dir > 0 ? s : e;
+      if (s === e) anchor = dir > 0 ? s : e;
+    } else {
+      anchor = dir > 0 ? e : s;
+    }
+    const isDelim = (c: string) => /[\s:/.?&=,#\-]/.test(c);
+    let next: number;
+    if (mode === "char") {
+      next = dir > 0 ? Math.min(v.length, anchor + 1) : Math.max(0, anchor - 1);
+    } else if (dir > 0) {
+      next = anchor;
+      while (next < v.length && isDelim(v[next]!)) next++;
+      while (next < v.length && !isDelim(v[next]!)) next++;
+    } else {
+      next = anchor;
+      while (next > 0 && isDelim(v[next - 1]!)) next--;
+      while (next > 0 && !isDelim(v[next - 1]!)) next--;
+    }
+    try {
+      if (extend) {
+        input.setSelectionRange(Math.min(anchor, next), Math.max(anchor, next));
+      } else {
+        input.setSelectionRange(next, next);
+      }
+    } catch {
+      // input types without a text selection — nothing to move
+    }
+  }
+
   function onKey(e: KeyboardEvent): boolean {
     const k = e.key;
     const empty = (opts.inputEl.value || "") === "";
+    // Left/Right with Shift or Alt are CURSOR MOVEMENT inside the input
+    // (word jump / plain move) — the list navigation must not steal them.
+    // Plain Left/Right still walk the list when the input is empty (nothing
+    // to edit); when the input holds text they move the caret instead, since
+    // mid-text list navigation is a footgun.
+    if (k === "ArrowLeft" || k === "ArrowRight") {
+      const dir = k === "ArrowRight" ? 1 : -1;
+      // Shift+arrow = word-extend, plain arrow with text = caret move (list
+      // navigation on a non-empty input is a footgun), plain arrow on an
+      // empty input still walks the list below.
+      if (e.shiftKey) {
+        moveCaret(dir, "word", true);
+        return true;
+      }
+      if (!empty) {
+        moveCaret(dir, "char", false);
+        return true;
+      }
+    }
     if (k === "ArrowDown") {
       e.preventDefault();
       move(1);
@@ -511,14 +383,6 @@ let toastHost: {
   timer: ReturnType<typeof setTimeout> | null;
 } | null = null;
 
-const TOAST_CSS = `
-.t{position:fixed;bottom:52px;left:50%;transform:translateX(-50%);z-index:2147483647;
-  background:rgba(22,22,30,.96);color:#c0caf5;font:13px ${UI_FONT};
-  padding:8px 14px;border:1px solid #414868;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.5);
-  opacity:0;transition:opacity .12s ease;pointer-events:none;}
-.t.on{opacity:1;}
-`;
-
 // --- rect overlays (find highlight / yank flash / visual selection) ---
 
 // Fixed-position overlay drawn as one absolutely-positioned div per rect
@@ -610,8 +474,18 @@ export function toast(msg: string): void {
   }
   toastHost.span.textContent = msg;
   toastHost.box.classList.add("on");
+  // Mirror the message onto <html>, the same way the find (data-lf-find),
+  // yank (data-lf-yank), hint (data-lf-hints) and leader (data-lf-leader)
+  // overlays do. The toast box lives in a CLOSED shadow root, so without this
+  // nothing outside the page can read it — and the toast is the product's own
+  // report of what a command did ("session “work”", "no session at marker 1"),
+  // which is exactly the signal a caller needs to confirm the command ran.
+  mirror("toast", msg);
   if (toastHost.timer) clearTimeout(toastHost.timer);
   toastHost.timer = setTimeout(() => {
     if (toastHost) toastHost.box.classList.remove("on");
+    // The attribute expires with the toast, so a stale message can never be
+    // mistaken for a fresh one by a later reader.
+    mirror("toast", null);
   }, 1400);
 }

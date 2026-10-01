@@ -9,11 +9,23 @@ import {
   evalIn,
   keyTap,
   waitFor,
+  waitForValue,
   sleep,
   activate,
   focusPage,
   createTab,
+  closeContext,
+  waitForDom,
 } from "./lib.ts";
+
+// Modifier keys a press may carry. Named once so every helper that forwards
+// opts to keyTap/sendKeys agrees on the shape.
+export interface KeyOpts {
+  ctrl?: boolean;
+  alt?: boolean;
+  shift?: boolean;
+  meta?: boolean;
+}
 
 // Recursively collect every browsing context (tabs and iframes) in the tree.
 export function contextsOf(tree) {
@@ -28,8 +40,14 @@ export function contextsOf(tree) {
   return all;
 }
 
-export function createCtx(runtime) {
-  const ctx = {
+export function createCtx(runtime): any {
+  // The helper functions below are attached to `ctx` one at a time, so the
+  // object literal below cannot name them. The `& Record<string, any>` index
+  // signature is what lets the suites call ctx.waitPopup / ctx.leaderPress /
+  // … and keeps the harness typechecked (tsconfig.bidi.json) for the errors
+  // that matter there: a helper used without importing it, a duplicate
+  // identifier, an arity mistake on a lib function.
+  const ctx: any = {
     // Session/state carried through the whole run.
     h: runtime.h,
     profile: runtime.profile,
@@ -90,7 +108,7 @@ export function createCtx(runtime) {
     })()`);
   };
 
-  ctx.windowRect = async function windowRect() {
+  ctx.windowRect = async function windowRect(): Promise<any> {
     const r = await httpJson("GET", `http://127.0.0.1:${ctx.h.port}/session/${ctx.h.sessionId}/window/rect`);
     return r.value;
   };
@@ -174,19 +192,39 @@ export function createCtx(runtime) {
   // Press the leader key, wait for it to be armed (the command center shows
   // "LZ›" in the mode tag), then press the binding key.
   ctx.tryArm = async function tryArm(tab, timeoutMs) {
+    // The content script mirrors the leader's armed state onto <html> as
+    // data-lf-leader. That mirror is the ONLY arm signal that works with the
+    // which-key overlay OFF — the modeTag and the overlay host both belong to
+    // the overlay, so with the overlay disabled the leader arms correctly and
+    // both of them look identical to "never armed". Probing the mirror first
+    // is what lets a test arm the leader while the overlay is off; without it
+    // the press times out, the leader stays armed, and every later keypress in
+    // the run is eaten by it.
     try {
       return await waitFor(async () => {
-        const mt = await evalIn(tab, `(document.getElementById("modeTag")||{textContent:""}).textContent`);
-        return mt === "LZ\u203A" ? true : null;
+        const on = await evalIn(
+          tab,
+          `document.documentElement.getAttribute("data-lf-leader") === "1"`
+        );
+        return on ? true : null;
       }, timeoutMs);
     } catch (e) {
+      // Fall back to the overlay signals for chrome-side contexts, which do not
+      // set the content script's attribute.
       try {
         return await waitFor(async () => {
-          const host = await ctx.hasHost(tab, "lazyfox-leader");
-          return host ? true : null;
+          const mt = await evalIn(tab, `(document.getElementById("modeTag")||{textContent:""}).textContent`);
+          return mt === "LZ\u203A" ? true : null;
         }, timeoutMs);
       } catch (e2) {
-        return false;
+        try {
+          return await waitFor(async () => {
+            const host = await ctx.hasHost(tab, "lazyfox-leader");
+            return host ? true : null;
+          }, timeoutMs);
+        } catch (e3) {
+          return false;
+        }
       }
     }
   };
@@ -280,7 +318,7 @@ export function createCtx(runtime) {
     }
   };
 
-  ctx.press = async function press(tab, key, opts = {}) {
+  ctx.press = async function press(tab, key, opts: KeyOpts = {}) {
     if (await ctx.chromeOwnsLeader(tab)) {
       await ctx.sendKeys(tab, [{ k: key, shift: opts.shift, ctrl: opts.ctrl, alt: opts.alt, meta: opts.meta }]);
     } else {
@@ -289,7 +327,7 @@ export function createCtx(runtime) {
     await sleep(150);
   };
 
-  ctx.keyTap = async function keyTap_(tab, key, opts = {}) {
+  ctx.keyTap = async function keyTap_(tab, key, opts: KeyOpts = {}) {
     if (await ctx.chromeOwnsLeader(tab)) {
       await ctx.sendKeys(tab, [{ k: key, shift: opts.shift, ctrl: opts.ctrl, alt: opts.alt, meta: opts.meta }]);
     } else {
@@ -328,6 +366,159 @@ export function createCtx(runtime) {
     return evalIn(tab, `!!document.getElementById(${JSON.stringify(id)})`);
   };
 
+  // ---------- deterministic waits (replace fixed sleeps) ----------
+  //
+  // Sleeps raced the product under load and their aborts poisoned later
+  // tests. Each of these waits for the PRODUCT SIGNAL itself; the timeout is
+  // the failure bound, not a timing guess.
+
+  // Wait until the popup host with `id` exists in the tab.
+  ctx.waitHost = function waitHost(tab, id, timeoutMs = 8000) {
+    return waitForDom(tab, `#${JSON.stringify(id).slice(1, -1)}`.replace(/^#"/, "#"), { timeoutMs });
+  };
+
+  // Wait until the popup host with `id` is GONE (closed cleanly).
+  ctx.waitHostGone = function waitHostGone(tab, id, timeoutMs = 8000) {
+    return waitForDom(tab, `#${JSON.stringify(id).slice(1, -1)}`.replace(/^#"/, "#"), { gone: true, timeoutMs });
+  };
+
+  // Wait for the lazyfox-popup (the shared popup engine's host) to appear.
+  ctx.waitPopup = function waitPopup(tab, timeoutMs = 8000) {
+    return waitFor(async () => (await ctx.hasHost(tab, "lazyfox-popup")) ? true : null, timeoutMs);
+  };
+
+  // Wait for the lazyfox-popup to close.
+  ctx.waitPopupGone = function waitPopupGone(tab, timeoutMs = 8000) {
+    return waitFor(async () => !(await ctx.hasHost(tab, "lazyfox-popup")) ? true : null, timeoutMs);
+  };
+
+  // Wait until `expr` (evaluated in the tab) satisfies `want`:
+  //  - want omitted or `true`  -> any TRUTHY value matches. This is the
+  //    common case ("a session with tabs exists", "the list has rows"), where
+  //    the expression yields a count/array/string, NOT a boolean. Matching
+  //    those strictly against `true` can never succeed, so the wait would burn
+  //    its whole timeout and then fail on a product that behaved correctly.
+  //  - any other value         -> strict equality (e.g. want === 1 for idx).
+  ctx.waitExpr = function waitExpr(tab, expr, want, timeoutMs = 8000) {
+    // Resolve with `true`, never the raw value: waitFor treats a falsy result
+    // as "not yet", so a matched value of 0 / "" / false would spin forever.
+    const truthy = want === undefined || want === true;
+    return waitFor(async () => {
+      const v = await evalIn(tab, expr).catch(() => null);
+      if (truthy) return v ? true : null;
+      return v === want ? true : null;
+    }, timeoutMs, 60);
+  };
+
+  // Wait for the content leader to be armed (or to finish dispatching).
+  //
+  // The armed state is read from the data-lf-leader attribute the content
+  // script mirrors onto <html>. It deliberately does NOT look at the
+  // lazyfox-leader host: the which-key overlay lives in a CLOSED shadow root
+  // and its host element survives hide() (only the "on" class is dropped), so
+  // "the host is gone" is not a signal that can ever become true — a wait on
+  // it just burns its whole timeout and then fails.
+  ctx.waitLeader = function waitLeader(tab, gone = false, timeoutMs = 8000) {
+    return waitFor(async () => {
+      const on = await evalIn(
+        tab,
+        `document.documentElement.getAttribute("data-lf-leader") === "1"`
+      ).catch(() => null);
+      if (on === null) {
+        // No content script on this page (about:/extension): fall back to the
+        // host, which is all such a page can offer.
+        const has = await ctx.hasHost(tab, "lazyfox-leader");
+        return gone ? !has : has;
+      }
+      return gone ? !on : !!on;
+    }, timeoutMs, 60);
+  };
+
+  // Wait until a tab whose URL contains `fragment` exists (or is gone with
+  // {gone:true}). The universal tab-strip wait — replaces every
+  // sleep-then-tabsInfo assertion.
+  ctx.waitTabUrl = async function waitTabUrl(fragment, { gone = false, timeoutMs = 10000 } = {}) {
+    return waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const hit = ts.some((t) => (t.url || "").includes(fragment));
+      return gone ? !hit : (ts.find((t) => (t.url || "").includes(fragment)) || null);
+    }, timeoutMs);
+  };
+
+  // Wait until the number of real tabs reaches `n` (or any predicate over the
+  // tab list). Replaces sleep-then-tabCount.
+  ctx.waitTabCount = function waitTabCount(n, timeoutMs = 10000) {
+    return waitFor(async () => {
+      const c = await ctx.tabCount();
+      return c === n ? c : null;
+    }, timeoutMs);
+  };
+
+  // Wait until the ACTIVE tab's URL contains `fragment`.
+  ctx.waitActiveUrl = function waitActiveUrl_(fragment, timeoutMs = 10000) {
+    return waitFor(async () => {
+      const a = await ctx.activeTabInfo();
+      return a && a.url && a.url.includes(fragment) ? a : null;
+    }, timeoutMs);
+  };
+
+  // Wait until the popup's composed list event reports `want` (an object of
+  // expected fields, e.g. {count: 2} or {idx: 3}). The closed-shadow-root
+  // observability path — replaces sleep-then-probe.
+  // Wait for a popup list-event detail to match `want`. `slot` picks which
+  // mirrored detail to read: "list" (the left list, the default) or "tabs"
+  // (the sessions popup's right-hand tabs pane).
+  //
+  // Each key of `want` is matched on its own: `>=`/`>` are inequalities, `min:`
+  // is a lower bound, anything else is strict equality. This replaces the
+  // compound `(window.__lfList || {}).a === x && …` expressions, which read
+  // the mirror correctly in the page but gave the harness nothing it could
+  // poll reliably.
+  ctx.waitListEvent = function waitListEvent(tab, want, timeoutMs = 8000, slot: "list" | "tabs" = "list") {
+    const varName = slot === "tabs" ? "__lfTabs" : "__lfList";
+    return waitFor(async () => {
+      const d = await evalIn(tab, `window.${varName}`);
+      if (!d) return null;
+      for (const k of Object.keys(want)) {
+        const w = (want as any)[k];
+        const v = d[k];
+        if (k === "min") continue;
+        if (typeof w === "object" && w !== null) {
+          if (w.ge !== undefined && !(v >= w.ge)) return null;
+          if (w.gt !== undefined && !(v > w.gt)) return null;
+          if (w.ne !== undefined && v === w.ne) return null;
+          continue;
+        }
+        if (v !== w) return null;
+      }
+      return d;
+    }, timeoutMs);
+  };
+
+  // Install the popup list-event listener (idempotent) and reset the cached
+  // detail. Tests that read popup state through the closed shadow root call
+  // this BEFORE opening the popup.
+  ctx.watchList = function watchList(tab) {
+    return evalIn(
+      tab,
+      `window.__lfList = null; if (!window.__lfListWatch) { window.__lfListWatch = true; document.addEventListener("lazyfox:list", (e) => { window.__lfList = e.detail; }, true); } true`
+    );
+  };
+
+  // Wait for a toast whose text matches `re` (a RegExp source). The toast is
+  // the product's own report of what a command just did ("session “work”",
+  // "no session at marker 1"), mirrored onto <html> as data-lf-toast — so this
+  // is the most direct proof a command actually ran, without guessing at side
+  // effects. The attribute expires with the toast.
+  ctx.waitToast = function waitToast(tab, re: RegExp, timeoutMs = 8000) {
+    const src = re.source;
+    return waitFor(async () => {
+      const m = await evalIn(tab, `document.documentElement.getAttribute("data-lf-toast") || ""`)
+        .catch(() => null);
+      return m && new RegExp(src).test(m) ? m : null;
+    }, timeoutMs, 60);
+  };
+
   // Open a fresh real page tab and return its browsing context. Used to
   // replace ctx.tabA after a test deliberately closes it (the destructive
   // "closing a tab down to two" regression), so later suites in a full run
@@ -339,14 +530,102 @@ export function createCtx(runtime) {
     return p;
   };
 
-  ctx.makeProbeTab = async function makeProbeTab() {
-    const p = await createTab();
-    await navigate(p, "about:newtab", "complete");
-    await waitFor(async () => {
-      const u = await evalIn(p, `location.href`);
-      return u && u.includes("commandcenter.html") ? u : null;
-    }, 15000);
-    return p;
+  // Wait until the tab strip stops changing. A destructive window operation
+  // (session restore / marker hot-swap) replaces tabs asynchronously, and
+  // anything that opens a tab DURING that rebuild can be swept away itself —
+  // which shows up much later as a confusing "no such frame" in an unrelated
+  // test. "Stable" means the same set of tab ids, twice in a row.
+  ctx.waitWindowStable = async function waitWindowStable(
+    stableRounds = 2,
+    timeoutMs = 20000,
+    intervalMs = 250
+  ) {
+    const start = Date.now();
+    let prev = "";
+    let same = 0;
+    for (;;) {
+      const key = (await ctx.tabsInfo().catch(() => null))
+        ? (await ctx.tabsInfo().catch(() => [])).map((t: any) => t.id).join(",")
+        : null;
+      if (key !== null && key === prev) {
+        if (++same >= stableRounds) return key;
+      } else {
+        same = 0;
+        prev = key;
+      }
+      if (Date.now() - start > timeoutMs) return key === null ? "" : key;
+      await sleep(intervalMs);
+    }
+  };
+
+  // Open the extension-realm probe tab, retrying if a concurrent window rebuild
+  // sweeps away the tab we just created. The probe is the only handle on the
+  // extension APIs (tabs/history/storage), so losing it takes every later test
+  // with it.
+  //
+  // The window is settled BEFORE the first attempt, not only between retries: a
+  // session restore replaces the window's tabs asynchronously, so a tab created
+  // while it is still running is itself replaced and dies with its context.
+  // Waiting first turns four doomed attempts into one.
+  ctx.makeProbeTab = async function makeProbeTab(attempts = 4) {
+    let last: any = null;
+    for (let i = 1; i <= attempts; i++) {
+      if (i > 1) await ctx.waitWindowStable(2, 15000).catch(() => {});
+      const p = await createTab();
+      try {
+        await navigate(p, "about:newtab", "complete");
+        await waitFor(async () => {
+          const u = await evalIn(p, `location.href`);
+          return u && u.includes("commandcenter.html") ? u : null;
+        }, 8000);
+        return p;
+      } catch (e) {
+        // The tab was destroyed (or never became the command center) — most
+        // often because a session restore was still rebuilding the window.
+        last = e;
+        await closeContext(p).catch(() => {});
+      }
+    }
+    throw new Error("makeProbeTab: could not open a stable probe tab: " + String(last && last.message ? last.message : last));
+  };
+
+  // Wait until the extension's current-session pointer is `name`, and hand back
+  // a LIVE probe tab that can be used afterwards.
+  //
+  // A session switch REPLACES every tab in the window, so the probe that sent
+  // the switch dies mid-flight: polling the old context can only ever time out,
+  // and the failure looks like a product bug. Each attempt therefore opens a
+  // FRESH probe (which itself waits for the window to stop churning) and reads
+  // the pointer through it. The successful probe is stored on ctx.
+  ctx.waitCurrentSession = async function waitCurrentSession(name, timeoutMs = 25000) {
+    const deadline = Date.now() + timeoutMs;
+    let last: any = "no attempt";
+    for (;;) {
+      const p = await ctx.makeProbeTab(2).catch((e) => {
+        last = e;
+        return null;
+      });
+      if (p) {
+        const cur = await evalIn(p, `browser.storage.local.get("lfCurrentSession").then(r => r.lfCurrentSession)`).catch((e) => {
+          last = e;
+          return null;
+        });
+        if (cur === name) {
+          ctx.probe = p;
+          return p;
+        }
+        last = cur;
+        await closeContext(p).catch(() => {});
+      }
+      if (Date.now() > deadline) {
+        throw new Error(
+          "waitCurrentSession: lfCurrentSession never became " +
+            JSON.stringify(name) +
+            ", last saw " +
+            JSON.stringify(last && last.message ? last.message : last)
+        );
+      }
+    }
   };
 
   // Ask the chrome helper (the chrome-document leader/popup engine) about its
@@ -359,7 +638,7 @@ export function createCtx(runtime) {
   // tab the caller is working with and the selectedTab-derived state (muted).
   // The probe's extension realm survives the navigation, so tabsInfo() keeps
   // working.
-  ctx.chromeState = async function chromeState() {
+  ctx.chromeState = async function chromeState(): Promise<any> {
     const activeId = await evalIn(
       ctx.probe,
       `browser.tabs.query({currentWindow:true, active:true}).then(ts => ts[0] ? ts[0].id : null)`
@@ -413,8 +692,71 @@ export function createCtx(runtime) {
     // into the input) and press.
     await evalIn(tab, `document.activeElement && document.activeElement.blur ? (document.activeElement.blur(), true) : true`).catch(() => {});
     await ctx.press(tab, ";");
+    // The chrome helper captures the leader key synchronously in the chrome
+    // document (its arm state is NOT observable from the page realm — the
+    // modeTag flip is the page's own handler), so there is no page-realm arm
+    // signal to wait on here. A short bounded pacing between `;` and the
+    // binding key is the correct primitive; anything longer races the leader's
+    // own arm timeout and the binding key lands as a plain keystroke.
     await sleep(300);
     await ctx.press(tab, key, opts);
+  };
+
+  // Put whichKey into a KNOWN state, and confirm it landed.
+  //
+  // This is SETUP, so it must not depend on the leader key working. Two earlier
+  // designs both did, and both made unrelated tests fail for an unrelated
+  // reason:
+  //
+  //   - a blind `;q` press is a toggle, so it only reaches the wanted value if
+  //     the current one is the opposite. One leaked value turns "turn it off"
+  //     into "turn it ON" and the failure blames the leader instead of setup;
+  //   - reading the value first and pressing only when needed fixes that, but
+  //     it still needs the leader to arm in whatever context the previous test
+  //     left behind. In a full run that intermittently timed out, taking four
+  //     unrelated indicator/options tests down with it.
+  //
+  // So setup goes through the background's `setConfig` handler instead — the
+  // same cache-consistent write the options page uses. Writing
+  // browser.storage.local directly is NOT an option: the background keeps its
+  // own config cache and would re-save its in-memory copy over the top,
+  // silently undoing it. Going through the handler means the cache, storage and
+  // every connected status bar agree, and it is idempotent and order-
+  // independent. `;q` itself still has its own dedicated test in
+  // suites/content/indicator.ts, which is where the real user path belongs.
+  ctx.ensureWhichKey = async function ensureWhichKey(
+    _tab,
+    on: boolean,
+    timeoutMs = 10000
+  ) {
+    if (!ctx.probe) ctx.probe = await ctx.makeProbeTab();
+    const read = async () =>
+      evalIn(
+        ctx.probe,
+        `browser.storage.local.get("config").then(r => !!(r.config && r.config.whichKey !== false))`
+      ).catch(() => null);
+    if ((await read()) === on) return on;
+    // Read-modify-write through the background so the config cache stays
+    // coherent: the payload is the WHOLE config, and only whichKey changes.
+    const applied = await evalIn(
+      ctx.probe,
+      `(async () => {
+         const r = await browser.storage.local.get("config");
+         const cfg = Object.assign({}, r.config || {}, { whichKey: ${on} });
+         const res = await browser.runtime.sendMessage({ action: "setConfig", data: { config: cfg } });
+         return !!(res && res.ok);
+       })()`
+    ).catch(() => false);
+    if (!applied) {
+      throw new Error("ensureWhichKey: background setConfig refused the write for whichKey=" + on);
+    }
+    // waitForValue, not waitFor: the target value is often `false`, and waitFor
+    // only resolves on TRUTHY — polling for false would time out while storage
+    // already held the value we asked for.
+    return waitForValue(async () => {
+      const c = await read();
+      return c === on ? c : null;
+    }, timeoutMs);
   };
 
   // Press the leader binding without selecting a tab first — used when the
@@ -423,7 +765,10 @@ export function createCtx(runtime) {
   // directly through the classic session.
   ctx.leaderPressNoFocus = async function leaderPressNoFocus(key) {
     await ctx.sendKeys(null, [{ k: ";" }]);
-    await sleep(300);
+    await waitFor(async () => {
+      const s = await ctx.chromeState().catch(() => null);
+      return s && s.leaderActive ? true : null;
+    }, 4000).catch(() => {});
     await ctx.sendKeys(null, [{ k: key }]);
   };
 

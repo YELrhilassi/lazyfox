@@ -25,16 +25,33 @@ import {
 } from "./harness.ts";
 import { createCtx, contextsOf } from "./helpers.ts";
 import { pages } from "./pages.ts";
-import * as commandcenter from "./suites/commandcenter.ts";
-import * as content from "./suites/content.ts";
-import * as sessions from "./suites/sessions.ts";
-import * as split from "./suites/split.ts";
-import * as options from "./suites/options.ts";
+import * as commandcenter from "./suites/commandcenter/index.ts";
+import * as content from "./suites/content/index.ts";
+import * as sessions from "./suites/sessions/index.ts";
+import * as split from "./suites/split/index.ts";
+import * as options from "./suites/options/index.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const EXT_DIR = resolve(ROOT, "dist/extension");
 
 const SUITE_MODULES = { commandcenter, content, sessions, split, options };
+
+// Every configured group must have a module here. This map is a static import
+// (the suite modules are loaded eagerly), so adding a group to suites.json
+// alone would otherwise fail LATER and far less clearly — as a
+// "Cannot read properties of undefined (reading 'run')" from inside the loop,
+// with no hint that the real problem is an unimported suite. Check it up front
+// so the error names the group and the fix.
+function assertGroupsAreLoaded(config) {
+  const missing = Object.keys(config.groups || {}).filter((g) => !SUITE_MODULES[g]);
+  if (missing.length) {
+    throw new Error(
+      "suites.json declares group(s) with no loaded suite module: " +
+        missing.join(", ") +
+        "\nAdd an import + an entry to SUITE_MODULES in scripts/bidi/test.ts."
+    );
+  }
+}
 
 const consoleLog = [];
 setLogs(consoleLog);
@@ -51,6 +68,7 @@ async function main() {
     return;
   }
   const selection = selectGroups(config, args);
+  assertGroupsAreLoaded(config);
   console.log("Run selection: " + selection.label + " -> " + [...selection.enabled].join(", "));
 
   profile = await makeProfile();

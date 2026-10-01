@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import http from "node:http";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -47,7 +47,7 @@ export function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export function httpJson(method, url, body) {
+export function httpJson(method, url, body?): Promise<any> {
   return new Promise((resolvePromise, reject) => {
     const u = new URL(url);
     const req = http.request(
@@ -81,7 +81,10 @@ export function httpJson(method, url, body) {
 
 // --- BiDi commands ---
 
-export function send(method, params = {}) {
+// The BiDi wire values are untyped by design (they are protocol messages, not
+// application data), so `send` resolves to `any`. Returning `unknown` here
+// would push a cast onto every one of the harness's ~200 call sites.
+export function send(method, params = {}): Promise<any> {
   const id = ++reqId;
   return new Promise((resolvePromise, reject) => {
     pending.set(id, { resolvePromise, reject });
@@ -103,7 +106,7 @@ export async function subscribe(events) {
 
 // --- browser-level helpers ---
 
-export function startGecko({ profile } = {}) {
+export function startGecko({ profile }: { profile?: string } = {}) {
   return new Promise((resolvePromise, reject) => {
     if (!existsSync(GECKO)) {
       reject(new Error(`geckodriver not found at ${GECKO} — download it into .tools/`));
@@ -129,6 +132,11 @@ export function startGecko({ profile } = {}) {
           "moz:firefoxOptions": {
             binary: FIREFOX,
             args: [
+              // -no-remote keeps the automation instance independent of any
+              // Firefox the user already has open: without it the new process
+              // hands the URL off to the running instance and exits 0, which
+              // geckodriver reports as "Process unexpectedly closed".
+              "-no-remote",
               ...(profile ? ["-profile", profile] : []),
               ...(HEADLESS ? ["-headless"] : []),
             ],
@@ -263,11 +271,22 @@ export async function captureScreenshot(context, filePath) {
   return filePath;
 }
 
-export async function getTree() {
+// A browsing context as the suites see it. Typed loosely on purpose (the
+// BiDi wire values are untyped), but not `unknown`: returning `unknown` here
+// pushed a cast onto every one of the ~200 call sites in the suites.
+export interface BidiContext {
+  context: string;
+  id?: string;
+  url?: string;
+  children?: BidiContext[];
+  [k: string]: any;
+}
+
+export async function getTree(): Promise<BidiContext[]> {
   const r = await send("browsingContext.getTree", {});
   // geckodriver names the field `context` (newer spec drafts); normalize to
   // `context` everywhere below.
-  return r.contexts;
+  return r.contexts || [];
 }
 
 export async function createTab() {
@@ -317,7 +336,7 @@ function unwrap(rv) {
 }
 
 // Evaluate an expression in the page realm. Returns the unserialized value.
-export async function evalIn(context, expression, awaitPromise = true, opts = {}) {
+export async function evalIn(context, expression, awaitPromise = true, opts: { userActivation?: boolean } = {}): Promise<any> {
   const r = await send("script.evaluate", {
     expression,
     target: { context },
@@ -358,7 +377,7 @@ function keyValue(key) {
   return KEY_CODES[key] || key;
 }
 
-export async function keyTap(context, key, opts = {}) {
+export async function keyTap(context, key, opts: { ctrl?: boolean; alt?: boolean; shift?: boolean; meta?: boolean } = {}) {
   const v = keyValue(key);
   const actions = [];
   if (opts.ctrl) actions.push({ type: "keyDown", value: "\uE009" });
@@ -448,8 +467,33 @@ export async function focusPage(context) {
   }
 }
 
-export function waitFor(fn, timeoutMs = 15000, interval = 120) {
+// Poll `fn` until it returns a truthy value. A bare "waitFor timed out" tells
+// you nothing about WHICH wait failed, so the caller's source location is
+// captured here and folded into the error: a suite with a dozen waits now
+// names the failing line instead of making you bisect the test by hand.
+//
+// TRUTHY, and that word matters: a poll like `return c === false ? c : null`
+// ("wait for the flag to go false") can NEVER resolve, because `false` is
+// falsy. It fails as a timeout while the value it waited for is sitting right
+// there in storage — which reads exactly like a product bug. Use
+// waitForValue for that case.
+export function waitFor(fn, timeoutMs = 15000, interval = 120): Promise<any> {
+  return waitUntil(fn, (v) => !!v, timeoutMs, interval);
+}
+
+// Poll `fn` until it returns anything other than null/undefined, so `false`
+// and `0` are legitimate results. This is the variant to reach for when the
+// thing being waited for is a value that can legitimately be falsy — a setting
+// turned OFF, a count that drops to zero, an empty list.
+export function waitForValue(fn, timeoutMs = 15000, interval = 120): Promise<any> {
+  return waitUntil(fn, (v) => v !== null && v !== undefined, timeoutMs, interval);
+}
+
+// Shared polling loop. `done` decides what counts as a result; the caller's
+// source location is captured once, here, so both variants name their caller.
+function waitUntil(fn, done, timeoutMs, interval): Promise<any> {
   const start = Date.now();
+  const site = callerSite();
   return new Promise((resolvePromise, reject) => {
     const tick = async () => {
       let v;
@@ -458,12 +502,18 @@ export function waitFor(fn, timeoutMs = 15000, interval = 120) {
       } catch (e) {
         v = null;
       }
-      if (v) {
+      if (done(v)) {
         resolvePromise(v);
         return;
       }
       if (Date.now() - start > timeoutMs) {
-        reject(new Error("waitFor timed out"));
+        reject(
+          new Error(
+            "waitFor timed out" +
+              (site ? ` at ${site}` : "") +
+              ` (${Math.round(timeoutMs / 100) / 10}s)`
+          )
+        );
         return;
       }
       setTimeout(tick, interval);
@@ -472,9 +522,104 @@ export function waitFor(fn, timeoutMs = 15000, interval = 120) {
   });
 }
 
+// The first stack frame outside this module: the suite line that called
+// waitFor. When that lands inside a ctx.wait* helper, also report the next
+// frame, which is the test's own call site — that pair ("helpers.ts:385 via
+// sessions.ts:299") names the failing wait without any guesswork.
+function callerSite(): string {
+  const frames: string[] = [];
+  for (const line of (new Error().stack || "").split("\n").slice(1)) {
+    // Node internals sit between the helper and the test whenever the call
+    // crossed an async boundary; they say nothing about which wait failed.
+    if (/node:internal|node:events/.test(line)) continue;
+    // ESM frames are "at fn (file:///C:/…/helpers.ts:385:20)"; plain ones are
+    // "at file:///C:/…". Match the file:line:col tail either way.
+    const m = line.match(/([\w.\-\\/]+\.(?:ts|js|mjs)):(\d+):(\d+)\)?\s*$/);
+    if (!m) continue;
+    const file = m[1].replace(/\\/g, "/");
+    if (file.endsWith("/bidi/lib.ts")) continue;
+    const cut = file.lastIndexOf("/scripts/");
+    frames.push((cut >= 0 ? file.slice(cut + 1) : file) + ":" + m[2]);
+    if (frames.length === 2) break;
+  }
+  // The ctx.wait* helpers are a pass-through: report the test's own line.
+  if (frames.length === 2 && /(^|\/)bidi\/helpers\.ts(:|$)/.test(frames[0])) {
+    return frames[1];
+  }
+  return frames[0] || "";
+}
+
+// ---------- deterministic settle helpers ----------
+//
+// The suite's old tests paused with fixed sleep(N) calls after every action
+// and then asserted. Under load (a full headed run on a busy machine) any
+// fixed pause eventually races the thing it waits for, the assert fails, and
+// — worse — the test aborts before its cleanup, leaving a popup open or a
+// context dead, which starves every LATER test. These helpers replace the
+// sleeps: each takes a CONDITION and resolves the moment the product actually
+// reaches it, with a generous timeout as the failure signal instead of a
+// timing guess.
+
+// Wait until the browser settles: no navigation or extension-message storm in
+// flight. True when two consecutive idle probes agree. Cheap and universal —
+// this is what most bare post-action sleeps were approximating.
+export async function settleContext(context, timeoutMs = 8000) {
+  let prev = null;
+  return waitFor(async () => {
+    const now = await evalIn(
+      context,
+      `JSON.stringify({url: location.href.split("#")[0], ready: document.readyState, lf: document.documentElement ? (document.documentElement.getAttribute("data-lf-lastkey") || "") : ""})`
+    ).catch(() => null);
+    if (!now) return null;
+    const snap = JSON.parse(now);
+    const idle = snap.ready === "complete" && prev === snap.url;
+    prev = snap.url;
+    return idle ? true : null;
+  }, timeoutMs, 60);
+}
+
+// Wait until a key press has been fully processed by the page: the content
+// script stamps data-lf-lastkey (dev builds) — but release builds carry no
+// stamp, so the universal signal is the document having settled at the same
+// URL with no load in flight. Callers with a product-specific signal (a popup
+// host appearing, a tab count changing) should use waitFor directly instead.
+export async function keySettled(context, timeoutMs = 5000) {
+  return waitFor(async () => {
+    const s = await evalIn(
+      context,
+      `document.readyState`
+    ).catch(() => null);
+    return s === "complete" ? true : null;
+  }, timeoutMs, 50);
+}
+
+// Wait until an element matching `selector` exists (or stops existing when
+// `gone` is true) in the page realm. The common DOM-shape wait, named.
+export async function waitForDom(context, selector, { gone = false, timeoutMs = 8000 } = {}): Promise<any> {
+  return waitFor(async () => {
+    const there = await evalIn(
+      context,
+      `!!document.querySelector(${JSON.stringify(selector)})`
+    ).catch(() => null);
+    return gone ? !there : there;
+  }, timeoutMs, 60);
+}
+
+// Run `fn` and require it to throw; resolves when it does. Used by tests that
+// pin a refusal ("narrow scopes refuse honestly") — replaces the old
+// sleep-then-check-two-things pattern.
+export async function expectFailure(fn) {
+  try {
+    await fn();
+  } catch (e) {
+    return e;
+  }
+  throw new Error("expected the call to fail, but it resolved");
+}
+
 // --- tiny local HTTP server for content-script tests ---
 
-export function startTestServer(pages) {
+export function startTestServer(pages): Promise<{ server: any; port: number }> {
   return new Promise((resolvePromise) => {
     const server = http.createServer((req, res) => {
       const path = req.url.split("?")[0];
@@ -509,7 +654,8 @@ export function startTestServer(pages) {
       }
     });
     server.listen(0, "127.0.0.1", () => {
-      resolvePromise({ server, port: server.address().port });
+      const addr = server.address() as any;
+      resolvePromise({ server, port: addr.port });
     });
   });
 }

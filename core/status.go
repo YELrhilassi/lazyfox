@@ -43,24 +43,58 @@ type BarDownload struct {
 	Speed    string `json:"speed"`
 }
 
+// NavState is the active tab's history-stack shape, pushed by the chrome
+// helper / content script whenever the session history changes. CanBack and
+// CanForward drive the "no more history" indications; Index/Count describe
+// where the user sits in the stack (Index is the current entry, 0-based;
+// Count the total). Entries carries the stack itself (oldest first, current
+// included) for the navigation-stack popup.
+type NavState struct {
+	CanBack    bool       `json:"canBack"`
+	CanForward bool       `json:"canForward"`
+	Index      int        `json:"index"`
+	Count      int        `json:"count"`
+	Entries    []NavEntry `json:"entries,omitempty"`
+}
+
+// NavEntry is one row of the navigation stack.
+type NavEntry struct {
+	URL   string `json:"url"`
+	Title string `json:"title"`
+}
+
+// LeaderSignal is the far-right leader indicator's input: armed (the leader
+// is active right now) and the keys pressed so far in the current sequence
+// (empty for a bare `;`, "l" after `;l` while a two-key binding is pending). The
+// indicator works regardless of whether the which-key overlay is enabled —
+// with the overlay off it is the ONLY visible sign the leader captured a key.
+type LeaderSignal struct {
+	Armed  bool   `json:"armed"`
+	Prefix string `json:"prefix"`
+}
+
 // StatusModel is the render model the single view paints. Field names match
 // the shared StatusBarData shape so the view needs no mapping.
 type StatusModel struct {
-	Name             string         `json:"name"`
-	Marker           int            `json:"marker"`
-	TabIndex         int            `json:"tabIndex"` // 1-based, over real tabs
-	TabCount         int            `json:"tabCount"` // real tabs only
-	InSplit          bool           `json:"inSplit"`
-	SplitOrientation string         `json:"splitOrientation"`
-	SplitActive      int            `json:"splitActive"`
-	SplitPanes       int            `json:"splitPanes"`
-	Mode             string         `json:"mode"` // POPUP | LEADER | NORMAL
-	ActiveStealth    bool           `json:"activeStealth"`
-	Sessions         []SessionPill  `json:"sessions"`
-	Find             *FindState     `json:"find"`
-	Downloads        []BarDownload  `json:"downloads"`
-	TabIds           []int          `json:"tabIds"`
-	StealthFlags     []bool         `json:"stealthFlags"`
+	Name             string        `json:"name"`
+	Marker           int           `json:"marker"`
+	TabIndex         int           `json:"tabIndex"` // 1-based, over real tabs
+	TabCount         int           `json:"tabCount"` // real tabs only
+	InSplit          bool          `json:"inSplit"`
+	SplitOrientation string        `json:"splitOrientation"`
+	SplitActive      int           `json:"splitActive"`
+	SplitPanes       int           `json:"splitPanes"`
+	Mode             string        `json:"mode"` // POPUP | LEADER | NORMAL
+	ActiveStealth    bool          `json:"activeStealth"`
+	Sessions         []SessionPill `json:"sessions"`
+	Find             *FindState    `json:"find"`
+	Downloads        []BarDownload `json:"downloads"`
+	TabIds           []int         `json:"tabIds"`
+	StealthFlags     []bool        `json:"stealthFlags"`
+	// The far-right leader indicator: armed + the prefix typed so far.
+	Leader LeaderSignal `json:"leader"`
+	// The active tab's history-stack shape ("at root" indications).
+	Nav NavState `json:"nav"`
 }
 
 // SessionPatch is the sessionState blob the background sends (name, marker,
@@ -108,6 +142,13 @@ type statusStoreT struct {
 	prevBytes map[string]int64
 	prevAt    map[string]int64
 	prevSpeed map[string]int64
+
+	// The leader indicator: armed state + the prefix typed so far in the
+	// current sequence ("" for a bare leader press, "l" after `;l`).
+	leaderPrefix string
+
+	// The active tab's history-stack shape, pushed by the owning context.
+	nav NavState
 }
 
 // statusStore is the singleton. The session name defaults to "default" so a
@@ -189,6 +230,23 @@ func StatusSetFind(index, cur, count int) {
 // StatusSetStealth records the live stealth badge of the selected tab.
 func StatusSetStealth(on bool) {
 	statusStore.activeStealth = on
+}
+
+// StatusSetLeaderSignal records the far-right leader indicator state. An
+// empty prefix with armed=true is a bare `;`; a non-empty prefix means a
+// sequence is in progress (e.g. `;l` waiting for its final key).
+func StatusSetLeaderSignal(armed bool, prefix string) {
+	s := statusStore
+	if armed {
+		s.leaderPrefix = prefix
+	} else {
+		s.leaderPrefix = ""
+	}
+}
+
+// StatusSetNav records the active tab's history-stack shape.
+func StatusSetNav(n NavState) {
+	statusStore.nav = n
 }
 
 // StatusSetDownloads merges a fresh snapshot from Firefox into the cache,
@@ -305,6 +363,10 @@ func StatusSnapshot() StatusModel {
 			Speed:    FormatSpeed(d.Speed),
 		})
 	}
+	// The leader indicator is armed while the overlay is up OR a one-shot
+	// capture is pending — both mean "the next key runs a binding". The prefix
+	// shows what was typed so far, so a sequence (`;l` …) reads as one.
+	leaderArmed := mode == "LEADER"
 	return StatusModel{
 		Name:             s.name,
 		Marker:           s.marker,
@@ -321,5 +383,7 @@ func StatusSnapshot() StatusModel {
 		Downloads:        downloads,
 		TabIds:           s.tabIds,
 		StealthFlags:     s.stealthFlags,
+		Leader:           LeaderSignal{Armed: leaderArmed, Prefix: s.leaderPrefix},
+		Nav:              s.nav,
 	}
 }
