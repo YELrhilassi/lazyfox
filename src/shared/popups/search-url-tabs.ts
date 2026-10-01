@@ -54,19 +54,41 @@ export function openUrlPopup(ctx: PopupCtx, replace = false): void {
           ctx.ops.openUrl(it.url || "", replace ? false : undefined);
         },
         // Enter must work even when the debounced suggestions haven't loaded
-        // yet (empty list): fall back to opening the typed value, normalized
-        // exactly like the command-center input. Otherwise a fast Enter does
-        // nothing, and a scheme-less word would be handed to the browser raw
-        // (which fails to load it). A highlighted row (e.g. a history entry
-        // the user navigated to) still wins via the default pick.
+        // yet (empty list): fall back to opening the typed value. A highlighted
+        // row (e.g. a history entry) still wins via the default pick.
+        //
+        // A bare word is a SEARCH, not a host. The old code normalized
+        // everything with normalizeUrl, which prepends https:// — so `;o`
+        // then "doodle" navigated to https://doodle, failed DNS, and dropped
+        // the user on a Firefox error page. Nothing works there: no content
+        // script runs on it, so neither the leader nor the which-key overlay
+        // can be reached, and the UI that would let them type a URL is hidden.
+        // That is a dead end reached by typing one ordinary word.
+        //
+        // The command-center input has always made this distinction with
+        // core.isLikelyUrl (scheme, a domain dot, or localhost => URL, anything
+        // else => search). `;o` now uses the same rule instead of guessing, so
+        // a word searches and only something that looks like a host is opened.
         onEnter: (value, item) => {
           if (item) return false;
           const v = (value || "").trim();
           if (!v) return false;
           ctx.close();
-          core
-            .normalizeUrl(v)
-            .then((u) => ctx.ops.openUrl(u, replace ? false : undefined))
+          void core
+            .isLikelyUrl(v)
+            .then((likely) => {
+              if (!likely) {
+                ctx.ops.search(v, replace ? false : undefined);
+                return;
+              }
+              core
+                .normalizeUrl(v)
+                .then((u) => ctx.ops.openUrl(u, replace ? false : undefined))
+                .catch(() => ctx.ops.openUrl(v, replace ? false : undefined));
+            })
+            // If the core is unavailable, fall back to opening it rather than
+            // dropping the keystroke: that is the old behaviour, and a wrong
+            // guess that still navigates beats a dead key.
             .catch(() => ctx.ops.openUrl(v, replace ? false : undefined));
           return true;
         },
