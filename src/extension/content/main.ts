@@ -9,7 +9,7 @@ import { ensureCore } from "../../shared/core";
 import { isTypingTarget } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { KeyGuard } from "../../shared/keyguard";
-import { LeaderController } from "../../shared/leader";
+import { LeaderController, isCancel } from "../../shared/leader";
 import { openNavPopup } from "../../shared/popups/nav";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
 import { mirrorFlag } from "../../shared/observability";
@@ -218,16 +218,28 @@ import type { ContentPopupShell } from "./find";
     if (currentPopup) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      // The popup's own onKey gets first refusal (the sessions popup consumes
-      // Esc to cancel a pending copy/move or step back to the left pane);
-      // only when it declines does Esc close the popup.
+      // The popup's own onKey gets first refusal. This is NOT optional: the
+      // find popup consumes Esc to leave yank mode while KEEPING the widget
+      // open, and the sessions popup uses it to cancel a pending copy/move or
+      // step back a pane. Handling the cancel before onKey took those away and
+      // closed the whole popup instead — so onKey always runs first, and the
+      // cancel is only the fallback for popups that decline it.
       try {
         if (currentPopup.onKey && currentPopup.onKey(e)) return;
       } catch (err) {
         closePopup();
         return;
       }
-      if (e.key === "Escape") closePopup();
+      // Ctrl+G is the second cancel. Esc alone is not enough: it is the most
+      // contested key on the web, so a site that binds it (closing its own
+      // cookie banner, a video player, a mega-menu) and a Lazyfox popup open
+      // at the same time means the two fight over one keystroke and the user
+      // cannot tell which one they just dismissed. Ctrl+G is the universal
+      // abort (emacs' abort-prefix, vim's Ctrl+[), it is a chord so no page
+      // can receive it as text, and it sits far from anything a site binds.
+      // It also works with the leader still held, which is how you back out of
+      // a sequence without giving up the key.
+      if (isCancel(e)) closePopup();
       return;
     }
     if (hints.active) {
