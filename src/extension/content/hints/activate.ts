@@ -134,6 +134,33 @@ export function createActivator(): Activator {
     }
   }
 
+  // Ask the window actor to synthesise a REAL click at these coordinates.
+  //
+  // This is the escalation path, and it is deliberately the second attempt
+  // rather than the first: the synthetic sequence above is free, instant and in
+  // process, and it handles the overwhelming majority of controls. Only when
+  // the watcher can prove the page did nothing does this get tried, because it
+  // costs a privileged path and is the one route a page could try to abuse.
+  //
+  // Returns false when the actor is not listening — on any page without the
+  // chrome layer installed, and on every page when Lazyfox is running
+  // standalone. The caller reports that honestly instead of implying a trusted
+  // press was attempted when no one was listening for it.
+  function trustedClick(x: number, y: number): boolean {
+    try {
+      const nonce = (window as unknown as Record<string, unknown>).__lazyfoxTrustedClick;
+      if (typeof nonce !== "string" || !nonce) return false;
+      window.dispatchEvent(
+        new CustomEvent("lazyfox-trusted-click:" + nonce, {
+          detail: { x: Math.round(x), y: Math.round(y) },
+        }),
+      );
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // Watch a just-clicked target for a sign that the page reacted, and report it
   // when it did not.
   //
@@ -161,18 +188,45 @@ export function createActivator(): Activator {
       window.removeEventListener("pagehide", onLeave);
       window.removeEventListener("hashchange", onLeave);
       stopLifeCounting();
-      lastAct = { target: desc, signal: signal, watchedMs: LIFE_WATCH_MS, ignored: !signal };
-      if (!signal) {
-        // Say it plainly. The user pressed a key for a specific control and got
-        // nothing; telling them which control, and that the page ignored it,
-        // turns a mystery into a fact (and the diagnostics page records it).
-        //
-        // This only fires when NOTHING observable happened anywhere on the page
-        // — no element change, no title, no route, no scroll, no mutation, no
-        // focus. Anything short of that silence is treated as success, because
-        // accusing a working click is worse than staying quiet.
-        toast("no response from " + desc);
+      if (signal) {
+        lastAct = { target: desc, signal: signal, watchedMs: LIFE_WATCH_MS, ignored: false };
+        return;
       }
+      // Total silence. Before calling it a failure, try the privileged path
+      // once: a site that filters on event.isTrusted (YouTube's ad skip button
+      // is the canonical case) rejects the synthetic click outright, and the
+      // user has no way to know that. One retry, never a loop — a loop would
+      // re-run activation on any control that legitimately does nothing.
+      let escalated = false;
+      try {
+        const r = el.getBoundingClientRect();
+        escalated = trustedClick(r.left + r.width / 2, r.top + r.height / 2);
+      } catch (e) {
+        escalated = false;
+      }
+      lastAct = {
+        target: desc,
+        signal: "",
+        watchedMs: LIFE_WATCH_MS,
+        ignored: !escalated,
+        // Recorded so the diagnostics page can distinguish "we never even
+        // tried the trusted path" from "we tried and the page still ignored
+        // it" — the second one means the button is not a button.
+        trustedRetry: escalated,
+      };
+      // Say it plainly, and say which of the two things happened. The user
+      // pressed a key for a specific control and got nothing; naming the
+      // control turns a mystery into a fact.
+      //
+      // This only fires when NOTHING observable happened anywhere on the page
+      // — no element change, no title, no route, no scroll, no mutation, no
+      // focus. Anything short of that silence is treated as success, because
+      // accusing a working click is worse than staying quiet.
+      toast(
+        escalated
+          ? "still no response from " + desc
+          : "no response from " + desc,
+      );
     };
     function onFocus(e: FocusEvent): void {
       const t = e.target as Element | null;

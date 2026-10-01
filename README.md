@@ -152,6 +152,7 @@ gatekeeper. The action runs the moment you press its key; `Esc` just cancels.
 | `; j` / `; k` | next / previous tab |
 | `; a` | alternate tab — jump to the last used tab and back |
 | `; r` / `; g` / `; l` | reload / back / forward |
+| `; G k` / `; L k` | navigation stack (Shift) — the whole back/forward history of this tab as a list; pick an entry to jump |
 | `; y` / `; m` | copy URL / mute tab |
 | `; z` | zen mode (fullscreen) |
 | `; e` | toolbar reveal on hover |

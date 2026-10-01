@@ -102,6 +102,14 @@ export const pages = {
   "/target1": { body: `<!DOCTYPE html><title>TARGET ONE</title><h1>Target One</h1><a href="/">back</a>` },
   "/target2": { body: `<!DOCTYPE html><title>TARGET TWO</title><h1>Target Two</h1><a href="/">back</a>` },
   "/hello": { body: `<!DOCTYPE html><title>HELLO PAGE</title><h1>Hello</h1>` },
+  // A per-test scratch page. Tests that assert "this tab is gone from the
+  // strip" must identify THEIR OWN tab: a shared URL like /target2 is also
+  // opened by the ;h and ;1/;9 tests, so "no /target2 tab remains" silently
+  // became a test about whichever test ran last. Each caller appends a unique
+  // query string, which is part of the tab URL and therefore unambiguous.
+  "/scratch": {
+    body: `<!DOCTYPE html><title>SCRATCH PAGE</title><h1>Scratch</h1><a href="/">back</a>`,
+  },
 
   // A realistic editorial page used for the store screenshots / examples: a
   // titled article with paragraphs, headings, a nav + footer of links (plenty

@@ -34,6 +34,23 @@ const SCROLL_KEYS = "jkdugG";
 // cross-process state push.
 const LEADER_WINDOW_MS = 15000;
 
+/** The slice of nsIDOMWindowUtils this module uses. Present only for
+ *  system-principal code, which is why it is reached through a cast rather
+ *  than declared on Window globally: a global declaration would make the
+ *  compiler think page content can reach it too, which is exactly the
+ *  confusion worth avoiding in the file that grants that power. */
+interface TrustedMouseUtils {
+  sendMouseEvent(
+    type: string,
+    x: number,
+    y: number,
+    button: number,
+    clickCount: number,
+    modifiers: number,
+    widgetTarget: boolean,
+  ): void;
+}
+
 function isEditable(el: Element | null): boolean {
   if (!el) return false;
   try {
@@ -64,6 +81,7 @@ export class LazyfoxChild extends BaseChild {
   private leaderUntil = 0;
 
   actorCreated(): void {
+    this.installTrustedClick();
     // Ask the parent for the configured leader key. The first key after this
     // may still use the default (";"), which is what virtually every config
     // uses — the query just keeps a custom leader honest a moment later.
@@ -74,6 +92,57 @@ export class LazyfoxChild extends BaseChild {
       .catch(() => {
         // parent gone or query unsupported — the default stands
       });
+  }
+
+  // Listen for the content script's trusted-click request. See the long note
+  // below for why this exists and what bounds it.
+  private installTrustedClick(): void {
+    const doc = this.document;
+    const cw = this.contentWindow;
+    if (!doc || !cw) return;
+    try {
+      // windowUtils is only exposed to system-principal code, which is exactly
+      // what a JS window actor is. If it is missing, the whole path is
+      // unavailable and the content script's probe will find no listener.
+      const utils = (cw as unknown as { windowUtils?: TrustedMouseUtils }).windowUtils;
+      if (!utils || typeof utils.sendMouseEvent !== "function") return;
+
+      // A fresh random token per document. Obfuscation, not authentication —
+      // the page can read this — but it is enough to stop a page that ships a
+      // fixed payload aimed at a fixed event name.
+      const nonce = Math.random().toString(36).slice(2) + "-" + Math.random().toString(36).slice(2);
+      (cw as unknown as Record<string, unknown>).__lazyfoxTrustedClick = nonce;
+
+      const type = "lazyfox-trusted-click:" + nonce;
+      const listener = (ev: Event): void => {
+        const detail = (ev as CustomEvent).detail;
+        if (!detail) return;
+        const x = Number((detail as { x?: unknown }).x);
+        const y = Number((detail as { y?: unknown }).y);
+        // Reject rather than clamp: a NaN or an out-of-viewport point means
+        // the caller is not the content script we expect, and guessing where
+        // they meant to click is the worst possible failure mode here.
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        if (x < 0 || y < 0 || x > cw.innerWidth || y > cw.innerHeight) return;
+        try {
+          // move, then press, then release. The move first because some
+          // widgets track the pointer before accepting a press; the release
+          // last because that is what produces the click. Gecko derives the
+          // click from this pair, so there is deliberately no click here.
+          utils.sendMouseEvent("mousemove", x, y, 0, 0, 0, false);
+          utils.sendMouseEvent("mousedown", x, y, 0, 1, 0, false);
+          utils.sendMouseEvent("mouseup", x, y, 0, 1, 0, false);
+        } catch (e) {
+          // the page went away mid-click — nothing to do
+        }
+      };
+      // Capture, so a page that stops propagation on a lower phase cannot
+      // swallow the request before it reaches the window.
+      cw.addEventListener(type, listener as EventListener, true);
+    } catch (e) {
+      // No windowUtils, no listener, no trusted clicks. The content script
+      // falls back to the synthetic path it already had.
+    }
   }
 
   handleEvent(event: Event): void {
@@ -141,23 +210,51 @@ export class LazyfoxChild extends BaseChild {
     return undefined;
   }
 
-  // NOTE: this used to be a trustedClick() built on windowUtils, and removing
-  // it during the trusted-press revert left this comment describing a function
-  // that no longer exists. It is kept, deliberately, as the design note for the
-  // fix that is still needed — see docs/HINTS.md section 2.0, which now has the
-  // measurement that says it is needed.
+  // --- Trusted click -----------------------------------------------------
   //
-  // Dispatch the full press through windowUtils, which is what makes the events
-  // TRUSTED: isTrusted is true, user activation is granted, and the browser's
-  // own default activation behaviour runs (a native <summary> toggle, a form
-  // submit, a checkbox). A content-script-dispatched MouseEvent cannot do any
-  // of that, which is exactly why stubborn controls need this path — and the
-  // e2e suite has since measured that our current path produces isTrusted
-  // FALSE even via HTMLElement.click(), so the escalation is not optional.
+  // Why this exists, in one paragraph because it is load-bearing: a site can
+  // tell a real user click from a scripted one by reading event.isTrusted, and
+  // YouTube's ad "Skip" button does exactly that. The e2e suite has MEASURED
+  // that our content-script path produces isTrusted FALSE even when it ends in
+  // HTMLElement.click() — the widely-repeated claim that Gecko synthesises
+  // .click() as trusted does not hold for a content script in a current
+  // Firefox. So no amount of cleverness in the synthetic sequence fixes it:
+  // the only way to produce a genuinely trusted click from inside the browser
+  // is nsIDOMWindowUtils.sendMouseEvent, and the only code in this project
+  // that can reach it is this actor, which is privileged and already runs in
+  // the content process.
   //
-  // The coordinates are viewport-relative (what getBoundingClientRect reports),
-  // and sendMouseEvent takes them offset from the window, so they are used
-  // as-is. The sequence is move -> down -> up -> click: the move first because
-  // some widgets track the pointer before accepting a press, and the click
-  // last because that is the event which actually activates.
+  // How the content script reaches it: a DOM CustomEvent. That is deliberately
+  // NOT a background message round trip. The alternative — content script ->
+  // background -> relay port -> chrome -> actor — is four process hops and a
+  // timeout budget to deliver two numbers, and it would only be reliable on
+  // pages where the relay tab can be opened at all. A CustomEvent is in-process
+  // and synchronous, so the trusted click lands in the same task the user's
+  // keystroke started.
+  //
+  // SECURITY. This is a channel from a content script to a privileged click
+  // synthesiser, and it deserves to be taken seriously rather than waved at:
+  // any page can dispatch this event and get a trusted click at coordinates of
+  // its choosing. In practice the blast radius is small — the page could
+  // already call .click() on itself, and the coordinates are in its own
+  // document — but "isTrusted becomes forgeable by page script" is not nothing.
+  // Three things bound it, and each is load-bearing:
+  //
+  //   1. The event name carries a per-installation random token, stashed on
+  //      the window by THIS code. A page can read it, so this is obfuscation
+  //      rather than authentication — it stops a page that ships a static
+  //      "skip YouTube ads" payload, which is the realistic case, and nothing
+  //      more. It is honestly described as such rather than as a defence.
+  //   2. The listener is installed on the window with capture, and refuses any
+  //      event whose detail does not parse as a finite in-viewport point. A
+  //      malformed or oversized detail is dropped rather than clamped.
+  //   3. It is only ever SENT by the content script after the user has
+  //      pressed a hint key. Nothing in this codebase dispatches it
+  //      speculatively, and there is no timer, retry or pref that does so.
+  //
+  // Coordinates are viewport-relative (what getBoundingClientRect reports) and
+  // sendMouseEvent expects exactly that, so they are passed through as-is.
+  // Gecko synthesises the click itself from a mousedown/mouseup pair, so there
+  // is no fourth event to send — sending one would double-activate.
+
 }

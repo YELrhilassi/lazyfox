@@ -34,8 +34,13 @@ export interface BgApi {
   clearHistory: { req: Record<string, never>; res: { ok: boolean } };
   duplicateTab: { req: Record<string, never>; res: { ok: boolean } };
   reload: { req: Record<string, never>; res: { ok: boolean } };
-  back: { req: Record<string, never>; res: { ok: boolean } };
-  forward: { req: Record<string, never>; res: { ok: boolean } };
+  back: { req: Record<string, never>; res: { ok: boolean; atRoot?: boolean } };
+  forward: { req: Record<string, never>; res: { ok: boolean; atEnd?: boolean } };
+  // The active tab's navigation stack: entries oldest-first (current
+  // included), canBack/canForward for the "at root / at end" indications.
+  navStack: { req: Record<string, never>; res: { canBack: boolean; canForward: boolean; index: number; entries: { url: string; title: string }[] } };
+  // Jump to a position in the navigation stack (0-based, oldest = 0).
+  navGoto: { req: { index: number }; res: { ok: boolean } };
   openUrl: { req: { url: string; newTab?: boolean }; res: { ok: boolean } };
   openPage: { req: { url: string }; res: { ok: boolean } };
   openUI: { req: { which: string }; res: { ok: boolean } };
@@ -79,7 +84,22 @@ export interface BgApi {
   copyUrl: { req: Record<string, never>; res: { url: string; title: string } };
   components: {
     req: Record<string, never>;
-    res: { extension: string; wasm: string; nativeHost: string | null; nativeProtocol: string | null; chromeHelper: string | null };
+    res: {
+      extension: string;
+      wasm: string;
+      nativeHost: string | null;
+      nativeProtocol: string | null;
+      chromeHelper: string | null;
+      /**
+       * Whether the chrome helper can see the Lazyfox window actor, as
+       * "ok" / "missing", or null when the helper has never announced and so
+       * has never been asked. Distinct from chromeHelper being null (the
+       * helper is not installed at all): the helper can be installed and
+       * still not reach the content process, and that is exactly the case
+       * that presents as "keys do nothing on this page".
+       */
+      bridge: "ok" | "missing" | null;
+    };
   };
   zoom: { req: { delta: number; factor?: number }; res: { factor?: number } };
   setConfig: { req: { config: Config }; res: { ok: boolean } };

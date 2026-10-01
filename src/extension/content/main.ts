@@ -9,15 +9,19 @@ import { ensureCore } from "../../shared/core";
 import { isTypingTarget } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { KeyGuard } from "../../shared/keyguard";
-import { LeaderController } from "../../shared/leader";
+import { LeaderController, leaderSequences } from "../../shared/leader";
+import { openNavPopup } from "../../shared/popups/nav";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
+import { mirrorFlag } from "../../shared/observability";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/popups";
 import { send } from "../../shared/protocol";
+import { readKey, vConfig } from "../store";
 import type { Config } from "../../shared/types";
 import { collectPageReport } from "./diagnostics";
 import { createLinkHints, focusFirstInput } from "./hints";
 import { createContentOps } from "./ops";
 import { createScrollController } from "./scroll";
+import { createScrollKeys } from "./scrollkeys";
 import type { ContentPopupShell } from "./find";
 
 (function () {
@@ -43,12 +47,9 @@ import type { ContentPopupShell } from "./find";
 
   function loadConfig() {
     try {
-      void browser.storage.local.get("config").then(
-        (r: { config?: Partial<Config> }) => {
-          if (r && r.config) config = mergeConfig(r.config);
-        },
-        () => {}
-      );
+      void readKey("config", vConfig, {}).then((c) => {
+        config = mergeConfig(c);
+      });
     } catch (e) {
       // A storage hiccup must never take the keyboard handling down with it.
       if (__DEV__) dbg("config load failed", (e && (e as Error).message) || String(e));
@@ -131,20 +132,37 @@ import type { ContentPopupShell } from "./find";
     manualText: true,
   };
   const leaderActions = makeLeaderActions(ctx);
+  // Mirror the leader's armed state onto <html>, the same way the find
+  // (data-lf-find), yank (data-lf-yank) and hint (data-lf-hints) overlays
+  // already do. Without it the leader is invisible from outside the page: the
+  // which-key overlay lives in a CLOSED shadow root, so nothing can read
+  // whether it is up, and its host element persists after hide() (only the
+  // "on" class is dropped). The attribute is the one honest, page-level answer
+  // to "is the leader armed right now" — and it is what lets the e2e harness
+  // wait for a dispatch to finish instead of guessing with a timer.
+  const setLeaderAttr = (armed: boolean) => mirrorFlag("leader", armed);
   leader = new LeaderController(
     (k) => runLeaderAction(leaderActions, k),
     () => config.whichKey !== false,
-    // The chrome helper owns the single window-level status bar and draws its
-    // pulsing LEADER chevron from the per-tab leader state it caches from the
-    // background's leaderState push. Report every arm/disarm so the chevron
-    // tracks the content-script leader on web pages (where the content
-    // script owns the leader key and the chrome helper's own leader never
-    // arms).
-    () => void send("syncLeader", { active: leader.active })
+    // The chrome helper owns the single window-level status bar and draws the
+    // far-right leader indicator from the per-tab leader state it caches from
+    // the background's leaderState push. Report every arm/disarm — with the
+    // which-key overlay disabled that indicator is the only visible leader
+    // sign.
+    () => {
+      setLeaderAttr(leader.active);
+      void send("syncLeader", { active: leader.active });
+    }
   );
   // Clear any stale leader state this tab carried from a previous page (the
   // leader starts disarmed on every fresh load).
   void send("syncLeader", { active: false });
+  // Two-key sequences for web pages (chrome helper registers its own table).
+  // The nav-stack popup owns ;G / ;L (shift) — plain ;g / ;l stay back/forward.
+  Object.assign(leaderSequences, {
+    G: { final: { k: () => openNavPopup(ctx) } },
+    L: { final: { k: () => openNavPopup(ctx) } },
+  });
   // ;' = quick switch: capture the next digit and jump to the marked session.
   leaderActions["'"] = () =>
     leader.armPending((k) => {
@@ -178,45 +196,7 @@ import type { ContentPopupShell } from "./find";
   // document cannot scroll (ChatGPT-style shells), or whichever region the user
   // cycled to with ;F / ;B (sidebars and secondary panes).
   const scroll = createScrollController();
-
-  let lastG = false;
-  function handleScrollKeys(e: KeyboardEvent): boolean {
-    if (config.scrollKeys === false) return false;
-    const k = e.key;
-    if (k === "j") {
-      scroll.scrollLines(1);
-      return true;
-    }
-    if (k === "k") {
-      scroll.scrollLines(-1);
-      return true;
-    }
-    if (k === "d") {
-      scroll.scrollPage(1);
-      return true;
-    }
-    if (k === "u") {
-      scroll.scrollPage(-1);
-      return true;
-    }
-    if (k === "G") {
-      scroll.toBottom();
-      return true;
-    }
-    if (k === "g") {
-      if (lastG) {
-        scroll.toTop();
-        lastG = false;
-      } else {
-        lastG = true;
-        setTimeout(() => {
-          lastG = false;
-        }, 600);
-      }
-      return true;
-    }
-    return false;
-  }
+  const handleScrollKeys = createScrollKeys(scroll, () => config);
 
   /* ==================== key dispatch ==================== */
 
@@ -353,16 +333,18 @@ import type { ContentPopupShell } from "./find";
   function syncTypingAttr() {
     const ae = document.activeElement;
     const typing = isTypingTarget(ae);
-    if (typing) document.documentElement.setAttribute("data-lf-typing", "1");
-    else document.documentElement.removeAttribute("data-lf-typing");
+    mirrorFlag("typing", typing);
     void send("syncTyping", { typing: typing });
   }
 
   /* ==================== boot ==================== */
 
-  // Warm the wasm core so the first leader press is already synchronous.
+  // Warm the wasm core AND the which-key bindings so the first leader press
+  // is already synchronous (loading the binding table lazily on the first
+  // `;` was the visible activation delay on web pages).
   ensureCore()
     .then(() => {
+      void leader.bindings().catch(() => {});
       if (!__DEV__) return;
       try {
         document.documentElement.setAttribute("data-lf-debug", "core-ok");

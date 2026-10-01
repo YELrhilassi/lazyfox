@@ -80,11 +80,11 @@ So there are two distinct problems, and they need different fixes:
 
 | # | Cause | Status |
 |---|---|---|
-| 1 | `isTrusted` is false, and YouTube checks it (it always has) | **NOT FIXED** — needs the privileged path below |
+| 1 | `isTrusted` is false, and YouTube checks it (it always has) | **FIXED** — privileged retry, see 2.6 |
 | 2 | The event *state* was malformed, so press-state machines never fired | **FIXED** — see 2.5 |
 
-**The remaining fix for #1 is a privileged input path, not a cleverer
-synthetic event.** There is exactly one way to produce a genuinely trusted
+**The fix for #1 is a privileged input path, not a cleverer synthetic
+event** — and it is now implemented; see 2.6. There is exactly one way to produce a genuinely trusted
 click from inside the browser: `nsIDOMWindowUtils.sendMouseEvent` in the
 content process. The window actor already runs there with `Services` and
 `windowUtils` available (see `src/chrome/actor-child.ts`, which uses
@@ -369,3 +369,65 @@ The badge is created once and toggled, like the labels, so typing does not churn
 a node per keystroke in the page's own MutationObserver. Backspacing to nothing
 takes it away: a stale badge promising an Enter that no longer does anything is
 worse than no badge.
+
+## 6. The trusted-click retry (2.0 item 1, implemented)
+
+`windowUtils.sendMouseEvent` in the window actor, reached from the hint
+activator by a DOM `CustomEvent`, fired only after the activation watcher has
+proven the page did not react.
+
+**Why a CustomEvent and not a message round trip.** The obvious design is
+content script → background → relay port → chrome helper → actor, because that
+is how everything else in this project crosses. It is also four process hops
+and a timeout budget to deliver two numbers, and it only works on pages where a
+relay tab can be opened at all. A `CustomEvent` is in-process and synchronous,
+so the trusted click lands in the same task the user's keystroke started. The
+actor is already privileged and already in the content process; nothing needs to
+be plumbed to reach it.
+
+**Why it is a retry, not the default.** The synthetic sequence is free, instant,
+and handles the overwhelming majority of controls. The trusted path costs a
+privileged round trip and is the one route a page could try to abuse, so it runs
+only on proven silence. The activation watcher — added earlier precisely to tell
+"found the wrong element" from "found the right one and the page ignored it" —
+is already the trigger, so the escalation needed no new detection code.
+
+**The security tradeoff, stated rather than waved at.** This is a channel from
+a content script to a privileged click synthesiser, and any page can dispatch
+the event. The blast radius is genuinely small — a page can already call
+`.click()` on itself, and the coordinates are in its own document — but
+"`isTrusted` becomes forgeable by page script" is not nothing. Three things
+bound it:
+
+1. The event name carries a per-document random token stashed on the window.
+   This is **obfuscation, not authentication** — the page can read it. It stops
+   a page shipping a fixed "skip YouTube ads" payload, which is the realistic
+   case, and nothing more. It is described that way in the code rather than
+   dressed up as a defence.
+2. The actor's listener drops any detail that is not a finite in-viewport
+   point, rather than clamping. Guessing where a caller meant to click is the
+   worst failure mode this code could have.
+3. Nothing dispatches it speculatively. It is sent only after a user keystroke
+   selects a hint, and there is no timer, retry loop, or pref that fires it.
+
+**What the report now says.** `HintActivation.trustedRetry` is deliberately
+three-state, because two of these cases were previously indistinguishable and
+that is what made the bug undiagnosable:
+
+| value | meaning |
+|---|---|
+| absent | the click worked, or was never ignored — no retry happened |
+| `false` | ignored, and **no actor was listening** — the privileged path was never tried (standalone mode, or no chrome layer) |
+| `true` | the privileged path **was** tried and the page still did nothing |
+
+`true` is the interesting one: it means the control is not a control, and no
+amount of event synthesis will reach it. The BiDi suite pins the `false` case,
+which is the one reachable without the chrome layer installed.
+
+**What the tests do and do not prove.** The suite pins the handshake — the
+content script's event reaches a nonce-keyed listener with its coordinates
+intact. It cannot pin the actor's validation (the finite check, the viewport
+bound), because those live in the actor's listener and page script cannot reach
+`windowUtils`; standing in for the actor would test a stub. An earlier version
+of that test asserted the validation anyway and would have passed no matter what
+the actor did. The bounds are commented in the code instead.

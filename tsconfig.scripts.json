@@ -20,7 +20,40 @@
   // is browser-chrome-only and drags in Firefox chrome globals this config
   // knows nothing about. The store is still typechecked by tsconfig.json; only
   // the Node-side TEST of it is out of scope here, exactly as with page-text.
-  "exclude": ["scripts/test-page-text.ts", "scripts/test-store.ts"],
+  // scripts/test-render-escaping.ts is excluded for the same reason: it calls
+  // the real row renderers, which live in DOM modules, and their typechecking
+  // belongs to tsconfig.json. The renderers are still checked there; only the
+  // Node-side test of them is out of scope for this config.
+  //
+  // scripts/test-find-text.ts is the fourth of these: it tests find/text.ts,
+  // whose segment tables are typed as DOM Text nodes. Note that excluding the
+  // test also stops this config reaching find/text.ts at all, because nothing
+  // else here imports it — which is the intent. find/text.ts is typechecked by
+  // tsconfig.json, like every module in the browser tree.
+  //
+  // scripts/test-chrome-keys.ts is the fifth: it tests chrome/keys.ts, the
+  // synthetic #lfc=keys channel, which reaches Firefox chrome globals
+  // (Services, window, Cu) that only src/chrome's ambient declarations name.
+  // The module and the test's DOM-free parts are still typechecked by
+  // tsconfig.json; only the Node-side test of it is out of scope here.
+  //
+  // scripts/test-overlays.ts is the sixth: it tests favicon.ts and
+  // manualtext.ts, whose signatures speak in DOM types (KeyboardEvent,
+  // HTMLInputElement) this DOM-less config cannot name. The modules are still
+  // typechecked by tsconfig.json.
+  //
+  // scripts/test-leader-sequences.ts is the seventh, for the same reason: it
+  // drives LeaderController.handleKey with synthetic KeyboardEvent-shaped
+  // objects, and leader.ts's public surface is typed against the DOM.
+  "exclude": [
+    "scripts/test-page-text.ts",
+    "scripts/test-store.ts",
+    "scripts/test-render-escaping.ts",
+    "scripts/test-find-text.ts",
+    "scripts/test-chrome-keys.ts",
+    "scripts/test-overlays.ts",
+    "scripts/test-leader-sequences.ts"
+  ],
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],

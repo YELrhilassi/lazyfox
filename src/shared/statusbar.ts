@@ -10,6 +10,7 @@
 //
 // Rendered in a closed shadow root so page CSS cannot restyle it.
 import { UI_FONT } from "./theme";
+import type { NavState } from "./types";
 
 export interface StatusBarSessions {
   marker: number;
@@ -26,6 +27,10 @@ export interface StatusBarDownload {
   percent: number; // 0..100, -1 when total is unknown
   speed: string; // pre-formatted "2.4 MB/s" or ""
 }
+
+// The active tab's history-stack shape lives in types.ts (both the Go status
+// model and the nav popup use it); re-exported here for bar consumers.
+export type { NavEntry, NavState } from "./types";
 
 export interface StatusBarData {
   name: string;
@@ -52,6 +57,11 @@ export interface StatusBarData {
   // snapshot — read by the tab switcher (badges + true Firefox ids).
   tabIds?: number[];
   stealthFlags?: boolean[];
+  // The far-right leader indicator: armed + the prefix typed so far in the
+  // current sequence. Works regardless of the which-key overlay setting.
+  leader?: { armed: boolean; prefix: string };
+  // The active tab's history-stack shape.
+  nav?: NavState;
 }
 
 const CSS = `
@@ -68,10 +78,16 @@ const CSS = `
   clip-path:polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%);}
 .seg.linked{margin-left:-8px;padding-left:18px;}
 .seg .ic{opacity:.95;font-weight:700;}
-.seg.leader{background:transparent;clip-path:none;color:#2ac3de;font-size:14px;
-  font-weight:800;padding:0 6px 0 10px;
-  animation:lfLeadPulse 1.1s ease-in-out infinite;}
-@keyframes lfLeadPulse{0%,100%{opacity:.35}50%{opacity:1}}
+/* The far-right leader indicator. ALWAYS present once armed (independent of
+   the which-key overlay setting) — with the overlay off it is the only visible
+   sign the leader captured a key. A minimal glyph-only pill: no prefix text,
+   painted synchronously at key time (see setLeaderSignal), so it tracks the
+   leader exactly instead of trailing the async store roundtrip. */
+.seg.leader{margin-left:auto;background:#2ac3de;color:#16161e;font-weight:800;
+  clip-path:none;padding:0 9px;}
+.seg.leader .ic{font-size:12px;line-height:1;}
+.seg.leader.stale{animation:lfLeadPulse 1.1s ease-in-out infinite;}
+@keyframes lfLeadPulse{0%,100%{opacity:.55}50%{opacity:1}}
 .seg.sess{background:#7aa2f7;color:#1a1b26;font-weight:800;}
 .seg.sess .marker{font-weight:800;}
 .seg.tabs{background:#24283b;color:#c0caf5;font-weight:600;}
@@ -82,7 +98,7 @@ const CSS = `
 .seg.find{background:#2ac3de;color:#16161e;font-weight:800;}
 .seg.find b{font-weight:900;}
 .seg.find .none{color:#f7768e;}
-.seg.dl{margin-left:auto;background:#16161e;color:#c0caf5;font-weight:700;clip-path:none;
+.seg.dl{background:#16161e;color:#c0caf5;font-weight:700;clip-path:none;
   border-left:1px solid #24283b;pointer-events:auto;cursor:pointer;}
 .seg.dl .ic{color:#7dcfff;}
 .seg.dl .dlitem{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;padding:0 10px;}
@@ -104,6 +120,45 @@ const CSS = `
 type StatusHost = HTMLElement & { _sh: ShadowRoot };
 
 const BAR_HEIGHT = 18;
+
+/**
+ * Should the far-right leader indicator be lit?
+ *
+ * Three independent sources can arm the leader, and the indicator is only
+ * honest if it lights for whichever one is current:
+ *
+ *   - `prefix` — the chrome helper's own leader is mid-sequence, so a prefix
+ *     key has been typed. Non-empty means armed.
+ *   - `uiLeader` — the store's own leader flag for the selected tab.
+ *   - `contentArmed` / `contentIndex` — the CONTENT script's leader, pushed by
+ *     the background. On a web page the content script owns the leader key and
+ *     the chrome helper's leader never arms, so without this the indicator
+ *     would stay dark on exactly the pages where users press it most.
+ *
+ * The index comparison is the subtle part, and it is why this is a named,
+ * tested function rather than an inline expression. `contentIndex` is the RAW
+ * tab-strip index (sender.tab.index — what the background pushes and what the
+ * Go store keys `leaderByIndex` by), and `selectedStrip` is the same raw
+ * coordinate. Comparing against a REAL-tab index instead silently disagrees
+ * whenever plumbing tabs exist, which lights the wrong tab's indicator. -1 is
+ * the "not readable" answer from a mid-collapse read and never equals a real
+ * index, so an unreadable selection shows the other sources rather than
+ * guessing.
+ *
+ * Pure so it can be unit-tested: the symptom it caused (an indicator visibly
+ * out of sync with the keypress) only reproduces in a live browser, and a
+ * decision this easy to get subtly wrong should not be reachable only there.
+ */
+export function leaderSignalOn(args: {
+  prefix: string;
+  uiLeader: boolean;
+  contentArmed: boolean;
+  contentIndex: number;
+  selectedStrip: number;
+}): boolean {
+  const { prefix, uiLeader, contentArmed, contentIndex, selectedStrip } = args;
+  return !!prefix || !!uiLeader || (!!contentArmed && contentIndex === selectedStrip);
+}
 
 // Pick readable text for a hex background: near-black on bright fills,
 // near-white on dark ones (HSL lightness).
@@ -186,12 +241,14 @@ export class StatusBar {
     sh.innerHTML =
       "<style>" + CSS + "</style>" +
       "<div class='lf-status " + this.position + "'>" +
-      "<span class='seg leader'><span class='ic'>»</span></span>" +
       "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
       "<span class='seg tabs linked'><span class='ic'>▤</span><span class='st'>🕶</span><b></b><span class='cnt'></span></span>" +
       "<span class='seg find' style='display:none'><span class='ic'>🔍</span><b class='cur'></b><span class='cnt'></span></span>" +
       "<span class='seg chips'></span>" +
-      "<span class='seg dl'><span class='ic'>⭳</span><span class='items'></span></span>" +
+      "<span class='seg dl' style='display:none'><span class='ic'>⭳</span><span class='items'></span></span>" +
+      // Far-right leader indicator: glyph only, painted synchronously at key
+      // time via setLeaderSignal so it tracks the leader press exactly.
+      "<span class='seg leader' style='display:none'><span class='ic'>⌘</span></span>" +
       "</div>";
     host._sh = sh;
     document.documentElement.appendChild(host);
@@ -331,6 +388,19 @@ export class StatusBar {
     this.render();
   }
 
+  // Paints the leader indicator SYNCHRONOUSLY, bypassing the async store
+  // roundtrip. A `;` press runs the leader's onChange → statusBatch → wasm →
+  // paint chain; that chain crosses several await boundaries and can land
+  // visibly late (or land out of order behind a queued snapshot). Arming is a
+  // state flag, not data, so paint it directly: zero hops between keypress and
+  // pixel. The next store repaint simply confirms whatever this decided.
+  setLeaderSignal(armed: boolean): void {
+    this.data.leader = { armed, prefix: "" };
+    const key = JSON.stringify(this.data);
+    this.lastKey = key;
+    this.render();
+  }
+
   setMode(mode: string): void {
     // Mode is rendered only through setData (the LEADER state shows the
     // pulsing chevron); kept as a thin setter for callers that prefer it.
@@ -359,7 +429,13 @@ export class StatusBar {
     const dlItems = dl ? (dl.querySelector(".items") as HTMLElement | null) : null;
     const chips = sh.querySelector(".chips");
 
-    if (leader) leader.style.display = this.data.mode === "LEADER" ? "" : "none";
+    if (leader) {
+      // The indicator is armed while the leader bar is up OR a sequence is in
+      // progress. setLeaderSignal paints this synchronously at key time — the
+      // store snapshot (data.leader) only reconciles it on the next repaint.
+      const sig = this.data.leader || { armed: this.data.mode === "LEADER", prefix: "" };
+      leader.style.display = sig.armed ? "" : "none";
+    }
     if (name) name.textContent = this.data.name;
     if (marker) {
       marker.textContent = this.data.marker ? String(this.data.marker) : "";
@@ -498,6 +574,11 @@ export class StatusBar {
           this.position +
           "|" +
           (this.data.activeStealth ? "stealth" : "") +
+          // The far-right leader indicator's state, mirrored for the tests
+          // and for debugging (the shadow root is closed).
+          ((this.data.leader && this.data.leader.armed)
+            ? "|lead:" + (this.data.leader.prefix || ";")
+            : "") +
           (this.data.find && this.data.find.count > 0
             ? "|find:" + this.data.find.cur + "/" + this.data.find.count
             : this.data.find && this.data.find.count === 0
