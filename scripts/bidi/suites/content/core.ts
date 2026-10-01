@@ -215,13 +215,18 @@ export async function run(ctx: any): Promise<void> {
     const title = await evalIn(ctx.tabA, `document.title`);
     assert(title === "LF Test Page", "page reloaded, title " + title);
   });
-  await t(";1 and ;9 jump to first and last tab", async () => {
+  await t(";1 jumps to the first tab and ;$ to the last", async () => {
+    // ;9 used to mean LAST TAB. It now means tab 9 like every other digit,
+    // because a special case that only shows up past nine tabs made ;9 behave
+    // unlike ;1 — the kind of irregularity a keymap should not have. "Last
+    // tab" is a different kind of command and now has its own key, $ (the vim
+    // end-of-line mnemonic, free at top level).
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const first = await ctx.tabsInfo();
     await ctx.leaderPress(ctx.tabA, "1");
     await ctx.waitActiveUrl(first[0].url, 10000);
     const last = (await ctx.tabsInfo()).pop();
-    await ctx.leaderPress(ctx.tabA, "9");
+    await ctx.leaderPress(ctx.tabA, "$");
     await ctx.waitActiveUrl(last.url, 10000);
     await activate(ctx.tabA);
   });

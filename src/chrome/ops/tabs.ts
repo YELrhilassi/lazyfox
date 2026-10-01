@@ -101,10 +101,13 @@ export function createTabOps(channel: {
       window.gBrowser.selectedTab = tabs[next];
       window.focus();
     },
+    // n is a 1-based tab position; 0 is the "last tab" sentinel (see the note
+    // in the content-script implementation). Every digit now means its own
+    // position, so ;9 lands on tab 9 instead of the last one.
     tabJump: (n: number) => {
       const tabs = realTabs();
       if (!tabs.length) return;
-      const idx = n === 9 ? tabs.length - 1 : Math.min(Math.max(0, n - 1), tabs.length - 1);
+      const idx = n === 0 ? tabs.length - 1 : Math.min(Math.max(0, n - 1), tabs.length - 1);
       window.gBrowser.selectedTab = tabs[idx];
       window.focus();
     },

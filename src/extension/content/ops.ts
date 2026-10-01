@@ -152,8 +152,12 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         void send("activateTab", { id: next.id });
       });
     },
+    // n is a 1-based tab position. n === 0 is the "last tab" sentinel rather
+    // than a real position, because ;9 used to mean last and that special case
+    // made ;9 behave unlike every other digit the moment a window passed nine
+    // tabs. Last tab now has its own key, and every digit means what it says.
     tabJump: (n: number) => {
-      if (n === 9) void send("activateTabAt", { last: true });
+      if (n === 0) void send("activateTabAt", { last: true });
       else void send("activateTabAt", { index: n });
     },
     alternateTab: () => {
