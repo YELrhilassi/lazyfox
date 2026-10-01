@@ -24,6 +24,34 @@ const deepBody = (() => {
 })();
 
 export const pages = {
+  /* ---- failure endpoints: the pages a user gets STUCK on -------------
+   * Every one of these must leave the Lazyfox keyboard working. They used
+   * not to, because the chrome helper handed any http(s) URL to the content
+   * script before that script existed (see chromeOwnsKeys), so between the
+   * navigation starting and the response arriving nobody owned the keys.
+   * A hang is the worst case and the one users actually hit; the HTTP error
+   * codes cover the rest, since each one renders Firefox's own error page
+   * instead of the site's content.
+   * ------------------------------------------------------------------- */
+  // Never answers. Holds the "no content script yet" window open forever.
+  "/hang": { hang: true, body: "" },
+  // Answers with headers but never finishes the body — a second shape of
+  // "the page never becomes usable", reached after document_start.
+  "/stall": {
+    body: "<!DOCTYPE html><title>STALL</title><h1>stall</h1>",
+    stream: { body: "x".repeat(64), chunkBytes: 8, delayMs: 600000 },
+  },
+  // The pages Firefox renders in place of the site. These are about:neterror
+  // internally — privileged, and never get a content script, so the chrome
+  // helper has to own the keyboard on all of them.
+  "/err/401": { status: 401, body: "unauthorized" },
+  "/err/403": { status: 403, body: "forbidden" },
+  "/err/404": { status: 404, body: "not found" },
+  "/err/500": { status: 500, body: "server error" },
+  "/err/502": { status: 502, body: "bad gateway" },
+  "/err/503": { status: 503, body: "service unavailable" },
+  "/err/504": { status: 504, body: "gateway timeout" },
+
   // A slow, chunked octet-stream: downloading it keeps the entry in_progress
   // (~4s at 64KB/250ms) so the status-bar progress segment can be observed.
   "/slowfile": {

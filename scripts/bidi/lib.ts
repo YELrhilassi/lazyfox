@@ -630,6 +630,18 @@ export function startTestServer(pages): Promise<{ server: any; port: number }> {
         return;
       }
       const body = page.body;
+      // A page that never answers. This is the endpoint the whole "the
+      // keyboard dies" bug is about: Firefox sets currentURI to this URL the
+      // moment the navigation starts, but no document — and so no content
+      // script — exists until the response finally arrives. Never answering
+      // holds that window open instead of letting it close in a millisecond.
+      // The socket is left open deliberately; the server is torn down with the
+      // suite, and unref'd sockets do not keep the process alive.
+      if (page.hang) {
+        const socket = res.socket;
+        if (socket) socket.unref();
+        return;
+      }
       res.writeHead(page.status || 200, Object.assign(
         { "Content-Type": page.type || "text/html; charset=utf-8" },
         page.headers || {}
