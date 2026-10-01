@@ -34,8 +34,13 @@ export interface BgApi {
   clearHistory: { req: Record<string, never>; res: { ok: boolean } };
   duplicateTab: { req: Record<string, never>; res: { ok: boolean } };
   reload: { req: Record<string, never>; res: { ok: boolean } };
-  back: { req: Record<string, never>; res: { ok: boolean } };
-  forward: { req: Record<string, never>; res: { ok: boolean } };
+  back: { req: Record<string, never>; res: { ok: boolean; atRoot?: boolean } };
+  forward: { req: Record<string, never>; res: { ok: boolean; atEnd?: boolean } };
+  // The active tab's navigation stack: entries oldest-first (current
+  // included), canBack/canForward for the "at root / at end" indications.
+  navStack: { req: Record<string, never>; res: { canBack: boolean; canForward: boolean; index: number; entries: { url: string; title: string }[] } };
+  // Jump to a position in the navigation stack (0-based, oldest = 0).
+  navGoto: { req: { index: number }; res: { ok: boolean } };
   openUrl: { req: { url: string; newTab?: boolean }; res: { ok: boolean } };
   openPage: { req: { url: string }; res: { ok: boolean } };
   openUI: { req: { which: string }; res: { ok: boolean } };

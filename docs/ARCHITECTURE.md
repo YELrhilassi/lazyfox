@@ -57,11 +57,17 @@ dist/        the built output (committed so installs need no toolchain)
 
 - `types.ts`, `config.ts`, `protocol.ts` — shared data shapes, config
   defaults, and the message protocol between contexts.
-- `core.ts` — the facade the rest of the code uses to reach the Go core.
+- `core.ts` — the typed `CoreApi` interface plus the wasm loader.
+- `corefacade.ts` — the promise-returning facade built over that interface
+  from one method table.
 - `leader.ts` — the which-key leader bar (the `;` overlay).
-- `popups.ts` — the popup engine (search/URL/tabs/history/bookmarks/
-  downloads/sessions) and the leader-action table.
-- `overlay.ts` — popup CSS and the toast helper.
+- `popups/` — the popup engine, one module per surface (search/URL/tabs/
+  history/bookmarks/downloads/sessions/nav) over the shared `kit.ts` shell,
+  plus the leader-action table in `leader.ts`.
+- `overlay.ts` — the selector/list engine and the toast; the CSS lives in
+  `overlaycss.ts`.
+- `observability.ts` — the page-level contract the e2e suite reads
+  (`data-lf-*` mirrors, `lazyfox:list` events).
 - `statusbar.ts` — the tmux-style status bar renderer.
 - `ops.ts` — the `ActionOps` interface: every capability a popup or action
   needs, abstracted per context.
@@ -99,8 +105,17 @@ itself — it builds the modules below and wires them together.
 
 `background.ts` is the composition root for the background script.
 
-- `sessions.ts` — tmux-style sessions: save, restore, markers, autosave,
-  startup restore, split-pane persistence.
+- `handlers/` — every background message action, one module per domain
+  (tabs, sessions, split, history, search, downloads, window, sync,
+  diagnostics). `types.ts` types each factory's `Owns` list, and
+  `background.ts` unions the lists and fails the build if any action in
+  `protocol.ts` has no owner.
+- `sessions.ts` + `sessions/` — tmux-style sessions: save, restore, markers,
+  autosave, startup restore, split-pane persistence. `sessions.ts` is the
+  facade; `storage.ts` / `autosave.ts` / `restore.ts` / `state.ts` hold the
+  implementation.
+- `services/` — the chrome-helper-facing services the background talks to
+  (relay, component discovery, home shim, navigation).
 - `search.ts` — search/URL suggestions, history and bookmarks.
 - `stealth.ts` — isolated container tabs that wipe their data on close.
 - `windowops.ts` — window resize/move/zoom/zen and tab activate/mute/reopen.
@@ -128,7 +143,8 @@ feeds both the search hit list and the Go-backed yank mode), `splitpanel.ts`
 1. You press `;`. Either the content script or the chrome helper intercepts
    it (whichever owns the page).
 2. The leader bar appears. You press the next key.
-3. The leader-action table (`shared/popups.ts`) maps that key to an action.
+3. The leader-action table (`shared/popups/leader.ts`) maps that key to an
+   action.
 4. The action calls into the context's `ActionOps` implementation — the
    chrome helper directly, the content script by messaging the background.
 5. The result renders as a popup, a navigation, or a status-bar update.

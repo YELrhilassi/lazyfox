@@ -48,6 +48,8 @@ var Bindings = []WkItem{
 	{Key: "S", Label: "Search in current tab", Group: "Open"},
 	{Key: "h", Label: "History", Group: "Open"},
 	{Key: "b", Label: "Bookmarks", Group: "Open"},
+	{Key: "G", Label: "Back history stack (popup)", Group: "Open"},
+	{Key: "L", Label: "Forward history stack (popup)", Group: "Open"},
 	{Key: "d", Label: "Downloads", Group: "Open"},
 	{Key: "i", Label: "Focus first input", Group: "Open"},
 
