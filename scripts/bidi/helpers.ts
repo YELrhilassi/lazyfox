@@ -394,6 +394,19 @@ export function createCtx(runtime): any {
     return evalIn(tab, `!!document.getElementById(${JSON.stringify(id)})`);
   };
 
+  // Is the content script's leader currently armed? The mirror is set by the
+  // leader's own onChange, so it is true for a HELD leader too — which is
+  // exactly what the held-leader tests need to observe.
+  ctx.evalLeaderAttr = function evalLeaderAttr() {
+    return evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader") === "1"`).catch(
+      () => null
+    );
+  };
+
+  ctx.evalHref = function evalHref() {
+    return evalIn(ctx.tabA, `location.href`).catch(() => "");
+  };
+
   // ---------- deterministic waits (replace fixed sleeps) ----------
   //
   // Sleeps raced the product under load and their aborts poisoned later

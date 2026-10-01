@@ -166,8 +166,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         (typingValue === "" || isChromeUiFocus(win, typing, e as KeyboardEvent)) &&
         (isCommandCenterTab(win) || isAboutPage(win))
       ) {
-        l.show();
-        return true;
+        if (armHeldLeader(l, e, fromActor)) return true;
       }
       return false;
     }
@@ -181,8 +180,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       !e.ctrlKey && !e.altKey && !e.metaKey &&
       isCommandCenterTab(win)
     ) {
-      l.show();
-      return true;
+      if (armHeldLeader(l, e, fromActor)) return true;
     }
 
     // Ctrl+1-9: hot-swap to the session with that marker (tmux-style).
@@ -201,10 +199,40 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     if (!isCommandCenterTab(win) && deps.handleScrollKeys(win, e)) return true;
 
     if (k === deps.leaderKey()) {
-      l.show();
-      return true;
+      if (armHeldLeader(l, e, fromActor)) return true;
     }
     return false;
+  }
+
+  // Arm the leader for a HELD leader key, and drop auto-repeat.
+  //
+  // A key that stays down re-fires keydown at the OS repeat rate. Treating
+  // each of those as a fresh leader press tore down and re-armed the leader
+  // several times a second, so holding the leader to run two actions in a row
+  // destroyed the sequence between them. A repeat carries no new intent, so
+  // it is swallowed here — still consumed, so the character never leaks into
+  // the page or the URL bar.
+  //
+  // A real (non-repeat) press marks the leader as held, so bindings run and
+  // stay armed until the key comes up (see LeaderController.sticky). The
+  // matching keyup lives in main.ts, next to the leader's own construction.
+  //
+  // Actor-forwarded keys are deliberately NOT sticky. They come from the
+  // content-process bridge as discrete presses and have no matching keyup, so
+  // marking them held would leave the leader armed forever after a single `;`
+  // — swallowing every key that followed.
+  function armHeldLeader(
+    l: { sticky: boolean; show(): void },
+    e: unknown,
+    fromActor?: boolean
+  ): boolean {
+    // `unknown` because the two callers are not the same shape: a real DOM
+    // KeyboardEvent carries `repeat`, while an actor-forwarded ActorKey does
+    // not have that field at all (and is never a repeat — see below).
+    if (!!(e as { repeat?: boolean }).repeat) return true;
+    l.sticky = !fromActor;
+    l.show();
+    return true;
   }
 
   function keyCombo(e: KeyboardEvent): string {

@@ -181,6 +181,26 @@ import { createTypingChannel } from "./typing";
   });
   chromeKeyDown = dispatch.chromeKeyDown;
 
+  // Releasing a HELD leader clears the hold, NOT the leader itself.
+  //
+  // A tap is keydown *and* keyup, so hiding on release would disarm the leader
+  // instantly and `;` plus a binding would stop working everywhere. Release
+  // only ends the chaining: the leader stays armed exactly as a normal tap
+  // leaves it, and the next binding disarms it as usual.
+  window.addEventListener(
+    "keyup",
+    (e) => {
+      try {
+        const l = leader;
+        if (!l || e.key !== (cfg.config && cfg.config.leader)) return;
+        l.sticky = false;
+      } catch (err) {
+        // ignore — a dead view must not break the key path
+      }
+    },
+    true
+  );
+
   // ;f is link-hints, and who handles it depends on the page: the command
   // center arms hint-PICK and chrome-owned pages (about:, error pages) draw
   // their own hints — both live in the dispatcher — while web pages run the
