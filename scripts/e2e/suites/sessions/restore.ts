@@ -14,8 +14,8 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[] } = {},
-  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS, keepTabs: opts.keepTabs });
+    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS, keepTabs: opts.keepTabs, reconcile: opts.reconcile });
 
   // Poll storage through the probe's extension realm.
   const waitStore = (expr, ms = 8000) => ctx.waitExpr(ctx.probe, expr, true, ms);

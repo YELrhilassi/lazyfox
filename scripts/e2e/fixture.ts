@@ -1156,7 +1156,8 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
    * fatal: a group that never touches chrome (the options page, say) should
    * not fail its first test because the chrome helper is not answering.
    */
-  ctx.reset = async function reset(keepTabs?: string[]): Promise<void> {
+  ctx.reset = async function reset(opts: { reconcile?: boolean; keepTabs?: string[] } = {}): Promise<void> {
+    const { reconcile = false, keepTabs } = opts;
     ctx.repaired = [];
 
     // 1. The probe first — every later step reads state through it, so a dead
@@ -1183,19 +1184,28 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
     // 5. Disarm the leader, in both places that can own it.
     await ctx.disarmLeader();
 
-    // 6. Reconcile the tab list.
+    // 6. Tab-list reconciliation is OPT-IN, and the measurement is why.
     //
-    // Without this the tab COUNT is the one piece of state the harness does
-    // not control, and a dozen tests assert on it — ";n new tab: wanted 3
-    // tabs, saw 2" is what a leaked tab looks like from the other side. The
-    // commandcenter group used to pass 29/29 purely because it ran FIRST and
-    // therefore inherited an empty window; once anything ran before it, every
-    // count assertion was off by whatever the earlier tests had opened.
+    // This ran on every test at first, on the reasoning that the tab count is
+    // the one piece of state the harness does not control and a dozen tests
+    // assert on it. Measured against the same tree, it was pure damage:
     //
-    // Keep tabA and the probe — the test's page and the harness's handle on
-    // the extension realm — and close everything else. Tests that need more
-    // tabs open them themselves, AFTER reset has run.
-    await ctx.reconcileTabs(keepTabs);
+    //     reconcile on every test    104/182    42 tests broken, 0 fixed
+    //     reconcile off (default)    146/182
+    //
+    // The cause is that tabAId was captured once and went stale as soon as any
+    // test replaced the tab it names. reconcileTabs then kept a DEAD id and
+    // closed every live tab instead — including the tab the next test was
+    // about to type into. It fixed nothing, because the tests that assert a
+    // count are also the tests that open the tabs.
+    //
+    // So a test that genuinely needs a known tab count asks for it:
+    //   await t("…", async () => { … }, { reconcile: true })
+    if (reconcile) {
+      await ctx.probeIsLive();
+      await ctx.captureTabAId();
+      await ctx.reconcileTabs(keepTabs);
+    }
   };
 
   /**
@@ -1237,9 +1247,12 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
   /** Is this browsing context still usable? */
   /** Record tabA's Firefox id if we have not already. */
   ctx.captureTabAId = async function captureTabAId(): Promise<void> {
-    if (ctx.tabAId != null) return;
     const ts = await ctx.tabsInfo().catch(() => []);
     if (!ts || !ts.length) return;
+    // A recorded id is only usable while that tab still EXISTS. The first
+    // version trusted it forever, which is how reconciliation ended up
+    // keeping a dead tab and closing every live one.
+    if (ctx.tabAId != null && ts.some((t: any) => t.id === ctx.tabAId)) return;
     const mine = (ts as any[]).filter((t) => t.id !== ctx.probeTabId_);
     // Prefer the ACTIVE tab: at bootstrap that is the one the harness was
     // handed, and it is the one a test's keys are aimed at.
