@@ -4,7 +4,11 @@ import { createTab, evalIn, getTree, navigate, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 import { makeSplitHelpers } from "./_shared.ts";
 export async function run(ctx: any): Promise<void> {
-  const { t, nativeSplit, waitNoSplit, waitPlusPopup } = makeSplitHelpers(ctx);
+  // Tags: `--tags split` selects these. "destructive" marks tests
+  // that dissolve and rebuild splits, so a quick subset can skip them.
+  const TAGS: string[] = ["split","destructive"];
+  const { t, nativeSplit, waitNoSplit, waitPlusPopup } = makeSplitHelpers(ctx, "split/lifecycle", TAGS);
+
   await t("split: ;| splits side-by-side via the native split view", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     // geckodriver cannot synthesize "|" from the bare character, so send the

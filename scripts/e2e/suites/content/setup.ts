@@ -4,7 +4,14 @@ import { evalIn, getTree, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 import { contextsOf } from "../../fixture.ts";
 export async function run(ctx: any): Promise<void> {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("content", name, fn);
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide.
+  const FILE = "content/setup";
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   await t(";I opens the setup page with a GitHub Releases standalone installer download", async () => {
     // The store add-on cannot write profile files itself, so ;I opens the
     // setup page that directs the user to download the standalone Go installer

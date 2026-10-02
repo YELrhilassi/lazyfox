@@ -19,7 +19,7 @@ were all green immediately before the batch was staged.
 ```
 npx tsc --noEmit
 npx tsc -p tsconfig.scripts.json --noEmit
-npx tsc -p tsconfig.bidi.json --noEmit
+npx tsc -p tsconfig.e2e.json --noEmit
 npm --prefix installer/frontend run typecheck
 go test ./core/ -count=1
 GOOS=js GOARCH=wasm go vet ./core/js/
@@ -67,7 +67,7 @@ wins — so adding a category can never silently steal an existing key.
 presence push plus the chrome push), producing a doubled/unpainted surface.
 Fixed with a content-presence push, a single `unpaint()` owner, and a
 `data-lf-*` mirror so the DOM state is inspectable from the test harness.
-Covered end-to-end in `scripts/bidi/suites/content/surfaces.ts`.
+Covered end-to-end in `scripts/e2e/suites/content/surfaces.ts`.
 
 ### 2.2 Session restore — five distinct bug classes
 
@@ -115,7 +115,7 @@ and later numbers are one short. Positioning a tab from a `chromeState` reply
 is therefore wrong by construction. `ctx.tabNumberOf(frag)` /
 `ctx.tabNumbers()` read `browser.runtime.sendMessage({action:"tabs"})`
 instead, which does not perturb the strip. This is now documented in
-`scripts/bidi/helpers.ts` so the next person does not rediscover it.
+`scripts/e2e/helpers.ts` so the next person does not rediscover it.
 
 ### 2.4 The move trail
 

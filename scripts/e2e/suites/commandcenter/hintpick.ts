@@ -3,7 +3,14 @@
 import { evalIn, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 export async function run(ctx: any): Promise<void> {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("commandcenter", name, fn);
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide.
+  const FILE = "commandcenter/hintpick";
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   await t("leader ;f arms home-grid hint-pick (letters run tiles)", async () => {
     // ;f is link-hints on web pages; on the home grid it arms hint-PICK: each
     // tile shows a letter badge and the next key runs that tile (the home

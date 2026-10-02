@@ -21,7 +21,7 @@ from "do the 182 things still work, roughly, in this order?".
 | --- | --- | --- | --- |
 | Go core | `core/*_test.go` | 52 test funcs, ~1200 lines | idiomatic `testing`, hand-rolled table cases, `reflect.DeepEqual` |
 | TS unit | `scripts/test-*.ts` | 18 files, ~500 checks | hand-rolled `ok()`/`eq()` counters, `node --experimental-strip-types`, own resolver hook |
-| BiDi e2e | `scripts/bidi/` | 25 registrations, 296 named tests, ~9 000 lines | custom runner, shared mutable `ctx` |
+| BiDi e2e | `scripts/e2e/` | 25 registrations, 296 named tests, ~9 000 lines | custom runner, shared mutable `ctx` |
 
 They share no assertion library, no reporter, no fixture concept, no naming
 convention and no runner. `npm test` chains them with `&&` in a single 900-
@@ -30,7 +30,7 @@ which suite that was.
 
 ### 1.2 The e2e harness, honestly described
 
-`scripts/bidi/test.ts` boots geckodriver + Firefox + a temp profile, installs
+`scripts/e2e/test.ts` boots geckodriver + Firefox + a temp profile, installs
 `dist/extension` as a temporary add-on, starts a local HTTP page server, and
 then runs five group modules **in one process, in one browser, in a fixed
 order**.
@@ -73,7 +73,7 @@ and reports a timeout.
   documented at the definition *and* worked around at ~10 call sites with
   comments like `return n <= 2 ? "settled" : null`. That is a design error
   leaking into every caller. Fix it once, in the API.
-- **`tsconfig.bidi.json`** exists because `scripts/bidi/` was in no typecheck
+- **`tsconfig.e2e.json`** exists because `scripts/e2e/` was in no typecheck
   at all, and its comment explains precisely which checks matter
   (`cannot-find-name`, `noUnusedLocals`) and which would lie (`strict`). This
   is right and rare.
@@ -452,7 +452,7 @@ two tests' results into one line.
 
 ### 3.4 L4 — the chrome probe becomes a first-class suite
 
-`scripts/bidi/chrome-probe.ts` is currently a standalone script, not a suite.
+`scripts/e2e/chrome-probe.ts` is currently a standalone script, not a suite.
 It is where the production-only bugs live — flashing relay tabs, a second
 status bar, the burst backlog — and it runs on demand, not on a schedule.
 
@@ -491,7 +491,7 @@ careful.
 
 Nothing above produces a regression signal until a baseline exists.
 
-- **`scripts/bidi/baseline.json`** — per test id: `status`
+- **`scripts/e2e/baseline.json`** — per test id: `status`
   (`pass`/`fail`/`quarantine`), `lastSeenPassing`, `consecutiveFailures`,
   `flakeRate` over the last N runs, and the commit it last passed at.
 - **On every run**, diff against the baseline and classify:
@@ -502,7 +502,7 @@ Nothing above produces a regression signal until a baseline exists.
   - `PASS → FLAKY` (fails ≥ 2 of 5 runs) = **flake**. Quarantine, and it shows
     up in a review as "this test is unreliable", not as a red X nobody
     investigates.
-- **`scripts/bidi/quarantine.ts`** — `--record <n>` runs the failing tests N
+- **`scripts/e2e/quarantine.ts`** — `--record <n>` runs the failing tests N
   times and writes the flake rates. This is how you find out that `content`
   is 27/104 flaky *before* you rewrite it, and how you prove afterwards that
   you fixed it.

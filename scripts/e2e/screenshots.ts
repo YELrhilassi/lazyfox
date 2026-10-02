@@ -8,7 +8,7 @@
 //
 // Outputs land in docs/img (override with SCREENSHOT_DIR).
 //
-//   node scripts/bidi/screenshots.ts
+//   node scripts/e2e/screenshots.ts
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFileSync } from "node:fs";

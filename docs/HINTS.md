@@ -34,7 +34,7 @@ This was measurable, and the measurement is the important part:
 
 ```bash
 npm run build
-BIDI_HEADLESS=1 node scripts/bidi/test.ts --suite content --only "link hints:"
+BIDI_HEADLESS=1 node scripts/e2e/test.ts --suite content --only "link hints:"
 ```
 
 | build | result |
@@ -296,7 +296,7 @@ invisible.
 
 It takes **~110 seconds** (mostly Firefox boot) and it caught the regression in
 §1 that `npm test`, the type checker and CI all missed. The decision on record
-is to keep it a local command (`npm run bidi:hints`) rather than a CI job, so
+is to keep it a local command (`npm run e2e:hints`) rather than a CI job, so
 the honest cost is that a hint regression can still reach a green build — which
 is exactly what happened last time. If that ever stops being acceptable, the
 suite is already self-contained and local, so adding it is a five-line workflow

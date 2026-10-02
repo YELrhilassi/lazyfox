@@ -5,7 +5,11 @@ import { closeContext, createTab, evalIn, navigate, waitFor } from "../../bidi.t
 import { assert } from "../../runner.ts";
 import { makeSplitHelpers } from "./_shared.ts";
 export async function run(ctx: any): Promise<void> {
-  const { t, waitNoSplit, waitPlusPopup } = makeSplitHelpers(ctx);
+  // Tags: `--tags split` selects these. "destructive" marks tests
+  // that dissolve and rebuild splits, so a quick subset can skip them.
+  const TAGS: string[] = ["split"];
+  const { t, waitNoSplit, waitPlusPopup } = makeSplitHelpers(ctx, "split/statusbar", TAGS);
+
   await t("split: one window-level status bar (not one per pane)", async () => {
     // During a native split the chrome helper shows the single window bar and
     // the web panes hide their per-tab bars, so there is exactly ONE bar for
