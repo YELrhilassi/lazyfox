@@ -197,9 +197,20 @@ The e2e test was made more honest in the meantime: it builds the pair with
 move trail is unchanged** — a changed trail means a real move happened, so
 retrying would compound a defect rather than mask it.
 
-### 3.2 Full e2e suite: 112/182
+### 3.2 Full e2e suite: 147/182 (was 113/182 before the harness rewrite)
 
-Not a number anyone should be proud of.
+The harness rewrite (`docs/TESTING.md`) took the suite from 113/182 to
+147/182. `content` went 63→94 and `sessions` 16→27, because most of their
+failures were order dependence rather than product defects. `commandcenter` is
+8 worse in a full run than alone (29/29), and `split` is unchanged at 0/13 —
+which is a product finding, not harness flake: in-process extension pages
+cannot host a remote-content split pane, so no split can be formed at all under
+the test profile.
+
+Details, the three real bugs the rewrite surfaced, and the known costs are in
+`docs/TESTING.md`. A per-test baseline now lives in `scripts/e2e/baseline.json`,
+so only `PASS → FAIL` blocks and a test that has been red for a month no longer
+shouts every run.
 
 - `leader ;f arms home-grid hint-pick` fails identically at `dev-nightly`
   HEAD with a clean stash and rebuild, so it is **pre-existing**, not caused
@@ -207,14 +218,15 @@ Not a number anyone should be proud of.
 - The `content` group alone swings **61–88 out of 104** run to run.
 - Many failures are BiDi timeouts, and a shared dead probe context
   ("no such frame" against one stale context id) poisons ~10 tests at once.
-- **No clean pre-change full-suite baseline was ever captured**, so no
-  regression claim about the suite as a whole is supportable. This is the most
-  important sentence in this document.
+- **A clean pre-change full-suite baseline now exists**: 113/182, captured on
+  the same machine, headless, on the same tree. Everything above is measured
+  against it.
 
 Two harness mitigations were attempted, measured, and **reverted**:
 a speculative probe-liveness check, and a reactive `viaProbe` rebuild on
 dead-context. Do not reintroduce them without a baseline to measure against.
-`docs/TEST-HARNESS-REWRITE.md` is the replacement plan.
+`docs/TEST-HARNESS-REWRITE.md` is the replacement plan, and
+`docs/TESTING.md` is what was actually built.
 
 ---
 

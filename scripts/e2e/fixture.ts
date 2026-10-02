@@ -1226,9 +1226,34 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
       ctx.repaired.push("no tab ids to reconcile against; skipped");
       return;
     }
+
+    // NEVER close Lazyfox's own plumbing. This is the same rule the product
+    // applies in src/shared/transient.ts, inlined rather than imported: the
+    // relay tab is the ONE carrier for every chrome<->background message
+    // (see docs/MESSAGING.md), and closing it does not fail loudly — it just
+    // means every later `browser.*` round-trip from the chrome helper never
+    // arrives. That is exactly what happened the first time this ran: content
+    // collapsed from 93/104 to 62/104 with errors like "Cannot read
+    // properties of undefined (reading 'find')" in tests that had nothing to
+    // do with tabs.
+    //
+    // A borrowed tab (one carrying a #lfc= channel the user owns) is a real
+    // tab and is NOT plumbing — same distinction the product makes.
+    const isPlumbing = (url: string): boolean => {
+      const u = url || "";
+      if (u.indexOf("relay.html") !== -1) return true;
+      if (u.indexOf("splitpanel.html") !== -1) return true;
+      if (u.indexOf("#lfc=") === -1) return false;
+      // Borrowed channels keep their number, so they are the user's tabs.
+      const BORROWED = ["keys", "state", "cfg", "open", "reveal", "console", "diag"];
+      const rest = u.slice(u.indexOf("#lfc=") + 5);
+      const dot = rest.indexOf(".");
+      const cmd = (dot === -1 ? rest : rest.slice(0, dot)).trim();
+      return BORROWED.indexOf(cmd) === -1;
+    };
     const ts = await ctx.tabsInfo().catch(() => []);
     if (!ts || !ts.length) return;
-    const extras = (ts as any[]).filter((t) => !keep.has(t.id));
+    const extras = (ts as any[]).filter((t) => !keep.has(t.id) && !isPlumbing(t.url || ""));
     if (!extras.length) return;
     for (const t of extras) {
       await ctx.probeEval(`browser.tabs.remove(${t.id}).catch(() => true)`).catch(() => {});
@@ -1236,7 +1261,7 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
     await until(
       async () => {
         const now = await ctx.tabsInfo().catch(() => null);
-        return now && (now as any[]).every((x) => keep.has(x.id)) ? true : null;
+        return now && (now as any[]).every((x) => keep.has(x.id) || isPlumbing(x.url || "")) ? true : null;
       },
       { timeoutMs: 10000, intervalMs: 120, what: "the extra tabs to close", signal: ctx.signal },
     ).catch(() => {
