@@ -12,7 +12,7 @@ export function makeSplitHelpers(ctx: any, file: string, tags: string[] = []) {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[] } = {},
+    opts: { tags?: string[]; keepTabs?: string[] } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? tags });
 
   // Create a native split of the command center + a fresh split-panel tab and

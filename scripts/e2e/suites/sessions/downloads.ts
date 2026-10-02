@@ -13,8 +13,8 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[] } = {},
-  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS });
+    opts: { tags?: string[]; keepTabs?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS, keepTabs: opts.keepTabs });
   await t("downloads: r retries a failed download, y copies its link", async () => {
     // Sweep leftovers, then start a download that always fails so the popup
     // has a failed entry to retry.

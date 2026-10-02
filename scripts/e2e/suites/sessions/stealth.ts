@@ -9,7 +9,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[] } = {},
+    opts: { tags?: string[]; keepTabs?: string[] } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   await t("stealth: isolated jar, session round-trip, wiped on close", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);

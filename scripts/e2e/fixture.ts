@@ -98,6 +98,10 @@ export function createCtx(runtime): any {
     // a test makes can be cancelled when it overruns. Without this a stalled
     // test held its contexts and the NEXT test ran against the wreckage.
     signal: undefined as AbortSignal | undefined,
+    // Firefox TAB ids, tracked alongside the BiDi CONTEXT ids above. The two
+    // are different id spaces and are never compared; see tabsInfo().
+    tabAId: null as number | null,
+    probeTabId_: null as number | null,
     // Diagnostics for the failure report: what reset() had to repair before
     // this test ran. A test that fails after reset() rebuilt the probe is a
     // different problem from one that did not, and the report says so.
@@ -182,11 +186,27 @@ export function createCtx(runtime): any {
   };
 
   // Active tab + tab list via the probe tab's extension realm (definitive).
+  //
+  // NOTE THE TWO ID SPACES IN THIS HARNESS. `id` here is a Firefox tab id (an
+  // integer, from browser.tabs). `ctx.tabA` and `ctx.probe` are WebDriver BiDi
+  // browsing-context ids. They are NOT interchangeable and comparing one
+  // against the other silently matches nothing.
+  //
+  // That mistake was made here once and it closed every tab in the window,
+  // including the probe, taking the whole run down with "aborted: session
+  // closed". So: whenever a decision needs to know whether a tab is one of
+  // OURS, it uses ctx.probeTabId / ctx.tabAId, which are Firefox tab ids
+  // captured from the extension realm itself — one id space throughout.
   ctx.tabsInfo = async function tabsInfo() {
     return evalIn(
       ctx.probe,
       `browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => ({id: t.id, url: t.url, active: t.active, title: t.title, pinned: t.pinned, splitViewId: t.splitViewId})))`
     );
+  };
+
+  /** This tab's OWN Firefox id, read from inside its own extension realm. */
+  ctx.probeTabId = async function probeTabId() {
+    return evalIn(ctx.probe, `browser.tabs.getCurrent().then(t => t ? t.id : null)`);
   };
 
   ctx.activeTabInfo = async function activeTabInfo() {
@@ -1092,8 +1112,37 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
    */
   ctx.disarmLeader = async function disarmLeader(): Promise<void> {
     if (!ctx.tabA) return;
+    // Only send Escape if the leader is ACTUALLY armed.
+    //
+    // This was unconditional at first, and it cost eight command-center tests:
+    // the command center uses Escape to move between command and insert mode,
+    // so a stray Escape at the start of every test silently changed the mode
+    // the next test expected to find. Cancelling a disarmed leader is
+    // harmless in a content page and destructive on the CC — so ask first.
+    const armed = await ctx.isLeaderArmed();
+    if (!armed) return;
     await ctx.press(ctx.tabA, "Escape").catch(() => {});
     await ctx.waitLeaderGone().catch(() => {});
+  };
+
+  /**
+   * Is the leader currently armed, in either host?
+   *
+   * Checks the content script's mirror first (a web page with the content
+   * script loaded), then the chrome host (extension and about: pages, where
+   * there is no content script and therefore no mirror).
+   */
+  ctx.isLeaderArmed = async function isLeaderArmed(): Promise<boolean> {
+    if (!ctx.tabA) return false;
+    const on = await attempt(() =>
+      evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader") === "1"`, {
+        signal: ctx.signal,
+      }),
+    );
+    if (on.ok && on.value !== undefined && on.value !== null) return on.value === true;
+    if (!on.ok) return false;
+    // No mirror on this page: fall back to the chrome host.
+    return await ctx.hasHost(ctx.tabA, "lazyfox-leader").then((v) => !!v).catch(() => false);
   };
 
   /**
@@ -1107,7 +1156,7 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
    * fatal: a group that never touches chrome (the options page, say) should
    * not fail its first test because the chrome helper is not answering.
    */
-  ctx.reset = async function reset(): Promise<void> {
+  ctx.reset = async function reset(keepTabs?: string[]): Promise<void> {
     ctx.repaired = [];
 
     // 1. The probe first — every later step reads state through it, so a dead
@@ -1133,9 +1182,70 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
 
     // 5. Disarm the leader, in both places that can own it.
     await ctx.disarmLeader();
+
+    // 6. Reconcile the tab list.
+    //
+    // Without this the tab COUNT is the one piece of state the harness does
+    // not control, and a dozen tests assert on it — ";n new tab: wanted 3
+    // tabs, saw 2" is what a leaked tab looks like from the other side. The
+    // commandcenter group used to pass 29/29 purely because it ran FIRST and
+    // therefore inherited an empty window; once anything ran before it, every
+    // count assertion was off by whatever the earlier tests had opened.
+    //
+    // Keep tabA and the probe — the test's page and the harness's handle on
+    // the extension realm — and close everything else. Tests that need more
+    // tabs open them themselves, AFTER reset has run.
+    await ctx.reconcileTabs(keepTabs);
+  };
+
+  /**
+   * Close every tab except `tabA` and the probe.
+   *
+   * `keep` lets a suite declare an exception, because a few tests genuinely
+   * need a wider window to exist before they start (the multi-digit chooser
+   * needs ten tabs to be ambiguous at all).
+   */
+  ctx.reconcileTabs = async function reconcileTabs(keepTabIds: number[] = []): Promise<void> {
+    // Firefox tab ids throughout — see the note on tabsInfo(). The probe's own
+    // id is asked of the probe, and tabA's is whatever tab was there at
+    // bootstrap and is not the probe.
+    const keep = new Set<number>([...keepTabIds]);
+    if (ctx.probeTabId_ != null) keep.add(ctx.probeTabId_);
+    if (ctx.tabAId != null) keep.add(ctx.tabAId);
+    if (keep.size === 0) {
+      ctx.repaired.push("no tab ids to reconcile against; skipped");
+      return;
+    }
+    const ts = await ctx.tabsInfo().catch(() => []);
+    if (!ts || !ts.length) return;
+    const extras = (ts as any[]).filter((t) => !keep.has(t.id));
+    if (!extras.length) return;
+    for (const t of extras) {
+      await ctx.probeEval(`browser.tabs.remove(${t.id}).catch(() => true)`).catch(() => {});
+    }
+    await until(
+      async () => {
+        const now = await ctx.tabsInfo().catch(() => null);
+        return now && (now as any[]).every((x) => keep.has(x.id)) ? true : null;
+      },
+      { timeoutMs: 10000, intervalMs: 120, what: "the extra tabs to close", signal: ctx.signal },
+    ).catch(() => {
+      ctx.repaired.push("some extra tabs would not close");
+    });
   };
 
   /** Is this browsing context still usable? */
+  /** Record tabA's Firefox id if we have not already. */
+  ctx.captureTabAId = async function captureTabAId(): Promise<void> {
+    if (ctx.tabAId != null) return;
+    const ts = await ctx.tabsInfo().catch(() => []);
+    if (!ts || !ts.length) return;
+    const mine = (ts as any[]).filter((t) => t.id !== ctx.probeTabId_);
+    // Prefer the ACTIVE tab: at bootstrap that is the one the harness was
+    // handed, and it is the one a test's keys are aimed at.
+    ctx.tabAId = (mine.find((t) => t.active) || mine[0] || {}).id ?? null;
+  };
+
   ctx.contextIsLive = async function contextIsLive(tab: string): Promise<boolean> {
     if (!tab) return false;
     const r = await attempt(() => evalIn(tab, "1+1", { signal: ctx.signal }));
