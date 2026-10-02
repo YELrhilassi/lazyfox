@@ -55,8 +55,8 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[] } = {},
-  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS, keepTabs: opts.keepTabs });
+    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS, keepTabs: opts.keepTabs, reconcile: opts.reconcile });
 
   await t(";1 in a small window jumps with no popup", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);

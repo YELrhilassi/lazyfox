@@ -9,7 +9,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[] } = {},
+    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   await t("options page loads and renders the form", async () => {
     const u = ctx.ccUrl.replace("commandcenter.html", "options.html");

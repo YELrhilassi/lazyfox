@@ -10,7 +10,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[] } = {},
+    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
 
   const waitCount = async (want: number, step: string, ms = 10000) => {
@@ -42,7 +42,7 @@ export async function run(ctx: any): Promise<void> {
     assert(!a.url.includes("commandcenter.html"), "setup page replaced the home tab, not stacked");
     // Back to the command center for the tests that follow.
     await ctx.openCC(ctx.tabA);
-  });
+  }, { reconcile: true });
   await t("leader ;m mutes the active tab", async () => {
     await ctx.openCC(ctx.tabA);
     await ctx.activateTab(ctx.tabA);
@@ -61,7 +61,7 @@ export async function run(ctx: any): Promise<void> {
       const s = await ctx.chromeState();
       return s.mutedCount === before ? s : null;
     }, 8000);
-  });
+  }, { reconcile: true });
   await t("command center tab commands ;n ;x ;v ;c", async () => {
     await ctx.openCC(ctx.tabA);
     await ctx.activateTab(ctx.tabA);
@@ -95,7 +95,7 @@ export async function run(ctx: any): Promise<void> {
       throw new Error(String((e && e.message) || e) + "; recently closed: " + rc);
     }
     await ctx.activateTab(ctx.tabA);
-  });
+  }, { reconcile: true });
   await t("probe tab: command center from the background", async () => {
     const a = await ctx.activeTabInfo();
     assert(a && a.url.includes("commandcenter.html"), "probe tab active: " + (a && a.url));
@@ -129,7 +129,7 @@ export async function run(ctx: any): Promise<void> {
     await evalIn(ctx.probe, `browser.tabs.remove(${opened.id}).catch(() => true); true`).catch(() => {});
     await waitFor(async () => (await ctx.tabCount()) === before ? true : null, 10000).catch(() => {});
     await ctx.activateTab(ctx.tabA);
-  });
+  }, { reconcile: true });
   await t("closing a tab down to two leaves a real tab active, not the relay", async () => {
     // Regression (the blank-page dead end): with the strip [A, relay, B],
     // closing the tab next to the hidden relay makes Firefox select the
@@ -193,5 +193,5 @@ export async function run(ctx: any): Promise<void> {
       href && href.indexOf("127.0.0.1") !== -1,
       "ctx.tabA re-pointed at a live page tab for the suites that follow, got " + href
     );
-  });
+  }, { reconcile: true });
 }

@@ -11,7 +11,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[] } = {},
+    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
 
   // The content leader mirrors its armed state onto <html> as data-lf-leader.
