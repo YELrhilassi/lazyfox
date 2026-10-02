@@ -35,8 +35,8 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[] } = {},
-  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS });
+    opts: { tags?: string[]; keepTabs?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS, keepTabs: opts.keepTabs });
 
   await t("holding the leader runs back then forward without a second press", async () => {
     // Start from a DISARMED leader, and prove it rather than assume it.

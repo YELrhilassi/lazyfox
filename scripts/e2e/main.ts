@@ -139,9 +139,9 @@ async function main(): Promise<void> {
   // which shows up in the failure line — a test that failed after the probe
   // was rebuilt is a different problem from one that did not.
   ctx.runTest = createRunner(selection, {
-    before: async () => {
+    before: async (keepTabs) => {
       ctx.signal = undefined;
-      await ctx.reset();
+      await ctx.reset(keepTabs);
     },
     after: async (r) => {
       r.repaired = [...ctx.repaired];

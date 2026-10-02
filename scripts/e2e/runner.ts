@@ -240,8 +240,13 @@ const TEST_TIMEOUT_MS = (() => {
 })();
 
 export interface RunnerHooks {
-  /** Run before each test. Must leave the world in the declared state. */
-  before?: () => Promise<void>;
+  /**
+   * Run before each test. Must leave the world in the declared state.
+   *
+   * `keepTabs` is the tab ids this test needs to have survived the reset,
+   * declared at registration. Empty for almost every test.
+   */
+  before?: (keepTabs?: string[]) => Promise<void>;
   /** Run after each test, pass or fail. Must not throw. */
   after?: (r: TestResult) => Promise<void>;
   /** Called with the id->TestResult map after every test. */
@@ -258,7 +263,7 @@ export function createRunner(selection: Selection, hooks: RunnerHooks = {}) {
     file: string,
     name: string,
     fn: (t: any) => Promise<void>,
-    opts: { tags?: string[] } = {},
+    opts: { tags?: string[]; keepTabs?: string[] } = {},
   ): Promise<void> {
     // Suites pass their FILE ("content/multidigit"), not their group, so the
     // id is "<group>/<file> › <name>" and two tests with the same name in
@@ -290,7 +295,7 @@ export function createRunner(selection: Selection, hooks: RunnerHooks = {}) {
       return;
     }
 
-    const r = await runOne(id, name, group, fn, tags, hooks);
+    const r = await runOne(id, name, group, fn, tags, hooks, opts.keepTabs);
     results.push(r);
     hooks.onResult?.(r);
   };
@@ -303,6 +308,7 @@ async function runOne(
   fn: (t: any) => Promise<void>,
   tags: string[],
   hooks: RunnerHooks,
+  keepTabs?: string[],
 ): Promise<TestResult> {
   const started = Date.now();
   const controller = new AbortController();
@@ -318,7 +324,10 @@ async function runOne(
   }, TEST_TIMEOUT_MS);
 
   try {
-    await hooks.before?.();
+    // `keepTabs` is declared at REGISTRATION time, which is what lets the
+    // fixture reconcile the tab list before the body runs while still honouring
+    // a test that needs a wider window to already exist.
+    await hooks.before?.(keepTabs);
     await fn({ signal: controller.signal, tags, id });
     r.pass = true;
   } catch (e) {
