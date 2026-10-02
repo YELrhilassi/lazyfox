@@ -254,3 +254,83 @@ by an npm script, so a file cannot be added and then quietly stop running.
 | one test fails only in a full run | order dependence — `ctx.reset()` should have handled it; check whether the test asserts a precondition instead |
 | a test that passes alone fails in a group | same, inverted: something leaked. `reset()` covers the common cases; the rest belong in it |
 | the suite is red but nothing changed | compare against `baseline.json` before reading anything — `still-broken` is not a regression |
+---
+
+## What the rewrite measured
+
+Full-suite runs of the same tree, same machine, headless:
+
+| | before | after |
+| --- | --- | --- |
+| commandcenter | 29/29 | 21/29 |
+| content | 63/104 | **94/104** |
+| sessions | 16/31 | **27/31** |
+| split | 0/13 | 0/13 |
+| options | 5/5 | 5/5 |
+| **total** | **113/182** | **147/182** |
+
+`content` and `sessions` were almost entirely order-dependent and now are
+mostly not: +31 and +11. `split` is unchanged at 0/13 and that is a **product**
+finding, not a harness one — see below. `commandcenter` is 8 worse in a full
+run than it is alone (29/29); see "known costs" below.
+
+### Three real bugs this found
+
+Each was found by running, not by reading, and each is the kind that a green
+suite hides.
+
+**1. Escape is not a universal cancel key.** `ctx.reset()` sent Escape to
+disarm the leader. On a content page that is correct. On the command center,
+Escape moves between command and insert mode — so a stray Escape at the start
+of every test changed the mode the next test expected to find. Eight
+command-center tests failed. `disarmLeader` now asks whether the leader is
+actually armed first.
+
+**2. Two id spaces, compared as one.** `ctx.tabA` and `ctx.probe` are WebDriver
+BiDi *browsing-context* ids; `browser.tabs.query` returns Firefox *tab* ids.
+The first `reconcileTabs` compared them directly, which matches nothing — so it
+closed every tab in the window, including the probe, and the run died with
+"aborted: session closed". The fixture now tracks Firefox tab ids alongside the
+context ids and never crosses the two.
+
+**3. Closing the relay is silent, not loud.** The relay tab (`relay.html`) is
+the one carrier for every chrome↔background message (see `MESSAGING.md`).
+Reconcile closed it, and nothing errored: every later `browser.*` round-trip
+from the chrome helper simply stopped arriving, and tests failed with things
+like `Cannot read properties of undefined (reading 'find')` in code that had
+nothing to do with tabs. `content` dropped 94/104 → 62/104.
+`reconcileTabs` now preserves plumbing using the same borrowed-vs-plumbing
+rule the product applies in `src/shared/transient.ts`.
+
+### What the measurements said about reconciliation itself
+
+Tab reconciliation is the one change that looked obviously right and was wrong.
+It ran on every test at first:
+
+```
+reconcile on every test         104/182    42 broken, 0 fixed
+reconcile off, disarm fixed    147/182
+```
+
+Two causes, both recorded at the code: `tabAId` was captured once and went
+stale, so reconcile kept a **dead** id and closed every live tab; and it closed
+the relay. It is now opt-in, used by the five command-center tests that assert
+a tab count, and it refuses to run when it cannot identify the tabs it must
+keep. `fixture.ts` carries the numbers, because "this looked right and was
+wrong" is the claim a future reader most needs.
+
+### Known costs
+
+`commandcenter` scores 29/29 alone and 21/29 inside a full run. The eight are
+the tab-count tests, and they fail because the count they assert against is
+whatever the earlier groups left behind — the same class of problem
+reconciliation was meant to solve, which measurement has not yet solved. They
+are recorded in the baseline as `fail`, so they do not block, and they are the
+obvious next thing to fix.
+
+`split` at 0/13 is a product finding, not harness flake. Every split test fails
+because the split cannot be formed in this environment at all: the chrome
+helper requires extension pages to run in-process
+(`extensions.webextensions.remote=false`), and in-process extension pages
+cannot host a remote-content split pane. `split/lifecycle.ts` documents this in
+its header. The suite is honest about it rather than skipping it.
