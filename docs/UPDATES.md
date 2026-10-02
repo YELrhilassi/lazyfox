@@ -83,7 +83,7 @@ updating, re-verify each one rather than assuming it still holds.
    look like "the status bar vanished". The background now detects
    "previously alive, now silent" within the startup window and raises a
    notification naming the likely cause (a Firefox update).
-4. **Keep the e2e suite green.** The BiDi suite (`scripts/bidi/`) is the
+4. **Keep the e2e suite green.** The BiDi suite (`scripts/e2e/`) is the
    canary: it boots a real Firefox with the real chrome layer and exercises
    the status bar, split view, sessions, command center and content script.
    If a Firefox update breaks something, the suite is where it shows first.
@@ -95,7 +95,7 @@ When a new Firefox (or Developer Edition) lands:
 1. `npm run build && node scripts/check-dist.ts` — confirm `dist/` is
    current and self-contained.
 2. `npm run typecheck && go test ./core/`.
-3. `node scripts/bidi/test.ts` — full e2e run with the new Firefox. The
+3. `node scripts/e2e/test.ts` — full e2e run with the new Firefox. The
    harness defaults to the installed Developer Edition
    (`FIREFOX_BIN` overrides).
 4. Watch the run's **console error audit**: an error mentioning

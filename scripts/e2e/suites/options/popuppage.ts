@@ -3,7 +3,14 @@
 import { evalIn, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 export async function run(ctx: any): Promise<void> {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("options", name, fn);
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide.
+  const FILE = "options/popuppage";
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   await t("popup page (action popup) renders", async () => {
     const u = ctx.ccUrl.replace("commandcenter.html", "popup.html");
     await ctx.gotoUrl(ctx.tabA, u, "complete");

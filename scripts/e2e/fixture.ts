@@ -79,7 +79,7 @@ export function createCtx(runtime): any {
   // The helper functions below are attached to `ctx` one at a time, so the
   // object literal below cannot name them. The `& Record<string, any>` index
   // signature is what lets the suites call ctx.waitPopup / ctx.leaderPress /
-  // … and keeps the harness typechecked (tsconfig.bidi.json) for the errors
+  // … and keeps the harness typechecked (tsconfig.e2e.json) for the errors
   // that matter there: a helper used without importing it, a duplicate
   // identifier, an arity mistake on a lib function.
   const ctx: any = {

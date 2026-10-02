@@ -4,7 +4,18 @@
 import { closeContext, createTab, evalIn, navigate, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 export async function run(ctx: any): Promise<void> {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("sessions", name, fn);
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide.
+  const FILE = "sessions/sessions";
+  // Tags: `--tags destructive` selects these. "newfeatures" is the set
+  // covering the most recent work; "destructive" marks tests that close
+  // tabs or rebuild the window, so a quick subset can skip them.
+  const TAGS: string[] = ["destructive"];
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS });
 
   // --- composable condition helpers (replace sleeps) ---
   // The leader is armed on a WEB page: the content script mirrors it onto

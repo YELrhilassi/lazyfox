@@ -3,8 +3,17 @@
 // and/or creating a fresh native split pair.
 import { evalIn, waitFor } from "../../bidi.ts";
 
-export function makeSplitHelpers(ctx: any) {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("split", name, fn);
+export function makeSplitHelpers(ctx: any, file: string, tags: string[] = []) {
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide. `file` is the
+  // CALLER's id, not this helper's — the helper is only where the
+  // registration function happens to live.
+  const FILE = file;
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? tags });
 
   // Create a native split of the command center + a fresh split-panel tab and
   // wait until two tabs share a splitViewId. Returns the tab pair (extension

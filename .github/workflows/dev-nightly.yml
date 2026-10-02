@@ -8,7 +8,7 @@ name: Dev Nightly - CI
 # the full WebDriver BiDi e2e suite is run locally instead of on CI.
 #
 #   bash scripts/install-tools.sh geckodriver   # one-time
-#   npm run bidi                                # the full e2e suite locally
+#   npm run e2e                                # the full e2e suite locally
 #   npm run probe:chrome                        # the real chrome-layer probe
 
 on:

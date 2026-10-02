@@ -63,7 +63,7 @@ when you want the browser-session tests included.
 > **Why BiDi is local-only (not on GitHub Actions):** the full e2e suite boots
 > a fresh Firefox and can take many minutes — more than GitHub's free-plan
 > minutes allow. So the `dev-nightly` workflow now runs only the fast `unit`
-> job (~50s) on push, and the browser suites are run locally (`npm run bidi`,
+> job (~50s) on push, and the browser suites are run locally (`npm run e2e`,
 > `npm run probe:chrome`). Kill orphaned Firefox processes between runs
 > (`pkill -9 geckodriver; pkill -9 firefox`) or a fresh run can stall waiting
 > for a port CPU.
@@ -73,11 +73,11 @@ when you want the browser-session tests included.
 The link-hint suite runs **locally only**, against the local test pages:
 
 ```bash
-npm run bidi:hints      # just the link-hint tests
+npm run e2e:hints      # just the link-hint tests
 npm run ci:hints        # the above with the full local CI prefix
 ```
 
-It needs no network and no third-party markup: `scripts/bidi/pages.ts` serves
+It needs no network and no third-party markup: `scripts/e2e/pages.ts` serves
 deliberately hostile local pages (occluding overlays, nested clickable wrappers,
 shadow roots, virtual-DOM churn, a fixed header) and the suite asserts real
 behaviour — which elements get keys, that keys stay stable across a re-render,

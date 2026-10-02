@@ -240,7 +240,7 @@ history of breakages and fixes, and the post-update checklist.
 ## Testing
 
 The end-to-end suite drives a real Firefox over WebDriver BiDi
-(`scripts/bidi/`). It boots a fresh profile, installs `dist/extension`, and
+(`scripts/e2e/`). It boots a fresh profile, installs `dist/extension`, and
 exercises every feature. `go test ./core/` covers the Go layer and
 `npm run typecheck` covers the TypeScript. See the README's Development
 section for the exact commands.

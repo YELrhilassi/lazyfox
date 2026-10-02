@@ -45,7 +45,18 @@ async function padTo(ctx: any, want: number): Promise<any[]> {
 }
 
 export async function run(ctx: any): Promise<void> {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("content", name, fn);
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide.
+  const FILE = "content/multidigit";
+  // Tags: `--tags newfeatures` selects these. "newfeatures" is the set
+  // covering the most recent work; "destructive" marks tests that close
+  // tabs or rebuild the window, so a quick subset can skip them.
+  const TAGS: string[] = ["newfeatures","tabs"];
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS });
 
   await t(";1 in a small window jumps with no popup", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);

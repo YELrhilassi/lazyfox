@@ -461,9 +461,9 @@ The end-to-end suite drives a real Firefox over WebDriver BiDi, and the
 screenshots in this README are captured the same way:
 
 ```bash
-node scripts/bidi/test.ts            # full run
-node scripts/bidi/test.ts --group sessions
-node scripts/bidi/screenshots.ts     # writes docs/img/*.png
+node scripts/e2e/test.ts            # full run
+node scripts/e2e/test.ts --group sessions
+node scripts/e2e/screenshots.ts     # writes docs/img/*.png
 ```
 
 Layout of the repo:

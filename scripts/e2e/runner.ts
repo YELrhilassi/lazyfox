@@ -2,7 +2,7 @@
 //
 // WHAT THIS REPLACES, and the four defects it fixes.
 //
-// The old runner (scripts/bidi/harness.ts) recorded a result per test and had a
+// The old runner (scripts/e2e/harness.ts) recorded a result per test and had a
 // 180-second timeout that could REPORT a failure but could not STOP the test.
 // A hung body kept holding its browsing context while the next test started,
 // which is the mechanism by which one failure became ten — and the suite's
@@ -255,12 +255,15 @@ export function createRunner(selection: Selection, hooks: RunnerHooks = {}) {
   const declaredTags = new Map<string, Set<string>>();
 
   return async function runTest(
-    group: string,
+    file: string,
     name: string,
     fn: (t: any) => Promise<void>,
-    opts: { tags?: string[]; file?: string } = {},
+    opts: { tags?: string[] } = {},
   ): Promise<void> {
-    const file = opts.file || group;
+    // Suites pass their FILE ("content/multidigit"), not their group, so the
+    // id is "<group>/<file> › <name>" and two tests with the same name in
+    // different files cannot collide. The group is the first path segment.
+    const group = file.split("/")[0];
     const id = `${file} › ${name}`;
     const tags = opts.tags || [];
 

@@ -27,11 +27,12 @@ function pkg(): any {
 
 /** Every npm script name reachable, directly or one level through `npm run`. */
 function reachableScripts(): string {
-  const s = pkg().scripts;
+  const s: Record<string, string> = pkg().scripts;
   let text = Object.values(s).join("\n");
   for (const v of Object.values(s)) {
     for (const m of String(v).matchAll(/npm run ([\w:-]+)/g)) {
-      if (s[m[1]] !== undefined) text += "\n" + s[m[1]];
+      const name = m[1];
+      if (name && s[name] !== undefined) text += "\n" + s[name];
     }
   }
   return text;
@@ -90,7 +91,7 @@ describe("every test directory is owned by a tsconfig", () => {
   test("scripts/test/ is typechecked", () => {
     // scripts/*.ts is a ONE-LEVEL pattern. Anything in a subdirectory is in no
     // typecheck unless a config names it explicitly — which is how both
-    // scripts/bidi/ and scripts/test/ were briefly unchecked.
+    // scripts/e2e/ and scripts/test/ were briefly unchecked.
     assert.match(includeText, /scripts\/test\/\*\*\/\*\.ts/, "no tsconfig includes scripts/test/");
   });
 
@@ -108,7 +109,7 @@ describe("every test directory is owned by a tsconfig", () => {
 });
 
 describe("the retired harness is really gone", () => {
-  test("scripts/bidi/ no longer exists", () => {
+  test("scripts/e2e/ no longer exists", () => {
     // The old tree was moved, not copied. Leaving it behind means two
     // harnesses drift apart and nobody knows which one CI runs.
     assert.equal(existsSync(join(ROOT, "scripts", "bidi")), false);

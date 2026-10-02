@@ -12,7 +12,7 @@
 // many #lfc= transient tabs exist, and the leader state.
 //
 // Run:
-//   node scripts/bidi/chrome-probe.ts
+//   node scripts/e2e/chrome-probe.ts
 // Env: GECKODRIVER (default .tools/geckodriver.exe), FIREFOX_BIN (default
 //   Firefox Developer Edition; use /usr/lib/firefox/firefox on Void/stable).
 import { resolve, dirname, join } from "node:path";

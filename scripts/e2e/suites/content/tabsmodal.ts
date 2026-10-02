@@ -3,7 +3,14 @@
 import { createTab, evalIn, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 export async function run(ctx: any): Promise<void> {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("content", name, fn);
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide.
+  const FILE = "content/tabsmodal";
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   /* ==================== tabs modal favicons ==================== */
   await t(";t tab rows carry a favicon image on the right", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
