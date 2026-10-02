@@ -18,6 +18,13 @@
 import { dbg } from "../shared/dev";
 import { KeyGuard } from "../shared/keyguard";
 import { LeaderController, leaderSequences } from "../shared/leader";
+// The two hold-release rules live in shared/holdrelease.ts so BOTH hosts use
+// one implementation and a unit test can pin the implementation, not a
+// restatement of it. See that file for why that distinction mattered.
+import {
+  releaseHoldOnKeyup,
+  releaseLostHold as releaseLostHoldOnBlur,
+} from "../shared/holdrelease";
 import { toast } from "../shared/overlay";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
 
@@ -225,10 +232,7 @@ import { createTypingChannel } from "./typing";
   // all and every synthetic `;` would look permanently pressed.
   const releaseLeaderHold = (key: string): void => {
     try {
-      const l = leader;
-      if (!l) return;
-      if (key !== (cfg.config && cfg.config.leader)) return;
-      l.sticky = false;
+      releaseHoldOnKeyup(leader, (cfg.config && cfg.config.leader) || ";", key);
     } catch (err) {
       // ignore — a dead view must not break the key path
     }
@@ -257,7 +261,7 @@ import { createTypingChannel } from "./typing";
   // only does anything while a hold is actually outstanding.
   const releaseLostHold = (): void => {
     try {
-      if (leader && leader.sticky) leader.sticky = false;
+      releaseLostHoldOnBlur(leader);
     } catch (err) {
       // ignore — a dead view must not break the key path
     }

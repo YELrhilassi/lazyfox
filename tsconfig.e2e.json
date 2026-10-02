@@ -1,0 +1,43 @@
+{
+  // Typecheck for the WebDriver BiDi end-to-end harness (scripts/e2e/).
+  //
+  // This tree was previously in NO typecheck at all: tsconfig.scripts.json
+  // includes only "scripts/*.ts" (one level), so nothing under scripts/bidi/
+  // was ever compiled. That is how a suite could call `navigate(...)` without
+  // importing it and only discover it as a runtime
+  // "ReferenceError: navigate is not defined" halfway through a 10-minute
+  // browser run.
+  //
+  // The harness talks to the raw (untyped) WebDriver BiDi protocol, so its
+  // values are protocol messages and strict null-checking them would be a lie.
+  // This config therefore turns OFF the checks that only make sense for
+  // well-typed application code (implicit any, null checks) while keeping the
+  // ones that catch real breakage in a test harness:
+  //
+  //   * cannot-find-name      — a helper used without importing it
+  //   * duplicate identifier  — two `const t` in one scope after a bad merge
+  //   * unused locals/params  — leftovers from a deleted sleep or a rename
+  //   * wrong arity/argument   — a mistyped ctx.wait* helper
+  //
+  // The `any`-typed `ctx` objects are deliberate (the harness composes them at
+  // runtime in createCtx), so they are not a source of false errors here.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "types": ["node"],
+    // Relaxed on purpose — see the note above.
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["scripts/e2e/**/*.ts"]
+}

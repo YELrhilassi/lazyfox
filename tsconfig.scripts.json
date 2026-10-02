@@ -46,11 +46,17 @@
   // drives LeaderController.handleKey with synthetic KeyboardEvent-shaped
   // objects, and leader.ts's public surface is typed against the DOM.
   //
-  // scripts/test-keyhold.ts is the eighth, and for the same reason plus one
-  // more: it drives chrome/keysdispatch.ts, whose deps and key shapes are
+  // scripts/test/keyhold.test.ts is excluded for the reason the older files
+  // were: it drives chrome/keysdispatch.ts, whose deps and key shapes are
   // typed against the DOM and Firefox chrome globals this config knows nothing
   // about. The module is typechecked by tsconfig.json; only the Node-side test
   // of it is out of scope here.
+  //
+  // The Node-side tests themselves now live in scripts/test/*.test.ts and run
+  // under node:test. They are INCLUDED here (see the include list below), so a
+  // change to a test file cannot silently break the build — scripts/test/ is
+  // one level below the old "scripts/*.ts" pattern and was, briefly, in no
+  // typecheck at all, exactly like the e2e harness was.
   "exclude": [
     "scripts/test-page-text.ts",
     "scripts/test-store.ts",
@@ -59,7 +65,7 @@
     "scripts/test-chrome-keys.ts",
     "scripts/test-overlays.ts",
     "scripts/test-leader-sequences.ts",
-    "scripts/test-keyhold.ts"
+    "scripts/test/keyhold.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",
@@ -77,5 +83,5 @@
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["build.ts", "scripts/*.ts"]
+  "include": ["build.ts", "scripts/*.ts", "scripts/test/**/*.ts"]
 }
