@@ -10,6 +10,11 @@ import { isTypingTarget } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { KeyGuard } from "../../shared/keyguard";
 import { LeaderController, isCancel, leaderSequences } from "../../shared/leader";
+import {
+  releaseHoldOnKeyup,
+  releaseLostHold as releaseLostHoldOnBlur,
+  visibilityLostHold,
+} from "../../shared/holdrelease";
 import { openNavPopup } from "../../shared/popups/nav";
 import { CATEGORY_TIMEOUT_MS, leaderCategories } from "../../shared/popups/categories";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
@@ -414,8 +419,7 @@ import type { ContentPopupShell } from "./find";
     "keyup",
     (e) => {
       try {
-        if (e.key !== config.leader) return;
-        leader.sticky = false;
+        releaseHoldOnKeyup(leader, config.leader, e.key);
       } catch (err) {
         // ignore
       }
@@ -438,7 +442,7 @@ import type { ContentPopupShell } from "./find";
   // outstanding, so it can run on every visibility change.
   const releaseLostHold = (): void => {
     try {
-      if (leader.sticky) leader.sticky = false;
+      releaseLostHoldOnBlur(leader);
     } catch (err) {
       // ignore
     }
@@ -446,7 +450,7 @@ import type { ContentPopupShell } from "./find";
   window.addEventListener("blur", releaseLostHold, true);
   try {
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState !== "visible") releaseLostHold();
+      if (visibilityLostHold(document.visibilityState)) releaseLostHold();
     });
   } catch (err) {
     // ignore
