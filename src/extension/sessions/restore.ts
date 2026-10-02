@@ -8,6 +8,7 @@
 // blocks overlapping restores.
 
 import { core } from "../../shared/core";
+import { splitPairsInRange } from "../../shared/splits";
 import type { Session, SessionTab } from "../../shared/types";
 import type { ChromeAction, ChromeReq } from "../../shared/protocol";
 import { realTabsInWindow } from "../tabs";
@@ -25,9 +26,32 @@ export function bindRestoreRequestChrome(fn: RequestChrome): void {
 // side effects (home conversion, autosave, status refresh) are suppressed
 // during it. The facade exposes isRestoring() from this flag.
 let restoring = false;
+// The in-flight restore, if any. Restores SERIALIZE on this rather than being
+// refused: switching sessions twice in quick succession used to drop the second
+// request on the floor with a "restore already in progress" note, so the user
+// asked for a session and silently got the other one. Waiting is the only
+// answer that matches what they did — the second switch is the newer intent,
+// so it must win.
+let inFlight: Promise<unknown> | null = null;
 
 export function isRestoringFlag(): boolean {
   return restoring;
+}
+
+/**
+ * Run `fn` once every previous restore has finished.
+ *
+ * Errors from the PREVIOUS restore are swallowed here (it reported its own
+ * failure through its own result); the caller's own error propagates.
+ */
+export function serializeRestore<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = inFlight || Promise.resolve();
+  const next = prev.then(fn, fn);
+  inFlight = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
 }
 
 // 1-based tab positions grouped by native splitViewId, for the chrome helper to
@@ -46,13 +70,26 @@ function splitGroupsOf(tabs: SessionTab[]): number[][] {
 }
 
 // The split layout for a session as 1-based groups for the chrome helper.
-// Preferred source is the Go-computed `splits` string; fall back to grouping
-// the per-tab splitViewId for sessions saved before the encoding existed.
+//
+// Preferred source is the Go-computed `splits` string; the per-tab
+// splitViewId grouping is the fallback. But the preference is CONDITIONAL: the
+// two are written together and should always agree, and when they don't the
+// encoded string is the one that is wrong. A session can be captured while the
+// window is mid-flight (a tab re-created by a restore, a request-hash tab that
+// reloads into a different URL), which leaves `splits` pointing at a position
+// the tab list no longer has. Pairing those positions silently restored a FLAT
+// strip — the split just vanished, with no error anywhere. So the encoded
+// pairs are accepted only when every index is inside the saved tab list; the
+// per-tab grouping is derived from the same list and is therefore always
+// self-consistent.
 export async function splitGroupsOfSession(s: Session): Promise<number[][]> {
+  const n = Array.isArray(s.tabs) ? s.tabs.length : 0;
   if (s.splits) {
     try {
       const pairs = await core.decodeSplits(s.splits);
-      if (pairs && pairs.length) return pairs.map((p) => [p[0] + 1, p[1] + 1]);
+      if (splitPairsInRange(pairs, n)) {
+        return pairs.map(([a, b]) => [a + 1, b + 1]);
+      }
     } catch {
       // fall through to the splitViewId grouping below
     }
@@ -93,6 +130,7 @@ async function needsSplitRestore(cur: any[], saved: Session): Promise<boolean> {
   } catch {
     return false;
   }
+  if (!splitPairsInRange(pairs, cur.length)) return false;
   for (const [a, b] of pairs) {
     const ta = cur[a] as any;
     const tb = cur[b] as any;
@@ -112,8 +150,11 @@ export async function applySessionToWindow(s: Session): Promise<number[]> {
   if (groups.length) {
     // The structured payload is the point of typing this channel: split
     // groupings travel as number[][], not as a JSON string the chrome side
-    // has to parse.
-    requestChrome("restoreSplits", { groups });
+    // has to parse. `expect` is how many real tabs the restore produced: the
+    // chrome side must wait for the strip to hold exactly that many before
+    // pairing, or it pairs positions against the tabs being torn down and the
+    // session comes back flat.
+    requestChrome("restoreSplits", { groups, expect: ids.length });
   }
   const active = Math.min(Math.max(0, s.active || 0), ids.length - 1);
   if (ids[active] != null) {
@@ -127,18 +168,20 @@ export async function restoreSession(
   checkpoint: () => Promise<void>,
   onRestored: () => Promise<void>
 ): Promise<void> {
-  beginRestore();
-  try {
-    await applySessionToWindow(s);
-    await onRestored();
-  } finally {
-    endRestore();
-    // Refresh the in-memory snapshot to the freshly-restored window
-    // immediately: flushOnQuit writes lastSnapshot into the current session
-    // on quit, and without this a quit right after a switch would persist
-    // the pre-switch checkpoint.
-    await checkpoint();
-  }
+  return serializeRestore(async () => {
+    beginRestore();
+    try {
+      await applySessionToWindow(s);
+      await onRestored();
+    } finally {
+      endRestore();
+      // Refresh the in-memory snapshot to the freshly-restored window
+      // immediately: flushOnQuit writes lastSnapshot into the current session
+      // on quit, and without this a quit right after a switch would persist
+      // the pre-switch checkpoint.
+      await checkpoint();
+    }
+  });
 }
 
 // Resume the saved session on startup when autoRestore is on. This runs

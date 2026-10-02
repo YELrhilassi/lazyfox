@@ -65,18 +65,107 @@ export async function run(ctx: any): Promise<void> {
     // ;+N digit is a position over the chrome's realTabs() (skips only
     // splitpanel/#lfc transients; commandcenter tabs COUNT), so resolve w3's
     // index over that same list.
-    const chromeReal = ids.filter((t) => ctx.isRealTab(t));
-    const w3ChromeIdx = chromeReal.findIndex((t) => t.id === w3Row.id) + 1;
-    assert(w3ChromeIdx <= 9, "w3 within ;+1-9: " + w3ChromeIdx);
+    // The position must come from the product's OWN numbering, read at the
+    // moment of the press — and read through a channel that does not change
+    // it. Both halves matter, and the second one is not obvious: a state reply
+    // rides the probe tab's `#lfc=state` hash, which makes the probe transient
+    // for the duration of the read, so the numbering that reply reports is
+    // missing a tab standing plainly in the strip. Every number after it is
+    // one short, and the move lands on the tab before the intended one.
+    // ctx.tabNumberOf reads the same list the tab popup numbers and the same
+    // one the digit resolves against, without touching the strip.
+    //
+    // "At the moment of the press" also has to mean a strip that has STOPPED
+    // changing. A real user never hits that race because the status bar shows
+    // the numbering LIVE beside their hand, so the honest primitive is "wait
+    // until it is quiescent", not "read it and hope".
+    const w3PosNow = async () => {
+      let last = "";
+      return waitFor(async () => {
+        const rows = await ctx.tabNumbers();
+        const sig = rows.map((r) => r.n + ":" + r.url).join("|");
+        if (sig && sig === last) {
+          const hit = rows.find((r) => r.url.indexOf("/lfw3") !== -1);
+          return hit ? hit.n : null;
+        }
+        last = sig;
+        return null;
+      }, 10000).catch(async () => {
+        throw new Error("tab numbering never settled: " + JSON.stringify(await ctx.tabNumbers()));
+      });
+    };
     await evalIn(ctx.probe, `browser.tabs.update(${w2Row.id}, { active: true })`).catch(() => {});
-    // ;+ on the w2 WEB page keeps w2 selected (leaderPress only focuses).
-    await ctx.leaderPress(tabs2[1], "=", { shift: true }); // ;+
-    await ctx.press(tabs2[1], String(w3ChromeIdx)); // digit -> pair (w2, w3)
+    // Create the split explicitly first. This test used to jump straight to
+    // the move, which only worked because an EARLIER test had left a live
+    // split view behind for `;W m` to attach to — so the test only passed when
+    // it ran after that one, and its own subject (a mid-strip pair surviving a
+    // restore) was never actually exercised in isolation. `;W |` is also the
+    // real user flow: pair the current tab, then move the partner in.
+    await ctx.leaderSeq(tabs2[1], ["W", "|"]); // ;W | -> split side-by-side
     await waitFor(async () => {
       const ts = await ctx.tabsInfo();
-      const sv2 = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
-      return sv2.length === 2 ? sv2 : null;
-    }, 10000);
+      return ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0).length === 2
+        ? true
+        : null;
+    }, 10000).catch(async () => {
+      throw new Error(";W | did not form the initial split: " + JSON.stringify((await ctx.tabsInfo()).map((t) => (t.url || "").slice(-10))));
+    });
+    // The pair we ASKED FOR — not merely "any two split tabs". The `;W |` step
+    // already forms a pair (the active tab plus the companion panel), so a
+    // "two tabs have a splitViewId" wait passes immediately and the save then
+    // captures the window mid-move, with the panel still in place and the real
+    // partner not yet swapped in. The stored session came back with no split
+    // at all, which read as a restore bug.
+    const wantedPair = async (ms: number) =>
+      waitFor(async () => {
+        const ts = await ctx.tabsInfo();
+        const sv2 = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+        const urls = sv2.map((t) => t.url || "");
+        const hasW2 = urls.some((u) => u.indexOf("/lfw2") !== -1);
+        const hasW3 = urls.some((u) => u.indexOf("/lfw3") !== -1);
+        // The panel must be gone: it is pure UI and is replaced by the real
+        // partner, never saved as a session tab.
+        const noPanel = !urls.some((u) => u.indexOf("splitpanel.html") !== -1);
+        return sv2.length === 2 && hasW2 && hasW3 && noPanel ? sv2 : null;
+      }, ms);
+
+    // `;W m` on the w2 WEB page keeps w2 selected (leaderSeq only focuses).
+    // The target is typed as its full number, so a position past nine works
+    // exactly like a single digit — which is the point of routing the split
+    // move through the same planner `;1` uses.
+    //
+    // Retried, and only when NOTHING happened. A chord that never reached the
+    // move leaves no trace at all in the chrome's move trail, and a user
+    // simply presses it again; retrying is also the only honest response,
+    // because a trace-less failure says nothing about which part drifted.
+    // A chord that DID run but moved the wrong tab stops the loop: repeating
+    // it would compound a real defect instead of hiding it.
+    let w3ChromeIdx = 0;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      w3ChromeIdx = await w3PosNow();
+      assert(w3ChromeIdx >= 1, "w3 has a strip position: " + w3ChromeIdx);
+      const before = String((await ctx.chromeState().catch(() => "ERR"))?.lastMoveDebug || "");
+      await ctx.leaderSeq(tabs2[1], ["W", "m"]); // ;W m -> move tab into split
+      for (const d of String(w3ChromeIdx)) {
+        await ctx.press(tabs2[1], d); // digits -> pair (w2, w3)
+      }
+      const paired = await wantedPair(attempt === 3 ? 10000 : 3000).then(() => true).catch(() => false);
+      if (paired) break;
+      const after = String((await ctx.chromeState().catch(() => "ERR"))?.lastMoveDebug || "");
+      if (after !== before) break; // a move ran; retrying would compound it
+      if (attempt === 3) break;
+    }
+    await wantedPair(2000).catch(async () => {
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error(
+        "split pair not formed; w3Idx=" + w3ChromeIdx +
+        " lastAction=" + JSON.stringify(st && st.lastAction) +
+        " leaderPending=" + JSON.stringify(st && st.leaderPending) +
+        " moveLog=" + JSON.stringify(st && st.lastMoveDebug) +
+        " strip=" + JSON.stringify(st && st.strip) +
+        " tabs=" + JSON.stringify((await ctx.tabsInfo()).map((t) => ({ u: (t.url || "").slice(-10), s: t.splitViewId })))
+      );
+    });
     // Save this layout, then switch away and back — each save waits for its
     // storage write to land.
     await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lforder" } }); true`);
@@ -111,7 +200,8 @@ export async function run(ctx: any): Promise<void> {
     }, 15000).catch(async () => {
       const ts = await ctx.tabsInfo().catch(() => "ERR");
       const st = await ctx.chromeState().catch(() => "ERR");
-      throw new Error("restore order never settled; want=" + beforeOrder + " w2SavedIdx=" + iw2Saved + " realAfter=" + JSON.stringify(Array.isArray(ts) ? ts.filter((t) => { const u = t.url || ""; return !u.includes("commandcenter.html") && !u.includes("relay.html"); }).map((t) => ({ u: t.url, s: t.splitViewId })) : ts) + " strip=" + JSON.stringify(st && st.strip));
+      const sv: any = await storeGet(`browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.lforder)`).catch(() => null);
+      throw new Error("restore order never settled; want=" + beforeOrder + " w2SavedIdx=" + iw2Saved + " splits=" + JSON.stringify(sv && sv.splits) + " savedTabs=" + JSON.stringify(((sv && sv.tabs) || []).map((x) => ({ u: (x.url || "").slice(-10), s: x.splitViewId }))) + " realAfter=" + JSON.stringify(Array.isArray(ts) ? ts.filter((t) => { const u = t.url || ""; return !u.includes("commandcenter.html") && !u.includes("relay.html"); }).map((t) => ({ u: (t.url||"").slice(-10), s: t.splitViewId })) : ts) + " realTabs=" + JSON.stringify(st && st.realTabs));
     });
     assert(restored != null, "restore kept every tab's strip slot (want " + beforeOrder + " with w2@" + iw2Saved + "): " + JSON.stringify((await ctx.tabsInfo()).map((t) => ({ u: t.url, s: t.splitViewId }))));
     const svTabs = restored.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);

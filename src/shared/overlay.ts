@@ -395,11 +395,19 @@ export class RectOverlay {
   private host: (HTMLElement & { _sh?: ShadowRoot }) | null = null;
   private clearTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(
-    private id: string,
-    private zIndex: number,
-    private rectCss: string
-  ) {}
+  // Declared as plain fields rather than constructor parameter properties:
+  // parameter properties are a compile-time-only construct that Node's
+  // type-stripping loader (used by the unit tests) cannot erase, so a single
+  // one anywhere in the import graph would make the module untestable.
+  private readonly id: string;
+  private readonly zIndex: number;
+  private readonly rectCss: string;
+
+  constructor(id: string, zIndex: number, rectCss: string) {
+    this.id = id;
+    this.zIndex = zIndex;
+    this.rectCss = rectCss;
+  }
 
   // Draws the given viewport rects (`.o` elements) into the overlay host,
   // replacing whatever was there. Empty rects clears the overlay.

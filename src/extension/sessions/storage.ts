@@ -81,19 +81,42 @@ export async function openTabsInCurrentWindow(tabs: SessionTab[]): Promise<numbe
   const win = await browser.windows.getCurrent();
   const cur = await browser.tabs.query({ currentWindow: true });
   const entries = (tabs || []).filter((t) => t && t.url);
-  // Tabs we may remove: unpinned and not the transient chrome-helper request
-  // tab (commandcenter #lfc=req...). Removing that tab from inside its own
-  // onUpdated handler while it is still being processed can crash Firefox; the
-  // request handler cleans it up itself after the restore.
+  // Two different questions, previously answered by one list and therefore
+  // wrong in both directions.
+  //
+  //   1. What may this restore DELETE? Everything unpinned except an in-flight
+  //      `#lfc=req` tab (removing that one from inside its own onUpdated
+  //      handler, while it is still being processed, can crash Firefox — its
+  //      request handler cleans it up itself). This deliberately still includes
+  //      stale `#lfc=` tabs and the split-panel pane: the window is being
+  //      replaced, and leaving either behind leaves a stray pane in a session
+  //      that was supposed to be rebuilt from scratch.
+  //
+  //   2. What may this restore REUSE as the host for the first saved URL? Only
+  //      a REAL tab. An internal tab closes itself a moment later, so reusing
+  //      one meant the first saved tab was destroyed with it: the restore came
+  //      back a tab short, every position after it shifted by one, and a saved
+  //      split pair silently dissolved. The old code reused the last removable
+  //      tab, which could be a `#lfc=state` debug tab — the exact failure.
+  const inFlightRequest = (t: any) =>
+    !!(t && t.url && t.url.indexOf("#lfc=req") !== -1);
   const removable = (cur || []).filter(
-    (t: any) => !t.pinned && !(t.url && t.url.indexOf("#lfc=req") !== -1)
+    (t: any) => !t.pinned && !inFlightRequest(t)
   );
-  // Host tab for the first restored URL. Prefer a removable tab (never remove
-  // the window's last tab: closing it closes the whole window). When every tab
-  // is pinned or a transient request tab, fall back to the active tab so a
-  // restore never piles the saved tabs on top of an unremovable strip.
+  // Never remove the window's last tab: closing it closes the whole window, so
+  // the fallback below still has to be a tab we can update in place.
+  const realCandidates = removable.filter((t: any) => !isUITab(t));
+  // The host is the FIRST real tab, not the last. It is reused for the first
+  // saved URL while the rest are appended after it, so its slot in the strip
+  // decides where the whole restored session starts. Taking the last real tab
+  // — which is what this did — left the first saved tab wherever the host
+  // happened to be, so a restore reproduced the tabs but not their ORDER: the
+  // numbering shifted and a saved split pair ended up on the wrong pair of
+  // tabs. Choosing the first real tab makes "reused in place" and "opened in
+  // order" the same thing, which is the property a restore actually needs.
   const host =
-    removable[removable.length - 1] ||
+    realCandidates[0] ||
+    removable[0] ||
     (cur || []).find((t: any) => t.active) ||
     (cur || [])[0] ||
     null;

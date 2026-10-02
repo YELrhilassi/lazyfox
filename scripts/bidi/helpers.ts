@@ -8,6 +8,7 @@ import {
   navigate,
   evalIn,
   keyTap,
+  keyHoldSequence,
   waitFor,
   waitForValue,
   sleep,
@@ -257,7 +258,50 @@ export function createCtx(runtime): any {
     }
   };
 
-  ctx.leaderPress = async function leaderPress(tab, key, opts) {
+  // Press a leader CHORD: the leader key, then every key in `keys` in order.
+//
+// Categories (`;W |`, `;Z i`) are two- and three-keystroke chords, and a test
+// that spelled one as three separate leaderPress calls would re-arm the leader
+// between them — testing something the user never does. Arming ONCE and then
+// sending the whole chord is the shape the product actually sees.
+ctx.leaderSeq = async function leaderSeq(tab, keys, opts) {
+  if (await ctx.chromeOwnsLeader(tab)) {
+    await ctx.chromeLeaderSeq(tab, keys, opts);
+    return;
+  }
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await focusPage(tab).catch(() => {});
+    await ctx.press(tab, ";");
+    const armed = await ctx.tryArm(tab, 2500);
+    if (armed) {
+      for (const k of keys) await ctx.press(tab, k, opts);
+      return;
+    }
+    await keyTap(tab, "Escape").catch(() => {});
+    await sleep(150);
+  }
+  throw new Error("leader did not arm for chord " + JSON.stringify(keys) + " (3 attempts)");
+};
+
+ctx.chromeLeaderSeq = async function chromeLeaderSeq(tab, keys, opts) {
+  // Same rationale as chromeLeaderPress: the chrome document captures the
+  // leader key synchronously, so no page focus and no clicks (a click near a
+  // split-pane border would switch the active pane underneath the action).
+  await evalIn(tab, `document.activeElement && document.activeElement.blur ? (document.activeElement.blur(), true) : true`).catch(() => {});
+  await ctx.press(tab, ";");
+  // No page-realm arm signal exists for the chrome leader, so this is bounded
+  // pacing between the leader and the first binding key — anything longer
+  // races the leader's own arm timeout and the key lands as plain typing.
+  await sleep(300);
+  for (const k of keys) {
+    await ctx.press(tab, k, opts);
+    // The sub-key arms its own one-shot capture, so each key after the first
+    // needs the same pacing.
+    await sleep(250);
+  }
+};
+
+ctx.leaderPress = async function leaderPress(tab, key, opts) {
     if (await ctx.chromeOwnsLeader(tab)) {
       await ctx.chromeLeaderPress(tab, key, opts);
       return;
@@ -345,6 +389,15 @@ export function createCtx(runtime): any {
     return (r && r.tabs) || [];
   };
 
+  // Send keys through the synthetic #lfc=keys channel.
+  //
+  // Each entry is `{ k, shift?, ctrl?, alt?, meta?, up? }`. `up` defaults to
+  // TRUE — the product synthesizes a matching keyup for every key, because a
+  // real keyboard always sends one and the leader's held state is defined by
+  // whether it arrives. Pass `up: false` to express a genuinely HELD key: that
+  // is the only way to test the held-leader feature, and getting it wrong is
+  // not a test artefact — a tap that never releases looks exactly like a hold,
+  // which is precisely why the release travels on this channel at all.
   ctx.sendKeys = async function sendKeys(tab, keys) {
     let idx = -1;
     if (tab) {
@@ -383,6 +436,12 @@ export function createCtx(runtime): any {
       await keyTap(tab, key, opts);
     }
     await sleep(150);
+  };
+
+  // Hold one key down across a list of others — see lib.ts keyHoldSequence for
+  // why it must be a single action list rather than separate calls.
+  ctx.holdSequence = async function holdSequence(tab, held, keys) {
+    await keyHoldSequence(tab, held, keys);
   };
 
   ctx.keyTap = async function keyTap_(tab, key, opts: KeyOpts = {}) {
@@ -704,11 +763,51 @@ export function createCtx(runtime): any {
   // leader key and all popups when it is installed (the real user setup), so
   // tests must probe it instead of page-side state on extension pages.
   //
+  // The window's tab numbering as the USER sees it, read through a channel
+  // that does not perturb it.
+  //
+  // This exists because chromeState() cannot answer it. The state reply rides
+  // the probe tab's own `#lfc=state` hash, and a `#lfc=` tab is transient by
+  // the product's own rule — so while the harness holds the probe, the probe
+  // is missing from the numbering the reply reports. That is an artefact of
+  // HOW the state was read, not a fact about the window: the probe is a
+  // command-center tab sitting in plain sight in the strip. Any test that
+  // positions a tab from a state reply is therefore one short, and a move
+  // lands on the tab before the one it asked for.
+  //
+  // `tabs` is the same list the tab popup numbers and the same one `;W m`
+  // resolves its digit against, and it is a plain runtime message that leaves
+  // the strip alone. The 1-based index is the popup's own numbering, so
+  // nothing about the rule is re-implemented here.
+  ctx.tabNumbers = async function tabNumbers(): Promise<Array<{ n: number; url: string }>> {
+    const rows = await evalIn(
+      ctx.probe,
+      `browser.runtime.sendMessage({ action: "tabs" }).then(r => ((r && r.tabs) || []).map(t => t.url || ""))`
+    );
+    return ((rows as string[]) || []).map((url, i) => ({ n: i + 1, url }));
+  };
+
+  // The position the product's numbering gives the first tab whose URL
+  // contains `frag`, or 0 when no such tab is in the window.
+  ctx.tabNumberOf = async function tabNumberOf(frag: string): Promise<number> {
+    const rows = await ctx.tabNumbers();
+    const hit = rows.find((r) => r.url.indexOf(frag) !== -1);
+    return hit ? hit.n : 0;
+  };
+
   // The query is driven through the background `probe` tab (never a fresh tab):
   // creating a tab would make it the selected tab and disturb both the active
   // tab the caller is working with and the selectedTab-derived state (muted).
   // The probe's extension realm survives the navigation, so tabsInfo() keeps
   // working.
+  //
+  // CAVEAT, and it has bitten twice: `realTabs` in the reply is NOT the
+  // window's numbering. The reply rides the probe's own `#lfc=state` hash,
+  // which makes the probe transient for the length of the read, so the probe
+  // — a command-center tab plainly visible in the strip — is missing and every
+  // number after it is one short. Use it to inspect chrome-side state, never
+  // to position a tab; ctx.tabNumberOf reads the numbering without perturbing
+  // it.
   ctx.chromeState = async function chromeState(): Promise<any> {
     const activeId = await evalIn(
       ctx.probe,

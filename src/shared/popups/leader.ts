@@ -69,6 +69,83 @@ export function tabDigit(ctx: PopupCtx, digit: number): void {
   })();
 }
 
+// Arm a digit capture whose digits name a tab POSITION, resolved by the same
+// planner `;1` uses — one digit when that is a complete answer, a prefix that
+// waits for one more when it is not.
+//
+// `;1` resolves a position in one shot (the whole chord is already typed); this
+// is the same rule for a sub-key that asks for a position afterwards, so the
+// two can never disagree about what a number means. The split-move is why it
+// exists: `;W m` used to take a bare single digit and therefore went
+// unreachable — silently, with no error — the moment a window passed nine tabs.
+// Sharing the planner means both grow a second digit at the same time.
+//
+// The capture is STATEFUL and handles every digit synchronously once the tab
+// count is known. That is not an optimisation, it is a correctness requirement:
+// an earlier version resolved the first digit asynchronously and opened the
+// chooser for the ambiguous case, which meant a fast second digit arrived
+// BEFORE anything was listening for it and fell through to the leader as an
+// unrelated binding. Typing "10" must never fire whatever `;0` would have.
+//
+// The count is fetched once when the capture arms (it is the same strip the
+// digits are resolved against, so it cannot meaningfully change mid-typing).
+export function armTabPosition(
+  ctx: PopupCtx,
+  apply: (n: number) => void
+): void {
+  let count = -1;
+  let prefix = "";
+  // The host's capture is one-shot: it disarms after the key it consumes. A
+  // position can need two digits, so an ambiguous prefix re-arms the SAME
+  // handler rather than relying on the caller to press the leader again.
+  const handler = (k: string): boolean => {
+    if (!/^[0-9]$/.test(k)) {
+      // Not a digit: drop the position and let the key through untouched.
+      // Swallowing it would make the keystroke after `;W m` unpredictable.
+      prefix = "";
+      return false;
+    }
+    // A leading zero cannot start a position, and must not be swallowed.
+    if (!prefix && k === "0") return false;
+    prefix += k;
+    const resolved = (n: number) => {
+      const plan = planTabJump(n, prefix, Number(prefix));
+      if (plan.kind === "jump") {
+        prefix = "";
+        apply(plan.n);
+        return;
+      }
+      if (plan.kind === "none") {
+        // The window is too short for this number: fall back to the digits
+        // typed so far rather than turning a live key into a dead one.
+        const typed = Number(prefix);
+        prefix = "";
+        apply(typed);
+        return;
+      }
+      // Ambiguous — more than one tab carries this prefix. Stay armed for the
+      // next digit.
+      ctx.armDigits(handler, 1500);
+    };
+    if (count >= 0) {
+      resolved(count);
+    } else {
+      void ctx.ops
+        .tabCount()
+        .then((n) => {
+          count = n;
+          resolved(n);
+        })
+        .catch(() => {
+          count = 0;
+          resolved(0);
+        });
+    }
+    return true;
+  };
+  ctx.armDigits(handler, 3000);
+}
+
 // The single leader binding table. Both contexts map the same key to the same
 // action; only the ActionOps implementation differs per context.
 export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
@@ -79,7 +156,6 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     o: () => openUrlPopup(ctx),
     O: () => openUrlPopup(ctx, true),
     t: () => openTabsPopup(ctx),
-    w: () => ctx.ops.openResize(),
     h: () => openHistoryPopup(ctx),
     b: () => openBookmarksPopup(ctx),
     d: () => openDownloadsPopup(ctx),
@@ -88,16 +164,12 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     p: () => openSessionsPopup(ctx),
     "'": () => openSessionsPopup(ctx),
     Q: () => ctx.ops.quit(),
-    "|": () => ctx.ops.splitTab("horizontal"),
-    "[": () => ctx.ops.switchSplitPane(-1),
-    "]": () => ctx.ops.switchSplitPane(1),
-    "{": () => ctx.ops.swapSplitPane(-1),
-    "}": () => ctx.ops.swapSplitPane(1),
-    ",": () => ctx.ops.moveActiveTab(-1),
-    ".": () => ctx.ops.moveActiveTab(1),
-    "\\": () => ctx.ops.unsplitTab(),
-    // `;+1-9` (move a specific tab into the split) needs the leader's one-shot
-    // digit capture, so it is wired by each context after makeLeaderActions.
+    // The split family, the window toggles and zoom now live under `;W` and `;Z`
+    // (see shared/popups/categories.ts). They used to sit at top level, where
+    // the split family alone cost nine punctuation keys for something used in
+    // short deliberate bursts, and zoom cost three more for a set nobody
+    // invents independently. Everything hot — tabs, navigation, opening,
+    // sessions — stays exactly where it was.
     i: () => ctx.ops.focusFirstInput(),
     I: () => ctx.ops.openSetup(),
     T: () => ctx.ops.openDiagnostics(),
@@ -130,13 +202,12 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     // special case that makes a keymap feel arbitrary. `$` is the vim end-of-
     // line mnemonic, is free at top level, and is a single keystroke.
     "$": () => ctx.ops.tabJump(0),
-    "=": () => ctx.ops.zoom(0.2),
-    "-": () => ctx.ops.zoom(-0.2),
-    "0": () => ctx.ops.zoom(0, 1),
+    // Zoom is `;Z i` / `;Z o` / `;Z r`; zen is `;W z`; the toolbar toggle is
+    // `;W e`. Leaving the old top-level spellings in place would defeat the
+    // point: the whole reason to move them is that `;W` and `;Z` exist, and a
+    // duplicate binding is one more thing to remember rather than one fewer.
     "/": () => ctx.ops.openFind(),
-    z: () => ctx.ops.zen(),
     "?": () => openHelpPopup(ctx),
-    e: () => ctx.ops.toggleReveal(),
     q: () => ctx.ops.toggleWhichKey(),
   };
 }

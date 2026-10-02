@@ -27,7 +27,12 @@ var Bindings = []WkItem{
 	{Key: "j", Label: "Next tab", Group: "Tabs"},
 	{Key: "k", Label: "Previous tab", Group: "Tabs"},
 	{Key: "a", Label: "Alternate tab (last used)", Group: "Tabs"},
-	{Key: "1", Label: "Go to tab 1-8", Group: "Tabs"},
+	// Digits are tab POSITIONS, and they compose. With nine tabs or fewer every
+	// digit is unambiguous and one keystroke goes straight there; past nine a
+	// digit that could be a prefix waits for one more (`;1` then `;1` is tab
+	// 11). The label says so, because "Go to tab 1-8" would be a lie the
+	// moment a tenth tab exists.
+	{Key: "1", Label: "Go to tab 1 (or prefix, e.g. ;11)", Group: "Tabs"},
 	{Key: "9", Label: "Go to tab 9", Group: "Tabs"},
 	{Key: "$", Label: "Go to last tab", Group: "Tabs"},
 
@@ -37,9 +42,10 @@ var Bindings = []WkItem{
 	{Key: "l", Label: "Forward", Group: "Navigation"},
 	{Key: "y", Label: "Copy URL", Group: "Navigation"},
 	{Key: "m", Label: "Mute tab", Group: "Navigation"},
-	{Key: "=", Label: "Zoom in", Group: "Navigation"},
-	{Key: "-", Label: "Zoom out", Group: "Navigation"},
-	{Key: "0", Label: "Reset zoom", Group: "Navigation"},
+	// Zoom used to be `=` `-` `0` at top level and now lives under `;Z`. The
+	// rows are GONE rather than re-labelled: a which-key row for a key that no
+	// longer does anything is the same lie as the `;G` rows that shipped
+	// advertising a binding nobody could reach. The menu shows what IS true.
 
 	// ---- Open ----
 	{Key: "o", Label: "Open URL (new tab)", Group: "Open"},
@@ -59,28 +65,25 @@ var Bindings = []WkItem{
 	{Key: "F", Label: "Scroll target: next region", Group: "Tools"},
 	{Key: "B", Label: "Scroll target: previous region", Group: "Tools"},
 	{Key: "T", Label: "Diagnostics & performance", Group: "Tools"},
-	{Key: "w", Label: "Resize window", Group: "Tools"},
 	{Key: "/", Label: "Find in page", Group: "Tools"},
 	{Key: "?", Label: "Keybindings help", Group: "Tools"},
 	{Key: "q", Label: "Toggle which-key overlay", Group: "Tools"},
-	{Key: "e", Label: "Toggle toolbar reveal", Group: "Tools"},
-	{Key: "z", Label: "Zen mode", Group: "Tools"},
 	{Key: "D", Label: "Dismiss download notification", Group: "Tools"},
 	{Key: "N", Label: "Stealth tab (isolated, wiped on close)", Group: "Tools"},
+
+	// ---- Categories (two-key chords) ----
+	//
+	// A category head is not a binding on its own: it arms a one-shot capture
+	// for its sub-key. The sub-keys are listed in the label because the
+	// overlay is where a user LEARNS the layout, and a row that said only
+	// "Window & layout" would advertise a key and explain nothing.
+	{Key: "W", Label: "Window & layout \u2192 | [ ] { } , . u m w z e", Group: "Categories"},
+	{Key: "Z", Label: "Zoom \u2192 i in \u00b7 o out \u00b7 r reset", Group: "Categories"},
 
 	// ---- Sessions (tmux-style) ----
 	{Key: "p", Label: "Sessions", Group: "Sessions"},
 	{Key: "Q", Label: "Save session and quit", Group: "Sessions"},
 	{Key: "'", Label: "Switch session 1-9", Group: "Sessions"},
-	{Key: "|", Label: "Split side-by-side", Group: "Sessions"},
-	{Key: "[", Label: "Split pane left", Group: "Sessions"},
-	{Key: "]", Label: "Split pane right", Group: "Sessions"},
-	{Key: "{", Label: "Swap pane left", Group: "Sessions"},
-	{Key: "}", Label: "Swap pane right", Group: "Sessions"},
-	{Key: "+", Label: "Move tab 1-9 into split", Group: "Sessions"},
-	{Key: ",", Label: "Move tab left", Group: "Sessions"},
-	{Key: ".", Label: "Move tab right", Group: "Sessions"},
-	{Key: "\\", Label: "Close split view", Group: "Sessions"},
 
 	// ---- Firefox native (display only) ----
 	{Key: "Ctrl+T", Label: "New tab", Group: "Firefox native", Native: true},

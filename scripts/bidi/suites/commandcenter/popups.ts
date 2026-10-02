@@ -56,7 +56,7 @@ export async function run(ctx: any): Promise<void> {
   });
   await t("leader ;w opens the resize popup and arrows resize the window", async () => {
     await ctx.openCC(ctx.tabA);
-    await ctx.leaderPress(ctx.tabA, "w");
+    await ctx.leaderSeq(ctx.tabA, ["W", "w"])
     await popupOpen();
     const before = await ctx.windowInnerSize();
     await ctx.press(ctx.tabA, "ArrowRight");

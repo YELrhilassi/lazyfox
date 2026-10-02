@@ -303,7 +303,7 @@ hold ;            -> arm the leader once
 press g           -> back
 press l           -> forward        (leader still held, no second ; press)
 press cancel      -> dismiss
-release ;         -> disarm
+release ;         -> end the chaining; the leader stays armed as after a tap
 ```
 
 This is what makes consecutive same-family actions cheap — `;g ;l` back and
@@ -311,11 +311,54 @@ forward repeatedly, or `;x` closing several tabs — without a keystroke per
 action. It also gives the cancel key a natural home: **hold `;` and press
 cancel** to dismiss without ever giving up the leader.
 
-Two consequences to build deliberately, not discover later:
+**Release ends the hold, not the leader.** A tap is a keydown *and* a keyup, so
+disarming on release would disarm the leader instantly and `;` plus a binding
+would stop working everywhere — the feature would delete the keymap rather than
+extend it. Release only ends the chaining; the next binding runs and disarms as
+usual. This is the single most load-bearing consequence in the section, and the
+one most likely to be got wrong.
 
-- Releasing `;` must disarm even if no key followed it.
-- The cancel key while the leader is held must **not** fall through to the
-  page's own `Esc` handling.
+The other consequence to build deliberately rather than discover later: **the
+cancel key while the leader is held must not fall through to the page's own
+`Esc` handling.** An armed leader consumes the key before the page can see it,
+which is what makes "hold `;`, press cancel" a way to dismiss without giving up
+the key. `Ctrl+G` is the alternative for the same reason `Esc` cannot be: it
+cancels a sequence *and* is impossible for a site to want.
+
+### The hold is a claim about key lifecycle, so the release has to be accounted for
+
+A leader is "held" from a keydown until a keyup arrives. Every way that
+arithmetic can come out wrong is a dead keyboard rather than a wrong badge,
+because a leader stuck *held* stays armed after every binding and eats the
+user's next ordinary keystroke. Three cases, all handled in the dispatchers
+(`src/chrome/keysdispatch.ts`, `src/chrome/main.ts`,
+`src/extension/content/main.ts`) and pinned by `scripts/test-keyhold.ts`:
+
+- **A keydown with no keyup to match.** The content-process actor bridge and
+  the `#lfc=keys` channel both dispatch a bare keydown, and neither wire format
+  carries a release. The dispatch therefore takes an explicit `noKeyup` flag
+  and treats such a key as a tap. Note this is a *different fact* from
+  `fromActor`, which is about ownership: the `#lfc=keys` channel drives the real
+  selection, which may be a page the content script owns, and conflating the two
+  would handle one keystroke twice. (`#lfc=keys` grew an `up: false` field so a
+  hold is expressible there at all; it is how the channel stops lying about the
+  difference between a tap and a hold.)
+- **A keydown with a keyup, but the leader is already armed.** The leader key is
+  only a press that *arms* the leader while the leader is down; an armed leader
+  treats every key, `;` included, as a binding. So a hold has to start from a
+  disarmed leader, which is the state a user is in when they reach for `;`.
+- **A keyup that never arrives.** Press `;`, switch away before releasing, and
+  the release is delivered wherever focus ended up — this window never sees it.
+  Both hosts therefore drop the hold on `blur` and on `visibilitychange`. Only
+  the hold is cleared: losing focus is not the user changing their mind about
+  the sequence, so the leader stays armed exactly as a released tap leaves it.
+
+The synthetic `#lfc=keys` channel cannot exercise the third case end to end: a
+web page's content script lives in another process, so the channel's
+`contentWindow` fallback is null there, and BiDi releases a key source when its
+action list ends, so a keydown with no keyup is unreachable through real input.
+That is why the property is pinned by a unit test rather than only in the
+browser.
 
 ---
 

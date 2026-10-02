@@ -25,6 +25,17 @@ export interface KeysDeps {
     metaKey: boolean;
     isComposing: boolean;
   }): boolean;
+  // The matching keyUP. The channel used to carry keydowns only, which is why
+  // a synthetic `;` could not be distinguished from a held one: the leader
+  // has no release to wait for, so nothing can tell a tap from a hold except
+  // the fact that the keyup never arrives. That is not a detail — the held-
+  // leader feature is defined entirely in terms of that release, so a channel
+  // that cannot send one cannot exercise it, and a leader left marked held by
+  // a keyup-less tap never recovers.
+  //
+  // It is the SAME handler the real window keyup listener runs, so a synthetic
+  // release and a genuine one cannot drift into behaving differently.
+  release(key: string): void;
 }
 
 // Apply the Shift modifier to a printable key the way a real keyboard does
@@ -130,7 +141,14 @@ function dispatchToFocused(
     altKey: boolean;
     metaKey: boolean;
   },
-  targetTab: any
+  targetTab: any,
+  // Whether this keystroke ends with a release. False means the caller is
+  // deliberately HOLDING the key down, and a keydown without its keyup is
+  // exactly how a physical hold looks to the page — so omitting it here is
+  // what lets a held leader be exercised on a web page at all. Sending the
+  // keyup regardless would silently turn every hold into a tap, and the
+  // held-leader feature would be untestable and, worse, unobservable.
+  withKeyup = true
 ): void {
   try {
     const popupInput = document.querySelector(".lf-input") as HTMLElement | null;
@@ -139,7 +157,7 @@ function dispatchToFocused(
       // so a synthetic one would double-insert alongside maybeInsertText.
       // Neither the command center nor the popups listen to keypress.
       const notCanceled = popupInput.dispatchEvent(buildKeyEvent("keydown", ev));
-      popupInput.dispatchEvent(buildKeyEvent("keyup", ev));
+      if (withKeyup) popupInput.dispatchEvent(buildKeyEvent("keyup", ev));
       maybeInsertText(popupInput, ev, notCanceled);
       return;
     }
@@ -156,7 +174,7 @@ function dispatchToFocused(
       // charCode makes the editor insert the text natively, double-inserting
       // alongside maybeInsertText.
       const notCanceled = target.dispatchEvent(buildKeyEvent("keydown", ev, ctor));
-      target.dispatchEvent(buildKeyEvent("keyup", ev, ctor));
+      if (withKeyup) target.dispatchEvent(buildKeyEvent("keyup", ev, ctor));
       maybeInsertText(target, ev, notCanceled);
     }
   } catch (e) {
@@ -180,7 +198,7 @@ export function handleKeys(
   const dot = rest.indexOf(".");
   const payload = dot < 0 ? rest : rest.slice(0, dot);
   const nonce = dot < 0 ? "" : rest.slice(dot + 1);
-  let req: { idx?: number; keys?: Array<{ k: string; shift?: boolean; ctrl?: boolean; alt?: boolean; meta?: boolean }> } = {};
+  let req: { idx?: number; keys?: Array<{ k: string; shift?: boolean; ctrl?: boolean; alt?: boolean; meta?: boolean; up?: boolean }> } = {};
   try {
     const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
     req = JSON.parse(new TextDecoder().decode(bytes));
@@ -230,8 +248,16 @@ export function handleKeys(
         metaKey: !!k.meta,
         isComposing: false,
       };
+      // The release half of the keystroke, unless the caller is deliberately
+      // holding the key down (`up: false`). A real keyboard always produces
+      // one, and the leader's held state is defined by whether it arrives — so
+      // omitting it by default would leave every synthetic tap looking like a
+      // hold. Sending it by default is what makes `;` a tap here and only an
+      // explicit `up: false` a hold.
+      const withKeyup = k.up !== false;
       const consumed = deps.dispatch(ev);
-      if (!consumed) dispatchToFocused(ev, targetTab);
+      if (!consumed) dispatchToFocused(ev, targetTab, withKeyup);
+      if (withKeyup) deps.release(ev.key);
     } catch (e) {
       errReply(e);
       return;

@@ -29,6 +29,8 @@ export interface DebugState {
   dlActive(): string[];
   isFullscreen(): boolean;
   activeSplitView(): any;
+  // The real (user) tab list, in the order the product numbers them.
+  realTabs(): any[];
   cfg(): ChromeCfg;
   // The persistent relay's helper-side state (relayDebug from channel.ts).
   relay(): any;
@@ -340,6 +342,34 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
           }
         })(),
         leaderPending: st.leaderPending(),
+        // The product's OWN tab numbering, published rather than re-derived by
+        // the e2e harness. The harness used to rebuild this list itself from
+        // the strip and got it subtly wrong (it counted the relay tab the
+        // product skips), so a correctly-typed digit named the wrong tab and
+        // the failure surfaced as "the split did not form" — pointing at the
+        // feature instead of at the test. Anything that needs a tab POSITION
+        // must read it from here; there is exactly one numbering.
+        realTabs: (() => {
+          try {
+            return st.realTabs().map((t: any, i: number) => {
+              let spec = "";
+              try {
+                spec = t.linkedBrowser && t.linkedBrowser.currentURI
+                  ? t.linkedBrowser.currentURI.spec : "";
+              } catch (e) {
+                // torn down mid-enumeration
+              }
+              return {
+                n: i + 1,
+                u: (spec.split("?")[0] || "").replace(/^moz-extension:\/\/[^/]+\//, "ext:").slice(-40),
+                sv: t.splitview ? t.splitview.splitViewId : (t.splitViewId ?? -1),
+                pinned: !!t.pinned,
+              };
+            });
+          } catch (e) {
+            return { error: String(e) };
+          }
+        })(),
         strip: (() => {
           try {
             return Array.from(window.gBrowser.tabs).map((t: any, i: number) => {
