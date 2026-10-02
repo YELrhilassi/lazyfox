@@ -86,6 +86,11 @@ const CSS = `
 .seg.leader{margin-left:auto;background:#2ac3de;color:#16161e;font-weight:800;
   clip-path:none;padding:0 9px;}
 .seg.leader .ic{font-size:12px;line-height:1;}
+/* A committed sub-key: monospace, tight tracking, so a "; W" reads as a chord
+   in progress rather than as a phrase. The glyph stays put — only the text
+   after it changes — so the segment never resizes under the user's eye. */
+.seg.leader.seq{font-family:ui-monospace,'Cascadia Mono',Consolas,monospace;
+  letter-spacing:.04em;font-weight:800;}
 .seg.leader.stale{animation:lfLeadPulse 1.1s ease-in-out infinite;}
 @keyframes lfLeadPulse{0%,100%{opacity:.55}50%{opacity:1}}
 .seg.sess{background:#7aa2f7;color:#1a1b26;font-weight:800;}
@@ -158,6 +163,31 @@ export function leaderSignalOn(args: {
 }): boolean {
   const { prefix, uiLeader, contentArmed, contentIndex, selectedStrip } = args;
   return !!prefix || !!uiLeader || (!!contentArmed && contentIndex === selectedStrip);
+}
+
+/**
+ * What the leader indicator should read, given the prefix typed so far.
+ *
+ * The shape is the same in every state so it never MOVES under the user's eye:
+ *
+ *     ;        the leader is armed, waiting for its first key
+ *     ; W      a category is armed, waiting for its sub-key
+ *
+ * One glyph, always in the same place, with the committed key appearing after
+ * it. The alternative — swapping the glyph for "W" — reads better in a mock-up
+ * and is worse in use, because the thing that tells you the sequence is still
+ * live is the LEADER, and it must not vanish the moment you press one.
+ *
+ * Pure, so the shape is pinned by unit tests rather than by looking at a bar.
+ */
+export function leaderSeqText(prefix: string | undefined | null): string {
+  const p = String(prefix || "").trim();
+  if (!p || p === ";") return "\u2318";
+  // The prefix is stored WITHOUT the leader key (";" + "W" is recorded as "W").
+  // Anything longer than one key means a deeper chord, and it is shown as typed
+  // rather than truncated: hiding what the user actually pressed is exactly
+  // the kind of lie this indicator exists to avoid.
+  return "\u2318 " + p;
 }
 
 // Pick readable text for a hex background: near-black on bright fills,
@@ -246,9 +276,11 @@ export class StatusBar {
       "<span class='seg find' style='display:none'><span class='ic'>🔍</span><b class='cur'></b><span class='cnt'></span></span>" +
       "<span class='seg chips'></span>" +
       "<span class='seg dl' style='display:none'><span class='ic'>⭳</span><span class='items'></span></span>" +
-      // Far-right leader indicator: glyph only, painted synchronously at key
-      // time via setLeaderSignal so it tracks the leader press exactly.
-      "<span class='seg leader' style='display:none'><span class='ic'>⌘</span></span>" +
+      // Far-right leader indicator: the leader glyph alone while waiting for a
+      // first key, and `<glyph> <committed key>` once a chord is in progress.
+      // Painted synchronously at key time via setLeaderSignal so it tracks the
+      // leader press exactly.
+      "<span class='seg leader' style='display:none'></span>" +
       "</div>";
     host._sh = sh;
     document.documentElement.appendChild(host);
@@ -394,8 +426,8 @@ export class StatusBar {
   // visibly late (or land out of order behind a queued snapshot). Arming is a
   // state flag, not data, so paint it directly: zero hops between keypress and
   // pixel. The next store repaint simply confirms whatever this decided.
-  setLeaderSignal(armed: boolean): void {
-    this.data.leader = { armed, prefix: "" };
+  setLeaderSignal(armed: boolean, prefix?: string): void {
+    this.data.leader = { armed, prefix: prefix || "" };
     const key = JSON.stringify(this.data);
     this.lastKey = key;
     this.render();
@@ -433,8 +465,18 @@ export class StatusBar {
       // The indicator is armed while the leader bar is up OR a sequence is in
       // progress. setLeaderSignal paints this synchronously at key time — the
       // store snapshot (data.leader) only reconciles it on the next repaint.
+      //
+      // The prefix is rendered, not just stored: once `;W` has been pressed the
+      // user has committed half the chord, and an indicator that looks the same
+      // at `;` and at `;W` tells them nothing about which key they are now
+      // waiting for. `leaderSeqText` owns the shape so it can be tested.
       const sig = this.data.leader || { armed: this.data.mode === "LEADER", prefix: "" };
       leader.style.display = sig.armed ? "" : "none";
+      if (sig.armed) {
+        const txt = leaderSeqText(sig.prefix);
+        leader.textContent = txt;
+        leader.classList.toggle("seq", !!sig.prefix);
+      }
     }
     if (name) name.textContent = this.data.name;
     if (marker) {

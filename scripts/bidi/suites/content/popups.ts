@@ -211,7 +211,7 @@ export async function run(ctx: any): Promise<void> {
     await ctx.press(ctx.tabA, "Enter");
     const fs = await ctx.waitExpr(ctx.tabA, `window.fullScreen`, true, 8000).catch(() => null);
     assert(fs, "help search matched ;z and ran it (fullscreen on)");
-    await ctx.leaderPress(ctx.tabA, "z");
+    await ctx.leaderSeq(ctx.tabA, ["W", "z"]);
     await ctx.waitExpr(ctx.tabA, `!window.fullScreen`, true, 8000);
   });
   await t(";/ find-in-page popup opens and finds", async () => {

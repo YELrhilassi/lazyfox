@@ -178,10 +178,11 @@ export async function newSession(name: string): Promise<{ ok: boolean; note?: st
   return { ok: true };
 }
 
-// Re-entrancy guard lives here (the facade owns the request), the rebuild
-// mechanics in sessions/restore.ts.
+// The rebuild mechanics live in sessions/restore.ts, which also serializes
+// concurrent restores: a second switch waits for the first instead of being
+// refused. Refusing it meant the user asked for a session and silently got the
+// other one, with nothing on screen saying so.
 export async function restoreSession(name: string): Promise<{ ok: boolean; note?: string }> {
-  if (isRestoring()) return { ok: false, note: "restore already in progress" };
   const all = await readSessions();
   const s = all[(name || "").trim()];
   // A clean (empty) session is valid: it restores to a single blank home tab.

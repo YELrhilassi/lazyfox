@@ -35,6 +35,17 @@ export interface SplitViewDeps {
   // Diagnostic hook for the ;+N move path (surfaced in the #lfc=state reply
   // so the e2e harness can assert WHY a move failed instead of guessing).
   onMove?(msg: string): void;
+  // Clears the recorded move trail. One move's trail must not inherit the
+  // previous one's: a stale line from an earlier operation is worse than no
+  // line at all, because it reads as evidence about a move that never ran.
+  onMoveReset?(): void;
+  // Is this tab element the window's relay? The relay answers the URL test
+  // only once relay.html has committed; before that it reports about:blank
+  // and is indistinguishable from a user tab by URL alone. The channel keeps
+  // the created-tab set that closes that gap, so the NUMBERING asks it rather
+  // than re-deriving identity — otherwise a relay that is still settling
+  // shifts every tab number after it by one, and `;4` moves the wrong tab.
+  isRelayTab?(tab: ChromeTab | null | undefined): boolean;
 }
 
 export interface SplitView {
@@ -47,7 +58,7 @@ export interface SplitView {
   unsplit(): boolean;
   switchPane(dir: number): boolean;
   swapPane(dir: number): boolean;
-  restoreSplits(groups: number[][]): void;
+  restoreSplits(groups: number[][], expect?: number): void;
   activeSplitView(): SplitViewWrapper | null;
   rememberSplit(): void;
 }
@@ -153,6 +164,10 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   function isTransientTab(tab: ChromeTab | null | undefined): boolean {
     if (isDeadWrapper(tab)) return true;
     if (isSplitPanelTab(tab)) return true;
+    // By reference FIRST: a relay that has not committed relay.html yet is
+    // about:blank, and the URL test below cannot see it. The channel owns
+    // that knowledge, so it is asked before falling back to the URL.
+    if (deps.isRelayTab && deps.isRelayTab(tab)) return true;
     try {
       const spec =
         tab && tab.linkedBrowser && tab.linkedBrowser.currentURI
@@ -166,6 +181,36 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
 
   // Real (user) tabs in strip order — the stable 1-9 identity space. Dead
   // wrappers (a tab being torn down mid-collapse) are skipped, never counted.
+  // The tab's own URL, for logs. A tab with no readable URL is not a match
+  // for anything, but it must still be reportable rather than throw.
+  function tabUrl(tab: ChromeTab | null | undefined): string {
+    try {
+      const spec =
+        tab && tab.linkedBrowser && tab.linkedBrowser.currentURI
+          ? String(tab.linkedBrowser.currentURI.spec)
+          : "";
+      return (spec.split("?")[0] || "(no url)").replace(/^moz-extension:\/\/[^/]+\//, "ext:").slice(-40);
+    } catch (e) {
+      return "(unreadable)";
+    }
+  }
+
+  // The hash fragment a tab carries, if any. The numbered view above elides
+  // it, so this is what tells "a real command-center tab" apart from "the
+  // command-center tab a request is currently riding".
+  function rawUrl(tab: ChromeTab | null | undefined): string {
+    try {
+      const spec =
+        tab && tab.linkedBrowser && tab.linkedBrowser.currentURI
+          ? String(tab.linkedBrowser.currentURI.spec)
+          : "";
+      const h = spec.indexOf("#");
+      return h === -1 ? "" : "#" + spec.slice(h + 1, h + 14);
+    } catch (e) {
+      return "";
+    }
+  }
+
   function realTabs(): ChromeTab[] {
     const out: ChromeTab[] = [];
     for (const t of window.gBrowser.tabs) {
@@ -464,13 +509,24 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // REPLACES the panel instead of stacking a third pane (the panel is added
   // first, so the split never drops below two panes and auto-unsplits).
   function addTabToSplitByIndex(n: number): boolean {
+    // Each move owns its trail, so what a reader sees describes the move they
+    // are looking at and nothing else.
+    try { deps.onMoveReset && deps.onMoveReset(); } catch (e) { /* ignore */ }
     const mv = (msg: string) => { try { deps.onMove && deps.onMove(msg); } catch (e) { /* ignore */ } };
     try {
       if (!nativeSplitAvailable()) { mv("nativeSplitAvailable=false"); return false; }
       let sv = activeSplitView();
       if (!sv && lastNativeSplit && lastNativeSplit.isConnected) sv = lastNativeSplit;
       const tab = realTabs()[n - 1];
-      mv("n=" + n + " sv=" + (sv ? "yes" : "no") + " tab=" + (tab ? "yes" : "no") + " tabPinned=" + (tab && tab.pinned) + " addTabsFn=" + (sv ? typeof sv.addTabs : "n/a") + " tabSv=" + (tab && tab.splitview ? "yes" : "no") + " activeSv=" + (window.gBrowser.selectedTab && window.gBrowser.selectedTab.splitview ? "yes" : "no"));
+      // The resolved tab's URL belongs in the trail: "n=4 landed on a tab that
+      // already had a splitview" is an unreadable bug report without it, and
+      // the whole question here is WHICH tab the number named.
+      mv("n=" + n + " -> " + tabUrl(tab) + " sv=" + (sv ? "yes" : "no") + " tab=" + (tab ? "yes" : "no") + " tabPinned=" + (tab && tab.pinned) + " addTabsFn=" + (sv ? typeof sv.addTabs : "n/a") + " tabSv=" + (tab && tab.splitview ? "yes" : "no") + " activeSv=" + (window.gBrowser.selectedTab && window.gBrowser.selectedTab.splitview ? "yes" : "no"));
+      // The numbering itself, as the product saw it at this instant. "n=4
+      // named the wrong tab" is only diagnosable against the list the number
+      // was taken from, and a strip snapshot taken seconds later is a
+      // different strip.
+      mv("numbering=[" + realTabs().map((t, i) => (i + 1) + ":" + tabUrl(t) + rawUrl(t)).join(" ") + "]");
       if (!tab || tab.pinned) { mv("tab missing or pinned"); return false; }
       if (!sv) {
         // Auto-split: pair the active tab with tab N directly.
@@ -643,9 +699,54 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // window.gBrowser.tabs directly would be shifted by those transient tabs
   // (and any pinned tabs the restore left in front), pairing the wrong tabs
   // or none at all.
-  function restoreSplits(groups: number[][]): void {
+  function restoreSplits(groups: number[][], expect?: number): void {
     try {
       if (!Array.isArray(groups) || !groups.length) return;
+      if (typeof window.gBrowser.addTabSplitView !== "function") return;
+      // The strip is the SAVED ORDER only once the restore has actually
+      // finished rebuilding it. A tab opened into a fresh content process
+      // appears in the parent's `gBrowser.tabs` a tick or two after
+      // `tabs.create` resolves, so pairing immediately resolves a saved
+      // position against the OLD tabs that are still being torn down — and
+      // the restored session silently comes back with a flat strip.
+      //
+      // Waiting for "enough tabs" is not enough: the old strip is usually
+      // still long enough to satisfy that. What identifies the settled state
+      // is the COUNT — after a restore of N tabs the strip holds exactly N
+      // real (unpinned, non-transient) tabs. `expect` is that N; without it
+      // (a caller that does not know it) we fall back to requiring at least
+      // as many tabs as the highest saved position.
+      const need = groups.reduce((mx, g) => {
+        const idx = Array.isArray(g) ? g.reduce((a, b) => (b > a ? b : a), 0) : 0;
+        return idx > mx ? idx : mx;
+      }, 0);
+      const target =
+        typeof expect === "number" && expect > 0 ? expect : need;
+      const real = () => realTabs().filter((t) => !t.pinned);
+      const ready = () => {
+        const n = real().length;
+        return typeof expect === "number" && expect > 0 ? n === target : n >= target;
+      };
+      if (ready()) {
+        runRestoreSplits(groups);
+        return;
+      }
+      let tries = 0;
+      const tick = () => {
+        if (ready() || tries++ >= 60) {
+          runRestoreSplits(groups);
+          return;
+        }
+        setTimeout(tick, 50);
+      };
+      setTimeout(tick, 50);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function runRestoreSplits(groups: number[][]): void {
+    try {
       // The restore re-opened the saved tabs in saved order, so the strip IS
       // the saved order right now. Snapshot it, form every group, then pin
       // the strip back — addTabSplitView parks each pair where it pleases
@@ -665,7 +766,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         }
       }
       repinAfterSplit(preStrip);
-      // Refresh the remembered split so a later ;+N with the selected tab
+      // Refresh the remembered split so a later ;W m with the selected tab
       // outside the split still targets a restored group (the selected tab's
       // own .splitview only covers the case where it sits inside one).
       rememberSplit();

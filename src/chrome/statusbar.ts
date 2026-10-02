@@ -51,9 +51,11 @@ export interface StatusBarCtl {
   // helper's own leader never arms — by resolving this per-index state in the
   // Go store against the current selection.
   setContentLeader(index: number, active: boolean): void;
-  // The far-right leader indicator for this context's own leader. Paints
-  // synchronously (see shared/statusbar.ts) so it tracks the keypress exactly.
-  setLeaderSignal(armed: boolean): void;
+  // The far-right leader indicator for this context's own leader. `prefix` is
+  // the chord committed so far ("" or ";" = waiting for the first key, "W" =
+  // a category armed and waiting for its sub-key). Paints synchronously (see
+  // shared/statusbar.ts) so it tracks the keypress exactly.
+  setLeaderSignal(armed: boolean, prefix?: string): void;
   // Content-script find-in-page state by tab-strip index (pushed by the
   // background on every count change). Same resolution as the leader chevron.
   setContentFind(index: number, count: number, cur: number): void;
@@ -371,14 +373,18 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     // symptom. `statusLeaderSignal` returns void, so it lands in the same tick
     // as the keypress: the store is authoritative, the view just follows it
     // immediately instead of waiting for the round trip.
-    setLeaderSignal: (armed) => {
-      leaderPrefix = armed ? ";" : "";
+    setLeaderSignal: (armed, prefix) => {
+      // "" means "the bare leader is armed and waiting for its first key" and
+      // is stored as "" — the store treats empty and ";" identically, and
+      // normalising here keeps the two from disagreeing about the same state.
+      leaderPrefix = prefix ? String(prefix).replace(/^;/, "") : "";
+      const on = !!armed;
       try {
-        core.statusLeaderSignal(armed, leaderPrefix);
+        core.statusLeaderSignal(on, leaderPrefix);
       } catch (e) {
         // a wasm that is not up yet must not break key dispatch
       }
-      chromeStatusBar.setLeaderSignal(armed);
+      chromeStatusBar.setLeaderSignal(on, leaderPrefix);
     },
     setContentFind: (index, count, cur) => {
       pushAndPaint([{ kind: "find", index, cur, count }]);

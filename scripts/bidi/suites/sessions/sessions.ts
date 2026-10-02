@@ -55,21 +55,21 @@ export async function run(ctx: any): Promise<void> {
     return ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
   };
 
-  await t("sessions: ;[ split-pane switch is a no-op without a split", async () => {
+  await t("sessions: ;W [ split-pane switch is a no-op without a split", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const before = await ctx.tabsInfo();
-    await ctx.leaderPress(ctx.tabA, "[");
+    await ctx.leaderSeq(ctx.tabA, ["W", "["]);
     await leaderDone(ctx.tabA);
     await chromeLeaderIdle();
     const after = await ctx.tabsInfo();
     assert(after.length === before.length, "split-pane switch without a split view changed no tabs");
   });
-  await t("sessions: ;. and ;, move bindings dispatch cleanly", async () => {
+  await t("sessions: ;W . and ;W , move bindings dispatch cleanly", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const before = await ctx.tabsInfo();
-    await ctx.leaderPress(ctx.tabA, ".");
+    await ctx.leaderSeq(ctx.tabA, ["W", "."]);
     await leaderDone(ctx.tabA);
-    await ctx.leaderPress(ctx.tabA, ",");
+    await ctx.leaderSeq(ctx.tabA, ["W", ","]);
     await leaderDone(ctx.tabA);
     await chromeLeaderIdle();
     const after = await ctx.tabsInfo();
@@ -291,33 +291,25 @@ export async function run(ctx: any): Promise<void> {
     await ctx.waitPopupGone(ctx.tabA, 5000);
   });
   await t("sessions: split layout is saved and restored with the session", async () => {
-    // Collapse the window to just the probe (exact tab id via getCurrent), so
-    // the split pair we create is the window's only pair (deterministic
-    // assertions). Use a fresh probe for the trim so we never depend on a
-    // possibly-stale harness context.
-    const probe = await ctx.makeProbeTab();
-    const probeId = await evalIn(probe, `browser.tabs.getCurrent().then(t => t ? t.id : null)`);
-    await evalIn(probe, `(async () => {
-      const ts = await browser.tabs.query({ currentWindow: true });
-      for (const t of ts) {
-        if (t.id !== ${probeId} && !t.pinned) { try { await browser.tabs.remove(t.id); } catch (e) {} }
-      }
-      return true;
-    })()`);
-    // Wait for the trim to land instead of sleeping: only the probe remains.
-    await ctx.waitExpr(probe, `browser.tabs.query({currentWindow:true}).then(ts => ts.length === 1 && ts[0].id === ${probeId})`, true, 10000);
-    ctx.probe = probe;
+    // No window trim here, deliberately. An earlier version collapsed the
+    // window to a single probe tab "for determinism" — and the trim removed
+    // the persistent relay tab the harness talks to, so every later step ran
+    // against a dead context. Nothing actually needed the trim: the split
+    // pair is identified by its splitViewIds, not by being the only pair, and
+    // the move target is resolved over the same real-tab list the product
+    // uses. A test should not reshape the world more than the behaviour under
+    // test requires.
     ctx.tabA = await createTab();
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await ctx.openCC(ctx.tabA);
-    // A split of two REAL tabs (the user's flow): ;| pairs the active CC tab
-    // with the split-panel companion, then ;+N moves a real content tab into
-    // the split, REPLACING the panel (the panel is pure UI and must never be
-    // saved as a session tab).
+    // A split of two REAL tabs (the user's flow): `;W |` pairs the active CC
+    // tab with the split-panel companion, then `;W m N` moves a real content
+    // tab into the split, REPLACING the panel (the panel is pure UI and must
+    // never be saved as a session tab).
     const tabB = await createTab();
     await navigate(tabB, `${ctx.base}/hello`, "complete");
     await ctx.openCC(ctx.tabA); // re-activate the CC tab
-    await ctx.leaderPress(ctx.tabA, "\\", { shift: true }); // ;| via chrome helper
+    await ctx.leaderSeq(ctx.tabA, ["W", "|"]); // ;W | -> split side-by-side
     await waitFor(async () => {
       const ts = await ctx.tabsInfo();
       const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
@@ -326,13 +318,21 @@ export async function run(ctx: any): Promise<void> {
       const ts = await ctx.tabsInfo().catch(() => "ERR");
       throw new Error("split not created; tabs=" + JSON.stringify(ts));
     });
-    const realT0 = (await ctx.tabsInfo()).filter(
-      (t) => ctx.isRealTab(t)
-    );
-    const bIdx = realT0.findIndex((t) => (t.url || "").includes("/hello")) + 1;
-    assert(bIdx >= 1 && bIdx <= 9, ";+N target within 1-9: " + bIdx + " of " + realT0.length);
-    await ctx.leaderPress(ctx.tabA, "=", { shift: true }); // ;+ -> shift+=
-    await ctx.press(ctx.tabA, String(bIdx)); // ;+N moves tab B into the split
+    // The target position is read from the product's OWN numbering at the
+    // moment of the press. Deriving it from the WebDriver tab list instead
+    // looks equivalent and is not: the two lists disagree the moment a
+    // transient helper tab is alive, and a correctly-typed digit then names
+    // the wrong tab — which surfaces as "the split did not form" rather than
+    // as the real cause. It must not come from chromeState() either: that
+    // reply rides the probe's own `#lfc=state` hash, which hides the probe
+    // from the numbering for the length of the read, so every number after it
+    // comes back one short and the move lands on the wrong tab.
+    const bIdx = await ctx.tabNumberOf("/hello");
+    assert(bIdx >= 1, ";W m target has a strip position: " + bIdx);
+    await ctx.leaderSeq(ctx.tabA, ["W", "m"]); // ;W m -> move tab into split
+    for (const d of String(bIdx)) {
+      await ctx.press(ctx.tabA, d); // the digits pick tab B
+    }
     const pair = await waitFor(async () => {
       const ts = await ctx.tabsInfo();
       const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
@@ -340,7 +340,7 @@ export async function run(ctx: any): Promise<void> {
     }, 8000).catch(async () => {
       const ts = await ctx.tabsInfo().catch(() => "ERR");
       const st = await ctx.chromeState().catch(() => "ERR");
-      throw new Error(";+N did not move tab into split; lastMoveDebug=" + JSON.stringify(st && st.lastMoveDebug) + " tabs=" + JSON.stringify(ts));
+      throw new Error(";W m N did not move tab into split; bIdx=" + bIdx + " chromeNumbering=" + JSON.stringify(st && st.lastMoveDebug) + " extNumbering=" + JSON.stringify(await ctx.tabNumbers().catch(() => "ERR")) + " chromeStrip=" + JSON.stringify(st && st.strip) + " tabs=" + JSON.stringify(ts));
     });
     assert(pair && pair.length === 2, "split pair is two real tabs: " + JSON.stringify(pair.map((t) => ({ u: t.url, s: t.splitViewId }))));
     const noPanel = await ctx.tabsInfo();
@@ -360,11 +360,11 @@ export async function run(ctx: any): Promise<void> {
     assert(svSaved.length === 2, "saved session captured the split pair: " + JSON.stringify(saved.tabs.map((t) => ({ u: t.url, s: t.splitViewId }))));
     // Build a flat "away" session (unsplit first) to switch to: the window's
     // tabs get replaced by restore, so the split must vanish.
-    await ctx.leaderPress(ctx.tabA, "\\"); // ;\ unsplit (chrome helper)
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]); // ;W u -> dissolve the split
     // Wait until the split actually dissolved instead of sleeping.
     await waitFor(async () => ((await splitTabsOf()).length === 0 ? true : null), 10000)
       .catch(async () => {
-        throw new Error(";\\ unsplit left a split: " + JSON.stringify((await ctx.tabsInfo()).map((t) => t.url)));
+        throw new Error(";W u left a split: " + JSON.stringify((await ctx.tabsInfo()).map((t) => t.url)));
       });
     const awayRes = await evalIn(ctx.probe, `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lfaway" } })`);
     assert(awayRes && awayRes.ok, "away session saved: " + JSON.stringify(awayRes));
@@ -392,7 +392,8 @@ export async function run(ctx: any): Promise<void> {
     }, 15000).catch(async () => {
       const ts = await ctx.tabsInfo().catch(() => "ERR");
       const cur = await evalIn(ctx.probe, `browser.storage.local.get("lfCurrentSession").then(r => r.lfCurrentSession)`).catch(() => "ERR");
-      throw new Error("restore did not re-pair; cur=" + cur + " tabs=" + JSON.stringify(ts));
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error("restore did not re-pair; cur=" + cur + " splits=" + JSON.stringify(saved.splits) + " savedTabs=" + JSON.stringify((saved.tabs || []).map((t) => t.url.slice(-12))) + " strip=" + JSON.stringify(st && st.strip) + " tabs=" + JSON.stringify(ts));
     });
     assert(restored && restored.length === 2, "restore re-paired the split panes: " + JSON.stringify(restored.map((t) => ({ u: t.url, s: t.splitViewId }))));
     assert(new Set(restored.map((t) => t.splitViewId)).size === 1, "restored panes share one splitViewId");

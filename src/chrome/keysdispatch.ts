@@ -83,7 +83,21 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     deps.runWebHints();
   }
 
-  function chromeKeyDown(e: ActorKey, fromActor?: boolean): boolean {
+  // `fromActor` and `noKeyup` are DIFFERENT facts and must not be conflated.
+  //
+  // `fromActor` is about OWNERSHIP: the key was forwarded from the content
+  // process for a page that has no content script, so deferring to the page is
+  // not an option. The `#lfc=keys` channel is not an actor in that sense — it
+  // drives the real selection, which may well be a page whose content script
+  // owns its keys, and claiming ownership there would make one keystroke
+  // handled twice.
+  //
+  // `noKeyup` is about the key's LIFECYCLE: nothing will deliver a matching
+  // keyup, so the key must be treated as a tap and never as a hold. Both
+  // synthetic paths need it (the actor bridge and the `#lfc=keys` test
+  // channel), and getting it wrong on either one leaves the leader marked as
+  // PHYSICALLY HELD with nothing left to release it — see armHeldLeader.
+  function chromeKeyDown(e: ActorKey, fromActor?: boolean, noKeyup?: boolean): boolean {
     if (e.isComposing) return false;
 
     // Web pages are the content script's territory (its own leader, popups,
@@ -182,7 +196,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         (typingValue === "" || isChromeUiFocus(win, typing, e as KeyboardEvent)) &&
         (isCommandCenterTab(win) || isAboutPage(win))
       ) {
-        if (armHeldLeader(l, e, fromActor)) return true;
+        if (armHeldLeader(l, e, noKeyup)) return true;
       }
       return false;
     }
@@ -196,7 +210,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       !e.ctrlKey && !e.altKey && !e.metaKey &&
       isCommandCenterTab(win)
     ) {
-      if (armHeldLeader(l, e, fromActor)) return true;
+      if (armHeldLeader(l, e, noKeyup)) return true;
     }
 
     // Ctrl+1-9: hot-swap to the session with that marker (tmux-style).
@@ -215,7 +229,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     if (!isCommandCenterTab(win) && deps.handleScrollKeys(win, e)) return true;
 
     if (k === deps.leaderKey()) {
-      if (armHeldLeader(l, e, fromActor)) return true;
+      if (armHeldLeader(l, e, noKeyup)) return true;
     }
     return false;
   }
@@ -233,20 +247,26 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
   // stay armed until the key comes up (see LeaderController.sticky). The
   // matching keyup lives in main.ts, next to the leader's own construction.
   //
-  // Actor-forwarded keys are deliberately NOT sticky. They come from the
-  // content-process bridge as discrete presses and have no matching keyup, so
-  // marking them held would leave the leader armed forever after a single `;`
-  // — swallowing every key that followed.
+  // A key with NO keyup to match is deliberately NOT sticky, and this is the
+  // one place that decision is made. Two callers can produce one: the
+  // content-process actor bridge, and the `#lfc=keys` channel the e2e harness
+  // synthesizes through. Both dispatch a bare keydown; neither can ever deliver
+  // the release. Marking either of them as held leaves the leader stuck
+  // chained FOREVER — the indicator stays lit, every binding leaves the leader
+  // up instead of disarming it, and the next keystroke in that window is
+  // swallowed as a leader key rather than doing what the user asked. That is
+  // not a cosmetic stuck badge: the keyboard goes dead until something else
+  // happens to clear the flag.
   function armHeldLeader(
     l: { sticky: boolean; show(): void },
     e: unknown,
-    fromActor?: boolean
+    noKeyup?: boolean
   ): boolean {
     // `unknown` because the two callers are not the same shape: a real DOM
-    // KeyboardEvent carries `repeat`, while an actor-forwarded ActorKey does
-    // not have that field at all (and is never a repeat — see below).
+    // KeyboardEvent carries `repeat`, while a synthesized ActorKey does not
+    // have that field at all (and is never a repeat — see below).
     if (!!(e as { repeat?: boolean }).repeat) return true;
-    l.sticky = !fromActor;
+    l.sticky = !noKeyup;
     l.show();
     return true;
   }

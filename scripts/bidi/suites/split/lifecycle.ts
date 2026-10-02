@@ -99,7 +99,7 @@ export async function run(ctx: any): Promise<void> {
     assert(p1 && p2, "native split has an active and an inactive pane: " + JSON.stringify(pair));
     // The command center pane stays selected right after splitting (the helper
     // keeps the original tab active); keys on it reach the chrome helper.
-    await ctx.leaderPress(ctx.tabA, "]");
+    await ctx.leaderSeq(ctx.tabA, ["W", "]"])
     try {
       await waitFor(async () => {
         const a = await ctx.activeTabInfo();
@@ -110,7 +110,7 @@ export async function run(ctx: any): Promise<void> {
       const ts = await ctx.tabsInfo().catch((e2) => "ERR:" + String(e2 && e2.message ? e2.message : e2));
       throw new Error("pane switch to p2 failed; pair=" + JSON.stringify(pair) + " state=" + JSON.stringify(st) + " tabs=" + JSON.stringify(ts));
     }
-    await ctx.leaderPress(ctx.tabA, "[");
+    await ctx.leaderSeq(ctx.tabA, ["W", "["])
     try {
       await waitFor(async () => {
         const a = await ctx.activeTabInfo();
@@ -195,7 +195,7 @@ export async function run(ctx: any): Promise<void> {
     const targetIndex = ci + 1;
     assert(targetIndex <= 9, "tab index stays within 1-9 for ;+N: " + targetIndex + " of " + real.length);
     const targetId = real[ci].id;
-    await ctx.leaderPress(ctx.tabA, "=", { shift: true }); // ;+ -> shift+=
+    await ctx.leaderSeq(ctx.tabA, ["W", "m"]); // ;W m -> move tab into split -> shift+=
     await waitPlusPopup(ctx.tabA);
     await ctx.press(ctx.tabA, String(targetIndex)); // ;+N
     try {
@@ -272,7 +272,7 @@ export async function run(ctx: any): Promise<void> {
       const st = await ctx.chromeState().catch(() => "ERR");
       throw new Error("swap setup strip did not settle; state=" + JSON.stringify(st && { strip: st.strip }) + " tabs=" + JSON.stringify(await ctx.tabsInfo().catch(() => "ERR")));
     });
-    await ctx.leaderPress(ctx.tabA, "=", { shift: true });
+    await ctx.leaderSeq(ctx.tabA, ["W", "m"]);
     await waitPlusPopup(ctx.tabA);
     await ctx.press(ctx.tabA, "3");
     try {
@@ -296,7 +296,7 @@ export async function run(ctx: any): Promise<void> {
     const flipped = before.split(",").reverse().join(",");
     assert(before.split(",").length === 2, "swap test has a 2-pane split: " + before);
     // ;} moves the active pane right (order flips).
-    await ctx.leaderPress(ctx.tabA, "}");
+    await ctx.leaderSeq(ctx.tabA, ["W", "}"])
     try {
       await waitFor(async () => ((await order()) === flipped ? flipped : null), 8000);
     } catch (e) {
@@ -307,7 +307,7 @@ export async function run(ctx: any): Promise<void> {
     const after1 = await order();
     assert(after1 === flipped, ";} swapped the panes: " + before + " -> " + after1);
     // ;{ moves the active pane back left (order flips again).
-    await ctx.leaderPress(ctx.tabA, "{");
+    await ctx.leaderSeq(ctx.tabA, ["W", "{"])
     await waitFor(async () => ((await order()) === before ? before : null), 8000);
     const after2 = await order();
     assert(after2 === before, ";{ swapped the panes back: " + after1 + " -> " + after2);
@@ -347,7 +347,7 @@ export async function run(ctx: any): Promise<void> {
     const targetIndex = real.indexOf(target) + 1;
     // ;+N with NO split must pair the active tab DIRECTLY with tab N — no
     // empty companion panel pane.
-    await ctx.leaderPress(ctx.tabA, "=", { shift: true }); // ;+
+    await ctx.leaderSeq(ctx.tabA, ["W", "m"]); // ;W m -> move tab into split
     await waitPlusPopup(ctx.tabA);
     await ctx.press(ctx.tabA, String(targetIndex));
     const sv = await waitFor(async () => {

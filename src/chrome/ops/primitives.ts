@@ -34,6 +34,20 @@ export function openUrlNative(url: string): boolean {
   }
 }
 
+// Whether a tab element is the window's relay, asked by the channel (which
+// knows the tab it created) rather than re-derived from the URL.
+//
+// A relay that has not committed relay.html yet reports about:blank, so the
+// URL test cannot see it — and a tab the numbering counts that is not there
+// shifts every number after it. This is the same question splitview's
+// numbering asks, and the two MUST get the same answer: the count that decides
+// whether a typed digit is ambiguous and the index that digit selects have to
+// come from one list, or `;W m N` moves the wrong tab.
+let relayTabTest: (tab: any) => boolean = () => false;
+export function setRelayTabTest(fn: (tab: any) => boolean): void {
+  relayTabTest = fn || (() => false);
+}
+
 // Real (user) tabs in strip order: skip the split-panel companion and the
 // persistent relay so tab numbers stay stable across splits/unsplits. A real
 // tab carrying a momentary #lfc=keys/state hash is NOT transient — it must
@@ -45,6 +59,7 @@ export function realTabs(): any[] {
   for (const t of window.gBrowser.tabs) {
     try {
       if (Cu && Cu.isDeadWrapper(t)) continue;
+      if (relayTabTest(t)) continue;
       const spec =
         t && t.linkedBrowser && t.linkedBrowser.currentURI
           ? t.linkedBrowser.currentURI.spec

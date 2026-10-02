@@ -51,11 +51,16 @@ export function leaderCombo(e: KeyboardEvent): string {  const mods: string[] = 
   return mods.length ? mods.join("+") + "+" + k : k;
 }
 
-// Two-key leader sequences: `;<first>;<final>` style prefixes, e.g. `;ly` =
-// "yank the link target" vs the plain `;y` copy-URL. Each sequence maps its
-// first key to the table of final keys. Sequences fire only when no plain
-// binding with the same key exists (the plain table wins — `;l` is still
-// "forward"), so registering a sequence does not break an existing binding.
+// Two-key leader sequences: `;<first>;<final>` style prefixes, e.g. `;W|` for
+// "split side-by-side" within the window category. Each sequence maps its
+// first key to the table of final keys.
+//
+// A sequence head must NEVER shadow a plain binding. The rule is enforced by
+// the host's `hasBinding` predicate rather than left to registration order,
+// because the failure it prevents is invisible: registering a sequence for a
+// key that already had a plain binding makes that binding arm a silent capture
+// and only run if it times out, so the key appears to do nothing at all. That
+// is exactly how `;G` and `;L` shipped as advertised-but-dead for a while.
 export interface LeaderSequence {
   final: Record<string, () => void>;
   timeoutMs?: number;
@@ -128,6 +133,12 @@ export class LeaderController {
 
   // The leader action dispatcher built from each context's ops adapter.
   private run: (key: string) => void;
+  // Whether a PLAIN binding exists for this key. Supplied by the host because
+  // the controller cannot tell "no binding for this key" from "a binding that
+  // did nothing" — `run` is fire-and-forget. Without it, registering a
+  // sequence for a key that already had a plain binding would silently
+  // shadow that binding, which is the ;G / ;L bug.
+  private hasBinding: (key: string) => boolean;
   // Whether the overlay is allowed by config.
   private enabled: () => boolean;
   // Fired whenever the leader arms or disarms, so hosts can reflect the
@@ -140,11 +151,13 @@ export class LeaderController {
   constructor(
     run: (key: string) => void,
     enabled: () => boolean,
-    onChange?: () => void
+    onChange?: () => void,
+    hasBinding?: (key: string) => void | boolean
   ) {
     this.run = run;
     this.enabled = enabled;
     this.onChange = onChange;
+    this.hasBinding = (k) => !!(hasBinding && hasBinding(k));
   }
 
   /** True while a one-shot key capture is armed (e.g. "session 1-9" after ;'). */
@@ -333,9 +346,12 @@ export class LeaderController {
     }
     // Two-key sequences: the first key of a registered sequence arms a
     // one-shot capture for the second instead of running an action. The
-    // prefix shows in the status-bar indicator meanwhile (`;l` …).
+    // prefix shows in the status-bar indicator meanwhile (`;W` …).
+    //
+    // A plain binding for the same key WINS. Registering a category must never
+    // be able to take over a key that already worked — see LeaderSequence.
     const combo = leaderCombo(e);
-    const seq = SEQUENCES[combo];
+    const seq = this.hasBinding(combo) ? undefined : SEQUENCES[combo];
     if (seq) {
       this.prefix = combo;
       if (this.onChange) this.onChange();
@@ -343,8 +359,20 @@ export class LeaderController {
         this.prefix = "";
         if (this.onChange) this.onChange();
         const fn = seq.final[k2];
-        if (!fn) return false; // not a sequence tail — nothing consumed
+        // An unregistered sub-key consumes nothing AND leaves the leader
+        // standing: the user may still pick a top-level binding, and yanking
+        // the leader out from under them would make the very next keystroke
+        // do something they did not ask for.
+        if (!fn) return false;
+        // A FIRED chord ends the leader exactly like a plain binding does.
+        // Leaving it armed was a real bug: after `;W |` the overlay stayed up
+        // and the next keystroke was swallowed as a leader key, so the action
+        // the user reached for simply never happened. A two-key chord is one
+        // action, and one action ends the leader — except while the leader key
+        // is physically held, where staying armed is the whole point.
         fn();
+        if (this.sticky) return true;
+        this.hide();
         return true;
       }, seq.timeoutMs, () => {
         // Timed out unused. The head key may itself carry a plain binding
@@ -353,9 +381,7 @@ export class LeaderController {
         // while the leader is still up: dismissing the leader cancels the
         // intent, and a stray timer must never fire an action into a page.
         if (!this.active) return;
-        this.prefix = "";
-        if (this.onChange) this.onChange();
-        this.run(combo);
+        this.runOrStay(combo);
       });
       // Keep the overlay up as a reminder when it is shown.
       return true;

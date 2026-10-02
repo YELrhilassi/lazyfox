@@ -192,18 +192,18 @@ export async function run(ctx: any): Promise<void> {
   await t(";= / ;- / ;0 zoom in, out, reset", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const w0 = await evalIn(ctx.tabA, `window.innerWidth`);
-    await ctx.leaderPress(ctx.tabA, "=");
+    await ctx.leaderSeq(ctx.tabA, ["Z", "i"]);
     await ctx.waitExpr(ctx.tabA, `window.innerWidth < ${w0} - 20`, true, 10000);
-    await ctx.leaderPress(ctx.tabA, "-");
+    await ctx.leaderSeq(ctx.tabA, ["Z", "o"])
     await ctx.waitExpr(ctx.tabA, `Math.abs(window.innerWidth - ${w0}) < 20`, true, 10000);
-    await ctx.leaderPress(ctx.tabA, "0");
+    await ctx.leaderSeq(ctx.tabA, ["Z", "r"])
     await ctx.waitExpr(ctx.tabA, `Math.abs(window.innerWidth - ${w0}) < 2`, true, 10000);
   });
   await t(";z zen mode toggles fullscreen", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    await ctx.leaderPress(ctx.tabA, "z");
+    await ctx.leaderSeq(ctx.tabA, ["W", "z"])
     await ctx.waitExpr(ctx.tabA, `window.fullScreen`, true, 10000);
-    await ctx.leaderPress(ctx.tabA, "z");
+    await ctx.leaderSeq(ctx.tabA, ["W", "z"])
     await ctx.waitExpr(ctx.tabA, `!window.fullScreen`, true, 10000);
   });
   await t(";r reload keeps the page", async () => {

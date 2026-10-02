@@ -62,6 +62,10 @@ export interface ChannelDeps {
       metaKey: boolean;
       isComposing: boolean;
     }): boolean;
+    // The matching keyup for a synthesized key — see KeysDeps. The channel
+    // forwards it to the SAME handler the real window keyup listener runs, so
+    // a synthetic release and a genuine one cannot disagree.
+    release(key: string): void;
   };
 }
 
@@ -96,6 +100,9 @@ export interface Channel {
   // Debug/verification: the helper's view of the relay (found window, ready
   // flag, tab list) — surfaced through the #lfc=state channel.
   relayDebug(): any;
+  // True when this tab element IS the window's relay, by reference as well as
+  // by URL — see the implementation for why the URL alone is not enough.
+  isKnownRelayTab(tab: any): boolean;
 }
 
 const EXT_ID = "lazyfox@lazyfox.dev";
@@ -242,6 +249,24 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
     relayTab = r;
     return r;
+  }
+
+  // True when this tab element is the window's relay, BY REFERENCE. The URL
+  // alone is not enough: a relay created a moment ago still reports
+  // about:blank until relay.html commits, and during that window it looks
+  // exactly like a user tab. Anything that NUMBERS tabs must ask this rather
+  // than re-deriving identity from the URL, or a tab's number shifts by one
+  // for as long as the relay is settling — and `;4` moves the wrong tab.
+  function isKnownRelayTab(tab: any): boolean {
+    try {
+      const b = tab && tab.linkedBrowser;
+      if (!b) return false;
+      if (relayBrowsers.has(b)) return true;
+      const spec = b.currentURI && b.currentURI.spec;
+      return !!spec && spec.indexOf("relay.html") !== -1;
+    } catch (e) {
+      return false;
+    }
   }
 
   function createRelayTab(): void {
@@ -488,7 +513,7 @@ export function createChannel(deps: ChannelDeps): Channel {
       moveToSplit: (req) => deps.split.addTabToSplitByIndex(req.index),
       // Session restore finished opening tabs; re-create the native split
       // groupings. Positions are 1-based over the SAVED tab list.
-      restoreSplits: (req) => deps.split.restoreSplits(req.groups),
+      restoreSplits: (req) => deps.split.restoreSplits(req.groups, req.expect),
       // Status-bar push/reply: the fresh session summary as an object.
       sessionState: (req) => deps.status.applySessionState(req),
       // Content-script leader arm/disarm, cached per tab-strip index so the
@@ -705,6 +730,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     setHash,
     handleLfc,
     relayDebug,
+    isKnownRelayTab,
     relayReady: () => relayReady,
   };
 }

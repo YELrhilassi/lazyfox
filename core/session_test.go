@@ -2,6 +2,7 @@ package core
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -14,7 +15,7 @@ func TestAssignSessionMarker(t *testing.T) {
 		{[]int{1}, 2},
 		{[]int{1, 2, 3, 5}, 4},
 		{[]int{4, 9, 1, 2, 3, 5, 6, 7, 8}, 0}, // all nine taken
-		{[]int{0, 7}, 1},                       // 0 is not a real marker
+		{[]int{0, 7}, 1},                      // 0 is not a real marker
 		{[]int{1, 2, 3, 4, 5, 6, 7, 8}, 9},
 	}
 	for _, c := range cases {
@@ -195,20 +196,25 @@ func TestSplitPairOf(t *testing.T) {
 // TestSessionBindings pins the tmux-style session leader keys in the
 // which-key table so the shortcut surface can't silently drift (split, switch
 // pane, move, close, save, quick-switch).
-func TestSessionBindings(t *testing.T) {    want := map[string]bool{
-        "p": true, // sessions popup
-        "Q": true, // save session and quit
-        "'": true, // switch session 1-9
-        "|": true, // split side-by-side
-        "[": true, // split pane left
-        "]": true, // split pane right
-        "{": true, // swap pane left
-        "}": true, // swap pane right
-        "+": true, // move tab 1-9 into split
-        ",": true, // move tab left
-        ".": true, // move tab right
-        "\\": true,
-    }
+// TestSessionBindings pins the tmux-style session leader keys in the
+// which-key table so the shortcut surface can't silently drift.
+//
+// The split family used to live here at top level (`;|` `;[` `;]` `;{` `;}`
+// `;+` `;,` `;.`) and now lives under `;W`, because nine punctuation keys for
+// a feature used in short deliberate bursts was the single biggest ergonomic
+// cost on the leader. So this pins TWO things: the keys that stayed, and the
+// keys that must NOT reappear at top level — because a which-key row for a key
+// that no longer does anything is the same lie as the `;G` rows that once
+// shipped advertising a binding nobody could reach.
+func TestSessionBindings(t *testing.T) {
+	want := map[string]bool{
+		"p": true, // sessions popup
+		"Q": true, // save session and quit
+		"'": true, // switch session 1-9
+	}
+	// Moved under ;W (and ;Z for zoom). None of these may be top level again.
+	moved := []string{"|", "[", "]", "{", "}", "+", ",", ".", "\\", "=", "-", "0"}
+
 	seen := map[string]bool{}
 	for _, b := range Bindings {
 		if b.Group == "Sessions" {
@@ -222,6 +228,64 @@ func TestSessionBindings(t *testing.T) {    want := map[string]bool{
 	}
 	if len(seen) != len(want) {
 		t.Errorf("Sessions group has unexpected keys: %v", seen)
+	}
+	for _, b := range Bindings {
+		for _, k := range moved {
+			if b.Key == k {
+				t.Errorf("key %q is advertised at top level but was moved under ;W/;Z", k)
+			}
+		}
+	}
+}
+
+// TestCategoryBindings pins the two category heads. A category head is not a
+// binding on its own — it arms a capture for a sub-key — so what matters is
+// that the label NAMES the sub-keys: the overlay is where the layout is
+// learned, and a row reading only "Window & layout" would advertise a key and
+// explain nothing.
+func TestCategoryBindings(t *testing.T) {
+	want := map[string][]string{
+		"W": {"|", "[", "]", "{", "}", ",", ".", "u", "m"},
+		"Z": {"i", "o", "r"},
+	}
+	found := map[string]string{}
+	for _, b := range Bindings {
+		if b.Group == "Categories" {
+			found[b.Key] = b.Label
+		}
+	}
+	if len(found) != len(want) {
+		t.Fatalf("Categories group has %d rows, want %d (have %v)", len(found), len(want), found)
+	}
+	for head, subs := range want {
+		label, ok := found[head]
+		if !ok {
+			t.Errorf("Categories group missing head %q", head)
+			continue
+		}
+		for _, s := range subs {
+			if !strings.Contains(label, s) {
+				t.Errorf("category %q does not advertise its sub-key %q: %q", head, s, label)
+			}
+		}
+	}
+}
+
+// TestNoCategoryHeadIsShadowed guards the rule the controller now enforces at
+// runtime (a plain binding always beats a category head): the categories must
+// sit on keys no plain binding uses, or `;W` would arm a capture over a
+// binding that already worked.
+func TestNoCategoryHeadIsShadowed(t *testing.T) {
+	heads := map[string]bool{}
+	for _, b := range Bindings {
+		if b.Group == "Categories" {
+			heads[b.Key] = true
+		}
+	}
+	for _, b := range Bindings {
+		if heads[b.Key] && b.Group != "Categories" {
+			t.Errorf("key %q is both a category head and a %s binding", b.Key, b.Group)
+		}
 	}
 }
 
