@@ -9,7 +9,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[] } = {},
+    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   /* ==================== tabs modal favicons ==================== */
   await t(";t tab rows carry a favicon image on the right", async () => {

@@ -9,7 +9,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[] } = {},
+    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   await t("leader ;f arms home-grid hint-pick (letters run tiles)", async () => {
     // ;f is link-hints on web pages; on the home grid it arms hint-PICK: each
