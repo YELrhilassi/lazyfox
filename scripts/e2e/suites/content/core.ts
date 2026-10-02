@@ -5,7 +5,14 @@ import { activate, evalIn, getTree, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 import { contextsOf } from "../../fixture.ts";
 export async function run(ctx: any): Promise<void> {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("content", name, fn);
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide.
+  const FILE = "content/core";
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
 
   // The content leader mirrors its armed state onto <html> as data-lf-leader.
   // (The which-key host element is not a signal: it lives in a closed shadow

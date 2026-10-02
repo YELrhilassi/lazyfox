@@ -25,7 +25,18 @@ import { evalIn, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 
 export async function run(ctx: any): Promise<void> {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("content", name, fn);
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide.
+  const FILE = "content/held";
+  // Tags: `--tags newfeatures` selects these. "newfeatures" is the set
+  // covering the most recent work; "destructive" marks tests that close
+  // tabs or rebuild the window, so a quick subset can skip them.
+  const TAGS: string[] = ["newfeatures","keys"];
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS });
 
   await t("holding the leader runs back then forward without a second press", async () => {
     // Start from a DISARMED leader, and prove it rather than assume it.

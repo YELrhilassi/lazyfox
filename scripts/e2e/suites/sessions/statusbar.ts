@@ -3,7 +3,14 @@
 import { evalIn, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 export async function run(ctx: any): Promise<void> {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("sessions", name, fn);
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide.
+  const FILE = "sessions/statusbar";
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   await t("status bar renders on web pages (single window bar)", async () => {
     // The chrome helper owns ONE window-level bar for every tab. A web page
     // must NOT carry its own fixed bar (that one overlapped content while

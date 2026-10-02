@@ -2,7 +2,7 @@
   // Typecheck for the WebDriver BiDi end-to-end harness (scripts/e2e/).
   //
   // This tree was previously in NO typecheck at all: tsconfig.scripts.json
-  // includes only "scripts/*.ts" (one level), so nothing under scripts/bidi/
+  // includes only "scripts/*.ts" (one level), so nothing under scripts/e2e/
   // was ever compiled. That is how a suite could call `navigate(...)` without
   // importing it and only discover it as a runtime
   // "ReferenceError: navigate is not defined" halfway through a 10-minute

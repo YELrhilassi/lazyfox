@@ -4,7 +4,10 @@ import { createTab, evalIn, navigate, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 import { makeSplitHelpers } from "./_shared.ts";
 export async function run(ctx: any): Promise<void> {
-  const { t, waitNoSplit, waitPlusPopup } = makeSplitHelpers(ctx);
+  // Tags: `--tags newfeatures` selects these. "destructive" marks tests
+  // that dissolve and rebuild splits, so a quick subset can skip them.
+  const TAGS: string[] = ["newfeatures","split","destructive"];const { t, waitNoSplit, waitPlusPopup } = makeSplitHelpers(ctx, "split/order", TAGS);
+
   await t("split: ;+N auto-split keeps the other tabs' order", async () => {
     // Regression: addTabSplitView used to park a freshly glued pair at the
     // END of the strip, renumbering every tab between the pair and the tail —

@@ -3,7 +3,14 @@
 import { activate, createTab, evalIn, getTree, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 export async function run(ctx: any): Promise<void> {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("sessions", name, fn);
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide.
+  const FILE = "sessions/stealth";
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   await t("stealth: isolated jar, session round-trip, wiped on close", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const origin = JSON.stringify(`${ctx.base}/`);

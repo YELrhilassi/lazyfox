@@ -4,7 +4,14 @@
 import { activate, evalIn, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 export async function run(ctx: any): Promise<void> {
-  const t = (name: string, fn: () => Promise<void>) => ctx.runTest("content", name, fn);
+  // The test id is "<group>/<file> › <name>", so two tests with the same
+  // name in different files of one group cannot collide.
+  const FILE = "content/popups";
+  const t = (
+    name: string,
+    fn: () => Promise<void>,
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
 
   // The popup renders its rows (and fires the composed `lazyfox:list` event)
   // the moment it opens, so the watcher has to be installed BEFORE the leader

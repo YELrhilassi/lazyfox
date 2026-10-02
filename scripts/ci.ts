@@ -8,9 +8,9 @@
 // on the first broken step.
 //
 // Usage:
-//   npm run ci              # build + unit tests + dist check + workflow lint
-//   npm run ci:bidi         # also run the BiDi end-to-end suite (needs a real
-//                           # Firefox + geckodriver, see below)
+//   npm run ci              # build + unit tests + dist check + workflow lint//   npm run ci:bidi         # also run the BiDi end-to-end suite (needs a real
+//                           #   Firefox + geckodriver, see below)
+//   npm run test:mutation   # prove the unit suite can actually fail
 //   npm run ci:hints        # the link-hint tests only (local pages, no network)
 //
 // Env (all optional; matches what the workflows set):
@@ -62,13 +62,13 @@ function bidiEnv(): NodeJS.ProcessEnv {
 
 if (runBidi) {
   steps.push(["BiDi end-to-end", () => {
-    sh("node", ["scripts/bidi/test.ts"], { env: bidiEnv() });
+    sh("node", ["scripts/e2e/main.ts"], { env: bidiEnv() });
   }]);
 }
 
 if (runHints) {
   steps.push(["BiDi link hints (local pages)", () => {
-    sh("node", ["scripts/bidi/test.ts", "--suite", "content", "--only", "link hints:"], {
+    sh("node", ["scripts/e2e/main.ts", "--suite", "content", "--only", "link hints:"], {
       env: bidiEnv(),
     });
   }]);

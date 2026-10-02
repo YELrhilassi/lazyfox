@@ -130,7 +130,7 @@ a dev installer refuses to masquerade as a signed one.
 | `submit` | publish a version to AMO + rebuild dev installers |
 | **`ship`** | **the release**: merge→signed→tag→push→GitHub Release |
 | `ci` / `ci:bidi` | run the local CI (universal pre-push check) |
-| `bidi` | run the WebDriver end-to-end suite (extension only) |
+| `e2e` | run the WebDriver end-to-end suite (extension only) |
 | `probe:chrome` | probe the real chrome helper (status bar / relay / leader) |
 | `clean` | wipe regenerable build products |
 | `verify` / `test` / `typecheck` | run the test suites / typecheck |
