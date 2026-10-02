@@ -396,6 +396,40 @@ export async function keyTap(context, key, opts: { ctrl?: boolean; alt?: boolean
   });
 }
 
+// Press one key down, run a list of other keys while it is still down, then
+// release it.
+//
+// This is the only way to test a genuinely held key, and it matters because
+// "held" is a claim about a key's LIFECYCLE, not about timing: the product
+// distinguishes a tap from a hold purely by whether the matching keyup
+// arrives, so a list of taps sent close together proves nothing about a hold.
+//
+// It has to be ONE action list. BiDi releases a key source when the action
+// list ends, so a keyDown in one performActions call and its keyUp in another
+// is not a hold at all — the key comes up before the second call starts, and
+// the product quite correctly treats the leader as released. Within one list
+// the ordering is honoured exactly, so `held` really is down for the whole
+// middle section.
+//
+// This is the real user path rather than a stand-in for it: a web page's
+// content script lives in another process, so the synthetic #lfc=keys channel
+// (which can also express `up: false`) only reaches the chrome dispatch, and
+// its contentWindow fallback is null for a remote page.
+export async function keyHoldSequence(context, held, keys) {
+  const h = keyValue(held);
+  const actions = [{ type: "keyDown", value: h }];
+  for (const k of keys || []) {
+    const v = keyValue(k);
+    actions.push({ type: "keyDown", value: v });
+    actions.push({ type: "keyUp", value: v });
+  }
+  actions.push({ type: "keyUp", value: h });
+  return send("input.performActions", {
+    context,
+    actions: [{ type: "key", id: "kbd", actions }],
+  });
+}
+
 // Click at page coordinates — moves keyboard focus out of the (hidden) URL
 // bar into the page so synthesized keys land where the tests expect.
 export async function clickPage(context, x, y) {

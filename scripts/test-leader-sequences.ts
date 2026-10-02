@@ -25,6 +25,11 @@ register("./ts-resolve-hook.mjs", import.meta.url);
 const { LeaderController, leaderSequences, leaderCombo } = await import(
   "../src/shared/leader.ts"
 );
+const { makeLeaderActions } = await import("../src/shared/popups/leader.ts");
+const { leaderCategories, CATEGORY_HINTS, CATEGORY_TIMEOUT_MS } = await import(
+  "../src/shared/popups/categories.ts"
+);
+const { armTabPosition } = await import("../src/shared/popups/leader.ts");
 
 let passed = 0;
 function ok(name: string, cond: boolean): void {
@@ -60,8 +65,43 @@ type Ctl = {
   cancelPending(): void;
 };
 
-function makeLeader(runs: string[], enabled: () => boolean = () => true): Ctl {
-  return new LeaderController((k) => runs.push(k), enabled, () => {}) as unknown as Ctl;
+// The REAL plain-binding table, not a stub: the point of the shadowing rule is
+// that it holds against the keymap we actually ship, so a category registered
+// on a key that later gains a plain binding is caught here rather than in the
+// browser.
+const leaderBindings: Record<string, () => void> = makeLeaderActions(
+  stubPopupCtx()
+);
+
+function stubPopupCtx(): any {
+  const noop = () => {};
+  const ops: any = new Proxy({}, { get: () => noop });
+  return {
+    ops,
+    open: noop,
+    close: noop,
+    toast: noop,
+    runAction: noop,
+    bindings: () => Promise.resolve([]),
+    armDigits: noop,
+    manualText: false,
+  };
+}
+
+// `hasBinding` is optional here so the older sequence tests can omit it; the
+// shadowing tests pass the REAL table so the rule is proven against the
+// keymap we ship.
+function makeLeader(
+  runs: string[],
+  enabled: () => boolean = () => true,
+  hasBinding?: (k: string) => boolean
+): Ctl {
+  return new LeaderController(
+    (k) => runs.push(k),
+    enabled,
+    () => {},
+    hasBinding
+  ) as unknown as Ctl;
 }
 
 /* ---------- leaderCombo sanity (the prefix keys come from it) ---------- */
@@ -226,4 +266,213 @@ eq("shift folds into the combo via e.key", leaderCombo(key("B", { shift: true })
 delete leaderSequences["G"];
 delete leaderSequences["L"];
 
-console.log(`\n${passed} checks passed.`);
+
+/* ---------- a category must NEVER shadow a plain binding ---------- */
+//
+// This is the ;G / ;L bug, and it is the reason the rule lives in the
+// controller rather than in registration discipline. Those keys were briefly
+// registered as two-key sequences so they "could never shadow" a plain binding,
+// and the effect was the opposite: `;G` armed a silent capture, showed nothing,
+// and on timeout fell through to a plain `G` action that did not exist. The
+// which-key menu advertised `;G` the whole time.
+//
+// So the guarantee is enforced against the host's own binding table, which is
+// the only thing that can answer "does a plain binding already exist here?".
+
+{
+  const fired: string[] = [];
+  // `t` already has a plain binding (the tab switcher).
+  leaderSequences["t"] = { final: { z: () => fired.push("z") }, timeoutMs: 50 };
+  const plain: string[] = [];
+  const l = makeLeader(plain, () => true, (k) => !!leaderBindings[k]);
+  l.active = true;
+  ok(
+    "a key with BOTH a sequence and a plain binding runs the plain binding",
+    l.handleKey(key("t")) === true
+  );
+  eq("the plain action ran", plain.join(","), "t");
+  ok("no sequence capture was armed", l.hasPending() === false);
+  eq("no sequence action fired", fired.join(","), "");
+  delete leaderSequences["t"];
+}
+
+{
+  // With no plain binding for the head, the same key DOES arm the category.
+  // Both halves matter: a rule that always refuses the sequence would make
+  // `;W` and `;Z` dead, which is the bug in the opposite direction.
+  const fired: string[] = [];
+  leaderSequences["W"] = { final: { "|": () => fired.push("split") }, timeoutMs: 50 };
+  const l = makeLeader([], () => true, (k) => !!leaderBindings[k]);
+  l.active = true;
+  ok("a free key arms the category", l.handleKey(key("W")) === true);
+  eq("the prefix records the category head", l.prefix, "W");
+  ok("a one-shot capture is armed for the sub-key", l.hasPending() === true);
+  ok("a registered sub-key is consumed", l.handlePending("|") === true);
+  eq("the sub-key action fired", fired.join(","), "split");
+  // Regression: a fired chord must END the leader. Leaving it armed meant the
+  // next keystroke was swallowed as a leader key and the action the user
+  // reached for never ran.
+  ok("a fired chord disarms the leader", l.active === false);
+  ok("and leaves no one-shot capture behind", l.hasPending() === false);
+  delete leaderSequences["W"];
+}
+
+{
+  // The held-leader exception: while `;` is physically down, a chord leaves
+  // the leader standing so a second action costs one keystroke.
+  const fired: string[] = [];
+  leaderSequences["W"] = { final: { "|": () => fired.push("split") }, timeoutMs: 50 };
+  const l = makeLeader([], () => true, (k) => !!leaderBindings[k]);
+  l.active = true;
+  l.sticky = true;
+  l.handleKey(key("W"));
+  l.handlePending("|");
+  eq("the sub-key action still fired while held", fired.join(","), "split");
+  ok("a HELD leader stays armed after a chord", l.active === true);
+  l.sticky = false;
+  delete leaderSequences["W"];
+}
+
+{
+  // An unregistered sub-key must leave the leader ALONE. Yanking it here would
+  // make the keystroke after a mistyped `;W x` do something unasked.
+  leaderSequences["W"] = { final: { "|": () => {} }, timeoutMs: 50 };
+  const l = makeLeader([], () => true, (k) => !!leaderBindings[k]);
+  l.active = true;
+  l.handleKey(key("W"));
+  l.handlePending("q");
+  ok("a mistyped sub-key leaves the leader armed", l.active === true);
+  eq("and clears the prefix", l.prefix, "");
+  delete leaderSequences["W"];
+}
+
+{
+  // An unknown sub-key must consume NOTHING. A category that silently ate an
+  // arbitrary keypress would make the next keystroke after `;W` unpredictable.
+  leaderSequences["W"] = { final: { "|": () => {} }, timeoutMs: 50 };
+  const plain: string[] = [];
+  const l = makeLeader(plain, () => true, (k) => !!leaderBindings[k]);
+  l.active = true;
+  l.handleKey(key("W"));
+  eq("an unregistered sub-key is not consumed", l.handlePending("q"), false);
+  eq("and runs no plain action either", plain.join(","), "");
+  delete leaderSequences["W"];
+}
+
+/* ---------- the SHIPPED categories, against the SHIPPED plain table ---------- */
+
+{
+  const cats = leaderCategories(stubPopupCtx());
+  const heads = Object.keys(cats).sort();
+  eq("the shipped categories are W and Z", heads.join(","), "W,Z");
+  for (const h of heads) {
+    // A category head that also has a plain binding is unreachable: the
+    // controller's rule sends the key to the plain action and the category is
+    // silently dead. Better caught here than as "the split shortcut stopped
+    // working" a release later.
+    ok(`;${h} does not collide with a plain binding`, !leaderBindings[h]);
+    ok(`;${h} is described in the which-key hints`, !!CATEGORY_HINTS[h]);
+  }
+
+  // Every advertised sub-key must exist, and every real sub-key must be
+  // advertised. The hints string is what the overlay renders, so a drift here
+  // is a menu that lies.
+  for (const h of heads) {
+    const advertised = (CATEGORY_HINTS[h]?.keys ?? "").split(" ").filter(Boolean);
+    for (const s of advertised) {
+      ok(`;${h} ${s} is a real sub-key`, typeof cats[h][s] === "function");
+    }
+    for (const s of Object.keys(cats[h])) {
+      ok(`;${h} ${s} appears in the hints`, advertised.includes(s));
+    }
+  }
+
+  // Sub-keys live inside a one-shot capture, so they cannot shadow anything at
+  // top level — `;W m` coexisting with a top-level `m` is safe by
+  // construction, and this pins that reading of the layout.
+  ok("a split sub-key also exists at top level", !!leaderBindings["m"]);
+
+  ok("the category timeout is short", CATEGORY_TIMEOUT_MS <= 2000);
+}
+
+/* ---------- `;W m` names a POSITION, and positions are now multi-digit ---------- */
+//
+// The split-move target used to take a bare single digit. The moment a window
+// passed nine tabs the target it named no longer existed, so the feature went
+// quietly unreachable with no error anywhere — the worst kind of failure,
+// because nothing looked broken. It now resolves digits through the same
+// planner `;1` uses, and these pin that it actually asks for the count.
+
+{
+  // A stub host whose digit capture is a real one-shot queue, so the test
+  // exercises armTabPosition's own re-arming rather than a permissive stub.
+  const applied: number[] = [];
+  let capture: ((k: string) => boolean) | null = null;
+  const ctx: any = {
+    ops: { tabCount: async () => 12, splitAddTabByIndex: (n: number) => applied.push(n) },
+    armDigits: (fn: any) => {
+      capture = fn;
+    },
+  };
+  armTabPosition(ctx, (n) => applied.push(n));
+  const press = async (k: string) => {
+    const fn = capture!;
+    capture = null;
+    fn(k);
+    // The tab count resolves on a microtask; let it land before the next key.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  // Tab 3 in a twelve-tab window is a complete answer on one digit.
+  await press("3");
+  eq("one unambiguous digit resolves immediately", applied.join(","), "3");
+  ok("the capture disarmed after resolving", capture === null);
+
+  // Tab 11 needs two: "1" is ambiguous (1, 10, 11, 12), so the capture must
+  // STAY armed rather than falling through to an unrelated binding.
+  armTabPosition(ctx, (n) => applied.push(n));
+  await press("1");
+  eq("an ambiguous prefix resolves nothing yet", applied.join(","), "3");
+  ok("the capture stays armed for the second digit", capture !== null);
+  await press("1");
+  eq("the second digit completes the position", applied.join(","), "3,11");
+  ok("and then disarms", capture === null);
+}
+
+{
+  // A non-digit must not be swallowed: the keystroke after `;W m` has to stay
+  // predictable.
+  const applied: number[] = [];
+  let capture: ((k: string) => boolean) | null = null;
+  const ctx: any = {
+    ops: { tabCount: async () => 12 },
+    armDigits: (fn: any) => {
+      capture = fn;
+    },
+  };
+  armTabPosition(ctx, (n) => applied.push(n));
+  const fn = capture!;
+  capture = null;
+  eq("a letter is not consumed", fn("q"), false);
+  eq("and runs no action", applied.join(","), "");
+}
+
+{
+  // A leading zero cannot start a position, and must not be eaten.
+  let capture: ((k: string) => boolean) | null = null;
+  const ctx: any = {
+    ops: { tabCount: async () => 12 },
+    armDigits: (fn: any) => {
+      capture = fn;
+    },
+  };
+  armTabPosition(ctx, () => {});
+  const fn = capture!;
+  capture = null;
+  eq("a leading zero is not consumed", fn("0"), false);
+}
+
+console.log(`
+${passed} checks passed.`);

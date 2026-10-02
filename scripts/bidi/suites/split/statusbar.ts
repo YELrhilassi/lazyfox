@@ -26,7 +26,7 @@ export async function run(ctx: any): Promise<void> {
       (t) => ctx.isRealTab(t)
     );
     const helloIdx = real.findIndex((t) => (t.url || "").includes("/hello")) + 1;
-    await ctx.leaderPress(a, "=", { shift: true }); // ;+
+    await ctx.leaderSeq(a, ["W", "m"]); // ;W m -> move tab into split
     await waitPlusPopup(a);
     await ctx.press(a, String(Math.min(Math.max(helloIdx, 1), 9)));
     // Wait for the move to land (hello is IN the split) and then for the

@@ -45,6 +45,12 @@
   // scripts/test-leader-sequences.ts is the seventh, for the same reason: it
   // drives LeaderController.handleKey with synthetic KeyboardEvent-shaped
   // objects, and leader.ts's public surface is typed against the DOM.
+  //
+  // scripts/test-keyhold.ts is the eighth, and for the same reason plus one
+  // more: it drives chrome/keysdispatch.ts, whose deps and key shapes are
+  // typed against the DOM and Firefox chrome globals this config knows nothing
+  // about. The module is typechecked by tsconfig.json; only the Node-side test
+  // of it is out of scope here.
   "exclude": [
     "scripts/test-page-text.ts",
     "scripts/test-store.ts",
@@ -52,7 +58,8 @@
     "scripts/test-find-text.ts",
     "scripts/test-chrome-keys.ts",
     "scripts/test-overlays.ts",
-    "scripts/test-leader-sequences.ts"
+    "scripts/test-leader-sequences.ts",
+    "scripts/test-keyhold.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

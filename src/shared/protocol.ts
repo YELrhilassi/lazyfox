@@ -308,7 +308,11 @@ export interface ChromeApi {
   moveToSplit: { req: { index: number }; res: void };
   // Session restore finished opening tabs: re-create the native split
   // groupings. 1-based positions over the SAVED tab list.
-  restoreSplits: { req: { groups: number[][] }; res: void };
+  // `expect` is the number of real tabs the restore produced. The chrome side
+  // waits for the strip to hold exactly that many before pairing, because a
+  // tab's element appears in the parent process a tick or two after
+  // `tabs.create` resolves — pairing early pairs the tabs being torn down.
+  restoreSplits: { req: { groups: number[][]; expect?: number }; res: void };
   sessionState: { req: RelaySessionState; res: void };
   leaderState: { req: { index: number; active: boolean }; res: void };
   contentState: { req: { index: number; active: boolean; url: string }; res: void };

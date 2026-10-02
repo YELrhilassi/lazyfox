@@ -36,7 +36,7 @@ export async function run(ctx: any): Promise<void> {
     const chromeReal = ids.filter((t) => ctx.isRealTab(t));
     const cRealIndex = chromeReal.findIndex((t) => t.id === cRow.id) + 1;
     assert(cRealIndex <= 9, "C index within 1-9: " + cRealIndex);
-    await ctx.leaderPress(a, "=", { shift: true }); // ;+
+    await ctx.leaderSeq(a, ["W", "m"]); // ;W m -> move tab into split
     await waitPlusPopup(a);
     await ctx.press(a, String(cRealIndex));
     try {

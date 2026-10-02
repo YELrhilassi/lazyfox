@@ -144,7 +144,7 @@ gatekeeper. The action runs the moment you press its key; `Esc` just cancels.
 | `; s` / `; S` | web search (new tab / current tab) |
 | `; o` / `; O` | open a URL (new tab / current tab) |
 | `; t` | tab switcher — each row shows its number; type to filter, or press `1`–`9` to jump straight to that tab |
-| `; 1`–`; 8` / `; 9` | jump to tab 1–8 / the last tab |
+| `; 1`–`; 9` | jump to tab N. With nine tabs or fewer every digit is unambiguous and goes straight there; past nine a digit that could be a prefix waits one more keystroke (`;1` `;1` is tab 11), and an ambiguous digit opens a quiet keypad of just the matching positions — no search box, because there is nothing to search |
 | `; ?` | keybindings help — grouped and searchable by key, name or group |
 | `; p` | sessions popup |
 | `; n` / `; x` / `; v` / `; c` | new tab / close / duplicate / reopen |
@@ -154,26 +154,53 @@ gatekeeper. The action runs the moment you press its key; `Esc` just cancels.
 | `; r` / `; g` / `; l` | reload / back / forward |
 | `; G` / `; L` | navigation stack (Shift) — the whole back/forward history of this tab as a list; pick an entry to jump |
 | `; y` / `; m` | copy URL / mute tab |
-| `; z` | zen mode (fullscreen) |
-| `; e` | toolbar reveal on hover |
-| `; \|` | split side-by-side |
-| `;[` / `;]` | previous / next split pane |
-| `;{` / `;}` | swap panes left / right |
-| `;+` then `1`–`9` | move that tab into the split |
+| `; w` | resize / move the window |
+| `; W` | **window & layout** category — see below |
 | `; d` / `; h` / `; b` | downloads / history / bookmarks |
 | `; /` | find in page — search, walk, copy (`y`) or yank (`Y`) |
 | `; i` | focus the first input on the page |
-| `; =` / `; -` / `; 0` | zoom in / out / reset |
+| `; Z` | **zoom** category — `;Z i` in, `;Z o` out, `;Z r` reset |
 | `; D` | dismiss the download notification |
 | `; q` | toggle the which-key overlay |
 | `; I` | full install — the setup page that completes the toolbar-free UI |
 | `; T` | diagnostics & performance — live page report, detection probes, cache controls |
 | `; N` | new stealth tab |
 | `; Q` | save the session and quit Firefox |
-| `; w` / `; m` | resize / move the window |
+| `; m` | mute tab (see also `;W m` to move a tab into the split) |
 | `; F` / `; B` | scroll target: next / previous scrollable region |
 | `j` `k` `d` `u` `gg` `G` | scroll the page (when not typing) |
 | `Ctrl+Alt+Space` / `Ctrl+Alt+K` | open the menu / command center from anywhere |
+
+### Two-key categories
+
+Most keys stay one keystroke. A few belong to a concept you cannot type in one
+keystroke without making the menu a wall of punctuation, so they live one
+level down. Press the head, the status bar shows the head and a waiting
+affordance, and your next keystroke picks the action:
+
+| Chord | Action |
+| --- | --- |
+| `; W \|` | split side-by-side |
+| `; W [` / `; W ]` | previous / next split pane |
+| `; W {` / `; W }` | swap panes left / right |
+| `; W ,` / `; W .` | move the active tab left / right |
+| `; W u` | dissolve the split (undo) |
+| `; W m` then `1`–`9` | move that tab into the split |
+| `; W w` | resize / move the window |
+| `; W z` | zen mode (fullscreen) |
+| `; W e` | toolbar reveal on hover |
+| `; Z i` / `; Z o` / `; Z r` | zoom in / out / reset |
+
+The sub-keys are, with three deliberate exceptions, the key the action
+already had — `;W |` used to be `;|`, so the hand does not relearn anything.
+The three that changed are the ones that were hard to read or needed a
+modifier for no reason: `\\` became `;W u` (undo), `+` became `;W m` (move),
+and zoom's `=` `-` `0` became `;Z i` `;Z o` `;Z r` (in / out / reset).
+
+A category head can never shadow a plain binding: the controller checks the
+real keymap first and, if the key already does something on its own, runs that
+instead. That rule exists because `;G` / `;L` once shipped as sequences that
+shadowed nothing, which is exactly why they were unreachable.
 
 ### Scrolling
 
@@ -330,15 +357,15 @@ in its folder, **`x x`** deletes it.
 
 ### Split view
 
-`;|` puts the current tab side by side with the split panel — a search box
-plus the live list of your other tabs, each row showing its `;+N` number.
-Pick a tab and it lands in the split, replacing the panel, so no empty pane
-is left behind.
+**`;W |`** puts the current tab side by side with the split panel — a search
+box plus the live list of your other tabs, each row showing its `;W m N`
+number. Pick a tab and it lands in the split, replacing the panel, so no
+empty pane is left behind.
 
-- **`;[` / `;]`** switch the active pane.
-- **`;{` / `;}`** swap the two panes.
-- **`;+`** then `1`–`9` moves that tab straight into the split.
-- **`;\\`** dissolves the split back into normal tabs.
+- **`;W [` / `;W ]`** switch the active pane.
+- **`;W {` / `;W }`** swap the two panes.
+- **`;W m`** then `1`–`9` moves that tab straight into the split.
+- **`;W u`** dissolves the split back into normal tabs.
 - Splits are part of sessions: save a session while split, and restoring the
   session brings the whole layout back.
 

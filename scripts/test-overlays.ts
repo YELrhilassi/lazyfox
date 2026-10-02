@@ -26,7 +26,7 @@ register("./ts-resolve-hook.mjs", import.meta.url);
 
 const { faviconFor, faviconHtml } = await import("../src/shared/favicon.ts");
 const { manualTextKey } = await import("../src/shared/manualtext.ts");
-const { leaderSignalOn } = await import("../src/shared/statusbar.ts");
+const { leaderSignalOn, leaderSeqText } = await import("../src/shared/statusbar.ts");
 const { isCancel } = await import("../src/shared/leader.ts");
 
 let passed = 0;
@@ -354,3 +354,32 @@ ok("Meta+G does NOT cancel", !isCancel(cancelKev("g", { metaKey: true })));
 ok("other Ctrl chords do NOT cancel", !isCancel(cancelKev("c", { ctrlKey: true })) && !isCancel(cancelKev("w", { ctrlKey: true })));
 
 console.log(`\n${passed} checks passed.`);
+
+/* ---------- leaderSeqText: what the leader indicator reads ---------- */
+//
+// The bar shows the leader glyph alone while waiting for a first key, and the
+// committed key after it once a chord is half-done. The glyph never moves —
+// only the text after it changes — so the segment cannot resize under the
+// user's eye mid-sequence.
+//
+// This matters because the alternative looks better in a mock-up and is worse
+// in use: swapping the glyph for "W" removes the very thing that says the
+// sequence is still live, at exactly the moment the user needs it to still be
+// live.
+
+eq("no prefix reads as the bare leader glyph", leaderSeqText(""), "⌘");
+eq("a bare leader reads as the same glyph", leaderSeqText(";"), "⌘");
+eq("a missing prefix is the bare glyph, not 'undefined'", leaderSeqText(undefined), "⌘");
+eq("a null prefix is the bare glyph", leaderSeqText(null), "⌘");
+ok("whitespace-only is the bare glyph", leaderSeqText("   ") === "⌘");
+eq("a committed category key follows the glyph", leaderSeqText("W"), "⌘ W");
+eq("a committed category key keeps the glyph first", leaderSeqText("Z"), "⌘ Z");
+eq("a punctuation sub-key is shown as typed", leaderSeqText("|"), "⌘ |");
+ok(
+  "the glyph is present in every state, so the segment never empties",
+  ["", ";", "W", "Z", "|"].every((p) => leaderSeqText(p).indexOf("⌘") === 0)
+);
+ok(
+  "the glyph is a prefix of the longer text, not replaced by it",
+  leaderSeqText("W").indexOf(leaderSeqText("")) === 0
+);

@@ -17,11 +17,12 @@
 
 import { dbg } from "../shared/dev";
 import { KeyGuard } from "../shared/keyguard";
-import { LeaderController } from "../shared/leader";
+import { LeaderController, leaderSequences } from "../shared/leader";
 import { toast } from "../shared/overlay";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
 
 import { openNavPopup } from "../shared/popups/nav";
+import { CATEGORY_TIMEOUT_MS, leaderCategories } from "../shared/popups/categories";
 import { createAliveAnnounce, detectProfile } from "./alive";
 import { createCacheCtl } from "./cache";
 import { createChannel, type Channel } from "./channel";
@@ -38,6 +39,7 @@ import {
   forgetContentFrom,
 } from "./keystate";
 import { createChromeOps } from "./ops";
+import { setRelayTabTest } from "./ops/primitives";
 import { createPopupHost } from "./popup";
 import { createScrollKeys } from "./scrollkeys";
 import { createSplitView, type SplitView } from "./splitview";
@@ -81,7 +83,11 @@ import { createTypingChannel } from "./typing";
   let debug!: DebugHandlers;
   let leader: LeaderController | null = null;
   let lastAction: string | null = null;
-  let lastMoveDebug: string | null = null;
+  // The whole trail of the last split MOVE, not just its final line. A single
+  // "addTabs returned ok" cannot distinguish "it worked" from "it worked and
+  // something undid it a moment later", which is exactly the ambiguity that
+  // made the restore-by-position failure unreadable.
+  let moveLog: string[] = [];
 
   status = createStatusBar({
     realTabs: () => split.realTabs(),
@@ -92,7 +98,15 @@ import { createTypingChannel } from "./typing";
   split = createSplitView({
     ccBaseUrl: () => channel.ccBaseUrl(),
     onSplitChange: () => status.update(),
-    onMove: (msg) => { lastMoveDebug = msg; },
+    // Resolved at call time: `channel` is built after `split` (it needs the
+    // popup context that wraps ops), and the relay's identity is only known
+    // once it exists — which is exactly when the numbering needs to ask.
+    isRelayTab: (t) => !!channel && channel.isKnownRelayTab(t),
+    onMove: (msg) => {
+      moveLog.push(msg);
+      if (moveLog.length > 24) moveLog.shift();
+    },
+    onMoveReset: () => { moveLog = []; },
   });
 
   debug = createDebug({
@@ -102,12 +116,13 @@ import { createTypingChannel } from "./typing";
       chromeOwnsKeys: () => chromeOwnsKeys(window),
       leaderPending: () => !!(leader && leader.hasPending()),
       lastAction: () => lastAction,
-      lastMoveDebug: () => lastMoveDebug,
+      lastMoveDebug: () => (moveLog.length ? moveLog.join(" | ") : null),
       statusMounted: () => status.mounted(),
       statusPosition: () => cfg.config.statusBarPosition || "bottom",
       dlActive: () => status.dlActive(),
       isFullscreen: () => status.isFullscreen(),
       activeSplitView: () => split.activeSplitView(),
+      realTabs: () => split.realTabs(),
       cfg: () => cfg,
       relay: () => channel.relayDebug(),
     }),
@@ -139,6 +154,12 @@ import { createTypingChannel } from "./typing";
     toast: toast,
     runAction: (k) => runLeaderAction(leaderActions, k),
     bindings: () => (leader ? leader.bindings() : Promise.resolve([])),
+    // A sub-key that takes a NUMBER (move tab N into the split) needs the
+    // leader's one-shot capture; the leader controller owns it.
+    armDigits: (apply, timeoutMs) => {
+      if (!leader) return;
+      leader.armPending(apply, timeoutMs || 3000);
+    },
     manualText: false,
   };
   leaderActions = makeLeaderActions(ctx);
@@ -155,7 +176,8 @@ import { createTypingChannel } from "./typing";
       metaKey: boolean;
       isComposing: boolean;
     },
-    fromActor?: boolean
+    fromActor?: boolean,
+    noKeyup?: boolean
   ) => boolean = () => false;
 
   const typing = createTypingChannel();
@@ -194,19 +216,60 @@ import { createTypingChannel } from "./typing";
   // instantly and `;` plus a binding would stop working everywhere. Release
   // only ends the chaining: the leader stays armed exactly as a normal tap
   // leaves it, and the next binding disarms it as usual.
+  //
+  // This is the ONE definition of "the leader key came up", deliberately
+  // shared rather than written twice. A real keyup and a synthetic one — the
+  // `#lfc=keys` channel's release — must not be able to disagree about what a
+  // release means, because the held-leader feature is exactly that agreement:
+  // if the synthetic path skipped it, the harness could not express a hold at
+  // all and every synthetic `;` would look permanently pressed.
+  const releaseLeaderHold = (key: string): void => {
+    try {
+      const l = leader;
+      if (!l) return;
+      if (key !== (cfg.config && cfg.config.leader)) return;
+      l.sticky = false;
+    } catch (err) {
+      // ignore — a dead view must not break the key path
+    }
+  };
+
   window.addEventListener(
     "keyup",
     (e) => {
-      try {
-        const l = leader;
-        if (!l || e.key !== (cfg.config && cfg.config.leader)) return;
-        l.sticky = false;
-      } catch (err) {
-        // ignore — a dead view must not break the key path
-      }
+      releaseLeaderHold(e.key);
     },
     true
   );
+
+  // A keyup can be LOST, and the hold must not outlive the window's attention.
+  //
+  // Press `;`, alt-tab (or click another application, or let a modal steal
+  // focus) before letting go: the release is delivered to whatever has focus
+  // by then, so this window never sees it and the leader stays marked as
+  // physically held. The user comes back to a lit indicator, a leader that
+  // never disarms, and a keyboard whose next keystrokes are eaten as bindings.
+  // The same happens when the tab is hidden or the window is minimized.
+  //
+  // Clearing the hold is the whole fix, and only the hold: the leader stays
+  // armed exactly as a released tap leaves it, because losing focus is not the
+  // user changing their mind about the sequence. Idempotent and cheap, and it
+  // only does anything while a hold is actually outstanding.
+  const releaseLostHold = (): void => {
+    try {
+      if (leader && leader.sticky) leader.sticky = false;
+    } catch (err) {
+      // ignore — a dead view must not break the key path
+    }
+  };
+  window.addEventListener("blur", releaseLostHold, true);
+  try {
+    window.document.addEventListener("visibilitychange", () => {
+      if (window.document.visibilityState !== "visible") releaseLostHold();
+    });
+  } catch (err) {
+    // ignore
+  }
 
   // ;f is link-hints, and who handles it depends on the page: the command
   // center arms hint-PICK and chrome-owned pages (about:, error pages) draw
@@ -248,10 +311,18 @@ import { createTypingChannel } from "./typing";
       // overlay is disabled — it is then the only visible leader sign.
       () => {
         if (leader) {
-          status.setLeaderSignal(leader.active || leader.hasPending());
+          // The prefix rides along so the bar can show `; W` rather than a bare
+          // glyph once a chord is half-committed: an indicator that looks
+          // identical at ";" and at ";W" says nothing about which key comes
+          // next, which is the only thing the user wants to know at that point.
+          status.setLeaderSignal(leader.active || leader.hasPending(), leader.prefix);
         }
         status.compute();
-      }
+      },
+      // A plain binding always beats a category head. Supplying this is what
+      // stops registering `;W` / `;Z` from ever being able to take over a key
+      // that already worked.
+      (k) => !!leaderActions[k]
     );
     // ;' = quick switch: capture the next digit and jump to the marked session.
     leaderActions["'"] = () =>
@@ -274,16 +345,12 @@ import { createTypingChannel } from "./typing";
     // the menu promised a key that did nothing.
     leaderActions["G"] = () => openNavPopup(ctx);
     leaderActions["L"] = () => openNavPopup(ctx);
-    // ;+1-9 = move tab N into the current split view.
-    leaderActions["+"] = () =>
-      leader!.armPending((k) => {
-        lastAction = "+" + k;
-        if (/^[1-9]$/.test(k)) {
-          chromeOps.splitAddTabByIndex(Number(k));
-          return true;
-        }
-        return false;
-      }, 3000);
+    // The leader's two-key categories (`;W` window/layout, `;Z` zoom) are defined
+    // once in shared/popups/categories.ts and registered here, so the chrome
+    // helper and the content script cannot drift into disagreeing about them.
+    for (const [head, final] of Object.entries(leaderCategories(ctx))) {
+      leaderSequences[head] = { final, timeoutMs: CATEGORY_TIMEOUT_MS };
+    }
     // ;F / ;B (cycle scroll region) are implemented by the content script,
     // which owns page scrolling on web content. They appear in the shared
     // which-key table, so answer them here with a clear note instead of a
@@ -335,6 +402,14 @@ import { createTypingChannel } from "./typing";
   // is keyed off the status bar's live tab-id snapshot (strip order).
   const cache = createCacheCtl({ getTabIds: () => status.getTabIds() });
 
+  // Both chrome-side numberings — the one that COUNTS tabs for a typed digit
+  // and the one that RESOLVES the digit to a tab — must agree about the relay
+  // by REFERENCE, not only by URL: a relay whose page has not committed yet is
+  // about:blank, and one list would count it while the other skipped it, so
+  // the number the user typed named the wrong tab. Wired here because this is
+  // the first point at which the channel exists.
+  setRelayTabTest((t) => !!channel && channel.isKnownRelayTab(t));
+
   channel = createChannel({
     ctx,
     ops: chromeOps as unknown as { openTarget(which: string): boolean; openUrlNative(url: string): boolean; openResize(): void },
@@ -344,7 +419,20 @@ split,
     cfg,
     debug,
     cache,
-    keys: { dispatch: (e) => chromeKeyDown(e) },
+    // The `#lfc=keys` channel carries keyDOWNS and nothing else — there is no
+    // keyup in the wire format and no way for the browser to invent one, so
+    // every key it delivers is a tap. Passing `noKeyup` is what keeps a
+    // synthesized `;` from marking the leader as physically HELD, which would
+    // otherwise leave it chained for the rest of the window's life: the
+    // indicator stuck on, every binding leaving the leader armed, and the next
+    // real keystroke eaten. It is the difference between a test harness that
+    // can drive a held key and one that quietly breaks the hold feature
+    // everywhere it runs.
+    //
+    // `fromActor` stays false on purpose: this channel drives the real
+    // selection, which may be a page whose content script owns its keys, and
+    // claiming ownership here would handle one keystroke twice.
+    keys: { dispatch: (e) => chromeKeyDown(e, false, true), release: releaseLeaderHold },
   });
 
   /* ===================== window listeners ===================== */
@@ -488,6 +576,7 @@ split,
         metaKey: false,
         isComposing: false,
       },
+      true,
       true
     );
     if (handled) return null;

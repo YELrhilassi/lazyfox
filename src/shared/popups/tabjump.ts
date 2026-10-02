@@ -43,8 +43,14 @@ export function openTabChooser(
   ctx: PopupCtx,
   prefix: string,
   count: number,
-  rows: PopupItem[]
+  rows: PopupItem[],
+  // What to do with the chosen number. Defaults to jumping, which is what
+  // `;1` wants; the split-move passes its own action so the same chooser can
+  // resolve a POSITION for a different purpose. The chooser resolves numbers,
+  // never actions — that keeps one list, one planner, one set of rules.
+  apply?: (n: number) => void
 ): void {
+  const act = apply || ((n: number) => ctx.ops.tabJump(n));
   const byNumber = new Map<number, PopupItem>();
   for (const r of rows) {
     if (r.number != null) byNumber.set(r.number, r);
@@ -78,7 +84,7 @@ export function openTabChooser(
         },
         onPick: (n) => {
           ctx.close();
-          ctx.ops.tabJump(n);
+          act(n);
         },
         extraKeys: (e, sel) => {
           if (e.ctrlKey || e.metaKey || e.altKey) return false;
@@ -88,7 +94,7 @@ export function openTabChooser(
           current = next.prefix;
           if (next.plan.kind === "jump") {
             ctx.close();
-            ctx.ops.tabJump(next.plan.n);
+            act(next.plan.n);
             return true;
           }
           // Still ambiguous: retitle to the wider prefix and let the search

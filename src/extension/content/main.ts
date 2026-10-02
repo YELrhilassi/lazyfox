@@ -9,8 +9,9 @@ import { ensureCore } from "../../shared/core";
 import { isTypingTarget } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { KeyGuard } from "../../shared/keyguard";
-import { LeaderController, isCancel } from "../../shared/leader";
+import { LeaderController, isCancel, leaderSequences } from "../../shared/leader";
 import { openNavPopup } from "../../shared/popups/nav";
+import { CATEGORY_TIMEOUT_MS, leaderCategories } from "../../shared/popups/categories";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
 import { mirrorFlag } from "../../shared/observability";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/popups";
@@ -129,6 +130,11 @@ import type { ContentPopupShell } from "./find";
     toast: toast,
     runAction: (k) => runLeaderAction(leaderActions, k),
     bindings: () => leader.bindings(),
+    // A sub-key that takes a NUMBER (move tab N into the split) needs the
+    // leader's one-shot capture; the leader controller owns it.
+    armDigits: (apply, timeoutMs) => {
+      leader.armPending(apply, timeoutMs || 3000);
+    },
     manualText: true,
   };
   const leaderActions = makeLeaderActions(ctx);
@@ -152,7 +158,10 @@ import type { ContentPopupShell } from "./find";
     () => {
       setLeaderAttr(leader.active);
       void send("syncLeader", { active: leader.active });
-    }
+    },
+    // A plain binding always beats a category head, so registering `;W` /
+    // `;Z` can never take over a key that already worked.
+    (k) => !!leaderActions[k]
   );
   // Clear any stale leader state this tab carried from a previous page (the
   // leader starts disarmed on every fresh load).
@@ -203,16 +212,12 @@ import type { ContentPopupShell } from "./find";
       }
       return false;
     }, 3000);
-  // ;+1-9 = move tab N into the current split view.
-  leaderActions["+"] =
-    () =>
-      leader.armPending((k) => {
-        if (/^[1-9]$/.test(k)) {
-          contentOps.splitAddTabByIndex(Number(k));
-          return true;
-        }
-        return false;
-      }, 3000);
+  // The leader's two-key categories (`;W` window/layout, `;Z` zoom) come from
+  // the shared table — registered here too, from the same source the chrome
+  // helper uses, so the two contexts cannot disagree about what `;W |` does.
+  for (const [head, final] of Object.entries(leaderCategories(ctx))) {
+    leaderSequences[head] = { final, timeoutMs: CATEGORY_TIMEOUT_MS };
+  }
   // ;F / ;B = cycle the scroll target among the page's scroll regions (the
   // document scroller, then each pane/sidebar largest-first). The plain scroll
   // keys keep working on whatever is focused, and cycling back to "window"
@@ -417,6 +422,35 @@ import type { ContentPopupShell } from "./find";
     },
     true
   );
+
+  // A keyup can be LOST, and the hold must not outlive the page's attention.
+  //
+  // Press `;`, then switch tabs, windows or applications before letting go: the
+  // release is delivered wherever focus ended up, so this document never sees
+  // it and the leader stays marked as physically held. The user comes back to a
+  // lit indicator, a leader that never disarms, and a page whose next
+  // keystrokes are eaten as bindings instead of reaching the document. Hiding
+  // the tab does the same thing, and so does minimizing the window.
+  //
+  // Only the hold is cleared — the leader stays armed exactly as a released tap
+  // leaves it, because losing focus is not the user changing their mind about
+  // the sequence. Idempotent, and a no-op unless a hold is actually
+  // outstanding, so it can run on every visibility change.
+  const releaseLostHold = (): void => {
+    try {
+      if (leader.sticky) leader.sticky = false;
+    } catch (err) {
+      // ignore
+    }
+  };
+  window.addEventListener("blur", releaseLostHold, true);
+  try {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") releaseLostHold();
+    });
+  } catch (err) {
+    // ignore
+  }
 
   function syncTypingAttr() {
     const ae = document.activeElement;

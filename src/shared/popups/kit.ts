@@ -23,6 +23,12 @@ export interface PopupCtx {
   runAction(key: string): void;
   // The leader binding list, in core order.
   bindings(): Promise<WkItem[]>;
+  // Arms a one-shot digit capture and hands the next digit to `apply`.
+  // Actions that take a NUMBER after the leader key need this (move tab N into
+  // the split, switch session N), and the leader controller is what owns that
+  // capture — so the shared action table asks the host for it rather than
+  // reaching into the controller, which keeps the sub-key table context-free.
+  armDigits(apply: (k: string) => boolean, timeoutMs?: number): void;
   // Content scripts preventDefault every key before it reaches the popup input,
   // so their selector must insert text manually; chrome's input receives keys
   // natively.
