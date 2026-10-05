@@ -170,3 +170,35 @@ func TestStatusDismissAll(t *testing.T) {
 		t.Fatalf("dismiss-all must keep popup entries: %+v", list)
 	}
 }
+
+// The leader indicator's "what we need next" half. The reason this is a store
+// field rather than a view-only value is the failure it prevents: the bar
+// repaints from this snapshot on every poll, so a hint that lived only on the
+// painted DOM would be erased by the next tick and the indicator would
+// flicker between "waiting for a digit" and "nothing pending".
+func TestStatusLeaderSignalCarriesTheExpectation(t *testing.T) {
+	resetStatus()
+	StatusSetTab(0, 1, 3)
+
+	StatusSetLeaderSignal(true, "W", "1-9")
+	m := StatusSnapshot()
+	if !m.Leader.Armed || m.Leader.Prefix != "W" || m.Leader.Expect != "1-9" {
+		t.Fatalf("armed chord with an expectation did not survive: %+v", m.Leader)
+	}
+
+	// Disarming must clear BOTH halves. A hint for a capture that has ended is
+	// a hint to press a dead key, which is worse than showing nothing.
+	StatusSetLeaderSignal(false, "", "")
+	m = StatusSnapshot()
+	if m.Leader.Armed || m.Leader.Prefix != "" || m.Leader.Expect != "" {
+		t.Fatalf("disarm left leader state behind: %+v", m.Leader)
+	}
+
+	// A capture that takes any key reports no expectation — absence is the
+	// honest answer, and it must not be rendered as an empty prompt.
+	StatusSetLeaderSignal(true, "", "")
+	m = StatusSnapshot()
+	if !m.Leader.Armed || m.Leader.Prefix != "" || m.Leader.Expect != "" {
+		t.Fatalf("bare armed leader should carry no expectation: %+v", m.Leader)
+	}
+}

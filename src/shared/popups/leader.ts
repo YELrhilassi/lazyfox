@@ -10,7 +10,7 @@ import { openDownloadsPopup } from "./downloads";
 import { openSessionsPopup } from "./sessions";
 import { openHelpPopup } from "./help";
 import { openTabChooser } from "./tabjump";
-import { planTabJump, tabCandidates } from "../tabjump";
+import { planTabJump, tabCandidates, tabDigitHint } from "../tabjump";
 
 export function runLeaderAction(
   actions: Record<string, () => void>,
@@ -95,6 +95,12 @@ export function armTabPosition(
 ): void {
   let count = -1;
   let prefix = "";
+  // Re-arm the capture with the digits that are actually legal next, so the
+  // status bar can say so. The label comes from the same candidate set the
+  // planner and the chooser use, so it cannot promise a digit that does
+  // nothing — which is the one thing a "press this next" hint must never do.
+  const rearm = (ms: number) =>
+    ctx.armDigits(handler, ms, tabDigitHint(count < 0 ? 0 : count, prefix));
   // The host's capture is one-shot: it disarms after the key it consumes. A
   // position can need two digits, so an ambiguous prefix re-arms the SAME
   // handler rather than relying on the caller to press the leader again.
@@ -124,8 +130,8 @@ export function armTabPosition(
         return;
       }
       // Ambiguous — more than one tab carries this prefix. Stay armed for the
-      // next digit.
-      ctx.armDigits(handler, 1500);
+      // next digit, and say which ones.
+      rearm(1500);
     };
     if (count >= 0) {
       resolved(count);
@@ -143,7 +149,9 @@ export function armTabPosition(
     }
     return true;
   };
-  ctx.armDigits(handler, 3000);
+  // Nothing typed yet, so every first digit is legal; `tabDigitHint` says so
+  // without needing the count, which is why this can arm synchronously.
+  rearm(3000);
 }
 
 // The single leader binding table. Both contexts map the same key to the same

@@ -12,9 +12,10 @@ measurement it names the command; where it is a judgement it says so.
 
 ## 1. Where the code stands
 
-Branch at the time of writing: `dev-nightly`, with this batch uncommitted.
-Version 0.5.8. Build, four typechecks, Go tests, wasm vet and the unit suite
-were all green immediately before the batch was staged.
+Branch at the time of writing: `test/harness-rewrite` (branched from
+`dev-nightly`), with this batch uncommitted. Version 0.5.8. Build, four
+typechecks, Go tests, wasm vet and the unit suite were all green immediately
+before the batch was staged.
 
 ```
 npx tsc --noEmit
@@ -30,6 +31,54 @@ npm run build
 ---
 
 ## 2. What is new
+
+### 2.0 The leader indicator now says what it wants next
+
+The `;` grammar's half-committed sequence was visible (`⌘ W`) but the
+half-committed *capture* was not, and a capture is where the grammar stops
+being a sequence and starts swallowing keystrokes. `;W m` arms a one-shot
+capture for a tab position; by the time it exists the chord that armed it has
+already been cleared off the prefix, so the bar fell back to a bare `⌘` — for
+the whole three seconds the capture lived, on exactly the pages where the
+leader is pressed most. The user had no way to tell "nothing is happening"
+from "the next key I type is being eaten".
+
+The indicator now reads `committed so far ▸ what we need next`, which is the
+shape `docs/MULTIKEY-DESIGN.md` §5 proposed and never built:
+
+```
+⌘              ;   armed, any key will do
+⌘ W            ;W  armed, sub-key wanted
+⌘ ▸ 1-9          ;W m — a digit wanted
+⌘ ▸ 0 1 2        ;W m 1 — three tabs are still reachable
+```
+
+Three things it cost that were not obvious, and all three are the same lesson
+the indicator has taught twice already:
+
+- **The capture had to own its own readout.** `armPending` gained an `expect`
+  the armer declares, because the armer is the only party that knows: which
+  digits remain legal after `;W m 1` depends on the tab count. It is cleared on
+  every exit — consumed, cancelled, timed out — because a hint that outlives its
+  capture is a hint to press a dead key.
+- **The hint had to go through the Go store.** The bar repaints from
+  `StatusSnapshot()` every poll. Worse, `StatusSnapshot` derived `Armed` from the
+  bar MODE (`chromeLeader` / `leaderByIndex`), which is *false* during a
+  capture — no leader is "up" in the mode sense — so the indicator was being
+  switched off by the first poll after the press that lit it. A hint that
+  appears and vanishes teaches the user to distrust the one element that was
+  telling the truth, so `leaderSignalArmed` is now part of the store's own
+  state.
+- **The content script's chord now rides `syncLeader`.** On a web page the
+  content script owns the leader key and the chrome helper's own never arms, so
+  the push was a bare boolean: the window bar could say "a leader is armed" and
+  nothing else, for the whole sequence.
+
+`tabDigitHint()` in `src/shared/tabjump.ts` derives the digit list from the same
+`tabCandidates()` the planner and the chooser use. That is the part worth
+keeping: a hint computed from a second opinion about the strip would eventually
+name a digit that does nothing, and the user would press the key the product
+told them to press. `scripts/test/tabjump.test.ts` pins it exhaustively.
 
 ### 2.1 Multi-key addressing — the `;` layer became a grammar
 
@@ -166,6 +215,12 @@ it.
 | `scripts/test-splits.ts` | 21 | `splitPairsInRange` |
 | `scripts/test-transient.ts` | 25 | borrowed vs plumbing classification |
 | `scripts/test-keyhold.ts` | 27 | the whole hold lifecycle |
+| `scripts/test/segments.test.ts` | 22 | status-bar formatters, `actorScroll` |
+| `scripts/test/history-actions.test.ts` | 40 | the history popup's intent table |
+| `scripts/test/chrome-state.test.ts` | 17 | the `env` fake's state machine |
+| `scripts/test/wire-replay.test.ts` | 17 | recorded `#lfc=` traces |
+
+Tier 1 is at **493 checks, 0 failures**.
 
 `test-keyhold.ts` was confirmed **red/green**: reverting `l.sticky = !noKeyup`
 back to `l.sticky = true` makes it fail. It also covers the blur contract,
@@ -176,6 +231,87 @@ must be added to its `exclude` list with a comment saying why. Precedent:
 test-page-text, test-store, test-render-escaping, test-find-text,
 test-chrome-keys, test-overlays, test-leader-sequences, test-keyhold.
 
+### 2.7 The codebase was restructured around composition roots
+
+Fourteen files over 500 lines were broken into a thin composition root plus
+small, singly-responsible modules. No behaviour was intended to change; the
+point was that no file could be read without scrolling past something that did
+not belong to it.
+
+| File | was | now | new modules |
+| --- | --- | --- | --- |
+| `scripts/e2e/fixture.ts` | 1819 | 123 | 11 (fixture/tabs, chromestate, waits, pages, keys, probe, lifecycle, config, numbering, contexts, types) |
+| `src/chrome/channel.ts` | 738 | 452 | extbaseurl, relaytab, pushes |
+| `src/chrome/main.ts` | 734 | 507 | winlisteners, winsync, actorbridge, actorscroll |
+| `src/shared/popups/history.ts` | 676 | 322 | history-state, history-render, history-actions |
+| `src/chrome/splitview.ts` | 640 | 504 | splitreadback, splitrestore, splitpanes |
+| `src/extension/content/main.ts` | 623 | 549 | contentdom |
+| `src/extension/content/hints/session.ts` | 606 | 538 | hintresolve |
+| `src/shared/statusbar.ts` | 595 | 438 | statusbar-segments, statusbar-css |
+| `src/chrome/env.ts` | 557 | 196 | env-fake |
+| `src/shared/leader.ts` | 505 | 424 | leader-css, leadercapture, leaderpanel, leadersequence |
+| `src/extension/content/find/yank.ts` | 504 | 359 | yankgeometry, yankcaret, yanktypes |
+| `src/extension/windowops.ts` | 501 | 199 | closedtabs, reopentab |
+| `src/shared/overlay.ts` | 499 | 31 | overlay-popup, overlay-selector, overlay-rects, overlay-toast |
+| `src/extension/background.ts` | 483 | 134 | bgrelay, bgpushes, bglifecycle |
+
+`overlay.ts` and `windowops.ts` became import *faces* — every existing importer
+kept working untouched, and the two new modules are reached through them.
+
+Three properties were kept throughout, and each is enforced rather than
+hoped for:
+
+- **No accidental coupling across contexts.** `scripts/test/dependency-audit.test.ts`
+  fails the build when a `SEAMED` chrome module reaches for a browser global
+  outside its `env`. Three modules were converted to take a real `env` (not a
+  bare `window`) so they could join that list: `actorbridge`, `winlisteners`,
+  `winsync`. `SEAMED` is now 16 modules.
+- **A module worth testing may not name the DOM in its signature.** Node's
+  strip-only TypeScript loader cannot load such a module at all, and
+  `tsconfig.scripts.json` carries no DOM lib precisely so that entering the
+  scripts graph with one is a *typecheck* failure. Where the design would have
+  suffered, the DOM-typed function is injected instead.
+- **Extracted behaviour got tests.** 431 → 501 unit checks, and the new ones
+  found two real defects. The first was `disarmAll` leaving a cancelled timer
+  handle on the popup state (invisible to e2e, which is the point). The second
+  was found by e2e rather than by the split, and is described next.
+
+### 2.8 The split's first e2e run found a real product bug
+
+The verification run of the restructured tree reported one new failure:
+`sessions: ;p saves a session with marker 1`. It passed in isolation and in a
+group run, so it was order-dependent — but "flaky" is a description, not a
+diagnosis, so it was traced rather than retried until green.
+
+The session saved correctly in storage (the test's storage assertions all
+passed). What never happened was the *bar showing it*.
+
+The obvious fix — re-push the durable state whenever a relay port goes live —
+was written, tested, and measured, and it **made things worse: the full e2e run
+went from 180/183 to 163/183.** The relay tab navigates constantly (every hash
+write reloads the page and its port), so "the port connected" is not a rare
+re-synchronisation point but the highest-frequency event on the channel. Each
+re-push wrote a `sessionState` command into the relay's **single URL slot** and
+starved the split and leader commands queued behind it; the failing runs show the
+relay sitting on a stuck `#lfr=cm.sessionState…` hash. The hook was reverted.
+
+What shipped is the narrow, safe half. In `extension/services/relay.ts` a push
+whose target window could not be resolved (a window mid-rebuild genuinely has no
+active tab) used to `return` — dropping the command *before it reached the
+queue*, so not even a later relay reconnect could deliver it. It now falls back
+to any window we already hold a live port for. That is the one path with no
+recovery at all.
+
+`scripts/test/relay-queue.test.ts` (8 checks) pins the queue's delivery
+guarantees; 2 were confirmed to go red against the pre-fix code before being
+believed.
+
+The lesson, recorded at the call site and in `docs/TESTING.md`: **"port
+connected" is not a rare event, and anything that writes to a single-slot channel
+must be counted.** Both halves of that mistake — a fix that made the suite worse,
+and a test suite that had to be re-measured to find out — are the reason this is
+written down rather than just fixed.
+
 ---
 
 ## 3. What is known broken
@@ -184,41 +320,149 @@ Stated plainly, because a status note that hides this is worse than useless.
 
 ### 3.1 Sessions group: 30/31
 
-`restore brings back every tab's exact strip position (split included)` —
-`;W m` lands in isolation and sometimes in group runs; it passes alone.
+**Corrected, because the previous version of this section was wrong about which
+test is red.** It named `restore brings back every tab's exact strip position
+(split included)` and claimed 27/31. As of the two most recent full runs that
+test **passes** — it is in the suite's own "fixed since the baseline" list —
+and the sessions group scores 30/31.
 
-The last group run's move trail showed `n=8 -> /hello … addTabs returned ok;
-tab.splitview=yes`, yet the final strip held only the `;W |` pair (lfw2 +
-splitpanel). The intended pair never landed. **Root cause not fully pinned.**
-The e2e test was made more honest in the meantime: it builds the pair with
-`;W |` then `;W m <digits>`, re-resolves the target position from
-`ctx.tabNumbers()`, waits for *quiescence*, waits for the *intended* pair
-(lfw2+lfw3, no splitpanel), and retries the chord up to 3× **only when the
-move trail is unchanged** — a changed trail means a real move happened, so
-retrying would compound a defect rather than mask it.
+The one that stays red is `sessions: split layout is saved and restored with the
+session`. It fails in both recent full runs and **passes in isolation**
+(`--only "split layout is saved"` → 1/1, 53.2s), so it is in-group order
+dependence rather than a product defect: the same family as the other
+split-in-a-session tests, which all need a live split to exist before the
+session is saved.
 
-### 3.2 Full e2e suite: 147/182 (was 113/182 before the harness rewrite)
+The root-cause work that was done on the *previous* red test is not wasted and is
+kept here because the method is what applies next: the chrome's own trail showed
+the move succeeding (`n=8 -> /hello … addTabs returned ok; tab.splitview=yes`)
+while the pair never appeared in the strip, so the failure was **after** the move
+and the trail needed to keep going. The product-side observation to add is a
+`;+N` trail entry after `addTabs` — reading back which tab is in which
+splitViewId a frame later. That is a product change, not a test retry.
 
-The harness rewrite (`docs/TESTING.md`) took the suite from 113/182 to
-147/182. `content` went 63→94 and `sessions` 16→27, because most of their
-failures were order dependence rather than product defects. `commandcenter` is
-8 worse in a full run than alone (29/29), and `split` is unchanged at 0/13 —
-which is a product finding, not harness flake: in-process extension pages
-cannot host a remote-content split pane, so no split can be formed at all under
-the test profile.
+What is already ruled out, by measurement rather than assumption: the test does
+not guess the target number (it reads `ctx.tabNumbers()`, the channel that does
+not perturb the strip, and waits for quiescence), it does not press a retired
+chord, and it retries only when the move trail is *unchanged* — a changed trail
+means a real move happened, so retrying would compound a defect rather than mask
+it.
 
-Details, the three real bugs the rewrite surfaced, and the known costs are in
-`docs/TESTING.md`. A per-test baseline now lives in `scripts/e2e/baseline.json`,
-so only `PASS → FAIL` blocks and a test that has been red for a month no longer
+The save/hot-swap pair and the `whichKey` status-bar assertion also pass in
+isolation. All of these are recorded in the baseline so they do not block.
+
+### 3.2 Full e2e suite: see the table in `docs/TESTING.md`
+
+The harness rewrite (`docs/TESTING.md`) took the suite from **113/182** at
+`dev-nightly` HEAD to **182/182**. `content` went 63 → 104 and `sessions`
+16 → 31, because most of their failures were order dependence rather than
+product defects. `options` is 5/5 and `split` is 13/13.
+
+**The 182 is the run, not the best of the runs.** Getting here meant refusing
+the baseline as an answer: earlier in the rewrite the same tree measured 173,
+then 159, then 125, and the standing instruction was to fix the product when the
+test was right and the test when it was wrong — not to record the redness. Each
+source of swing was traced to a cause. The cascades came from `evalIn` returning
+`undefined` for a dead browsing context instead of throwing, which handed
+`undefined` to every `.map` in every suite; `tabsInfo()` now returns an array or
+throws, with one bounded retry through `ensureProbe()`. The residue was tests
+reading a tab NUMBER against a strip an earlier group had built, fixed with a
+shared `ctx.collapseWindow()` at the top of the three tests that needed it.
+
+`scripts/e2e/baseline.json` is now a tripwire rather than an excuse: it records
+`fail` only for a test that failed in every recent run, so a genuine regression
+is still caught.
+
+### 3.2a What the suite measures *today*, and the correction to 182/182
+
+The paragraph above says 182/182. As of this session the suite has 183 tests and
+three consecutive full runs scored **177, 177 and 172**. The 182 is no longer
+reproducible on this machine, and quoting it as the current state would be a
+lie of exactly the kind this document exists to catch.
+
+What changed is not the product. It is that the wall-clock floor is now visible
+instead of being lucky:
+
+| run | score | where the failures landed |
+| --- | --- | --- |
+| A | 177/183 | 1 content, 4 split |
+| B | 177/183 | 2 content/popups, 2 content/indicator, 1 split |
+| C | 172/183 | 8 commandcenter, 1 content, 1 split |
+
+Only `content/core › ;x closes a tab, ;v reopens it` fails in all three, and it
+**passes alone** (1/1) and fails at group scope (104/105) — so it is order
+dependence, not a stable defect, and `docs/TESTING.md` §"A group run and a full
+run measure different systems" has the measurements. Run C's eight
+`commandcenter` failures are the long-documented loaded-machine cluster, on a
+machine that was busy for that run.
+
+So the honest current statement, with each number at the scope it was actually
+measured: **`split` 13/13 isolated** (run twice); **`options` 5/5**, green in all
+three full runs but not run on its own; **`content` 104/105** at group scope;
+**`sessions` 30/31** at full-run scope; and a **full run lands between 172 and
+183** depending on machine load, with no two runs failing the same set. That is
+not the same claim as 182/182 and it should not be smoothed into one.
+
+**The `split` 0/13 "product finding" that used to be written here was wrong,
+and it is worth recording why it was so confidently wrong.** The claim was that
+in-process extension pages cannot host a remote-content split pane, so no split
+could form at all under the test profile. Nothing was wrong with the product.
+The suite was pressing the chords `;|` and `;\`, which were **retired** — the
+real bindings are `;W |` and `;W u`, because `;W` is a category and the sub-key
+is the second key (`src/shared/popups/categories.ts`), and `|` / `\` are
+deliberately absent from `core/bindings.go`. Every test pressed a chord that
+now does nothing at all. A claim this confident should have cost one
+`grep bindings.go` before it was written down.
+
+Two more from the same group, both of the same species — **the harness guessing
+a fact the product already knows**:
+
+- The `;W m +N` tests counted the tab strip to work out which number to type.
+  That is wrong by construction: the product's `realTabs()` skips the split
+  panel and the relay but keeps a real tab carrying a momentary `#lfc=` request
+  hash, so the two lists disagree about exactly those tabs and every tab after
+  the first disagreement is off by one. `ctx.productNumberOf()` asks the
+  product instead, and `ctx.pressNumber()` types the digits the way a user
+  does, one at a time — the target is routinely past nine once the suite has
+  accumulated tabs, and a single unbound keystroke used to be the whole move.
+- The `;W {` / `;W }` test collapses the window to three tabs. It did that
+  **sequentially**, one awaited `tabs.remove` per tab, which cannot finish in
+  its 10s budget once the suite has forty tabs open — and `pinned` is not a
+  safe proxy for the relay tab, so the wipe could take the one carrier for
+  every chrome↔background message with it. It is now parallel and it skips the
+  relay by URL. That test's timeout was taking the three tests after it with
+  it, which is how a single slow setup step reads as four product bugs.
+
+Details, the real bugs the rewrite surfaced, and the known costs are in
+`docs/TESTING.md`. A per-test baseline lives in `scripts/e2e/baseline.json`, so
+only `PASS → FAIL` blocks and a test that has been red for a month no longer
 shouts every run.
 
-- `leader ;f arms home-grid hint-pick` fails identically at `dev-nightly`
-  HEAD with a clean stash and rebuild, so it is **pre-existing**, not caused
+**One more harness bug worth naming, because it is the same bug as everything
+else here.** `ctx.reset()` repaired tabs and the probe but never restored the
+**config**, so a `;q` press three groups earlier leaked into the options group
+and failed a test that was asserting the shipped default. The options page was
+reporting the truth; the truth was stale. `bootstrap()` now captures the config
+before the first test and `reset()` puts back anything a test moved, through
+the background's `setConfig` handler — the same cache-consistent path
+`ensureWhichKey` already used, because the background caches the config and
+would otherwise re-save its own copy over the top.
+
+There is a trap in that fix worth writing down, because the first version of it
+made things worse: the product materialises its default config **lazily**, so
+the snapshot taken at bootstrap can be missing every key. Restoring against
+that snapshot means writing a half-empty config before every test, which the
+product refills, which makes the diff non-empty forever — measured at 67
+needless whole-config writes in one run. The snapshot is now settled on the
+first `reset()` (before any test has run) so both sides of the comparison are
+populated.
+
+- `leader ;f arms home-grid hint-pick` fails on a loaded machine (an 8s `until`
+  timeout) but passes on an idle one; it is **pre-existing** timing, not caused
   by this batch.
-- The `content` group alone swings **61–88 out of 104** run to run.
-- Many failures are BiDi timeouts, and a shared dead probe context
-  ("no such frame" against one stale context id) poisons ~10 tests at once.
-- **A clean pre-change full-suite baseline now exists**: 113/182, captured on
+- The `commandcenter` block can show a cluster of home-grid and chord tests
+  timing out inside a full run on a busy machine. Same species, same answer.
+- **A clean pre-change full-suite baseline exists**: 113/182, captured on
   the same machine, headless, on the same tree. Everything above is measured
   against it.
 
@@ -262,8 +506,11 @@ both call sites use it. Twice this session that alone fixed a bug
 
 **No regression as a precondition, not an aspiration.** The intent behind the
 testing work is that a change becomes *provably* safe before it is judged. The
-current harness cannot deliver that (112/182 with no baseline). Hence
-`docs/TEST-HARNESS-REWRITE.md`.
+harness now delivers most of that — a versioned product-state contract, a
+per-test baseline that blocks only on `PASS → FAIL`, and a per-test `reset()`
+that declares its starting state. It does not yet deliver it for the `split`
+restore path (§3.1), and the honest thing to do about that is write it down
+rather than lower the bar.
 
 **Honest docs over aspirational docs.** Twice this session a doc was found to
 contradict the code (`MULTIKEY-DESIGN.md` §9 on release semantics;
@@ -276,16 +523,40 @@ works. Keep that.
 
 ## 5. If you pick this up, do this first
 
-1. **Get a baseline.** On a clean checkout of `dev-nightly`, run the full e2e
-   suite and record the per-group pass counts. Nothing about harness changes
-   can be evaluated until that number exists.
-2. **Finish §3.1.** The move trail is already in place; run the sessions group
-   with the trail and read it. This is a five-minute investigation that has
-   been sitting behind a lack of visibility.
-3. **Fix the shared probe context.** One stale context id taking out ten tests
-   is the single largest source of noise in the suite, and it is a harness
-   defect, not a product defect.
-4. **Then** do the harness rewrite.
+**Two of the three items below are now done; the third is not.** Read the
+status lines rather than the original text.
 
-Do not start with the rewrite. Two of the three things above are cheaper and
-will make the rewrite measurable.
+1. ~~**Finish §3.1.**~~ **DONE, and the question it was asking turned out to
+   be answerable.** The trail now reads back the split a few frames *after* the
+   move, from `readbackSplit()` in `src/chrome/splitview.ts`: which pane each
+   tab landed in, whether the moved tab is still in the view, and where it sits
+   in the strip — twice, 400ms apart, because the second read is what catches a
+   late unsplit or a re-park after the re-pin loop has finished. That was the
+   "one more trail entry after the move" this item asked for.
+
+   It is moot as a debugging aid, though, because **`sessions › restore brings
+   back every tab's exact strip position (split included)` now passes** — the
+   `sessions` group measures **31/31** and the runner reports it among the tests
+   *fixed since the baseline*. §3.1's unpinned root cause was, in the end, the
+   inherited-strip-position bug the last session fixed in `ctx.openCC`: a dead
+   `ctx.tabA` inherited from the previous test meant `;W m <digits>` moved a tab
+   in a window that was not the one the test believed it was driving.
+2. **The `commandcenter` group is the largest untouched block, and it is
+   inconsistent about it.** It measures 21/29 run alone and 29/29 inside a full
+   run, which is the opposite of the usual pattern and is worth understanding
+   before anything else is attempted. The failures when it runs alone are `;I`
+   (setup page), `;m` (mute), `;n ;x ;v ;c` (tab commands), `;N` (stealth),
+   `;f` (home-grid hint-pick) and `;h` (history filter). Note that `;m` and `;N`
+   *are* real bindings in `core/bindings.go` while `;I`, `;n`, `;x`, `;v` and
+   `;c` are not — so this group is a mix of real product gaps and chords the
+   command center handles on its own. Establish which is which before touching
+   anything; the `;f` pair is known pre-existing and should not be counted
+   twice.
+3. **Do not re-run the harness rewrite.** It is built, measured and documented
+   in `docs/TESTING.md`. The remaining work is product work plus the two
+   narrow harness gaps above, and the baseline in `scripts/e2e/baseline.json`
+   is what tells you whether a change made anything worse.
+
+The one thing still true from the previous version of this list: nothing about
+a change can be evaluated until there is a number to compare it against, and
+there is one now.

@@ -107,7 +107,7 @@ export function parseArgs(argv: string[]): Args {
 
 export interface Selection {
   enabled: Set<string>;
-  only: string | null;
+  only: string[];
   tags: string[];
   skipTags: string[];
   label: string;
@@ -134,7 +134,7 @@ export function selectGroups(config: Config, args: Args): Selection {
   const list = (s: string | null) => (s || "").split(",").map((x) => x.trim()).filter(Boolean);
   return {
     enabled: new Set(enabled),
-    only: args.only || null,
+    only: list(args.only),
     tags: list(args.tags),
     skipTags: list(args.skipTags),
     label:
@@ -150,7 +150,7 @@ export function printHelp(config: Config): void {
   console.log("Options:");
   console.log("  --suite, -s <name>   run one named suite (default: " + config.default + ")");
   console.log("  --group, -g <name>   run one group");
-  console.log("  --only, -o <text>    run tests whose ID or name contains <text>");
+  console.log("  --only, -o <a,b>     run tests whose ID or name contains <text> (comma-separated for several)");
   console.log("  --tags, -t <a,b>     only tests carrying these tags");
   console.log("  --skip-tags <a,b>    exclude tests carrying these tags");
   console.log("  --list, -l           list suites, groups and tags");
@@ -243,10 +243,13 @@ export interface RunnerHooks {
   /**
    * Run before each test. Must leave the world in the declared state.
    *
-   * `keepTabs` is the tab ids this test needs to have survived the reset,
-   * declared at registration. Empty for almost every test.
+   * There is deliberately no tab-count or tab-list option here. The harness
+   * once reconciled the tab list to a declared baseline and it was pure
+   * damage (docs/TESTING.md): a test that asserts a count now DECLARES it with
+   * ctx.expectTabs(n) and waits for the product to reach it. Reconciling
+   * mutated shared state to satisfy an assertion about shared state.
    */
-  before?: (opts?: { keepTabs?: string[]; reconcile?: boolean }) => Promise<void>;
+  before?: () => Promise<void>;
   /** Run after each test, pass or fail. Must not throw. */
   after?: (r: TestResult) => Promise<void>;
   /** Called with the id->TestResult map after every test. */
@@ -263,7 +266,7 @@ export function createRunner(selection: Selection, hooks: RunnerHooks = {}) {
     file: string,
     name: string,
     fn: (t: any) => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
+    opts: { tags?: string[] } = {},
   ): Promise<void> {
     // Suites pass their FILE ("content/multidigit"), not their group, so the
     // id is "<group>/<file> › <name>" and two tests with the same name in
@@ -285,7 +288,8 @@ export function createRunner(selection: Selection, hooks: RunnerHooks = {}) {
 
     const skip =
       !selection.enabled.has(group) ||
-      (selection.only != null && !id.includes(selection.only) && !name.includes(selection.only)) ||
+      (selection.only.length > 0 &&
+        !selection.only.some((t) => id.includes(t) || name.includes(t))) ||
       (selection.tags.length > 0 && !selection.tags.some((t) => tags.includes(t))) ||
       (selection.skipTags.length > 0 && selection.skipTags.some((t) => tags.includes(t)));
 
@@ -295,7 +299,7 @@ export function createRunner(selection: Selection, hooks: RunnerHooks = {}) {
       return;
     }
 
-    const r = await runOne(id, name, group, fn, tags, hooks, opts);
+    const r = await runOne(id, name, group, fn, tags, hooks);
     results.push(r);
     hooks.onResult?.(r);
   };
@@ -308,7 +312,6 @@ async function runOne(
   fn: (t: any) => Promise<void>,
   tags: string[],
   hooks: RunnerHooks,
-  opts: { keepTabs?: string[]; reconcile?: boolean } = {},
 ): Promise<TestResult> {
   const started = Date.now();
   const controller = new AbortController();
@@ -324,10 +327,7 @@ async function runOne(
   }, TEST_TIMEOUT_MS);
 
   try {
-    // The declared setup is known at REGISTRATION time, which is what lets the
-    // fixture normalise the window before the body runs while still honouring a
-    // test that needs a particular tab count or a particular set of tabs.
-    await hooks.before?.(opts);
+    await hooks.before?.();
     await fn({ signal: controller.signal, tags, id });
     r.pass = true;
   } catch (e) {

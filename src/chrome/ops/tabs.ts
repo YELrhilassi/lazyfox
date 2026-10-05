@@ -6,14 +6,19 @@
 import { toast } from "../../shared/overlay";
 import { faviconFor } from "../../shared/favicon";
 import type { PopupItem } from "../../shared/types";
-import { closeCurrentTabWithConfirm, realTabs } from "./primitives";
+import type { Primitives } from "./primitives";
 import { tabRowMatches } from "../../shared/tabjump";
+import type { ChromeEnv } from "../env";
 
-declare const ZoomManager: any;
-
-export function createTabOps(channel: {
-  requestBg(action: "reopenTab" | "alternateTab"): void;
-}) {
+export function createTabOps(
+  env: ChromeEnv,
+  prim: Primitives,
+  channel: {
+    requestBg(action: "reopenTab" | "alternateTab"): void;
+  }
+) {
+  const win = env.window as any;
+  const { realTabs, closeCurrentTabWithConfirm } = prim;
   return {
     closeTab: (id?: number) => {
       if (id == null) {
@@ -25,25 +30,25 @@ export function createTabOps(channel: {
       // transient tabs so a split panel never shifts closing by number.
       const t = realTabs()[id];
       if (t) {
-        if (t.selected) window.gBrowser.removeCurrentTab();
-        else window.gBrowser.removeTab(t);
+        if (t.selected) win.gBrowser.removeCurrentTab();
+        else win.gBrowser.removeTab(t);
       }
     },
     moveTab: (id: number, dir: number) => {
       const t = realTabs()[id];
       if (!t) return;
-      const tabs = window.gBrowser.tabs;
+      const tabs = win.gBrowser.tabs;
       const i = tabs.indexOf(t);
       const ni = i + (dir > 0 ? 1 : -1);
-      if (ni >= 0 && ni < tabs.length) window.gBrowser.moveTabTo(t, ni);
+      if (ni >= 0 && ni < tabs.length) win.gBrowser.moveTabTo(t, ni);
     },
     moveActiveTab: (dir: number) => {
       const tabs = realTabs();
-      const i = tabs.indexOf(window.gBrowser.selectedTab);
+      const i = tabs.indexOf(win.gBrowser.selectedTab);
       if (i < 0) return;
       const ni = i + (dir > 0 ? 1 : -1);
-      if (ni >= 0 && ni < tabs.length) window.gBrowser.moveTabTo(window.gBrowser.selectedTab, ni);
-      window.focus();
+      if (ni >= 0 && ni < tabs.length) win.gBrowser.moveTabTo(win.gBrowser.selectedTab, ni);
+      win.focus();
     },
     reopenTab: () => {
       // Route through the extension rather than gBrowser.undoCloseTab().
@@ -54,16 +59,16 @@ export function createTabOps(channel: {
       channel.requestBg("reopenTab");
     },
     duplicateTab: () => {
-      const t = window.gBrowser.duplicateTab(window.gBrowser.selectedTab);
+      const t = win.gBrowser.duplicateTab(win.gBrowser.selectedTab);
       // duplicateTab returns null on failure; assigning null would throw on
       // the next read of selectedTab rather than here, where it is reportable.
       if (!t) { toast("could not duplicate tab"); return; }
-      window.gBrowser.selectedTab = t;
-      window.focus();
+      win.gBrowser.selectedTab = t;
+      win.focus();
     },
-    reload: () => window.gBrowser.reload(),
+    reload: () => win.gBrowser.reload(),
     back: () => {
-      const b = window.gBrowser.selectedBrowser;
+      const b = win.gBrowser.selectedBrowser;
       try {
         if (b && b.canGoBack === false) {
           toast("start of history");
@@ -72,10 +77,10 @@ export function createTabOps(channel: {
       } catch {
         // fall through and let Firefox decide
       }
-      window.gBrowser.goBack();
+      win.gBrowser.goBack();
     },
     forward: () => {
-      const b = window.gBrowser.selectedBrowser;
+      const b = win.gBrowser.selectedBrowser;
       try {
         if (b && b.canGoForward === false) {
           toast("end of history");
@@ -84,23 +89,23 @@ export function createTabOps(channel: {
       } catch {
         // fall through
       }
-      window.gBrowser.goForward();
+      win.gBrowser.goForward();
     },
     activateTab: (id: number) => {
       const t = realTabs()[id];
       if (t) {
-        window.gBrowser.selectedTab = t;
-        window.focus();
+        win.gBrowser.selectedTab = t;
+        win.focus();
       }
     },
     tabNav: (dir: number) => {
       const tabs = realTabs();
       if (!tabs.length) return;
-      let cur = tabs.indexOf(window.gBrowser.selectedTab);
+      let cur = tabs.indexOf(win.gBrowser.selectedTab);
       if (cur < 0) cur = dir > 0 ? -1 : 0;
       const next = (cur + dir + tabs.length) % tabs.length;
-      window.gBrowser.selectedTab = tabs[next];
-      window.focus();
+      win.gBrowser.selectedTab = tabs[next];
+      win.focus();
     },
     // n is a 1-based tab position; 0 is the "last tab" sentinel (see the note
     // in the content-script implementation). Every digit now means its own
@@ -109,8 +114,8 @@ export function createTabOps(channel: {
       const tabs = realTabs();
       if (!tabs.length) return;
       const idx = n === 0 ? tabs.length - 1 : Math.min(Math.max(0, n - 1), tabs.length - 1);
-      window.gBrowser.selectedTab = tabs[idx];
-      window.focus();
+      win.gBrowser.selectedTab = tabs[idx];
+      win.focus();
     },
     alternateTab: () => {
       // The background tracks the per-window activation order and flips back.
@@ -118,22 +123,23 @@ export function createTabOps(channel: {
     },
     zoom: (delta: number, factor?: number) => {
       try {
-        const b = window.gBrowser.selectedBrowser;
+        const b = win.gBrowser.selectedBrowser;
+        const zoom = env.ZoomManager;
         if (factor != null) {
-          ZoomManager.setZoomForBrowser(b, Math.max(0.3, Math.min(5, factor)));
+          zoom.setZoomForBrowser(b, Math.max(0.3, Math.min(5, factor)));
         } else {
-          ZoomManager.setZoomForBrowser(b, Math.max(0.3, Math.min(5, ZoomManager.getZoomForBrowser(b) + delta)));
+          zoom.setZoomForBrowser(b, Math.max(0.3, Math.min(5, zoom.getZoomForBrowser(b) + delta)));
         }
       } catch {
         // ignore
       }
     },
     copyUrl: () => {
-      const url = window.gBrowser.currentURI && window.gBrowser.currentURI.spec;
+      const url = win.gBrowser.currentURI && win.gBrowser.currentURI.spec;
       if (!url) return;
       try {
-        Cc["@mozilla.org/widget/clipboardhelper;1"]
-          .getService(Ci.nsIClipboardHelper)
+        env.Cc["@mozilla.org/widget/clipboardhelper;1"]
+          .getService(env.Ci.nsIClipboardHelper)
           .copyString(url);
         toast("copied URL");
       } catch {
@@ -144,7 +150,7 @@ export function createTabOps(channel: {
       // tab.muted is a getter-only property in current Firefox and the legacy
       // toggleMute/toggleMuteTab helpers are gone — the muted attribute on the
       // xul:tab element is the state the getter reflects.
-      const tab = window.gBrowser.selectedTab;
+      const tab = win.gBrowser.selectedTab;
       if (!tab) return;
       try {
         if (tab.hasAttribute("muted")) tab.removeAttribute("muted");
@@ -161,32 +167,30 @@ export function createTabOps(channel: {
       // left a dead about:newtab tab after `;n`.
       const base = ccBaseUrl();
       const url = base ? base + "commandcenter.html" : "about:newtab";
-      const tab = window.gBrowser.addTab(url, {
-        triggeringPrincipal: base ? Services.scriptSecurityManager.getSystemPrincipal() : undefined,
+      const tab = win.gBrowser.addTab(url, {
+        triggeringPrincipal: base ? env.services.scriptSecurityManager.getSystemPrincipal() : undefined,
       });
-      if (tab) window.gBrowser.selectedTab = tab;
-      window.focus();
+      if (tab) win.gBrowser.selectedTab = tab;
+      win.focus();
     },
   };
 }
 
-declare const Services: any;
-declare const Cc: any;
-declare const Ci: any;
-
 // The tab switcher's row list: real tabs, numbered, with true Firefox tab ids
 // and stealth badges.
 export function buildTabRows(
+  env: ChromeEnv,
   status: {
     getTabIds(): number[];
     getStealthFlags(): boolean[];
   },
   q: string
 ): PopupItem[] {
+  const win = env.window as any;
   const out: PopupItem[] = [];
   const tabIds = status.getTabIds();
   const stealthFlags = status.getStealthFlags();
-  const tabs = window.gBrowser.tabs;
+  const tabs = win.gBrowser.tabs;
   let real = 0;
   for (let i = 0; i < tabs.length; i++) {
     const t = tabs[i];

@@ -155,12 +155,17 @@ helper↔background message; nothing is created or removed per message.
 
 ### Files
 
-- `src/chrome/channel.ts` — the helper side: relay resolution/creation, the
-  req/resp/cmd bridge, reply waiters, and the real-tab `#lfc=` channels that
-  deliberately ride REAL tabs (`keys` test synthesizer, `state`/`cfg`/`open`
-  debug/UI hashes).
-- `src/extension/background.ts` — `requestChrome` (robust delivery above), the
-  relay port handling (`onConnect` drain + `relayCmdQueues`), `ensureRelayTab`.
+- `src/chrome/channel.ts` — the helper side: the req/resp/cmd bridge, reply
+  waiters, and the real-tab `#lfc=` channels that deliberately ride REAL tabs
+  (`keys` test synthesizer, `state`/`cfg`/`open` debug/UI hashes). The relay
+  TAB itself was split out to `src/chrome/relaytab.ts` (find/create/dedupe/
+  navigate) and the push dispatcher to `src/chrome/pushes.ts`; see
+  `docs/ARCHITECTURE.md` §2.7 for why those are separate questions.
+- `src/shared/relay-wire.ts` — the `#lfr=` grammar itself, plus `isRelayUrl`.
+  One implementation used by both ends, so the two cannot drift.
+- `src/extension/services/relay.ts` — the background side: `requestChrome`
+  (robust delivery above), the relay port handling (`onConnect` drain +
+  `relayCmdQueues`). Split out of `background.ts` during the restructure.
 - `src/extension/relay.ts` — the tiny relay page: port connect/reconnect,
   message shuttle, the command buffer + hello handshake.
 - `src/shared/transient.ts` — `isRelayTabUrl` (relay.html + the leftover

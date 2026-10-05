@@ -21,18 +21,28 @@ export async function run(ctx: any): Promise<void> {
     await navigate(b, `${ctx.base}/hello`, "complete");
     await ctx.waitTabUrl("/hello", { timeoutMs: 10000 });
     await ctx.openCC(a); // re-activate the CC tab
-    await ctx.leaderPress(a, "\\", { shift: true }); // ;| -> CC + panel
+    await ctx.leaderSeq(a, ["W", "|"]); // ;W | -> CC + panel
     await waitFor(async () => {
       const ts = await ctx.tabsInfo();
       return ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0).length === 2 ? true : null;
     }, 8000);
-    const real = (await ctx.tabsInfo()).filter(
-      (t) => ctx.isRealTab(t)
+    const real = (await ctx.tabsInfo()).filter((t) => ctx.isRealTab(t));
+    const helloRow = real.find((t) => (t.url || "").includes("/hello"));
+    // The PRODUCT's numbering, not the strip index this test happens to see,
+    // and not clamped into 1-9. The clamp was a silent wrong-target bug: in a
+    // full run the strip carries tabs from three earlier groups, so a hello
+    // sitting at position 11 was addressed as 9 and some OTHER tab was moved
+    // into the split. productNumberOf asks the product which digit means
+    // /hello, and pressNumber types it a digit at a time so a two-digit answer
+    // works exactly like a single keystroke.
+    const helloNumber = await ctx.productNumberOf(helloRow, real);
+    assert(
+      helloNumber >= 1,
+      "the product's numbering knows the /hello tab: " + helloNumber + " of " + real.length,
     );
-    const helloIdx = real.findIndex((t) => (t.url || "").includes("/hello")) + 1;
     await ctx.leaderSeq(a, ["W", "m"]); // ;W m -> move tab into split
     await waitPlusPopup(a);
-    await ctx.press(a, String(Math.min(Math.max(helloIdx, 1), 9)));
+    await ctx.pressNumber(a, helloNumber);
     // Wait for the move to land (hello is IN the split) and then for the
     // per-pane bar to actually disappear (the content poll hides it) instead
     // of a fixed sleep.
@@ -57,7 +67,7 @@ export async function run(ctx: any): Promise<void> {
     const host = await evalIn(b, `!!document.getElementById("lazyfox-status")`).catch(() => null);
     assert(host === false, "web pane has no per-tab bar during the split (got " + host + ")");
     // Clean up: unsplit and drop the two fresh tabs.
-    await ctx.leaderPress(a, "\\");
+    await ctx.leaderSeq(a, ["W", "u"]);
     await waitNoSplit();
     await closeContext(b).catch(() => {});
     await closeContext(a).catch(() => {});

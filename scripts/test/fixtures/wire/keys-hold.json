@@ -1,0 +1,8 @@
+{
+  "name": "keys-hold",
+  "about": "A key sequence over the synthetic key channel. The reply is the product saying every key in the sequence was dispatched. A dropped key used to surface as an e2e timeout eleven minutes in, with nothing to say which key went missing.",
+  "steps": [
+    { "send": "lfc=keys.eyJrZXlzIjpbeyJrIjoiOyJ9LHsiayI6ImIifV19.k1-1", "expect": "keys.ok", "cmd": "keys", "note": "{keys:[{k:';'},{k:'b'}]}" },
+    { "send": "lfc=state.k2-2", "expect": "reply", "cmd": "state", "note": "read the leader back after the sequence" }
+  ]
+}

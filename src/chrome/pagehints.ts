@@ -5,13 +5,16 @@
 // opens that link in the current tab, Esc cancels. Never swallows a key when
 // it cannot draw labels, so it can never break normal key handling.
 
+import { digitExpect } from "../shared/leadersignal";
 import { toast } from "../shared/overlay";
 import type { LeaderController } from "../shared/leader";
+import type { ChromeEnv, ChromeWindow } from "./env";
 
 type HintEntry = { href: string; el: any };
 
 export function createChromePageHints(
-  win: Window,
+  env: ChromeEnv,
+  win: ChromeWindow,
   leader: () => LeaderController | null
 ) {
   let entries: HintEntry[] = [];
@@ -41,7 +44,7 @@ export function createChromePageHints(
       const b = (win as any).gBrowser.selectedBrowser;
       if (b && typeof b.fixupAndLoadURIString === "function") {
         b.fixupAndLoadURIString(url, {
-          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+          triggeringPrincipal: env.services.scriptSecurityManager.getSystemPrincipal(),
         });
       }
     } catch {
@@ -110,7 +113,7 @@ export function createChromePageHints(
         const target = snapshot[chose - 1];
         if (target) openInSelectedTab(target, cw);
         return true;
-      }, 8000);
+      }, { timeoutMs: 8000, expect: digitExpect(snapshot.length) });
       cleanupTimer = setTimeout(clear, 8000);
     },
   };

@@ -103,6 +103,44 @@ export function extendTabPrefix(
 }
 
 /**
+ * The digits that can still turn `prefix` into a live tab position, as the
+ * compact label the leader's status-bar indicator shows while it waits.
+ *
+ * This is the third consumer of the same candidate set, and that is the point:
+ * the chooser lists the candidates, `planTabJump` decides between them, and
+ * this describes them. Deriving the label from the SAME list is what makes it
+ * safe to promise a digit on the bar — a hint computed from a second opinion
+ * about the strip is a hint that will eventually name a digit that does
+ * nothing, which is worse than showing nothing.
+ *
+ * Three shapes, because the three states are genuinely different:
+ *
+ *   ""         nothing typed yet -> "1-9". The count cannot narrow this, so
+ *              asking it to would be theatre.
+ *   "0 1 2"    a prefix is typed and exactly these digits extend it. With
+ *              12 tabs and prefix "1", candidates 1/10/11/12 continue with
+ *              0/1/2 — and the exact match (tab 1) contributes none, because
+ *              `;1` `1` has to mean tab 11.
+ *   "" (empty) a prefix is typed and NOTHING extends it: the candidates are
+ *              all exact matches, which can only be one candidate, so the
+ *              caller resolves the position instead of waiting. An empty hint
+ *              therefore means "do not wait" — which is exactly the answer.
+ */
+export function tabDigitHint(count: number, prefix: string): string {
+  const p = String(prefix);
+  if (!/^[1-9][0-9]*$/.test(p)) return "1-9";
+  const keys: string[] = [];
+  for (const n of tabCandidates(count, p)) {
+    const k = tabQuickKey(n, p);
+    if (k && keys.indexOf(k) === -1) keys.push(k);
+  }
+  keys.sort();
+  // All ten digits live: say so compactly rather than filling the bar.
+  if (keys.length === 10) return "0-9";
+  return keys.join(" ");
+}
+
+/**
  * The one row filter for the tab list, so the popup and the leader cannot
  * disagree about what typing a number means.
  *

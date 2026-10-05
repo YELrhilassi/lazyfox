@@ -10,7 +10,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
+    opts: { tags?: string[] } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
 
   const hintsOn = (ms = 5000) =>
@@ -490,16 +490,27 @@ export async function run(ctx: any): Promise<void> {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/press`);
     await pageSettled();
     await beginHints();
+    // Every tab carrying a content script answers this action, so a reply
+    // proves nothing on its own — it is the ANSWER THAT SAYS THE BADGE IS UP
+    // that matters. Returning the first reply therefore made this test depend
+    // on `browser.tabs.query({})` ordering: a tab with no active hint session
+    // answering "shown:false" first hid the one real answer behind it. Keep the
+    // first reply as the fallback (that is the correct "at rest" answer), but
+    // return immediately on a positive one.
     const badge = async () =>
       await evalIn(ctx.probe, `(async function () {
          var tabs = await browser.tabs.query({});
+         var first = null;
          for (const t of tabs) {
            try {
              var res = await browser.tabs.sendMessage(t.id, { action: "hintBadge" });
-             if (res && res.shown !== undefined && res.id === "amb") return res;
+             if (res && res.shown !== undefined && res.id === "amb") {
+               if (res.shown === true) return res;
+               if (!first) first = res;
+             }
            } catch (e) { /* no content script */ }
          }
-         return null;
+         return first;
        })()`);
     // Nothing typed yet: no ambiguity, so no badge. The probe always replies
     // with an object, so this has to read .shown — a truthiness check on the
@@ -533,13 +544,20 @@ export async function run(ctx: any): Promise<void> {
         "on this page (keys: " + keys.join(",") + ")"
     );
     for (const ch of shared) await ctx.press(ctx.tabA, ch);
+    // Generous bound, for the same reason the clear-the-badge half of this test
+    // has one: `badge()` fans `browser.tabs.sendMessage` out over EVERY tab in
+    // the window, and every tab without a content script costs a rejected
+    // message. Four seconds was an outlier against the 15s the comparable
+    // cross-process waits in this suite allow.
     const shown = await waitFor(async () => {
       const b = await badge();
       return b && b.shown === true ? b : null;
-    }, 4000);
+    }, 15000).catch(() => null);
     assert(
       shown && shown.shown === true,
-      "typing an ambiguous prefix must show the enter badge (got: " + JSON.stringify(shown) + ")"
+      "typing an ambiguous prefix must show the enter badge (got: " + JSON.stringify(shown) +
+        ", hints: " + JSON.stringify(keys.join(",")) + ", armed: " +
+        JSON.stringify(await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`)) + ")"
     );
     assert(
       shown && shown.glyph && shown.glyph.indexOf("\u23ce") !== -1,
@@ -548,16 +566,26 @@ export async function run(ctx: any): Promise<void> {
     // Backspacing to nothing must take the badge away again — a stale badge
     // promising an Enter that no longer does anything is worse than none.
     for (let i = 0; i < shared.length; i++) await ctx.press(ctx.tabA, "Backspace");
+    // Generous bound, and for the same reason the hint-pick waits are: this
+    // query fans `browser.tabs.sendMessage` out over EVERY tab in the window,
+    // and each one that has no content script costs a rejected message. Four
+    // seconds was an outlier against the 15s the comparable cross-process
+    // waits in this suite already allow, and it is what made the clear-the-
+    // badge half of this test flap on a busy window.
     await ctx.waitExpr(ctx.probe, `(async function () {
          var tabs = await browser.tabs.query({});
+         var saw = false;
          for (const t of tabs) {
            try {
              var res = await browser.tabs.sendMessage(t.id, { action: "hintBadge" });
-             if (res && res.shown !== undefined && res.id === "amb") return !res.shown;
+             if (res && res.shown !== undefined && res.id === "amb") {
+               if (res.shown === true) return false; // still up somewhere
+               saw = true;
+             }
            } catch (e) { /* no content script */ }
          }
-         return null;
-       })()`, true, 4000);
+         return saw;
+       })()`, true, 15000);
     const after = await badge();
     assert(
       !after || after.shown === false,

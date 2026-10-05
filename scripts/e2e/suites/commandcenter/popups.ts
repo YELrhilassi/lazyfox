@@ -10,7 +10,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
+    opts: { tags?: string[] } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
 
   const popupOpen = (ms = 8000) =>
@@ -209,14 +209,18 @@ export async function run(ctx: any): Promise<void> {
     await waitFor(async () => {
       const st = await ctx.chromeState();
       return st && st.popup && st.popup.items && st.popup.items.length ? true : null;
-    }, 8000).catch(() => { throw new Error("[history-rows] popup rows never loaded"); });
+      // 15s, not 8s: `chromeState()` is the heaviest read in the harness and
+      // this polls it per iteration. The popup fetches its list ONCE at open,
+      // so on a busy machine an 8s ceiling expired while a perfectly good
+      // fetch was still in flight, and the message said the rows never loaded.
+    }, 15000).catch(() => { throw new Error("[history-rows] popup rows never loaded"); });
     // Filter to the /hello row and wait for the filtered list before Enter.
     await ctx.typeIn(ctx.tabA, "hello");
     await waitFor(async () => {
       const st = await ctx.chromeState();
       const items = (st && st.popup && st.popup.items) || [];
       return items.length >= 1 && items.every((t) => /hello/i.test(t)) ? true : null;
-    }, 8000).catch(() => { throw new Error("[history-filter] filtered row never matched"); });
+    }, 15000).catch(() => { throw new Error("[history-filter] filtered row never matched"); });
     await ctx.press(ctx.tabA, "Enter");
     await activeUrl("/hello").catch(() => { throw new Error("[history-open] Enter did not open /hello"); });
     const after = (await ctx.tabsInfo()).length;

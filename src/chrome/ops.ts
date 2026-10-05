@@ -20,19 +20,21 @@ import type { ActionOps } from "../shared/ops";
 import type { Config, PopupItem, SessionSummaryItem } from "../shared/types";
 import type { ChromeCfg } from "./config";
 import type { RelayAction, RelayReq, RelayRes } from "../shared/protocol";
-import {
-  doSearch,
-  histItems,
-  loadUrl,
-  realTabs,
-  openUrlNative,
-  suggestSearch,
-} from "./ops/primitives";
+import type { ChromeEnv } from "./env";
+import type { Primitives } from "./ops/primitives";
 import { buildTabRows, createTabOps } from "./ops/tabs";
 import { createSessionOps, createSplitOps } from "./ops/sessions";
 import { createUiOps } from "./ops/ui";
 
 export interface ChromeOpsDeps {
+  // The chrome document's environment, threaded into every domain below so no
+  // ops module reads a browser global. See src/chrome/env.ts.
+  env: ChromeEnv;
+  // The window primitives (tab identity, native URL loading, the native data
+  // sources). Built by the composition root rather than here, because the relay
+  // tab predicate it carries cannot be supplied until the channel exists — see
+  // `setRelayTabTest` in main.ts, which is the first point the channel does.
+  primitives: Primitives;
   // Native split view operations (splitview.ts).
   split: {
     splitCurrentTab(orientation: "horizontal" | "vertical"): boolean;
@@ -70,16 +72,22 @@ export interface ChromeOpsDeps {
 }
 
 export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
-  const tabs = createTabOps({
+  const env = deps.env;
+  const win = env.window as any;
+  const prim = deps.primitives;
+  const { doSearch, histItems, loadUrl, realTabs, openUrlNative, suggestSearch } = prim;
+  const tabs = createTabOps(env, prim, {
     requestBg: (action) => deps.getChannel().requestBg(action),
   });
   const tabOps = tabs;
   const sessions = createSessionOps(
+    env,
     () => deps.getChannel(),
     deps.status
   );
-  const splits = createSplitOps(deps.split);
+  const splits = createSplitOps(env, deps.split);
   const ui = createUiOps({
+    env,
     cfg: deps.cfg,
     persistCfg: deps.persistCfg,
     applyHoverRevealPref: deps.applyHoverRevealPref,
@@ -130,7 +138,7 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       // Refresh the status bar's tab ids + stealth flags first so the rows
       // carry the true Firefox tab id and the stealth badge.
       await deps.getChannel().requestSessionState();
-      return buildTabRows(deps.status, q);
+      return buildTabRows(env, deps.status, q);
     },
 
     history: (q: string) => {
@@ -143,7 +151,7 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       })));
     },
     bookmarks: async (q: string) => {
-      const ChromeUtils: any = (window as any).ChromeUtils;
+      const ChromeUtils: any = env.ChromeUtils;
       try {
         const PlacesUtils = ChromeUtils.importESModule(
           "resource://gre/modules/PlacesUtils.sys.mjs"
@@ -250,9 +258,9 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     swapSplitPane: (dir: number) => splits.swapSplitPane(dir),
     splitAddTabByIndex: (n: number) => splits.splitAddTabByIndex(n),
     sessionState: () => {
-      const tabsAll = window.gBrowser.tabs;
+      const tabsAll = win.gBrowser.tabs;
       let idx = 1;
-      const sel = tabsAll.indexOf(window.gBrowser.selectedTab);
+      const sel = tabsAll.indexOf(win.gBrowser.selectedTab);
       if (sel >= 0) idx = sel + 1;
       return Promise.resolve({
         name: "default",

@@ -1,12 +1,36 @@
 // History popup: two-pane (grouped list | details + related), command/insert
 // modes, armed delete/clear, and the related-history index.
+//
+// This file is the popup's WIRING and nothing else. Every decision it used to
+// make inline now lives in a module that can be read — and tested — on its own:
+//
+//   history-groups.ts    which rows are visible, which hint letter names which
+//                        group                        (pure, tested)
+//   history-keys.ts      which intent a key is         (pure, tested)
+//   history-state.ts     the mutable state, and the pure reads over it
+//   history-render.ts    state -> markup
+//   history-actions.ts   intent -> effect
+//   history-related.ts   the related-history ranking  (pure, tested)
+//
+// What is left here is the part that genuinely needs the whole popup at once:
+// fetching the snapshot once, re-organizing it through the Go core on every
+// filter keystroke, binding the state to the view and the actions, and handing
+// back the controller the popup host expects.
 import { core } from "../core";
-import { esc } from "../dom";
-import { faviconFor, faviconHtml } from "../favicon";
-import type { HistoryRow, PopupItem } from "../types";
 import { manualTextKey } from "../overlay";
-import { publishListState } from "../observability";
+import type { PopupItem } from "../types";
 import { type PopupCtx } from "./kit";
+import { historyIntent } from "./history-keys";
+import { applyHistoryIntent } from "./history-actions";
+import { createHistoryView } from "./history-render";
+import {
+  createHistoryState,
+  currentRow,
+  disarmAll,
+  hintBucketFor,
+  visibleRows,
+  type HistoryState,
+} from "./history-state";
 import { createRelatedIndex, type RelatedRow } from "./history-related";
 
 export function openHistoryPopup(ctx: PopupCtx): void {
@@ -18,87 +42,28 @@ export function openHistoryPopup(ctx: PopupCtx): void {
   // the chrome helper keys only reach onKey through the focused input — so the
   // mode is virtual. Tab flips between the left (grouped list) and right
   // (minimal details + related history) panes.
-  let all: PopupItem[] = [];
-  let rows: HistoryRow[] = [];
-  let idx = 0; // selection among VISIBLE rows (collapsed groups are skipped)
-  let mode: "cmd" | "insert" = "cmd";
-  let pane: "L" | "R" = "L";
-  let collapsed: Record<string, boolean> = {};
+  const state: HistoryState = createHistoryState();
   let loaded: Promise<void> | null = null;
   let orgTimer: ReturnType<typeof setTimeout> | null = null;
-  let armDelete: { url: string; timer: ReturnType<typeof setTimeout> | null } | null = null;
-  let armClear = false;
-  let armClearTimer: ReturnType<typeof setTimeout> | null = null;
-  // `c` arms a group toggle: the next key picks the group by its hint char
-  // (shown next to each header), `c` again toggles the group under the
-  // cursor, Esc cancels, and any other key falls through to normal handling.
-  let armGroup = false;
 
   // Related-history index, built once from the cached snapshot so the right
   // pane can answer "same site" and "similar title" instantly per selection.
-  // The ranking itself lives in history-related.ts: it is pure computation
-  // over plain data, and the only part of this popup that can be tested
-  // without driving a browser.
+  // The ranking itself is history-related.ts: pure computation over plain data.
   const related = createRelatedIndex();
-  let relatedRows: RelatedRow[] = [];
-  let relIdx = 0;
-  let lastPrimary = -1;
 
   const ensureLoaded = (): Promise<void> => {
     if (!loaded) {
       loaded = ctx.ops.history("").then((items) => {
-        all = (items || []).filter((it) => it && it.url);
-        related.build(all);
+        state.all = (items || []).filter((it: PopupItem) => it && it.url);
+        related.build(state.all);
       });
     }
     return loaded;
   };
 
+  // The core buckets and relativizes times against the LOCAL offset, so it is
+  // told it once here rather than per row.
   const tz = -new Date().getTimezoneOffset();
-
-  const visible = (): number[] => {
-    const out: number[] = [];
-    for (let i = 0; i < rows.length; i++) {
-      if (!collapsed[rows[i]!.bucket]) out.push(i);
-    }
-    return out;
-  };
-
-  // Stable per-bucket hint letters for the `c` + char group toggle, in
-  // display order. Prefer the bucket's own first letter (Today→t,
-  // Yesterday→y, This week→w, ...); fall back to the next free letter if two
-  // bucket names ever collide.
-  const groupHints = (): Record<string, string> => {
-    const used = new Set<string>();
-    const out: Record<string, string> = {};
-    const seen = new Set<string>();
-    for (const r of rows) {
-      const b = r.bucket;
-      if (!b || seen.has(b)) continue;
-      seen.add(b);
-      let ch = "";
-      for (let i = 0; i < b.length; i++) {
-        const c = b[i]!.toLowerCase();
-        if (/^[a-z]$/.test(c) && !used.has(c)) {
-          ch = c;
-          break;
-        }
-      }
-      if (!ch) {
-        for (const c of "abcdefghijklmnopqrstuvwxyz") {
-          if (!used.has(c)) {
-            ch = c;
-            break;
-          }
-        }
-      }
-      if (ch) {
-        used.add(ch);
-        out[b] = ch;
-      }
-    }
-    return out;
-  };
 
   ctx.open(
     "<div class='lf-panel wide'><div class='lf-title'>History</div>" +
@@ -132,373 +97,136 @@ export function openHistoryPopup(ctx: PopupCtx): void {
       // re-assert the command-mode dimming here.
       inputEl.classList.add("lf-cmd");
 
-      const organize = () => {
+      const view = createHistoryView({
+        state,
+        listEl,
+        inputEl,
+        emptyEl,
+        detailEl,
+        relatedEl,
+        statusEl,
+        hintEl,
+        cols: Array.from(root.querySelectorAll(".lf-col")) as HTMLElement[],
+        related,
+        onOpenRow: (newTab) => openRow(newTab),
+        onOpenRelated: (r) => openRelated(r),
+      });
+      const { render, updateFoot, setPane } = view;
+
+      // Re-run the core's organize + fuzzy filter over the cached snapshot. A
+      // stale reply is dropped by comparing the query it was issued for against
+      // the one in the input now.
+      const organize = (): void => {
         const q = (inputEl.value || "").trim();
-        const raw = all.map((it) => ({
+        const raw = state.all.map((it) => ({
           url: it.url || "",
           title: it.title || "",
           time: it.time || 0
         }));
         void core.organizeHistory(raw, q, Date.now(), tz).then((out) => {
           if ((inputEl.value || "").trim() !== q) return; // stale reply
-          rows = out || [];
-          if (idx >= rows.length) idx = Math.max(0, rows.length - 1);
+          state.rows = out || [];
+          if (state.idx >= state.rows.length) state.idx = Math.max(0, state.rows.length - 1);
           render();
         });
       };
 
-      const currentRowIndex = (): number => {
-        const vis = visible();
-        return vis.length ? (vis[idx] ?? -1) : -1;
-      };
-
-      const currentRow = (): HistoryRow | null => {
-        const ri = currentRowIndex();
-        return ri >= 0 ? rows[ri] || null : null;
-      };
-
-      const setStatus = () => {
-        if (!statusEl) return;
-        if (armGroup) {
-          const hs = groupHints();
-          const parts = Object.keys(hs).map((b) => hs[b] + " " + b);
-          statusEl.style.display = "";
-          statusEl.textContent =
-            "c + " + parts.join(" \u00b7 ") + " toggles that group \u00b7 c again = current \u00b7 Esc cancel";
-          return;
-        }
-        if (armClear) {
-          statusEl.style.display = "";
-          statusEl.textContent = "press X again to clear ALL history";
-          return;
-        }
-        if (armDelete) {
-          statusEl.style.display = "";
-          statusEl.textContent = "press x again to delete \u201C" + (armDelete.url || "") + "\u201D";
-          return;
-        }
-        if (pane === "R") {
-          statusEl.style.display = "";
-          statusEl.textContent =
-            "Tab list \u00b7 j/k related \u00b7 Enter open related \u00b7 o open selected \u00b7 Esc back";
-          return;
-        }
-        statusEl.style.display = "none";
-        statusEl.textContent = "";
-      };
-
-      // The bottom guide switches with the active context: command mode on
-      // the list, insert mode (typing a filter), the details pane, and the
-      // armed group toggle each show their own keys. setStatus() owns the
-      // transient messages (armed deletes/clears, pane-R guide); updateFoot
-      // decides which span is visible and what the static guide says.
-      // These hint strings are assigned via `innerHTML` INSIDE the popup
-      // build, on an element that now lives in the chrome (XUL/XML) document.
-      // Its innerHTML setter runs the XML parser, which rejects the undefined
-      // HTML entity `&middot;` as "an invalid or illegal string" — a
-      // SyntaxError that would abort the whole build and deaden every key.
-      // Use the literal · (U+00B7) instead of the entity so the string parses
-      // in both the HTML fragment parser and the chrome XML parser.
-      const CMD_L_HINT =
-        "<span class='lf-badge'>j/k</span> move \u00b7 <span class='lf-badge'>i</span> search \u00b7 " +
-        "<span class='lf-badge'>Enter</span> open \u00b7 <span class='lf-badge'>o</span> current \u00b7 " +
-        "<span class='lf-badge'>x</span> delete \u00b7 <span class='lf-badge'>X</span> clear all \u00b7 " +
-        "<span class='lf-badge'>c+hint</span> toggle group \u00b7 <span class='lf-badge'>C</span> collapse \u00b7 " +
-        "<span class='lf-badge'>O</span> expand \u00b7 <span class='lf-badge'>g/G</span> top/bottom \u00b7 " +
-        "<span class='lf-badge'>Tab</span> details \u00b7 <span class='lf-badge'>Esc</span> close";
-      const INSERT_HINT =
-        "<span class='lf-badge'>j/k</span> move \u00b7 <span class='lf-badge'>Enter</span> open \u00b7 " +
-        "<span class='lf-badge'>Esc</span> done";
-      const updateFoot = () => {
-        if (!hintEl || !statusEl) return;
-        setStatus();
-        if (statusEl.style.display !== "none") {
-          hintEl.style.display = "none";
-          return;
-        }
-        hintEl.style.display = "";
-        hintEl.innerHTML = mode === "insert" ? INSERT_HINT : CMD_L_HINT;
-      };
-
-      const disarmAll = () => {
-        if (armDelete && armDelete.timer) clearTimeout(armDelete.timer);
-        armDelete = null;
-        if (armClearTimer) clearTimeout(armClearTimer);
-        armClear = false;
-      };
-
-      const drawDetail = () => {
-        detailEl.textContent = "";
-        const it = currentRow();
-        if (!it) return;
-        const title = document.createElement("div");
-        title.className = "lf-detail-title";
-        title.textContent = it.title || it.url;
-        title.title = it.title || it.url;
-        const host = document.createElement("div");
-        host.className = "lf-detail-host";
-        host.textContent = it.host + " \u00b7 " + it.bucket;
-        const url = document.createElement("div");
-        url.className = "lf-detail-url";
-        url.textContent = it.url || "";
-        url.title = it.url || "";
-        const meta = document.createElement("div");
-        meta.className = "lf-detail-meta";
-        meta.textContent =
-          "Visited " + it.rel + (it.time ? " \u00b7 " + new Date(it.time).toLocaleString() : "");
-        detailEl.appendChild(title);
-        detailEl.appendChild(host);
-        detailEl.appendChild(url);
-        detailEl.appendChild(meta);
-      };
-
-      const drawRelated = () => {
-        relatedEl.textContent = "";
-        const ri = currentRowIndex();
-        const it = ri >= 0 ? rows[ri] || null : null;
-        if (ri !== lastPrimary) {
-          lastPrimary = ri;
-          relIdx = 0;
-        }
-        if (!it) {
-          const empty = document.createElement("div");
-          empty.className = "lf-related-empty";
-          empty.textContent = "no related history";
-          relatedEl.appendChild(empty);
-          return;
-        }
-        relatedRows = related.for(it);
-        if (relIdx >= relatedRows.length) relIdx = Math.max(0, relatedRows.length - 1);
-        if (!relatedRows.length) {
-          const empty = document.createElement("div");
-          empty.className = "lf-related-empty";
-          empty.textContent = "no related history";
-          relatedEl.appendChild(empty);
-          return;
-        }
-        let lastSection = "";
-        relatedRows.forEach((r, i) => {
-          if (r.section !== lastSection) {
-            const hd = document.createElement("div");
-            hd.className = "lf-related-head";
-            hd.textContent = r.section;
-            relatedEl.appendChild(hd);
-            lastSection = r.section;
-          }
-          const row = document.createElement("div");
-          row.className = "lf-item lf-rel" + (i === relIdx && pane === "R" ? " selected" : "");
-          row.innerHTML =
-            "<div class='t'>" + esc(r.title) + "</div>" +
-            "<div class='s'><span class='lf-host'>" + esc(r.host) + "</span>" +
-            "<span class='lf-time'>" + esc(r.rel) + "</span></div>";
-          row.addEventListener("mousedown", (ev) => {
-            ev.preventDefault();
-            relIdx = i;
-            drawRelated();
-            openRelated(r);
-          });
-          relatedEl.appendChild(row);
-        });
-        const sel = relatedEl.querySelector(".selected");
-        if (sel) sel.scrollIntoView({ block: "nearest" });
-      };
-
-      const openRelated = (r: RelatedRow) => {
-        ctx.close();
-        ctx.ops.openUrl(r.url, undefined);
-      };
-
-      // The two-pane history popup lives in a closed shadow root, so nothing
-      // outside it can read the rows. Publish the same composed, bubbling
-      // contract the shared overlay's popups use (shared/observability.ts) so
-      // page-level observers — and the e2e harness — can follow this popup's
-      // render and selection without reaching into the shadow DOM. The history
-      // popup builds its own rows instead of using the shared selector, so this
-      // is the one place it has to publish for itself.
-      const publishHistoryState = () =>
-        publishListState(listEl, inputEl, visible().length, idx);
-
-      const render = () => {
-        listEl.textContent = "";
-        const vis = visible();
-        if (idx >= vis.length) idx = Math.max(0, vis.length - 1);
-        if (!rows.length) {
-          emptyEl.style.display = "block";
-          detailEl.textContent = "";
-          relatedEl.textContent = "";
-          updateFoot();
-          markCols();
-          publishHistoryState();
-          return;
-        }
-        emptyEl.style.display = "none";
-        const visPos: Record<number, number> = {};
-        vis.forEach((ri, p) => {
-          visPos[ri] = p;
-        });
-        const frag = document.createDocumentFragment();
-        let lastBucket = "";
-        const hints = groupHints();
-        rows.forEach((it, i) => {
-          if (it.bucket !== lastBucket) {
-            const count = rows.reduce((n, r) => n + (r.bucket === it.bucket ? 1 : 0), 0);
-            const hd = document.createElement("div");
-            hd.className =
-              "lf-hgroup" +
-              (collapsed[it.bucket] ? " lf-collapsed" : "") +
-              (armGroup ? " lf-arm" : "");
-            const hkey = hints[it.bucket];
-            hd.innerHTML =
-              (hkey ? "<span class='lf-hkey'>" + hkey + "</span>" : "") +
-              esc(it.bucket) +
-              "<span class='lf-hcount'>" + count + "</span>";
-            hd.addEventListener("mousedown", (ev) => {
-              ev.preventDefault();
-              armGroup = false;
-              collapsed[it.bucket] = !collapsed[it.bucket];
-              render();
-            });
-            frag.appendChild(hd);
-            lastBucket = it.bucket;
-          }
-          if (collapsed[it.bucket]) return;
-          const vi = visPos[i]!;
-          const armed = !!(armDelete && armDelete.url === it.url);
-          const row = document.createElement("div");
-          row.className =
-            "lf-item lf-hist" + (vi === idx ? " selected" : "") + (armed ? " lf-armed" : "");
-          row.innerHTML =
-            "<div class='t'><span class='txt'>" + esc(it.title || it.url) + "</span></div>" +
-            "<div class='s'><span class='lf-host'>" + esc(it.host) + "</span>" +
-            "<span class='lf-url'>" + esc(it.url) + "</span>" +
-            faviconHtml(faviconFor(it.url)) +
-            "<span class='lf-time'>" + esc(it.rel) + "</span></div>";
-          row.addEventListener("mousedown", (ev) => {
-            ev.preventDefault();
-            idx = vi;
-            relIdx = 0;
-            render();
-            openRow(undefined);
-          });
-          frag.appendChild(row);
-        });
-        listEl.appendChild(frag);
-        if (!vis.length) {
-          const hint = document.createElement("div");
-          hint.className = "lf-collapsed-hint";
-          hint.textContent = "all groups collapsed \u2014 press O to expand";
-          listEl.appendChild(hint);
-        }
-        const sel = listEl.querySelector(".selected");
-        if (sel) sel.scrollIntoView({ block: "nearest" });
-        drawDetail();
-        drawRelated();
-        updateFoot();
-        markCols();
-        publishHistoryState();
-      };
-
-      const move = (d: number) => {
-        const vis = visible();
-        if (!vis.length) return;
-        const n = vis.length;
-        if (d === Number.NEGATIVE_INFINITY) idx = 0;
-        else if (d === Number.POSITIVE_INFINITY) idx = n - 1;
-        else idx = (idx + d + n) % n;
-        disarmAll();
-        relIdx = 0;
-        render();
-      };
-
-      const moveRelated = (d: number) => {
-        if (!relatedRows.length) return;
-        const n = relatedRows.length;
-        if (d === Number.NEGATIVE_INFINITY) relIdx = 0;
-        else if (d === Number.POSITIVE_INFINITY) relIdx = n - 1;
-        else relIdx = (relIdx + d + n) % n;
-        drawRelated();
-      };
-
-      const openRow = (newTab: boolean | undefined) => {
-        const it = currentRow();
+      const openRow = (newTab: boolean | undefined): void => {
+        const it = currentRow(state);
         if (!it) return;
         ctx.close();
         ctx.ops.openUrl(it.url, newTab);
       };
 
-      const toggleCurrentGroup = () => {
-        const it = currentRow();
+      const openRelated = (r: RelatedRow): void => {
+        ctx.close();
+        ctx.ops.openUrl(r.url, undefined);
+      };
+
+      const move = (d: number): void => {
+        const vis = visibleRows(state);
+        if (!vis.length) return;
+        const n = vis.length;
+        if (d === Number.NEGATIVE_INFINITY) state.idx = 0;
+        else if (d === Number.POSITIVE_INFINITY) state.idx = n - 1;
+        else state.idx = (state.idx + d + n) % n;
+        disarmAll(state);
+        state.relIdx = 0;
+        render();
+      };
+
+      const moveRelated = (d: number): void => {
+        if (!state.relatedRows.length) return;
+        const n = state.relatedRows.length;
+        if (d === Number.NEGATIVE_INFINITY) state.relIdx = 0;
+        else if (d === Number.POSITIVE_INFINITY) state.relIdx = n - 1;
+        else state.relIdx = (state.relIdx + d + n) % n;
+        view.drawRelated();
+      };
+
+      const toggleCurrentGroup = (): void => {
+        const it = currentRow(state);
         if (!it) return;
-        collapsed[it.bucket] = !collapsed[it.bucket];
+        state.collapsed[it.bucket] = !state.collapsed[it.bucket];
         render();
       };
 
-      const collapseAll = () => {
-        for (const r of rows) collapsed[r.bucket] = true;
+      const collapseAll = (): void => {
+        for (const r of state.rows) state.collapsed[r.bucket] = true;
         render();
       };
 
-      const expandAll = () => {
-        collapsed = {};
+      const expandAll = (): void => {
+        state.collapsed = {};
         render();
       };
 
-      const onX = () => {
-        const it = currentRow();
+      // `x` deletes the row under the cursor, but only after a second `x`
+      // within 2.5s — an armed row is marked, so the gesture is visible.
+      const onX = (): void => {
+        const it = currentRow(state);
         if (!it) return;
-        if (armDelete && armDelete.url === it.url) {
+        if (state.armDelete && state.armDelete.url === it.url) {
           const url = it.url;
-          disarmAll();
+          disarmAll(state);
           ctx.ops.removeHistory(url);
-          all = all.filter((a) => a.url !== url);
-          related.build(all);
+          state.all = state.all.filter((a) => a.url !== url);
+          related.build(state.all);
           organize();
           return;
         }
-        disarmAll();
-        armDelete = {
+        disarmAll(state);
+        state.armDelete = {
           url: it.url,
           timer: setTimeout(() => {
-            armDelete = null;
+            state.armDelete = null;
             render();
           }, 2500)
         };
         render();
       };
 
-      const onXBig = () => {
-        if (armClear) {
-          disarmAll();
+      const onXBig = (): void => {
+        if (state.armClear) {
+          disarmAll(state);
           ctx.ops.clearHistory();
-          all = [];
+          state.all = [];
           // Clear the related index through its own API rather than reaching
           // into the documents it indexed — the popup has no business knowing
           // how the ranking is stored.
           related.build([]);
-          rows = [];
-          idx = 0;
+          state.rows = [];
+          state.idx = 0;
           render();
           return;
         }
-        disarmAll();
-        armClear = true;
-        armClearTimer = setTimeout(() => {
-          armClear = false;
+        disarmAll(state);
+        state.armClear = true;
+        state.armClearTimer = setTimeout(() => {
+          state.armClear = false;
           render();
         }, 2500);
         render();
-      };
-
-      const cols = Array.from(root.querySelectorAll(".lf-col"));
-      const markCols = () => {
-        for (let i = 0; i < cols.length; i++) {
-          cols[i]!.classList.toggle("active", pane === "R" ? i === 1 : i === 0);
-        }
-      };
-      const setPane = (p: "L" | "R") => {
-        pane = p;
-        markCols();
-        updateFoot();
       };
 
       inputEl.addEventListener("input", () => {
@@ -508,152 +236,88 @@ export function openHistoryPopup(ctx: PopupCtx): void {
       void ensureLoaded().then(() => organize());
       setPane("L");
 
+      // Named rather than an anonymous arrow: the armed group toggle has to
+      // RE-DISPATCH the same event once the arm is dropped, and a const arrow
+      // cannot reference itself inside its own initializer.
+      const onKey = (e: KeyboardEvent): boolean => {
+        // history-keys.ts is the pure half (which intent is this?); this is the
+        // half that ACTS on it.
+        const k = e.key;
+        const noMods = !e.ctrlKey && !e.altKey && !e.metaKey;
+        // When the group toggle is armed, the arm claims the NEXT key. If that
+        // key names no group, the arm is dropped and the SAME key is dispatched
+        // again as an ordinary one, so a mis-aimed hint letter still does what
+        // it would have done without the arm.
+        const armed = state.armGroup;
+        const hit = hintBucketFor(state, k);
+        const intent = historyIntent({
+          key: k,
+          shiftKey: e.shiftKey,
+          noMods,
+          mode: state.mode,
+          pane: state.pane,
+          armGroupLive: armed,
+          // The dispatcher re-checks noMods/length itself, so a hint hit here
+          // only has to answer "does this letter name a bucket?".
+          groupHintHit: !!hit,
+          manualText: ctx.manualText,
+        });
+
+        if (intent === "pass") {
+          if (armed) {
+            state.armGroup = false;
+            updateFoot();
+            // Re-dispatch as an ordinary command-mode key: the arm is gone, so
+            // this key is judged by the normal keymap.
+            return onKey(e);
+          }
+          // Not ours: chrome lets the focused input receive it natively.
+          return false;
+        }
+        if (intent === "close") {
+          // Deliberately NOT preventDefaulted: returning false is how the popup
+          // contract says "not mine, close me", and the key must stay
+          // un-consumed for the host to act on it.
+          return false;
+        }
+
+        // Every remaining intent is ours, so the key is consumed and can never
+        // reach the page behind the popup.
+        e.preventDefault();
+        return applyHistoryIntent(intent, {
+          state,
+          inputEl,
+          key: k,
+          hit,
+          event: () => e,
+          manualTextKey,
+          render,
+          updateFoot,
+          setPane,
+          move,
+          moveRelated,
+          openRow,
+          openRelatedAtCursor: () => {
+            const r = state.relatedRows[state.relIdx];
+            if (r) openRelated(r);
+          },
+          toggleCurrentGroup,
+          collapseAll,
+          expandAll,
+          deleteEntry: onX,
+          clearAll: onXBig,
+          organize,
+        });
+      };
+
       return {
-        onKey: (e: KeyboardEvent): boolean => {
-          const k = e.key;
-          const noMods = !e.ctrlKey && !e.altKey && !e.metaKey;
-
-          if (k === "Escape") {
-            e.preventDefault();
-            if (mode === "insert") {
-              mode = "cmd";
-              inputEl.classList.add("lf-cmd");
-              disarmAll();
-              render();
-              return true;
-            }
-            if (pane === "R") {
-              setPane("L");
-              return true;
-            }
-            return false; // let the host close the popup
-          }
-
-          if (mode === "insert") {
-            if (k === "Tab") { e.preventDefault(); setPane(pane === "L" ? "R" : "L"); return true; }
-            if (k === "Enter") { e.preventDefault(); openRow(e.shiftKey ? false : undefined); return true; }
-            if (k === "ArrowDown") { e.preventDefault(); move(1); return true; }
-            if (k === "ArrowUp") { e.preventDefault(); move(-1); return true; }
-            if (k === "PageDown") { e.preventDefault(); move(8); return true; }
-            if (k === "PageUp") { e.preventDefault(); move(-8); return true; }
-            if (ctx.manualText && (k === "Backspace" || k === "Delete" || (k.length === 1 && noMods))) {
-              manualTextKey(e, inputEl);
-              return true;
-            }
-            return false; // chrome: native typing into the focused input
-          }
-
-          // command mode
-          if (pane === "R") {
-            if (k === "Tab" || k === "Escape") { e.preventDefault(); setPane("L"); return true; }
-            if (k === "j" || k === "ArrowDown") { e.preventDefault(); moveRelated(1); return true; }
-            if (k === "k" || k === "ArrowUp") { e.preventDefault(); moveRelated(-1); return true; }
-            if (k === "PageDown") { e.preventDefault(); moveRelated(8); return true; }
-            if (k === "PageUp") { e.preventDefault(); moveRelated(-8); return true; }
-            if (k === "Home") { e.preventDefault(); moveRelated(Number.NEGATIVE_INFINITY); return true; }
-            if (k === "End") { e.preventDefault(); moveRelated(Number.POSITIVE_INFINITY); return true; }
-            if (k === "Enter") {
-              e.preventDefault();
-              const r = relatedRows[relIdx];
-              if (r) openRelated(r);
-              return true;
-            }
-            if (k === "o" && noMods) { e.preventDefault(); openRow(false); return true; }
-            // Consume everything else so stray keys never reach the input.
-            return true;
-          }
-
-          // `c` armed a group toggle: the next key picks a group by its hint
-          // char (shown in each header), `c` again toggles the current group,
-          // Esc cancels, and anything else drops the arm and is handled
-          // normally below.
-          if (armGroup) {
-            if (k === "Escape") {
-              e.preventDefault();
-              armGroup = false;
-              updateFoot();
-              return true;
-            }
-            if (k === "c" && noMods) {
-              e.preventDefault();
-              armGroup = false;
-              toggleCurrentGroup();
-              return true;
-            }
-            if (noMods && k.length === 1) {
-              const hs = groupHints();
-              const kc = k.toLowerCase();
-              for (const b of Object.keys(hs)) {
-                if (hs[b] === kc) {
-                  e.preventDefault();
-                  armGroup = false;
-                  collapsed[b] = !collapsed[b];
-                  render();
-                  return true;
-                }
-              }
-            }
-            armGroup = false;
-            updateFoot();
-          }
-
-          if (k === "Tab") { e.preventDefault(); setPane("R"); return true; }
-          if (k === "j" || k === "ArrowDown") { e.preventDefault(); move(1); return true; }
-          if (k === "k" || k === "ArrowUp") { e.preventDefault(); move(-1); return true; }
-          if (k === "PageDown") { e.preventDefault(); move(8); return true; }
-          if (k === "PageUp") { e.preventDefault(); move(-8); return true; }
-          if (k === "Home" || (k === "g" && noMods)) { e.preventDefault(); move(Number.NEGATIVE_INFINITY); return true; }
-          if (k === "End" || (k === "G" && noMods)) { e.preventDefault(); move(Number.POSITIVE_INFINITY); return true; }
-          if (k === "i" || k === "/") {
-            e.preventDefault();
-            if (k === "/") inputEl.value = "";
-            mode = "insert";
-            inputEl.classList.remove("lf-cmd");
-            disarmAll();
-            inputEl.focus();
-            updateFoot();
-            organize();
-            return true;
-          }
-          if (k === "Enter") { e.preventDefault(); openRow(e.shiftKey ? false : undefined); return true; }
-          if (k === "o" && noMods) { e.preventDefault(); openRow(false); return true; }
-          if (k === "c" && noMods) {
-            e.preventDefault();
-            armGroup = true;
-            render(); // repaint headers with the armed hint highlight
-            return true;
-          }
-          if (k === "C" && noMods) { e.preventDefault(); collapseAll(); return true; }
-          if (k === "O" && noMods) { e.preventDefault(); expandAll(); return true; }
-          if (k === "x" && noMods) { e.preventDefault(); onX(); return true; }
-          if (k === "X" && noMods) { e.preventDefault(); onXBig(); return true; }
-          // Any other printable key starts a search: switch to insert mode and
-          // type it. Content scripts insert manually (the window capture
-          // handler already preventDefaulted the key); chrome lets the native
-          // input insert it and the input event re-runs organize.
-          if (k.length === 1 && noMods) {
-            e.preventDefault();
-            mode = "insert";
-            inputEl.classList.remove("lf-cmd");
-            disarmAll();
-            inputEl.focus();
-            updateFoot();
-            if (ctx.manualText) {
-              manualTextKey(e, inputEl);
-              return true;
-            }
-            return false; // chrome: native typing into the focused input
-          }
-          // Consume every other key so stray keys never type in command mode.
-          return true;
-        },
+        onKey,
         refresh: () => {
           void ensureLoaded().then(() => organize());
         },
-        close: () => {},        focus: () => inputEl.focus(),
+        close: () => {},
+        focus: () => inputEl.focus(),
       };
     }
   );
 }
-
-

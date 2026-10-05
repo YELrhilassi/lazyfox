@@ -8,8 +8,9 @@ import { mergeConfig } from "../../shared/config";
 import { ensureCore } from "../../shared/core";
 import { isTypingTarget } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
-import { KeyGuard } from "../../shared/keyguard";
+import { installContentDom } from "./contentdom";
 import { LeaderController, isCancel, leaderSequences } from "../../shared/leader";
+import { digitExpect, idleSignal, type LeaderSignal } from "../../shared/leadersignal";
 import {
   releaseHoldOnKeyup,
   releaseLostHold as releaseLostHoldOnBlur,
@@ -18,7 +19,7 @@ import {
 import { openNavPopup } from "../../shared/popups/nav";
 import { CATEGORY_TIMEOUT_MS, leaderCategories } from "../../shared/popups/categories";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
-import { mirrorFlag } from "../../shared/observability";
+import { mirror, mirrorFlag } from "../../shared/observability";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/popups";
 import { send } from "../../shared/protocol";
 import { readKey, vConfig } from "../store";
@@ -137,8 +138,8 @@ import type { ContentPopupShell } from "./find";
     bindings: () => leader.bindings(),
     // A sub-key that takes a NUMBER (move tab N into the split) needs the
     // leader's one-shot capture; the leader controller owns it.
-    armDigits: (apply, timeoutMs) => {
-      leader.armPending(apply, timeoutMs || 3000);
+    armDigits: (apply, timeoutMs, expect) => {
+      leader.armPending(apply, { timeoutMs: timeoutMs || 3000, expect });
     },
     manualText: true,
   };
@@ -152,6 +153,21 @@ import type { ContentPopupShell } from "./find";
   // to "is the leader armed right now" — and it is what lets the e2e harness
   // wait for a dispatch to finish instead of guessing with a timer.
   const setLeaderAttr = (armed: boolean) => mirrorFlag("leader", armed);
+  // What the armed capture wants next, mirrored in-page alongside
+  // data-lf-leader.
+  //
+  // The obvious place to read this is the chrome bar, and that is where a user
+  // reads it — but the bar lives in another process and the only way in is a
+  // multi-hop round trip, while a digit capture lives for THREE seconds. A
+  // read that can take as long as the state it is trying to observe cannot
+  // test it. Mirroring it here makes the fact reachable from the same realm
+  // that owns it, which is the same move as the other data-lf-* mirrors: the
+  // attribute is a fact about the product, not a convenience for one test.
+  const setLeaderExpect = (want: string) => mirror("lead-expect", want || null);
+  // ONE value for the whole readout, produced by the controller and forwarded
+  // unchanged: in-page mirror, the wire to the background, the bar. Nothing here
+  // re-assembles it, so nothing here can half-report it.
+  const readout = (): LeaderSignal => leader.signal();
   leader = new LeaderController(
     (k) => runLeaderAction(leaderActions, k),
     () => config.whichKey !== false,
@@ -161,8 +177,13 @@ import type { ContentPopupShell } from "./find";
     // which-key overlay disabled that indicator is the only visible leader
     // sign.
     () => {
-      setLeaderAttr(leader.active);
-      void send("syncLeader", { active: leader.active });
+      const sig = readout();
+      setLeaderAttr(sig.armed);
+      setLeaderExpect(sig.expect);
+      // The chord and the expected-next key travel with the arm flag. Without
+      // them the chrome helper's bar — the only bar a web page has — could say
+      // "a leader is armed" and nothing more, for the whole sequence.
+      void send("syncLeader", { signal: sig });
     },
     // A plain binding always beats a category head, so registering `;W` /
     // `;Z` can never take over a key that already worked.
@@ -170,7 +191,7 @@ import type { ContentPopupShell } from "./find";
   );
   // Clear any stale leader state this tab carried from a previous page (the
   // leader starts disarmed on every fresh load).
-  void send("syncLeader", { active: false });
+  void send("syncLeader", { signal: idleSignal() });
   // Report IN. The chrome helper has to know whether this page is covered by a
   // content script before it may claim or yield the keys and the screen, and
   // it cannot find out for itself: `selectedBrowser.contentDocument` is null
@@ -210,13 +231,20 @@ import type { ContentPopupShell } from "./find";
   leaderActions["L"] = () => openNavPopup(ctx);
   // ;' = quick switch: capture the next digit and jump to the marked session.
   leaderActions["'"] = () =>
-    leader.armPending((k) => {
-      if (/^[1-9]$/.test(k)) {
-        contentOps.switchSessionByMarker(Number(k));
-        return true;
+    leader.armPending(
+      (k) => {
+        if (/^[1-9]$/.test(k)) {
+          contentOps.switchSessionByMarker(Number(k));
+          return true;
+        }
+        return false;
+      },
+      {
+        timeoutMs: 3000,
+        // Markers are 1-9 by construction; see the chrome host.
+        expect: digitExpect(9),
       }
-      return false;
-    }, 3000);
+    );
   // The leader's two-key categories (`;W` window/layout, `;Z` zoom) come from
   // the shared table — registered here too, from the same source the chrome
   // helper uses, so the two contexts cannot disagree about what `;W |` does.
@@ -495,101 +523,28 @@ import type { ContentPopupShell } from "./find";
     return !!currentPopup || hints.active || leader.active || leader.hasPending();
   }
 
-  const keyGuard = new KeyGuard();
+  /* ==================== DOM wiring ==================== */
 
-  window.addEventListener(
-    "keydown",
-    (e) => {
-      // A page-specific exception (a hostile handler, an unexpected element)
-      // must not take down key handling for the whole session: catch it, keep
-      // the listener, and let the next key try again.
-      try {
-        onKeyDown(e);
-      } catch (err) {
-        if (__DEV__) dbg("keydown handler threw", (err && (err as Error).message) || String(err));
-      }
-      // Remember every key we consumed so its keypress/keyup tail is swallowed
-      // too (see keyguard.ts). Without this the keystroke a user types into a
-      // Lazyfox popup still reaches page scripts that listen on keypress/keyup
-      // — the input leaking to the page behind the popup.
-      if (e.defaultPrevented) keyGuard.consume(e);
-    },
-    true
-  );
-
-  // keypress/keyup do NOT obey the keydown's preventDefault, so swallowing
-  // keydown alone is not enough. Swallow the tail of every key we consumed,
-  // and everything at all while an overlay owns the keyboard, so nothing the
-  // user types into Lazyfox can leak to the page behind it.
-  function onKeyTail(e: KeyboardEvent): void {
-    // Always reconcile the guard (never short-circuit): a key we consumed once
-    // must have its record cleared by the tail that follows, or a later,
-    // legitimate press of the same key while typing would be swallowed too.
-    const tail = keyGuard.ownsTail(e);
-    if (overlayOwnsKeys() || tail) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      return;
-    }
-    // Firefox's native typeahead quick-find is bound to the `keypress` of `/`
-    // and `'`, so it fires even after the leader has consumed the `keydown`.
-    // Suppress it outside text fields so `;/` opens the Lazyfox find popup,
-    // not the native find bar.
-    if (e.type === "keypress" && (e.key === "/" || e.key === "'")) {
-      if (!isTypingTarget(e.target as Element)) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    }
-  }
-  window.addEventListener("keypress", onKeyTail, true);
-  window.addEventListener("keyup", onKeyTail, true);
-
-
-  window.addEventListener("blur", () => {
-    // The window lost focus mid-key: no keyup is coming for anything we
-    // consumed, so drop the records instead of letting them swallow a later
-    // press of the same key.
-    keyGuard.clear();
-    if (currentPopup) closePopup();
-    if (hints.active) hints.exit();
-    if (leader.active) leader.hide();
+  // Every listener on window/document, plus the extension message port. Split
+  // into contentdom.ts because these are rules about EVENTS, not about the
+  // leader, the popups or the hints — so it takes their predicates, not the
+  // modules themselves.
+  installContentDom({
+    onKeyDown,
+    overlayOwnsKeys,
+    closePopup,
+    hintsActive: () => hints.active,
+    exitHints: () => hints.exit(),
+    leaderActive: () => leader.active,
+    hideLeader: () => leader.hide(),
+    leaderHasPending: () => leader.hasPending(),
+    cancelLeaderPending: () => leader.cancelPending(),
+    syncTypingAttr,
+    startHints: () => hints.start(),
+    focusFirstInput,
+    hintBadge: () => hints.enterBadge(),
+    pageReport: () => collectPageReport(scroll, hints),
+    isDev: () => __DEV__,
+    logError: (what, err) => dbg(what, (err && (err as Error).message) || String(err)),
   });
-  document.addEventListener("focusin", (e) => {
-    syncTypingAttr();
-    // A stale leader or one-shot capture must never eat what the user types.
-    // Disarm when focus moves to an editable element (e.g. clicking into a
-    // search box after pressing `;` on the page).
-    if (isTypingTarget(e.target as Element)) {
-      if (leader.active) leader.hide();
-      if (leader.hasPending()) leader.cancelPending();
-    }
-  });
-  document.addEventListener("focusout", syncTypingAttr);
-  document.addEventListener("focus", syncTypingAttr);
-
-  browser.runtime.onMessage.addListener(
-    (msg: { action?: string }) => {
-      if (msg && msg.action === "startHints") {
-        void hints.start();
-        return Promise.resolve({ ok: true });
-      }
-      if (msg && msg.action === "focusFirstInput") {
-        focusFirstInput();
-        return Promise.resolve({ ok: true });
-      }
-      if (msg && msg.action === "hintBadge") {
-        return Promise.resolve({ ok: true, id: "amb", ...hints.enterBadge() });
-      }
-      if (msg && msg.action === "pageReport") {
-        // The diagnostics page asks the ACTIVE tab's content script for a live
-        // self-report. A rejection here is meaningful too (no content script on
-        // this page), so the background turns it into "report: null".
-        return collectPageReport(scroll, hints)
-          .then((report) => ({ ok: true, report: report }))
-          .catch(() => ({ ok: false, report: null }));
-      }
-      return undefined;
-    }
-  );
 })();

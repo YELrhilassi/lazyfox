@@ -7,11 +7,13 @@
 // forward keys into the page's own document.
 
 import type { LeaderController } from "../shared/leader";
+import { ANY_KEY_EXPECT } from "../shared/leadersignal";
+import type { ChromeWindow } from "./env";
 
 // Focus the command-center page's body (tabindex=-1) so keyboard focus sits in
 // the page, in command mode, away from Firefox's URL bar and the page's own
 // search input.
-export function focusCCBody(win: Window): void {
+export function focusCCBody(win: ChromeWindow): void {
   try {
     const cw = (win as any).gBrowser.selectedBrowser.contentWindow;
     const doc = cw && cw.document;
@@ -27,7 +29,7 @@ export function focusCCBody(win: Window): void {
 // Move keyboard focus into the command-center tab's content document (out of
 // the hidden URL bar / chrome UI), leaving it in command mode. Focuses the
 // page body, never the <browser> element (which grabs the search input).
-export function focusCommandCenterContent(win: Window): void {
+export function focusCommandCenterContent(win: ChromeWindow): void {
   try {
     const cw = (win as any).gBrowser.selectedBrowser.contentWindow;
     const doc = cw && cw.document;
@@ -45,7 +47,7 @@ export function focusCommandCenterContent(win: Window): void {
 // own keydown listener drives hint-pick / modes / typing from it). Built with
 // the PAGE's KeyboardEvent constructor — an event created in the chrome realm
 // is invisible to the page's listeners.
-export function dispatchToCCPage(win: Window, k: string): void {
+export function dispatchToCCPage(win: ChromeWindow, k: string): void {
   try {
     const cw = (win as any).gBrowser.selectedBrowser.contentWindow;
     const doc = cw && cw.document;
@@ -65,7 +67,7 @@ export function dispatchToCCPage(win: Window, k: string): void {
 // dispatching, the next key is captured and forwarded into the page — the
 // home-grid hint-pick letter must reach the PAGE even when focus is NOT in it
 // (Firefox keeps the hidden URL bar focused on a fresh new tab).
-export function signalCommandCenterFind(win: Window, leader: LeaderController): void {
+export function signalCommandCenterFind(win: ChromeWindow, leader: LeaderController): void {
   let reached = false;
   try {
     const cw = (win as any).gBrowser.selectedBrowser.contentWindow;
@@ -85,10 +87,20 @@ export function signalCommandCenterFind(win: Window, leader: LeaderController): 
     // ignore
   }
   if (!reached) return;
-  leader.armPending((k) => {
-    dispatchToCCPage(win, k);
-    return true;
-  }, 10000);
+  leader.armPending(
+    (k) => {
+      dispatchToCCPage(win, k);
+      return true;
+    },
+    {
+      timeoutMs: 10000,
+      // This capture eats the next keystroke and hands it to another realm,
+      // where the page decides what it meant. Without a label the indicator
+      // looks identical whether or not a key is being forwarded for the next
+      // ten seconds — so the bar says so instead of sitting there looking idle.
+      expect: ANY_KEY_EXPECT,
+    }
+  );
   // Pull focus into the page so keys AFTER the pick (and hjkl on the grid)
   // land naturally instead of in the hidden URL bar. Focus the page BODY,
   // never the <browser> element.
@@ -99,9 +111,9 @@ export function signalCommandCenterFind(win: Window, leader: LeaderController): 
 // search box, a focused button) so the page returns to its neutral state and
 // the vim keys / leader work without a click. Chrome UI fields (the URL bar)
 // are left alone — the browser owns their Esc behavior.
-export function blurFocusedElement(win: Window): void {
+export function blurFocusedElement(win: ChromeWindow): void {
   try {
-    const fd = (win.document as { commandDispatcher?: { focusedElement?: Element | null } })
+    const fd = (win.document as unknown as { commandDispatcher?: { focusedElement?: Element | null } })
       .commandDispatcher;
     const el = fd && fd.focusedElement;
     if (

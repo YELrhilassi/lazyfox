@@ -5,6 +5,7 @@
 //   - background -> content script (startHints / focusFirstInput)
 // One table, typed request and response per action, so the send() helper and
 // the background handler cannot drift.
+import type { LeaderSignal } from "./leadersignal";
 import type { CacheMode, CacheScope, CacheState, Config, PageReport, PopupItem, Session, SessionSummaryItem, TabInfo } from "./types";
 
 export interface WindowSize {
@@ -115,7 +116,19 @@ export interface BgApi {
   // bar shows the pulsing LEADER chevron on web pages, where the content
   // script owns the leader key and the chrome helper's own leader never
   // arms).
-  syncLeader: { req: { active: boolean }; res: { ok: boolean } };
+  //
+  // `prefix`/`expect` ride along for the same reason the relay exists at all:
+  // the bar has to be able to say WHICH key comes next, and on a web page the
+  // only party that knows is the content script. Sending a bare boolean left
+  // the indicator pinned to "something is armed" for the whole sequence.
+  syncLeader: {
+    // The leader readout as ONE value, not three fields. A wire shape of
+    // `{active, prefix, expect}` lets a sender fill two halves and drop the
+    // third, and the bar then shows a chord with no expectation (or the
+    // reverse) — a silent half-truth that only shows up in a live browser.
+    req: { signal: LeaderSignal };
+    res: { ok: boolean };
+  };
   // "A Lazyfox content script is running in this tab", pushed at boot and torn
   // down on pagehide. This exists because the chrome helper cannot work the
   // question out for itself: `selectedBrowser.contentDocument` is null for
@@ -314,7 +327,11 @@ export interface ChromeApi {
   // `tabs.create` resolves — pairing early pairs the tabs being torn down.
   restoreSplits: { req: { groups: number[][]; expect?: number }; res: void };
   sessionState: { req: RelaySessionState; res: void };
-  leaderState: { req: { index: number; active: boolean }; res: void };
+  leaderState: {
+    // index + the same one-value signal; see BgApi["syncLeader"].
+    req: { index: number; signal: LeaderSignal };
+    res: void;
+  };
   contentState: { req: { index: number; active: boolean; url: string }; res: void };
   findState: { req: { index: number; count: number; cur: number }; res: void };
   cacheGlobal: { req: { mode: CacheMode }; res: void };

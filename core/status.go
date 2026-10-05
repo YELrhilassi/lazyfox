@@ -71,6 +71,15 @@ type NavEntry struct {
 type LeaderSignal struct {
 	Armed  bool   `json:"armed"`
 	Prefix string `json:"prefix"`
+	// What the next key must be, when the answer is not "anything" — the
+	// digits still legal after `;W m 1`, for instance. Empty means no hint,
+	// which is the honest answer for a plain binding and for a bare leader.
+	//
+	// It lives in the store rather than only in the view because the store is
+	// what every repaint reads: a hint that existed only on the painted DOM
+	// would be erased by the next poll, and an indicator that flickers between
+	// "waiting for a digit" and "nothing pending" is worse than no indicator.
+	Expect string `json:"expect,omitempty"`
 }
 
 // StatusModel is the render model the single view paints. Field names match
@@ -146,6 +155,18 @@ type statusStoreT struct {
 	// The leader indicator: armed state + the prefix typed so far in the
 	// current sequence ("" for a bare leader press, "l" after `;l`).
 	leaderPrefix string
+
+	// What the armed leader capture wants next, cleared whenever it disarms.
+	leaderExpect string
+
+	// The signal's own armed flag. The bar's MODE resolves from chromeLeader /
+	// leaderByIndex, but an armed one-shot capture is a third thing entirely:
+	// no leader is "up" in the mode sense, yet the next key is still captured
+	// and must still be advertised. Resolving the indicator from the mode
+	// alone therefore switched it off one poll after the press that turned it
+	// on — a hint that appears and vanishes is worse than no hint, because the
+	// user learns to distrust the one element that was telling them the truth.
+	leaderSignalArmed bool
 
 	// The active tab's history-stack shape, pushed by the owning context.
 	nav NavState
@@ -234,13 +255,18 @@ func StatusSetStealth(on bool) {
 
 // StatusSetLeaderSignal records the far-right leader indicator state. An
 // empty prefix with armed=true is a bare `;`; a non-empty prefix means a
-// sequence is in progress (e.g. `;l` waiting for its final key).
-func StatusSetLeaderSignal(armed bool, prefix string) {
+// sequence is in progress (e.g. `;l` waiting for its final key). `expect` is
+// what the next key must be ("1-9"); it is cleared on disarm, because a hint
+// for a capture that has ended is a hint to press a dead key.
+func StatusSetLeaderSignal(armed bool, prefix, expect string) {
 	s := statusStore
+	s.leaderSignalArmed = armed
 	if armed {
 		s.leaderPrefix = prefix
+		s.leaderExpect = expect
 	} else {
 		s.leaderPrefix = ""
+		s.leaderExpect = ""
 	}
 }
 
@@ -366,7 +392,7 @@ func StatusSnapshot() StatusModel {
 	// The leader indicator is armed while the overlay is up OR a one-shot
 	// capture is pending — both mean "the next key runs a binding". The prefix
 	// shows what was typed so far, so a sequence (`;l` …) reads as one.
-	leaderArmed := mode == "LEADER"
+	leaderArmed := mode == "LEADER" || s.leaderSignalArmed
 	return StatusModel{
 		Name:             s.name,
 		Marker:           s.marker,
@@ -383,7 +409,7 @@ func StatusSnapshot() StatusModel {
 		Downloads:        downloads,
 		TabIds:           s.tabIds,
 		StealthFlags:     s.stealthFlags,
-		Leader:           LeaderSignal{Armed: leaderArmed, Prefix: s.leaderPrefix},
+		Leader:           LeaderSignal{Armed: leaderArmed, Prefix: s.leaderPrefix, Expect: s.leaderExpect},
 		Nav:              s.nav,
 	}
 }

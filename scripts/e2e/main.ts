@@ -138,14 +138,26 @@ async function main(): Promise<void> {
   // inheriting the previous test's. `after` captures whatever reset had to fix,
   // which shows up in the failure line — a test that failed after the probe
   // was rebuilt is a different problem from one that did not.
+  // 'A test that opens tabs has to give the window back' used to be each test's own
+  // 'finally' — and only three tests remembered, so the window reached ninety tabs
+  // before 'sessions' ran and every numbering-dependent test after it addressed the
+  // wrong tab. The snapshot/reclaim pair makes it the harness default instead, with
+  // the same two guards the hand-written version had: never touch a tab that
+  // predates the test, and never run while a test is rebuilding the window.
+  let tabsBefore: Set<number> = new Set();
+
   ctx.runTest = createRunner(selection, {
-    before: async (keepTabs) => {
+    before: async () => {
       ctx.signal = undefined;
-      await ctx.reset(keepTabs);
+      await ctx.reset();
+      ctx.rebuilding = false;
+      tabsBefore = await ctx.keepOpen();
     },
     after: async (r) => {
       r.repaired = [...ctx.repaired];
       ctx.signal = undefined;
+      const closed = await ctx.reclaimLeakedTabs(tabsBefore).catch(() => 0);
+      if (closed) r.repaired.push('closed ' + closed + ' tab(s) the test leaked');
     },
   });
 

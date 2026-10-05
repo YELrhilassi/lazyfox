@@ -14,8 +14,8 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
-  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS, keepTabs: opts.keepTabs, reconcile: opts.reconcile });
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS });
 
   // Poll storage through the probe's extension realm.
   const waitStore = (expr, ms = 8000) => ctx.waitExpr(ctx.probe, expr, true, ms);
@@ -32,6 +32,19 @@ export async function run(ctx: any): Promise<void> {
     // split machinery parks a re-formed pair at the strip END, so before the
     // fix a session with a mid-strip split came back with the pair at the
     // tail — ;1-9 pointed at different tabs than when the session was saved.
+    // Start from a window this test controls. The subject is whether a
+    // mid-strip split pair SURVIVES a session round-trip, but the move that
+    // forms the pair is driven by a tab NUMBER, and a number is only meaningful
+    // against a known strip. In a full run the window arrives holding a dozen
+    // tabs from earlier tests, and the digits the test read resolved against a
+    // strip that had since changed — so the pair never formed and the failure
+    // landed on the restore, which is the one thing under test here.
+    //
+    // BEFORE openCC: the collapse closes everything it did not keep, and
+    // ctx.tabA is one of the tabs it is clearing. So tabA is re-made after it,
+    // not merely re-pointed at.
+    await ctx.collapseWindow();
+    ctx.tabA = await createTab();
     await ctx.openCC(ctx.tabA);
     // Four distinctive tabs in a known order.
     const names = ["lfw1", "lfw2", "lfw3", "lfw4"];

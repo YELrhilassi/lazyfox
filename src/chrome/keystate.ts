@@ -12,6 +12,7 @@
 //     the find bar) rather than in page content — the only way an element that
 //     is a genuine typing target has the chrome document as its ownerDocument.
 import type { TypingChannel } from "./typing";
+import type { ChromeWindow } from "./env";
 
 // ---------------------------------------------------------------------------
 // noteContentPresent — why presence is PUSHED rather than looked up
@@ -57,7 +58,7 @@ export function resetContentPresence(): void {
   contentPresent.clear();
 }
 
-export function isCommandCenterTab(win: Window): boolean {
+export function isCommandCenterTab(win: ChromeWindow): boolean {
   try {
     const b = (win as any).gBrowser.selectedBrowser;
     const uri = b && b.currentURI;
@@ -73,7 +74,7 @@ export function isCommandCenterTab(win: Window): boolean {
  * The selected tab's raw strip index, or -1 when it cannot be read.
  * -1 never equals a real index, so every cache lookup against it misses.
  */
-function selectedStripIndex(win: Window): number {
+function selectedStripIndex(win: ChromeWindow): number {
   try {
     return (win as any).gBrowser.tabs.indexOf((win as any).gBrowser.selectedTab);
   } catch {
@@ -90,7 +91,7 @@ function selectedStripIndex(win: Window): number {
  * is treated as unknown, so presence can never outlive the document that
  * announced it.
  */
-export function contentScriptPresent(browser: unknown, win?: Window): boolean {
+export function contentScriptPresent(browser: unknown, win?: ChromeWindow): boolean {
   try {
     const idx = win ? selectedStripIndex(win) : -1;
     if (idx < 0) return false;
@@ -106,7 +107,7 @@ export function contentScriptPresent(browser: unknown, win?: Window): boolean {
   }
 }
 
-export function chromeOwnsKeys(win: Window): boolean {
+export function chromeOwnsKeys(win: ChromeWindow): boolean {
   try {
     const b = (win as any).gBrowser.selectedBrowser;
     const u = b && b.currentURI;
@@ -150,7 +151,7 @@ export function chromeOwnsKeys(win: Window): boolean {
  * side effect of the next keypress: a surface you no longer own must be gone
  * now, not whenever the user next happens to type.
  */
-export function chromeOwnsSurfaces(win: Window): boolean {
+export function chromeOwnsSurfaces(win: ChromeWindow): boolean {
   return chromeOwnsKeys(win);
 }
 
@@ -168,7 +169,7 @@ export function forgetContentFrom(stripIndex: number): void {
   }
 }
 
-export function isAboutPage(win: Window): boolean {
+export function isAboutPage(win: ChromeWindow): boolean {
   try {
     const u = (win as any).gBrowser.selectedBrowser.currentURI;
     return !!(u && u.spec && /^about:/i.test(u.spec));
@@ -177,7 +178,7 @@ export function isAboutPage(win: Window): boolean {
   }
 }
 
-export function isChromeUiFocus(win: Window, typing: TypingChannel, e: KeyboardEvent): boolean {
+export function isChromeUiFocus(win: ChromeWindow, typing: TypingChannel, e: KeyboardEvent): boolean {
   try {
     const t = typing.focusedTypingTarget(e);
     return !!(t && t.ownerDocument === win.document);
