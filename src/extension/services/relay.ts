@@ -15,13 +15,25 @@ const relayPorts = new Map<number, any>();
 // coming up); flushed on connect, dropped after the TTL so a stale command can
 // never fire late.
 const relayCmdQueues = new Map<number, Array<{ action: string; arg?: any }>>();
+import { isRelayUrl } from "../../shared/relay-wire";
+
 const RELAY_QUEUE_TTL = 6000;
 
-export function isRelayUrl(url: string | undefined | null): boolean {
-  return !!url && url.indexOf("relay.html") !== -1;
-}
+// Re-exported so the existing `from "./services/relay"` importers keep working;
+// the definition lives in shared/relay-wire.ts with the rest of the relay's wire
+// facts, where it is readable (and testable) from Node.
+export { isRelayUrl };
 
 // Called by background.ts for every runtime.onConnect port.
+//
+// NOTE: an `onRelayUp` hook was tried here — re-push the durable state whenever
+// a relay port (re)connects, to recover pushes lost while it was down. It is
+// the wrong place, and measurably so: the relay tab navigates constantly (every
+// hash write reloads the page and its port), so "port connected" fires far too
+// often. Re-pushing on each one put a sessionState command into the relay's
+// SINGLE url slot, which then starved the split and leader commands behind it:
+// the full e2e run went from 180/183 to 163/183, with the relay sitting on a
+// stuck `#lfr=cm.sessionState…` hash. The queue below has to stay a queue.
 export function acceptRelayPort(
   port: any,
   onReq: (action: string, arg: unknown) => Promise<unknown>,
@@ -99,6 +111,13 @@ function findRelayTab(): Promise<any | null> {
     .catch(() => null);
 }
 
+// The window whose relay port we can currently post to, or null. Used only as
+// the fallback when the "active tab" lookup came back empty.
+function firstPortedWindow(): number | null {
+  for (const winId of relayPorts.keys()) return winId;
+  return null;
+}
+
 // Ask the chrome helper to do something only it can (native splits, status
 // pushes): post the command over the relay's runtime port.
 //
@@ -112,7 +131,15 @@ export function requestChrome<K extends string>(action: K, arg?: any): void {
   browser.tabs
     .query({ currentWindow: true, active: true })
     .then((ts: any[]) => {
-      const winId = ts && ts[0] ? ts[0].windowId : null;
+      // The active tab's window is the right target, and normally the only one.
+      // But "no active tab in the current window" is a real, transient state —
+      // a window mid-rebuild has none — and the old `if (winId == null) return;`
+      // dropped the command there WITHOUT EVEN QUEUEING IT, so it could not be
+      // delivered by a later reconnect either. Any window we already hold a
+      // live relay port for is a strictly better answer than dropping: the
+      // helper is per-window and there is normally exactly one.
+      const active = ts && ts[0] ? ts[0].windowId : null;
+      const winId = active != null ? active : firstPortedWindow();
       if (winId == null) return;
       const entry = { action, arg };
       const tryPost = (): boolean => {

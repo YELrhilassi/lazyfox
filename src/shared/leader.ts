@@ -1,13 +1,28 @@
-// The unified which-key leader bar, shared by the chrome helper and the
-// content script. Both contexts previously carried near-identical copies of
-// this controller plus its CSS; this is the single implementation. All page
-// math (page count, slicing, selection) is delegated to the Go core via
-// WkSession; the only context-specific input is `run(key)` (the leader action
-// dispatcher built from each context's ops adapter) and `enabled()` (whether
-// the overlay is allowed by config).
+// The unified which-key leader bar, shared by the chrome helper and the content
+// script. Both contexts previously carried near-identical copies of this
+// controller plus its CSS; this is the single implementation. All page math
+// (page count, slicing, selection) is delegated to the Go core via WkSession;
+// the only context-specific input is `run(key)` (the leader action dispatcher
+// built from each context's ops adapter) and `enabled()` (whether the overlay is
+// allowed by config).
+//
+// This file is the controller: state, the key grammar, and the dispatch. Its
+// three collaborators are its own modules, so the whole bar can be read without
+// scrolling past a stylesheet and a shadow-root constructor:
+//
+//   leader-css.ts     the style sheet and the static markup
+//   leadercapture.ts  the one-shot key capture (armed, consumed, expired)
+//   leaderpanel.ts    the persistent closed-shadow host and its painting
+//   leadersequence.ts the two-key `;<head>;<final>` grammar
+//   leadersignal.ts   the one-value readout every host forwards to its status bar
+
 import { core } from "./core";
+import { LeaderCapture } from "./leadercapture";
+import { makeLeaderSignal, subKeyExpect, type LeaderSignal } from "./leadersignal";
+import { buildSequenceArm } from "./leadersequence";
+import { WK_CSS } from "./leader-css";
+import { LeaderPanel } from "./leaderpanel";
 import { mirrorFlag } from "./observability";
-import { UI_FONT } from "./theme";
 import type { WkItem } from "./types";
 import { WkSession, wkBodyHtml, wkFootHtml } from "./wk";
 
@@ -43,7 +58,8 @@ export function isCancel(e: {
   return !!(e.ctrlKey && !e.altKey && !e.metaKey && (e.key === "g" || e.key === "G"));
 }
 
-export function leaderCombo(e: KeyboardEvent): string {  const mods: string[] = [];
+export function leaderCombo(e: KeyboardEvent): string {
+  const mods: string[] = [];
   if (e.ctrlKey) mods.push("Ctrl");
   if (e.altKey) mods.push("Alt");
   if (e.metaKey) mods.push("Meta");
@@ -71,26 +87,7 @@ export interface LeaderSequence {
 export const leaderSequences: Record<string, LeaderSequence> = {};
 const SEQUENCES = leaderSequences;
 
-export const WK_CSS =
-  ".wk{position:fixed;right:24px;bottom:30px;z-index:2147483646;" +
-  "width:360px;max-width:94vw;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:8px;" +
-  "box-shadow:0 24px 70px rgba(0,0,0,.6);display:none;font-family:" + UI_FONT + ";overflow:hidden}" +
-  ".wk.on{display:block}" +
-  ".wk-body{padding:8px 12px 6px;max-height:min(70vh,480px);overflow-y:auto;overscroll-behavior:contain;" +
-  "scrollbar-width:thin;scrollbar-color:#414868 transparent}" +
-  ".wk-group{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#565f89;margin:8px 2px 3px}" +
-  ".wk-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px 8px}" +
-  ".wk-item{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 6px;border-radius:5px;font-size:12px;cursor:default;line-height:1.25}" +
-  ".wk-item>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-  ".wk-item.sel{background:#292e42;outline:1px solid #7aa2f7}" +
-  ".wk-item.dim{color:#9aa5ce}" +
-  ".wk-kbd{display:inline-block;min-width:24px;text-align:center;background:#16161e;border:1px solid #414868;" +
-  "border-bottom-width:2px;border-radius:4px;padding:0 6px;color:#7aa2f7;font-size:11px;white-space:nowrap}" +
-  ".wk-item.dim .wk-kbd{color:#9aa5ce}" +
-  ".wk-foot{padding:6px 14px;font-size:10px;color:#565f89;border-top:1px solid #2a2f45;display:flex;gap:12px;flex-wrap:wrap;white-space:nowrap}" +
-  ".wk-foot .wk-page{margin-left:auto;color:#2ac3de;font-weight:700}";
-
-type LeaderHost = HTMLElement & { _sh: ShadowRoot };
+export { WK_CSS };
 
 export class LeaderController {
   readonly wk = new WkSession();
@@ -99,15 +96,13 @@ export class LeaderController {
   // its final key) can be rendered by the far-right status-bar indicator.
   // Empty while only the bare leader is armed.
   prefix = "";
-  private host: LeaderHost | null = null;
+  private readonly panel = new LeaderPanel();
   private lazyBindings: WkItem[] = [];
   private bindingsLoaded: Promise<WkItem[]> | null = null;
-  private pendingFn: ((k: string) => boolean) | null = null;
-  private pendingTimer: ReturnType<typeof setTimeout> | null = null;
-  // Runs when an armed capture times out unused: a sequence head may share
-  // its key with a plain binding (;b bookmarks vs ;b<final>), so a lone
-  // press must still run the plain action instead of dying silently.
-  private pendingTimeoutFn: (() => void) | null = null;
+  // The one-shot key capture. It is its own object (leadercapture.ts) because
+  // it arms and disarms independently of the leader and can be cancelled
+  // outright, which nothing else here can do.
+  private readonly capture: LeaderCapture;
 
   // Whether the leader key is PHYSICALLY held down right now. A held key
   // repeats at the OS auto-repeat rate, so without this the leader would be
@@ -157,39 +152,72 @@ export class LeaderController {
     this.run = run;
     this.enabled = enabled;
     this.onChange = onChange;
+    this.capture = new LeaderCapture(() => {
+      if (this.onChange) this.onChange();
+    });
     this.hasBinding = (k) => !!(hasBinding && hasBinding(k));
   }
 
-  /** True while a one-shot key capture is armed (e.g. "session 1-9" after ;'). */
+  /**
+   * What the armed capture will accept next ("1-9", "0 1 2", "digit"), or ""
+   * when it takes any key. The status bar shows this as the indicator's
+   * "what we need next" half.
+   *
+   * It lives on the capture and not on the caller because a capture is the only
+   * thing that knows: `;W m` resolves to a digit the user cannot see anywhere
+   * else, and the chord that armed it has already been cleared off the prefix
+   * by the time the capture exists. Without this the bar looks idle for the
+   * whole 1.5s while the user's next keystroke is being swallowed.
+   */
+  get pendingExpect(): string {
+    return this.capture.expect;
+  }
+
+  /**
+   * The whole leader readout as ONE value: armed + committed chord + what the
+   * next key must be.
+   *
+   * This is the single source every host forwards. Until it existed each host
+   * assembled the three halves itself (`leader.active || leader.hasPending()`,
+   * `leader.prefix`, `leader.pendingExpect`), and a host that read one of them
+   * a moment late painted a bar that disagreed with the keyboard — a chord
+   * from a tab the user had already left, or a digit promise for a capture
+   * that had since expired. One accessor makes that class of bug impossible
+   * to express rather than merely unlikely.
+   *
+   * `armed` covers the bare leader AND an armed capture, because after
+   * `;W m` the overlay is gone and the chord is spent: this is then the only
+   * thing anywhere saying a keystroke of the user is about to be eaten.
+   */
+  signal(): LeaderSignal {
+    return makeLeaderSignal({
+      armed: this.active || this.hasPending(),
+      prefix: this.prefix,
+      expect: this.pendingExpect,
+    });
+  }
+
   hasPending(): boolean {
-    return this.pendingFn !== null;
+    return this.capture.armed();
   }
 
   /** Arms a one-shot key capture. The next key is handed to fn (which returns
    * whether it consumed the key); it auto-disarms after timeoutMs, running
-   * onTimeout (if given) when it expires unused. */
-  armPending(fn: (k: string) => boolean, timeoutMs = 3000, onTimeout?: () => void): void {
-    this.pendingFn = fn;
-    this.pendingTimeoutFn = onTimeout || null;
-    if (this.pendingTimer) clearTimeout(this.pendingTimer);
-    this.pendingTimer = setTimeout(() => {
-      this.pendingFn = null;
-      const to = this.pendingTimeoutFn;
-      this.pendingTimeoutFn = null;
-      if (to) to();
-    }, timeoutMs);
+   * onTimeout (if given) when it expires unused.
+   *
+   * `expect` is the human-readable description of what fn will accept, shown on
+   * the status-bar indicator for the life of the capture. See
+   * leadercapture.ts for why it is declared by the armer. */
+  armPending(
+    fn: (k: string) => boolean,
+    opts?: { timeoutMs?: number; onTimeout?: () => void; expect?: string }
+  ): void {
+    this.capture.arm(fn, opts);
   }
 
   /** Consumes the pending key, if any. Returns whether it was consumed. */
   handlePending(k: string): boolean {
-    const fn = this.pendingFn;
-    this.pendingFn = null;
-    this.pendingTimeoutFn = null;
-    if (this.pendingTimer) {
-      clearTimeout(this.pendingTimer);
-      this.pendingTimer = null;
-    }
-    return fn ? fn(k) : false;
+    return this.capture.handle(k);
   }
 
   /** Cancels an armed one-shot capture without running it. Used when the user
@@ -197,12 +225,7 @@ export class LeaderController {
    * capture (e.g. `;'` then typing into a search box must not switch sessions
    * on the next digit). */
   cancelPending(): void {
-    this.pendingFn = null;
-    this.pendingTimeoutFn = null;
-    if (this.pendingTimer) {
-      clearTimeout(this.pendingTimer);
-      this.pendingTimer = null;
-    }
+    this.capture.cancel();
   }
 
   /** The selectable (non-native) bindings in core order; wk.sel indexes into it. */
@@ -220,7 +243,7 @@ export class LeaderController {
   }
 
   private shown(): boolean {
-    return this.host !== null && this.enabled();
+    return this.panel.current() !== null && this.enabled();
   }
 
   /**
@@ -240,10 +263,7 @@ export class LeaderController {
    * and hiding would silently break the keymap.
    */
   unpaint(): void {
-    if (this.host) {
-      const box = this.host._sh.querySelector(".wk");
-      if (box) box.classList.remove("on");
-    }
+    this.panel.setShown(false);
     // The mirror is the only externally visible signal that this overlay is on
     // screen. It cannot be read out of the DOM instead: the host attaches a
     // CLOSED shadow root, so `querySelectorAll(".wk.on")` from the page or the
@@ -255,21 +275,10 @@ export class LeaderController {
   }
 
   private async render(): Promise<void> {
-    if (!this.host) return;
+    if (!this.panel.current()) return;
     const total = await this.wk.pageCount();
     const page = await this.wk.slice();
-    const body = this.host._sh.querySelector(".wk-body")!;
-    body.innerHTML = wkBodyHtml(page, this.wk.sel);
-    // Keep the current selection visible: the overlay shows every binding on
-    // one page, so arrow navigation scrolls the body to follow the highlight.
-    try {
-      const selEl = body.querySelector(".wk-item.sel");
-      if (selEl) selEl.scrollIntoView({ block: "nearest" });
-    } catch (e) {
-      // ignore
-    }
-    const foot = this.host._sh.querySelector(".wk-foot")!;
-    foot.innerHTML = wkFootHtml(this.wk.page, total);
+    this.panel.fill(wkBodyHtml(page, this.wk.sel), wkFootHtml(this.wk.page, total));
   }
 
   show(): void {
@@ -284,19 +293,10 @@ export class LeaderController {
       this.unpaint();
       return;
     }
-    if (!this.host) {
-      this.host = document.createElement("div") as unknown as LeaderHost;
-      this.host.id = "lazyfox-leader";
-      const sh = this.host.attachShadow({ mode: "closed" });
-      sh.innerHTML =
-        "<style>" + WK_CSS + "</style>" +
-        "<div class='wk'><div class='wk-body'></div><div class='wk-foot'></div></div>";
-      this.host._sh = sh;
-      document.documentElement.appendChild(this.host);
-    }
+    this.panel.ensure();
     this.wk.reset();
     void this.render();
-    this.host._sh.querySelector(".wk")!.classList.add("on");
+    this.panel.setShown(true);
     mirrorFlag("whichkey", true);
   }
 
@@ -355,33 +355,24 @@ export class LeaderController {
     if (seq) {
       this.prefix = combo;
       if (this.onChange) this.onChange();
-      this.armPending((k2) => {
-        this.prefix = "";
-        if (this.onChange) this.onChange();
-        const fn = seq.final[k2];
-        // An unregistered sub-key consumes nothing AND leaves the leader
-        // standing: the user may still pick a top-level binding, and yanking
-        // the leader out from under them would make the very next keystroke
-        // do something they did not ask for.
-        if (!fn) return false;
-        // A FIRED chord ends the leader exactly like a plain binding does.
-        // Leaving it armed was a real bug: after `;W |` the overlay stayed up
-        // and the next keystroke was swallowed as a leader key, so the action
-        // the user reached for simply never happened. A two-key chord is one
-        // action, and one action ends the leader — except while the leader key
-        // is physically held, where staying armed is the whole point.
-        fn();
-        if (this.sticky) return true;
-        this.hide();
-        return true;
-      }, seq.timeoutMs, () => {
-        // Timed out unused. The head key may itself carry a plain binding
-        // (;b = bookmarks shares its head with a ;b… sequence), so run
-        // the plain action — registering a sequence must not break it. Only
-        // while the leader is still up: dismissing the leader cancels the
-        // intent, and a stray timer must never fire an action into a page.
-        if (!this.active) return;
-        this.runOrStay(combo);
+      const arm = buildSequenceArm({
+        final: seq.final,
+        timeoutMs: seq.timeoutMs,
+        isActive: () => this.active,
+        isSticky: () => this.sticky,
+        setPrefix: (v) => {
+          this.prefix = v;
+          if (this.onChange) this.onChange();
+        },
+        hide: () => this.hide(),
+        runOrStay: (c) => this.runOrStay(c),
+        combo,
+        describe: subKeyExpect
+      });
+      this.armPending(arm.consume, {
+        timeoutMs: arm.timeoutMs,
+        expect: arm.expect,
+        onTimeout: arm.onTimeout
       });
       // Keep the overlay up as a reminder when it is shown.
       return true;
@@ -423,8 +414,7 @@ export class LeaderController {
     this.show();
     try {
       await new Promise((r) => setTimeout(r, 120));
-      const body = this.host && this.host._sh.querySelector(".wk-body");
-      const out = "sel=" + this.wk.sel + " bodyLen=" + (body ? body.innerHTML.length : -1);
+      const out = "sel=" + this.wk.sel + " bodyLen=" + this.panel.bodyLength();
       this.hide();
       return out;
     } catch (e) {

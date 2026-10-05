@@ -1,0 +1,9 @@
+{
+  "name": "state",
+  "about": "The state query — the contract the whole e2e harness asserts against — and its reply loop. The handler answers by location.replace, which fires onLocationChange again with the reply hash; answering that again is how a harness ends up reading a stale snapshot and blaming the product.",
+  "steps": [
+    { "send": "lfc=state.s1-1", "expect": "reply", "cmd": "state" },
+    { "send": "lfc=state.s1-1", "reenter": true, "noReply": true, "note": "the handler's OWN reply coming back around" },
+    { "send": "lfc=state.s2-2", "expect": "reply", "cmd": "state", "note": "a fresh nonce is a fresh question" }
+  ]
+}

@@ -6,7 +6,7 @@
 // SessionStore's "most recently closed" is usually one of the extension's own
 // hidden plumbing tabs.
 import { CC_URL, getActiveTab, realTabsInWindow } from "../tabs";
-import { activateTabByIndex, tabsInWindow } from "../windowops";
+import { activateTabByIndex, noteClosedTab, tabsInWindow } from "../windowops";
 import type { NavEntry } from "../../shared/types";
 import type { Domain } from "./types";
 // The actions this domain owns. The list is the contract: background.ts unions
@@ -84,7 +84,24 @@ export function createTabHandlers(deps: TabDeps): Domain<Owns> {
       if (isLast && !data.force) {
         return { ok: true, last: true };
       }
-      if (targetId != null) await browser.tabs.remove(targetId);
+      // Record what is about to disappear, BEFORE it does. `;v` needs it:
+      // Firefox's closed-tab list is served from a delayed cache, so read
+      // straight after a close it still describes the PREVIOUS close, and
+      // `;x ;v` restored the wrong tab or nothing. See noteClosedTab.
+      const doomed = targetId != null ? await browser.tabs.get(targetId).catch(() => null) : null;
+      if (targetId != null) {
+        await browser.tabs.remove(targetId);
+        noteClosedTab(
+          doomed
+            ? {
+                url: doomed.url || "",
+                index: typeof doomed.index === "number" ? doomed.index : 0,
+                windowId: doomed.windowId,
+                pinned: !!doomed.pinned
+              }
+            : null
+        );
+      }
       return { ok: true, last: false };
     },
 

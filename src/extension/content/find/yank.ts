@@ -17,73 +17,31 @@
 // the find widget has no concept of), and it needs the Go core where the find
 // widget does not. Keeping them together is what made the closure 1000 lines.
 //
-// The interface below is deliberately narrow. Yank mode READS the find session
-// (which match is current, so the cursor can start there) and repaints through
-// it (the widget owns rendering both modes). It never writes find state.
+// This file is the state machine and the key grammar. Two collaborators take
+// the parts that are not that:
+//
+//   yankgeometry.ts  (line, col) <-> flat offset, and selection spans
+//   yankcaret.ts     the block caret element and the scroll that follows it
+//   yanktypes.ts     the contract the find widget programs against
 
 import { coreReady, coreSync, type CoreApi } from "../../../shared/core";
 import { removeHtmlAttr, setHtmlAttr } from "../../../shared/dom";
 import { toast } from "../../../shared/overlay";
 import { buildYankText, segAt as segAtSegs, type YankModel } from "./text";
 import { flashNodeRange, selOverlay } from "./overlays";
-import type { FindPiece } from "./text";
+import {
+  flatOf,
+  lineOf,
+  nodeFlatOffset,
+  previewSpan,
+  selectionSpan
+} from "./yankgeometry";
+import { YankCaret } from "./yankcaret";
+import type { Yank, YankDeps, YankMode } from "./yanktypes";
 
 declare const __DEV__: boolean;
 
-export type YankMode = "off" | "idle" | "pendY" | "sel";
-
-export interface YankEls {
-  count: HTMLElement;
-  keys: HTMLElement;
-  range: HTMLElement;
-}
-
-export interface YankDeps {
-  els: YankEls;
-  /** The find session, read-only. currentHit() seeds the cursor at the match
-   *  the user walked to, which is the whole reason opening yank mode from a
-   *  search feels like continuing it. */
-  currentHit(): { pieces: FindPiece[] } | null;
-  /** True when the page has changed since the flat text was built. */
-  isDirty(): boolean;
-  /** Repaint the widget. Yank mode changes what the badge, the hint line and
-   *  the html state attributes say, so every state change goes back through
-   *  the widget's render rather than painting here. */
-  repaint(): void;
-  copy(text: string): Promise<boolean>;
-  /** Flip the input into command mode, and back to insert when leaving. */
-  setInputMode(m: "cmd" | "insert", yank: boolean): void;
-}
-
-export interface Yank {
-  mode(): YankMode;
-  /** Enter yank mode, seeding the cursor at the current match. Returns false
-   *  when the core is still initialising, having already told the user. */
-  enter(): boolean;
-  exit(to: "cmd" | "insert"): void;
-  /** Handle a key while yank mode owns the keyboard. Returns true when the
-   *  key was consumed — which is every key except a modified one, because in
-   *  this mode a modifier belongs to the page, not to the widget. */
-  onKey(k: string, e: KeyboardEvent): boolean;
-  /** The hint line for the current sub-mode, as trusted HTML (static strings
-   *  only, built here, never from page content). */
-  hints(): string;
-  /** Badge text and preview for the current state. */
-  badge(): { count: string; range: string; valid: boolean };
-  /** Caret position for the html state attribute, as "line:col". */
-  position(): string;
-  /** The flat text currently modelled, or "" before the first build. The
-   *  dev-only probe mirrors it so a test can assert what the yank buffer
-   *  contains without reaching into the module. */
-  flatText(): string;
-  /** Redraw (or clear) the live selection highlight. The widget calls this
-   *  from its render, because the widget owns when a repaint happens — and
-   *  because the highlight must be cleared on the same repaint that leaves
-   *  selection mode, not on some later one. */
-  paintSelection(): void;
-  hideCaret(): void;
-  close(): void;
-}
+export type { Yank, YankDeps, YankEls, YankMode } from "./yanktypes";
 
 const tryCore = (): CoreApi | null => {
   try {
@@ -107,7 +65,7 @@ export function createYank(deps: YankDeps): Yank {
   // Where `y` was pressed. The highlighted range runs anchor -> cursor
   // (inclusive), so the user sees exactly what the next `y` will copy.
   let anchor = { line: 0, col: 0 };
-  let caretEl: HTMLElement | null = null;
+  const caret = new YankCaret();
 
   // Rebuild the flat text + Go line table. False when the core is still
   // initialising; the caller shows a toast and stays put.
@@ -122,104 +80,16 @@ export function createYank(deps: YankDeps): Yank {
     return true;
   };
 
-  const segAt = (off: number): { node: Text; nodeOff: number } | null =>
-    model ? segAtSegs(model.segs, off) : null;
+  const segAt = (off: number) => (model ? segAtSegs(model.segs, off) : null);
 
-  const flatOf = (l: number, c: number): number => {
-    if (!model) return 0;
-    if (l < 0) l = 0;
-    if (l >= model.lines) l = model.lines - 1;
-    return model.lineStart[l]! + c;
-  };
-
-  // Flat offset of the real character under the cursor, never a '\n': a cursor
-  // at end-of-line resolves to the line's last character. This is what makes
-  // `y` at the end of a line copy a character rather than nothing.
-  const charOff = (l: number, c: number): number => {
-    if (!model) return 0;
-    const ls = model.lineStart;
-    if (l < 0) l = 0;
-    if (l >= model.lines) l = model.lines - 1;
-    const end = l + 1 < ls.length ? ls[l + 1]! - 1 : model.text.length;
-    const len = Math.max(0, end - ls[l]!);
-    let cc = c;
-    if (cc < 0) cc = 0;
-    if (cc >= len) cc = Math.max(0, len - 1);
-    return ls[l]! + cc;
-  };
-
-  // Flat offset of a specific text node offset \u2014 used once, to seed the
-  // cursor at the match the user walked to.
-  const nodeFlatOffset = (node: Text, off: number): number => {
-    if (!model) return 0;
-    for (let i = 0; i < model.segs.length; i++) {
-      const s = model.segs[i]!;
-      if (s.node === node) return Math.min(s.start + off, s.end);
-    }
-    return 0;
-  };
-
-  const ensureCaret = (): HTMLElement => {
-    if (caretEl && caretEl.isConnected) return caretEl;
-    if (!caretEl) {
-      caretEl = document.createElement("div");
-      caretEl.id = "lazyfox-caret";
-      caretEl.style.cssText =
-        "all:initial;position:fixed;z-index:2147483647;pointer-events:none;" +
-        "background:rgba(122,162,247,.55);border:1px solid #7aa2f7;border-radius:2px;" +
-        "box-shadow:0 0 0 1px rgba(10,12,20,.6);";
-    }
-    document.documentElement.appendChild(caretEl);
-    return caretEl;
-  };
-
-  const hideCaret = (): void => {
-    if (caretEl) {
-      try {
-        caretEl.remove();
-      } catch (e) {
-        // ignore
-      }
-      caretEl = null;
-    }
-  };
-
-  // Position the block caret on the character under the cursor and scroll the
-  // window so it stays visible \u2014 the page follows the cursor like a pager,
-  // which is the whole reason this mode is not just find-with-a-copy-key.
   const showCaret = (): void => {
     if (!model) return;
-    const off = flatOf(line, col);
-    const seg = segAt(off);
+    const seg = segAt(flatOf(model, line, col));
     if (!seg) return;
-    const len = (seg.node.data || "").length;
-    let s = seg.nodeOff;
-    let e = Math.min(s + 1, len);
-    if (s >= len) {
-      s = Math.max(0, len - 1);
-      e = len;
-    }
-    try {
-      const range = document.createRange();
-      range.setStart(seg.node, s);
-      range.setEnd(seg.node, e);
-      const rect = range.getBoundingClientRect();
-      if (rect && rect.height > 0 && rect.width > 0) {
-        const el = ensureCaret();
-        el.style.left = rect.left + "px";
-        el.style.top = rect.top + "px";
-        el.style.width = Math.max(2, rect.width) + "px";
-        el.style.height = rect.height + "px";
-        const vh = window.innerHeight;
-        if (rect.top < 90) window.scrollBy(0, rect.top - 90);
-        else if (rect.bottom > vh - 70) window.scrollBy(0, rect.bottom - vh + 70);
-        return;
-      }
-    } catch (e) {
-      // A range across trees: no caret, but the copy still works.
-    }
-    hideCaret();
+    caret.show(seg);
   };
+
+  const hideCaret = (): void => caret.hide();
 
   // One motion through the Go core. Re-parses first when the page changed since
   // the model was built, so a lazy-loading feed yanks current lines rather than
@@ -278,7 +148,7 @@ export function createYank(deps: YankDeps): Yank {
       toast(op === "yy" ? "nothing to yank here" : "no " + op + " here");
       return;
     }
-    yankSpanOff(flatOf(o.sl, o.sc), flatOf(o.el, o.ec));
+    yankSpanOff(flatOf(model, o.sl, o.sc), flatOf(model, o.el, o.ec));
   };
 
   // Redraw the live selection highlight for the anchor -> cursor range.
@@ -287,14 +157,13 @@ export function createYank(deps: YankDeps): Yank {
       selOverlay.clear();
       return;
     }
-    const s = Math.min(charOff(anchor.line, anchor.col), charOff(line, col));
-    const e = Math.max(charOff(anchor.line, anchor.col), charOff(line, col)) + 1;
-    if (e <= s) {
+    const span = selectionSpan(model, anchor.line, anchor.col, line, col);
+    if (!span.valid) {
       selOverlay.clear();
       return;
     }
-    const a = segAt(s);
-    const b = segAt(e - 1);
+    const a = segAt(span.s);
+    const b = segAt(span.e - 1);
     if (!a || !b) {
       selOverlay.clear();
       return;
@@ -315,16 +184,12 @@ export function createYank(deps: YankDeps): Yank {
   // while moving, which is the entire contract of a visual selection.
   const yankSelection = (): void => {
     if (!model) return;
-    const aOff = charOff(anchor.line, anchor.col);
-    const cOff = charOff(line, col);
-    const s = Math.min(aOff, cOff);
-    const e = Math.max(aOff, cOff) + 1;
-    const ch = model.text[s];
-    if (e <= s || ch === "\n" || ch === undefined) {
+    const span = selectionSpan(model, anchor.line, anchor.col, line, col);
+    if (!span.valid) {
       toast("nothing selected to yank");
       return;
     }
-    yankSpanOff(s, e);
+    yankSpanOff(span.s, span.e);
     mode = "idle";
     selOverlay.clear();
     deps.repaint();
@@ -346,16 +211,12 @@ export function createYank(deps: YankDeps): Yank {
 
   const badge = (): { count: string; range: string; valid: boolean } => {
     if (mode === "sel" && model) {
-      const aOff = charOff(anchor.line, anchor.col);
-      const cOff = charOff(line, col);
-      const n = Math.abs(cOff - aOff) + 1;
-      const s = Math.min(aOff, cOff);
-      const e = Math.max(aOff, cOff) + 1;
-      const ch = model.text[s];
-      const valid = e > s && ch !== "\n" && ch !== undefined;
-      let snip = valid ? model.text.slice(s, e).replace(/\s+/g, " ").trim() : "";
-      if (snip.length > 46) snip = snip.slice(0, 46) + "\u2026";
-      return { count: valid ? n + " chars" : "0 chars", range: snip, valid };
+      const span = selectionSpan(model, anchor.line, anchor.col, line, col);
+      return {
+        count: span.valid ? span.count + " chars" : "0 chars",
+        range: span.valid ? previewSpan(model.text, span.s, span.e) : "",
+        valid: span.valid
+      };
     }
     return { count: line + ":" + col, range: "", valid: true };
   };
@@ -373,15 +234,9 @@ export function createYank(deps: YankDeps): Yank {
       const m = deps.currentHit();
       const first = m && m.pieces[0] ? m.pieces[0] : null;
       if (first && model) {
-        const off = nodeFlatOffset(first.node, first.start);
-        const ls = model.lineStart;
-        let l = 0;
-        for (let i = 0; i < ls.length; i++) {
-          if (ls[i]! <= off) l = i;
-          else break;
-        }
-        line = l;
-        col = Math.max(0, off - ls[l]!);
+        const off = nodeFlatOffset(model, first.node, first.start);
+        line = lineOf(model, off);
+        col = Math.max(0, off - model.lineStart[line]!);
       } else {
         line = 0;
         col = 0;
@@ -415,7 +270,7 @@ export function createYank(deps: YankDeps): Yank {
         return true;
       }
       // A modified key belongs to the page, not to the widget. Returning
-      // false here would be wrong \u2014 the host would not close the widget on
+      // false here would be wrong — the host would not close the widget on
       // Escape, but it would also mean the key reached the page un-prevented.
       if (e.ctrlKey || e.altKey || e.metaKey) return false;
       if (!k || k.length > 1) return true;

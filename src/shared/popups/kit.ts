@@ -28,7 +28,13 @@ export interface PopupCtx {
   // the split, switch session N), and the leader controller is what owns that
   // capture — so the shared action table asks the host for it rather than
   // reaching into the controller, which keeps the sub-key table context-free.
-  armDigits(apply: (k: string) => boolean, timeoutMs?: number): void;
+  //
+  // `expect` is what the capture is waiting for, surfaced on the status bar as
+  // the indicator's "what we need next" half. It belongs in this signature
+  // rather than in a side channel because the armer is the ONLY party that
+  // knows it: the digits still legal after `;W m 1` depend on the tab count,
+  // which only the action knows.
+  armDigits(apply: (k: string) => boolean, timeoutMs?: number, expect?: string): void;
   // Content scripts preventDefault every key before it reaches the popup input,
   // so their selector must insert text manually; chrome's input receives keys
   // natively.

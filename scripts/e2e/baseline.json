@@ -2,1093 +2,1111 @@
   "commandcenter/modes › new tab opens the command center": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/modes › command center core (wasm) is loaded": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/modes › command center mode keys 1-6 and Tab cycle": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/modes › home page opens in command mode; hjkl navigates and Enter opens": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 2
   },
   "commandcenter/modes › command center typing starts insert mode, Esc returns to cmd": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/modes › command center hjkl navigate the home grid from command mode": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/modes › command center insert mode: j/k/x type into the input": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/modes › command center insert mode: the leader key and apostrophe type into the input": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/modes › command center: a fresh tab opens in command mode so `;` arms the leader": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/modes › command center search: suggestions + Enter runs a web search": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/modes › command center url mode: normalize + Enter opens URL": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/modes › command center url mode: about: pages open on Enter": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/modes › command center tabs mode lists and switches tabs": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/popups › leader ;o opens the chrome URL popup, ;s the search popup": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/popups › about:home (the startup-page fallback) converts to the command center": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/popups › leader ;w opens the resize popup and arrows resize the window": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/popups › popup arrows navigate the list, never resize the window": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/popups › popup arrow keys move the highlighted row": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/popups › chrome ;o popup: fast Enter opens the typed URL, never the home page": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/popups › chrome ;O replaces the current tab in place": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/popups › chrome ;h from home opens history in place": {
-    "status": "fail",
+    "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 1
   },
   "commandcenter/hintpick › leader ;f arms home-grid hint-pick (letters run tiles)": {
-    "status": "fail",
+    "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 1
   },
   "commandcenter/hintpick › leader ;f hint-pick: a letter runs the tile (never types into the input)": {
-    "status": "fail",
+    "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 1
   },
   "commandcenter/tabs › leader ;I from the home opens the setup page in the current tab": {
-    "status": "fail",
+    "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 1
   },
   "commandcenter/tabs › leader ;m mutes the active tab": {
-    "status": "fail",
+    "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 1
   },
   "commandcenter/tabs › command center tab commands ;n ;x ;v ;c": {
-    "status": "fail",
+    "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 1
   },
   "commandcenter/tabs › probe tab: command center from the background": {
     "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 5
+    "runs": 3,
+    "passes": 3
   },
   "commandcenter/tabs › stealth ;N from the command center opens a stealth tab": {
-    "status": "fail",
+    "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 1
   },
   "commandcenter/tabs › closing a tab down to two leaves a real tab active, not the relay": {
-    "status": "fail",
+    "status": "pass",
     "group": "commandcenter",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 1
   },
   "content/core › content script boots and the leader opens the which-key overlay": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › content script runs on addons.mozilla.org (restricted domain unblocked)": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › leader ;n opens a new tab from a web page": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › ;j / ;k switch tabs": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › ;g back and ;l forward": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › ;i focuses the first input": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › ;T opens the diagnostics page with a populated tab picker": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › diagnostics: the tab picker diagnoses any chosen tab, not just the last one": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › ;y copy URL shows the toast without errors": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › ;= / ;- / ;0 zoom in, out, reset": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › ;z zen mode toggles fullscreen": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › ;r reload keeps the page": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › ;1 jumps to the first tab and ;$ to the last": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › leader key types into shadow-DOM inputs and editables (custom elements)": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › ;m mute runs without errors": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › ;x closes a tab, ;v reopens it": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/core › a stale leader never eats keys typed into an input": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › all special characters type correctly into text inputs": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › all special characters type correctly into textareas": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › all special characters type into contenteditable divs": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › leader key disarms when focus moves to an input": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › Esc blurs the focused input and reaches the page": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/core › Esc during hints clears state so the next ;f re-hints everything": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/setup › ;I opens the setup page with a GitHub Releases standalone installer download": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/setup › setup page: the installed state and uninstall help appear only on a confirmed chrome signal": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/scroll › scroll keys j k d u gg G": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/scroll › scroll: an inner overflow pane is the target when the document cannot scroll": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/scroll › scroll: ;F cycles the page's scroll regions and Esc returns to the document": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/scroll › page cache: the global switch applies, is reported, and narrow scopes refuse honestly": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/hints › link hints: ;f then hint key activates the link": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/hints › link hints: hints track a page that shifts under them": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: ] pages down to links below the fold": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: hidden, inert and occluded elements are never hinted": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a control inside a clickable media container wins the hint": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a click the page ignores is reported, not silent": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/hints › link hints: the actor's trusted click produces a trusted event": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: the control inside the media container really activates": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/hints › link hints: the page receives a trusted, well-formed click": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a control that tracks press state still activates": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/hints › link hints: an ambiguous prefix shows an enter badge, and it clears": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/hints › link hints: nested targets collapse and labels never overlap": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: activating never scrolls the page (button and input)": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: scrolling to a new section re-hints its links": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a dense grid yields unique, capped hints": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a control inside an open shadow root is hinted and clicks": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: clickable image and video thumbnails are hinted and click": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a control inserted after ;f gets a working hint": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a framework re-render keeps the same key and still clicks": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a late control does not reshuffle existing keys": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/popups › ;s search popup: type query, Enter searches": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/popups › ;S search popup: Enter searches in the current tab": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/popups › ;o URL popup: type URL, Enter opens it in a new tab": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/popups › ;O URL popup: Enter replaces the current tab": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/popups › ;t tab switcher popup lists tabs and Enter switches": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/popups › ;h history popup filters and opens a result": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/popups › ;b bookmarks popup opens and closes": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/popups › ;d downloads popup opens and closes": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/popups › ;? help popup opens with the binding list": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
-  },
-  "content/popups › ;t tab switcher: the number key jumps to that tab": {
-    "status": "fail",
-    "group": "content",
-    "runs": 5,
+    "runs": 2,
     "passes": 2
   },
-  "content/popups › ;? help popup filters as you type and Enter runs the match": {
-    "status": "fail",
+  "content/popups › ;t tab switcher: the number key jumps to that tab": {
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 1
+  },
+  "content/popups › ;? help popup filters as you type and Enter runs the match": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
   },
   "content/popups › ;/ find-in-page popup opens and finds": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
-  "content/popups › ;w resize popup from the content page": {
-    "status": "fail",
+  "content/popups › ;W w resize popup from the content page": {
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 2
   },
   "content/popups › ;V recently-closed popup lists and restores a closed tab": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/popups › popup input never leaks to the page behind (keypress/keyup isolation)": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/find › find restores the previous scroll position on close and Ctrl+o walks back": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/find › find counts matches live, walks with Enter, and selects the match": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/find › find pierces open shadow roots (Reddit-style custom elements)": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/find › find matches text split across element boundaries": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/find › find cleans the query: whitespace runs and nbsp match like one space": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/find › find sees text nested 40+ levels deep (Google-style framework pages)": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/find › find walks in visual reading order, not DOM order (Google-style CSS reordering)": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/find › yank selection follows the component tree: chrome is not selectable, deep content is": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/find › find yanks the current match with a neovim-style flash": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/find › yank mode: visual selection shows exactly what will be yanked; yy and y+motion+y copy with flash": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/indicator › status bar leader indicator arms on ; and shows the prefix": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/indicator › status bar leader indicator works with the which-key overlay off": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/indicator › ;q toggles the which-key overlay and reports the new state": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/surfaces › switching from a chrome page to a web page leaves no stale overlay": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/surfaces › navigating the same tab away stands the chrome overlay down": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/surfaces › only one which-key overlay is ever on screen": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/sequences › ;G opens the navigation-stack popup and Esc closes it": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/sequences › ;L opens the navigation-stack popup too (both entry keys)": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/sequences › ;b alone still opens bookmarks (sequences never shadow plain bindings)": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/tabsmodal › ;t tab rows carry a favicon image on the right": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 2,
+    "passes": 2
   },
   "content/tabsmodal › ;t tab modal refreshes after x on a row (the closed tab disappears)": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/multidigit › ;1 in a small window jumps with no popup": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/multidigit › an ambiguous ;1 lists the candidates instead of guessing": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/multidigit › ;1 then 1 goes to tab 11 and closes the chooser": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/multidigit › Escape backs out of the chooser without moving": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/multidigit › ;9 in a twelve-tab window is still a plain jump": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/multidigit › the window is left as it was found": {
     "status": "fail",
     "group": "content",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "content/stuck › a page that never responds still answers the leader key": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/stuck › a page that sends headers then stalls still answers the leader key": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/stuck › an HTTP 401 error page still answers the leader key": {
     "status": "fail",
     "group": "content",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "content/stuck › an HTTP 403 error page still answers the leader key": {
     "status": "fail",
     "group": "content",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "content/stuck › an HTTP 404 error page still answers the leader key": {
     "status": "fail",
     "group": "content",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "content/stuck › an HTTP 500 error page still answers the leader key": {
     "status": "fail",
     "group": "content",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "content/stuck › an HTTP 502 error page still answers the leader key": {
     "status": "fail",
     "group": "content",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "content/stuck › an HTTP 503 error page still answers the leader key": {
     "status": "fail",
     "group": "content",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "content/stuck › an HTTP 504 error page still answers the leader key": {
     "status": "fail",
     "group": "content",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "content/stuck › about:config still answers the leader key": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/stuck › view-source: still answers the leader key": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/held › holding the leader runs back then forward without a second press": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "content/held › a released leader does not swallow the next key": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/statusbar › status bar renders on web pages (single window bar)": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "sessions/statusbar › window bar shrinks content so a web page never renders under it": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "sessions/statusbar › chrome status bar renders on the command center": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/statusbar › status bar hides during DOM fullscreen and returns on exit": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "sessions/statusbar › leader-armed indicator: with the which-key overlay off, the bar shows LEADER": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/statusbar › web page: with the which-key overlay off, the window bar shows LEADER": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "sessions/statusbar › status bar position: top setting moves the bar": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "sessions/statusbar › downloads: progress shows done indicator, ;D dismiss, popup list": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "sessions/sessions › sessions: ;W [ split-pane switch is a no-op without a split": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "sessions/sessions › sessions: ;W . and ;W , move bindings dispatch cleanly": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "sessions/sessions › sessions: ;p saves a session with marker 1": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "sessions/sessions › sessions: ;' + digit consumes the marker binding": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "sessions/sessions › sessions: ;' + 1 hot-swaps to the marked session": {
     "status": "fail",
     "group": "sessions",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "sessions/sessions › sessions: Ctrl+digit assigns a marker": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 2
+    "runs": 2,
+    "passes": 1
   },
   "sessions/sessions › sessions: Ctrl+digit hot-swaps to the marked session": {
     "status": "fail",
     "group": "sessions",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "sessions/sessions › sessions: ;p saves on immediate Enter (no debounce wait)": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/sessions › sessions: new clean session creates an empty session without touching the window": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/sessions › sessions: x x on empty input deletes the highlighted session": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/sessions › sessions: split layout is saved and restored with the session": {
     "status": "fail",
     "group": "sessions",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "sessions/sessions › sessions: Tab + c copies a tab into another session": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/sessions › sessions: Tab + m moves a tab into another session": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/sessions › sessions: Esc cancels the copy target picker without closing the popup": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/sessions › sessions: chrome popup — Tab toggles the tabs pane, Esc steps back (no leak)": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/sessions › sessions: moving the last tab out of the current session sticks (autosave can't resurrect it)": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/sessions › sessions: moving a tab into the current session opens it live (autosave can't drop it)": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/restore › restore brings back every tab's exact strip position (split included)": {
     "status": "fail",
     "group": "sessions",
-    "runs": 5,
-    "passes": 0
+    "runs": 2,
+    "passes": 0,
+    "flakeRate": 1
   },
   "sessions/restore › tabs opened after saving are persisted into the session": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/restore › restore replaces a partially-restored window (no blank first tab)": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/restore › an active about:blank tab is never hijacked into the command center": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/downloads › downloads: r retries a failed download, y copies its link": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
   "sessions/stealth › stealth: isolated jar, session round-trip, wiped on close": {
-    "status": "fail",
+    "status": "pass",
     "group": "sessions",
-    "runs": 5,
-    "passes": 4
+    "runs": 2,
+    "passes": 2
   },
-  "split/lifecycle › split: ;| splits side-by-side via the native split view": {
-    "status": "fail",
+  "split/lifecycle › split: ;W | splits side-by-side via the native split view": {
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 3
   },
   "split/lifecycle › split: native split companion pane shows the split panel": {
-    "status": "fail",
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 3
   },
   "split/lifecycle › split: native split loads real pages in both panes": {
-    "status": "fail",
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 1
   },
-  "split/lifecycle › split: native split ;[ / ;] switch the active pane": {
-    "status": "fail",
+  "split/lifecycle › split: native split ;W [ / ;W ] switch the active pane": {
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 3
   },
-  "split/lifecycle › split: native split ;\\ unsplits back to independent tabs": {
-    "status": "fail",
+  "split/lifecycle › split: native split ;W u unsplits back to independent tabs": {
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 3
   },
   "split/lifecycle › split: re-splitting the same tab right after an unsplit works": {
-    "status": "fail",
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 3
   },
   "split/lifecycle › split: native split closing one pane auto-unsplits the other": {
-    "status": "fail",
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 3
   },
-  "split/lifecycle › split: native split ;+N moves tab N into the split": {
-    "status": "fail",
+  "split/lifecycle › split: native split ;W m +N moves tab N into the split": {
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 1
   },
-  "split/lifecycle › split: ;{ and ;} swap the panes left/right": {
-    "status": "fail",
+  "split/lifecycle › split: ;W { and ;W } swap the panes left/right": {
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 2
   },
-  "split/lifecycle › split: ;+N auto-splits when no split exists": {
-    "status": "fail",
+  "split/lifecycle › split: ;W m +N auto-splits when no split exists": {
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 3
   },
-  "split/order › split: ;+N auto-split keeps the other tabs' order": {
-    "status": "fail",
+  "split/order › split: ;W m +N auto-split keeps the other tabs' order": {
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 2
   },
   "split/order › split: splitting a middle tab keeps the other tabs' order": {
-    "status": "fail",
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 2
   },
   "split/statusbar › split: one window-level status bar (not one per pane)": {
-    "status": "fail",
+    "status": "pass",
     "group": "split",
-    "runs": 5,
-    "passes": 0
+    "runs": 3,
+    "passes": 2
   },
   "options/options › options page loads and renders the form": {
-    "status": "fail",
+    "status": "pass",
     "group": "options",
-    "runs": 5,
-    "passes": 3
+    "runs": 2,
+    "passes": 2
   },
   "options/options › options page: Esc goes back": {
-    "status": "fail",
+    "status": "pass",
     "group": "options",
-    "runs": 5,
-    "passes": 3
+    "runs": 2,
+    "passes": 2
   },
   "options/options › options page: save persists and survives a reload": {
-    "status": "fail",
+    "status": "pass",
     "group": "options",
-    "runs": 5,
-    "passes": 3
+    "runs": 2,
+    "passes": 2
   },
   "options/options › options page: a corrupt config field falls back, the rest survives": {
-    "status": "fail",
+    "status": "pass",
     "group": "options",
-    "runs": 5,
-    "passes": 3
+    "runs": 2,
+    "passes": 2
   },
   "options/popuppage › popup page (action popup) renders": {
-    "status": "fail",
+    "status": "pass",
     "group": "options",
-    "runs": 5,
-    "passes": 3
+    "runs": 2,
+    "passes": 2
+  },
+  "content/indicator › an armed digit capture says which key it wants": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
   }
 }

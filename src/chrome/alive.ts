@@ -11,6 +11,7 @@
 // on top of the window one.
 
 import type { Channel } from "./channel";
+import type { ChromeEnv } from "./env";
 
 export const CHROME_HELPER_VERSION = "0.5.8";
 
@@ -19,14 +20,14 @@ export const CHROME_HELPER_VERSION = "0.5.8";
 // center footer even before any tmux-style session has been saved. The
 // user-facing name is the part after the first dot ("lfxdev-…") — the raw
 // leaf "zfdaq0c3.dev-edition-default" would show the hash prefix instead.
-export function detectProfile(win: Window): { profileName: string; profileDir: string } {
+export function detectProfile(env: ChromeEnv): { profileName: string; profileDir: string } {
   let profileName = "";
   let profileDir = "";
   try {
     // dirsvc.get needs the nsIFile IID in this context — the one-arg form
     // throws "Not enough arguments [nsIProperties.get]" and the profile
     // would silently stay empty.
-    profileDir = String((win as any).Services.dirsvc.get("ProfD", (win as any).Ci.nsIFile).leafName || "");
+    profileDir = String(env.services.dirsvc.get("ProfD", env.Ci.nsIFile).leafName || "");
     const dot = profileDir.indexOf(".");
     profileName = dot > 0 ? profileDir.slice(dot + 1) : profileDir;
   } catch {
@@ -42,7 +43,7 @@ export function detectProfile(win: Window): { profileName: string; profileDir: s
 // chrome side. Reported with the alive announce so the diagnostics page can
 // tell "the browser never registered the bridge" from "the bridge is fine,
 // this particular page just has no content script".
-function bridgeRegistered(win: Window): boolean {
+function bridgeRegistered(win: ChromeEnv["window"]): boolean {
   try {
     const bc = (win as any).gBrowser.selectedBrowser.browsingContext;
     const wg = bc && bc.currentWindowGlobal;
@@ -53,7 +54,7 @@ function bridgeRegistered(win: Window): boolean {
 }
 
 export function createAliveAnnounce(
-  win: Window,
+  win: ChromeEnv["window"],
   channel: () => Channel,
   profile: { profileName: string; profileDir: string }
 ) {

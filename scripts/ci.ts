@@ -50,6 +50,11 @@ const steps: Array<[string, () => void]> = [
   ["toolchain check", () => sh("npm", ["run", "prepare"])],
   ["build dev extension (unsigned)", () => sh("npm", ["run", "build"])],
   ["run full unit suite (go core + installer + dist)", () => sh("npm", ["test"])],
+  // Also inside `npm test`, listed separately so their failures are NAMED in
+  // the output. A seam regression and a wire-drift regression both arrive as
+  // "npm test failed" otherwise, and they have nothing to do with each other.
+  ["env seam audit (no browser globals outside env)", () => sh("npm", ["run", "test:seam"])],
+  ["#lfc= wire replay (recorded traces)", () => sh("npm", ["run", "test:wire"])],
   ["verify dist self-contained", () => sh("node", ["scripts/check-dist.ts"])],
 ];
 

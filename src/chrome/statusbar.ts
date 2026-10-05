@@ -13,11 +13,22 @@
 // alone extension mode) there is simply no bar.
 
 import { core, type StatusOp } from "../shared/core";
-import { StatusBar, leaderSignalOn, type StatusBarData } from "../shared/statusbar";
+import {
+  idleSignal,
+  makeLeaderSignal,
+  resolveLeaderSignal,
+  type LeaderSignal,
+} from "../shared/leadersignal";
+import { StatusBar, type StatusBarData } from "../shared/statusbar";
 import { updateDownloads } from "./downloads";
 import type { ChromeCfg } from "./config";
+import type { ChromeEnv } from "./env";
 
 export interface StatusBarDeps {
+  // The chrome document's environment. Injected rather than read from a
+  // global so the bar's lifecycle (mount, fullscreen hide, selection read) is
+  // assertable in Node; see src/chrome/env.ts.
+  env: ChromeEnv;
   // Real (user) tabs in strip order (splitview.realTabs) — the live count.
   realTabs(): any[];
   getConfig(): ChromeCfg;
@@ -50,12 +61,13 @@ export interface StatusBarCtl {
   // web pages — where the content script owns the leader key and the chrome
   // helper's own leader never arms — by resolving this per-index state in the
   // Go store against the current selection.
-  setContentLeader(index: number, active: boolean): void;
+  setContentLeader(index: number, sig: LeaderSignal): void;
   // The far-right leader indicator for this context's own leader. `prefix` is
   // the chord committed so far ("" or ";" = waiting for the first key, "W" =
-  // a category armed and waiting for its sub-key). Paints synchronously (see
-  // shared/statusbar.ts) so it tracks the keypress exactly.
-  setLeaderSignal(armed: boolean, prefix?: string): void;
+  // a category armed and waiting for its sub-key). `expect` is what an armed
+  // capture will accept next ("1-9"), empty when it takes any key. Paints
+  // synchronously (see shared/statusbar.ts) so it tracks the keypress exactly.
+  setLeaderSignal(sig: LeaderSignal): void;
   // Content-script find-in-page state by tab-strip index (pushed by the
   // background on every count change). Same resolution as the leader chevron.
   setContentFind(index: number, count: number, cur: number): void;
@@ -74,23 +86,37 @@ export interface StatusBarCtl {
 }
 
 export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
-  const chromeStatusBar = new StatusBar(true, "#browser");
-  // The leader prefix typed so far in the current sequence ("" when idle,
-  // ";" after a bare leader press, "l" after `;l`). Set by the composition
-  // root whenever the leader arms, shows a key, or disarms.
-  let leaderPrefix = "";
-  // The content script's leader state, as last pushed by the background, plus
-  // the tab-strip index it belongs to. Mirrors the store so the indicator can
-  // be repainted synchronously (the store roundtrip is too slow for a keypress).
+  const env = deps.env;
+  const win = env.window as any;
+  const doc = env.document as any;
+  const chromeStatusBar = new StatusBar(true, "#browser", doc);
+  // The chrome helper's OWN leader readout, exactly as its controller reports
+  // it (see LeaderController.signal). Held whole rather than as loose prefix
+  // and expectation strings because it has to reach BOTH the store (so the
+  // next repaint agrees) and the view (so this keypress paints now); writing
+  // only the view is what previously let a later repaint restore a stale
+  // readout.
+  let ownSignal = idleSignal();
+
+  // The SELECTED tab's content script, reporting the same shape by a different
+  // road, plus the tab-strip index it belongs to. The index is what decides
+  // whether that chord belongs on the bar at all.
+  //
+  // This is not an optimisation: on a web page the content script owns the
+  // leader key and the chrome helper's own leader never arms at all, so before
+  // this the window bar could only ever show a bare glyph there — on exactly
+  // the pages where the leader is pressed most, and while `;W` and a digit
+  // capture were both invisible.
+  let contentSignal = idleSignal();
   let contentLeaderIndex = -1;
-  let contentLeaderArmed = false;
+
   // The selected tab's RAW strip index. This is the coordinate the background
   // pushes content-leader state in (sender.tab.index) and the one the Go store
   // resolves leaderByIndex against — NOT the real-tab index, which counts only
   // visible tabs and would disagree whenever plumbing tabs exist.
   function selectedStripIndex(): number {
     try {
-      return window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
+      return win.gBrowser.tabs.indexOf(win.gBrowser.selectedTab);
     } catch (e) {
       return -1;
     }
@@ -115,13 +141,13 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     // is stable across versions. Either signal alone hides the bar; the
     // 500ms poll plus the fullscreenchange events keep both edges fresh.
     try {
-      if (document.documentElement.hasAttribute("inDOMFullscreen")) return true;
-      const b = window.gBrowser && window.gBrowser.selectedBrowser;
+      if (doc.documentElement.hasAttribute("inDOMFullscreen")) return true;
+      const b = win.gBrowser && win.gBrowser.selectedBrowser;
       // The selected browser can be a dead wrapper mid-collapse (its tab is
       // being torn down); any property access then throws. Skip it.
-      if (b && Cu && Cu.isDeadWrapper(b)) return false;
-      const doc = b && b.contentDocument;
-      if (doc && doc.fullscreenElement) return true;
+      if (b && env.Cu && env.Cu.isDeadWrapper(b)) return false;
+      const contentDoc = b && b.contentDocument;
+      if (contentDoc && contentDoc.fullscreenElement) return true;
     } catch (e) {
       // ignore
     }
@@ -205,21 +231,21 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     // still be repainted when the rest of the batch gives up.
     let sel = -1;
     try {
-      sel = window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
+      sel = win.gBrowser.tabs.indexOf(win.gBrowser.selectedTab);
     } catch (e) {
       // mid-collapse; -1 is the documented "unreadable" coordinate
     }
     try {
       const real = deps.realTabs();
       const liveCount = real.length;
-      const realSel = real.indexOf(window.gBrowser.selectedTab);
+      const realSel = real.indexOf(win.gBrowser.selectedTab);
       const ui = deps.getUi();
       // The stealth badge is a LIVE property of the selected tab (its
       // container), never a cached flag: flags keyed by raw tab index go stale
       // the moment a tab closes. userContextId > 0 = isolated container.
       let selStealth = false;
       try {
-        const t = window.gBrowser.selectedTab;
+        const t = win.gBrowser.selectedTab;
         selStealth = !!(
           t && typeof t.userContextId === "number" && t.userContextId > 0
         );
@@ -241,26 +267,39 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     // The far-right indicator rides OUTSIDE the store batch: it is painted
     // directly on the view so a `;` press lights it with zero async hops, and
     // it is repainted even when the batch above could not run.
-    // The decision (including the raw-strip-index rule) lives in
-    // shared/statusbar.ts and is unit-tested there.
+    paintLeader(sel);
+  }
+
+  // The ONE place the window-level leader readout is decided and written.
+  //
+  // Both contexts report the same LeaderSignal, so this function resolves
+  // between them once (resolveLeaderSignal, unit-tested) instead of carrying
+  // four loose variables and an inline ternary — which is how the bar came to
+  // show a chord belonging to a tab the user had already left.
+  //
+  // The store write is in the same tick as the view paint, on purpose. A `;`
+  // press must light the indicator with zero async hops, but painting ONLY the
+  // view leaves the Go store holding the previous value and the next store
+  // repaint (any TabSelect, any poll) resurrects it — which is how a `;`
+  // followed by Esc could leave the indicator lit forever. statusLeaderSignal
+  // returns void, so the store is authoritative and still lands synchronously.
+  function paintLeader(sel: number): void {
     try {
-      const on = leaderSignalOn({
-        prefix: leaderPrefix,
-        uiLeader: deps.getUi().leader,
-        contentArmed: contentLeaderArmed,
+      const sig = resolveLeaderSignal({
+        own: ownSignal,
+        content: contentSignal,
         contentIndex: contentLeaderIndex,
         // `sel` is the raw strip index, the same coordinate
         // contentLeaderIndex is pushed in.
         selectedStrip: sel,
+        uiLeader: deps.getUi().leader,
       });
-      // Same reason as setLeaderSignal: write the store in the same tick, so
-      // the snapshot this repaint is about to produce already agrees with it.
       try {
-        core.statusLeaderSignal(on, leaderPrefix);
+        core.statusLeaderSignal(sig.armed, sig.prefix, sig.expect);
       } catch (e) {
-        // ignore
+        // a wasm that is not up yet must not break key dispatch
       }
-      chromeStatusBar.setLeaderSignal(on);
+      chromeStatusBar.setLeaderSignal(sig);
     } catch (e) {
       // ignore — a dead view must not break key dispatch
     }
@@ -311,7 +350,7 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
           kind: "stealth",
           on: (() => {
             try {
-              const sel = window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
+              const sel = win.gBrowser.tabs.indexOf(win.gBrowser.selectedTab);
               return sel >= 0 && !!(state.stealthFlags && state.stealthFlags[sel]);
             } catch (e) {
               return !!(lastSnap && lastSnap.activeStealth);
@@ -338,7 +377,7 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     setActiveStealth: (on) => {
       pushAndPaint([{ kind: "stealth", on }]);
     },
-    setContentLeader: (index, active) => {
+    setContentLeader: (index, sig) => {
       // Keep the store authoritative (it resolves which index is selected),
       // but light the indicator the moment the state arrives. On a web page
       // the content script owns the leader and this push has already crossed
@@ -347,19 +386,11 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
       // press. Paint directly for the selected tab; the batch repaint that
       // follows just confirms the same decision.
       contentLeaderIndex = index;
-      contentLeaderArmed = !!active;
-      if (index === selectedStripIndex()) {
-        // Keep the store's own leader state in step with the direct paint
-        // (see setLeaderSignal): a later store repaint must not be able to
-        // resurrect the value this push just replaced.
-        try {
-          core.statusLeaderSignal(!!active, "");
-        } catch (e) {
-          // ignore
-        }
-        chromeStatusBar.setLeaderSignal(!!active);
-      }
-      pushAndPaint([{ kind: "leader", index, active }]);
+      contentSignal = makeLeaderSignal(sig);
+      // paintLeader re-derives whose chord this is, so a push for a tab the
+      // user has since left cannot leave the previous tab's chord on screen.
+      paintLeader(selectedStripIndex());
+      pushAndPaint([{ kind: "leader", index, active: sig.armed }]);
     },
     // The far-right indicator for the chrome helper's OWN leader. Painted
     // synchronously on the view — the store roundtrip would trail the key
@@ -373,18 +404,13 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     // symptom. `statusLeaderSignal` returns void, so it lands in the same tick
     // as the keypress: the store is authoritative, the view just follows it
     // immediately instead of waiting for the round trip.
-    setLeaderSignal: (armed, prefix) => {
-      // "" means "the bare leader is armed and waiting for its first key" and
-      // is stored as "" — the store treats empty and ";" identically, and
-      // normalising here keeps the two from disagreeing about the same state.
-      leaderPrefix = prefix ? String(prefix).replace(/^;/, "") : "";
-      const on = !!armed;
-      try {
-        core.statusLeaderSignal(on, leaderPrefix);
-      } catch (e) {
-        // a wasm that is not up yet must not break key dispatch
-      }
-      chromeStatusBar.setLeaderSignal(on, leaderPrefix);
+    setLeaderSignal: (sig) => {
+      // One assignment, one paint. The signal arrived whole from the leader
+      // controller, so there is nothing here that can put the prefix from one
+      // read next to the expectation from another — and nothing to normalise,
+      // because makeLeaderSignal already did it.
+      ownSignal = makeLeaderSignal(sig);
+      paintLeader(selectedStripIndex());
     },
     setContentFind: (index, count, cur) => {
       pushAndPaint([{ kind: "find", index, cur, count }]);

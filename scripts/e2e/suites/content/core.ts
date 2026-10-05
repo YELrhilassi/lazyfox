@@ -1,7 +1,7 @@
 // core tests (content). Deterministic: every wait targets a product signal
 // (leader overlay, tab strip, input values, page attributes) instead of fixed
 // sleeps.
-import { activate, evalIn, getTree, waitFor } from "../../bidi.ts";
+import { activate, createTab, evalIn, getTree, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 import { contextsOf } from "../../fixture.ts";
 export async function run(ctx: any): Promise<void> {
@@ -11,7 +11,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
+    opts: { tags?: string[] } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
 
   // The content leader mirrors its armed state onto <html> as data-lf-leader.
@@ -229,10 +229,15 @@ export async function run(ctx: any): Promise<void> {
     // tab" is a different kind of command and now has its own key, $ (the vim
     // end-of-line mnemonic, free at top level).
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    const first = await ctx.tabsInfo();
+    // The PRODUCT's numbering, not the raw tab list. `tabsInfo()` is the
+    // Firefox list — it includes the relay tab and any #lfc= transient — so
+    // its first entry is not necessarily what `;1` jumps to, and the test was
+    // asserting against a tab the key never addresses.
+    const rows = await ctx.tabNumbers();
+    assert(rows.length >= 2, "the window numbers at least two tabs, saw " + rows.length);
     await ctx.leaderPress(ctx.tabA, "1");
-    await ctx.waitActiveUrl(first[0].url, 10000);
-    const last = (await ctx.tabsInfo()).pop();
+    await ctx.waitActiveUrl(rows[0].url, 10000);
+    const last = rows[rows.length - 1];
     await ctx.leaderPress(ctx.tabA, "$");
     await ctx.waitActiveUrl(last.url, 10000);
     await activate(ctx.tabA);
@@ -275,7 +280,20 @@ export async function run(ctx: any): Promise<void> {
     assert(!(await ctx.hasHost(ctx.tabA, "lazyfox-popup")), ";m opened no popup");
   });
   await t(";x closes a tab, ;v reopens it", async () => {
+    // The tab this test closes is the SELECTED one — `;x` acts on the active
+    // tab, not on whichever context the keys were typed into. So tabA has to
+    // be a live tab this test made AND the selected one, and it cannot be
+    // either by inheritance: in a full run `ctx.tabA` was a context that had
+    // already died, so the press closed the PROBE instead, the count went
+    // down by one for the wrong reason, and `;v` dutifully put the probe back.
+    // The undo pair was never exercised; the test just agreed with itself.
+    //
+    // Both halves matter. A fresh context is not automatically the selected
+    // tab, and a selected context is not automatically alive.
+    await ctx.collapseWindow();
+    ctx.tabA = await createTab();
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.activateTab(ctx.tabA);
     const before = await ctx.tabCount();
     await ctx.leaderPress(ctx.tabA, "x");
     let afterClose = -1;
@@ -291,17 +309,31 @@ export async function run(ctx: any): Promise<void> {
     await ctx.activateTab(survivor.context);
     await ctx.leaderPress(survivor.context, "v");
     let afterReopen = -1;
+    // The reopen is a tab being CREATED, and `browser.tabs.create` resolves
+    // before the tab is queryable in some cases — so the count is polled, not
+    // read once. Ten seconds was the bound on an operation the product
+    // completes in milliseconds; the bound belongs to the measurement.
+    //
+    // Every reading keeps its own reason, and the reasons are kept rather than
+    // just the counts: a poll that watched the number stay put could have been
+    // watching a window that stayed empty or a probe that could not see it, and
+    // the two look identical from the outside.
+    const seen: string[] = [];
     const reopened = await waitFor(async () => {
       afterReopen = await ctx.tabCount();
+      seen.push(afterReopen + " via " + (ctx.tabCountWhy || "?"));
       return afterReopen === before ? true : null;
-    }, 10000).catch(() => null);
+    }, 15000).catch(() => null);
     // Re-point tabA at a LIVE context BEFORE asserting, so a reopen failure
     // can never cascade: every later test would otherwise run against the
     // just-destroyed tabA and fail with "no such frame" instead of its own
     // behaviour. Prefer a real content tab; fall back to the survivor.
     const t2 = await getTree();
     const cs2 = contextsOf(t2);
-    const contentCtx = cs2.find((c) => c.url && c.url.includes("127.0.0.1"));
+    // Any LIVE content context will do here, but the first one by URL is only
+    // correct while there is exactly one. Sorted by nothing and matched by
+    // "contains 127.0.0.1", this picks an arbitrary tab in a busy window.
+    const contentCtx = cs2.find((c) => c.url && c.url.includes("127.0.0.1")) || cs2.find((c) => ctx.isRealTab({ url: c.url }));
     ctx.tabA = contentCtx ? contentCtx.context : survivor.context;
     await ctx.activateTab(ctx.tabA).catch(() => {});
     let rc = "<none>";
@@ -311,11 +343,43 @@ export async function run(ctx: any): Promise<void> {
         `browser.sessions.getRecentlyClosed({maxResults:20}).then(l => JSON.stringify(l.map(i => i.tab ? (i.tab.url||"") : "(window)")))`
       ).catch(() => "<err>");
     }
+    let why = "";
+    if (!reopened) {
+      // Two facts that cannot be read off each other, so both are reported:
+      // did the KEY reach the binding at all (the chrome dispatcher's own
+      // lastAction), and does the PRODUCT reopen when asked directly. Without
+      // them "the tab did not come back" reads as one bug when it is two.
+      const st = await ctx.chromeState().catch(() => null);
+      // Three facts, because "the tab did not come back" is one sentence and
+      // at least three different bugs. Does the same op work when the
+      // background is called DIRECTLY (so the failure is the op), when it is
+      // driven through the RELAY the way `;v` drives it (so the failure is the
+      // channel), and does the tab turn up in some OTHER window (so the reopen
+      // happened where the test was not looking)?
+      const direct = await evalIn(
+        ctx.probe,
+        `browser.runtime.sendMessage({ action: "reopenTab" }).then(r => JSON.stringify(r)).catch(e => "ERR:" + e)`
+      ).catch(() => "<err>");
+      const allTabs = await evalIn(
+        ctx.probe,
+        `browser.tabs.query({}).then(ts => JSON.stringify(ts.map(t => ({u: (t.url||"").slice(0, 60), w: t.windowId, a: t.active}))))`
+      ).catch(() => "<err>");
+      const viaRelay = await evalIn(
+        ctx.probe,
+        `location.hash = "lfc=open.reopen"; true`
+      ).then(() => new Promise((r) => setTimeout(r, 2500))).then(() => ctx.tabCount()).catch(() => -1);
+      why = " lastAction=" + JSON.stringify(st && st.lastAction) +
+        " leaderActive=" + JSON.stringify(st && st.leaderActive) +
+        " directCall=" + String(direct) + " afterDirectCount=" + (await ctx.tabCount()) +
+        " afterRelayCount=" + viaRelay + " allTabs=" + String(allTabs);
+    }
     assert(
       reopened,
       ";v reopened the closed tab (before=" + before + ", afterClose=" + afterClose +
-        ", afterReopen=" + afterReopen + ", survivor=" + ((survivor && survivor.url) || "?") +
-        ", recently closed: " + rc + ")"
+        ", afterReopen=" + afterReopen + ", counted via " + (seen.length ? seen[seen.length - 1] : (ctx.tabCountWhy || "?")) +
+        ", readings=[" + seen.slice(0, 6).join(" ; ") + "]" +
+        ", survivor=" + ((survivor && survivor.url) || "?") +
+        ", recently closed: " + rc + why + ")"
     );
   });
   await t("a stale leader never eats keys typed into an input", async () => {

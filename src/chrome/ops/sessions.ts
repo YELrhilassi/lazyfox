@@ -5,6 +5,7 @@
 
 import { toast } from "../../shared/overlay";
 import type { PopupItem, SessionSummaryItem } from "../../shared/types";
+import type { ChromeEnv } from "../env";
 
 // The relay channel surface the session ops need.
 export interface SessionChannel {
@@ -21,6 +22,7 @@ export interface SessionChannel {
 }
 
 export function createSessionOps(
+  env: ChromeEnv,
   channel: () => SessionChannel,
   status: { getInfo(): { sessions: SessionSummaryItem[] } }
 ) {
@@ -28,10 +30,10 @@ export function createSessionOps(
   // the status bar's session list. The 900ms delay is not a guess about the
   // network: the relay is a URL slot polled every 500ms, and the refresh is
   // queued behind the action it is meant to reflect — a real ordering
-  // dependency, not a retry.
+  // dependency, not a retry. The timer is the injected one so a test can run it.
   const sessionAction = (action: Parameters<SessionChannel["requestBg"]>[0], arg?: any) => {
     channel().requestBg(action as any, arg);
-    setTimeout(() => void channel().requestSessionState(), 900);
+    env.setTimeout(() => void channel().requestSessionState(), 900);
   };
 
   return {
@@ -68,18 +70,19 @@ export function createSessionOps(
       void channel().requestReply("sessionTabCopy", { from, index, to }).then((r) => {
         if (r && r.ok === false) toast("tab copy failed: " + (r.note || "unknown"));
       });
-      setTimeout(() => void channel().requestSessionState(), 900);
+      env.setTimeout(() => void channel().requestSessionState(), 900);
     },
     sessionTabMove: (from: string, index: number, to: string) => {
       void channel().requestReply("sessionTabMove", { from, index, to }).then((r) => {
         if (r && r.ok === false) toast("tab move failed: " + (r.note || "unknown"));
       });
-      setTimeout(() => void channel().requestSessionState(), 900);
+      env.setTimeout(() => void channel().requestSessionState(), 900);
     },
   };
 }
 
 export function createSplitOps(
+  env: ChromeEnv,
   split: {
     splitCurrentTab(orientation: "horizontal" | "vertical"): boolean;
     unsplit(): boolean;
@@ -88,10 +91,11 @@ export function createSplitOps(
     addTabToSplitByIndex(n: number): boolean;
   }
 ) {
+  const win = env.window as any;
   return {
     splitTab: (orientation: "horizontal" | "vertical") => {
       if (!split.splitCurrentTab(orientation)) {
-        const api = typeof window.gBrowser.addTabSplitView === "function";
+        const api = typeof win.gBrowser.addTabSplitView === "function";
         toast(api ? "could not split (pinned tab or stale split state)" : "native split needs Firefox 149+");
       }
     },

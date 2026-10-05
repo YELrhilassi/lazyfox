@@ -26,6 +26,7 @@ import {
   tabQuickKey,
   extendTabPrefix,
   tabRowMatches,
+  tabDigitHint,
 } from "../../src/shared/tabjump.ts";
 
 // --- P1: the candidate set, checked against a brute-force oracle ---------
@@ -315,5 +316,121 @@ describe("tabRowMatches — a partly numeric query is TEXT", () => {
   });
   test("a decimal is text, not a number", () => {
     assert.equal(tabRowMatches({ number: 11, title: "1.1" }, "1.1"), true);
+  });
+});
+// --- P4: the status bar's "what we need next" hint -----------------------
+
+// The hint is shown on a bar while a digit is being captured, so a digit it
+// names has to be worth pressing. That is a correctness property, not a
+// cosmetic one: a hint that offers "3" and then swallows the 3 is worse than
+// no hint, because the user pressed the key the product told them to.
+//
+// P4  every digit tabDigitHint offers KEEPS the capture alive — appending it
+//     is never a dead press, and never makes the candidate set larger.
+//
+// Note it deliberately does NOT claim the press resolves. At 110 tabs, `;1`
+// offers `0` and `;10` is still ambiguous (tab 10 plus 100-109), which is
+// correct: narrowing is the whole point of a prefix. The claim that would
+// sound better — "every offered digit finishes it" — is simply false, and a
+// test asserting it would have been a test that agreed with a wrong design.
+
+describe("tabDigitHint — P4: every digit it offers keeps the capture alive", () => {
+  for (let count = 0; count <= 130; count++) {
+    for (const prefix of allPrefixes()) {
+      const offered = tabDigitHint(count, prefix)
+        .split(" ")
+        .filter(Boolean)
+        // "0-9" is the compact form of all ten digits.
+        .flatMap((k) => (k === "0-9" ? ["0","1","2","3","4","5","6","7","8","9"] : [k]));
+      const before = tabCandidates(count, prefix);
+      for (const d of offered) {
+        const next = prefix + d;
+        const plan = planTabJump(count, next);
+        if (plan.kind === "none") {
+          assert.fail(
+            `count=${count} prefix=${prefix} offered=${d}: pressing it is a DEAD press`
+          );
+        }
+        const after = tabCandidates(count, next);
+        if (after.length > before.length) {
+          assert.fail(
+            `count=${count} prefix=${prefix} offered=${d}: ` +
+              `widened the candidates from ${before.length} to ${after.length}`
+          );
+        }
+      }
+    }
+  }
+  test("no offered digit is dead or widening, across count 0..130 × every prefix ≤ 3 digits", () => {
+    assert.ok(true);
+  });
+});
+
+describe("tabDigitHint — it never offers a digit that goes nowhere", () => {
+  test("nothing typed yet offers the first-digit range", () => {
+    // The count cannot narrow the first digit, and pretending otherwise would
+    // be a lie: with 3 tabs, `;9` still clamps rather than dying.
+    assert.equal(tabDigitHint(0, ""), "1-9");
+    assert.equal(tabDigitHint(3, ""), "1-9");
+    assert.equal(tabDigitHint(140, ""), "1-9");
+  });
+  test("a non-numeric prefix is treated as nothing typed", () => {
+    assert.equal(tabDigitHint(12, "x"), "1-9");
+  });
+  test("twelve tabs, prefix 1: 0/1/2 continue 10/11/12 and nothing else does", () => {
+    // Tab 1 is the exact match and contributes no digit — `;1` `1` has to
+    // mean tab 11, so offering nothing for tab 1 is the point, not an
+    // omission.
+    assert.equal(tabDigitHint(12, "1"), "0 1 2");
+  });
+  test("twenty tabs, prefix 1: all ten digits are live", () => {
+    assert.equal(tabDigitHint(20, "1"), "0-9");
+  });
+  test("twelve tabs, prefix 2: unambiguous, so nothing more is wanted", () => {
+    // An empty hint means "do not wait" — the caller resolves instead. The
+    // hint is therefore not a failure state, it is the honest one.
+    assert.equal(tabDigitHint(12, "2"), "");
+  });
+  test("a prefix past the end of the strip wants nothing", () => {
+    assert.equal(tabDigitHint(3, "9"), "");
+  });
+  test("one hundred twenty tabs, prefix 11: 0-9 all continue", () => {
+    assert.equal(tabDigitHint(120, "11"), "0-9");
+  });
+  test("one hundred twenty tabs, prefix 119: resolved, nothing more", () => {
+    assert.equal(tabDigitHint(120, "119"), "");
+  });
+  test("one hundred twenty tabs, prefix 12: only 0 continues, to tab 120", () => {
+    assert.equal(tabDigitHint(120, "12"), "0");
+  });
+  test("one hundred thirty tabs, prefix 12: 0-9 continue 120-129", () => {
+    assert.equal(tabDigitHint(130, "12"), "0-9");
+  });
+  test("one hundred twenty one tabs, prefix 12: 0 and 1 continue 120/121", () => {
+    assert.equal(tabDigitHint(121, "12"), "0 1");
+  });
+  test("one hundred twenty tabs, prefix 120: past the end", () => {
+    assert.equal(tabDigitHint(120, "120"), "");
+  });
+});
+
+describe("tabDigitHint — it agrees with the planner about when to wait", () => {
+  for (let count = 0; count <= 130; count++) {
+    for (const prefix of allPrefixes()) {
+      const plan = planTabJump(count, prefix);
+      const hint = tabDigitHint(count, prefix);
+      // The single thing that must hold everywhere: the hint is empty exactly
+      // when there is nothing left to type. A capture armed on an empty hint
+      // would be waiting for a key that cannot exist.
+      const wantEmpty = plan.kind !== "choose";
+      if (hint === "" !== wantEmpty) {
+        assert.fail(
+          `count=${count} prefix=${prefix}: plan=${plan.kind} hint=${JSON.stringify(hint)}`
+        );
+      }
+    }
+  }
+  test("the hint is empty IFF the planner would not ask for another digit", () => {
+    assert.ok(true);
   });
 });

@@ -9,7 +9,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
+    opts: { tags?: string[] } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   await t("status bar renders on web pages (single window bar)", async () => {
     // The chrome helper owns ONE window-level bar for every tab. A web page
@@ -118,15 +118,15 @@ export async function run(ctx: any): Promise<void> {
     // session value; wait for the bar to show it (bounded, not a sleep).
     const armed = await waitFor(async () => {
       const s = await ctx.chromeState();
-      return s && s.statusAttr && s.statusAttr.indexOf("|LEADER|") !== -1 ? s : null;
+      return s && s.statusAttr && s.statusAttr.indexOf("|lead:") !== -1 ? s : null;
     }, 8000).catch(() => null);
     assert(armed && armed.statusAttr,
-      "window bar shows LEADER while the content leader is armed: " + JSON.stringify(armed && armed.statusAttr));
+      "window bar shows the leader chevron while the content leader is armed: " + JSON.stringify(armed && armed.statusAttr));
     // Escape disarms; the chevron leaves the bar.
     await ctx.press(ctx.tabA, "Escape");
     await waitFor(async () => {
       const s = await ctx.chromeState();
-      return s && s.statusAttr && s.statusAttr.indexOf("|LEADER|") === -1 ? true : null;
+      return s && s.statusAttr && s.statusAttr.indexOf("|lead:") === -1 ? true : null;
     }, 8000).catch(() => { throw new Error("bar stayed in LEADER mode after Escape"); });
     // Re-enable the overlay so the rest of the suite runs with hints on.
     await ctx.ensureWhichKey(ctx.tabA, true);

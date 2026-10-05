@@ -12,8 +12,8 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
-  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS, keepTabs: opts.keepTabs, reconcile: opts.reconcile });
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS });
   /* ==================== two-key leader sequences ==================== */
   await t(";G opens the navigation-stack popup and Esc closes it", async () => {
     // TWO keys, not three. This was briefly a ;G-then-k sequence, and the

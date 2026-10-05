@@ -12,6 +12,7 @@
 // because the typing state has to survive the content script being torn down and
 // rebuilt (a bfcache restore, a virtual-DOM navigation).
 import { mergeConfig } from "../../shared/config";
+import type { LeaderSignal } from "../../shared/leadersignal";
 import { getConfig, setConfig } from "../config";
 import { vConfig } from "../store";
 import type { Domain } from "./types";
@@ -21,7 +22,7 @@ import type { Domain } from "./types";
 type Owns = "syncTyping" | "syncLeader" | "syncContent" | "syncFind" | "setConfig" | "toggleWhichKey" | "stealthOpen";
 
 export interface SyncDeps {
-  pushLeaderStateToChrome(index: number, active: boolean): void;
+  pushLeaderStateToChrome(index: number, signal: LeaderSignal): void;
   pushContentStateToChrome(index: number, active: boolean, url: string): void;
   pushFindStateToChrome(index: number, count: number, cur: number): void;
   stealthOpen(onDone: () => void): Promise<{ ok: boolean; error?: string }>;
@@ -49,7 +50,10 @@ export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
       // leader never arms there — the content script owns the keys).
       const tab = (sender as { tab?: { id?: number; index?: number } } | undefined)?.tab;
       if (tab && tab.id != null) {
-        deps.pushLeaderStateToChrome(typeof tab.index === "number" ? tab.index : -1, !!data.active);
+        deps.pushLeaderStateToChrome(
+          typeof tab.index === "number" ? tab.index : -1,
+          data.signal
+        );
       }
       return { ok: true };
     },

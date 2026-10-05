@@ -74,8 +74,9 @@ export interface CoreApi {
   statusLeader(index: number, active: boolean): void;
   statusFind(index: number, cur: number, count: number): void;
   statusStealth(on: boolean): void;
-  // The far-right leader indicator: armed + the prefix typed so far.
-  statusLeaderSignal(armed: boolean, prefix: string): void;
+  // The far-right leader indicator: armed + the prefix typed so far + what the
+  // next key must be ("" when any key will do).
+  statusLeaderSignal(armed: boolean, prefix: string, expect: string): void;
   // The active tab's history-stack shape (JSON NavState).
   statusNav(nav: string): void;
   statusDownloads(fresh: string): void;
@@ -101,7 +102,7 @@ export type StatusOp =
   | { kind: "leader"; index: number; active: boolean }
   | { kind: "find"; index: number; cur: number; count: number }
   | { kind: "stealth"; on: boolean }
-  | { kind: "leaderSignal"; armed: boolean; prefix: string }
+  | { kind: "leaderSignal"; armed: boolean; prefix: string; expect: string }
   | { kind: "nav"; nav: NavState }
   | { kind: "downloads"; fresh: DownloadEntry[] }
   | { kind: "dismiss"; keys: string[] };
@@ -135,7 +136,7 @@ export function applyStatusOps(a: CoreApi, ops: StatusOp[]): void {
         a.statusStealth(op.on);
         break;
       case "leaderSignal":
-        a.statusLeaderSignal(op.armed, op.prefix);
+        a.statusLeaderSignal(op.armed, op.prefix, op.expect);
         break;
       case "nav":
         a.statusNav(JSON.stringify(op.nav || { canBack: false, canForward: false, index: 0, count: 0 }));
