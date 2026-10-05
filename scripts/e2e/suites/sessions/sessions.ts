@@ -14,8 +14,8 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
-  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS, keepTabs: opts.keepTabs, reconcile: opts.reconcile });
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS });
 
   // --- composable condition helpers (replace sleeps) ---
   // The leader is armed on a WEB page: the content script mirrors it onto

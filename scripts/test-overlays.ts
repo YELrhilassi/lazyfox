@@ -26,7 +26,16 @@ register("./ts-resolve-hook.mjs", import.meta.url);
 
 const { faviconFor, faviconHtml } = await import("../src/shared/favicon.ts");
 const { manualTextKey } = await import("../src/shared/manualtext.ts");
-const { leaderSignalOn, leaderSeqText } = await import("../src/shared/statusbar.ts");
+const {
+  leaderSignalOn,
+  leaderSeqText,
+  resolveLeaderSignal,
+  digitExpect,
+  subKeyExpect,
+  ANY_KEY_EXPECT,
+  leaderMirrorFragment,
+  makeLeaderSignal,
+} = await import("../src/shared/leadersignal.ts");
 const { isCancel } = await import("../src/shared/leader.ts");
 
 let passed = 0;
@@ -353,7 +362,6 @@ ok("Ctrl+Alt+G does NOT cancel — Alt combos belong to the site", !isCancel(can
 ok("Meta+G does NOT cancel", !isCancel(cancelKev("g", { metaKey: true })));
 ok("other Ctrl chords do NOT cancel", !isCancel(cancelKev("c", { ctrlKey: true })) && !isCancel(cancelKev("w", { ctrlKey: true })));
 
-console.log(`\n${passed} checks passed.`);
 
 /* ---------- leaderSeqText: what the leader indicator reads ---------- */
 //
@@ -383,3 +391,229 @@ ok(
   "the glyph is a prefix of the longer text, not replaced by it",
   leaderSeqText("W").indexOf(leaderSeqText("")) === 0
 );
+
+/* ---------- leaderSeqText: the "what we need next" half ---------- */
+//
+// An armed capture is a modal state with no other visible sign: the chord has
+// been spent, the which-key overlay is gone, and the next keystroke is about
+// to be swallowed. A bar that only reports what already happened looks
+// identical to an idle one, so the bar has to say what it wants.
+//
+// This is the half docs/MULTIKEY-DESIGN.md §5 specifies as `; 1 ▸` and that
+// shipped as `;` — the ▸ was drawn in the proposal and never built.
+
+eq("no expectation is the same shape as before", leaderSeqText("W", ""), leaderSeqText("W"));
+eq(
+  "a missing expectation is not 'undefined'",
+  leaderSeqText("W", undefined),
+  leaderSeqText("W")
+);
+eq("a null expectation is not 'null'", leaderSeqText("W", null), leaderSeqText("W"));
+ok(
+  "whitespace-only is not an expectation",
+  leaderSeqText("W", "   ") === leaderSeqText("W")
+);
+eq(
+  "an expectation after a committed key reads committed-then-wanted",
+  leaderSeqText("W", "1-9"),
+  "\u2318 W \u25b8 1-9"
+);
+eq(
+  "an expectation on a bare leader still leads with the glyph",
+  leaderSeqText("", "1-9"),
+  "\u2318 \u25b8 1-9"
+);
+ok(
+  "the glyph is still first in every state",
+  ["", "W", "Z", "|"].every((p) => leaderSeqText(p, "1-9").indexOf("\u2318") === 0)
+);
+ok(
+  "adding an expectation never removes the committed prefix",
+  ["", "W", "Z", "|"].every((p) => leaderSeqText(p, "1-9").indexOf(leaderSeqText(p)) === 0)
+);
+ok(
+  "the wanted half is separated from the committed half, so the two read differently",
+  ["", "W", "Z"].every((p) => leaderSeqText(p, "1-9").indexOf(" \u25b8 ") > 0)
+);
+// A bare leader already waits for a key, so it needs no hint — the shape only
+// appears when the answer is specific, which is what keeps it meaningful.
+eq(
+  "a bare leader with no capture shows no prompt",
+  leaderSeqText("", ""),
+  "\u2318"
+);
+/* ---------- makeLeaderSignal: one construction, one normalisation ---------- */
+//
+// The whole readout is now a single value that travels unchanged from the
+// leader controller to the bar. These pin the normalisation that used to be
+// re-implemented at each hop — where ";" and "" disagreeing is precisely how
+// the bar and the keyboard fall out of step.
+
+eq("a bare leader prefix is stored as empty", makeLeaderSignal({ armed: true, prefix: ";" }).prefix, "");
+eq("an empty prefix stays empty", makeLeaderSignal({ armed: true, prefix: "" }).prefix, "");
+eq("a committed key survives", makeLeaderSignal({ armed: true, prefix: "W" }).prefix, "W");
+eq("whitespace is not a prefix", makeLeaderSignal({ armed: true, prefix: "  " }).prefix, "");
+eq("a missing expectation is empty", makeLeaderSignal({ armed: true }).expect, "");
+eq("a null expectation is empty, not 'null'", makeLeaderSignal({ armed: true, expect: null }).expect, "");
+ok("armed is always a boolean", makeLeaderSignal({}).armed === false && makeLeaderSignal({ armed: 1 as any }).armed === true);
+
+/* ---------- resolveLeaderSignal: whose chord is on the bar ---------- */
+//
+// The window bar repaints for the whole window's lifetime (every TabSelect,
+// every 500ms poll), so it must RE-DERIVE which context's leader is driving
+// the keys rather than trust whichever push landed last. Getting this wrong is
+// a bar promising a keystroke to a tab the user has already left.
+
+const lsig = (o: Partial<{ armed: boolean; prefix: string; expect: string }>) =>
+  makeLeaderSignal(o);
+const resolve = (o: {
+  own?: { armed?: boolean; prefix?: string; expect?: string };
+  content?: { armed?: boolean; prefix?: string; expect?: string };
+  contentIndex?: number;
+  selectedStrip?: number;
+  uiLeader?: boolean;
+}) =>
+  resolveLeaderSignal({
+    own: lsig(o.own || {}),
+    content: lsig(o.content || {}),
+    contentIndex: o.contentIndex === undefined ? -1 : o.contentIndex,
+    selectedStrip: o.selectedStrip === undefined ? -1 : o.selectedStrip,
+    uiLeader: !!o.uiLeader,
+  });
+
+eq(
+  "with nothing armed the bar is dark",
+  resolve({}),
+  lsig({ armed: false })
+);
+eq(
+  "the chrome helper's own prefix lights it",
+  resolve({ own: { prefix: "W" } }).armed,
+  true
+);
+eq(
+  "the chrome helper's own readout is shown when it has one",
+  resolve({ own: { prefix: "W", expect: "1-9" } }),
+  lsig({ armed: true, prefix: "W", expect: "1-9" })
+);
+eq(
+  "a content leader on the selected tab wins over an idle chrome one",
+  resolve({ content: { armed: true, prefix: "W", expect: "1-9" }, contentIndex: 3, selectedStrip: 3 }),
+  lsig({ armed: true, prefix: "W", expect: "1-9" })
+);
+eq(
+  "a content leader on ANOTHER tab is ignored entirely",
+  resolve({ content: { armed: true, prefix: "W" }, contentIndex: 3, selectedStrip: 5 }),
+  lsig({ armed: false })
+);
+eq(
+  "a committed chrome chord wins over the content one — it is driving the keys",
+  resolve({
+    own: { prefix: "Z" },
+    content: { armed: true, prefix: "W" },
+    contentIndex: 3,
+    selectedStrip: 3,
+  }),
+  lsig({ armed: true, prefix: "Z" })
+);
+// The mixed pair that used to be reachable: the prefix from the content push
+// and the expectation from the chrome state.
+eq(
+  "a chord and its expectation always come from the same context",
+  resolve({ content: { armed: true, prefix: "W" }, contentIndex: 3, selectedStrip: 3, uiLeader: true }),
+  lsig({ armed: true, prefix: "W" })
+);
+eq(
+  "the store's own leader flag lights the bar without a chord",
+  resolve({ uiLeader: true }).armed,
+  true
+);
+// -1 is both the "selection not readable" answer from a mid-collapse read
+// and the "no content push seen yet" default. It must never be mistaken for a
+// real tab index — which is why the content source is matched on EQUALITY with
+// a real index rather than on "not unset" (see channel.ts, which refuses any
+// push below 0, so an armed content signal can never carry -1).
+eq(
+  "an unreadable selection does not adopt another tab's content chord",
+  resolve({ content: { armed: true, prefix: "W" }, contentIndex: 3, selectedStrip: -1 }),
+  lsig({ armed: false })
+);
+eq(
+  "a stale content index left behind by a closed tab does not light the bar",
+  resolve({ content: { armed: true, prefix: "W" }, contentIndex: 0, selectedStrip: 2 }),
+  lsig({ armed: false })
+);
+// The chrome helper's own chord is unaffected by any of the index arithmetic,
+// which is the point of keeping the two sources independent.
+eq(
+  "the chrome helper's own chord shows even when the selection is unreadable",
+  resolve({ own: { prefix: "W" }, contentIndex: 3, selectedStrip: -1 }),
+  lsig({ armed: true, prefix: "W" })
+);
+
+/* ---------- the expectation labels themselves ---------- */
+//
+// These build the strings the bar shows. Every one is derived from the thing
+// that actually decides which key is accepted, because a hand-written label is
+// a second opinion about the keymap — and a wrong one is a bar that promises a
+// keystroke which does nothing, which is worse than showing nothing at all.
+
+eq("nine digit positions read as 1-9", digitExpect(9), "1-9");
+eq("four hintable links read as 1-4, not 1-9", digitExpect(4), "1-4");
+eq("one position reads as 1-1", digitExpect(1), "1-1");
+eq("no positions is the bare leader, not a promise", digitExpect(0), "");
+eq("a negative count is the bare leader", digitExpect(-3), "");
+ok("a fractional count is floored, not rounded up", digitExpect(4.9) === "1-4");
+ok(
+  "the named range is always the range that is accepted",
+  [1, 2, 4, 9, 12].every((n) => digitExpect(n) === "1-" + n)
+);
+
+eq("a category's sub-keys are listed", subKeyExpect(["i", "o", "r"]), "i o r");
+eq("punctuation sub-keys read as typed", subKeyExpect(["|", "[", "]"]), "| [ ]");
+eq("no sub-keys means no expectation", subKeyExpect([]), "");
+ok("a duplicate sub-key is listed once", subKeyExpect(["m", "m", "w"]) === "m w");
+// Capped: this lives on an 18px strip, and an unreadable bar is worse than a
+// summarised one. The count keeps it honest rather than silently truncating.
+ok(
+  "a long sub-key set is capped and says how many more there are",
+  subKeyExpect(["a", "b", "c", "d", "e", "f", "g", "h"]).indexOf("+2") > -1
+);
+ok(
+  "the cap never exceeds the bar's budget",
+  subKeyExpect(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]).split(" ").length <= 7
+);
+// A forward-any capture is a REAL modal state: the keystroke is being eaten and
+// handed to another realm. It must be visibly different from "nothing pending".
+ok("an any-key capture has its own words", ANY_KEY_EXPECT.length > 0);
+ok("it is distinguishable from the bare leader", leaderSeqText("", ANY_KEY_EXPECT) !== leaderSeqText("", ""));
+
+/* ---------- the mirror fragment ---------- */
+//
+// The e2e suite and debug snapshots read `data-lf-status`. The leader half is
+// appended so its `|lead:<prefix>` shape stays readable by everything that
+// already matches on it.
+
+eq(
+  "an armed bare leader mirrors the leader key",
+  leaderMirrorFragment(lsig({ armed: true })),
+  "|lead:;"
+);
+eq(
+  "a committed chord mirrors after the marker",
+  leaderMirrorFragment(lsig({ armed: true, prefix: "W" })),
+  "|lead:W"
+);
+eq(
+  "an expectation is a suffix, so existing readers still match",
+  leaderMirrorFragment(lsig({ armed: true, prefix: "W", expect: "1-9" })),
+  "|lead:W>1-9"
+);
+eq("a disarmed signal mirrors nothing", leaderMirrorFragment(lsig({ armed: false, prefix: "W" })), "");
+eq("a missing signal mirrors nothing", leaderMirrorFragment(null), "");
+ok(
+  "the armed mirror keeps the legacy prefix shape",
+  leaderMirrorFragment(lsig({ armed: true, expect: "1-9" })).indexOf("|lead:") === 0
+);
+
+console.log(`\n${passed} checks passed.`);

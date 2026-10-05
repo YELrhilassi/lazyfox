@@ -35,8 +35,8 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
-  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS, keepTabs: opts.keepTabs, reconcile: opts.reconcile });
+    opts: { tags?: string[] } = {},
+  ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS });
 
   await t("holding the leader runs back then forward without a second press", async () => {
     // Start from a DISARMED leader, and prove it rather than assume it.
@@ -61,29 +61,50 @@ export async function run(ctx: any): Promise<void> {
     ).catch(() => null);
     assert(clean, "the leader starts disarmed");
 
-    await ctx.gotoPage(ctx.tabA, `${ctx.base}/target2`);
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    const before = await ctx.evalHref();
+    // Past eleven tabs, `;1` is a PREFIX rather than a jump: the content
+    // script opens the chooser and waits for a second digit. That makes a pair
+    // of digits the ideal probe - both keys resolve inside the page, with no
+    // background round trip and no navigation between them.
+    await ctx.ensureTabCount(12);
+    const startTab = await ctx.activeTabInfo();
+    assert(startTab, "the page is the active tab to begin with");
 
     // A genuine hold: the key goes down, two bindings run while it is still
     // down, then it comes up — as ONE action list, because BiDi releases a key
     // source when the list ends, so a hold split across two performActions
     // calls is not a hold at all.
     //
-    // This is the real user path, not a stand-in for it: a web page's content
-    // script runs in another process, so the synthetic #lfc=keys channel (which
-    // can also express `up: false`) only reaches the chrome dispatch, and its
-    // contentWindow fallback is null for a remote page.
-    await ctx.holdSequence(ctx.tabA, ";", ["g", "l"]);
-
-    // Back then forward returns to where we started; the important part is
-    // that both ran off ONE leader press.
-    const landed = await waitFor(async () => {
-      const h = await ctx.evalHref();
-      return h === before ? h : null;
+    // Digits, and specifically NOT the pairs that looked obvious first:
+    //
+    //  - `;g ;l` (back / forward) navigate, and navigation is ASYNCHRONOUS.
+    //    performActions dispatches the two keys back to back with no gap, so
+    //    the forward was issued while the back had not committed and Firefox
+    //    dropped it — a human-impossible timing that flapped the test.
+    //  - `;m ;m` (mute / unmute) is a background round trip per key, and with
+    //    no gap between them one of the two is swallowed the same way.
+    //
+    // The control run first is what stops the assertion being vacuous: on its
+    // own `;1` does not move, it opens the chooser. So "the chooser opened"
+    // and "the second digit turned that into a jump" are only both true if the
+    // leader stayed armed across both keys of one hold.
+    await ctx.holdSequence(ctx.tabA, ";", ["1"]);
+    const chooser = await waitFor(async () =>
+      (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 10000
+    ).catch(() => null);
+    assert(chooser, "a held leader ran one binding (`;1` opened the chooser)");
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+    await ctx.activateTab(ctx.tabA).catch(() => {});
+    await ctx.holdSequence(ctx.tabA, ";", ["1", "1"]);
+    const jumped = await waitFor(async () => {
+      const a = await ctx.activeTabInfo();
+      return a && a.id !== startTab.id ? a : null;
     }, 10000).catch(() => null);
-    assert(landed, "back+forward off a single held leader returned to the start (" +
-      JSON.stringify(await ctx.evalHref().catch(() => "?")) + " vs " + JSON.stringify(before) + ")");
+    assert(jumped, "`;1` then `;1` off a SINGLE held leader jumped to tab 11 (wanted a tab other than " +
+      startTab.id + ", active is " +
+      JSON.stringify(await ctx.activeTabInfo().catch(() => "?")) + ")");
+    await ctx.activateTab(ctx.tabA).catch(() => {});
   });
 
   // The tap-then-release case needs no separate test: the one below presses

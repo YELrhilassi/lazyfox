@@ -9,13 +9,13 @@ export async function run(ctx: any): Promise<void> {
   const TAGS: string[] = ["split","destructive"];
   const { t, nativeSplit, waitNoSplit, waitPlusPopup } = makeSplitHelpers(ctx, "split/lifecycle", TAGS);
 
-  await t("split: ;| splits side-by-side via the native split view", async () => {
+  await t("split: ;W | splits side-by-side via the native split view", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     // geckodriver cannot synthesize "|" from the bare character, so send the
     // leader + Shift+\\ (which produces the "|" binding) explicitly. The native
     // split pairs the current tab with a fresh split-panel pane (two real tabs
     // sharing one splitViewId).
-    await ctx.leaderPress(ctx.tabA, "\\", { shift: true });
+    await ctx.leaderSeq(ctx.tabA, ["W", "|"]);
     const pair = await waitFor(async () => {
       const ts = await ctx.tabsInfo();
       const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
@@ -62,7 +62,7 @@ export async function run(ctx: any): Promise<void> {
     // apart in the panel.
     assert((dump.listHTML || "").includes("id "), "split panel rows show the tab id: " + String(raw));
     // Clean up.
-    await ctx.leaderPress(ctx.tabA, "\\");
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]);
     await waitNoSplit();
   });
   await t("split: native split loads real pages in both panes", async () => {
@@ -96,7 +96,7 @@ export async function run(ctx: any): Promise<void> {
     if (p2) await evalIn(ctx.probe, `browser.tabs.remove(${p2.id})`).catch(() => {});
     await waitNoSplit();
   });
-  await t("split: native split ;[ / ;] switch the active pane", async () => {
+  await t("split: native split ;W [ / ;W ] switch the active pane", async () => {
     const pair = await nativeSplit();
     const p1 = pair.find((t) => t.active);
     const p2 = pair.find((t) => !t.active);
@@ -128,12 +128,12 @@ export async function run(ctx: any): Promise<void> {
     const finalTs = await ctx.tabsInfo();
     const sv = finalTs.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
     assert(sv.length === 2, "split intact after pane switching: " + JSON.stringify(finalTs));
-    await ctx.leaderPress(ctx.tabA, "\\"); // ;\ unsplit
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]); // ;W u unsplit
     await waitNoSplit();
   });
-  await t("split: native split ;\\ unsplits back to independent tabs", async () => {
+  await t("split: native split ;W u unsplits back to independent tabs", async () => {
     await nativeSplit();
-    await ctx.leaderPress(ctx.tabA, "\\"); // ;\
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]); // ;W u
     await waitNoSplit();
     const ts = await ctx.tabsInfo();
     assert(ts.every((t) => !(typeof t.splitViewId === "number" && t.splitViewId >= 0)), "all tabs independent after unsplit: " + JSON.stringify(ts));
@@ -146,9 +146,9 @@ export async function run(ctx: any): Promise<void> {
   await t("split: re-splitting the same tab right after an unsplit works", async () => {
     // Regression for the "need firefox 149+" toast after an unsplit: a stale
     // split-view reference on the just-unsplit tab used to make the next ;|
-    // on that same tab fail. ;| must work immediately after ;\.
+    // on that same tab fail. ;W | must work immediately after ;W u.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    await ctx.leaderPress(ctx.tabA, "\\", { shift: true }); // ;| split
+    await ctx.leaderSeq(ctx.tabA, ["W", "|"]); // ;W | split
     const p1 = await waitFor(async () => {
       const ts = await ctx.tabsInfo();
       const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
@@ -158,10 +158,10 @@ export async function run(ctx: any): Promise<void> {
       throw new Error("first split did not happen: " + JSON.stringify(ts));
     });
     assert(p1 && p1.length === 2, "first split created: " + JSON.stringify(p1));
-    await ctx.leaderPress(ctx.tabA, "\\"); // ;\ unsplit
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]); // ;W u unsplit
     await waitNoSplit();
     // Immediately re-split the SAME tab.
-    await ctx.leaderPress(ctx.tabA, "\\", { shift: true });
+    await ctx.leaderSeq(ctx.tabA, ["W", "|"]);
     const p2 = await waitFor(async () => {
       const ts = await ctx.tabsInfo();
       const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
@@ -171,7 +171,7 @@ export async function run(ctx: any): Promise<void> {
       throw new Error("re-split after unsplit failed: " + JSON.stringify(ts));
     });
     assert(p2 && p2.length === 2, "re-split on the same tab works: " + JSON.stringify(p2));
-    await ctx.leaderPress(ctx.tabA, "\\"); // cleanup
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]); // cleanup
     await waitNoSplit();
   });
   await t("split: native split closing one pane auto-unsplits the other", async () => {
@@ -184,24 +184,43 @@ export async function run(ctx: any): Promise<void> {
     assert(ts.length >= 1, "the other pane survives closing one: " + JSON.stringify(ts));
     assert(ts.every((t) => !(typeof t.splitViewId === "number" && t.splitViewId >= 0)), "remaining tab auto-unsplit: " + JSON.stringify(ts));
   });
-  await t("split: native split ;+N moves tab N into the split", async () => {
+  await t("split: native split ;W m +N moves tab N into the split", async () => {
+    // Isolate FIRST, for the same reason the two tests below do: `;+N` is a
+    // digit addressed at whatever the product's own numbering says, so the
+    // strip it numbers has to be one this test built. Inherited from a full
+    // run it held a dozen leftover command-center tabs, "the first real tab
+    // outside the split" was one of THOSE rather than a page, and the move
+    // never had a chance — a test whose subject is numbering cannot be the one
+    // that lets numbering drift.
+    await ctx.collapseWindow();
+    ctx.tabA = await createTab();
+    await ctx.openCC(ctx.tabA);
+    const tabB = await createTab();
+    await navigate(tabB, `${ctx.base}/hello`, "complete");
+    await ctx.waitTabUrl("/hello", { timeoutMs: 10000 });
+    await ctx.openCC(ctx.tabA); // tabA active
     await nativeSplit();
-    // Pick a tab currently outside the split and derive its 1-based REAL-tab
-    // index for ;+N. Numbering skips the split panel and the #lfc= request
-    // channel, so the test must too (the suite accumulates tabs, so use the
-    // earliest movable real tab rather than assuming a fresh tab lands in 1-9).
+    // The target is a tab this test made, not "whatever is first": a leftover
+    // command-center tab is a legal thing to move into a split, but it is not
+    // what this test is about, and it is the one shape that made the digit
+    // ambiguous in a full run.
+    //
+    // Its NUMBER still comes from the product, never from counting the strip
+    // here: realTabs() skips the split panel and the relay but keeps a real
+    // tab carrying a momentary #lfc= request hash, so a harness-side count
+    // disagrees with the product about exactly those tabs and every tab after
+    // the first disagreement is off by one. The number is not even 1-9, so the
+    // digits are typed in full.
     const ts = await ctx.tabsInfo();
     const real = ts.filter((t) => ctx.isRealTab(t));
-    const ci = real.findIndex(
-      (t) => !t.pinned && !(typeof t.splitViewId === "number" && t.splitViewId >= 0)
-    );
-    assert(ci >= 0, "found a movable tab to move in: " + JSON.stringify(ts));
-    const targetIndex = ci + 1;
-    assert(targetIndex <= 9, "tab index stays within 1-9 for ;+N: " + targetIndex + " of " + real.length);
-    const targetId = real[ci].id;
+    const target = real.find((t) => (t.url || "").indexOf("/hello") !== -1);
+    assert(target, "found the content tab to move in: " + JSON.stringify(ts));
+    const targetIndex = await ctx.productNumberOf(target, real);
+    assert(targetIndex >= 1, "the product's numbering knows the target tab: " + targetIndex + " of " + real.length);
+    const targetId = target.id;
     await ctx.leaderSeq(ctx.tabA, ["W", "m"]); // ;W m -> move tab into split -> shift+=
     await waitPlusPopup(ctx.tabA);
-    await ctx.press(ctx.tabA, String(targetIndex)); // ;+N
+    await ctx.pressNumber(ctx.tabA, targetIndex); // ;+N
     try {
       await waitFor(async () => {
         const now = await ctx.tabsInfo();
@@ -226,30 +245,37 @@ export async function run(ctx: any): Promise<void> {
       "the split-panel pane is gone after the move: " + JSON.stringify(now.map((t) => t.url))
     );
     // Clean up: unsplit (no panel pane is left to close).
-    await ctx.leaderPress(ctx.tabA, "\\"); // ;\
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]); // ;W u
     await waitNoSplit();
   });
-  await t("split: ;{ and ;} swap the panes left/right", async () => {
+  await t("split: ;W { and ;W } swap the panes left/right", async () => {
     // Isolate: collapse the window to just the probe + a fresh CC (tabA) and
     // a fresh content tab (tabB), so the split pair and its ;+N index are
     // deterministic (probe=1, tabA=2, tabB=3).
-    const probe = await ctx.makeProbeTab();
-    const probeId = await evalIn(probe, `browser.tabs.getCurrent().then(t => t ? t.id : null)`);
-    await evalIn(probe, `(async () => {
-      const ts = await browser.tabs.query({ currentWindow: true });
-      for (const t of ts) if (t.id !== ${probeId} && !t.pinned) { try { await browser.tabs.remove(t.id); } catch (e) {} }
-      return true;
-    })()`);
-    await ctx.waitExpr(probe, `browser.tabs.query({currentWindow:true}).then(ts => ts.length === 1 && ts[0].id === ${probeId})`, true, 10000);
-    ctx.probe = probe;
+    //
+    // Two things this wipe has to get right, and both were wrong at once.
+    //
+    // It must NOT close the relay. The relay tab is the one carrier for every
+    // chrome<->background message, and closing it does not fail loudly — it
+    // makes every later browser.* round-trip from the chrome helper simply
+    // never arrive, which reads as "the split never formed" in the three tests
+    // after this one. `pinned` is not a safe proxy for it: a relay that has
+    // not committed relay.html yet is about:blank. So the URL is checked too.
+    //
+    // And it must not be SEQUENTIAL. One awaited tabs.remove per tab is a round
+    // trip each, and a full run reaches forty tabs by this point — the wipe
+    // simply ran out of its 10s budget, left the window half-closed, and took
+    // the rest of the group with it. Removing in parallel makes the setup
+    // deterministic instead of racing the clock.
+    await ctx.collapseWindow();
     ctx.tabA = await createTab();
     await ctx.openCC(ctx.tabA);
     const tabB = await createTab();
     await navigate(tabB, `${ctx.base}/hello`, "complete");
     await ctx.waitTabUrl("/hello", { timeoutMs: 10000 });
     await ctx.openCC(ctx.tabA); // tabA active
-    // ;| creates [tabA, panel]; ;+3 moves tabB in, replacing the panel.
-    await ctx.leaderPress(ctx.tabA, "\\", { shift: true });
+    // ;W | creates [tabA, panel]; ;W m moves tabB in, replacing the panel.
+    await ctx.leaderSeq(ctx.tabA, ["W", "|"]);
     try {
       await waitFor(async () => {
         const ts = await ctx.tabsInfo();
@@ -264,6 +290,7 @@ export async function run(ctx: any): Promise<void> {
     // Firefox glides the freshly glued pair around asynchronously and the
     // numbering must be stable when the digit is pressed.
     const settleInfo = await ctx.tabsInfo();
+    const probeId = await evalIn(ctx.probe, `browser.tabs.getCurrent().then(t => t ? t.id : null)`);
     const aId = settleInfo.find((t) => t.active)?.id;
     const bId = settleInfo.find((t) => (t.url || "").includes("/hello"))?.id;
     await waitFor(async () => {
@@ -340,20 +367,23 @@ export async function run(ctx: any): Promise<void> {
     ctx.tabA = await createTab();
     await ctx.openCC(ctx.tabA);
   });
-  await t("split: ;+N auto-splits when no split exists", async () => {
+  await t("split: ;W m +N auto-splits when no split exists", async () => {
     // Ensure a flat window: no split view active.
     await waitNoSplit();
     const before = await ctx.tabsInfo();
-    // Pick the first non-active real tab as the move target (real-tab index).
+    // Pick the first non-active real tab as the move target, and ask the
+    // PRODUCT for its number rather than counting the strip — see the sibling
+    // test above for why the two lists are not the same list.
     const real = before.filter((t) => ctx.isRealTab(t));
     const target = real.find((t) => !t.active && !t.pinned);
     assert(target, "found a non-active tab to move: " + JSON.stringify(before));
-    const targetIndex = real.indexOf(target) + 1;
+    const targetIndex = await ctx.productNumberOf(target, real);
+    assert(targetIndex >= 1, "the product's numbering knows the target tab: " + targetIndex);
     // ;+N with NO split must pair the active tab DIRECTLY with tab N — no
     // empty companion panel pane.
     await ctx.leaderSeq(ctx.tabA, ["W", "m"]); // ;W m -> move tab into split
     await waitPlusPopup(ctx.tabA);
-    await ctx.press(ctx.tabA, String(targetIndex));
+    await ctx.pressNumber(ctx.tabA, targetIndex);
     const sv = await waitFor(async () => {
       const now = await ctx.tabsInfo();
       const split = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
@@ -401,7 +431,7 @@ export async function run(ctx: any): Promise<void> {
       "pair pinned next to the anchor: anchor=" + activeRow.id + " partner=" + partner + " pair=" + JSON.stringify(pairIds) + " order=" + JSON.stringify((await ctx.tabsInfo()).filter((t) => ctx.isRealTab(t)).map((t) => t.id))
     );
     // Clean up.
-    await ctx.leaderPress(ctx.tabA, "\\"); // ;\
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]); // ;W u
     await waitNoSplit();
   });
 }

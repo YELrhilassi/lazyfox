@@ -52,6 +52,29 @@
   // about. The module is typechecked by tsconfig.json; only the Node-side test
   // of it is out of scope here.
   //
+  // scripts/test/chrome-state.test.ts and scripts/test/wire-replay.test.ts are
+  // the eighth and ninth, for the same reason and by the same mechanism: both
+  // drive the REAL createDebug().handle() (the first to prove a reply the
+  // product writes round-trips through the decoder the harness reads with; the
+  // second to replay the committed traces through it), and debug.ts imports
+  // chrome/config.ts, which still reads `Services` directly — it is one of the
+  // declared backlog modules in src/chrome/dependency-audit.ts, not yet on the
+  // env seam. So importing debug.ts from a Node-side test drags Firefox chrome
+  // globals into a DOM-less config.
+  //
+  // scripts/test/relay-queue.test.ts is the tenth, and for the same reason as
+  // test-store.ts: it drives extension/services/relay.ts, which reaches the
+  // `browser` global (and so does the port bookkeeping under test). The module
+  // is typechecked by tsconfig.json; only the Node-side test of it is out of
+  // scope here.
+  //
+  // Worth being precise about what is and is not checked here. src/chrome/
+  // env.ts and src/chrome/stateapi.ts — the two modules these tests exist to
+  // cover — are DOM-free and DO typecheck cleanly under this config, which is
+  // deliberate: the state contract has to be readable from Node or the whole
+  // seam is theatre. Only the debug.ts import forces the exclusion, and when
+  // config.ts is converted to the seam these two come straight back in.
+  //
   // The Node-side tests themselves now live in scripts/test/*.test.ts and run
   // under node:test. They are INCLUDED here (see the include list below), so a
   // change to a test file cannot silently break the build — scripts/test/ is
@@ -65,7 +88,10 @@
     "scripts/test-chrome-keys.ts",
     "scripts/test-overlays.ts",
     "scripts/test-leader-sequences.ts",
-    "scripts/test/keyhold.test.ts"
+    "scripts/test/keyhold.test.ts",
+    "scripts/test/chrome-state.test.ts",
+    "scripts/test/wire-replay.test.ts",
+    "scripts/test/relay-queue.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

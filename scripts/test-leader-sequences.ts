@@ -474,5 +474,57 @@ delete leaderSequences["L"];
   eq("a leading zero is not consumed", fn("0"), false);
 }
 
+/* ---------- the capture's "what we need next" hint ---------- */
+//
+// The status bar's indicator shows what the armed capture wants, so this is
+// not decoration: it is the only thing that tells the user a keystroke is
+// about to be swallowed. These pin the four ways a capture can end, because a
+// hint that outlives its capture is a hint to press a dead key.
+
+{
+  const l = makeLeader([]) as any;
+  eq("a fresh controller expects nothing", l.pendingExpect, "");
+
+  l.armPending(() => true, { timeoutMs: 1000, expect: "1-9" });
+  eq("arming records what it wants", l.pendingExpect, "1-9");
+
+  l.handlePending("3");
+  eq("consuming the key clears the hint", l.pendingExpect, "");
+
+  l.armPending(() => true, { timeoutMs: 1000, expect: "0 1 2" });
+  l.cancelPending();
+  eq("cancelling clears the hint", l.pendingExpect, "");
+
+  let timedOut = false;
+  l.armPending(() => true, {
+    timeoutMs: 10,
+    onTimeout: () => { timedOut = true; },
+    expect: "1-9",
+  });
+  await new Promise((r) => setTimeout(r, 40));
+  ok("an unused capture runs its timeout", timedOut);
+  eq("a timed-out capture drops its hint", l.pendingExpect, "");
+}
+
+{
+  // Re-arming is the ordinary case for a two-digit position, and the hint has
+  // to narrow with the prefix rather than keep promising the first digit's
+  // range — a bar that still said "1-9" after `;W m 1` would be describing a
+  // state the user had already left.
+  const armed: Array<{ fn: (k: string) => boolean; ms: number; expect?: string }> = [];
+  const ctx: any = {
+    ops: { tabCount: async () => 12 },
+    armDigits: (fn: any, ms: number, expect?: string) => armed.push({ fn, ms, expect }),
+  };
+  armTabPosition(ctx, () => {});
+  eq("the first arm asks for any first digit", armed[0]!.expect, "1-9");
+  // `;W m 1` with twelve tabs: 1/10/11/12, so 0/1/2 continue and nothing else.
+  armed[0]!.fn("1");
+  // The count is fetched on first use, so the re-arm lands a microtask later.
+  await new Promise((r) => setTimeout(r, 0));
+  eq("the re-arm narrows to the live digits", armed[1]!.expect, "0 1 2");
+  // `1` `1` is tab 11 — a jump, so no capture is left armed at all.
+  eq("a resolved position arms nothing further", armed.length, 2);
+}
 console.log(`
 ${passed} checks passed.`);

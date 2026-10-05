@@ -8,7 +8,7 @@ export async function run(ctx: any): Promise<void> {
   // that dissolve and rebuild splits, so a quick subset can skip them.
   const TAGS: string[] = ["newfeatures","split","destructive"];const { t, waitNoSplit, waitPlusPopup } = makeSplitHelpers(ctx, "split/order", TAGS);
 
-  await t("split: ;+N auto-split keeps the other tabs' order", async () => {
+  await t("split: ;W m +N auto-split keeps the other tabs' order", async () => {
     // Regression: addTabSplitView used to park a freshly glued pair at the
     // END of the strip, renumbering every tab between the pair and the tail —
     // so ;1-9 could silently point at a different tab after a split. Splitting
@@ -34,14 +34,17 @@ export async function run(ctx: any): Promise<void> {
     // Activate A (a MIDDLE tab, not the last) and auto-split A with C.
     await evalIn(ctx.probe, `browser.tabs.update(${aRow.id}, { active: true })`).catch(() => {});
     await waitFor(async () => ((await ctx.activeTabInfo() || {}).id === aRow.id ? true : null), 5000).catch(() => {});
-    // ;+N numbers REAL tabs exactly like the chrome helper's realTabs(): skip
-    // only splitpanel/#lfc transients (commandcenter tabs count).
+    // ;+N resolves against the PRODUCT's numbering, which is not the strip
+    // order the test can see: it skips the split panel and the relay but keeps
+    // a real tab carrying a momentary #lfc= request hash. Ask for C's number
+    // rather than counting, then type it in full — C is nowhere near 1-9 once
+    // the suite has accumulated tabs.
     const chromeReal = ids.filter((t) => ctx.isRealTab(t));
-    const cRealIndex = chromeReal.findIndex((t) => t.id === cRow.id) + 1;
-    assert(cRealIndex <= 9, "C index within 1-9: " + cRealIndex);
+    const cRealIndex = await ctx.productNumberOf(cRow, chromeReal);
+    assert(cRealIndex >= 1, "the product's numbering knows C: " + cRealIndex);
     await ctx.leaderSeq(a, ["W", "m"]); // ;W m -> move tab into split
     await waitPlusPopup(a);
-    await ctx.press(a, String(cRealIndex));
+    await ctx.pressNumber(a, cRealIndex);
     try {
       await waitFor(async () => {
         const now = await ctx.tabsInfo();
@@ -70,7 +73,7 @@ export async function run(ctx: any): Promise<void> {
     }, 4000);
     assert(settled != null, "pair pinned next to the anchor (A first, then C, then B): web=" + JSON.stringify((await ctx.tabsInfo()).filter((t) => ctx.isRealTab(t) && !(t.url || "").includes("commandcenter.html")).map((t) => t.id)));
     // Clean up: unsplit and close the fresh tabs.
-    await ctx.leaderPress(a, "\\");
+    await ctx.leaderSeq(a, ["W", "u"]);
     await waitNoSplit();
     for (const id of [aRow.id, bRow.id, cRow.id]) {
       await evalIn(ctx.probe, `browser.tabs.remove(${id}).catch(() => {})`);
@@ -102,7 +105,7 @@ export async function run(ctx: any): Promise<void> {
     // Split the middle tab (B) via its content-script leader.
     await evalIn(ctx.probe, `browser.tabs.update(${bId}, { active: true })`).catch(() => {});
     await waitFor(async () => ((await ctx.activeTabInfo() || {}).id === bId ? true : null), 5000).catch(() => {});
-    await ctx.leaderPress(b, "\\", { shift: true }); // ;| on B
+    await ctx.leaderSeq(b, ["W", "|"]); // ;W | on B
     await waitFor(async () => {
       const now = await ctx.tabsInfo();
       const sv = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
@@ -118,7 +121,7 @@ export async function run(ctx: any): Promise<void> {
       "real tabs kept their order after a middle split: want=" + JSON.stringify([aId, bId, cId]) + " got=" + JSON.stringify(realOrder)
     );
     // Clean up: unsplit and close the fresh tabs + panel.
-    await ctx.leaderPress(b, "\\"); // ;\
+    await ctx.leaderSeq(b, ["W", "u"]); // ;W u
     await waitNoSplit();
     const leftovers = await ctx.tabsInfo();
     for (const id of [aId, bId, cId]) {

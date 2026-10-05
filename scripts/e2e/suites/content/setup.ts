@@ -10,7 +10,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
+    opts: { tags?: string[] } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   await t(";I opens the setup page with a GitHub Releases standalone installer download", async () => {
     // The store add-on cannot write profile files itself, so ;I opens the

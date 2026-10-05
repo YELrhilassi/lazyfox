@@ -7,11 +7,17 @@
 import { backdropWheel } from "../shared/keyguard";
 import { PANEL_CSS, type PopupCtl } from "../shared/overlay";
 import { UI_FONT } from "../shared/theme";
+import type { ChromeEnv, ChromeDocument } from "./env";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 
-function el(tag: string, attrs?: Record<string, string> | null, text?: string | null): HTMLElement {
-  const e = document.createElementNS(XHTML, tag) as HTMLElement;
+// `el` returns `HTMLElement` even though `env.document` is only structurally a
+// document: the real env's `createElementNS` produces one, and the fake's
+// satisfies the same shape. Typing it keeps the listener callbacks below
+// contextually typed (`e` is an Event, not `any`) — which is the whole point of
+// parameterising the document instead of widening it to `any`.
+function el(doc: ChromeDocument, tag: string, attrs?: Record<string, string> | null, text?: string | null): HTMLElement {
+  const e = doc.createElementNS(XHTML, tag) as HTMLElement;
   if (attrs) {
     for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]!);
   }
@@ -37,7 +43,9 @@ export interface PopupHost {
   handleKey(e: KeyboardEvent): boolean;
 }
 
-export function createPopupHost(): PopupHost {
+export function createPopupHost(env: ChromeEnv): PopupHost {
+  const doc = env.document;
+  const win = env.window;
   let currentPopup: {
     root: HTMLElement;
     onKey?: (e: KeyboardEvent) => boolean;
@@ -62,7 +70,7 @@ export function createPopupHost(): PopupHost {
     // never keep arrow keys resizing the window.
     resizeHost = null;
     try {
-      window.gBrowser.selectedBrowser.focus();
+      win.gBrowser.selectedBrowser.focus();
     } catch (e) {
       // ignore
     }
@@ -79,11 +87,11 @@ export function createPopupHost(): PopupHost {
   }
 
   function openChromePopupInner(html: string, build: (root: HTMLElement) => PopupCtl): PopupCtl {
-    const root = el("div");
+    const root = el(doc, "div");
     root.style.cssText =
       "position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;" +
       "background:rgba(8,8,14,.4);font-family:" + UI_FONT;
-    const hdoc = document.implementation.createHTMLDocument("");
+    const hdoc = (doc as any).implementation.createHTMLDocument("");
     hdoc.body.innerHTML = html;
     while (hdoc.body.firstChild) root.appendChild(hdoc.body.firstChild);
     // Firefox's HTML-fragment parser drops form controls (<input>, <button>,
@@ -93,7 +101,7 @@ export function createPopupHost(): PopupHost {
     if (!root.querySelector(".lf-input")) {
       const panel = root.querySelector(".lf-panel");
       if (panel) {
-        const input = el("input");
+        const input = el(doc, "input");
         input.className = "lf-input";
         input.setAttribute("spellcheck", "false");
         const empty = panel.querySelector(".lf-empty");
@@ -103,10 +111,10 @@ export function createPopupHost(): PopupHost {
         else panel.appendChild(input);
       }
     }
-    const st = el("style");
+    const st = el(doc, "style");
     st.textContent = PANEL_CSS;
     root.appendChild(st);
-    document.documentElement.appendChild(root);
+    doc.documentElement.appendChild(root);
     root.addEventListener("mousedown", (e) => {
       if (e.target === root) closePopup();
     });
@@ -146,7 +154,7 @@ export function createPopupHost(): PopupHost {
       });
     }
     currentPopup = { root: root, onKey: ctl.onKey, refresh: ctl.refresh, focus: ctl.focus, close: ctl.close };
-    setTimeout(() => {
+    env.setTimeout(() => {
       if (currentPopup && currentPopup.focus) currentPopup.focus();
       if (currentPopup && currentPopup.refresh) currentPopup.refresh();
     }, 0);
@@ -155,11 +163,11 @@ export function createPopupHost(): PopupHost {
 
   function openResizePopup(): void {
     closePopup();
-    const root = el("div");
+    const root = el(doc, "div");
     root.style.cssText =
       "position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;" +
       "background:rgba(8,8,14,.4);font-family:" + UI_FONT;
-    const panel = el("div");
+    const panel = el(doc, "div");
     panel.style.cssText =
       "width:520px;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;" +
       "box-shadow:0 24px 70px rgba(0,0,0,.6);padding:20px 22px;text-align:center";
@@ -168,13 +176,13 @@ export function createPopupHost(): PopupHost {
       "<div style='margin-top:12px;font-size:12px;color:#7aa2f7'>" +
       "arrows resize \u00b7 shift+arrows move \u00b7 Esc close</div>";
     root.appendChild(panel);
-    document.documentElement.appendChild(root);
+    doc.documentElement.appendChild(root);
     root.addEventListener("mousedown", (e) => {
       if (e.target === root) closeResize();
     });
     resizeHost = root;
     currentPopup = { root: root };
-    window.focus();
+    win.focus();
   }
 
   function closeResize(): void {
@@ -197,22 +205,27 @@ export function createPopupHost(): PopupHost {
     // popup's own navigation.
     if (!resizeHost) return false;
     const step = e.shiftKey ? 40 : 20;
+    // The window is read through `win`, not the global `window`, so the resize
+    // geometry is assertable in a test: the fake records the deltas instead of
+    // asking a display server for them.
+    const move = (dx: number, dy: number) => win.moveBy && win.moveBy(dx, dy);
+    const resize = (dw: number, dh: number) => win.resizeBy && win.resizeBy(dw, dh);
     switch (e.key) {
       case "ArrowLeft":
-        if (e.shiftKey) window.moveBy(-step, 0);
-        else window.resizeBy(-step, 0);
+        if (e.shiftKey) move(-step, 0);
+        else resize(-step, 0);
         return true;
       case "ArrowRight":
-        if (e.shiftKey) window.moveBy(step, 0);
-        else window.resizeBy(step, 0);
+        if (e.shiftKey) move(step, 0);
+        else resize(step, 0);
         return true;
       case "ArrowUp":
-        if (e.shiftKey) window.moveBy(0, -step);
-        else window.resizeBy(0, -step);
+        if (e.shiftKey) move(0, -step);
+        else resize(0, -step);
         return true;
       case "ArrowDown":
-        if (e.shiftKey) window.moveBy(0, step);
-        else window.resizeBy(0, step);
+        if (e.shiftKey) move(0, step);
+        else resize(0, step);
         return true;
       case "Escape":
         closeResize();

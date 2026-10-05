@@ -8,25 +8,40 @@
 // timing-sensitive handshake (a reply racing the removal, safety timeouts
 // dropping late requests).
 //
-// Today ONE hidden relay tab (relay.html) carries everything. The helper
-// reaches the relay page's window directly (postMessage); the page holds a
-// long-lived runtime port to the background and forwards traffic both ways.
-// Nothing is created or removed per message.
+// Today ONE hidden relay tab (relay.html) carries everything. The helper reaches
+// the relay page's window directly; the page holds a long-lived runtime port to
+// the background and forwards traffic both ways. Nothing is created or removed
+// per message.
 //
-// This module owns the helper side of the channel: relay resolution/creation,
-// the message bridge (req/resp/cmd/ready), the reply waiters, and the command
-// dispatcher for background->chrome pushes. The deliberate per-message URL
-// channels that ride REAL tabs (the #lfc=keys test synthesizer, the #lfc=state
-// debug query, #lfc=cfg, #lfc=open) are handled here too, in handleLfc.
+// WHAT THIS FILE IS: the composition root for the helper side of that channel.
+// It holds the MESSAGE state — the queue, the reply waiters, the single URL
+// slot, and the 500ms poll that drains them — and wires four collaborators
+// around it:
+//
+//   extbaseurl  what is the extension's base URL (four other callers too)
+//   relaytab    the relay TAB: find/create/dedupe/navigate/identity
+//   tabguard    is the selected tab a real user tab (existing module)
+//   pushes      what each background->chrome command DOES
+//
+// and it owns the per-message real-tab channels that ride URL hashes on a real
+// tab instead of the relay (the #lfc= keys synthesizer, the state query, cfg,
+// open), which is a different transport and deliberately does not share the
+// relay's state.
+//
+// The dependency runs one way: this file imports the collaborators, none of
+// them import it.
 
 import { mergeConfig, mergeHotkeys } from "../shared/config";
 import { openBookmarksPopup, openDownloadsPopup, openHistoryPopup, openSearchPopup, openTabsPopup, openUrlPopup, type PopupCtx } from "../shared/popups";
-import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
-import type { ChromeAction, ChromeReq, RelayAction, RelayReq, RelayRes } from "../shared/protocol";
+import type { PopupItem } from "../shared/types";
+import type { RelayAction, RelayReq, RelayRes } from "../shared/protocol";
 import { HASH_PREFIX, decodeCommand, decodeReply, encodeRequest } from "../shared/relay-wire";
 import { applyHoverRevealPref, type ChromeCfg } from "./config";
 import { handleKeys } from "./keys";
 import { createTabGuard } from "./tabguard";
+import { resolveCcBaseUrl } from "./extbaseurl";
+import { createRelayTabCtl } from "./relaytab";
+import { createPushDispatcher } from "./pushes";
 import type { CacheCtl } from "./cache";
 import type { DebugHandlers } from "./debug";
 import type { SplitView } from "./splitview";
@@ -61,7 +76,7 @@ export interface ChannelDeps {
       shiftKey: boolean;
       metaKey: boolean;
       isComposing: boolean;
-    }): boolean;
+    }, target?: any): boolean;
     // The matching keyup for a synthesized key — see KeysDeps. The channel
     // forwards it to the SAME handler the real window keyup listener runs, so
     // a synthetic release and a genuine one cannot disagree.
@@ -101,11 +116,10 @@ export interface Channel {
   // flag, tab list) — surfaced through the #lfc=state channel.
   relayDebug(): any;
   // True when this tab element IS the window's relay, by reference as well as
-  // by URL — see the implementation for why the URL alone is not enough.
+  // by URL — see relaytab.ts for why the URL alone is not enough.
   isKnownRelayTab(tab: any): boolean;
 }
 
-const EXT_ID = "lazyfox@lazyfox.dev";
 // How long a request may sit queued before the relay becomes ready, and how
 // long a reply-bearing request waits for its response.
 const RELAY_TIMEOUT = 6000;
@@ -127,269 +141,41 @@ export function createChannel(deps: ChannelDeps): Channel {
   // own URL to #lfr=rp/cm.<...> which the helper polls (it already polls every
   // 500ms). The URL is a single slot: one request in flight at a time, the
   // rest queue here; the page never clobbers a pending request hash.
-  let relayTab: { browser: any; tab: any } | null = null;
   let relayReady = false;
   // Requests queued for the single URL slot (helper -> background). The arg is
   // a structured value from RelayApi, not a string: the wire JSON-encodes it
   // exactly as it already did replies and commands.
   let pendingReqs: Array<{ id: number; action: RelayAction; arg: unknown }> = [];
+  let relaySeq = 0;
   // Reply waiters keyed by request id, resolved when the relay page writes the
   // `#lfr=rp.<id>.<json>` hash back into the tab URL.
-  let relaySeq = 0;
   const relayWaiters: Record<number, { resolve: (v: any) => void; timer: any }> = {};
 
-  function ccBaseUrl(): string | null {
-    // Primary: resolve the extension's policy directly. Firefox's
-    // WebExtensionPolicy.getByID() keys on the add-on's moz-extension HOSTNAME
-    // UUID (e.g. ebf1759a-…), not the email-style add-on id, so on a permanent
-    // install it can return null for EXT_ID. Iterate the active policies and
-    // match by the add-on id — the field that is ALWAYS the email id we ship —
-    // so the helper resolves its base URL on a cold boot even with no
-    // extension page tab open (no commandcenter yet). This is what lets the
-    // alive announce + relay come up on a real interactive session; relying
-    // only on getByID + a commandcenter-tab scan left the announce stuck and a
-    // second content status bar drawn.
-    try {
-      const policies = WebExtensionPolicy.getActiveExtensions();
-      for (const p of policies) {
-        if (p && p.id === EXT_ID) return p.getURL("");
-      }
-    } catch (e) {
-      // fall through to getByID then tab scan
-    }
-    // Secondary: getByID by id (works for some installs), then fall back to
-    // scanning for an open commandcenter/relay/extension page tab.
-    try {
-      const p = WebExtensionPolicy.getByID(EXT_ID);
-      if (p) return p.getURL("");
-    } catch (e) {
-      // fall through to tab scan
-    }
-    for (const t of window.gBrowser.tabs) {
-      try {
-        const lb = t.linkedBrowser;
-        const s = lb && lb.currentURI ? lb.currentURI.spec : "";
-        if (s.indexOf("moz-extension://") !== 0) continue;
-        // Any extension page tab works — commandcenter, relay, setup, options.
-        if (
-          s.indexOf("commandcenter.html") !== -1 ||
-          s.indexOf("relay.html") !== -1 ||
-          s.indexOf("setup.html") !== -1 ||
-          s.indexOf("options") !== -1
-        ) {
-          // base = moz-extension://<hostname>/  (slice past hostname to slash).
-          const host = s.indexOf("//") + 2;
-          const slash = s.indexOf("/", host);
-          return slash < 0 ? s : s.slice(0, slash + 1);
-        }
-      } catch (e) {
-        // skip tab
-      }
-    }
-    return null;
-  }
-
-  /* ===================== relay bridge ===================== */
-
-  // The relay tab is identified by its page name (relay.html) — its URL never
-  // changes, so scanning is unambiguous even while messages are in flight.
-  // The <browser>'s contentWindow object is REPLACED when the page commits
-  // (the initial about:blank window dies), so the window must be re-resolved
-  // from the tab on every use — never cached from creation time.
-  const relayBrowsers = new Set<any>();
-
-  // Any live <browser> in this window whose tab is a relay page — the one true
-  // answer to "do we already have a relay?", regardless of which side created
-  // it (chrome helper via addTab, or the background via browser.tabs.create).
-  // Returns { browser, tab } or null.
-  function findRelayTab(): { browser: any; tab: any } | null {
-    try {
-      for (const t of window.gBrowser.tabs) {
-        const b = t.linkedBrowser;
-        if (!b) continue;
-        let isRelay = false;
-        try {
-          isRelay = !!b.currentURI && b.currentURI.spec.indexOf("relay.html") !== -1;
-        } catch (e) {
-          // ignore
-        }
-        // A relay tab created a moment ago may still show about:blank; the
-        // created-browsers set covers that window.
-        if (!isRelay && relayBrowsers.has(b)) isRelay = true;
-        if (!isRelay) continue;
-    // A relay must carry the extension's page (never a stale leftover);
-    // check the created set OR a committed relay URL.
-    return { browser: b, tab: t };
-      }
-    } catch (e) {
-      // ignore
-    }
-    return null;
-  }
-
-  // Resolve + cache the relay tab's { browser, tab }. Prunes a dead cache
-  // (tab recreated after a death), hides the tab natively (cosmetic — never
-  // browser.tabs.hide(), which detaches the browsing context and nulls the
-  // URL/loadURI path), and returns null when no relay exists yet.
-  function resolveRelayTab(): { browser: any; tab: any } | null {
-    for (const b of relayBrowsers) {
-      try {
-        if (!window.gBrowser.tabs.some((t: any) => t.linkedBrowser === b)) relayBrowsers.delete(b);
-      } catch (e) {
-        relayBrowsers.delete(b);
-      }
-    }
-    const r = findRelayTab();
-    if (!r) return null;
-    relayBrowsers.add(r.browser);
-    try {
-      r.tab.hidden = true; // cosmetic hide only (see above)
-    } catch (e) {
-      // ignore
-    }
-    relayTab = r;
-    return r;
-  }
-
-  // True when this tab element is the window's relay, BY REFERENCE. The URL
-  // alone is not enough: a relay created a moment ago still reports
-  // about:blank until relay.html commits, and during that window it looks
-  // exactly like a user tab. Anything that NUMBERS tabs must ask this rather
-  // than re-deriving identity from the URL, or a tab's number shifts by one
-  // for as long as the relay is settling — and `;4` moves the wrong tab.
-  function isKnownRelayTab(tab: any): boolean {
-    try {
-      const b = tab && tab.linkedBrowser;
-      if (!b) return false;
-      if (relayBrowsers.has(b)) return true;
-      const spec = b.currentURI && b.currentURI.spec;
-      return !!spec && spec.indexOf("relay.html") !== -1;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function createRelayTab(): void {
-    // One relay per window, ever: if a relay already exists (helper-created or
-    // background-created), never add another. Before this guard, a 500ms poll
-    // that ran before the first relay's page committed (currentURI was still
-    // about:blank) could spawn a duplicate relay tab every tick — the "tabs
-    // flashing open and closed" + one content process per stray tab.
-    if (findRelayTab()) return;
-    const base = ccBaseUrl();
-    if (!base) return;
-    try {
-      const tab = window.gBrowser.addTab(base + "relay.html", {
-        inBackground: true,
-        skipAnimation: true,
-        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-      });
-      if (tab && tab.linkedBrowser) relayBrowsers.add(tab.linkedBrowser);
-      relayTab = tab && tab.linkedBrowser ? { browser: tab.linkedBrowser, tab: tab } : null;
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // ---- URL-slot relay (see the state comment above) ----------------------
+  const ccBaseUrl = resolveCcBaseUrl;
+  const relayTab = createRelayTabCtl({ ccBaseUrl });
+  const handlePush = createPushDispatcher(deps);
+  // The tab-selection guard (what a real user tab is, same-tick steering
+  // after a close, delayed stranded recovery). Hooked once from startRelay, and
+  // consulted by nothing else.
+  const tabGuard = createTabGuard({ ccBaseUrl });
 
   // Declared once, in shared/relay-wire.ts, and used by the relay page too.
   const RELAY_HASH_PREFIX = HASH_PREFIX;
 
-  function relayBrowser(): any {
-    const cached = relayTab;
-    if (cached && cached.browser) {
-      try {
-        if (window.gBrowser.tabs.some((t: any) => t.linkedBrowser === cached.browser)) return cached.browser;
-      } catch (e) {
-        // ignore
-      }
-    }
-    const r = resolveRelayTab();
-    return r ? r.browser : null;
-  }
-
-  // Exactly one relay tab per window, ever. Session restore recreates the
-  // previous relay tab while the helper is also creating one at startup, and a
-  // stray second relay means a second hidden page + content process for no
-  // benefit (and the "many processes on htop" the user saw). Called from
-  // startRelay's 500ms poll, so any extra is closed within half a second.
-  function dedupeRelayTabs(): void {
-    try {
-      const relays = Array.from(window.gBrowser.tabs).filter((t: any) => {
-        try {
-          return t.linkedBrowser && t.linkedBrowser.currentURI && t.linkedBrowser.currentURI.spec.indexOf("relay.html") !== -1;
-        } catch (e) {
-          return false;
-        }
-      });
-      for (const extra of relays.slice(1)) {
-        try {
-          window.gBrowser.removeTab(extra);
-        } catch (e) {
-          // ignore
-        }
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  function relayUrl(browser: any): string {
-    try {
-      return (browser && browser.currentURI && browser.currentURI.spec) || "";
-    } catch (e) {
-      return "";
-    }
-  }
-
-  // Navigate the relay tab to url. Same-document hash changes (the common
-  // case) never reload the page; even a full reload is survivable (the page
-  // re-connects its port and re-reads the hash on pageshow). Works for remote
-  // (out-of-process) tabs from the chrome side — plain navigation.
-  function loadRelay(url: string): void {
-    const b = relayBrowser();
-    if (!b) return;
-    try {
-      // Fragment-only changes must stay same-document (no reload, no content
-      // process churn per message): loadURI with an nsIURI preserves the
-      // document for a pure fragment change, while fixupAndLoadURIString can
-      // fix up a fragment-bearing URL into a FULL RELOAD (verified: the relay
-      // page's boot counter incremented on every rq write / hash clear,
-      // spinning a content process per message). loadURI accepts an nsIURI,
-      // not a bare string.
-      const uri = Services.io.newURI(url);
-      b.loadURI(uri, {
-        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-      });
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // Clear a handled #lfr hash (same-document navigation back to the bare
-  // relay URL), freeing the slot for the next message.
-  function clearRelayHash(): void {
-    const b = relayBrowser();
-    if (!b) return;
-    const base = ccBaseUrl();
-    if (!base) return;
-    loadRelay(base + "relay.html");
-  }
+  /* ===================== relay bridge ===================== */
 
   // Pop the next queued request and write it into the URL slot.
   function sendNextRelay(): void {
-    const b = relayBrowser();
+    const b = relayTab.browser();
     if (!b) return;
     const base = ccBaseUrl();
     if (!base) return;
-    const cur = relayUrl(b);
-    if (cur.indexOf(RELAY_HASH_PREFIX) !== -1) return; // slot busy
+    if (relayTab.url().indexOf(RELAY_HASH_PREFIX) !== -1) return; // slot busy
     const next = pendingReqs.shift();
     if (!next) return;
     // The wire format is shared/relay-wire.ts, which the relay page also uses,
     // so the two ends cannot drift apart.
-    loadRelay(
+    relayTab.load(
       base + "relay.html" + RELAY_HASH_PREFIX + encodeRequest(next.id, next.action, next.arg)
     );
   }
@@ -397,9 +183,9 @@ export function createChannel(deps: ChannelDeps): Channel {
   // Poll the relay tab's URL (called from startRelay every 500ms): handle a
   // reply or command hash the page wrote, then send the next queued request.
   function pollRelayUrl(): void {
-    const b = relayBrowser();
+    const b = relayTab.browser();
     if (!b) return;
-    const spec = relayUrl(b);
+    const spec = relayTab.url();
     const i = spec.indexOf(RELAY_HASH_PREFIX);
     if (i < 0) {
       // Slot free (page cleared a forwarded request): send the next one.
@@ -416,35 +202,29 @@ export function createChannel(deps: ChannelDeps): Channel {
         delete relayWaiters[reply.id];
         w.resolve(reply.result);
       }
-      clearRelayHash();
+      relayTab.clearHash();
       sendNextRelay();
       return;
     }
     const cmd = decodeCommand(frag);
     if (cmd) {
-      handleCmd(cmd.action, cmd.arg);
-      clearRelayHash();
+      handlePush(cmd.action, cmd.arg);
+      relayTab.clearHash();
       sendNextRelay();
     }
   }
 
-  // The tab-selection guard (what a real user tab is, same-tick steering
-  // after a close, delayed stranded recovery) lives in tabguard.ts. It is
-  // created here, hooked once from startRelay, and consulted by relayDebug
-  // and nothing else.
-  const tabGuard = createTabGuard({ ccBaseUrl });
-
   function startRelay(): boolean {
     if (!ccBaseUrl()) return false;
-    let r = resolveRelayTab();
+    const r = relayTab.browser();
     tabGuard.hook();
     if (!r) {
       // No relay yet: create the tab; requests queue until it exists.
-      createRelayTab();
+      relayTab.create();
       return true;
     }
     relayReady = true;
-    dedupeRelayTabs();
+    relayTab.dedupe();
     tabGuard.ensureRealTabSelected();
     pollRelayUrl();
     return true;
@@ -490,65 +270,6 @@ export function createChannel(deps: ChannelDeps): Channel {
     });
   }
 
-  /* ===================== background -> chrome commands ===================== */
-
-  // Commands the background pushes through the relay (native splits, status
-  // pushes, ...). `arg` arrives structured-cloned: objects come through as
-  // objects, strings as strings.
-  // Commands the background pushes through the relay (native splits, status
-  // pushes, ...). The arg arrives structured-cloned, so what actually shows up
-  // here is exactly the request shape declared in ChromeApi.
-  //
-  // The dispatch is a table rather than an if-chain for one concrete reason: an
-  // if-chain silently ignores an action it does not recognise, so a rename on
-  // the background side turned into a push that did nothing and nobody could
-  // tell. A table typed over ChromeAction makes an unhandled action a compile
-  // error, and a removed action a compile error here too.
-  function handleCmd(action: string, arg: unknown): void {
-    const table: { [K in ChromeAction]: (req: ChromeReq<K>) => void } = {
-      splitTab: () => deps.split.splitCurrentTab("horizontal"),
-      unsplit: () => deps.split.unsplit(),
-      switchPane: (req) => deps.split.switchPane(req.dir >= 0 ? 1 : -1),
-      swapSplitPanes: (req) => deps.split.swapPane(req.dir >= 0 ? 1 : -1),
-      moveToSplit: (req) => deps.split.addTabToSplitByIndex(req.index),
-      // Session restore finished opening tabs; re-create the native split
-      // groupings. Positions are 1-based over the SAVED tab list.
-      restoreSplits: (req) => deps.split.restoreSplits(req.groups, req.expect),
-      // Status-bar push/reply: the fresh session summary as an object.
-      sessionState: (req) => deps.status.applySessionState(req),
-      // Content-script leader arm/disarm, cached per tab-strip index so the
-      // window-level status bar can show the pulsing LEADER chevron on web
-      // pages, where the content script owns the leader key.
-      leaderState: (req) => {
-        if (req.index >= 0) deps.status.setContentLeader(req.index, !!req.active);
-      },
-      // "A content script is running in this tab", pushed by the tab itself.
-      // The helper cannot work this out on its own — see noteContentPresent.
-      contentState: (req) => {
-        if (req.index >= 0) deps.setContentPresent(req.index, !!req.active, String(req.url || ""));
-      },
-      // Content-script find-in-page count, cached the same way.
-      findState: (req) => {
-        if (req.index >= 0) deps.status.setContentFind(req.index, req.count || 0, req.cur || 0);
-      },
-      // Global page-cache mode pushed by the background's diagnostics page.
-      cacheGlobal: (req) => deps.cache.setGlobalMode(req.mode || "normal"),
-      // Per-tab/session page-cache policy; tabIds aligned to the strip order
-      // the tab switcher already relies on.
-      cachePolicy: (req) =>
-        deps.cache.setPolicy(req.mode || "normal", Array.isArray(req.tabIds) ? req.tabIds : []),
-    };
-    const fn = table[action as ChromeAction];
-    if (!fn) return; // an action this build does not know: ignore, never throw
-    try {
-      fn((arg || {}) as never);
-    } catch (e) {
-      // A push that throws must not take the whole chrome helper down with it.
-      // Losing one status-bar update is survivable; losing the leader key is not.
-    }
-  }
-
-
   /* ===================== public request wrappers ===================== */
 
   // The three read-only pulls the chrome UI makes, each with its reply already
@@ -590,6 +311,16 @@ export function createChannel(deps: ChannelDeps): Channel {
     }, 0);
   }
 
+  // Close the requesting command-center tab. Shared by both arms of handleOpen.
+  function closeRequestingTab(browser: any): void {
+    try {
+      const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
+      if (tab) window.gBrowser.removeTab(tab);
+    } catch (e) {
+      // ignore
+    }
+  }
+
   function handleOpen(target: string, browser: any): void {
     // `.c` marks "close the requesting command-center tab after opening".
     // Checked by SUFFIX (not contains): the base64 URL payload below can
@@ -609,14 +340,7 @@ export function createChannel(deps: ChannelDeps): Channel {
       } catch (e) {
         // malformed payload — ignore
       }
-      if (closeCc && browser) {
-        try {
-          const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
-          if (tab) window.gBrowser.removeTab(tab);
-        } catch (e) {
-          // ignore
-        }
-      }
+      if (closeCc && browser) closeRequestingTab(browser);
       return;
     }
     const which = target.split(".")[0]!;
@@ -635,14 +359,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     } else {
       deps.ops.openTarget(which);
     }
-    if (closeCc && browser) {
-      try {
-        const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
-        if (tab) window.gBrowser.removeTab(tab);
-      } catch (e) {
-        // ignore
-      }
-    }
+    if (closeCc && browser) closeRequestingTab(browser);
   }
 
   // The #lfc=keys channel — the e2e harness's synthetic key path (shift
@@ -674,14 +391,14 @@ export function createChannel(deps: ChannelDeps): Channel {
         const parsed = JSON.parse(json) as Record<string, unknown>;
         if (parsed && typeof parsed === "object") {
           if (parsed.bindings && typeof parsed.bindings === "object") {
-            deps.cfg.bindings = mergeHotkeys(parsed.bindings as Partial<ChromeHotkeys>);
+            deps.cfg.bindings = mergeHotkeys(parsed.bindings as Partial<ChannelDeps["cfg"]["bindings"]>);
             Services.prefs.setStringPref("lazyfox.chrome.bindings", JSON.stringify(deps.cfg.bindings));
           } else {
-            deps.cfg.bindings = mergeHotkeys(parsed as Partial<ChromeHotkeys>);
+            deps.cfg.bindings = mergeHotkeys(parsed as Partial<ChannelDeps["cfg"]["bindings"]>);
             Services.prefs.setStringPref("lazyfox.chrome.bindings", JSON.stringify(deps.cfg.bindings));
           }
           if (parsed.config && typeof parsed.config === "object") {
-            deps.cfg.config = mergeConfig(parsed.config as Partial<Config>);
+            deps.cfg.config = mergeConfig(parsed.config as Partial<ChannelDeps["cfg"]["config"]>);
             Services.prefs.setStringPref("lazyfox.chrome.config", JSON.stringify(deps.cfg.config));
             applyHoverRevealPref(deps.cfg);
           }
@@ -708,9 +425,9 @@ export function createChannel(deps: ChannelDeps): Channel {
       });
       out.relayTabs = tabs.filter((s: string) => s.indexOf("relay.html") !== -1).length;
       out.allTabs = tabs.map((s: string) => s.replace(/^moz-extension:\/\/[^/]+\//, "ext:").slice(0, 60));
-      const b = relayBrowser();
+      const b = relayTab.browser();
       out.windowLive = !!b;
-      out.urlSlot = b ? relayUrl(b).split("#")[1] || "(empty)" : null;
+      out.urlSlot = b ? relayTab.url().split("#")[1] || "(empty)" : null;
       out.pending = pendingReqs.length;
       out.awaiting = Object.keys(relayWaiters).length;
     } catch (e) {
@@ -730,7 +447,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     setHash,
     handleLfc,
     relayDebug,
-    isKnownRelayTab,
+    isKnownRelayTab: relayTab.isKnown,
     relayReady: () => relayReady,
   };
-}
+}

@@ -9,7 +9,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
+    opts: { tags?: string[] } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
   await t("leader ;f arms home-grid hint-pick (letters run tiles)", async () => {
     // ;f is link-hints on web pages; on the home grid it arms hint-PICK: each
@@ -23,7 +23,12 @@ export async function run(ctx: any): Promise<void> {
     const badges = await waitFor(async () => {
       const n = await evalIn(ctx.tabA, `document.querySelectorAll("#results.quick .result .hintkey").length`);
       return n > 0 ? n : null;
-    }, 8000);
+      // 15s, the standard for a chrome-window -> background -> content ->
+      // page-DOM round trip in this suite. The Esc-clear wait below already
+      // says so in a comment; this badge wait was the same relay left at 8s,
+      // so under load the one that failed first was the one with the least
+      // headroom, and its message named hint-pick rather than the clock.
+    }, 15000);
     assert(badges > 0, "home-grid tiles show ;f hint badges");
     // Hint-pick is a one-key pick: the input stays blurred; a letter would run
     // that tile. Esc leaves it with nothing selected, back to command mode.
@@ -54,7 +59,7 @@ export async function run(ctx: any): Promise<void> {
     await waitFor(async () => {
       const n = await evalIn(ctx.tabA, `document.querySelectorAll("#results.quick .result .hintkey").length`);
       return n > 0 ? n : null;
-    }, 8000);
+    }, 15000);
     // The chrome helper arms a one-shot capture for the pick: the next key is
     // intercepted at the window level and forwarded into the page, so a hint
     // letter works even when Firefox's (hidden) URL bar holds focus on a fresh

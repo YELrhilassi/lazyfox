@@ -22,12 +22,20 @@ import {
   signalCommandCenterFind
 } from "./commandcenterfocus";
 import { chromeOwnsKeys, isAboutPage, isChromeUiFocus, isCommandCenterTab } from "./keystate";
+import type { ChromeEnv, ChromeWindow } from "./env";
 import type { PopupHost } from "./popup";
 import { createChromePageHints } from "./pagehints";
 import type { TypingChannel } from "./typing";
 
 export interface KeyDispatchDeps {
-  win: Window;
+  // The chrome window, as a parameter rather than the ambient global, so this
+  // module — the whole ownership order below — can be driven in Node with a
+  // fake window. See src/chrome/env.ts.
+  win: ChromeWindow;
+  // The seam itself, for collaborators that take it whole (page hints reads
+  // env.services). Passed rather than derived from `win` so the fake env a
+  // test builds is the same object every collaborator sees.
+  env: ChromeEnv;
   leader: () => LeaderController | null;
   popup: PopupHost;
   typing: TypingChannel;
@@ -37,7 +45,7 @@ export interface KeyDispatchDeps {
   // marker jump, both implemented by the ops adapter.
   handleHotkeyCombo: (combo: string) => boolean;
   switchSessionByMarker: (marker: number) => void;
-  handleScrollKeys: (win: Window, e: { key: string }) => boolean;
+  handleScrollKeys: (win: ChromeWindow, e: { key: string }) => boolean;
   // The leader-action table's own `f` handler (web-page hints), set by the
   // composition root after the leader actions are built (breaks the mutual
   // reference).
@@ -58,7 +66,7 @@ export interface ActorKey {
 
 export function createChromeKeyDown(deps: KeyDispatchDeps) {
   const { win, popup, typing } = deps;
-  const pageHints = createChromePageHints(win, deps.leader);
+  const pageHints = createChromePageHints(deps.env, win, deps.leader);
   const leader = () => deps.leader();
 
   // ;f is link-hints. Web pages run a content script that owns them; the

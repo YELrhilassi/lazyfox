@@ -17,14 +17,20 @@ export interface KeysDeps {
   // The chrome window's capture-phase keydown dispatch (leader, popups,
   // hotkeys, typing guard). Returns whether the key was consumed; a key it
   // lets through is delivered to the focused element below.
-  dispatch(e: {
-    key: string;
-    ctrlKey: boolean;
-    altKey: boolean;
-    shiftKey: boolean;
-    metaKey: boolean;
-    isComposing: boolean;
-  }): boolean;
+  dispatch(
+    e: {
+      key: string;
+      ctrlKey: boolean;
+      altKey: boolean;
+      shiftKey: boolean;
+      metaKey: boolean;
+      isComposing: boolean;
+    },
+    // The tab the key is FOR, so the dispatcher can apply the product's own
+    // ownership fact (is a Lazyfox content script present?) instead of
+    // assuming. Omitted by callers that genuinely have no target.
+    target?: any
+  ): boolean;
   // The matching keyUP. The channel used to carry keydowns only, which is why
   // a synthetic `;` could not be distinguished from a held one: the leader
   // has no release to wait for, so nothing can tell a tap from a hold except
@@ -255,7 +261,7 @@ export function handleKeys(
       // hold. Sending it by default is what makes `;` a tap here and only an
       // explicit `up: false` a hold.
       const withKeyup = k.up !== false;
-      const consumed = deps.dispatch(ev);
+      const consumed = deps.dispatch(ev, targetTab);
       if (!consumed) dispatchToFocused(ev, targetTab, withKeyup);
       if (withKeyup) deps.release(ev.key);
     } catch (e) {

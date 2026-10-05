@@ -10,7 +10,7 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
+    opts: { tags?: string[] } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
 
   // The popup renders its rows (and fires the composed `lazyfox:list` event)
@@ -21,9 +21,17 @@ export async function run(ctx: any): Promise<void> {
   // It also waits for the popup's input to hold focus. Keys only reach a
   // popup through its focused input, so a typeIn that races the focus() lands
   // on the page behind instead — the same silent flake as an early Enter.
-  const openPopup = async (key: string, opts?: any) => {
+  const openPopup = async (key: string | string[], opts?: any) => {
     await ctx.watchList(ctx.tabA);
-    await ctx.leaderPress(ctx.tabA, key, opts);
+    // An array is a CHORD. Split moved under the `;W` category, so `;w` (the
+    // resize popup) is now `;W w` — `leaderPress` sends exactly one binding key
+    // after the leader, and a bare `w` now lands as plain typing, which timed
+    // out waiting for a popup that was never going to open.
+    if (Array.isArray(key)) {
+      await ctx.leaderSeq(ctx.tabA, key, opts);
+    } else {
+      await ctx.leaderPress(ctx.tabA, key, opts);
+    }
     await ctx.waitPopup(ctx.tabA, 8000);
     await ctx.waitExpr(
       ctx.tabA,
@@ -74,17 +82,43 @@ export async function run(ctx: any): Promise<void> {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await activate(ctx.tabA);
     const before = await ctx.tabCount();
-    const tabAId = await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true}).then(ts => { const t = ts.find(x => (x.url||"").indexOf("127.0.0.1") !== -1); return t ? t.id : null; })`);
-    assert(tabAId, "located tabA's id");
+    // tabA's OWN id. `ctx.tabIdOf` reads `browser.tabs.getCurrent()` INSIDE
+    // the tab, which only works in an extension page — tabA is a web page
+    // here, so the content realm has no browser.tabs and it answered null.
+    // The id is read from the PROBE instead, and found by a URL marker unique
+    // to this tab: asking for "the first tab on the fixture host" silently
+    // picks a DIFFERENT tab once the window holds more than one of them, and
+    // then the test asserts about a tab it never touched.
+    //
+    // ONE navigation, carrying the marker. Navigating twice left the second
+    // load racing the popup's first keypress, and `;S` lost.
+    const MARK = "s-same-tab-" + Date.now();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/?m=${MARK}`);
+    const tabAId = await ctx
+      .probeEval(
+        `browser.tabs.query({currentWindow:true}).then(ts => { const t = ts.find(x => (x.url||"").indexOf(${JSON.stringify(MARK)}) !== -1); return t ? t.id : null; })`
+      )
+      .catch(() => null);
+    assert(tabAId, "located tabA's id by its unique marker " + MARK);
     await openPopup("S", { shift: true });
     await filterTo("hello world");
     await ctx.press(ctx.tabA, "Enter");
     await ctx.waitPopupGone(ctx.tabA, 8000);
+    // The marker, not the host: "left the test page" has to mean "left THIS
+    // document", and with a marker present that is a statement about tabA alone.
+    let sawActive: any = null;
     await waitFor(async () => {
       const now = await ctx.tabsInfo();
       const active = now.find((t) => t.active);
-      return active && active.id === tabAId && (active.url || "").indexOf(ctx.base) === -1 ? active : null;
-    }, 20000);
+      sawActive = active;
+      return active && active.id === tabAId && (active.url || "").indexOf(MARK) === -1 ? active : null;
+    }, 20000).catch((e) => {
+      throw new Error(
+        ";S did not search in the current tab (active=" +
+          JSON.stringify(sawActive && { id: sawActive.id, url: sawActive.url }) +
+          ", wanted tab " + tabAId + " away from the marker): " + String((e as any).message)
+      );
+    });
     assert((await ctx.tabCount()) === before, ";S opened no new tab");
     // Force the tab back to the local test page through the extension API
     // (a BiDi navigate away from the heavy external page can stall, and later
@@ -132,12 +166,17 @@ export async function run(ctx: any): Promise<void> {
     // listTabs skips the harness plumbing (relay / probe #lfc= tabs), so the
     // row count is the *real* tab count, not tabsInfo().length.
     await ctx.waitListEvent(ctx.tabA, { count: await ctx.tabCount() });
-    const first = await ctx.tabsInfo();
+    // Row 0 of the popup is the first REAL tab, so the expectation has to be
+    // built from the same list. `tabsInfo()` is the raw Firefox list — it
+    // still leads with the relay tab and any #lfc= transient, so its [0] was a
+    // tab the popup never listed, and the assertion named the wrong subject.
+    const first = (await ctx.tabsInfo()).filter((t: any) => ctx.isRealTab(t))[0];
+    assert(first, "the popup's first row is a real tab");
     await ctx.press(ctx.tabA, "Enter");
     await ctx.waitPopupGone(ctx.tabA, 8000);
     // Enter activates the highlighted tab (index 0 = tabA, the first tab)
     const a = await ctx.activeTabInfo();
-    assert(a && a.id === first[0].id, "activated the first tab: " + (a && a.url));
+    assert(a && a.id === first.id, "activated the first tab: " + (a && a.url));
   });
   await t(";h history popup filters and opens a result", async () => {
     // ;h opens the history result in a NEW tab (it follows the openInNewTab
@@ -210,16 +249,20 @@ export async function run(ctx: any): Promise<void> {
     await ctx.activateTab(ctx.tabA).catch(() => {});
   });
   await t(";? help popup filters as you type and Enter runs the match", async () => {
-    // The redesigned help popup searches by key/name/group; typing "zen"
-    // narrows to the ;z binding and Enter runs it (fullscreen toggles on).
+    // The help popup searches by key/name/group; typing "download" narrows to
+    // the ;d binding and Enter runs it (the downloads popup opens).
+    //
+    // It used to type "zen" for `;z`. That string no longer exists anywhere in
+    // the keymap — zen moved under the `;W` category as `;W z`, and a category
+    // sub-key is not indexed by the help popup, so the filter matched nothing
+    // and the test timed out. Searching a binding that is still top-level is
+    // the honest version of this test.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await openPopup("?", { shift: true });
-    await filterTo("zen");
+    await filterTo("download");
     await ctx.press(ctx.tabA, "Enter");
-    const fs = await ctx.waitExpr(ctx.tabA, `window.fullScreen`, true, 8000).catch(() => null);
-    assert(fs, "help search matched ;z and ran it (fullscreen on)");
-    await ctx.leaderSeq(ctx.tabA, ["W", "z"]);
-    await ctx.waitExpr(ctx.tabA, `!window.fullScreen`, true, 8000);
+    const opened = await ctx.waitPopup(ctx.tabA, 8000).catch(() => null);
+    assert(opened, "help search matched the downloads binding and ran it");
   });
   await t(";/ find-in-page popup opens and finds", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
@@ -230,10 +273,10 @@ export async function run(ctx: any): Promise<void> {
     await ctx.waitExpr(ctx.tabA, `document.documentElement.getAttribute("data-lf-find") != null`, true, 8000);
     await closePopup();
   });
-  await t(";w resize popup from the content page", async () => {
+  await t(";W w resize popup from the content page", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const before = await ctx.windowInnerSize();
-    await openPopup("w");
+    await openPopup(["W", "w"]);
     await ctx.press(ctx.tabA, "ArrowDown");
     // Same WM/automation caveat as the command-center resize test: exercise the
     // popup opening and the arrow, but assert the height delta only when a

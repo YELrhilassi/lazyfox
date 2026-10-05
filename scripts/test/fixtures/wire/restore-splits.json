@@ -1,0 +1,10 @@
+{
+  "name": "restore-splits",
+  "about": "Routing, which is where a grammar bug hides. A `state` request must reach the debug handler and not fall through to the config arm; `diag` must reach its own. The shapes are unremarkable — it is the ARMING that is under test.",
+  "steps": [
+    { "send": "lfc=state.r1-1", "expect": "reply", "cmd": "state" },
+    { "send": "lfc=diag.r2-2", "expect": "reply", "cmd": "diag" },
+    { "send": "lfc=reveal.r3-3", "expect": "reveal", "cmd": "reveal" },
+    { "send": "lfc=state.r4-4", "expect": "reply", "cmd": "state" }
+  ]
+}

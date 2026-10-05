@@ -73,8 +73,9 @@ export interface CoreFacade {
   statusLeader(index: number, active: boolean): P<void>;
   statusFind(index: number, cur: number, count: number): P<void>;
   statusStealth(on: boolean): P<void>;
-  // The far-right leader indicator: armed + the prefix typed so far.
-  statusLeaderSignal(armed: boolean, prefix: string): P<void>;
+  // The far-right leader indicator: armed + the prefix typed so far + what the
+  // next key must be (empty when any key will do).
+  statusLeaderSignal(armed: boolean, prefix: string, expect: string): P<void>;
   // The active tab's history-stack shape.
   statusNav(nav: NavState): P<void>;
   statusDownloads(fresh: DownloadEntry[]): P<void>;
@@ -139,7 +140,8 @@ const METHODS: { [K in keyof TableMethods]: SyncMethod } = {
   statusLeader: (a, [index, active]) => a.statusLeader(index, active),
   statusFind: (a, [index, cur, count]) => a.statusFind(index, cur, count),
   statusStealth: (a, [on]) => a.statusStealth(on),
-  statusLeaderSignal: (a, [armed, prefix]) => a.statusLeaderSignal(armed, prefix),
+  statusLeaderSignal: (a, [armed, prefix, expect]) =>
+    a.statusLeaderSignal(armed, prefix, expect),
   statusNav: (a, [nav]) => { a.statusNav(JSON.stringify(nav || { canBack: false, canForward: false, index: 0, count: 0 })); },
   statusDownloads: (a, [fresh]) => { a.statusDownloads(JSON.stringify(fresh || [])); },
   statusDismiss: (a, [keys]) => { a.statusDismiss(JSON.stringify(keys || [])); },

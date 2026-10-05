@@ -222,6 +222,84 @@ of state that exists rather than new plumbing. That matters, because the
 indicator has already bitten us once by being painted from one place and
 read from another.
 
+### Status: built, and the `▸` half needed more than a rendering change
+
+The `committed so far` half shipped as `⌘` / `⌘ W`. The `▸ what we need next`
+half did not, and the reason it could not is worth recording, because it is the
+same lesson as the indicator biting us once already.
+
+**An armed capture has no prefix to show.** By the time a capture exists the
+chord that armed it is already spent — the sequence handler clears `prefix`
+before it runs the sub-key — so a bar reporting only the prefix falls back to a
+bare `⌘`. For `;W m` that bare glyph was the whole readout for the entire 1.5s
+the capture lived, while the next keystroke was being swallowed. The state the
+proposal assumed ("the store already carries a prefix") is true for a sequence
+and false for the thing the `▸` exists to describe.
+
+So the capture now declares what it accepts, and the bar renders both halves:
+
+```
+⌘                    ;  armed, any key
+⌘ W                  ;W  armed, sub-key wanted
+⌘ ▸ 1-9                ;W m armed, a digit wanted
+⌘ ▸ 0 1 2              ;W m 1 — three tabs were still reachable
+```
+
+Three things this cost that are not obvious:
+
+- **The hint had to go through the Go store, not just the painted DOM.** The bar
+  repaints from `StatusSnapshot()` on every poll; a hint that lived only on the
+  view would be erased a tick later. Worse, `StatusSnapshot` derived `Armed`
+  from the bar MODE (`chromeLeader` / `leaderByIndex`), which is false during a
+  capture — no leader is "up" in the mode sense — so the indicator was being
+  switched off by the first poll after the press that lit it. A hint that
+  appears and vanishes teaches the user to distrust the one element that was
+  telling the truth.
+- **The content script's chord now rides `syncLeader`.** On a web page the
+  content script owns the leader and the chrome helper's own never arms, so the
+  push was a bare boolean and the window bar could say "something is armed" and
+  nothing more — on exactly the pages where the leader is pressed most.
+- **The digit hint comes from the candidate set, not from a second opinion.**
+  `tabDigitHint()` derives its label from the same `tabCandidates()` the planner
+  and the chooser use. A hint computed independently would eventually name a
+  digit that does nothing, which is worse than no hint: the user pressed the
+  key the product told them to press. `scripts/test/tabjump.test.ts` pins it
+  exhaustively (property P4).
+
+One correction to the proposal above: it says the `▸` "only pulses while a key
+is genuinely expected", implying a distinction between states that expect a key
+and states that do not. In practice every armed state expects a key, so the
+pulse is simply "armed". The distinction that turned out to matter is not
+whether a key is expected but whether *which* key is knowable — that is what
+separates `⌘` (any key will do) from `⌘ ▸ 1-9`.
+
+### The three halves became one value
+
+The three questions above — armed, committed chord, what is needed next — are
+answered by a single `LeaderSignal` rather than by three fields a host reads.
+The reasons are in `docs/ARCHITECTURE.md` under “The leader signal is one
+value”; the short version is that a host cannot read half a signal, and every
+bar that disagreed with the keyboard was a host that had read half of one.
+
+That refactor is also why `leader.ts` splits the way it does. `;W m` involves
+four separate lifetimes — the sequence head, the one-shot capture, the overlay,
+and the status bar — and they used to be four interleaved fields in one class,
+so a rule about the capture (clear the hint *before* running the timeout, or
+the timer that ended one capture wipes the hint of the next) sat two hundred
+lines away from the code that depended on it. Now:
+
+- `leadersequence.ts` owns the five ways a `;<head>;<final>` can end;
+- `leadercapture.ts` owns the armed-once-consumed-once state machine;
+- `leaderpanel.ts` owns the persistent closed-shadow host and its `on` class;
+- `leader-css.ts` owns the stylesheet;
+- `leader.ts` composes them and keeps only the state and the dispatch.
+
+`subKeyExpect()` — the `▸ 1-9` label — stayed a pure function, so
+`leadersequence.ts` describes it from the same final-key table the capture
+dispatches through. That was already the rule above (“the hint comes from the
+candidate set, not from a second opinion”); moving it next to the dispatcher is
+what makes the rule checkable by reading two files instead of three.
+
 ---
 
 ## 6. Collision check

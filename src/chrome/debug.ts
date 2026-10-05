@@ -11,6 +11,8 @@
 
 import { toast } from "../shared/overlay";
 import type { ChromeCfg } from "./config";
+import type { ChromeEnv } from "./env";
+import { createStateReader } from "./stateapi";
 
 export interface DebugState {
   hasPopup(): boolean;
@@ -37,6 +39,12 @@ export interface DebugState {
 }
 
 export interface DebugDeps {
+  // The chrome document as a parameter, not a global. Without it these four
+  // handlers cannot be constructed in Node at all, which is exactly what this
+  // dep buys: a test can drive the `#lfc=state` reply against a fake document
+  // and assert the shape of the thing the e2e harness reads. See
+  // src/chrome/env.ts.
+  env: ChromeEnv;
   getState(): DebugState;
 }
 
@@ -48,11 +56,20 @@ export interface DebugHandlers {
 const EXT_ID = "lazyfox@lazyfox.dev";
 
 export function createDebug(deps: DebugDeps): DebugHandlers {
+  const env = deps.env;
+  const win = env.window as any;
+  const doc = env.document as any;
+  // The wire's own base64, not a global: the reply hash is the contract this
+  // module has with the harness, so a test replays it through the same encoder.
+  const btoa = (v: string): string => env.btoa(v);
+  // The state contract lives in stateapi.ts; the handler below is transport.
+  const reader = createStateReader({ env, getState: () => deps.getState() });
+
   function handleReveal(browser: any, rest: string, setHash: (browser: any, hash: string) => void): void {
     // Dev/verification: force the toolbar visible so tests can hover real
     // chrome buttons.
     try {
-      const tb = document.getElementById("navigator-toolbox");
+      const tb = doc.getElementById("navigator-toolbox");
       if (tb) {
         if (tb.hasAttribute("lf-debug-reveal")) tb.removeAttribute("lf-debug-reveal");
         else tb.setAttribute("lf-debug-reveal", "1");
@@ -71,7 +88,7 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
     let json = "{}";
     try {
       const msgs: Array<{ t: string; m: string }> = [];
-      const c = (globalThis as any).Services.console;
+      const c = env.services.console;
       if (c && typeof c.getMessageCount === "function") {
         const n = c.getMessageCount();
         for (let i = Math.max(0, n - 60); i < n; i++) {
@@ -105,7 +122,7 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
     const nonce = dot < 0 ? rest : rest.slice(0, dot);
     let json = "{}";
     try {
-      const p = (globalThis as any).WebExtensionPolicy.getByID(EXT_ID);
+      const p = env.WebExtensionPolicy.getByID(EXT_ID);
       let cs = null;
       try {
         if (p && p.contentScripts) {
@@ -150,7 +167,7 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
       }
       let e10s = null;
       try {
-        e10s = (globalThis as any).Services.appinfo.browserTabsRemoteAutostart;
+        e10s = env.services.appinfo.browserTabsRemoteAutostart;
       } catch (e) {
         e10s = String(e);
       }
@@ -160,13 +177,13 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
       // silent (the shipped user.js sets it to "").
       let restrictedDomains = null;
       try {
-        restrictedDomains = (globalThis as any).Services.prefs.getStringPref("extensions.webextensions.restrictedDomains", "<unset>");
+        restrictedDomains = env.services.prefs.getStringPref("extensions.webextensions.restrictedDomains", "<unset>");
       } catch (e) {
         restrictedDomains = "<error: " + e + ">";
       }
       let perTab = null;
       try {
-        const tab = (window as any).gBrowser && (window as any).gBrowser.selectedTab;
+        const tab = win.gBrowser && win.gBrowser.selectedTab;
         const lb = tab && tab.linkedBrowser;
         perTab = lb ? { remote: lb.isRemoteBrowser, currentURI: lb.currentURI && lb.currentURI.spec } : null;
       } catch (e) {
@@ -194,8 +211,7 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
     // shows them, so tests can assert the vanilla UI is really gone.
     const dot = rest.indexOf(".");
     const nonce = dot < 0 ? rest : rest.slice(0, dot);
-    const st = deps.getState();
-    // onLocationChange fires again for our own location.replace: don't
+    // onLocationChange fires again for our own location.replace: dont
     // re-answer an already-answered query. The reply is
     // state.<base64>.<nonce> (two dots); the request state.<nonce> (one).
     try {
@@ -205,244 +221,19 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
     } catch (e) {
       // ignore
     }
-    let json = "{}";
+    // The snapshot itself lives in stateapi.ts; this function is transport.
+    // That split is what lets the contract be asserted in Node, with no wire.
+    let payload: any;
     try {
-      const nav = document.getElementById("nav-bar");
-      const tabs = document.getElementById("TabsToolbar");
-      const toolbox = document.getElementById("navigator-toolbox");
-      const stEl = (el: HTMLElement | null) =>
-        el ? getComputedStyle(el).display : "missing";
-      let hover = false;
-      try {
-        hover = toolbox ? toolbox.matches(":hover") : false;
-      } catch (e) {
-        // ignore
-      }
-      const br = toolbox ? toolbox.getBoundingClientRect() : null;
-      let popupInfo = null;
-      try {
-        const panels = Array.from(document.querySelectorAll(".lf-panel"));
-        popupInfo = {
-          current: st.hasPopup(),
-          // Which-key overlays lit in this document. Counted from the leader
-          // controller's own mirror, NOT from `.wk.on`: the overlay host attaches
-          // a CLOSED shadow root, so a querySelectorAll from here cannot see
-          // inside it and always answered 0 — an instrument that could not see
-          // the thing it existed to detect, which is how two overlays on screen
-          // at once went unnoticed.
-          wkOn: document.documentElement.getAttribute("data-lf-whichkey") === "1" ? 1 : 0,
-          rootInputs: document.querySelectorAll(".lf-popup .lf-input").length,
-          panels: panels.map((p) => ({                    title: (p.querySelector(".lf-title") || {}).textContent || "",
-                    hasInput: !!p.querySelector(".lf-input"),
-                    status: (p.querySelector(".lf-status") || { textContent: "" }).textContent || "",
-          })),
-          items: panels
-            .map((p) =>
-              Array.from(p.querySelectorAll(".lf-item"))
-                .map((it) => (it.textContent || "").trim())
-                .slice(0, 40)
-            )
-            .reduce((a, b) => a.concat(b), []),
-          selIdx: panels.map((p) => {
-            const items = Array.from(p.querySelectorAll(".lf-item"));
-            return items.findIndex((it) => it.classList.contains("selected"));
-          }),
-        };
-      } catch (e) {
-        popupInfo = { error: String(e) };
-      }
-      let mutedCount = 0;
-      try {
-        for (const t of Array.from(window.gBrowser.tabs) as Array<{ muted?: boolean }>) {
-          if (t.muted) mutedCount++;
-        }
-      } catch (e) {
-        // ignore
-      }
-      const state = {
-        // The active profile's raw directory leaf (ProfD) — reported so the
-        // "setup page shows no profile name" problem is diagnosable.
-        profileLeaf: (() => {
-          try {
-            const f = Services.dirsvc.get("ProfD", Ci.nsIFile);
-            return f ? String(f.leafName || "") : "<null>";
-          } catch (e) {
-            return "<error: " + e + ">";
-          }
-        })(),
-        // Firefox blocks content scripts on restricted domains
-        // (addons.mozilla.org, accounts.firefox.com, ...) unless this pref is
-        // emptied; reported so "extension doesn't work on AMO" is diagnosable.
-        restrictedDomains: (() => {
-          try {
-            return Services.prefs.getStringPref("extensions.webextensions.restrictedDomains", "<unset>");
-          } catch (e) {
-            return "<error>";
-          }
-        })(),
-        relay: (() => {
-          try {
-            return st.relay();
-          } catch (e) {
-            return { error: String(e) };
-          }
-        })(),
-        popup: popupInfo,
-        navDisplay: stEl(nav),
-        tabsDisplay: stEl(tabs),
-        toolboxDisplay: stEl(toolbox),
-        toolboxHeight: br ? Math.round(br.height) : -1,
-        hoverReveal: Services.prefs.getBoolPref("lazyfox.hoverReveal", false),
-        toolboxHover: hover,
-        leaderActive: st.leaderActive(),
-        chromeOwnsKeys: st.chromeOwnsKeys(),
-        // The selected tab's URL, so an ownership verdict can be checked
-        // against the page it was made about rather than inferred.
-        selUrl: (() => {
-          try {
-            const b = (window as any).gBrowser.selectedBrowser;
-            const u = b && b.currentURI;
-            return u ? String(u.spec) : "?";
-          } catch (e) {
-            return "err " + String(e);
-          }
-        })(),
-        mutedCount: mutedCount,
-        lastAction: st.lastAction(),
-        lastMoveDebug: st.lastMoveDebug(),
-        statusMounted: st.statusMounted(),
-        statusPosition: st.statusPosition(),
-        dlCount: st.dlActive().length,
-        dlActive: st.dlActive(),
-        // The window bar's rendered strip, as the StatusBar mirrors it onto
-        // the chrome document root (name|marker|tabIdx/tabCount|split|mode|pos).
-        statusAttr: (() => {
-          try {
-            return document.documentElement.getAttribute("data-lf-status");
-          } catch (e) {
-            return null;
-          }
-        })(),
-        fullscreen: st.isFullscreen(),
-        inDOMFullscreen: (() => {
-          try {
-            return document.documentElement.hasAttribute("inDOMFullscreen");
-          } catch (e) {
-            return false;
-          }
-        })(),
-        browserReserve: (() => {
-          try {
-            const el = document.getElementById("browser");
-            if (!el) return null;
-            const cs = getComputedStyle(el);
-            return { mb: cs.marginBottom, mt: cs.marginTop, h: Math.round(el.getBoundingClientRect().height) };
-          } catch (e) {
-            return null;
-          }
-        })(),
-        leaderPending: st.leaderPending(),
-        // The product's OWN tab numbering, published rather than re-derived by
-        // the e2e harness. The harness used to rebuild this list itself from
-        // the strip and got it subtly wrong (it counted the relay tab the
-        // product skips), so a correctly-typed digit named the wrong tab and
-        // the failure surfaced as "the split did not form" — pointing at the
-        // feature instead of at the test. Anything that needs a tab POSITION
-        // must read it from here; there is exactly one numbering.
-        realTabs: (() => {
-          try {
-            return st.realTabs().map((t: any, i: number) => {
-              let spec = "";
-              try {
-                spec = t.linkedBrowser && t.linkedBrowser.currentURI
-                  ? t.linkedBrowser.currentURI.spec : "";
-              } catch (e) {
-                // torn down mid-enumeration
-              }
-              return {
-                n: i + 1,
-                u: (spec.split("?")[0] || "").replace(/^moz-extension:\/\/[^/]+\//, "ext:").slice(-40),
-                sv: t.splitview ? t.splitview.splitViewId : (t.splitViewId ?? -1),
-                pinned: !!t.pinned,
-              };
-            });
-          } catch (e) {
-            return { error: String(e) };
-          }
-        })(),
-        strip: (() => {
-          try {
-            return Array.from(window.gBrowser.tabs).map((t: any, i: number) => {
-              let spec = "";
-              try {
-                spec = t.linkedBrowser && t.linkedBrowser.currentURI
-                  ? t.linkedBrowser.currentURI.spec : "";
-              } catch (e) {
-                // Same reason as the channel's tab walk: a tab can be torn down
-                // mid-enumeration, and a tab with no readable URL is simply not a match.
-              }
-              return {
-                i: i,
-                u: (spec.split("?")[0] || "").replace(/^moz-extension:\/\/[^/]+\//, "ext:").slice(-40),
-                sv: t.splitview ? t.splitview.splitViewId : (t.splitViewId ?? -1),
-                panel: spec.indexOf("splitpanel.html") !== -1,
-                req: spec.indexOf("#lfc=") !== -1,
-              };
-            });
-          } catch (e) {
-            return { error: String(e) };
-          }
-        })(),
-        nativeSplit: (() => {
-          try {
-            const sv = st.activeSplitView();
-            const sel = window.gBrowser.selectedTab;
-            return {
-              fn: typeof window.gBrowser.addTabSplitView,
-              pref: Services.prefs.getBoolPref("browser.tabs.splitView.enabled", false),
-              selSplitview: sv
-                ? {
-                    id: sv.splitViewId,
-                    tabs: Array.isArray(sv.tabs) ? sv.tabs.length : -1,
-                  }
-                : null,
-              selHasSplitview: sel ? !!sel.splitview : false,
-              selUrl: sel && sel.linkedBrowser && sel.linkedBrowser.currentURI
-                ? sel.linkedBrowser.currentURI.spec
-                : null,
-              svMethods: sv ? Object.getOwnPropertyNames(sv).filter((n) => n !== "tabs" && n !== "splitViewId").slice(0, 40) : null,
-              svProto: sv
-                ? (() => {
-                    const names: string[] = [];
-                    let p = Object.getPrototypeOf(sv);
-                    let depth = 0;
-                    while (p && depth < 4) {
-                      for (const n of Object.getOwnPropertyNames(p)) names.push(n);
-                      p = Object.getPrototypeOf(p);
-                      depth++;
-                    }
-                    return names.slice(0, 60);
-                  })()
-                : null,
-              addTabsType: sv ? typeof sv.addTabs : "no-sv",
-              unsplitTabsType: sv ? typeof sv.unsplitTabs : "no-sv",
-              reverseTabsType: sv ? typeof sv.reverseTabs : "no-sv",
-              addTabsSrc: sv && typeof sv.addTabs === "function" ? String(sv.addTabs).slice(0, 800) : null,
-              addTabSplitViewSrc: typeof window.gBrowser.addTabSplitView === "function" ? String(window.gBrowser.addTabSplitView).slice(0, 800) : null,
-              gbSplitFns: typeof window.gBrowser.addTabSplitView === "function"
-                ? Object.getOwnPropertyNames(Object.getPrototypeOf(window.gBrowser) || {}).filter((n) => /split|tab/i.test(n)).slice(0, 40)
-                : null,
-            };
-          } catch (e) {
-            return { error: String(e) };
-          }
-        })(),
-      };
-      json = btoa(JSON.stringify(state));
+      payload = reader.read();
     } catch (e) {
-      json = btoa(JSON.stringify({ error: String(e) }));
+      // The reader is written not to throw. If it ever does, say so WITH a
+      // version: an unversioned {error} blob is indistinguishable from a
+      // state whose fields are all missing, which is how a broken reply once
+      // read as a passing test.
+      payload = { v: reader.version, ok: false, error: String(e) };
     }
-    setHash(browser, "#lfc=state." + json + "." + nonce);
+    setHash(browser, "#lfc=state." + btoa(JSON.stringify(payload)) + "." + nonce);
   }
 
   return {

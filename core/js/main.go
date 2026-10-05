@@ -595,9 +595,10 @@ var exportsTable = []jsExport{
 		core.StatusSetStealth(argBool(args, 0))
 		return nil
 	}},
-	// The far-right leader indicator: armed + the prefix typed so far.
+	// The far-right leader indicator: armed + the prefix typed so far + what the
+	// next key must be.
 	{"statusLeaderSignal", func(args []js.Value) interface{} {
-		core.StatusSetLeaderSignal(argBool(args, 0), argStr(args, 1))
+		core.StatusSetLeaderSignal(argBool(args, 0), argStr(args, 1), argStr(args, 2))
 		return nil
 	}},
 	// The active tab's history-stack shape (back/forward availability + the

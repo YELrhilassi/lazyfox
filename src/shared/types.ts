@@ -48,6 +48,8 @@ export interface WkRow {
   lazyIndex: number;
 }
 
+import type { LeaderSignal } from "./leadersignal";
+
 export interface WkPage {
   items: WkRow[];
   selFirst: number;
@@ -328,4 +330,55 @@ export interface SessionSummaryItem {
   current: boolean;
   tabCount: number;
   splitCount: number;
+}
+
+// ---- status bar (was declared in statusbar.ts; moved here so the bar's pure
+// formatters in statusbar-segments.ts can use them without importing the bar)
+
+export interface StatusBarSessions {
+  marker: number;
+  name: string;
+  current: boolean;
+  tabCount: number;
+  splitCount: number;
+}
+
+export interface StatusBarDownload {
+  key: string;
+  filename: string;
+  state: string; // in_progress | paused | complete | failed
+  percent: number; // 0..100, -1 when total is unknown
+  speed: string; // pre-formatted "2.4 MB/s" or ""
+}
+
+export interface StatusBarData {
+  name: string;
+  marker: number;
+  tabIndex: number;
+  tabCount: number;
+  inSplit: boolean;
+  splitOrientation?: "horizontal" | "vertical";
+  // 0-based active pane and pane count while a split view is focused.
+  splitActive: number;
+  splitPanes: number;
+  mode: string;
+  sessions: StatusBarSessions[];
+  // Active (un-dismissed) downloads whose progress belongs on the bar.
+  downloads: StatusBarDownload[];
+  // True when the active tab is a stealth tab — shows a badge on the bar.
+  activeStealth?: boolean;
+  // Live find-in-page state (content-script find widget): current match
+  // (1-based, 0 = none selected yet) and total matches. Shown as a "find"
+  // segment; null (or count 0) hides it. Pushed by the content script and
+  // relayed from the background for the chrome helper's window-level bar.
+  find?: { cur: number; count: number } | null;
+  // Real tab ids + stealth flags in strip order, from the Go store's session
+  // snapshot — read by the tab switcher (badges + true Firefox ids).
+  tabIds?: number[];
+  stealthFlags?: boolean[];
+  // The far-right leader indicator: armed + the prefix typed so far in the
+  // current sequence. Works regardless of the which-key overlay setting.
+  leader?: LeaderSignal;
+  // The active tab's history-stack shape.
+  nav?: NavState;
 }

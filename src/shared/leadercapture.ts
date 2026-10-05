@@ -1,0 +1,106 @@
+// The one-shot key capture: an armed state that swallows exactly one key.
+//
+// This is a separate object rather than four fields on the leader because it is
+// armed and disarmed independently of the leader itself, and because its
+// lifetime rules are the whole reason it exists:
+//
+//   `;'` then typing into a search box must NOT switch sessions on the next
+//   digit, so a capture can be cancelled outright (cancelPending) with no key
+//   consumed at all. Nothing else in the leader can do that.
+//
+//   A timeout handler may arm a fresh capture, so the expiry has to clear the
+//   old hint BEFORE running its callback — otherwise the timer that ended one
+//   capture wipes the hint of the capture that replaced it, and the bar goes
+//   silent for the whole of the new one.
+//
+// It owns no rendering: it reports what changed through onChange, and the
+// controller turns that into a repaint.
+
+export interface CaptureOpts {
+  timeoutMs?: number;
+  onTimeout?: () => void;
+  /** What this capture will accept, shown on the status bar. "" means "anything". */
+  expect?: string;
+}
+
+export class LeaderCapture {
+  /** What the next key must be. "" when the capture takes anything. */
+  expect = "";
+  private fn: ((k: string) => boolean) | null = null;
+  private timeoutFn: (() => void) | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private readonly onChange: (() => void) | undefined;
+
+  // Explicit field rather than a constructor parameter property: the unit tests
+  // load modules through Node's strip-only TypeScript loader, which cannot
+  // erase a compile-time-only construct.
+  constructor(onChange?: () => void) {
+    this.onChange = onChange;
+  }
+
+  armed(): boolean {
+    return this.fn !== null;
+  }
+
+  /**
+   * Arms the capture. The next key is handed to `fn`, which returns whether it
+   * consumed it; the capture auto-disarms after timeoutMs, running onTimeout
+   * when it expires unused.
+   *
+   * `expect` is declared by the armer rather than derived here because only the
+   * armer knows: a digit capture knows it wants a digit, a category knows it
+   * wants its own sub-key, and a capture that takes anything (a sequence head
+   * that times out into its plain binding) should say nothing rather than
+   * guess.
+   */
+  arm(fn: (k: string) => boolean, opts?: CaptureOpts): void {
+    this.fn = fn;
+    this.timeoutFn = (opts && opts.onTimeout) || null;
+    this.setExpect((opts && opts.expect) || "");
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.fn = null;
+      const to = this.timeoutFn;
+      this.timeoutFn = null;
+      // Cleared before onTimeout runs: a timeout handler that arms a fresh
+      // capture must not have its own hint wiped by the timer that expired the
+      // previous one.
+      this.setExpect("");
+      if (to) to();
+    }, (opts && opts.timeoutMs) || 3000);
+  }
+
+  /** Consumes the pending key, if any. Returns whether it was consumed. */
+  handle(k: string): boolean {
+    const fn = this.fn;
+    this.fn = null;
+    this.timeoutFn = null;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.setExpect("");
+    return fn ? fn(k) : false;
+  }
+
+  /** Cancels an armed capture without running it — used when the user moves
+   * focus into a text field or otherwise stops intending to complete it. */
+  cancel(): void {
+    this.fn = null;
+    this.timeoutFn = null;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.setExpect("");
+  }
+
+  // Changing the hint repaints the bar. Guarded so an unchanged arm (the common
+  // case — most captures take any key) costs nothing, and so the repaint happens
+  // exactly when the readout actually changes.
+  private setExpect(v: string): void {
+    if (this.expect === v) return;
+    this.expect = v;
+    if (this.onChange) this.onChange();
+  }
+}

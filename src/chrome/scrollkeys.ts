@@ -4,10 +4,12 @@
 // reachable from chrome (in-process); cross-process pages fall through
 // unconsumed (nothing else can scroll them).
 
+import type { ChromeWindow } from "./env";
+
 export function createScrollKeys(getCfg: () => { scrollKeys?: boolean }) {
   let lastG = false;
 
-  function scroll(win: Window, fn: (w: any) => void): boolean {
+  function scroll(win: ChromeWindow, fn: (w: any) => void): boolean {
     try {
       const cw = (win as any).gBrowser.selectedBrowser.contentWindow;
       if (!cw || !cw.document) return false;
@@ -18,7 +20,7 @@ export function createScrollKeys(getCfg: () => { scrollKeys?: boolean }) {
     }
   }
 
-  return function handleScrollKeys(win: Window, e: { key: string }): boolean {
+  return function handleScrollKeys(win: ChromeWindow, e: { key: string }): boolean {
     if (getCfg().scrollKeys === false) return false;
     const k = e.key;
     if (k === "j") return scroll(win, (w) => w.scrollBy(0, 60));

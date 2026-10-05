@@ -14,8 +14,12 @@ import {
   retryDownload as restartDownload
 } from "../downloads";
 import { withConfig, type ChromeCfg } from "../config";
+import type { ChromeEnv } from "../env";
 
 export function createUiOps(deps: {
+  // The chrome document, so zen mode and the find bar are assertable in Node
+  // instead of reaching for the ambient window (see src/chrome/env.ts).
+  env: ChromeEnv;
   cfg: ChromeCfg;
   persistCfg(cfg: ChromeCfg, config?: import("../../shared/types").Config): void;
   applyHoverRevealPref(cfg: ChromeCfg): void;
@@ -25,6 +29,8 @@ export function createUiOps(deps: {
     requestReply(action: "stealthOpen"): Promise<any>;
   };
 }) {
+  const win = deps.env.window as any;
+  const doc = deps.env.document as any;
   return {
     downloads: (q: string): Promise<PopupItem[]> => {
       const ql = q.trim().toLowerCase();
@@ -86,7 +92,7 @@ export function createUiOps(deps: {
       });
     },
     zen: () => {
-      window.fullScreen = !window.fullScreen;
+      win.fullScreen = !win.fullScreen;
     },
     toggleReveal: () => {
       const next = withConfig(deps.cfg, { hoverReveal: !deps.cfg.config.hoverReveal });
@@ -123,7 +129,7 @@ export function createUiOps(deps: {
     },
     openFind: () => {
       try {
-        const fb = window.gFindBar || document.getElementById("FindToolbar");
+        const fb = win.gFindBar || doc.getElementById("FindToolbar");
         if (fb) {
           fb.open();
           return;
@@ -132,7 +138,7 @@ export function createUiOps(deps: {
         // fall through
       }
       try {
-        window.gBrowser.getFindBar().then((b: any) => b.open()).catch(() => toast("find bar unavailable"));
+        win.gBrowser.getFindBar().then((b: any) => b.open()).catch(() => toast("find bar unavailable"));
       } catch {
         toast("find bar unavailable");
       }

@@ -20,18 +20,16 @@ import type { HintActivation } from "../../../shared/types";
 import {
   DOM_RESYNC_DELAY,
   DOM_RESYNC_MAX_WAIT,
-  HINTABLE_SELECTOR,
   MAX_HINTS,
-  PAGE_FACTOR,
   PAGE_GUARD,
   RESYNC_DELAY,
   type HintItem,
 } from "./selectors";
-import { collectHintables } from "./collect";
-import { selectHintables, targetKey } from "./select";
-import { basicVisible, deepHit } from "./probe";
 import { createHintOverlay } from "./overlay";
 import { createActivator } from "./activate";
+import { collectHintables } from "./collect";
+import { targetKey } from "./select";
+import { createHintResolve } from "./hintresolve";
 
 export interface LinkHints {
   readonly active: boolean;
@@ -50,6 +48,18 @@ export interface LinkHints {
 export function createLinkHints(getHintChars: () => string): LinkHints {
   let active = false;
   let pool: Element[] = []; // every hintable element, in document order
+  // Which live element does this label belong to, NOW? Split into
+  // hintresolve.ts because it is the only part of link hints with no state of
+  // its own: give it the pool and it gives back elements, which the key
+  // assignment, the render loop and the activator all need answered the same
+  // way. `setPool` exists because resolving may find the pool stale and
+  // refresh it - which is a mutation of the session's own state, so the
+  // session keeps ownership and the module asks.
+  const resolve = createHintResolve({
+    pool: () => pool,
+    setPool: (next) => { pool = next; },
+    maxHints: MAX_HINTS,
+  });
   let items: HintItem[] = []; // currently hinted items (viewport subset)
   // A prefix-free key sequence generated once per hint session. Keys are drawn
   // from it for the whole session and are NEVER reshuffled by a re-hint, so a
@@ -119,12 +129,12 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     if (session !== mySession) return; // exited (ESC) during the await
     // If the current viewport has no links (e.g. a blank section), page down
     // until a batch of links comes into view.
-    let vis = viewportItems();
+    let vis = resolve.viewportItems();
     let guard = 0;
     while (!vis.length && guard < PAGE_GUARD) {
-      pageScroll(1);
+      resolve.pageScroll(1);
       guard++;
-      vis = viewportItems();
+      vis = resolve.viewportItems();
     }
     if (!vis.length) {
       toast("no hints");
@@ -137,17 +147,6 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     await assign(vis);
     if (session !== mySession) return; // exited (ESC) during the await
     if (!items.length) exit();
-  }
-
-  // The currently-hintable elements: everything in `pool` that is in the
-  // viewport, CSS-visible, not occluded and not a nested/duplicate target.
-  function viewportItems(): Element[] {
-    return selectHintables(pool, MAX_HINTS).kept;
-  }
-
-  function pageScroll(dir: number): void {
-    const vh = window.innerHeight || document.documentElement.clientHeight || 600;
-    window.scrollBy(0, dir * Math.round(vh * PAGE_FACTOR));
   }
 
   // The shortest key in the pool that this batch has not taken yet. Scanning
@@ -254,64 +253,6 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     render();
   }
 
-  // The live element nearest an item's last screen centre, preferring the same
-  // destination so a small reflow cannot hand the hint to a neighbour.
-  function nearestHintable(it: HintItem, list: Element[]): Element | null {
-    if (!it.cx && !it.cy) return null;
-    let best: Element | null = null;
-    let bestD = Infinity;
-    for (const el of list) {
-      if (!el.isConnected || !basicVisible(el)) continue;
-      let r: DOMRect;
-      try {
-        r = el.getBoundingClientRect();
-      } catch (e) {
-        continue;
-      }
-      const dx = r.left + r.width / 2 - it.cx;
-      const dy = r.top + r.height / 2 - it.cy;
-      const d = dx * dx + dy * dy;
-      const sameTarget = !!it.target && it.target === targetKey(el);
-      const limit = sameTarget ? 80 * 80 : 12 * 12;
-      if (d <= limit && d < bestD) {
-        bestD = d;
-        best = el;
-      }
-    }
-    return best;
-  }
-
-  // The element for an item, re-resolved when the node the hint was built from
-  // has been replaced (a React/Vue/Polymer re-render). Returning null here is
-  // what used to make a key silently "do nothing": the framework swapped the
-  // node between the label appearing and the keystroke, and the old element was
-  // no longer connected. Instead of giving up we re-find the SAME control —
-  // first in the live pool, then in a fresh collection (the pool is only
-  // refreshed on a debounce, so it can lag a just-rendered control), then by a
-  // deep hit at the recorded position.
-  function resolveItem(it: HintItem): Element | null {
-    if (it.el && it.el.isConnected) return it.el;
-    let found = nearestHintable(it, pool);
-    if (!found) {
-      pool = collectHintables();
-      found = nearestHintable(it, pool);
-    }
-    if (found) {
-      it.el = found;
-      return found;
-    }
-    if (!it.cx && !it.cy) return null;
-    const hit = deepHit(it.cx, it.cy);
-    if (hit && (hit.matches(HINTABLE_SELECTOR) || hit.closest(HINTABLE_SELECTOR))) {
-      const el = hit.matches(HINTABLE_SELECTOR) ? hit : hit.closest(HINTABLE_SELECTOR);
-      if (el && el.isConnected) {
-        it.el = el;
-        return el;
-      }
-    }
-    return null;
-  }
-
   // When the viewport has moved and settled, move the hints to the batch that
   // is now on screen: scrolling to a new section should show ITS links, not the
   // hidden labels of the section left behind. While a prefix is being typed the
@@ -321,7 +262,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   // them.
   function syncViewport(): void {
     if (!active || typed !== "" || syncing) return;
-    const vis = viewportItems();
+    const vis = resolve.viewportItems();
     if (!vis.length) return;
     if (vis.length === items.length && vis.every((el, i) => items[i] && items[i]!.el === el)) {
       return;
@@ -437,8 +378,8 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   function page(dir: number): void {
     for (let i = 0; i < PAGE_GUARD; i++) {
       const before = window.scrollY;
-      pageScroll(dir);
-      const vis = viewportItems();
+      resolve.pageScroll(dir);
+      const vis = resolve.viewportItems();
       if (vis.length) {
         void assign(vis);
         return;
@@ -463,31 +404,22 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   // they commit. So: ambiguous means at least one match is longer than `typed`
   // AND there is more than one candidate to choose between.
   function render(): boolean {
-    const matches = items.filter((i) => i.key.indexOf(typed) === 0 && itemOnScreen(i));
+    const matches = items.filter((i) => i.key.indexOf(typed) === 0 && resolve.onScreen(i));
     const longer = matches.some((i) => i.key.length > typed.length);
     // The typed.length guard is not redundant: an empty prefix matches
     // everything, so without it the badge would be up from the moment ;f
     // starts — telling the user to press Enter to choose, when they have not
     // narrowed anything yet and any character is the right next move.
-    return overlay.render(items, typed, resolveItem, typed.length > 0 && longer && matches.length > 1);
+    return overlay.render(items, typed, resolve.resolve, typed.length > 0 && longer && matches.length > 1);
   }
 
   // Whether a hint's element is currently within the viewport — the same test
   // the label uses to decide whether to show itself. A hidden hint (its link
   // scrolled away) must not be typeable, or a keystroke would fire at an
   // off-screen element or scroll the page back to it.
-  function itemOnScreen(it: HintItem): boolean {
-    const el = resolveItem(it);
-    if (!el) return false;
-    const r = el.getBoundingClientRect();
-    const vw = window.innerWidth || 0;
-    const vh = window.innerHeight || 0;
-    return r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
-  }
-
   async function typeChar(c: string): Promise<void> {
     const nt = typed + c;
-    const matches = items.filter((i) => i.key.indexOf(nt) === 0 && itemOnScreen(i));
+    const matches = items.filter((i) => i.key.indexOf(nt) === 0 && resolve.onScreen(i));
     if (!matches.length) return; // no candidate for this prefix — ignore
     const exact = matches.find((i) => i.key === nt);
     const isPrefixOfMore = matches.some(
@@ -516,7 +448,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
       return true;
     }
     if (e.key === "Enter") {
-      const found = items.filter((i) => i.key.indexOf(typed) === 0 && itemOnScreen(i));
+      const found = items.filter((i) => i.key.indexOf(typed) === 0 && resolve.onScreen(i));
       if (found.length) activate(found[0]!);
       else exit();
       return true;
@@ -541,7 +473,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   // the page reacted (see docs/HINTS.md for why that report exists).
   function activate(it: HintItem): void {
     exit();
-    const el = resolveItem(it) || it.el;
+    const el = resolve.resolve(it) || it.el;
     if (!el || !el.isConnected) return;
     const t = el.tagName;
     if (t === "INPUT" || t === "TEXTAREA" || t === "SELECT") {

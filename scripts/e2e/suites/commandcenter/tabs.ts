@@ -10,18 +10,25 @@ export async function run(ctx: any): Promise<void> {
   const t = (
     name: string,
     fn: () => Promise<void>,
-    opts: { tags?: string[]; keepTabs?: string[]; reconcile?: boolean } = {},
+    opts: { tags?: string[] } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
 
-  const waitCount = async (want: number, step: string, ms = 10000) => {
-    let seen = -1;
+  // The tab count, DECLARED and then asserted. The harness does not reconcile
+  // the tab list toward it (that mutated shared state to satisfy an assertion
+  // about shared state, and measured as pure damage: 104/182 with it on every
+  // test, 146/182 without). Every count below is RELATIVE to the count the
+  // test itself just observed, so this file is order-independent: it says what
+  // the action should do to the window, not what the window should contain.
+  // 15s, not 10s: this is the fixture's own default (`expectTabs`) and the
+  // standard the rest of the suite's cross-process waits use. A local default
+  // of 10s quietly OVERRODE it at every call site in this file, so on a loaded
+  // machine these read as "the product did not open a tab" when what had
+  // actually happened is that the tab arrived a second after the deadline.
+  const waitCount = async (want: number, step: string, ms = 15000) => {
     try {
-      await waitFor(async () => {
-        seen = await ctx.tabCount();
-        return seen === want ? true : null;
-      }, ms);
+      await ctx.expectTabs(want, ms);
     } catch (e) {
-      throw new Error(step + ": wanted " + want + " tabs, saw " + seen);
+      throw new Error(step + ": wanted " + want + " tabs, saw " + (await ctx.tabCount()));
     }
   };
 
@@ -31,18 +38,23 @@ export async function run(ctx: any): Promise<void> {
     // install page never stacks a second extension tab.
     await ctx.openCC(ctx.tabA);
     await ctx.activateTab(ctx.tabA);
-    const before = (await ctx.tabsInfo()).length;
+    // Declared, then asserted: the tab count must be the SAME after ;I. This
+    // is the shape that replaces reconciling — the test states the number it
+    // needs and the product has to meet it. Nothing is closed or opened to
+    // make room, so the test is order-independent.
+    const before = await ctx.tabCount();
     await ctx.leaderPress(ctx.tabA, "I");
     const setupTab = await ctx.waitActiveUrl("setup.html", 15000);
     assert(setupTab, ";I opened the setup page");
-    const after = (await ctx.tabsInfo()).length;
-    assert(after === before, "no new tab opened: " + before + " -> " + after);
+    await ctx.expectTabs(before, 8000).catch(async () => {
+      throw new Error(";I opened a tab: wanted " + before + ", saw " + (await ctx.tabCount()));
+    });
     const a = await ctx.activeTabInfo();
     assert(a.url.includes("setup.html"), "active tab is the setup page, got " + a.url);
     assert(!a.url.includes("commandcenter.html"), "setup page replaced the home tab, not stacked");
     // Back to the command center for the tests that follow.
     await ctx.openCC(ctx.tabA);
-  }, { reconcile: true });
+  });
   await t("leader ;m mutes the active tab", async () => {
     await ctx.openCC(ctx.tabA);
     await ctx.activateTab(ctx.tabA);
@@ -54,15 +66,26 @@ export async function run(ctx: any): Promise<void> {
     await waitFor(async () => {
       const s = await ctx.chromeState();
       return s.mutedCount === before + 1 ? s : null;
-    }, 8000);
+      // 15s: `chromeState()` is the heaviest read in the harness (probe tab ->
+      // #lfc=state relay -> background -> re-activate the active tab), and this
+      // is a round trip per poll. 8s was below what the chain needs when the
+      // machine is busy, and the failure it produced ("the leader did not
+      // mute") named the product rather than the clock.
+    }, 15000);
     // unmute again so later tests are unaffected
     await ctx.leaderPress(ctx.tabA, "m");
     await waitFor(async () => {
       const s = await ctx.chromeState();
       return s.mutedCount === before ? s : null;
-    }, 8000);
-  }, { reconcile: true });
+    }, 15000);
+  });
   await t("command center tab commands ;n ;x ;v ;c", async () => {
+    // This test opens four tabs and closes two, so it OWNS the window shape
+    // while it runs and gives it back afterwards. That is test-owned cleanup
+    // in a `finally`, not harness-side reconciliation: the ids are read at the
+    // moment of cleanup, so a tab that died in between is simply not kept.
+    const keep = await ctx.keepOpen();
+    try {
     await ctx.openCC(ctx.tabA);
     await ctx.activateTab(ctx.tabA);
     // ;n — new tab, redirected to the command center
@@ -95,12 +118,20 @@ export async function run(ctx: any): Promise<void> {
       throw new Error(String((e && e.message) || e) + "; recently closed: " + rc);
     }
     await ctx.activateTab(ctx.tabA);
-  }, { reconcile: true });
+    } finally {
+      await ctx.closeExtras(keep);
+    }
+  });
   await t("probe tab: command center from the background", async () => {
     const a = await ctx.activeTabInfo();
     assert(a && a.url.includes("commandcenter.html"), "probe tab active: " + (a && a.url));
   });
   await t("stealth ;N from the command center opens a stealth tab", async () => {
+    // A container tab is a real tab in the numbering, so this test opens one
+    // and must close it itself. The window shape is snapshotted HERE and
+    // restored in the `finally` below.
+    const keep = await ctx.keepOpen();
+    try {
     await ctx.openCC(ctx.tabA);
     await ctx.activateTab(ctx.tabA);
     const before = await ctx.tabCount();
@@ -108,10 +139,17 @@ export async function run(ctx: any): Promise<void> {
     // requestBg -> reqResult round-trip and must still open a container tab.
     await ctx.leaderPress(ctx.tabA, "N");
     const opened = await waitFor(async () => {
-      const ts = await evalIn(ctx.probe, `browser.tabs.query({currentWindow:true}).then(ts => ts.map(t => ({id: t.id, cs: t.cookieStoreId})))`);
+      // `query({})`, not `query({currentWindow:true})`. The narrow form is
+      // answered from the background, where `currentWindow` resolves to the
+      // FOCUSED window — and it has a second, documented blind spot where it
+      // answers an EMPTY list for a window that demonstrably has tabs. Either
+      // way the test reads "no stealth tab was opened" when the tab was there
+      // all along. `ctx.tabCount()` already carries the fix and the reasoning;
+      // this call site had simply not been given it.
+      const ts = await evalIn(ctx.probe, `browser.tabs.query({}).then(ts => ts.map(t => ({id: t.id, cs: t.cookieStoreId})))`);
       const stealth = (ts || []).find((t) => t.cs && t.cs !== "firefox-default");
       return stealth ? stealth : null;
-    }, 10000).catch(() => null);
+    }, 15000).catch(() => null);
     assert(opened, ";N from the command center opened a stealth container tab");
     // The stealth tab and a transient #lfc= request/sessionState tab can
     // coexist for a moment: wait for the transients to self-remove AND the
@@ -129,8 +167,15 @@ export async function run(ctx: any): Promise<void> {
     await evalIn(ctx.probe, `browser.tabs.remove(${opened.id}).catch(() => true); true`).catch(() => {});
     await waitFor(async () => (await ctx.tabCount()) === before ? true : null, 10000).catch(() => {});
     await ctx.activateTab(ctx.tabA);
-  }, { reconcile: true });
+    } finally {
+      await ctx.closeExtras(keep);
+    }
+  });
   await t("closing a tab down to two leaves a real tab active, not the relay", async () => {
+    // This test deliberately rewrites the whole tab strip, so it owns the
+    // window shape and restores it in the `finally`.
+    const keep = await ctx.keepOpen();
+    try {
     // Regression (the blank-page dead end): with the strip [A, relay, B],
     // closing the tab next to the hidden relay makes Firefox select the
     // relay, and the post-close guard must steer back to a REAL tab — never
@@ -163,7 +208,7 @@ export async function run(ctx: any): Promise<void> {
     // Close tabA via the leader key path (what the user does).
     await ctx.activateTab(ctx.tabA);
     await ctx.leaderPressNoFocus("x");
-    await waitFor(async () => realOf(await ctx.tabsInfo()).length === 1 ? true : null, 10000);
+    await waitFor(async () => realOf(await ctx.tabsInfo()).length === 1 ? true : null, 15000);
     const left = realOf(await ctx.tabsInfo());
     assert(left.length === 1, "one tab remains after the close, got " + left.length);
     const active = left.find((t: any) => t.active);
@@ -193,5 +238,12 @@ export async function run(ctx: any): Promise<void> {
       href && href.indexOf("127.0.0.1") !== -1,
       "ctx.tabA re-pointed at a live page tab for the suites that follow, got " + href
     );
-  }, { reconcile: true });
+    } finally {
+      // The strip this test built is its own business; hand the window back
+      // so the next group starts from the shape it expected. `keep` was read
+      // live, so the tabs the test closed are not protected and the ones it
+      // opened beyond `keep` are closed.
+      await ctx.closeExtras(keep);
+    }
+  });
 }

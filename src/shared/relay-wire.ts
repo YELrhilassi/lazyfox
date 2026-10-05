@@ -22,6 +22,17 @@
 
 export const HASH_PREFIX = "#lfr=";
 
+// The relay page's own URL. It lives here, beside the hash format it is always
+// seen with, for the same reason: it is a wire fact both ends must agree on,
+// and a tab is "the relay" or it is not — a mismatch means every message for
+// that tab is addressed to nothing.
+//
+// The fragment is deliberately NOT part of the test: a relay mid-conversation
+// carries #lfr=… and must still be recognised as the relay.
+export function isRelayUrl(url: string | undefined | null): boolean {
+  return !!url && url.indexOf("relay.html") !== -1;
+}
+
 const REQ = "rq.";
 const REP = "rp.";
 const CMD = "cm.";
