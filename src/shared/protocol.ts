@@ -251,6 +251,12 @@ export interface RelayApi {
   // Ask the active tab's content script to start hinting / focus its first
   // field. Best-effort: a tab with no content script is a normal outcome.
   startHints: { req: Record<string, never>; res: null };
+  // Ask the active tab's content script to copy / edit the link in front of the
+  // user (`;K c` and `;K e`). Best-effort and silent on a tab with no content
+  // script, exactly like startHints: the chrome helper has no page of its own,
+  // so the only place this can be answered is the page.
+  copyLink: { req: Record<string, never>; res: null };
+  editLink: { req: Record<string, never>; res: null };
   focusFirstInput: { req: Record<string, never>; res: null };
   openOptions: { req: Record<string, never>; res: null };
   openSetup: { req: Record<string, never>; res: null };

@@ -37,7 +37,9 @@ import { stealthOpen } from "./stealth";
 import { pushSessionStateToChrome } from "./bgpushes";
 
 // Forward a request to the active tab's content script.
-async function relayToContent(action: "startHints" | "focusFirstInput"): Promise<null> {
+async function relayToContent(
+  action: "startHints" | "focusFirstInput" | "copyLink" | "editLink"
+): Promise<null> {
   const t = await getActiveTab();
   if (!t) return null;
   try {
@@ -80,6 +82,8 @@ export const relayHandlers: {
   // Best-effort: a tab with no content script (about:, an extension page, a
   // restricted domain) is a normal outcome, not an error to surface.
   startHints: () => relayToContent("startHints"),
+  copyLink: () => relayToContent("copyLink"),
+  editLink: () => relayToContent("editLink"),
   focusFirstInput: () => relayToContent("focusFirstInput"),
   openOptions: async () => {
     try {

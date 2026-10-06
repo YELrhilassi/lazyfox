@@ -18,13 +18,13 @@
 
 import { core } from "./core";
 import { LeaderCapture } from "./leadercapture";
-import { makeLeaderSignal, subKeyExpect, type LeaderSignal } from "./leadersignal";
+import { makeLeaderSignal, type LeaderSignal } from "./leadersignal";
 import { buildSequenceArm } from "./leadersequence";
 import { WK_CSS } from "./leader-css";
 import { LeaderPanel } from "./leaderpanel";
 import { mirrorFlag } from "./observability";
 import type { WkItem } from "./types";
-import { WkSession, wkBodyHtml, wkFootHtml } from "./wk";
+import { WkSession, wkBodyHtml, wkCategoryHtml, wkFootHtml, wkHeadHtml } from "./wk";
 
 // Normalizes a key event into a leader-binding key. Shift is already
 // reflected in e.key for printable characters ("p" vs "P", "|" vs "\\"), so it
@@ -79,6 +79,14 @@ export function leaderCombo(e: KeyboardEvent): string {
 // is exactly how `;G` and `;L` shipped as advertised-but-dead for a while.
 export interface LeaderSequence {
   final: Record<string, () => void>;
+  // What each sub-key does, for the which-key overlay. Declared by the table
+  // that decides what the keys DO, so the menu cannot advertise a key the
+  // sequence does not have, or mislabel one it does.
+  labels?: Record<string, string>;
+  // The category's title, shown as the overlay's heading once the head is
+  // pressed. Absent for sequences that are not categories (`;G`, `;'`), which
+  // keep the flat top-level table.
+  category?: string;
   timeoutMs?: number;
 }
 
@@ -99,6 +107,10 @@ export class LeaderController {
   private readonly panel = new LeaderPanel();
   private lazyBindings: WkItem[] = [];
   private bindingsLoaded: Promise<WkItem[]> | null = null;
+  // The category whose head was pressed, or null at the top level. Drives the
+  // overlay's contents and heading; cleared by hide() so a fired chord returns
+  // to the full table instead of leaving a stale menu up.
+  private activeCategory: { head: string; title: string; labels: Record<string, string>; keys: string[] } | null = null;
   // The one-shot key capture. It is its own object (leadercapture.ts) because
   // it arms and disarms independently of the leader and can be cancelled
   // outright, which nothing else here can do.
@@ -274,16 +286,53 @@ export class LeaderController {
     mirrorFlag("whichkey", false);
   }
 
+  /**
+   * The registered sequence for a key.
+   *
+   * A CATEGORY head is also accepted in the opposite case. The heads are
+   * capital letters (`;W`, `;Z`, `;K`) because that is what reads as a
+   * CATEGORY next to the lowercase verbs — but it made the whole two-key
+   * grammar unreachable for anyone who typed `;w`, and lowercase is what a
+   * keyboard produces without Shift. Measured in a browser: `;w` left the
+   * leader unarmed and did nothing at all, with no error and nothing on screen.
+   *
+   * ONLY categories get this. A blanket case-insensitive lookup is a
+   * different bug and it was caught the moment it was written: `;G` is a
+   * sequence head (the back history stack), so making every head match either
+   * case meant `;g` — plain Back — armed that capture instead of going back.
+   * A capital is how a category says "I am a category"; for anything else it is
+   * a real difference between two bindings.
+   */
+  private findSequence(combo: string): LeaderSequence | undefined {
+    const direct = SEQUENCES[combo];
+    if (direct) return direct;
+    if (combo.length === 1 && /[a-z]/.test(combo)) {
+      const up = SEQUENCES[combo.toUpperCase()];
+      if (up && up.category) return up;
+    }
+    return undefined;
+  }
+
   private async render(): Promise<void> {
     if (!this.panel.current()) return;
+    const cat = this.activeCategory;
+    if (cat) {
+      this.panel.fill(
+        wkHeadHtml(cat.head, cat.title),
+        wkCategoryHtml(cat.keys, cat.labels),
+        wkFootHtml(0, 1, true)
+      );
+      return;
+    }
     const total = await this.wk.pageCount();
     const page = await this.wk.slice();
-    this.panel.fill(wkBodyHtml(page, this.wk.sel), wkFootHtml(this.wk.page, total));
+    this.panel.fill(wkHeadHtml("", ""), wkBodyHtml(page, this.wk.sel), wkFootHtml(this.wk.page, total));
   }
 
   show(): void {
     this.active = true;
     this.prefix = "";
+    this.activeCategory = null;
     if (this.onChange) this.onChange();
     if (!this.enabled()) {
       // Overlay disabled by config, OR this context does not own the page any
@@ -303,6 +352,7 @@ export class LeaderController {
   hide(): void {
     this.active = false;
     this.prefix = "";
+    this.activeCategory = null;
     if (this.onChange) this.onChange();
     this.unpaint();
   }
@@ -351,9 +401,12 @@ export class LeaderController {
     // A plain binding for the same key WINS. Registering a category must never
     // be able to take over a key that already worked — see LeaderSequence.
     const combo = leaderCombo(e);
-    const seq = this.hasBinding(combo) ? undefined : SEQUENCES[combo];
+    const seq = this.hasBinding(combo) ? undefined : this.findSequence(combo);
     if (seq) {
       this.prefix = combo;
+      this.activeCategory = seq.category
+        ? { head: combo, title: seq.category, labels: seq.labels || {}, keys: Object.keys(seq.final) }
+        : null;
       if (this.onChange) this.onChange();
       const arm = buildSequenceArm({
         final: seq.final,
@@ -366,15 +419,18 @@ export class LeaderController {
         },
         hide: () => this.hide(),
         runOrStay: (c) => this.runOrStay(c),
-        combo,
-        describe: subKeyExpect
+        combo
       });
       this.armPending(arm.consume, {
         timeoutMs: arm.timeoutMs,
-        expect: arm.expect,
         onTimeout: arm.onTimeout
       });
-      // Keep the overlay up as a reminder when it is shown.
+      // Repaint the overlay with THIS category's contents rather than leaving
+      // the top-level table up as a reminder. A menu that still lists every
+      // binding while a category is armed is not a reminder, it is a lie: the
+      // keys that work right now are the category's, and nothing on screen
+      // said so.
+      if (this.shown()) void this.render();
       return true;
     }
     if (this.shown()) {

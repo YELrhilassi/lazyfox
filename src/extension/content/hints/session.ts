@@ -43,6 +43,15 @@ export interface LinkHints {
   // appears in the one state a user cannot otherwise detect (an ambiguous typed
   // prefix), so it is part of the same self-report the diagnostics page reads.
   enterBadge(): { shown: boolean; glyph: string };
+  // The link this session is currently pointed at: the first on-screen match
+  // for the typed prefix, i.e. exactly what Enter would activate right now.
+  // null when the layer is not open or nothing matches.
+  //
+  // This is what lets "copy link" and "edit link" mean the same thing the user
+  // can SEE rather than a second, hidden idea of "current link". It is computed
+  // from the same predicate Enter uses, deliberately: a copy action that
+  // disagreed with what Enter would open is worse than no copy action.
+  currentTarget(): { url: string; text: string } | null;
 }
 
 export function createLinkHints(getHintChars: () => string): LinkHints {
@@ -509,6 +518,22 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     activator.activate(el, "click");
   }
 
+  // The link Enter would open right now, resolved to an absolute href and the
+  // text that names it. Shares `typed` and the on-screen filter with
+  // activate/Enter by construction, so the three can never disagree.
+  function currentTarget(): { url: string; text: string } | null {
+    if (!active) return null;
+    const found = items.filter((i) => i.key.indexOf(typed) === 0 && resolve.onScreen(i));
+    const it = found[0];
+    if (!it) return null;
+    const el = resolve.resolve(it) || it.el;
+    if (!el || !el.isConnected) return null;
+    const url = targetKey(el);
+    if (!url) return null;
+    const text = ((el as HTMLElement).innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+    return { url, text: text.slice(0, 200) };
+  }
+
   function exit(): void {
     session++;
     active = false;
@@ -527,6 +552,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
 
   return {
     enterBadge: () => overlay.enterBadge(),
+    currentTarget,
     get active() {
       return active;
     },

@@ -11,8 +11,15 @@ export const WK_CSS =
   "width:360px;max-width:94vw;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:8px;" +
   "box-shadow:0 24px 70px rgba(0,0,0,.6);display:none;font-family:" + UI_FONT + ";overflow:hidden}" +
   ".wk.on{display:block}" +
+  ".wk-head{display:flex;align-items:baseline;gap:8px;padding:7px 12px 6px;" +
+  "border-bottom:1px solid #2a2f45;background:#1a1a28}" +
+  ".wk-chord{flex:none;font-size:11px;font-weight:700;color:#2ac3de;letter-spacing:.04em;" +
+  "background:#16161e;border:1px solid #414868;border-radius:4px;padding:1px 6px;min-width:26px;text-align:center}" +
+  ".wk-title{font-size:11px;color:#9aa5ce;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
   ".wk-body{padding:8px 12px 6px;max-height:min(70vh,480px);overflow-y:auto;overscroll-behavior:contain;" +
   "scrollbar-width:thin;scrollbar-color:#414868 transparent}" +
+  ".wk-cat{padding:4px 6px}" +
+  ".wk-live{color:#7aa2f7}" +
   ".wk-group{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#565f89;margin:8px 2px 3px}" +
   ".wk-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px 8px}" +
   ".wk-item{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 6px;border-radius:5px;font-size:12px;cursor:default;line-height:1.25}" +
@@ -29,4 +36,5 @@ export const WK_CSS =
 // line goes in. Kept beside the CSS so the two cannot disagree about class
 // names.
 export const WK_HOST_HTML =
-  "<div class='wk'><div class='wk-body'></div><div class='wk-foot'></div></div>";
+  "<div class='wk'><div class='wk-head'></div><div class='wk-body'></div>" +
+  "<div class='wk-foot'></div></div>";

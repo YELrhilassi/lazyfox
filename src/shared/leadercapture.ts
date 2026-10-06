@@ -58,16 +58,33 @@ export class LeaderCapture {
     this.timeoutFn = (opts && opts.onTimeout) || null;
     this.setExpect((opts && opts.expect) || "");
     if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => {
-      this.fn = null;
-      const to = this.timeoutFn;
-      this.timeoutFn = null;
-      // Cleared before onTimeout runs: a timeout handler that arms a fresh
-      // capture must not have its own hint wiped by the timer that expired the
-      // previous one.
-      this.setExpect("");
-      if (to) to();
-    }, (opts && opts.timeoutMs) || 3000);
+    this.timer = null;
+    // `timeoutMs: 0` means NO EXPIRY. This is what every category uses, and it
+    // is the single most important change in the two-key grammar: the capture
+    // used to give up after 1.5s, which is shorter than it takes to read eleven
+    // sub-keys and press one. Every keystroke after that went to the page, so
+    // `;W` looked broken — the menu painted, the keys vanished, and the next
+    // press did nothing.
+    //
+    // A capture that cannot expire needs an explicit way out, and it has four:
+    // a sub-key consumes it, Escape cancels it, releasing the leader hides it,
+    // and clicking into a field cancels it (see the hosts). All four are
+    // things the user DID; a timeout was the only thing that ended it without
+    // them, and it ended it while they were still reading.
+    const ms = opts && opts.timeoutMs !== undefined ? opts.timeoutMs : 3000;
+    if (ms > 0) {
+      this.timer = setTimeout(() => {
+        this.fn = null;
+        const to = this.timeoutFn;
+        this.timeoutFn = null;
+        this.timer = null;
+        // Cleared before onTimeout runs: a timeout handler that arms a fresh
+        // capture must not have its own hint wiped by the timer that expired
+        // the previous one.
+        this.setExpect("");
+        if (to) to();
+      }, ms);
+    }
   }
 
   /** Consumes the pending key, if any. Returns whether it was consumed. */

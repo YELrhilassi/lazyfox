@@ -31,12 +31,12 @@ const {
   leaderSeqText,
   resolveLeaderSignal,
   digitExpect,
-  subKeyExpect,
   ANY_KEY_EXPECT,
   leaderMirrorFragment,
   makeLeaderSignal,
 } = await import("../src/shared/leadersignal.ts");
 const { isCancel } = await import("../src/shared/leader.ts");
+const { wkCategoryHtml, wkHeadHtml, wkFootHtml } = await import("../src/shared/wk.ts");
 
 let passed = 0;
 function ok(name: string, cond: boolean): void {
@@ -569,20 +569,47 @@ ok(
   [1, 2, 4, 9, 12].every((n) => digitExpect(n) === "1-" + n)
 );
 
-eq("a category's sub-keys are listed", subKeyExpect(["i", "o", "r"]), "i o r");
-eq("punctuation sub-keys read as typed", subKeyExpect(["|", "[", "]"]), "| [ ]");
-eq("no sub-keys means no expectation", subKeyExpect([]), "");
-ok("a duplicate sub-key is listed once", subKeyExpect(["m", "m", "w"]) === "m w");
-// Capped: this lives on an 18px strip, and an unreadable bar is worse than a
-// summarised one. The count keeps it honest rather than silently truncating.
-ok(
-  "a long sub-key set is capped and says how many more there are",
-  subKeyExpect(["a", "b", "c", "d", "e", "f", "g", "h"]).indexOf("+2") > -1
-);
-ok(
-  "the cap never exceeds the bar's budget",
-  subKeyExpect(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]).split(" ").length <= 7
-);
+// `subKeyExpect` used to build the status bar's "w z e | [ ] +6". It is gone:
+// the bar no longer lists a category's keys, and the overlay shows all of them.
+// A category's sub-keys are rendered by wkCategoryHtml, below — the whole point
+// of the move is that a menu does not truncate itself to six items and then
+// claim there are "+6 more" of the feature's keys.
+{
+  const keys = ["|", "[", "]", "{", "}", ",", ".", "u", "m", "w", "z", "e"];
+  const labels: Record<string, string> = {};
+  for (const k of keys) labels[k] = "Label " + k;
+  const html = wkCategoryHtml(keys, labels);
+  ok("every sub-key is rendered", keys.every((k) => html.indexOf(">" + k + "<") > -1));
+  ok(
+    "every sub-key carries its label",
+    keys.every((k) => html.indexOf("Label " + k) > -1)
+  );
+  ok(
+    "a missing label still renders the key rather than an empty row",
+    wkCategoryHtml(["z"], {}).indexOf(">z<") > -1
+  );
+  eq("an empty category says so", wkCategoryHtml([], {}), "<div class='wk-group'>—</div>");
+  ok(
+    "the heading names the chord and the category",
+    // The title goes through esc(), so "Window & layout" is "Window &amp;
+    // layout" in the markup. Asserting the ESCAPED form is the point: this is
+    // an HTML builder, and a title containing markup must not reach the DOM.
+    wkHeadHtml("W", "Window & layout").indexOf("⌘W") > -1 &&
+      wkHeadHtml("W", "Window & layout").indexOf("Window &amp; layout") > -1
+  );
+  ok(
+    "the heading is CONTENT, not a second .wk-head element",
+    // Wrapping the content in its own .wk-head nests a flex item inside a flex
+    // container, and the inner one sizes to its content — so the header's
+    // bottom border drew only as far as the title. Pinned because the symptom
+    // is a stray line under the title, which looks like nothing at all.
+    wkHeadHtml("W", "Links").indexOf("wk-head") === -1
+  );
+  ok(
+    "a category foot does not advertise navigation it does not have",
+    wkFootHtml(0, 1, true).indexOf("Enter run") === -1
+  );
+}
 // A forward-any capture is a REAL modal state: the keystroke is being eaten and
 // handed to another realm. It must be visibly different from "nothing pending".
 ok("an any-key capture has its own words", ANY_KEY_EXPECT.length > 0);

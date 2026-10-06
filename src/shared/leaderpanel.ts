@@ -61,9 +61,11 @@ export class LeaderPanel {
    * The scrollIntoView is guarded because a range across trees throws, and a
    * throw here would take down the leader that called render.
    */
-  fill(bodyHtml: string, footHtml: string): void {
+  fill(headHtml: string, bodyHtml: string, footHtml: string): void {
     if (!this.host) return;
     const sh = this.host._sh;
+    const head = sh.querySelector(".wk-head");
+    if (head) head.innerHTML = headHtml;
     const body = sh.querySelector(".wk-body");
     if (body) {
       body.innerHTML = bodyHtml;

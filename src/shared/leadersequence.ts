@@ -17,8 +17,6 @@ export interface SequenceArm {
   consume: (finalKey: string) => boolean;
   /** How long the head waits before giving up and running the plain binding. */
   timeoutMs: number | undefined;
-  /** The human-readable sub-keys, shown on the bar for the life of the capture. */
-  expect: string;
   /** Runs when the capture expires unused: the head may itself be a plain binding. */
   onTimeout: () => void;
 }
@@ -40,8 +38,6 @@ export interface SequenceContext {
   runOrStay: (combo: string) => void;
   /** The head's own key combination, for the timeout fallback. */
   combo: string;
-  /** Renders the final-key table as the capture's "what we need next" hint. */
-  describe: (keys: string[]) => string;
 }
 
 /**
@@ -55,12 +51,6 @@ export interface SequenceContext {
 export function buildSequenceArm(ctx: SequenceContext): SequenceArm {
   return {
     timeoutMs: ctx.timeoutMs,
-    // The sub-keys, from the SAME table the capture dispatches through, so the
-    // bar advertises exactly what pressing one will do. A category used to show
-    // a bare `;W` for its whole 1.5s: the user can see that something is wanted
-    // and no idea what, with the overlay off there being nothing else on
-    // screen to look at.
-    expect: ctx.describe(Object.keys(ctx.final)),
     onTimeout: () => {
       // Timed out unused. The head key may itself carry a plain binding
       // (;b = bookmarks shares its head with a ;b… sequence), so run the plain
@@ -72,6 +62,10 @@ export function buildSequenceArm(ctx: SequenceContext): SequenceArm {
     },
     consume: (k2) => {
       ctx.setPrefix("");
+      // An unregistered sub-key is not merely "nothing happens": the capture is
+      // spent, the category is over, and the key must be allowed to reach
+      // whatever wanted it. Swallowing it here is what made a mistyped sub-key
+      // feel like the feature was broken.
       const fn = ctx.final[k2];
       // An unregistered sub-key consumes nothing AND leaves the leader
       // standing: the user may still pick a top-level binding, and yanking the
