@@ -96,6 +96,39 @@ silently. The same wiring exposed `CH_KEYS` being a plain `string[]`, which
 meant a typo in a hotkey key name was invisible — the exact class of bug the
 typed store was introduced to stop.
 
+### DONE — typing into a CLOSED shadow root ran Lazyfox bindings
+The worst shape a keyboard layer can break: it takes a keystroke that belongs
+to a text field. `isTypingTarget(e.target)` asks "is the event target a field?",
+and for a keystroke inside a **closed** shadow root — YouTube's search box,
+Reddit's input, most component libraries — the event is retargeted to the
+HOST `<closed-field>`, which is not a field. Measured in Firefox 158: with such
+a field focused, typing `;x` **closed a tab** (4 → 3). The user was writing a
+sentence and lost a tab.
+
+`deepTypingFocus` could not see it either: it walked `el.shadowRoot`, which is
+`null` for a closed root. The fix uses the one door Firefox gives extensions —
+`element.openOrClosedShadowRoot` (with `browser.dom.openOrClosedShadowRoot` as
+the fallback for other hosts) — so the walk reaches the real `<input>`. Pinned
+both ways: `scripts/test/typing-target.test.ts` (12 checks, including the
+no-door case that stays invisible) and four browser tests in
+`scripts/e2e/suites/content/typing.ts`, one of which asserts the fixture's root
+really is closed before trusting anything it reports.
+
+The fixture itself was wrong first: the inner input did not fill its host, so
+the click at the host's centre landed on host padding, nothing was focused, and
+`;x` closed a tab **correctly**. The test was measuring a page where nobody was
+typing. `/closedinput` now makes the input fill the host, and the test asserts
+focus and typing rather than assuming them.
+
+### DONE — the hint layer was a keyboard trap
+While hints were open, the content keydown handler called `e.preventDefault()`
+unconditionally, so the hint layer consumed **every** key on the page. No
+Lazyfox binding could be pressed at all, and `;K c` — whose entire job is to
+act on the link the hints are pointed at — was unreachable from the one state
+it was designed for. Now the leader takes precedence over the hints, and a key
+is swallowed only if `hints.handleKey(e)` claims it; anything else falls
+through to the normal handler.
+
 ---
 
 ## Measurement corrections (a claim that turned out to be wrong)
@@ -178,6 +211,78 @@ two remaining hits were false positives (`seq` in host.ts is declared plus used
 once; `probeHostOnce` does have a caller). Recorded because "we looked and it
 was clean" is worth having written down, and because the scan is the thing to
 re-run after the next change.
+
+### DONE — `composedPath()` does NOT see inside a closed shadow root
+This one nearly shipped as a fix. `composedPath()` is the standard answer to
+"what element did this event really happen in" and reads as though a closed
+root cannot hide from it. Measured in Firefox 158 with a real closed-root
+field and a window-level capture listener:
+
+```
+target        CLOSED-FIELD
+composedPath  [CLOSED-FIELD, BODY, HTML, #document, window]
+path[0]       CLOSED-FIELD        <- the host, not the input
+```
+
+Retargeting is not the only blind spot; the composed path is filtered too. The
+first version of the typing fix was built on `composedPath()` and changed
+nothing measurable. It stays in the code only because it settles the open-root
+and synthetic-event cases for free.
+
+### DONE — "the tab popup takes 2.8 seconds to open" was a measurement artifact
+The complaint ("popups/modals are slow to load and their content takes a while
+to load") is real-sounding and did not survive measurement. The first probe
+anchored on the page's own `keydown` listener and reported `;t` → popup
+**+2809ms**, list **+2853ms**, hints **+4872ms**.
+
+The page cannot use its own keydown listener as a clock: Lazyfox's window
+capture handler calls `stopImmediatePropagation()` on every key it consumes, so
+a listener the page registers afterwards **never runs at all**. The numbers
+were "time since page load", not "time since the keystroke".
+
+Re-measured against the product's own in-page mirrors (`data-lf-leader` flips in
+the same task as the dispatch; `data-lf-whichkey`, `lazyfox:list` and the popup
+host mark what became visible), with a 4ms in-page poller:
+
+```
+cold `;` after a page load      which-key overlay      +0ms
+`;t` tab popup                  popup / rows    +0ms / +39ms
+`;t` with 41 tabs open          popup / rows    +0ms / +47ms
+`;h` history popup              popup / rows   +10ms / +30ms
+`;f` link hints                 hints host          +0ms
+hint key                        click delivered     +0ms
+```
+
+Everything is inside one frame at 4ms granularity, at scale. Two honest
+caveats: this is a tiny local page in a headless build with no network (so
+favicon fetches cost nothing), and it does not explain what the user felt.
+What it does establish is that the *keystroke-to-visible* path is not where
+time goes, so the fixes that came out of this round were elsewhere.
+
+### DONE — keys answer from ~25ms after a navigation, not before
+Pressing `;` 0ms after a navigation start does nothing: the content script has
+not booted. From 25ms on, every delay tried (25/50/100/200/400/800ms) armed the
+leader. There is no dead window a human can actually type into — recorded
+because "sometimes they don't respond" deserves a number rather than a shrug,
+and the number is small.
+
+### OPEN — the chrome-side copy of the typing predicate still walks open roots only
+`src/chrome/typing.ts` and `src/chrome/frame.ts` each carry their own copy of
+the open-root walk, so neither sees inside a CLOSED root the way
+`shared/dom.ts` now does. Assessed rather than assumed blind:
+
+- For **remote pages**, the content script's broadcast is the answer —
+  `SessionStore` custom tab value `lfTyping`, written from the fixed
+  `isTypingEvent` — so the chrome side already gets the truth for a
+  closed-root field.
+- For **in-process pages** (about:, the command center) every editable is in
+  the light DOM, and Lazyfox's own overlays bind their keydown listener
+  directly on the input inside the closed root, so no retargeting is involved.
+
+What is left is narrow: a closed-root field on an in-process page that is not
+Lazyfox's own UI. Nothing has been observed doing that. Worth folding into
+the shared predicate when the chrome-side copies are next touched — not worth
+a change on its own.
 
 ---
 

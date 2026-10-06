@@ -12,8 +12,8 @@
 // global, and nothing here knows about the status bar, the channel or the
 // window beyond what it is handed, so the table can be read as a table.
 
-import { LeaderController, leaderSequences } from "../shared/leader";
-import { CATEGORY_TIMEOUT_MS, leaderCategories } from "../shared/popups/categories";
+import { LeaderController } from "../shared/leader";
+import { registerCategories } from "../shared/popups/categories";
 import { digitExpect } from "../shared/leadersignal";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
 import { openNavPopup } from "../shared/popups/nav";
@@ -103,9 +103,9 @@ export function createChromeLeader(deps: LeaderSetupDeps): ChromeLeader {
   leaderActions["G"] = () => openNavPopup(ctx);
   leaderActions["L"] = () => openNavPopup(ctx);
 
-  for (const [head, final] of Object.entries(leaderCategories(ctx))) {
-    leaderSequences[head] = { final, timeoutMs: CATEGORY_TIMEOUT_MS };
-  }
+  // The same shared helper the content script calls, so the two contexts derive
+  // one category table instead of each looping over it.
+  registerCategories(ctx);
 
   leaderActions["F"] = () => toast("scroll regions: web pages only");
   leaderActions["B"] = () => toast("scroll regions: web pages only");

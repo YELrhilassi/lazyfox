@@ -219,6 +219,8 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     quit: () => ui.quit(),
     focusFirstInput: () => ui.focusFirstInput(),
     startHints: () => ui.startHints(),
+    copyLink: () => ui.copyLink(),
+    editLink: () => ui.editLink(),
     openTarget: (which: string) => {
       const ABOUT: Record<string, string> = {
         preferences: "about:preferences",

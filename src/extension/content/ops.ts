@@ -17,6 +17,7 @@ import { relTime } from "../../shared/format";
 import { send } from "../../shared/protocol";
 import type { Config, PopupItem } from "../../shared/types";
 import { openFindPopup, openResizePopup, type ContentPopupShell } from "./find";
+import { copyLink, editLink } from "./links";
 import { tabRowMatches } from "../../shared/tabjump";
 
 export interface ContentOpsDeps {
@@ -24,6 +25,8 @@ export interface ContentOpsDeps {
   config: () => Config;
   startHints(): void;
   focusFirstInput(): void;
+  // The open hint layer, so `;K c` / `;K e` can ask it what it is pointed at.
+  hints(): { active: boolean; currentTarget(): { url: string; text: string } | null } | null;
   // Live find-in-page state for the status bar: called on every count/walk
   // change with { cur (1-based, 0 = nothing walked to yet), count }, and
   // with null when the find widget closes. The host feeds its own status bar
@@ -219,6 +222,8 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
       toast("toolbar reveal: " + (c.hoverReveal ? "on" : "off"));
     },
     focusFirstInput: () => deps.focusFirstInput(),
+    copyLink: () => copyLink({ hints: deps.hints() }),
+    editLink: () => editLink({ hints: deps.hints() }),
     startHints: () => deps.startHints(),
     listSessions: async (q: string) => {
       const r = await send("sessionList");

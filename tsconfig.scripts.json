@@ -68,7 +68,14 @@
   // is typechecked by tsconfig.json; only the Node-side test of it is out of
   // scope here.
   //
-  // Worth being precise about what is and is not checked here. src/chrome/
+  // scripts/test/typing-target.test.ts is the eleventh, and for the same
+// reason: it drives shared/dom.ts — the typing-target predicate — with
+// synthetic event/element objects. dom.ts is DOM-typed top to bottom
+// (Element, ShadowRoot, composedPath), so the test cannot live in a DOM-less
+// config. The module itself is typechecked by tsconfig.json, which owns the
+// browser tree.
+//
+// Worth being precise about what is and is not checked here. src/chrome/
   // env.ts and src/chrome/stateapi.ts — the two modules these tests exist to
   // cover — are DOM-free and DO typecheck cleanly under this config, which is
   // deliberate: the state contract has to be readable from Node or the whole
@@ -91,7 +98,8 @@
     "scripts/test/keyhold.test.ts",
     "scripts/test/chrome-state.test.ts",
     "scripts/test/wire-replay.test.ts",
-    "scripts/test/relay-queue.test.ts"
+    "scripts/test/relay-queue.test.ts",
+    "scripts/test/typing-target.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

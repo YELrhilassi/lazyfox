@@ -226,33 +226,6 @@ export function leaderSeqText(
 }
 
 /**
- * The label for a capture that takes one of a known SET of keys — the
- * sub-keys of a category (`;W` then `|`).
- *
- * Built from the same table that decides what those keys DO, so the bar
- * cannot advertise a sub-key the category does not have, and it is derived
- * rather than hand-written (a hand-written list is a second opinion about
- * the binding table, and a second opinion is eventually wrong).
- *
- * The set is capped at a handful of keys: this lives on a 18px strip at the
- * far right, and a bar too wide to read at a glance is worse than one that
- * names the common cases. Over the cap it says how many more there are,
- * which is the honest summary — the full list is one keystroke away in the
- * which-key overlay.
- */
-export function subKeyExpect(keys: string[]): string {
-  const uniq: string[] = [];
-  for (const k of keys) {
-    const s = String(k || "");
-    if (s && uniq.indexOf(s) === -1) uniq.push(s);
-  }
-  if (!uniq.length) return "";
-  const CAP = 6;
-  if (uniq.length <= CAP) return uniq.join(" ");
-  return uniq.slice(0, CAP).join(" ") + " +" + (uniq.length - CAP);
-}
-
-/**
  * The `data-lf-status` fragment for an armed signal, appended to the mirror.
  *
  * Append-only by design: `|lead:<prefix>` is the shape every existing reader

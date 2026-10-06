@@ -392,6 +392,33 @@ by an npm script, so a file cannot be added and then quietly stop running.
 
 ---
 
+## Timing a keystroke: the page cannot be the clock
+
+If you ever measure "how long from the keypress to the thing appearing", do
+**not** anchor on a `keydown` listener installed by the page. Lazyfox's window
+capture handler calls `stopImmediatePropagation()` on every key it consumes, so
+a listener the page registers afterwards never runs at all — you get an empty
+array and a number that is really "time since page load".
+
+This is not theoretical. It produced a confident, wrong measurement of `;t`
+taking **2.8 seconds** to open and `;f` taking **4.9**, in a build where both
+open in the same frame.
+
+What works:
+
+- **Anchor on the product's own mirrors.** `data-lf-leader` flips in the same
+  task as the dispatch (`armed` on press, cleared when the action runs);
+  `data-lf-whichkey`, `data-lf-hints`, `data-lf-typing`, `data-lf-dispatched`
+  and the `lazyfox:list` event mark what became visible.
+- **Stamp inside the page.** A `setInterval(…, 4)` poller in the page records
+  `performance.now()` the first time each fact is true, so no protocol round
+  trip is inside the number. The tab must be focused or the interval is
+  clamped to 1s.
+- **Install the watcher before the keystroke** and do not restart it between
+  phases — a restart resets the "was armed" flag, and with no `disarmed` mark
+  the report silently falls back to "time since page load" again. That was the
+  second round of the same mistake.
+
 ## When something fails
 
 | Symptom | Look at |

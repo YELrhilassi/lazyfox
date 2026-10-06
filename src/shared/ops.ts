@@ -54,6 +54,12 @@ export interface ActionOps {
   // Open the current page in a stealth (isolated, self-wiping) tab.
   stealthOpen(): void;
   copyUrl(): void;
+  // The link in front of the user (`;K c` / `;K e`): the hint layer's current
+  // match when it is open, otherwise the anchor under the pointer. Never
+  // "the first link on the page" — a copy command that quietly returns the
+  // wrong URL is worse than one that says it found nothing.
+  copyLink(): void;
+  editLink(): void;
   muteTab(): void;
   zen(): void;
   toggleReveal(): void;

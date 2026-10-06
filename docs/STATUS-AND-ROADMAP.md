@@ -396,6 +396,27 @@ run measure different systems" has the measurements. Run C's eight
 `commandcenter` failures are the long-documented loaded-machine cluster, on a
 machine that was busy for that run.
 
+### 3.2b After the multikey + typing-safety work: 183/193
+
+The suite is 193 tests now (189 + 4 typing-safety tests). One full run after the
+closed-shadow-root fix:
+
+| group | measured |
+| --- | --- |
+| commandcenter | 21/29 — the loaded-machine cluster, unchanged |
+| content | 114/115 |
+| sessions | 30/31 |
+| split | 13/13 |
+| options | 5/5 |
+| **total** | **183/193** |
+
+The ten failures are the same ten as before this work, by composition: the
+eight `commandcenter` ones, `content/core › ;x closes a tab, ;v reopens it`, and
+`sessions: split layout is saved and restored with the session` (which passes
+alone). **No new failure, and all ten tests added this session pass** — six
+`;K` links tests and four typing-safety tests, including the closed-root leak
+that used to close a tab mid-sentence.
+
 So the honest current statement, with each number at the scope it was actually
 measured: **`split` 13/13 isolated** (run twice); **`options` 5/5**, green in all
 three full runs but not run on its own; **`content` 104/105** at group scope;

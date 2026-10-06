@@ -247,6 +247,7 @@ func TestCategoryBindings(t *testing.T) {
 	want := map[string][]string{
 		"W": {"|", "[", "]", "{", "}", ",", ".", "u", "m"},
 		"Z": {"i", "o", "r"},
+		"K": {"h", "c", "e"},
 	}
 	found := map[string]string{}
 	for _, b := range Bindings {
@@ -286,6 +287,18 @@ func TestNoCategoryHeadIsShadowed(t *testing.T) {
 		if heads[b.Key] && b.Group != "Categories" {
 			t.Errorf("key %q is both a category head and a %s binding", b.Key, b.Group)
 		}
+	}
+	// The head this table cannot protect against is one a HOST registers rather
+	// than a row in here: `;L` is the forward history stack, added by
+	// leadersetup.ts / content main.ts and absent from Bindings. Registering the
+	// Links category on it would have produced a category that silently never
+	// opens — so `;K` is used and the reason is asserted here rather than
+	// trusted to a comment.
+	if _, shadowed := heads["L"]; shadowed {
+		t.Error("`;L` is a live binding (forward history stack), so Links must use ;K")
+	}
+	if !heads["K"] {
+		t.Error("the Links category head `;K` is missing from Bindings")
 	}
 }
 

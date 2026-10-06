@@ -12,7 +12,7 @@
 // rather than the modules themselves.
 
 import { KeyGuard } from "../../shared/keyguard";
-import { isTypingTarget } from "../../shared/dom";
+import { isTypingEvent } from "../../shared/dom";
 
 export interface ContentDomDeps {
   // The single keydown dispatcher. A throw inside it must not kill the
@@ -36,6 +36,10 @@ export interface ContentDomDeps {
   syncTypingAttr(): void;
   /** Ask the extension to start link hints. */
   startHints(): Promise<unknown>;
+  // The `;K` link actions, answered by the page because the page is the only
+  // place a link under the pointer exists. The chrome helper relays them here.
+  copyLink(): void;
+  editLink(): void;
   /** Focus the page's first text input (the `;f` flow). */
   focusFirstInput(): void;
   /** The hint badge state, for the `hintBadge` message. */
@@ -89,7 +93,7 @@ export function installContentDom(deps: ContentDomDeps): void {
     // Suppress it outside text fields so `;/` opens the Lazyfox find popup,
     // not the native find bar.
     if (e.type === "keypress" && (e.key === "/" || e.key === "'")) {
-      if (!isTypingTarget(e.target as Element)) {
+      if (!isTypingEvent(e)) {
         e.preventDefault();
         e.stopPropagation();
       }
@@ -113,7 +117,7 @@ export function installContentDom(deps: ContentDomDeps): void {
     // A stale leader or one-shot capture must never eat what the user types.
     // Disarm when focus moves to an editable element (e.g. clicking into a
     // search box after pressing `;` on the page).
-    if (isTypingTarget(e.target as Element)) {
+    if (isTypingEvent(e)) {
       if (deps.leaderActive()) deps.hideLeader();
       if (deps.leaderHasPending()) deps.cancelLeaderPending();
     }
@@ -126,6 +130,14 @@ export function installContentDom(deps: ContentDomDeps): void {
       if (msg && msg.action === "startHints") {
         void deps.startHints();
         return Promise.resolve({ ok: true });
+      }
+      if (msg && msg.action === "copyLink") {
+        deps.copyLink();
+        return true;
+      }
+      if (msg && msg.action === "editLink") {
+        deps.editLink();
+        return true;
       }
       if (msg && msg.action === "focusFirstInput") {
         deps.focusFirstInput();
