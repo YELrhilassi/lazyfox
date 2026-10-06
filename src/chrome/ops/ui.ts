@@ -25,7 +25,7 @@ export function createUiOps(deps: {
   applyHoverRevealPref(cfg: ChromeCfg): void;
   popup: { openResizePopup(): void };
   channel: {
-    requestBg(action: "focusFirstInput" | "startHints" | "openSetup" | "openDiagnostics" | "toggleWhichKey" | "quit", arg?: any): void;
+    requestBg(action: "focusFirstInput" | "startHints" | "copyLink" | "editLink" | "openSetup" | "openDiagnostics" | "toggleWhichKey" | "quit", arg?: any): void;
     requestReply(action: "stealthOpen"): Promise<any>;
   };
 }) {
@@ -117,6 +117,14 @@ export function createUiOps(deps: {
     },
     startHints: () => {
       deps.channel.requestBg("startHints");
+    },
+    // The page owns the links, so these are relayed rather than answered here:
+    // the chrome helper is a privileged document with no DOM of its own.
+    copyLink: () => {
+      deps.channel.requestBg("copyLink");
+    },
+    editLink: () => {
+      deps.channel.requestBg("editLink");
     },
     openSetup: () => {
       deps.channel.requestBg("openSetup");

@@ -1108,5 +1108,65 @@
     "group": "content",
     "runs": 2,
     "passes": 2
+  },
+  "content/links › ;K h starts link hints": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/links › ;K c copies the link the hints are pointed at": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/links › ;K c says so when there is no link to copy": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/links › ;K c names WHY it found no link": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/links › ;K e opens an editor holding the link under the pointer": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/links › ;K e applies the edited url back to the anchor": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/typing › typing in a CLOSED shadow-root field reaches the field": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/typing › a keystroke in a closed shadow-root field fires no Lazyfox action": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/typing › a plain input field fires no Lazyfox action either": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/typing › the leader is disarmed when focus moves into a field": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
   }
 }

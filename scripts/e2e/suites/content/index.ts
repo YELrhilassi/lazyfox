@@ -5,6 +5,8 @@ import * as core from "./core.ts";
 import * as setup from "./setup.ts";
 import * as scroll from "./scroll.ts";
 import * as hints from "./hints.ts";
+import * as links from "./links.ts";
+import * as typing from "./typing.ts";
 import * as popups from "./popups.ts";
 import * as find from "./find.ts";
 import * as indicator from "./indicator.ts";
@@ -23,6 +25,12 @@ export async function run(ctx: any): Promise<void> {
   await setup.run(ctx);
   await scroll.run(ctx);
   await hints.run(ctx);
+  // After hints: the link tests drive the hint layer, and they leave a dead
+  // editor behind if one fails, which the next test would trip over.
+  await links.run(ctx);
+  // Typing safety next: it is a guard against Lazyfox stealing keystrokes, so
+  // it must run before anything that leaves an armed leader behind.
+  await typing.run(ctx);
   await popups.run(ctx);
   await find.run(ctx);
   await indicator.run(ctx);

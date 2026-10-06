@@ -456,3 +456,117 @@ the hand already is after `;`.
 **Implementation note:** the cancel must be handled by the Lazyfox key
 dispatcher *before* the page sees it, and must `preventDefault` +
 `stopImmediatePropagation` so the page never receives it.
+
+---
+
+## 11. What was wrong with the two-key grammar, measured
+
+Everything above was a design. This section is what the built thing actually
+did, measured in a real browser against the committed `dist/extension`, because
+the gap between "the design says the user can see the sub-keys" and "the user
+can see the sub-keys" turned out to be where every complaint came from.
+
+### The 1.5s expiry
+
+The category capture expired after 1500ms, on the argument that a sub-key is
+"the next keystroke in a chord" and waiting seconds would leave a stale prefix
+on the bar. Measured, pressing `;W` paints **eleven** sub-keys, and choosing one
+of eleven takes longer than a second and a half essentially every time. So:
+
+```
+;W pressed            leader=1  expect="w z e | [ ] +6"
++1300ms               leader=1
++1400ms               leader=null      <- the capture gave up
++2500ms               leader=null
+|  pressed            nothing happens; the page gets the pipe character
+```
+
+`CATEGORY_TIMEOUT_MS` is now **0**, which `LeaderCapture` reads as "no timer at
+all". A category is something you *read*; a menu with a stopwatch on it is not a
+menu. There are four explicit ways out — a sub-key, `Esc`, releasing the leader,
+clicking into a field — and all four are things the user *did*, which is what an
+escape hatch has to be.
+
+### `;w` did nothing at all
+
+The heads are capitals (`;W`, `;Z`, `;K`) because a capital reads as a CATEGORY
+next to lowercase verbs. But a keyboard produces lowercase `w` without Shift,
+so the entire two-key grammar was unreachable unless you already knew to hold
+Shift for a key that looks identical:
+
+```
+;w pressed            leader=null   <- not a sequence, no plain binding, nothing
+```
+
+Category heads now answer to either case. **Only categories.** A blanket
+case-insensitive lookup is a different bug, and it was caught the moment it was
+written: `;G` is a sequence head (the back history stack), so matching either
+case everywhere made `;g` — plain **Back** — arm that capture instead. The unit
+test now pins both halves.
+
+### The status bar was summarising the menu instead of showing it
+
+`;W` put `w z e | [ ] +6` in the status bar: six of eleven keys, the rest
+summarised as "+6". That is not a menu, and it is not even a list — it is the
+part of the list that fits. It is gone: the status bar no longer names a
+category's sub-keys at all, and the overlay shows every one of them, labelled.
+
+The `+6` case is the argument. A truncation that announces itself is still a
+truncation, and the key you wanted was the one most likely to be the one
+dropped. `subKeyExpect` is deleted rather than left as tested dead code.
+
+### The overlay did not adapt
+
+Pressing `;W` left the *identical* panel on screen: the full keymap, paging and
+all, with a few characters in the status bar as the only cue that a category was
+open. A menu that still lists everything while a category is armed is not a
+reminder — it is a lie about what the next keystroke will do.
+
+The panel now has a heading (`⌘ All keys` / `⌘W Window & layout`) and renders
+the pressed category's keys, one per row, labelled. The size and position are
+unchanged — 360px, `right:24px bottom:30px` — because they were not the problem
+and moving them would have been an unrequested change.
+
+Labels come from the binding table itself (`CategoryDef.items` pairs each key
+with its label), so the menu cannot advertise a key the category does not have
+or mislabel one it does. That is why the shape changed: a separate hand-written
+list of labels is a second opinion about the binding table, and a second
+opinion is eventually wrong, silently.
+
+### A layout bug worth naming
+
+`wkHeadHtml` originally returned `<div class='wk-head'>…</div>`, and `fill()`
+assigns into a `.wk-head` that `WK_HOST_HTML` already owns. The header was
+therefore nested inside itself — and an inner flex item is sized to its
+content, so the header's bottom border drew only as far as the title text. It
+looked like a stray rule under the heading. The function returns the header's
+*content* now, and a test pins that it returns no `.wk-head` element at all.
+
+### `;K` — Links
+
+```
+K  Links
+h  Link hints
+c  Copy link
+e  Edit link
+```
+
+Deliberately neither search nor link-opening: `;o`, `;O`, `;s`, `;S` already do
+those. `;K` is about the link in front of you, and "which link" has two visible
+answers, tried in this order:
+
+1. the hint layer's current match, when it is open — computed with the *same*
+   predicate `Enter` uses, so "copy this link" cannot disagree with "open this
+   link";
+2. the anchor under the pointer.
+
+Otherwise it says so. "The first link on the page" would be a silent wrong
+answer to a copy command, which is the worst possible failure for something
+whose entire job is to hand you a URL you are about to paste.
+
+**`;K`, not `;L`.** `;L` was the obvious head and it is already a live binding —
+the forward history stack, registered by both hosts. A plain binding always
+beats a sequence head, so registering a category on `;L` produces a category
+that silently never opens. That is the `;G`/`;L` bug this document has warned
+about since §8, so the choice is asserted in `core/session_test.go` rather than
+left to a comment.

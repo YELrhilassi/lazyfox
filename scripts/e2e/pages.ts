@@ -111,6 +111,43 @@ export const pages = {
 </body></html>`,
   },
   "/deep": { body: deepBody },
+  // A page whose editable lives inside a CLOSED shadow root — how YouTube's
+  // search box, Reddit's input and most modern component libraries ship a text
+  // field. This is where typing detection breaks: a keydown inside a closed
+  // root is retargeted to the HOST, so `e.target` is a custom element that is
+  // not an INPUT, and anything reading `e.target` decides the user is not
+  // typing and takes the keystroke. The event's composed path still contains
+  // the real <input>, which is the only place the truth survives.
+  // A field inside a CLOSED shadow root, with the inner input FILLING its host.
+// That is how real ones are built (YouTube's search box, Reddit's composer),
+// and it is also the only honest fixture here: the inner input is unreachable
+// from the page, so a test cannot query its box and click it directly. If the
+// input did not fill the host, a click at the host's centre would land on the
+// host's own padding — focus would stay on <body> and the "typing" tests would
+// be measuring a page where nobody is typing at all.
+  "/closedinput": {
+    body: `<!DOCTYPE html><html><head><title>CLOSED SHADOW INPUT</title></head><body>
+<closed-field id="cf"></closed-field>
+<p id="note">field above is inside a closed shadow root</p>
+<script>
+class ClosedField extends HTMLElement {
+  constructor() {
+    super();
+    const root = this.attachShadow({ mode: "closed" });
+    root.innerHTML = '<style>:host{display:block;width:340px}'
+      + 'input{display:block;width:100%;box-sizing:border-box;font:14px monospace;padding:4px}</style>'
+      + '<input id="inner" type="text" placeholder="type here">';
+    this.__root = root;
+  }
+  // A test hook: the root is closed, so nothing outside can reach the input —
+  // which is the point. Reading it back has to go through here.
+  value() { return this.__root.getElementById("inner").value; }
+  focused() { return this.__root.getElementById("inner") === this.__root.activeElement; }
+}
+customElements.define("closed-field", ClosedField);
+</script>
+</body></html>`,
+  },
   // A page whose DOM order deliberately differs from its visual order (Google
   // reorders SERP blocks with CSS). DOM order: ZETA, ALPHA, BETA, DELTA.
   // Reading order: ALPHA (top-left), BETA (top-right), DELTA (bottom-left),

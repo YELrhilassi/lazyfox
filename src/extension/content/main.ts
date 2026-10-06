@@ -6,10 +6,10 @@
 
 import { mergeConfig } from "../../shared/config";
 import { ensureCore } from "../../shared/core";
-import { isTypingTarget } from "../../shared/dom";
+import { isTypingEvent, isTypingTarget } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { installContentDom } from "./contentdom";
-import { LeaderController, isCancel, leaderSequences } from "../../shared/leader";
+import { LeaderController, isCancel } from "../../shared/leader";
 import { digitExpect, idleSignal, type LeaderSignal } from "../../shared/leadersignal";
 import {
   releaseHoldOnKeyup,
@@ -17,7 +17,7 @@ import {
   visibilityLostHold,
 } from "../../shared/holdrelease";
 import { openNavPopup } from "../../shared/popups/nav";
-import { CATEGORY_TIMEOUT_MS, leaderCategories } from "../../shared/popups/categories";
+import { registerCategories } from "../../shared/popups/categories";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
 import { mirror, mirrorFlag } from "../../shared/observability";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/popups";
@@ -26,6 +26,7 @@ import { readKey, vConfig } from "../store";
 import type { Config } from "../../shared/types";
 import { collectPageReport } from "./diagnostics";
 import { createLinkHints, focusFirstInput } from "./hints";
+import { installPointerTracker } from "./links";
 import { createContentOps } from "./ops";
 import { createScrollController } from "./scroll";
 import { createScrollKeys } from "./scrollkeys";
@@ -119,6 +120,9 @@ import type { ContentPopupShell } from "./find";
     config: () => config,
     startHints: () => void hints.start(),
     focusFirstInput: focusFirstInput,
+    // `;K c` / `;K e` ask the hint layer what it is pointed at, so "copy link"
+    // and "open link" cannot disagree about which link is current.
+    hints: () => hints,
     // Live find count: relay it to the chrome helper's window-level bar (the
     // only bar — this content script never draws one) so "N/M" follows the
     // find widget on web pages. count -1 = the widget closed (hide the bar
@@ -127,6 +131,12 @@ import type { ContentPopupShell } from "./find";
       void send("syncFind", s ? { cur: s.cur, count: s.count } : { cur: 0, count: -1 });
     },
   });
+
+  // The pointer position is what `;K c` / `;K e` fall back to when the hint
+  // layer is closed, so it has to be tracked before either key can be pressed.
+  // Passive and capture-phase: this must never cost the page a mousemove, and
+  // it must still see the event in a page that stops propagation.
+  installPointerTracker();
 
   let leader: LeaderController;
   const ctx: PopupCtx = {
@@ -245,12 +255,12 @@ import type { ContentPopupShell } from "./find";
         expect: digitExpect(9),
       }
     );
-  // The leader's two-key categories (`;W` window/layout, `;Z` zoom) come from
-  // the shared table — registered here too, from the same source the chrome
-  // helper uses, so the two contexts cannot disagree about what `;W |` does.
-  for (const [head, final] of Object.entries(leaderCategories(ctx))) {
-    leaderSequences[head] = { final, timeoutMs: CATEGORY_TIMEOUT_MS };
-  }
+  // The leader's two-key categories (`;W` window/layout, `;Z` zoom, `;K` links)
+  // come from the shared table — registered here through the shared helper, so
+  // both hosts derive the identical table rather than each looping over it and
+  // a category added to one context only being a category that works on web
+  // pages and silently does nothing on the command center.
+  registerCategories(ctx);
   // ;F / ;B = cycle the scroll target among the page's scroll regions (the
   // document scroller, then each pane/sidebar largest-first). The plain scroll
   // keys keep working on whatever is focused, and cycling back to "window"
@@ -324,7 +334,7 @@ import type { ContentPopupShell } from "./find";
       return;
     }
     if (hints.active) {
-      if (isTypingTarget(e.target as Element)) {
+      if (isTypingEvent(e)) {
         // The user focused a text field mid-hints: the hint batch must not
         // eat what they type there. Drop the hints and let the key through.
         hints.exit();
@@ -333,11 +343,28 @@ import type { ContentPopupShell } from "./find";
         // consumed here — it falls through to the shared Esc handling below,
         // which also blurs focus and lets the page close its own overlays.
         hints.exit();
+      } else if (leader.active) {
+        // The LEADER takes precedence over the hints. The hint layer is a
+        // keyboard trap otherwise: it owned every key on the page, so while it
+        // was open not one Lazyfox binding could be pressed — and `;K c`, whose
+        // whole job is to act on the link the hints are pointed at, was
+        // unreachable from the state it was designed for.
+        //
+        // It keeps running underneath. Pressing `;` does not exit it, so the
+        // hint target `;K c`/`;K e` act on is still the one on screen; only the
+        // keyboard moves. Esc still drops the hints outright, below.
       } else {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        hints.handleKey(e);
-        return;
+        // Only swallow what the hints actually handled. This branch used to
+        // preventDefault unconditionally, which meant `;` — the leader key, not
+        // a hint character — vanished into a layer that had no use for it, and
+        // the leader could never be armed from a hinted page.
+        if (hints.handleKey(e)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
+        // Not consumed: fall through and let the rest of the handler decide,
+        // exactly as it would if the hints had never been open.
       }
     }
     // NOTE: the chrome helper announces itself as "alive" and was meant to own
@@ -377,7 +404,7 @@ import type { ContentPopupShell } from "./find";
     // into a search box used to swallow the first character (and a stray `'`
     // re-armed the marker capture, so the next digit switched sessions).
     // Disarm both and let the key reach the field.
-    if (isTypingTarget(e.target as Element)) {
+    if (isTypingEvent(e)) {
       if (leader.active) leader.hide();
       if (leader.hasPending()) leader.cancelPending();
       return;
@@ -404,7 +431,7 @@ import type { ContentPopupShell } from "./find";
     // Ctrl+1-9: hot-swap to the session with that marker (tmux-style). Skips
     // text fields so Ctrl+1 inside an input is untouched.
     if (e.ctrlKey && !e.altKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
-      if (!isTypingTarget(e.target as Element)) {
+      if (!isTypingEvent(e)) {
         e.preventDefault();
         e.stopImmediatePropagation();
         contentOps.switchSessionByMarker(Number(e.key));
@@ -484,11 +511,17 @@ import type { ContentPopupShell } from "./find";
     // ignore
   }
 
-  function syncTypingAttr() {
-    const ae = document.activeElement;
-    const typing = isTypingTarget(ae);
+  function setTyping(typing: boolean) {
     mirrorFlag("typing", typing);
     void send("syncTyping", { typing: typing });
+  }
+
+  // From focus, on the way in. The keydown path is the authoritative one (it
+  // sees the event, not just the focus), but this keeps the flag honest
+  // between keystrokes — and `isTypingTarget` walks shadow roots, so a field
+  // inside a CLOSED root resolves correctly here too.
+  function syncTypingAttr() {
+    setTyping(isTypingTarget(document.activeElement));
   }
 
   /* ==================== boot ==================== */
@@ -542,6 +575,8 @@ import type { ContentPopupShell } from "./find";
     syncTypingAttr,
     startHints: () => hints.start(),
     focusFirstInput,
+    copyLink: () => contentOps.copyLink(),
+    editLink: () => contentOps.editLink(),
     hintBadge: () => hints.enterBadge(),
     pageReport: () => collectPageReport(scroll, hints),
     isDev: () => __DEV__,

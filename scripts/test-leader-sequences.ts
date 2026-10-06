@@ -26,7 +26,7 @@ const { LeaderController, leaderSequences, leaderCombo } = await import(
   "../src/shared/leader.ts"
 );
 const { makeLeaderActions } = await import("../src/shared/popups/leader.ts");
-const { leaderCategories, CATEGORY_HINTS, CATEGORY_TIMEOUT_MS } = await import(
+const { leaderCategories, categoryHint, registerCategories, CATEGORY_TIMEOUT_MS } = await import(
   "../src/shared/popups/categories.ts"
 );
 const { armTabPosition } = await import("../src/shared/popups/leader.ts");
@@ -364,35 +364,76 @@ delete leaderSequences["L"];
 {
   const cats = leaderCategories(stubPopupCtx());
   const heads = Object.keys(cats).sort();
-  eq("the shipped categories are W and Z", heads.join(","), "W,Z");
+  eq("the shipped categories are K, W and Z", heads.join(","), "K,W,Z");
   for (const h of heads) {
     // A category head that also has a plain binding is unreachable: the
     // controller's rule sends the key to the plain action and the category is
     // silently dead. Better caught here than as "the split shortcut stopped
     // working" a release later.
     ok(`;${h} does not collide with a plain binding`, !leaderBindings[h]);
-    ok(`;${h} is described in the which-key hints`, !!CATEGORY_HINTS[h]);
+    ok(`;${h} has a title`, !!cats[h].label);
   }
 
   // Every advertised sub-key must exist, and every real sub-key must be
   // advertised. The hints string is what the overlay renders, so a drift here
   // is a menu that lies.
   for (const h of heads) {
-    const advertised = (CATEGORY_HINTS[h]?.keys ?? "").split(" ").filter(Boolean);
+    const advertised = categoryHint(cats[h]).keys.split(" ").filter(Boolean);
     for (const s of advertised) {
-      ok(`;${h} ${s} is a real sub-key`, typeof cats[h][s] === "function");
+      ok(`;${h} ${s} is a real sub-key`, !!cats[h].items.find((i) => i.key === s));
     }
-    for (const s of Object.keys(cats[h])) {
-      ok(`;${h} ${s} appears in the hints`, advertised.includes(s));
+    for (const s of cats[h].items) {
+      ok(`;${h} ${s.key} appears in the hints`, advertised.includes(s.key));
+      // The overlay labels each row from this table, so an unlabelled sub-key
+      // is a row that renders as a bare key with nothing to say.
+      ok(`;${h} ${s.key} has a label`, !!s.label);
     }
   }
+
+  // `;L` was the obvious head for Links and is NOT available: it is a live
+  // binding (the forward history stack) registered by the HOSTS, so it is not
+  // in this shared action table at all. core/session_test.go pins that the
+  // shipped table keeps Links on `;K` instead.
 
   // Sub-keys live inside a one-shot capture, so they cannot shadow anything at
   // top level — `;W m` coexisting with a top-level `m` is safe by
   // construction, and this pins that reading of the layout.
   ok("a split sub-key also exists at top level", !!leaderBindings["m"]);
 
-  ok("the category timeout is short", CATEGORY_TIMEOUT_MS <= 2000);
+  // The category capture must NOT expire. It used to be 1500ms, which is
+  // shorter than reading eleven sub-keys takes: the menu painted, the keys
+  // evaporated, and every keystroke after that went to the page. A category is
+  // something you read, not a chord you fly through.
+  eq("a category capture never expires on its own", CATEGORY_TIMEOUT_MS, 0);
+}
+
+/* ---------- a category head works in either case; other heads do not ---------- */
+//
+// `;w` is what a keyboard produces without Shift, and it used to do nothing at
+// all. But the fix must NOT be a blanket case-insensitive lookup: `;G` is a
+// sequence head, so matching either case everywhere would make `;g` — plain
+// Back — arm that capture instead of going back. Both halves are pinned.
+
+{
+  registerCategories(stubPopupCtx());
+  const plain: string[] = [];
+  const l = makeLeader(plain, () => false, (k) => !!leaderBindings[k]);
+
+  l.active = true;
+  l.handleKey(key("w"));
+  ok("lowercase ;w arms the category", l.prefix === "w");
+  eq("and does not run a plain binding", plain.join(","), "");
+  l.handlePending("Escape");
+
+  // `;G` is NOT a category, so its capital is meaningful and `;g` stays Back.
+  l.active = true;
+  l.handleKey(key("g"));
+  eq("lowercase ;g still runs plain Back", plain.join(","), "g");
+  l.hide();
+
+  delete leaderSequences["W"];
+  delete leaderSequences["Z"];
+  delete leaderSequences["K"];
 }
 
 /* ---------- `;W m` names a POSITION, and positions are now multi-digit ---------- */
@@ -503,6 +544,20 @@ delete leaderSequences["L"];
   });
   await new Promise((r) => setTimeout(r, 40));
   ok("an unused capture runs its timeout", timedOut);
+
+  // `timeoutMs: 0` is the category rule: no expiry at all. The old 1500ms
+  // was shorter than reading eleven sub-keys takes, so the menu painted, the
+  // keys evaporated, and the keystroke after that went to the page — which is
+  // what made `;W` feel broken rather than fast.
+  let expired = false;
+  l.armPending(() => true, { timeoutMs: 0, onTimeout: () => { expired = true; } });
+  await new Promise((r) => setTimeout(r, 120));
+  ok("a zero timeout never expires", expired === false);
+  ok("and the capture is still armed", l.hasPending() === true);
+  let took = false;
+  ok("and still consumes its key", l.handlePending("|") === true);
+  took = l.hasPending() === false;
+  ok("and disarms once used", took);
   eq("a timed-out capture drops its hint", l.pendingExpect, "");
 }
 

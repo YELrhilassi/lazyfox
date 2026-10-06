@@ -79,6 +79,12 @@ var Bindings = []WkItem{
 	// "Window & layout" would advertise a key and explain nothing.
 	{Key: "W", Label: "Window & layout \u2192 | [ ] { } , . u m w z e", Group: "Categories"},
 	{Key: "Z", Label: "Zoom \u2192 i in \u00b7 o out \u00b7 r reset", Group: "Categories"},
+		// `;K` is a category, not the letter "K" as a verb. `;L` was the obvious
+		// pick until it turned out `;L` is a live binding (the forward history
+		// stack): a category registered there never arms, because a plain
+		// binding always beats a sequence head. That failure is silent, which is
+		// why the choice is recorded next to the table it constrains.
+		{Key: "K", Label: "Links \u2192 h hints \u00b7 c copy \u00b7 e edit", Group: "Categories"},
 
 	// ---- Sessions (tmux-style) ----
 	{Key: "p", Label: "Sessions", Group: "Sessions"},
