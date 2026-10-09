@@ -63,6 +63,14 @@ export function installProbe(
     return (r && r.tabs) || [];
   };
 
+  // The whole `tabs` reply, including `omitted`: the rows the product's list
+  // left out and the reason for each (windowops#tabsInWindow). A test that
+  // compares the product's numbering against its own count can then say WHICH
+  // tab the product dropped and why, instead of reporting two numbers.
+  ctx.productTabsReply = async function productTabsReply(): Promise<any> {
+    return (await ctx.bgCall("tabs")) || {};
+  };
+
   // Open the extension-realm probe tab, retrying if a concurrent window rebuild
   // sweeps away the tab we just created. The probe is the only handle on the
   // extension APIs (tabs/history/storage), so losing it takes every later test

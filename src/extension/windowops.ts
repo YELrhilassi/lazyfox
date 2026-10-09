@@ -13,7 +13,7 @@
 // a long correctness argument (see reopentab.ts) that must be readable without
 // the window-management code around it.
 
-import { getActiveTab, realTabsInWindow } from "./tabs";
+import { getActiveTab, omittedTabsInWindow, realTabsInWindow } from "./tabs";
 import { reconcileStealth, stealthContainers } from "./stealth";
 import {
   alternateTarget,
@@ -194,7 +194,12 @@ export async function activateTabByIndex(n: number) {
 export async function tabsInWindow() {
   await reconcileStealth();
   const tabs = await realTabsInWindow();
+  // What the list left out, and why (see omittedTabsInWindow): the popup
+  // ignores it, and a reader comparing two counts stops having to guess which
+  // tab is missing.
+  const omitted = await omittedTabsInWindow();
   return {
+    omitted,
     tabs: tabs.map((t: any) => ({
       id: t.id,
       title: t.title || t.url || "about:blank",
