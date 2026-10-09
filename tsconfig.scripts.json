@@ -75,6 +75,13 @@
 // config. The module itself is typechecked by tsconfig.json, which owns the
 // browser tree.
 //
+// scripts/test/keymap.test.ts is the twelfth. It is the DRIFT CHECK between
+// the Go keymap (core/keymap.go) and the TypeScript action tables, so it has
+// to be able to see the action tables — popups/leader.ts and the three host
+// tables — and those are DOM-typed because they are what builds the popups.
+// The keymap module it checks (shared/keymap.ts) is DOM-free and typechecked
+// by tsconfig.json; only this Node-side harness is out of scope here.
+//
 // Worth being precise about what is and is not checked here. src/chrome/
   // env.ts and src/chrome/stateapi.ts — the two modules these tests exist to
   // cover — are DOM-free and DO typecheck cleanly under this config, which is
@@ -99,7 +106,8 @@
     "scripts/test/chrome-state.test.ts",
     "scripts/test/wire-replay.test.ts",
     "scripts/test/relay-queue.test.ts",
-    "scripts/test/typing-target.test.ts"
+    "scripts/test/typing-target.test.ts",
+    "scripts/test/keymap.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

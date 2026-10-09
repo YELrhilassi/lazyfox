@@ -38,7 +38,7 @@ import { pushSessionStateToChrome } from "./bgpushes";
 
 // Forward a request to the active tab's content script.
 async function relayToContent(
-  action: "startHints" | "focusFirstInput" | "copyLink" | "editLink"
+  action: "startHints" | "focusFirstInput"
 ): Promise<null> {
   const t = await getActiveTab();
   if (!t) return null;
@@ -82,8 +82,6 @@ export const relayHandlers: {
   // Best-effort: a tab with no content script (about:, an extension page, a
   // restricted domain) is a normal outcome, not an error to surface.
   startHints: () => relayToContent("startHints"),
-  copyLink: () => relayToContent("copyLink"),
-  editLink: () => relayToContent("editLink"),
   focusFirstInput: () => relayToContent("focusFirstInput"),
   openOptions: async () => {
     try {
@@ -130,10 +128,9 @@ export const relayHandlers: {
     await restoreSession(req.name);
     return null;
   },
-  deleteSession: async (req) => {
-    await deleteSession(req.name);
-    return null;
-  },
+  // Returns the outcome: the caller awaits it to know the storage write has
+  // landed before it re-reads the list (see protocol.ts).
+  deleteSession: (req) => deleteSession(req.name),
   switchSessionByMarker: async (req) => {
     await switchSessionByMarker(req.marker);
     return null;

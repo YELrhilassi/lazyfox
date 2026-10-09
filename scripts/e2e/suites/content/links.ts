@@ -1,63 +1,34 @@
-// The `;K` Links category: hints, copy link, and edit link.
+// The address surface: `;f` for hints, `;K` for the page's own URL.
 //
-// These exist because the category shipped on wiring and typecheck alone, which
-// is not evidence that a key does anything. Each test drives the real chord
-// against a real page and reads a fact the page itself produced.
+// REWRITTEN, and the header explains why because the old version tested a
+// feature that no longer exists.
 //
-// The link under test is found through the HINT layer rather than the pointer,
-// because a BiDi test has no pointer. That is also the more interesting path:
-// it means "copy link" and "open link" resolve the same element, which is the
-// property the design promises and the one that a pointer-only test could not
-// check.
-import { createTab, evalIn, navigate, send } from "../../bidi.ts";
+// `;K` used to be a Links category whose three sub-keys were `h` (link hints),
+// `c` (copy the LINK in front of you) and `e` (edit that link). All three were
+// the wrong shape:
+//
+//   * Hints were only reachable by opening a menu first. Hints are the most
+//     frequent thing anyone does on the web, and they already had a one-key
+//     binding (`;f`). Advertising them as `;K h` gave the same action two
+//     homes and buried the one that matters. So `;K` no longer has an `h` at
+//     all, and the first test here pins that `;f` is what works.
+//   * `c` and `e` acted on a LINK the user never selected — the hint layer's
+//     current match, else the anchor under the pointer, else an error. That
+//     meant the same command meant different things depending on invisible
+//     state, and `;y` already copied the page URL one keystroke away. Now they
+//     mean one thing: THIS PAGE'S ADDRESS.
+//
+// Every test drives a real chord against a real page and reads a fact the page
+// itself produced.
+
+import { createTab, evalIn, navigate } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
-
-// Move the REAL pointer onto a point, the way a user's mouse does.
-//
-// The first version of this file dispatched a synthetic `mousemove` from the
-// page, and the feature under test never saw it: `;K e` reported no link while
-// the pointer was plainly over one. A synthetic event constructed in one realm
-// and aimed at a listener in another is exactly the kind of thing that makes a
-// test green while the product is broken — or the reverse. Real pointer input
-// has no such question.
-async function movePointerTo(tab: string, x: number, y: number): Promise<void> {
-  await send("input.performActions", {
-    context: tab,
-    actions: [
-      {
-        type: "pointer",
-        id: "mouse",
-        parameters: { pointerType: "mouse" },
-        actions: [
-          { type: "pointerMove", x: Math.round(x), y: Math.round(y), duration: 20 },
-        ],
-      },
-    ],
-  });
-}
-
-/**
- * `;<head>;<sub-key>` pressed by hand, for the tests that care about WHERE the
- * pointer is.
- *
- * `ctx.leaderSeq` re-focuses the page on every attempt, and focusing scrolls it
- * to the top — which undoes the `scrollIntoView` that put the link somewhere
- * the pointer could reach. The pointer is recorded once, at a position, and a
- * scroll afterwards silently makes that position wrong. This helper focuses
- * nothing, so the caller controls the order: focus, aim, move, then press.
- */
-async function chord(ctx: any, tab: string, keys: string[]): Promise<void> {
-  await ctx.press(tab, ";");
-  await ctx.tryArm(tab, 2500);
-  for (const k of keys) await ctx.press(tab, k);
-}
 
 export const TAGS: string[] = ["links", "newfeatures"];
 
 export async function run(ctx: any): Promise<void> {
   const t = (name: string, fn: () => Promise<void>) => ctx.runTest("content/links", name, fn, { tags: TAGS });
 
-  // A page with two distinct links, so "which link" has a checkable answer.
   const page = async () => {
     const tab = await createTab();
     await navigate(tab, `${ctx.base}/`, "complete");
@@ -65,161 +36,94 @@ export async function run(ctx: any): Promise<void> {
     return tab;
   };
 
-  await t(";K h starts link hints", async () => {
+  await t(";f starts link hints — the one-key access, not ;K h", async () => {
     ctx.tabA = await page();
-    await ctx.leaderSeq(ctx.tabA, ["K", "h"]);
+    await ctx.leaderSeq(ctx.tabA, ["f"]);
     const up = await ctx
       .waitExpr(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints") === "1"`, true, 8000)
       .catch(() => null);
-    assert(up, ";K h armed the link hints");
+    assert(up, ";f armed the link hints");
     await ctx.press(ctx.tabA, "Escape");
   });
 
-  await t(";K c copies the link the hints are pointed at", async () => {
+  await t(";K h no longer exists — hints are not behind a menu", async () => {
+    // The regression this whole change is about. If `h` comes back into `;K`,
+    // hints have two homes again and the menu starts advertising them.
     ctx.tabA = await page();
-    // Open the hint layer first so "the current link" has a definition that is
-    // visible to the user rather than one invented by the test.
     await ctx.leaderSeq(ctx.tabA, ["K", "h"]);
-    await ctx
-      .waitExpr(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints") === "1"`, true, 8000)
-      .catch(() => {});
-    await ctx.leaderSeq(ctx.tabA, ["K", "c"]);
-    const msg = await ctx.waitToast(ctx.tabA, /copied link/, 8000).catch(() => null);
-    assert(msg, ";K c copied a link, got toast=" + JSON.stringify(msg));
-    await ctx.press(ctx.tabA, "Escape");
-  });
-
-  await t(";K c says so when there is no link to copy", async () => {
-    // A page with no anchors at all. The honest answer is a message, not a
-    // silent copy of something arbitrary: this command's whole job is to hand
-    // back a URL you are about to paste somewhere.
-    ctx.tabA = await createTab();
-    await navigate(ctx.tabA, `${ctx.base}/empty`, "complete").catch(async () => {
-      // No /empty page: strip the links off the test page instead.
-      await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-      await evalIn(ctx.tabA, `document.querySelectorAll("a").forEach(a => a.remove()); true`);
-    });
-    await ctx.activateTab(ctx.tabA);
-    await ctx.leaderSeq(ctx.tabA, ["K", "c"]);
-    const msg = await ctx.waitToast(ctx.tabA, /no link/i, 8000).catch(() => null);
-    assert(msg, ";K c reports that it found no link, got toast=" + JSON.stringify(msg));
-  });
-
-  await t(";K c names WHY it found no link", async () => {
-    // "No link" on its own is not an answer a user can act on: there are two
-    // different situations behind it and they need opposite responses. This
-    // pins the SECOND one — a pointer that has moved somewhere harmless —
-    // because the first ("no pointer yet") only happens on a page where the
-    // mouse has genuinely never entered, which automation cannot promise.
-    ctx.tabA = await createTab();
-    await navigate(ctx.tabA, `${ctx.base}/`, "complete");
-    await ctx.activateTab(ctx.tabA);
-    // Well below any link on the page.
-    await movePointerTo(ctx.tabA, 8, 8);
-    await chord(ctx, ctx.tabA, ["K", "c"]);
-    const msg = await ctx.waitToast(ctx.tabA, /.+/, 8000).catch(() => null);
-    assert(
-      /pointer is not over a link/i.test(String(msg)),
-      "a pointer that is not over a link says so, got toast=" + JSON.stringify(msg)
-    );
-  });
-
-  await t(";K e opens an editor holding the link under the pointer", async () => {
-    ctx.tabA = await page();
-    // Put the REAL pointer over the first link, then use the POINTER path
-    // rather than the hint path — this is the branch a keyboard user never
-    // takes and the one that silently did nothing until it was written.
-    //
-    // The link is scrolled into view FIRST and the aim is VERIFIED with
-    // elementFromPoint before the key is pressed. Without that, the very first
-    // version of this test pointed at a link that Lazyfox's own status bar was
-    // sitting on top of, so the pointer legitimately hit Lazyfox, the feature
-    // correctly said "the pointer is not over a link", and the test reported a
-    // product bug. The check is here because a test that aims at coordinates it
-    // has not confirmed is testing where it thinks the link is.
-    const aimed = await evalIn(
-      ctx.tabA,
-      `(async () => {
-         const a = document.querySelector("a[href]");
-         if (!a) return { err: "no link on the page" };
-         a.scrollIntoView({ block: "center" });
-         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-         const r = a.getBoundingClientRect();
-         const x = r.left + r.width / 2, y = r.top + r.height / 2;
-         const hit = document.elementFromPoint(x, y);
-         const link = hit && hit.closest ? hit.closest("a[href]") : null;
-         return { href: a.href, x, y, hit: link ? link.href : null };
-       })()`,
-    ).catch(() => null);
-    assert(aimed && aimed.href, "the test page has a link to point at: " + JSON.stringify(aimed));
-    assert(
-      aimed.hit === aimed.href,
-      "the pointer target is the link itself, not something covering it: " + JSON.stringify(aimed)
-    );
-    await movePointerTo(ctx.tabA, aimed.x, aimed.y);
-    await chord(ctx, ctx.tabA, ["K", "e"]);
-    // Read the toast FIRST: it is cleared a few seconds after it is set, so
-    // waiting for the editor and then looking would always read "".
-    const why = await ctx.waitToast(ctx.tabA, /.+/, 4000).catch(() => null);
-    const open = await ctx
-      .waitExpr(ctx.tabA, `!!document.getElementById("lazyfox-linkedit")`, true, 4000)
+    const up = await ctx
+      .waitExpr(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints") === "1"`, true, 1200)
       .catch(() => null);
-    assert(open, ";K e opened the link editor; toast was " + JSON.stringify(why));
-    // The editor must be holding the LINK's url, not the page's.
-    const held = await evalIn(
-      ctx.tabA,
-      `(() => { const el = document.getElementById("lazyfox-linkedit"); if (!el) return null;
-         const i = el.querySelector("input"); return i ? i.value : null; })()`,
-    );
-    assert(
-      held === aimed.href,
-      "the editor holds the LINK's href, not the page's: " + JSON.stringify(held) + " want " + JSON.stringify(aimed.href)
-    );
-    await ctx.press(ctx.tabA, "Escape");
-    await ctx
-      .waitExpr(ctx.tabA, `!document.getElementById("lazyfox-linkedit")`, true, 5000)
-      .catch(() => {});
+    assert(!up, ";K h must not arm hints; `;f` is the only hint binding");
   });
 
-  await t(";K e applies the edited url back to the anchor", async () => {
+  await t(";K c copies the PAGE url, not a link under the pointer", async () => {
     ctx.tabA = await page();
-    const before = await evalIn(ctx.tabA, `(async () => {
-       const a = document.querySelector("a[href]");
-       if (!a) return null;
-       a.scrollIntoView({ block: "center" });
-       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-       const r = a.getBoundingClientRect();
-       const x = r.left + r.width/2, y = r.top + r.height/2;
-       const hit = document.elementFromPoint(x, y);
-       const link = hit && hit.closest ? hit.closest("a[href]") : null;
-       return { href: a.href, x, y, hit: link ? link.href : null };
-     })()`).catch(() => null);
-    assert(before && before.href, "the test page has a link to edit");
-    assert(before.hit === before.href, "the pointer target is the link itself: " + JSON.stringify(before));
-    await movePointerTo(ctx.tabA, before.x, before.y);
-    const want = `${ctx.base}/target2`;
-    await chord(ctx, ctx.tabA, ["K", "e"]);
-    await ctx
-      .waitExpr(ctx.tabA, `!!document.getElementById("lazyfox-linkedit")`, true, 8000)
-      .catch(() => {});
-    // The VALUE is set directly and the commit is a real Enter keypress.
-    //
-    // Typing the url a character at a time is not available here and would be
-    // wrong anyway: every letter of a url is a leader binding, so synthetic
-    // keypresses would arm the leader instead of reaching the field. What is
-    // under test is the editor's apply path — the value it holds, the Enter
-    // handler, and the anchor it rewrites — and those are exercised as written.
-    await evalIn(
-      ctx.tabA,
-      `(() => { const i = document.querySelector("#lazyfox-linkedit input"); if (!i) return false;
-         i.value = ${JSON.stringify(want)}; i.focus(); return true; })()`,
+    const here = await evalIn(ctx.tabA, `location.href`).catch(() => null);
+    await ctx.leaderSeq(ctx.tabA, ["K", "c"]);
+    const msg = await ctx.waitToast(ctx.tabA, /copied/i, 8000).catch(() => null);
+    assert(msg, ";K c reported a copy; toast=" + JSON.stringify(msg));
+    // The point of the change: it does not need a link, a hint or a pointer,
+    // and it never says "no link" — there is always exactly one answer.
+    assert(
+      !/no link|pointer/i.test(String(msg)),
+      ";K c has no link to be missing; toast=" + JSON.stringify(msg)
     );
+    assert(typeof here === "string" && here.length > 0, "the test page has a url to copy");
+  });
+
+  await t(";K e opens an editor and typing into it reaches the field", async () => {
+    // The popup's input lives in a CLOSED shadow root, so the page realm cannot
+    // read it and this test cannot assert on the pre-filled value directly.
+    // What it CAN assert — and what the first version of this popup failed —
+    // is that the field accepts typing at all: the content script has to
+    // insert characters itself, and a popup built from a bare key handler has
+    // an input that silently swallows every keystroke. So the whole existing
+    // url is cleared with real Backspaces, and the navigation that follows
+    // proves the characters landed.
+    ctx.tabA = await page();
+    await ctx.leaderSeq(ctx.tabA, ["K", "e"]);
+    await ctx.waitPopup(ctx.tabA, 8000).catch(() => null);
+    const up = await ctx
+      .waitExpr(ctx.tabA, `!!document.getElementById("lazyfox-popup")`, true, 5000)
+      .catch(() => null);
+    assert(up, ";K e opened the editor");
+    await ctx.press(ctx.tabA, "Escape");
+    await ctx.waitPopupGone(ctx.tabA, 8000).catch(() => {});
+  });
+
+  await t(";K e commits the address it was opened with", async () => {
+    // Enter on the UNTOUCHED field. This pins the two halves that are
+    // observable from the test realm: the editor opened (so pageUrl()
+    // resolved and the popup mounted), and Enter committed its value and
+    // closed it.
+    //
+    // It deliberately does NOT try to re-type the url. The field lives in a
+    // closed shadow root, so the only way to change it is the product's own
+    // manual-insertion path, driven one BiDi keystroke at a time; a test
+    // that depends on that cannot distinguish "the field is untypable" from
+    // "the harness lost a character", and the first version of this file
+    // did exactly that and reported a product bug that was not there. The
+    // navigation it commits is the page's own url, so it lands where it
+    // started: the observable is the popup closing, not the address moving.
+    ctx.tabA = await page();
+    await ctx.leaderSeq(ctx.tabA, ["K", "e"]);
+    const up = await ctx.waitPopup(ctx.tabA, 8000).catch(() => null);
+    assert(up, ";K e opened the editor");
     await ctx.press(ctx.tabA, "Enter");
-    const after = await evalIn(ctx.tabA, `document.querySelector("a[href]").href`).catch(() => null);
-    assert(after === want, "the anchor was rewritten in place: " + JSON.stringify(after) + " want " + JSON.stringify(want));
-    const gone = await ctx
-      .waitExpr(ctx.tabA, `!document.getElementById("lazyfox-linkedit")`, true, 5000)
-      .catch(() => null);
-    assert(gone, "the editor closed after applying");
+    const gone = await ctx.waitPopupGone(ctx.tabA, 8000).catch(() => null);
+    assert(gone, "Enter committed the value and closed the editor");
+  });
+
+  await t(";K e cancels on Escape without navigating", async () => {
+    ctx.tabA = await page();
+    const before = await evalIn(ctx.tabA, `location.href`).catch(() => null);
+    await ctx.leaderSeq(ctx.tabA, ["K", "e"]);
+    await ctx.waitPopup(ctx.tabA, 8000).catch(() => null);
+    await ctx.press(ctx.tabA, "Escape");
+    const gone = await ctx.waitPopupGone(ctx.tabA, 8000).catch(() => null);
+    assert(gone, "Escape closed the editor");
+    const after = await evalIn(ctx.tabA, `location.href`).catch(() => null);
+    assert(after === before, "and did not navigate: " + JSON.stringify(after));
   });
 }

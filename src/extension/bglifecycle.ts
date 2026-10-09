@@ -12,11 +12,13 @@ import { getConfig } from "./config";
 import { probeHostOnce } from "./host";
 import { transientTabIds } from "./tabs";
 import { createCacheController } from "./cache";
+import { forgetTabTrack, noteTabTitle, noteTabUrl, primeTracks } from "./navstore";
 import {
   forgetTab,
   noteKnownTab,
   noteTabActivation,
   noteTabRemoved,
+  primeActivation,
   primeKnownTabs
 } from "./windowops";
 import {
@@ -99,6 +101,9 @@ function installTabBookkeeping(): void {
   });
   // Tabs that already existed when the background woke up.
   void primeKnownTabs();
+  // One MRU entry per window, so `;a` has a list even in a window that has not
+  // seen an activation since this process started (see windowops.alternateTab).
+  void primeActivation();
 
   // Suppressed during a session restore rebuild (the transient activations
   // would pollute the pair).
@@ -115,6 +120,21 @@ function installTabBookkeeping(): void {
     // transient closes live. See noteTabRemoved.
     noteTabRemoved(tabId, removeInfo);
   });
+}
+
+// Per-tab navigation tracks for `;G` / `;L` (see navstore.ts for why the
+// background is the one that knows). No permission is added: a URL change on
+// any tab already reaches the background through tabs.onUpdated, and that
+// stream is exactly what the tracker rebuilds a stack from. `onUpdated` fires
+// once with the URL and (usually) once more with the title, so both fields are
+// read from the same event — whichever is present.
+function installNavTracks(): void {
+  browser.tabs.onUpdated.addListener((tabId: number, info: any, tab: any) => {
+    if (info && info.url) noteTabUrl(tabId, info.url, (tab && tab.title) || "");
+    if (info && info.title) noteTabTitle(tabId, info.title);
+  });
+  browser.tabs.onRemoved.addListener((tabId: number) => forgetTabTrack(tabId));
+  void primeTracks();
 }
 
 // Session autosave + the in-memory quit snapshot, kept current on every tab
@@ -212,6 +232,7 @@ export function installBackgroundLifecycle(): void {
   installRelayPort();
   installTransientTabs();
   installTabBookkeeping();
+  installNavTracks();
   installSessionAutosave();
   installStealthCleanup();
   installBrowserLifecycle();

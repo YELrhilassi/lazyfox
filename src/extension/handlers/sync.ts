@@ -19,7 +19,7 @@ import type { Domain } from "./types";
 // The actions this domain owns. The list is the contract: background.ts unions
 // every domain's list and requires the result to cover BgApi exactly, so a new
 // action cannot be declared without someone deciding which domain answers it.
-type Owns = "syncTyping" | "syncLeader" | "syncContent" | "syncFind" | "setConfig" | "toggleWhichKey" | "stealthOpen";
+type Owns = "syncTyping" | "syncLeader" | "syncContent" | "syncFind" | "syncHold" | "setConfig" | "toggleWhichKey" | "stealthOpen";
 
 export interface SyncDeps {
   pushLeaderStateToChrome(index: number, signal: LeaderSignal): void;
@@ -58,7 +58,7 @@ export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
       return { ok: true };
     },
 
-    syncContent: (data, sender) => {
+    syncContent: async (data, sender) => {
       // The tab's own content script is the only party that can say whether it
       // is running — the chrome helper's attempt to look is structurally
       // impossible (contentDocument is null out of process). Relayed with the
@@ -71,6 +71,31 @@ export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
           !!data.active,
           String(data.url || "")
         );
+      }
+      // A booting content script also learns whether the leader key is still
+      // physically down. Without this the hold is per-document and dies at
+      // every navigation and every tab close, which is where it always died.
+      let hold = false;
+      try {
+        const id = tab && tab.id != null ? tab.id : null;
+        if (id != null) hold = (await browser.sessions.getTabValue(id, "lfHold")) === "1";
+      } catch (e) {
+        // A tab that closed during boot, or a store that is not ready. The
+        // safe answer is "not held": a wrongly-held leader eats keystrokes.
+        hold = false;
+      }
+      return { ok: true, hold };
+    },
+
+    syncHold: async (data, sender) => {
+      const tab = (sender as { tab?: { id?: number } } | undefined)?.tab;
+      if (tab && tab.id != null) {
+        try {
+          await browser.sessions.setTabValue(tab.id, "lfHold", data.hold ? "1" : "0");
+        } catch (e) {
+          // The tab can close between the message and this write; the hold it
+          // carried died with it, which is correct.
+        }
       }
       return { ok: true };
     },

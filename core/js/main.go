@@ -14,6 +14,7 @@ package main
 import (
 	"encoding/json"
 	"lazyfox/core"
+	"strings"
 
 	"syscall/js"
 )
@@ -68,8 +69,38 @@ func wkItemObj(it core.WkItem) js.Value {
 	return o
 }
 
+// keymapArray exports the keymap rows so the TS side can build its lookup
+// table. Every row carries its canonical Spec alongside the display Key,
+// because the two differ for anything shifted (`shift+p` matches, the menu
+// shows `P`).
+func keymapArray() js.Value {
+	a := js.Global().Get("Array").New(len(core.Keymap))
+	for i, r := range core.Keymap {
+		o := obj()
+		o.Set("spec", r.Spec)
+		o.Set("key", r.Key)
+		o.Set("action", r.Action)
+		o.Set("label", r.Label)
+		o.Set("group", r.Group)
+		o.Set("cat", r.Cat)
+		o.Set("catLabel", r.CatLabel)
+		subs := js.Global().Get("Array").New(len(r.CatKeys))
+		for j, s := range r.CatKeys {
+			so := obj()
+			so.Set("spec", s.Spec)
+			so.Set("key", s.Key)
+			so.Set("action", s.Action)
+			so.Set("label", s.Label)
+			subs.SetIndex(j, so)
+		}
+		o.Set("catKeys", subs)
+		a.SetIndex(i, o)
+	}
+	return a
+}
+
 func bindingsArray() js.Value {
-	b := core.Bindings
+	b := core.DisplayBindings()
 	a := js.Global().Get("Array").New(len(b))
 	for i, it := range b {
 		a.SetIndex(i, wkItemObj(it))
@@ -413,6 +444,25 @@ var exportsTable = []jsExport{
 	{"version", func([]js.Value) interface{} { return version }},
 
 	{"bindings", func([]js.Value) interface{} { return bindingsArray() }},
+
+	// The keymap itself, for the TypeScript side's lookup table. Crossing the
+	// boundary once at startup is deliberate: a keystroke must not await a wasm
+	// call, so the table is fetched and mirrored, and every later match is a
+	// local lookup against data Go has already validated.
+	{"keymap", func([]js.Value) interface{} { return keymapArray() }},
+
+	// `keymapValidate` exists so the JS test tier can assert the SAME
+	// invariants `go test` does, from the same table, without a second copy of
+	// the rules to keep in step.
+	{"keymapValidate", func([]js.Value) interface{} {
+		return strings.Join(core.ValidateKeymap(), "\n")
+	}},
+
+	// `unshiftKey` is exported for the same reason ShiftKey lives in Go: the
+	// event-to-spec normalisation must not be able to drift from the table it
+	// is normalised for.
+	{"unshiftKey", func(args []js.Value) interface{} { return core.UnshiftKey(argStr(args, 0)) }},
+	{"shiftKey", func(args []js.Value) interface{} { return core.ShiftKey(argStr(args, 0)) }},
 
 	{"normalizeUrl", func(args []js.Value) interface{} { return core.NormalizeUrl(argStr(args, 0)) }},
 	{"isLikelyUrl", func(args []js.Value) interface{} { return core.IsLikelyUrl(argStr(args, 0)) }},

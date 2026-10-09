@@ -30,15 +30,15 @@ type WkPage struct {
 func WkPerPage() int { return wkPerPage }
 
 // lazyBindings is the overlay's actual content: the Lazyfox leader bindings
-// only. The Firefox-native shortcut rows (Ctrl+T, F11, ...) stay in Bindings
-// so the `?` help popup can still list them, but the which-key overlay omits
-// them — they were noise that made the overlay tall and wide.
+// only, PROJECTED from the keymap. The Firefox-native shortcut rows (Ctrl+T,
+// F11, ...) live in NativeBindings so the `?` help popup can still list them,
+// but the which-key overlay omits them — they were noise that made the overlay
+// tall and wide, and they are not pressable from the leader, so offering them as
+// selectable rows was a lie about what the keyboard will do.
 func lazyBindings() []WkItem {
-	out := make([]WkItem, 0, len(Bindings))
-	for _, b := range Bindings {
-		if !b.Native {
-			out = append(out, b)
-		}
+	out := make([]WkItem, 0, len(Keymap))
+	for _, r := range Keymap {
+		out = append(out, WkItem{Key: r.Key, Label: r.Label, Group: r.Group})
 	}
 	return out
 }

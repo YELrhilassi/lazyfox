@@ -39,5 +39,13 @@
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["scripts/e2e/**/*.ts"]
+  // `product-globals.d.ts` is here because the harness IMPORTS a few product
+  // modules rather than re-implementing their rules (the tab-count predicate in
+  // shared/transient.ts, the config schema in extension/store.ts). Those files
+  // read `browser` / `__DEV__`, which do not exist in Node — without this the
+  // imported module is the thing that fails to compile, which points the reader
+  // at the wrong file. It is NOT src/shared/globals.d.ts: that one declares
+  // `Window.gBrowser` from chrome/tabs and would pull the chrome-window type
+  // graph (and a DOM lib requirement) into a Node harness.
+  "include": ["scripts/e2e/**/*.ts", "scripts/e2e/product-globals.d.ts"]
 }

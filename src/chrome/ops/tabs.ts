@@ -66,6 +66,71 @@ export function createTabOps(
       win.gBrowser.selectedTab = t;
       win.focus();
     },
+    // THE REAL STACK — and the reason this op exists on the host rather than in
+    // the protocol.
+    //
+    // `sessionHistory` is reachable from here: it hangs off the <browser>
+    // element's nsIWebNavigation, in the browser window's own process. The
+    // background does NOT have it (browser.sessionStore is a
+    // system-extension API, so the extension's copy is undefined), which is why
+    // the content path rebuilds the stack from URL changes instead — see
+    // shared/navtrack.ts for that account. Asking the host means `;G` is exact
+    // where the chrome helper owns the keys and as good as the URL stream can
+    // make it everywhere else, instead of one-row everywhere.
+    navStack: async () => {
+      const fallback = {
+        canBack: false,
+        canForward: false,
+        index: 0,
+        entries: [{
+          url: (win.gBrowser.currentURI && win.gBrowser.currentURI.spec) || "",
+          title: "",
+        }],
+      };
+      try {
+        const b = win.gBrowser.selectedBrowser;
+        const sh = b && b.webNavigation && b.webNavigation.sessionHistory;
+        if (!sh) return fallback;
+        const count = Number(sh.count) || 0;
+        if (count < 1) return fallback;
+        const index = Math.max(0, Math.min(Number(sh.index) || 0, count - 1));
+        const entries: { url: string; title: string }[] = [];
+        for (let i = 0; i < count; i++) {
+          let url = "";
+          let title = "";
+          try {
+            const e = sh.getEntryAtIndex(i, false);
+            url = (e && e.URI && e.URI.spec) || "";
+            title = (e && e.title) || "";
+          } catch {
+            // One unreadable entry must not cost the user the rest of the
+            // stack: the row stays, empty, and the walk continues.
+          }
+          entries.push({ url, title: title || url });
+        }
+        return { canBack: index > 0, canForward: index < count - 1, index, entries };
+      } catch {
+        return fallback;
+      }
+    },
+    navGoto: (steps: number) => {
+      if (!isFinite(steps) || steps === 0) return;
+      // Walked, not jumped: nsISHistory has no "go to index", and each step is
+      // instant from the user's side (bfcache). Sequential on purpose — a
+      // parallel burst races the browser's own history cursor.
+      const run = async () => {
+        try {
+          if (steps < 0) {
+            for (let i = 0; i < -steps; i++) await win.gBrowser.goBack();
+          } else {
+            for (let i = 0; i < steps; i++) await win.gBrowser.goForward();
+          }
+        } catch {
+          // The end of the stack: there is nothing left to walk.
+        }
+      };
+      void run();
+    },
     reload: () => win.gBrowser.reload(),
     back: () => {
       const b = win.gBrowser.selectedBrowser;
@@ -146,6 +211,10 @@ export function createTabOps(
         // ignore
       }
     },
+    // The same fact copyUrl() copies, read once. `;K e` pre-fills its field
+    // from this, so the address you can edit is by construction the address
+    // that gets copied.
+    pageUrl: () => (win.gBrowser.currentURI && win.gBrowser.currentURI.spec) || "",
     muteTab: () => {
       // tab.muted is a getter-only property in current Firefox and the legacy
       // toggleMute/toggleMuteTab helpers are gone — the muted attribute on the

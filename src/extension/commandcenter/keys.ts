@@ -7,7 +7,9 @@
 import { core } from "../../shared/core";
 import { copyText } from "../../shared/dom";
 import { send } from "../../shared/protocol";
+import { windowStep } from "../../shared/resize";
 import { MODES, openItem } from "./data";
+import { traceDecision, traceKey } from "./trace";
 import type { Renderer } from "./render";
 import type { CCStore } from "./state";
 
@@ -22,6 +24,16 @@ export interface KeysDeps {
   renderer: Renderer;
   // Called when the input should be focused (insert mode).
   focusInput(): void;
+  // THE SHARED SURFACES, which own the keyboard while they are up: the leader
+  // (armed or holding a capture) and any of its popups. Returns true when the
+  // key was consumed. This is the whole reason the home page now behaves like
+  // every other page — see the note at the top of onKeyDown.
+  overlayKey(e: KeyboardEvent): boolean;
+  // Show the shared leader, exactly as `;` does on a web page. The page owns
+  // the keydown, so it is the page that arms it.
+  showLeader(): void;
+  // The configured leader key (config.leader).
+  leaderKey(): string;
 }
 
 export interface KeyHandler {
@@ -34,7 +46,7 @@ export interface KeyHandler {
 
 export function createKeyHandler(deps: KeysDeps): KeyHandler {
   const { refs, store, renderer } = deps;
-  const { input, modeTag } = refs;
+  const { input } = refs;
 
   // Armed close: ;x on the LAST tab closes the whole window, so the first
   // press arms a confirmation and a second press within 2.5s actually closes.
@@ -65,7 +77,7 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
 
   function handleResizeKey(e: KeyboardEvent): boolean {
     const k = e.key;
-    const fine = e.shiftKey ? 8 : 32;
+    const fine = windowStep(e);
     if (k === "ArrowLeft") {
       e.preventDefault();
       send("resizeWindow", { dx: -fine, dy: 0 }).then(renderer.updateResizeSize);
@@ -101,7 +113,7 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
 
   function handleMoveKey(e: KeyboardEvent): boolean {
     const k = e.key;
-    const fine = e.shiftKey ? 8 : 32;
+    const fine = windowStep(e);
     if (k === "ArrowLeft") {
       e.preventDefault();
       send("moveWindow", { dx: -fine, dy: 0 }).then(renderer.updateMovePos);
@@ -128,48 +140,6 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
       return true;
     }
     return false;
-  }
-
-  function runLeader(k: string): void {
-    const modeMap: Record<string, string> = {
-      s: "search", o: "url", t: "tabs", h: "history", b: "bookmarks", d: "downloads",
-      1: "search", 2: "url", 3: "tabs", 4: "history", 5: "bookmarks", 6: "downloads",
-    };
-    if (modeMap[k]) {
-      renderer.setMode(modeMap[k]);
-      return;
-    }
-    if (k === "f") {
-      // `;f` on the home grid arms hint-PICK: every tile gets a letter badge
-      // and the next key runs that tile — the home-page equivalent of web
-      // link-hints (any mode other than the home grid falls back to focusing
-      // the search box).
-      const home = renderer.isHome();
-      if (home) {
-        store.patch({ hintArmed: true });
-        renderer.refresh();
-      } else {
-        renderer.setStateTag("insert");
-        deps.focusInput();
-      }
-    } else if (k === "w") renderer.toggleResize(true);
-    else if (k === "m") renderer.toggleMove(true);
-    else if (k === "n") void send("newTab");
-    else if (k === "x") closeTabConfirm();
-    else if (k === "v") void send("reopenTab");
-    else if (k === "a") void send("alternateTab");
-    else if (k === "c") void send("duplicateTab");
-    else if (k === "z") void send("zen");
-    else if (k === "N") void send("stealthOpen");
-    else if (k === "I") void send("openSetup"); // ;I — the standalone installer/setup page
-    else if (k === "Q") void send("quit");
-    else if (k === "?") toggleHelp();
-    modeTag.textContent = store.get().mode;
-  }
-
-  function toggleHelp(): void {
-    input.value = "";
-    renderer.setMode("search");
   }
 
   function onEnter(): void {
@@ -236,21 +206,32 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
     const state = store.get();
     const inInput = document.activeElement === input;
 
+    // Dev-only: record the key and the state it arrived in, BEFORE any branch
+    // can consume it. See commandcenter/trace.ts for why the page needs this at
+    // all — the mirrors it already publishes are transient by design.
+    if (__DEV__) {
+      traceKey(
+        k,
+        inInput ? "ins" : "cmd",
+        (e.ctrlKey ? "+c" : "") + (e.altKey ? "+a" : "") + (e.metaKey ? "+m" : "") + (e.shiftKey ? "+s" : "")
+      );
+    }
+
+    // THE SHARED SURFACES OWN THE KEYBOARD WHILE THEY ARE UP.
+    //
+    // This page used to answer every `;`-sequence from its OWN table, and that
+    // is exactly why it behaved unlike every other page: `;a` (alternate tab),
+    // `;G`/`;L` (the navigation stack), `;P` (sessions), the tab digits and the
+    // whole category grammar were either missing here or spelled differently.
+    // Now the leader and its popups come from shared/popups/leader.ts, the same
+    // table a web page and the chrome helper run — one keymap, one set of
+    // popups, and a key added anywhere works here too.
+    if (deps.overlayKey(e)) return;
+
     // While hint-pick is armed on the home grid, every key is a hint letter
     // (or Esc to cancel) — before leader/typing/resize handling.
     if (store.get().hintArmed) {
       handleHintPick(e);
-      return;
-    }
-
-    if (state.leaderPending) {
-      e.preventDefault();
-      store.patch({ leaderPending: false });
-      if (k === "Escape") {
-        modeTag.textContent = state.mode;
-        return;
-      }
-      runLeader(k);
       return;
     }
 
@@ -355,10 +336,15 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
       renderer.setMode(MODES[Number(k) - 1]!);
       return;
     }
-    if (k === ";") {
+    if (k === deps.leaderKey() && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      // `;` arms the SHARED leader — the same one a web page arms, with the
+      // same overlay, the same categories and the same bindings. `e.repeat` is
+      // dropped for the same reason it is dropped there: a held key re-fires at
+      // the OS repeat rate, and re-arming on every repeat tears a held sequence
+      // apart between two actions.
       e.preventDefault();
-      store.patch({ leaderPending: true });
-      modeTag.textContent = "LZ\u203A";
+      if (e.repeat) return;
+      deps.showLeader();
       return;
     }
     if (k === "i" || k === "I") {
@@ -369,6 +355,7 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
     }
     if (k.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
+      traceDecision("type:" + k);
       renderer.setStateTag("insert");
       startTyping(k);
     }

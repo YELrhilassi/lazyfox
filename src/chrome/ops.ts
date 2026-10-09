@@ -102,6 +102,9 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
       requestBg: (action, arg) => deps.getChannel().requestBg(action, arg),
       requestReply: (action) => deps.getChannel().requestReply(action),
     },
+    // Same source copyUrl() copies, so `;K e` cannot pre-fill a field that
+    // disagrees with what `;K c` put on the clipboard.
+    pageUrl: () => tabs.pageUrl(),
   });
 
   return {
@@ -192,6 +195,8 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     reload: () => tabOps.reload(),
     back: () => tabOps.back(),
     forward: () => tabOps.forward(),
+    navStack: () => tabOps.navStack(),
+    navGoto: (steps: number) => tabOps.navGoto(steps),
     activateTab: (id: number) => tabs.activateTab(id),
     tabNav: (dir: number) => tabs.tabNav(dir),
     tabJump: (n: number) => tabs.tabJump(n),
@@ -212,6 +217,7 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     dismissDownload: (key?: string) => ui.dismissDownload(key),
     stealthOpen: () => ui.stealthOpen(),
     copyUrl: () => tabs.copyUrl(),
+    pageUrl: async () => tabs.pageUrl(),
     muteTab: () => tabs.muteTab(),
     zen: () => ui.zen(),
     toggleReveal: () => ui.toggleReveal(),
@@ -219,8 +225,6 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     quit: () => ui.quit(),
     focusFirstInput: () => ui.focusFirstInput(),
     startHints: () => ui.startHints(),
-    copyLink: () => ui.copyLink(),
-    editLink: () => ui.editLink(),
     openTarget: (which: string) => {
       const ABOUT: Record<string, string> = {
         preferences: "about:preferences",

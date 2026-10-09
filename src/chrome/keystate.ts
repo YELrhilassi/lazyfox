@@ -58,13 +58,19 @@ export function resetContentPresence(): void {
   contentPresent.clear();
 }
 
+// Is this URL the command center page? The one LAZYFOX-OWNED document that runs
+// a full key engine of its own — its own leader, its own popups, its own typing
+// guard, all from the shared modules a web page's content script uses.
+export function isCommandCenterUrl(spec: string): boolean {
+  return String(spec || "").indexOf("commandcenter.html") !== -1;
+}
+
 export function isCommandCenterTab(win: ChromeWindow): boolean {
   try {
     const b = (win as any).gBrowser.selectedBrowser;
     const uri = b && b.currentURI;
     if (!uri) return false;
-    const s = uri.spec || "";
-    return s.indexOf("commandcenter.html") !== -1;
+    return isCommandCenterUrl(uri.spec || "");
   } catch {
     return false;
   }
@@ -126,6 +132,20 @@ export function chromeOwnsKeys(win: ChromeWindow): boolean {
     // resolved the tab still reports the requested URL, so Firefox's own
     // "Server Not Found" page inherited the same dead zone before about:
     // neterror ever became currentURI.
+    // THE COMMAND CENTER IS DEFERRED TO EXACTLY LIKE A WEB PAGE, and for the
+    // same reason. It is Lazyfox's own document, but it runs the same key
+    // engine a content script does — its own leader, its own popups, its own
+    // typing guard, the same shared binding table — and it reports presence the
+    // same way (`syncContent`, from the page itself, see commandcenter.ts).
+    //
+    // This helper claiming its keys AS WELL is what made `;f` on the home page
+    // "work sometimes": the page's own capture listener runs first (it is
+    // inside the document) and then this window-level one ran the same binding
+    // a second time — but only while Firefox had the tab IN-PROCESS, because an
+    // out-of-process tab's keys never reach the chrome window at all. So the
+    // same keystroke was either handled twice or not at all, depending on which
+    // process the tab happened to land in.
+    if (isCommandCenterUrl(s)) return !contentScriptPresent(b, win);
     if (/^https?:/i.test(s) || /^file:/i.test(s)) return !contentScriptPresent(b, win);
     return true;
   } catch {

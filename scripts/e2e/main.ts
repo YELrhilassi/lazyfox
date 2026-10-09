@@ -144,7 +144,13 @@ async function main(): Promise<void> {
   // wrong tab. The snapshot/reclaim pair makes it the harness default instead, with
   // the same two guards the hand-written version had: never touch a tab that
   // predates the test, and never run while a test is rebuilding the window.
+  //
+  // `handlesBefore` is the third guard, and it is about the HARNESS rather than
+  // the test: a suite that re-points ctx.tabA is not leaking the tab it just
+  // opened, it is MOVING its handle, and the sweep has to close the tab it left
+  // behind rather than the one it is holding (see reclaimLeakedTabs).
   let tabsBefore: Set<number> = new Set();
+  let handlesBefore: { tabA: number | null; probe: number | null } = { tabA: null, probe: null };
 
   ctx.runTest = createRunner(selection, {
     before: async () => {
@@ -152,11 +158,12 @@ async function main(): Promise<void> {
       await ctx.reset();
       ctx.rebuilding = false;
       tabsBefore = await ctx.keepOpen();
+      handlesBefore = await ctx.snapshotHandles().catch(() => ({ tabA: null, probe: null }));
     },
     after: async (r) => {
       r.repaired = [...ctx.repaired];
       ctx.signal = undefined;
-      const closed = await ctx.reclaimLeakedTabs(tabsBefore).catch(() => 0);
+      const closed = await ctx.reclaimLeakedTabs(tabsBefore, handlesBefore).catch(() => 0);
       if (closed) r.repaired.push('closed ' + closed + ' tab(s) the test leaked');
     },
   });
@@ -207,7 +214,14 @@ try {
   console.log("SUITE CRASHED:", (e as Error).stack || (e as Error).message);
   process.exitCode = 1;
 } finally {
-  if (server) server.close();
+  if (server) {
+    // close() only stops ACCEPTING: a socket the browser left in its keep-alive
+    // pool is still a live handle on this side. That is the same class of leak
+    // as the geckodriver pipes (see stopGecko), and it is one line to rule out
+    // here rather than to debug later as "the runner sometimes does not exit".
+    server.close();
+    server.closeAllConnections?.();
+  }
   if (session) await stopGecko(session);
   if (profile) await removeProfile(profile);
   if (process.exitCode === 1) {
@@ -217,4 +231,26 @@ try {
       console.log(`  [${e.level}] ${(e.text || e.message || JSON.stringify(e)).slice(0, 250)}`);
     }
   }
-}
+}
+
+// The report is printed, the browser is gone and the profile is deleted, so
+// the run has nothing left to do — but that is not the same as the event loop
+// being empty, and waiting for it to empty makes the EXIT CODE depend on
+// whether some OS-level handle happens to be released. The one seen here is
+// geckodriver's stdio pipe, which Firefox inherits (see stopGecko); the result
+// was a finished run that printed `115/115` and then sat there for twenty
+// minutes, which the next person reasonably "fixes" by killing the process —
+// leaving a geckodriver, a profile and a half-dead browser to poison the run
+// after it.
+//
+// A SHORT grace period, then exit with the code the summary already decided.
+// The timer is unref'd, so a loop that drains on its own still exits at once;
+// a loop that does not gets its holder named on the way out instead of a hang.
+// The timer counts itself, so a clean run reports `[Timeout]` and nothing else;
+// a real holder shows up beside it, by name.
+const exitGrace = setTimeout(() => {
+  const held = process.getActiveResourcesInfo();
+  console.log("exit: event loop still held by [" + held.join(", ") + "] — exiting from the report");
+  process.exit(process.exitCode ?? 0);
+}, 5000);
+exitGrace.unref?.();

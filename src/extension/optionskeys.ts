@@ -2,6 +2,7 @@
 // j/k scrolling, plus the window resize/move mini-modes. Sits alongside
 // options.ts (the options.html page loads both bundles).
 import { UI_FONT } from "../shared/theme";
+import { windowStep } from "../shared/resize";
 
 (function () {
   "use strict";
@@ -86,7 +87,7 @@ import { UI_FONT } from "../shared/theme";
   }
 
   function handleResize(e: KeyboardEvent): boolean {
-    const fine = e.shiftKey ? 8 : 32;
+    const fine = windowStep(e);
     if (e.key === "ArrowLeft") { e.preventDefault(); send("resizeWindow", { dx: -fine, dy: 0 }).then(updateSize); return true; }
     if (e.key === "ArrowRight") { e.preventDefault(); send("resizeWindow", { dx: fine, dy: 0 }).then(updateSize); return true; }
     if (e.key === "ArrowUp") { e.preventDefault(); send("resizeWindow", { dx: 0, dy: -fine }).then(updateSize); return true; }
@@ -97,7 +98,7 @@ import { UI_FONT } from "../shared/theme";
   }
 
   function handleMove(e: KeyboardEvent): boolean {
-    const fine = e.shiftKey ? 8 : 32;
+    const fine = windowStep(e);
     if (e.key === "ArrowLeft") { e.preventDefault(); send("moveWindow", { dx: -fine, dy: 0 }).then(updateMove); return true; }
     if (e.key === "ArrowRight") { e.preventDefault(); send("moveWindow", { dx: fine, dy: 0 }).then(updateMove); return true; }
     if (e.key === "ArrowUp") { e.preventDefault(); send("moveWindow", { dx: 0, dy: -fine }).then(updateMove); return true; }

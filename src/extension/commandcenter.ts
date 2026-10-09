@@ -6,13 +6,20 @@
 
 import { mergeConfig } from "../shared/config";
 import { core, ensureCore } from "../shared/core";
+import { LeaderController, isCancel } from "../shared/leader";
+import { mirror, mirrorFlag } from "../shared/observability";
+import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../shared/overlay";
+import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
 import { send } from "../shared/protocol";
 import { readKey, vBoolean, vConfig, vStealth, vString } from "./store";
-import type { QuickApp } from "../shared/types";
+import type { Config, QuickApp } from "../shared/types";
 import { openItem } from "./commandcenter/data";
 import { createKeyHandler } from "./commandcenter/keys";
 import { createRenderer, type CCRefs } from "./commandcenter/render";
 import { createStore } from "./commandcenter/state";
+import { createContentOps } from "./content/ops";
+import { traceDecision } from "./commandcenter/trace";
+import type { ContentPopupShell } from "./content/find";
 
 (function () {
   "use strict";
@@ -37,14 +44,20 @@ import { createStore } from "./commandcenter/state";
   function getApps(): QuickApp[] {
     return apps;
   }
-  void readKey("config", vConfig, {}).then((c) => {
-    apps = mergeConfig(c).apps;
+  // The page's own view of the config. It used to read only `apps`, because the
+  // leader lived in the chrome helper; now that the page arms the shared leader
+  // itself it needs the same two settings every other host reads: the leader key
+  // and whether the which-key overlay is enabled.
+  let config: Config = mergeConfig(undefined);
+  function applyConfig(c: Partial<Config> | undefined): void {
+    config = mergeConfig(c);
+    apps = config.apps;
     renderer.refresh();
-  });
+  }
+  void readKey("config", vConfig, {}).then(applyConfig);
   browser.storage.onChanged.addListener((changes: any, area: any) => {
     if (area === "local" && changes.config && changes.config.newValue) {
-      apps = mergeConfig(changes.config.newValue).apps;
-      renderer.refresh();
+      applyConfig(changes.config.newValue);
     }
   });
 
@@ -71,6 +84,191 @@ import { createStore } from "./commandcenter/state";
     stealthOpen: () => void send("stealthOpen"),
   };
 
+  /* ===================== the shared leader ===================== */
+
+  // THE HOME PAGE RUNS THE SAME KEYMAP AS EVERY OTHER PAGE.
+  //
+  // Everything behind `;` here used to be this page's own private table: a
+  // dozen hand-written branches that had drifted from the shared one in both
+  // directions. Keys the rest of the browser has were missing outright — `;a`
+  // (alternate tab), `;G`/`;L` (the navigation stack), `;P` (sessions), the
+  // whole two-key category grammar, the digit jumps — while the keys it did
+  // have were spelled differently. That is what "the home page uses its own
+  // shortcuts" was, and why `;f` here behaved unlike `;f` everywhere else.
+  //
+  // So this is the same three-piece construction the content script builds:
+  //
+  //   createContentOps     the ActionOps adapter (protocol messages plus the
+  //                        shared popups) — already written, already shared
+  //   makeLeaderActions    the ONE action table; which CHORD runs which action
+  //                        is core/keymap.go, fetched by keymap.ts, and it is
+  //                        the same table `;W` / `;Z` / `;K` are rows of
+  //   LeaderController     the armed state, the which-key overlay, the captures
+  //
+  // What stays page-specific is only what is genuinely about THIS page: `;f`
+  // arms hint-PICK on the home grid rather than drawing link hints, and the grid
+  // itself (hjkl, Enter, the quick-view filters) is untouched.
+  let currentPopup: PopupCtl | null = null;
+
+  function closePopup(): void {
+    if (currentPopup) {
+      try {
+        currentPopup.close();
+      } catch (e) {
+        // ignore — a popup that fails to close must not wedge the page
+      }
+      currentPopup = null;
+    }
+  }
+
+  const shell: ContentPopupShell = {
+    open: (html, build) => {
+      closePopup();
+      leader.hide();
+      const ctl = overlayOpenPopup(html, (root: HTMLElement) => build(root), () => {
+        currentPopup = null;
+      });
+      currentPopup = ctl;
+      return ctl;
+    },
+    close: closePopup,
+  };
+
+  // `;f` on the home grid: every tile gets a letter badge and the next key runs
+  // that tile — the home-page equivalent of web link hints. Anywhere else it
+  // focuses the search box, which is what the chrome helper's `lazyfox-find`
+  // signal does too.
+  function startGridHints(): void {
+    if (renderer.isHome()) {
+      store.patch({ hintArmed: true });
+      renderer.refresh();
+      return;
+    }
+    renderer.setStateTag("insert");
+    focusInput();
+  }
+
+  const ccOps = createContentOps({
+    shell: shell,
+    config: () => config,
+    startHints: startGridHints,
+    focusFirstInput: focusInput,
+    // The page has no window-level bar of its own; the chrome helper owns the
+    // single one, and this is how a find running in THIS page reaches it.
+    setFindState: (s) => {
+      void send("syncFind", s ? { cur: s.cur, count: s.count } : { cur: 0, count: -1 });
+    },
+  });
+
+  const ctx: PopupCtx = {
+    ops: ccOps,
+    open: shell.open,
+    close: closePopup,
+    toast: toast,
+    runAction: (k) => {
+      // The leaf that ran, by ACTION ID — the page's answer to chrome's
+      // `lastAction`, and the difference between "the chord never resolved" and
+      // "the action ran and the op behind it did not".
+      traceDecision("action:" + k);
+      runLeaderAction(leaderActions, k);
+    },
+    bindings: () => leader.bindings(),
+    armDigits: (apply, timeoutMs, expect) => {
+      leader.armPending(apply, { timeoutMs: timeoutMs || 3000, expect });
+    },
+    // The popup's input lives in a CLOSED shadow root, so no real keystroke ever
+    // reaches it and the selector has to insert text itself. Same setting as the
+    // content script, for the same reason.
+    manualText: true,
+  };
+  const leaderActions = makeLeaderActions(ctx);
+  // The home page is a PAGE: it runs the same key engine a web page does, from
+  // the same keymap and the same action table. There is no second keymap here
+  // to keep in step, which is what "the home page uses its own shortcuts" used
+  // to mean.
+  const leader = new LeaderController(
+    (action) => runLeaderAction(leaderActions, action),
+    () => config.whichKey !== false,
+    () => {
+      // Mirror the readout onto <html> and send it to the chrome helper's bar,
+      // exactly as the content script does: the which-key overlay is in a closed
+      // shadow root, so nothing outside it can see whether the leader is armed
+      // without this.
+      const sig = leader.signal();
+      mirrorFlag("leader", sig.armed);
+      mirror("lead-expect", sig.expect || null);
+      void send("syncLeader", { signal: sig });
+    },
+    // An unknown chord is reported rather than swallowed, exactly as on a web
+    // page. The home page is where a new key is most often tried first.
+    (spec) => {
+      traceDecision("miss:" + spec);
+      toast("no binding for ;" + spec);
+    }
+  );
+
+  // The page's analogue of a host's key dispatcher. A popup gets first refusal
+  // (its own onKey, so the sessions popup can cancel a pending copy instead of
+  // closing); then the leader — cancel first, so ONE Escape backs all the way
+  // out of a category, then the armed capture, then the binding.
+  function overlayKey(e: KeyboardEvent): boolean {
+    if (currentPopup) {
+      traceDecision("popup");
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      try {
+        if (currentPopup.onKey && currentPopup.onKey(e)) return true;
+      } catch (err) {
+        closePopup();
+        return true;
+      }
+      if (isCancel(e)) closePopup();
+      return true;
+    }
+    if (leader.active || leader.hasPending()) {
+      // WHICH surface took the key matters: a stale one-shot capture (";W m"s
+      // digit capture, never fed) eats the NEXT chord's leader key, and the
+      // whole sequence silently shifts by one. Naming the surface is what makes
+      // that readable instead of mysterious.
+      traceDecision(leader.hasPending() ? "capture" : "leader");
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (isCancel(e)) {
+        leader.cancelPending();
+        leader.hide();
+        return true;
+      }
+      if (leader.hasPending()) leader.handlePending(e);
+      else leader.handleKey(e);
+      return true;
+    }
+    return false;
+  }
+
+  // REPORT IN, exactly as a content script does.
+  //
+  // The chrome helper has to know whether this page owns its own keys before it
+  // may claim them, and it cannot find out for itself (`contentDocument` is null
+  // for an out-of-process tab). Without this report the helper treated the
+  // command center as chrome territory and armed its OWN leader for the same
+  // keypress the page was handling — so a key ran twice when the tab happened to
+  // be in-process, and the two answers disagreed (";f works sometimes").
+  const reportPresence = (active: boolean) => {
+    let href = "";
+    try {
+      href = location.href;
+    } catch (e) {
+      // ignore — an unreadable location simply reports no URL
+    }
+    return send("syncContent", { active, url: href });
+  };
+  void reportPresence(true);
+  try {
+    window.addEventListener("pagehide", () => void reportPresence(false), { capture: true });
+  } catch (e) {
+    // ignore — presence is re-derived on the next load regardless
+  }
+
   // The renderer owns the view; the key handler owns input. They depend on
   // each other (renderer drives the grid, keys drive the renderer), so wire
   // them with a late-bound reference.
@@ -93,6 +291,12 @@ import { createStore } from "./commandcenter/state";
       isHome: () => renderer.isHome(),
     },
     focusInput,
+    overlayKey,
+    showLeader: () => {
+      traceDecision("arm");
+      leader.show();
+    },
+    leaderKey: () => config.leader,
   });
 
   renderer = createRenderer({
@@ -184,12 +388,7 @@ import { createStore } from "./commandcenter/state";
   // that arms hint-pick (letter = run tile), in any other mode it focuses the
   // search box. Out-of-process CC pages arm hint-pick via their own leader.
   document.addEventListener("lazyfox-find", () => {
-    if (renderer.isHome()) {
-      store.patch({ hintArmed: true });
-      renderer.refresh();
-    } else {
-      focusInput();
-    }
+    startGridHints();
   });
 
   // Brand logo: ship the horizontal lockup (icon + wordmark). It is a

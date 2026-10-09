@@ -106,8 +106,8 @@ export function createChromePageHints(
       const snapshot = entries.map((it) => it.href);
       const l = leader();
       if (!l) return;
-      l.armPending((k) => {
-        const chose = k !== "Escape" ? Number(k) : 0;
+      l.armPending((e) => {
+        const chose = e.key !== "Escape" ? Number(e.key) : 0;
         clear();
         if (!chose || chose < 1 || chose > snapshot.length) return true;
         const target = snapshot[chose - 1];

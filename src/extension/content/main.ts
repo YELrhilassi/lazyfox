@@ -10,14 +10,13 @@ import { isTypingEvent, isTypingTarget } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { installContentDom } from "./contentdom";
 import { LeaderController, isCancel } from "../../shared/leader";
-import { digitExpect, idleSignal, type LeaderSignal } from "../../shared/leadersignal";
+import { idleSignal, type LeaderSignal } from "../../shared/leadersignal";
 import {
   releaseHoldOnKeyup,
   releaseLostHold as releaseLostHoldOnBlur,
   visibilityLostHold,
 } from "../../shared/holdrelease";
 import { openNavPopup } from "../../shared/popups/nav";
-import { registerCategories } from "../../shared/popups/categories";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
 import { mirror, mirrorFlag } from "../../shared/observability";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/popups";
@@ -26,7 +25,6 @@ import { readKey, vConfig } from "../store";
 import type { Config } from "../../shared/types";
 import { collectPageReport } from "./diagnostics";
 import { createLinkHints, focusFirstInput } from "./hints";
-import { installPointerTracker } from "./links";
 import { createContentOps } from "./ops";
 import { createScrollController } from "./scroll";
 import { createScrollKeys } from "./scrollkeys";
@@ -120,9 +118,6 @@ import type { ContentPopupShell } from "./find";
     config: () => config,
     startHints: () => void hints.start(),
     focusFirstInput: focusFirstInput,
-    // `;K c` / `;K e` ask the hint layer what it is pointed at, so "copy link"
-    // and "open link" cannot disagree about which link is current.
-    hints: () => hints,
     // Live find count: relay it to the chrome helper's window-level bar (the
     // only bar — this content script never draws one) so "N/M" follows the
     // find widget on web pages. count -1 = the widget closed (hide the bar
@@ -131,12 +126,6 @@ import type { ContentPopupShell } from "./find";
       void send("syncFind", s ? { cur: s.cur, count: s.count } : { cur: 0, count: -1 });
     },
   });
-
-  // The pointer position is what `;K c` / `;K e` fall back to when the hint
-  // layer is closed, so it has to be tracked before either key can be pressed.
-  // Passive and capture-phase: this must never cost the page a mousemove, and
-  // it must still see the event in a page that stops propagation.
-  installPointerTracker();
 
   let leader: LeaderController;
   const ctx: PopupCtx = {
@@ -179,7 +168,7 @@ import type { ContentPopupShell } from "./find";
   // re-assembles it, so nothing here can half-report it.
   const readout = (): LeaderSignal => leader.signal();
   leader = new LeaderController(
-    (k) => runLeaderAction(leaderActions, k),
+    (action) => runLeaderAction(leaderActions, action),
     () => config.whichKey !== false,
     // The chrome helper owns the single window-level status bar and draws the
     // far-right leader indicator from the per-tab leader state it caches from
@@ -195,9 +184,12 @@ import type { ContentPopupShell } from "./find";
       // "a leader is armed" and nothing more, for the whole sequence.
       void send("syncLeader", { signal: sig });
     },
-    // A plain binding always beats a category head, so registering `;W` /
-    // `;Z` can never take over a key that already worked.
-    (k) => !!leaderActions[k]
+    // A chord the keymap does not know is REPORTED, never swallowed in
+    // silence. The leader owns the keyboard while it is armed, so the key is
+    // consumed either way — but the user is told which chord went nowhere, which
+    // is the difference between a keymap they can learn and one they learn by
+    // pressing things twice to see what sticks.
+    (spec) => toast("no binding for ;" + spec)
   );
   // Clear any stale leader state this tab carried from a previous page (the
   // leader starts disarmed on every fresh load).
@@ -219,55 +211,65 @@ import type { ContentPopupShell } from "./find";
     } catch (e) {
       // ignore — an unreadable location simply reports no URL
     }
-    void send("syncContent", { active, url: href });
+    return send("syncContent", { active, url: href });
   };
-  reportPresence(true);
+  // THE HELD LEADER, ACROSS DOCUMENTS.
+  //
+  // `leader.sticky` is a claim about a key's lifecycle, but it lived in the
+  // one document that received the keydown — so it evaporated exactly when the
+  // user was relying on it. Hold `;`, press `x`: the tab closes, focus lands
+  // on a different tab, and that tab's content script is a different object
+  // with `sticky === false`. The second `x` was then a literal character typed
+  // into a page. `;g`/`;l` failed the same way, because navigating builds a
+  // new document too.
+  //
+  // So the hold is published to the background (a per-tab session value, the
+  // same store syncTyping uses precisely because it outlives the script) and
+  // read back on boot. The restored leader is ARMED as well as held: the whole
+  // point is that the user does not press `;` a second time.
+  //
+  // The keyup still arrives — key events go to the FOCUSED document, which is
+  // this one — so the restored hold is released normally, and blur/visibility
+  // still release a lost one.
+  const publishHold = (hold: boolean): void => {
+    void send("syncHold", { hold });
+  };
+  void reportPresence(true).then((r) => {
+    if (!r || !r.hold) return;
+    leader.sticky = true;
+    leader.show();
+  });
   // ...and report OUT, so presence cannot outlive this document. `pagehide`
   // rather than `unload`: it is the one both a real navigation and a bfcache
   // eviction fire, and `unload` is unreliable on mobile and in some unload
   // paths. A missed report is self-limiting anyway — the helper discards any
   // answer whose URL no longer matches the tab.
   try {
-    window.addEventListener("pagehide", () => reportPresence(false), { capture: true });
+    window.addEventListener("pagehide", () => void reportPresence(false), { capture: true });
   } catch (e) {
     // ignore — presence is re-derived on the next load regardless
   }
-  // Two-key sequences for web pages (chrome helper registers its own table).
-  // The nav-stack popup is a PLAIN binding on the shifted keys — ;G / ;L open
-  // it right away, ;g / ;l stay back/forward. See the note in chrome/main.ts:
-  // it was briefly a ;G-then-k sequence, which made the advertised binding do
-  // nothing at all.
-  leaderActions["G"] = () => openNavPopup(ctx);
-  leaderActions["L"] = () => openNavPopup(ctx);
-  // ;' = quick switch: capture the next digit and jump to the marked session.
-  leaderActions["'"] = () =>
-    leader.armPending(
-      (k) => {
-        if (/^[1-9]$/.test(k)) {
-          contentOps.switchSessionByMarker(Number(k));
-          return true;
-        }
-        return false;
-      },
-      {
-        timeoutMs: 3000,
-        // Markers are 1-9 by construction; see the chrome host.
-        expect: digitExpect(9),
-      }
-    );
-  // The leader's two-key categories (`;W` window/layout, `;Z` zoom, `;K` links)
-  // come from the shared table — registered here through the shared helper, so
-  // both hosts derive the identical table rather than each looping over it and
-  // a category added to one context only being a category that works on web
-  // pages and silently does nothing on the command center.
-  registerCategories(ctx);
+  // HOST ACTIONS. Four actions need an object only this host has, so they are
+  // filled in here rather than in the shared table — and they are NAMED, not
+  // keyed, because the keymap that routes them is in Go and the coverage test
+  // reads this list to tell "a host's job" apart from "nobody implemented
+  // this".
+  //
+  //   backStack / forwardStack  ;G / ;L open the nav-stack popup. They are
+  //         plain bindings on the SHIFTED keys, and that is exactly why they
+  //         are unambiguous: `;g` and `;l` are Back and Forward, `;G` and `;L`
+  //         are the stacks. The old system made this depend on a case-folding
+  //         rule and a "a plain binding beats a head" rule, and it shipped
+  //         advertised-but-dead more than once.
+  leaderActions["backStack"] = () => openNavPopup(ctx);
+  leaderActions["forwardStack"] = () => openNavPopup(ctx);
   // ;F / ;B = cycle the scroll target among the page's scroll regions (the
   // document scroller, then each pane/sidebar largest-first). The plain scroll
   // keys keep working on whatever is focused, and cycling back to "window"
   // restores the automatic behaviour. Content-only: chrome-owned pages have no
   // page scroll regions to cycle.
-  leaderActions["F"] = () => scroll.cycle(1);
-  leaderActions["B"] = () => scroll.cycle(-1);
+  leaderActions["scrollRegionNext"] = () => scroll.cycle(1);
+  leaderActions["scrollRegionPrev"] = () => scroll.cycle(-1);
 
   /* ==================== scroll keys ==================== */
 
@@ -333,7 +335,7 @@ import type { ContentPopupShell } from "./find";
       if (isCancel(e)) closePopup();
       return;
     }
-    if (hints.active) {
+    if (hints.active || hints.starting) {
       if (isTypingEvent(e)) {
         // The user focused a text field mid-hints: the hint batch must not
         // eat what they type there. Drop the hints and let the key through.
@@ -342,7 +344,20 @@ import type { ContentPopupShell } from "./find";
         // Esc exits the hints (clearing every hint's state) but is NOT
         // consumed here — it falls through to the shared Esc handling below,
         // which also blurs focus and lets the page close its own overlays.
+        //
+        // `starting` is in the condition on purpose. `hints.start()` walks the
+        // document and then awaits the core, so between the `;f` keypress and
+        // the batch appearing there is a window where `active` is still false.
+        // Gating on `active` alone meant an Escape in that window cancelled
+        // nothing at all: the hosts skipped exit(), nothing bumped the
+        // session, and the batch finished building AFTER the user had asked
+        // for it to stop — leaving a hint layer on screen that the Escape they
+        // had already pressed did not dismiss.
         hints.exit();
+      } else if (!hints.active) {
+        // Starting, but not yet taking keys: the batch is still being built
+        // and no hint character means anything yet, so let the key fall
+        // through to the leader/popups rather than swallowing it.
       } else if (leader.active) {
         // The LEADER takes precedence over the hints. The hint layer is a
         // keyboard trap otherwise: it owned every key on the page, so while it
@@ -374,13 +389,24 @@ import type { ContentPopupShell } from "./find";
     // MUST own the leader, popups, hints, Esc and scroll keys itself — the
     // chrome helper only receives keys on in-process pages (about:, the
     // command center), where this content script does not run.
-    if (e.key === "Escape") {
-      // Esc is the universal cancel key. Clear every Lazyfox overlay state so
-      // the next invocation starts fresh: link hints (typed prefix, items,
-      // pool), the leader and any one-shot capture.
-      if (hints.active) hints.exit();
+    if (isCancel(e)) {
+      // The universal cancel key — Escape, or Ctrl+G for pages that own Escape
+      // themselves. Clear every Lazyfox overlay state so the next invocation
+      // starts fresh: link hints (typed prefix, items, pool), the leader and
+      // any one-shot capture.
+      //
+      // ONE press, for the same reason the chrome host does it in one: a
+      // category is an armed capture sitting on top of an armed leader, and
+      // handing the Escape to the capture's sub-key table (which has no Escape
+      // row) spent the capture and left the leader standing, so the menu stayed
+      // up until a second press. `cancelPending` is the difference — it drops
+      // the capture WITHOUT running it, which is what "cancel" means; the old
+      // call ran the capture with the string "Escape", i.e. it pressed a key
+      // on the user's behalf to say they wanted to press none.
+      const cancelChord = e.key !== "Escape";
+      if (hints.active || hints.starting) hints.exit();
+      if (leader.hasPending()) leader.cancelPending();
       if (leader.active) leader.hide();
-      if (leader.hasPending()) leader.handlePending("Escape");
       // Return the scroll keys to the automatic target (document scroller on
       // ordinary pages) so a cycled sidebar can never trap them.
       if (scroll.isCustom()) scroll.reset();
@@ -394,9 +420,17 @@ import type { ContentPopupShell } from "./find";
           // ignore
         }
       }
-      // Deliberately NOT consumed: the page must also receive Esc so it can
-      // close its own popups, info bars, cookie banners and fullscreen video.
-      // preventDefault/stopImmediatePropagation here used to keep those open.
+      // Esc is deliberately NOT consumed: the page must also receive it so it
+      // can close its own popups, info bars, cookie banners and fullscreen
+      // video.
+      //
+      // Ctrl+G IS consumed. It exists precisely because a page that binds Esc
+      // fights Lazyfox for it, and a page cannot receive Ctrl+G as text anyway —
+      // so the chord is ours alone and nothing downstream needs it.
+      if (cancelChord) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
       return;
     }
     // Focus is in a text field. A stale leader or one-shot capture must never
@@ -412,7 +446,7 @@ import type { ContentPopupShell } from "./find";
     if (leader.hasPending()) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      leader.handlePending(e.key);
+      leader.handlePending(e);
       return;
     }
     if (leader.active) {
@@ -456,6 +490,7 @@ import type { ContentPopupShell } from "./find";
       // Held down: bindings run and the leader stays armed, so `;` then
       // back/forward (or close-tab twice) costs one keystroke per action.
       leader.sticky = true;
+      publishHold(true);
       leader.show();
     }
   }
@@ -474,7 +509,7 @@ import type { ContentPopupShell } from "./find";
     "keyup",
     (e) => {
       try {
-        releaseHoldOnKeyup(leader, config.leader, e.key);
+        if (releaseHoldOnKeyup(leader, config.leader, e.key)) publishHold(false);
       } catch (err) {
         // ignore
       }
@@ -497,7 +532,7 @@ import type { ContentPopupShell } from "./find";
   // outstanding, so it can run on every visibility change.
   const releaseLostHold = (): void => {
     try {
-      releaseLostHoldOnBlur(leader);
+      if (releaseLostHoldOnBlur(leader)) publishHold(false);
     } catch (err) {
       // ignore
     }
@@ -553,7 +588,7 @@ import type { ContentPopupShell } from "./find";
   // find widget and the resize panel), the leader bar, an armed one-shot
   // capture, or live link hints.
   function overlayOwnsKeys(): boolean {
-    return !!currentPopup || hints.active || leader.active || leader.hasPending();
+    return !!currentPopup || hints.active || hints.starting || leader.active || leader.hasPending();
   }
 
   /* ==================== DOM wiring ==================== */
@@ -575,8 +610,6 @@ import type { ContentPopupShell } from "./find";
     syncTypingAttr,
     startHints: () => hints.start(),
     focusFirstInput,
-    copyLink: () => contentOps.copyLink(),
-    editLink: () => contentOps.editLink(),
     hintBadge: () => hints.enterBadge(),
     pageReport: () => collectPageReport(scroll, hints),
     isDev: () => __DEV__,

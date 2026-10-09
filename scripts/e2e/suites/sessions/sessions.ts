@@ -18,10 +18,6 @@ export async function run(ctx: any): Promise<void> {
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags ?? TAGS });
 
   // --- composable condition helpers (replace sleeps) ---
-  // The leader is armed on a WEB page: the content script mirrors it onto
-  // <html> as data-lf-leader. (The which-key overlay's host element is NOT a
-  // signal — it lives in a closed shadow root and survives hide().)
-  const armedOnPage = (tab, ms = 4000) => ctx.waitLeader(tab, false, ms);
   // A leader sequence DISPATCHED: the leader is disarmed again.
   const leaderDone = (tab, ms = 6000) => ctx.waitLeader(tab, true, ms);
   // The chrome window's leader is idle (a chrome-side dispatch finished —
@@ -35,19 +31,29 @@ export async function run(ctx: any): Promise<void> {
   const waitStore = (expr, ms = 8000) => ctx.waitExpr(ctx.probe, expr, true, ms);
   const storeGet = (expr) => evalIn(ctx.probe, expr);
   // Watch the popup's composed list/tabs events (closed shadow root).
+  //
+  // Both trails are kept as well as both caches: `waitListEvent` reports the
+  // sequence a popup published when a wait times out, and the cached detail on
+  // its own cannot say whether the value ever changed. The two panes publish
+  // separately (`lazyfox:tabs` is the right-hand tabs pane), so each gets its
+  // own trail rather than sharing one that would interleave them.
   const watchPopupEvents = (tab) =>
     evalIn(
       tab,
       `window.__lfList = null; window.__lfTabs = null;
+       window.__lfSeen = []; window.__lfTabsSeen = [];
        if (!window.__lfEvtWatch) { window.__lfEvtWatch = true;
-         document.addEventListener("lazyfox:list", (e) => { window.__lfList = e.detail; }, true);
-         document.addEventListener("lazyfox:tabs", (e) => { window.__lfTabs = e.detail; }, true); } true`
+         document.addEventListener("lazyfox:list", (e) => { window.__lfList = e.detail; window.__lfSeen.push(e.detail); if (window.__lfSeen.length > 40) window.__lfSeen.shift(); }, true);
+         document.addEventListener("lazyfox:tabs", (e) => { window.__lfTabs = e.detail; window.__lfTabsSeen.push(e.detail); if (window.__lfTabsSeen.length > 40) window.__lfTabsSeen.shift(); }, true); } true`
     );
+  // The sessions family is ONE key now: `;P`. `;p` is a different chord —
+  // unbound, and reported as such — so it is not a second way in, which is
+  // exactly what the old `;p`-and-`;P` (and `;'`) spellings had become.
   const openSessionsPopup = async (tab) => {
-    await ctx.leaderPress(tab, "p");
+    await ctx.leaderSeq(tab, ["P"], { shift: true });
     await ctx.waitPopup(tab, 8000);
   };
-  // Save a session by name through the ;p popup. Enter creates the session but
+  // Save a session by name through the ;P popup. Enter creates the session but
   // does NOT necessarily close the popup, and a popup left open swallows every
   // later keystroke — the next test's `;` would be typed into its input
   // instead of arming the leader. So the close is part of the operation, not an
@@ -58,7 +64,7 @@ export async function run(ctx: any): Promise<void> {
     await ctx.press(tab, "Enter");
     await waitStore(`browser.storage.local.get("lfSessions").then(r => !!(r.lfSessions && r.lfSessions[${JSON.stringify(name)}]))`);
     await ctx.waitPopupGone(tab, 8000).catch(async () => {
-      throw new Error("[save-session] the ;p popup stayed open after Enter");
+      throw new Error("[save-session] the ;P popup stayed open after Enter");
     });
   };
   const splitTabsOf = async () => {
@@ -91,7 +97,7 @@ export async function run(ctx: any): Promise<void> {
     assert(after.length === before.length, "move bindings create/destroy no tabs");
     assert(!(await ctx.hasHost(ctx.tabA, "lazyfox-popup")), "move bindings open no popup");
   });
-  await t("sessions: ;p saves a session with marker 1", async () => {
+  await t("sessions: ;P saves a session with marker 1", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await saveSession(ctx.tabA, "work");
     await waitStore(`browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.work && r.lfSessions.work.marker === 1)`);
@@ -104,28 +110,44 @@ export async function run(ctx: any): Promise<void> {
       return s && s.statusAttr && s.statusAttr.indexOf("work") !== -1 ? true : null;
     }, 8000);
   });
-  await t("sessions: ;' + digit consumes the marker binding", async () => {
-    // Switch to a marker with no session: the pending-prefix path must run
-    // without touching the window's tabs (non-destructive verification).
+  await t("sessions: a marker dive with no such session is reported", async () => {
+    // A digit in the popup is a MARKER DIVE. Picking one that no session
+    // carries must say so — the alternative is the digit silently landing in
+    // the filter box, which is a key that appears to do nothing (and the same
+    // silent-swallow failure the whole keymap was rebuilt to remove).
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const before = await ctx.tabsInfo();
-    await ctx.press(ctx.tabA, ";");
-    await armedOnPage(ctx.tabA);
-    await ctx.press(ctx.tabA, "'");
-    await ctx.press(ctx.tabA, "9");
-    await leaderDone(ctx.tabA);
+    // Find a digit nothing is marked with, rather than assuming one: the
+    // markers in play depend on every session the earlier tests left behind,
+    // which differs between an isolated run and a full one.
+    const used = await storeGet(
+      `browser.storage.local.get("lfSessions").then(r => Object.keys(r.lfSessions || {}).map(k => (r.lfSessions[k] || {}).marker).filter(Boolean))`
+    );
+    const free = [1, 2, 3, 4, 5, 6, 7, 8, 9].find((d) => !used.includes(d));
+    assert(free, "every marker 1-9 is taken; this test needs one that is not");
+    await watchPopupEvents(ctx.tabA);
+    await openSessionsPopup(ctx.tabA);
+    // The dive needs the list loaded (it resolves the digit against the
+    // markers it holds), so wait for the render rather than for a sleep.
+    await ctx.waitListEvent(ctx.tabA, { count: { ge: 1 } }, 10000);
+    await ctx.press(ctx.tabA, String(free));
+    await ctx.waitToast(ctx.tabA, new RegExp("no session at marker " + free), 8000);
     const after = await ctx.tabsInfo();
     assert(after.length === before.length, "no tabs were changed by an unknown marker");
+    await ctx.press(ctx.tabA, "Escape");
+    await ctx.waitPopupGone(ctx.tabA, 5000);
   });
-  await t("sessions: ;' + 1 hot-swaps to the marked session", async () => {
+  await t("sessions: ;P then 1 hot-swaps to the marked session", async () => {
     // Save a second session from a distinct tab set.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/hello`);
     await saveSession(ctx.tabA, "mail");
-    // Switch to marker 1 ("work") with ;' + 1.
+    // Switch to marker 1 ("work"): `;P` opens the list, `1` dives to the
+    // marker. Two keystrokes and no marker menu in between — the nine rows the
+    // which-key overlay used to spend on this are gone, not moved.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    await ctx.press(ctx.tabA, ";");
-    await armedOnPage(ctx.tabA);
-    await ctx.press(ctx.tabA, "'");
+    await watchPopupEvents(ctx.tabA);
+    await openSessionsPopup(ctx.tabA);
+    await ctx.waitListEvent(ctx.tabA, { count: { ge: 2 } }, 10000);
     await ctx.press(ctx.tabA, "1");
     // The switch REPLACES every tab in the window, so this keystroke destroys
     // tabA and the probe by design. Nothing may be read from them afterwards:
@@ -177,7 +199,7 @@ export async function run(ctx: any): Promise<void> {
     await hotSwap("9", "mail");
     await hotSwap("1", "work");
   });
-  await t("sessions: ;p saves on immediate Enter (no debounce wait)", async () => {
+  await t("sessions: ;P saves on immediate Enter (no debounce wait)", async () => {
     // Regression for the Enter race: typing a name and pressing Enter at once
     // must save, without waiting for the (formerly debounced) search to land.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
@@ -188,7 +210,7 @@ export async function run(ctx: any): Promise<void> {
     // The popup must be closed before this test ends, or the next test's `;`
     // is typed into its input instead of arming the leader.
     await ctx.waitPopupGone(ctx.tabA, 8000).catch(() => {
-      throw new Error("[instant-save] the ;p popup stayed open after Enter");
+      throw new Error("[instant-save] the ;P popup stayed open after Enter");
     });
     const r = await storeGet(`browser.storage.local.get("lfSessions").then(r => r.lfSessions.instant)`);
     assert(r && r.tabs && r.tabs.length >= 1, "instant saved with tabs");
@@ -212,7 +234,7 @@ export async function run(ctx: any): Promise<void> {
     await ctx.press(ctx.tabA, "Enter");
     await waitStore(`browser.storage.local.get("lfSessions").then(r => !!r.lfSessions && !!r.lfSessions.clean)`);
     await ctx.waitPopupGone(ctx.tabA, 8000).catch(() => {
-      throw new Error("[clean-session] the ;p popup stayed open after Enter");
+      throw new Error("[clean-session] the ;P popup stayed open after Enter");
     });
     const clean = await storeGet(`browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.clean)`);
     assert(clean && Array.isArray(clean.tabs) && clean.tabs.length === 0, "clean session saved with zero tabs: " + JSON.stringify(clean && clean.tabs));
@@ -234,7 +256,7 @@ export async function run(ctx: any): Promise<void> {
     await ctx.press(ctx.tabA, "Enter");
     await waitStore(`browser.storage.local.get("lfSessions").then(r => !!r.lfSessions && !!r.lfSessions.delme)`);
     await ctx.waitPopupGone(ctx.tabA, 8000).catch(() => {
-      throw new Error("[delete-session] the ;p popup stayed open after Enter");
+      throw new Error("[delete-session] the ;P popup stayed open after Enter");
     });
     // Reopen the popup: the input starts empty (that is the point — `x` used to
     // fall through and filter the list instead of deleting). Watch the composed
@@ -547,45 +569,31 @@ export async function run(ctx: any): Promise<void> {
     await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { delete r.lfSessions.lfTmp; return browser.storage.local.set({ lfSessions: r.lfSessions }); }); true`);
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
   });
-  await t("sessions: chrome popup — Tab toggles the tabs pane, Esc steps back (no leak)", async () => {
-    // On the command center the popup mounts at chrome-window level, where a
-    // leaked Tab (returned false from onKey, so not preventDefaulted) moves
+  await t("sessions: Tab toggles the tabs pane, Esc steps back (no leak)", async () => {
+    // A leaked Tab (returned false from onKey, so not preventDefaulted) moves
     // focus into the browser chrome and the popup silently stops receiving
-    // keys. The chrome input listener now captures Tab for every popup, and
-    // the window's capture listener lets the popup consume Esc first.
+    // keys. The proof of "no leak" is that the popup still ANSWERS: the Escape
+    // that closes it below can only work if the popup is still the party
+    // receiving keys. Read from the page's own observables — the command
+    // center hosts its popups in the page (closed shadow root), not at
+    // chrome-window level, which is also why the chrome helper's popup state
+    // is empty here.
     await ctx.openCC(ctx.tabA);
-    await ctx.chromeLeaderPress(ctx.tabA, "p");
-    const opened = await waitFor(async () => {
-      const s = await ctx.chromeState();
-      const p = s && s.popup;
-      return p && p.current && p.panels && p.panels.length && (p.panels[0].title || "").indexOf("Sessions") !== -1 ? s : null;
-    }, 8000).catch(() => null);
-    assert(opened, "sessions popup opened on the command center: " + JSON.stringify(opened && opened.popup));
-    // Tab moves into the tabs pane; the popup must stay open and show the
-    // tabs-pane hint (a leaked Tab would have moved focus out of the popup).
-    await ctx.sendKeys(ctx.tabA, [{ k: "Tab" }]);
-    const afterTab = await waitFor(async () => {
-      const s = await ctx.chromeState();
-      const p = s && s.popup;
-      return p && p.current && p.panels && p.panels[0] && p.panels[0].status && p.panels[0].status.indexOf("j/k select") !== -1 ? s : null;
-    }, 5000).catch(() => null);
-    assert(afterTab, "Tab toggled into the tabs pane, popup stayed open: " + JSON.stringify(afterTab && afterTab.popup && afterTab.popup.panels));
-    // Esc in the tabs pane returns to the left list (the popup consumes it
-    // through handleKey instead of closing).
-    await ctx.sendKeys(ctx.tabA, [{ k: "Escape" }]);
-    const afterEsc = await waitFor(async () => {
-      const s = await ctx.chromeState();
-      const p = s && s.popup;
-      return p && p.current && p.panels && p.panels[0] && p.panels[0].status === "" ? s : null;
-    }, 5000).catch(() => null);
-    assert(afterEsc, "Esc left the tabs pane without closing the popup: " + JSON.stringify(afterEsc && afterEsc.popup && afterEsc.popup.panels));
+    await ctx.leaderSeq(ctx.tabA, ["P"], { shift: true });
+    await ctx.waitPopupTitle(ctx.tabA, "Sessions", 8000).catch(() => {
+      throw new Error("sessions popup did not open on the command center");
+    });
+    // Tab moves into the tabs pane; the popup must stay open.
+    await ctx.press(ctx.tabA, "Tab");
+    assert(await ctx.hasHost(ctx.tabA, "lazyfox-popup"), "popup still open in the tabs pane");
+    // Esc in the tabs pane returns to the left list instead of closing.
+    await ctx.press(ctx.tabA, "Escape");
+    assert(await ctx.hasHost(ctx.tabA, "lazyfox-popup"), "Esc left the tabs pane without closing the popup");
     // A final Esc (left pane active) closes the popup normally.
-    await ctx.sendKeys(ctx.tabA, [{ k: "Escape" }]);
-    const closed = await waitFor(async () => {
-      const s = await ctx.chromeState();
-      return s && s.popup && s.popup.current === false ? s : null;
-    }, 5000).catch(() => null);
-    assert(closed, "Esc on the left pane closed the popup");
+    await ctx.press(ctx.tabA, "Escape");
+    await ctx.waitPopupGone(ctx.tabA, 5000).catch(() => {
+      throw new Error("Esc on the left pane did not close the popup");
+    });
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
   });
   await t("sessions: moving the last tab out of the current session sticks (autosave can't resurrect it)", async () => {

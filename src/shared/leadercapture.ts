@@ -23,10 +23,27 @@ export interface CaptureOpts {
   expect?: string;
 }
 
+/**
+ * A capture receives the whole event, not a bare character.
+ *
+ * A string key has already thrown the modifiers away, and the modifier state
+ * is what distinguishes `1` from `Shift+1` and Enter from Ctrl+Enter — so a
+ * capture that only gets the character cannot answer a question it is being
+ * asked. `key` is always present; the modifier flags are optional because the
+ * synthetic paths build a smaller object.
+ */
+export interface CaptureKey {
+  key: string;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  metaKey?: boolean;
+}
+
 export class LeaderCapture {
   /** What the next key must be. "" when the capture takes anything. */
   expect = "";
-  private fn: ((k: string) => boolean) | null = null;
+  private fn: ((k: CaptureKey) => boolean) | null = null;
   private timeoutFn: (() => void) | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly onChange: (() => void) | undefined;
@@ -53,7 +70,7 @@ export class LeaderCapture {
    * that times out into its plain binding) should say nothing rather than
    * guess.
    */
-  arm(fn: (k: string) => boolean, opts?: CaptureOpts): void {
+  arm(fn: (k: CaptureKey) => boolean, opts?: CaptureOpts): void {
     this.fn = fn;
     this.timeoutFn = (opts && opts.onTimeout) || null;
     this.setExpect((opts && opts.expect) || "");
@@ -88,7 +105,7 @@ export class LeaderCapture {
   }
 
   /** Consumes the pending key, if any. Returns whether it was consumed. */
-  handle(k: string): boolean {
+  handle(k: CaptureKey): boolean {
     const fn = this.fn;
     this.fn = null;
     this.timeoutFn = null;

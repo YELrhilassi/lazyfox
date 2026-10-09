@@ -75,6 +75,17 @@ export interface ChromeStatePopupV1 {
   panels: Array<{ title: string; hasInput: boolean; status: string }>;
   items: string[];
   selIdx: number[];
+  /**
+   * The current value of every popup input, in document order.
+   *
+   * Added because "the filter did not apply" and "the keys never reached the
+   * input" are indistinguishable from `items` alone, and they are the two
+   * halves of the question every popup test eventually has to answer. The
+   * chrome popup re-creates its `<input>` (Firefox's HTML parser drops form
+   * controls in the privileged document), so this also says whether the field
+   * being typed into is the one the popup built.
+   */
+  inputValues: string[];
 }
 
 export interface ChromeStateV1 {
@@ -258,6 +269,10 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
     partial.popup = step("popup", () => {
       const panels = Array.from(doc.querySelectorAll(".lf-panel")) as any[];
       const items = (p: any) => Array.from(p.querySelectorAll(".lf-item")) as any[];
+      // Read across the WHOLE document, not per panel: a popup input can be
+      // re-created outside its panel, and a stale input left in the document
+      // is exactly the thing a test needs to see.
+      const inputs = Array.from(doc.querySelectorAll(".lf-input")) as any[];
       return {
         current: st.hasPopup(),
         // Counted from the leader controller's own mirror, NOT from `.wk.on`:
@@ -274,6 +289,7 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
         items: panels.map((p) => items(p).map((it) => (it.textContent || "").trim()).slice(0, 40))
           .reduce((a: string[], b: string[]) => a.concat(b), []),
         selIdx: panels.map((p) => items(p).findIndex((it) => it.classList.contains("selected"))),
+        inputValues: inputs.map((i) => String(i.value ?? "")),
       } as ChromeStatePopupV1;
     }, { error: "popup unavailable" } as any);
 

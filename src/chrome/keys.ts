@@ -13,6 +13,8 @@
 // SPECIAL_KEYS/keycode arithmetic) are unit-tested without a browser in
 // scripts/test-chrome-keys.ts.
 
+import { shiftKey } from "../shared/keymap";
+
 export interface KeysDeps {
   // The chrome window's capture-phase keydown dispatch (leader, popups,
   // hotkeys, typing guard). Returns whether the key was consumed; a key it
@@ -44,20 +46,17 @@ export interface KeysDeps {
   release(key: string): void;
 }
 
-// Apply the Shift modifier to a printable key the way a real keyboard does
-// (the harness asks for `;|` as key "\\" + shift, `;+` as "=" + shift). The
-// real key path has Firefox compute the shifted character; the synthetic
-// #lfc=keys path must do it itself or the leader sees "\\" instead of "|".
+// The Shift map is not written here. It lives in shared/keymap.ts, next to the
+// matcher that consumes it, and a test pins it against the Go core's copy —
+// because two copies of the US layout is two chances to disagree about what
+// Shift+P is, and when they disagree the key quietly stops matching on one
+// dispatch path while still working on the other.
+//
+// Bound through a named import rather than a re-export so the specifier is
+// resolved against this file, which is what Node's extensionless-TS resolve
+// hook needs: a re-export specifier arrives with no parent to resolve against.
 export function shiftedKey(key: string): string {
-  if (key.length !== 1) return key;
-  if (key >= "a" && key <= "z") return key.toUpperCase();
-  const map: Record<string, string> = {
-    "`": "~", "1": "!", "2": "@", "3": "#", "4": "$", "5": "%",
-    "6": "^", "7": "&", "8": "*", "9": "(", "0": ")",
-    "-": "_", "=": "+", "[": "{", "]": "}", "\\": "|",
-    ";": ":", "'": "\"", ",": "<", ".": ">", "/": "?",
-  };
-  return map[key] || key;
+  return shiftKey(key);
 }
 
 // Key names -> DOM_VK_ key codes for sendKeyEvent (printable chars use

@@ -15,6 +15,7 @@
 import {
   evalIn,
   attempt,
+  waitFor,
 } from "../bidi.ts";
 
 export function installLifecycle(
@@ -73,6 +74,52 @@ export function installLifecycle(
   };
 
   /**
+   * Clear the two KEY TRAPS a failed test can leave behind: an open popup, and
+   * an armed one-shot capture. Both eat keystrokes, which is how one broken
+   * test gets reported as eight unrelated failures.
+   *
+   * AN OPEN POPUP is the expensive one. `chromeKeyDown` consumes every key it
+   * sees while a popup is open unless the key is aimed inside that popup, so a
+   * popup which outlived a test that threw swallows the next test's `;` and
+   * every binding after it. The commandcenter group is where this shows: the
+   * leader keys "stop working" on a product that is working perfectly, on
+   * every test after the one that failed. Escape is the product's OWN close
+   * key — both hosts route it through the same `isCancel` predicate the
+   * dispatcher uses — so the harness presses it rather than reaching into the
+   * DOM to remove the overlay. It is sent only when a popup is actually open,
+   * for the reason `disarmLeader` documents: a stray Escape on the command
+   * center silently changes the mode the next test expects to find.
+   *
+   * AN ARMED CAPTURE (the `;f` hint-pick letter, a digit target) is NOT
+   * cleared with Escape, and that asymmetry is deliberate: `handlePending`
+   * always RUNS the capture's function, so Escape through an armed digit
+   * capture would switch sessions. The capture expires on its own (3s for a
+   * digit, 10s for a hint-pick letter), so the repair waits it out rather than
+   * injecting a key whose meaning it cannot predict. It is bounded, and it
+   * costs nothing at all in the normal case, because nothing is armed.
+   */
+  ctx.repairKeyTraps = async function repairKeyTraps(): Promise<void> {
+    const before = await ctx.chromeState().catch(() => null);
+    if (!before) return;
+    if (before.popup && before.popup.current) {
+      ctx.repaired.push("closed a popup the previous test left open");
+      await ctx.press(ctx.tabA, "Escape").catch(() => {});
+      await waitFor(async () => {
+        const s = await ctx.chromeState().catch(() => null);
+        return s && s.popup && !s.popup.current ? true : null;
+      }, 8000).catch(() => {});
+    }
+    if (!before.leaderPending) return;
+    ctx.repaired.push("waited out a one-shot key capture the previous test armed");
+    await waitFor(async () => {
+      const s = await ctx.chromeState().catch(() => null);
+      return s && !s.leaderPending ? true : null;
+      // 12s: the longest capture the product arms is the 10s hint-pick letter
+      // forward, so anything still armed after that is not going to expire.
+    }, 12000).catch(() => {});
+  };
+
+  /**
    * The test's declared starting state, asserted before it runs.
    *
    * Everything here is a PRECONDITION, not a cleanup. A test may assume all of
@@ -116,6 +163,12 @@ export function installLifecycle(
 
     // 5. Disarm the leader, in both places that can own it.
     await ctx.disarmLeader();
+
+    // 5b. No popup and no armed one-shot capture left over from the previous
+    //     test — see repairKeyTraps for why a leftover of either turns ONE
+    //     failure into eight, and why the repair lives here rather than at the
+    //     end of each test: a test that throws is not around to clean up.
+    await ctx.repairKeyTraps();
 
     // 6. The tab list is NOT reconciled, and must not be. The measurement that
     //    settled it is in docs/TESTING.md:

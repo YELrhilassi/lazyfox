@@ -60,6 +60,9 @@ export interface ChannelDeps {
   status: StatusBarCtl;
   // Records that a tab's own content script is running (see noteContentPresent).
   setContentPresent(index: number, active: boolean, url: string): void;
+  // Clear the bar's download notification(s) at a page's request (`;D` runs in
+  // the page's own leader, but the bar is this side's).
+  dismissDownloads(): void;
   cfg: ChromeCfg;
   debug: DebugHandlers;
   // Per-tab / per-session page-cache enforcement (the global scope is owned by
@@ -123,6 +126,9 @@ export interface Channel {
 // How long a request may sit queued before the relay becomes ready, and how
 // long a reply-bearing request waits for its response.
 const RELAY_TIMEOUT = 6000;
+// How long a queued request may keep waiting for the relay to come up (or for
+// the slot ahead of it to free) before it is given up on. See requestBg.
+const RELAY_BOOT_MAX = 45000;
 
 export function createChannel(deps: ChannelDeps): Channel {
   // The persistent relay tab (relay.html) carries every helper<->background
@@ -240,10 +246,34 @@ export function createChannel(deps: ChannelDeps): Channel {
     // retries on its own schedule).
     const entry = { id: 0, action: action, arg: arg ?? {} };
     pendingReqs.push(entry);
-    setTimeout(() => {
+    // THE DROP DEADLINE IS NOT A STARTUP DEADLINE.
+    //
+    // A queued request is dropped after RELAY_TIMEOUT so a background that never
+    // answers cannot leak the queue. But the relay is a real TAB: on a fresh
+    // launch it has to be created and commit, and on a cold profile — or while a
+    // session restore is reopening a windowful of tabs — that takes longer than
+    // this window. The request was then dropped before it was ever sent, and
+    // nothing said so: the action simply did not happen. That is what "not all
+    // functionality works right after Firefox launches" was.
+    //
+    // So the timer re-arms while there has been NO OPPORTUNITY to send — the
+    // relay tab is not up yet, or its single URL slot is still busy with the
+    // request ahead of this one — up to a hard ceiling. Once the relay is up and
+    // the slot is free, the original deadline applies again, so the queue still
+    // cannot grow without bound.
+    const queuedAt = Date.now();
+    const dropIfStuck = (): void => {
       const i = pendingReqs.indexOf(entry);
-      if (i >= 0) pendingReqs.splice(i, 1);
-    }, RELAY_TIMEOUT);
+      if (i < 0) return;
+      const relayUp = !!relayTab.browser();
+      const slotBusy = relayUp && relayTab.url().indexOf(RELAY_HASH_PREFIX) !== -1;
+      if ((!relayUp || slotBusy) && Date.now() - queuedAt < RELAY_BOOT_MAX) {
+        setTimeout(dropIfStuck, RELAY_TIMEOUT);
+        return;
+      }
+      pendingReqs.splice(i, 1);
+    };
+    setTimeout(dropIfStuck, RELAY_TIMEOUT);
     sendNextRelay();
     return true;
   }

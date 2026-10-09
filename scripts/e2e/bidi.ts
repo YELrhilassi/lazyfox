@@ -325,6 +325,20 @@ export async function stopGecko(h: Session): Promise<void> {
   try { ws?.close(); } catch { /* already gone */ }
   try { await httpJson("DELETE", `http://127.0.0.1:${h.port}/session/${h.sessionId}`); } catch { /* already gone */ }
   try { h.gd.kill(); } catch { /* already gone */ }
+  // geckodriver is spawned with PIPED stdout/stderr, so this process owns two
+  // pipe handles — and a live pipe is a live handle, which is why a finished
+  // run can print its summary and then never exit. Killing the driver is not
+  // enough on Windows: the Firefox it launched INHERITS those handles, so the
+  // pipe stays open for as long as any survivor holds it, and `kill()` has no
+  // opinion about a grandchild. The observed shape of that hang is exactly two
+  // Socket handles plus a ChildProcess with `exitCode === null`, seconds (or
+  // forever) after the run ended. Closing OUR end is what actually releases
+  // the loop; the driver's diagnostics are already accumulated in `out`/`err`
+  // by the 'data' handlers above, so nothing readable is lost by dropping the
+  // pipe, and `unref` covers the child process handle itself.
+  try { h.gd.stdout?.destroy(); } catch { /* already gone */ }
+  try { h.gd.stderr?.destroy(); } catch { /* already gone */ }
+  try { h.gd.unref?.(); } catch { /* already gone */ }
 }
 
 // --- browsing contexts -----------------------------------------------------
