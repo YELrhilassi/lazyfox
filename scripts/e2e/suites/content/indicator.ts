@@ -16,6 +16,34 @@ export async function run(ctx: any): Promise<void> {
   // sequence is in progress) — INDEPENDENT of the which-key overlay setting.
   // The data-lf-status attribute mirrors the render model; the leader segment
   // appends "|lead:<prefix>" when armed.
+  //
+  // WHY THE FAILURE CARRIES THE WHOLE CHROME STATE. This pair is the suite's
+  // order-dependent flake: it passes in a content-only run and has failed in a
+  // full run with nothing but `null` — which says "the read never saw lead:"
+  // and nothing about WHY, leaving four indistinguishable suspects (the bar
+  // never mounted, the push never crossed the relay, the push resolved against
+  // a different strip index, the bar painted for a different selected tab).
+  // A null cannot separate those; the state does, and it costs one read that
+  // only happens on the failing path.
+  const diag = async (): Promise<string> => {
+    const st = await ctx.chromeState().catch(() => null);
+    const rows: any[] = (await ctx.tabsInfo().catch(() => [])) || [];
+    const key = (t: any) => String((t && (t.id || t.context)) || "");
+    const mine = rows.find((r) => key(r) === String(ctx.tabA)) || null;
+    const act = rows.find((r) => r.active) || null;
+    return JSON.stringify({
+      statusMounted: st && st.statusMounted,
+      statusAttr: st && st.statusAttr,
+      selUrl: st && st.selUrl,
+      leaderActive: st && st.leaderActive,
+      leaderPending: st && st.leaderPending,
+      lastAction: st && st.lastAction,
+      popup: st && st.popup && st.popup.current,
+      tabAActive: mine ? !!mine.active : "unknown",
+      tabAUrl: (mine && mine.url) || "?",
+      activeUrl: (act && act.url) || "?",
+    });
+  };
   await t("status bar leader indicator arms on ; and shows the prefix", async () => {
     // The indicator lives on the chrome helper's window bar (data-lf-status
     // is mirrored in the chrome document, which chromeState reads).
@@ -45,13 +73,20 @@ export async function run(ctx: any): Promise<void> {
       const s = await ctx.chromeState();
       return s && s.statusAttr && s.statusAttr.indexOf("lead:") !== -1 ? s.statusAttr : null;
     }, 15000).catch(() => null);
-    assert(armed, "indicator armed after ; (read while ;W was open): " + JSON.stringify(armed));
+    assert(
+      armed,
+      "indicator armed after ; (read while ;W was open): " +
+        JSON.stringify(armed) + (armed ? "" : " chrome=" + (await diag())),
+    );
     await ctx.press(ctx.tabA, "Escape");
     const after = await waitFor(async () => {
       const s = await ctx.chromeState();
       return s && s.statusAttr && s.statusAttr.indexOf("lead:") === -1 ? s.statusAttr : null;
     }, 15000).catch(() => null);
-    assert(after, "indicator disarmed after Esc: " + JSON.stringify(after));
+    assert(
+      after,
+      "indicator disarmed after Esc: " + JSON.stringify(after) + (after ? "" : " chrome=" + (await diag())),
+    );
   });
   await t("status bar leader indicator works with the which-key overlay off", async () => {
     // The whole point of the indicator: with ;q (which-key) disabled it is
@@ -72,7 +107,11 @@ export async function run(ctx: any): Promise<void> {
       const s = await ctx.chromeState();
       return s && s.statusAttr && s.statusAttr.indexOf("lead:") !== -1 ? s.statusAttr : null;
     }, 15000).catch(() => null);
-    assert(armed, "indicator armed with which-key off: " + JSON.stringify(armed));
+    assert(
+      armed,
+      "indicator armed with which-key off: " +
+        JSON.stringify(armed) + (armed ? "" : " chrome=" + (await diag())),
+    );
     await ctx.press(ctx.tabA, "Escape");
     // Restore the overlay.
     await ctx.ensureWhichKey(ctx.tabA, true);
