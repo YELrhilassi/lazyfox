@@ -179,6 +179,36 @@ ok(
     return whilePresent && chromeOwnsKeys(one("https://a.example/"));
   })()
 );
+// A RETRACTION ONLY RETRACTS ITS OWN DOCUMENT.
+//
+// `pagehide` is sent by the page that is LEAVING, and the page that is
+// ARRIVING announces itself from another process at the same moment. When the
+// late "out" won that race it deleted the entry belonging to the page that had
+// already replaced it, and nothing ever re-announced: the helper went on
+// believing a live web page had no content script, claimed its keys, and
+// painted its own which-key overlay on top of the page's own — intermittently,
+// because the order depends on process scheduling. That is the "commands
+// collide and get confused" a user reports and a test suite cannot reproduce.
+ok(
+  "a retraction from the page the user LEFT cannot retract the page that replaced it",
+  (() => {
+    resetContentPresence();
+    // The new document announces itself first...
+    noteContentPresent(0, true, "https://b.example/");
+    // ...then the old document's pagehide lands, still reporting its own URL.
+    noteContentPresent(0, false, "https://a.example/");
+    return !chromeOwnsKeys(one("https://b.example/"));
+  })()
+);
+ok(
+  "a retraction that cannot name its own URL still retracts",
+  (() => {
+    resetContentPresence();
+    noteContentPresent(0, true, "https://a.example/");
+    noteContentPresent(0, false, "");
+    return chromeOwnsKeys(one("https://a.example/"));
+  })()
+);
 // THE COMMAND CENTER IS DEFERRED TO LIKE A WEB PAGE, once it reports in.
 //
 // It is Lazyfox's own document, but it runs the same key engine a web page's

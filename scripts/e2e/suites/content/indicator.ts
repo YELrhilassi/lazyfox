@@ -25,13 +25,48 @@ export async function run(ctx: any): Promise<void> {
   // a different strip index, the bar painted for a different selected tab).
   // A null cannot separate those; the state does, and it costs one read that
   // only happens on the failing path.
+  // WHY THE PAGE-SIDE FACTS ARE READ TOO, and read FIRST.
+  //
+  // The chrome state says the bar is DARK; it cannot say which half of the
+  // chain lost the keystroke. The content script mirrors the last key it SAW
+  // (`data-lf-lastkey`), whether its leader was armed and whether a popup was
+  // up at that moment, so the same failed read answers the only question that
+  // matters: did `W` reach the page at all?
+  //
+  //   lastkey === ";"  the key never landed      -> the harness' input path
+  //   lastkey === "W"  it landed, no category    -> the product's keymap/dispatch
+  //
+  // Without that split the failure is undiagnosable under load, which is
+  // exactly how this pair spent its life recorded as "flake".
+  const pageFacts = async (): Promise<string> => {
+    try {
+      return await evalIn(
+        ctx.tabA,
+        `(() => { const d = document.documentElement; return JSON.stringify({
+          lastkey: d.getAttribute("data-lf-lastkey"),
+          leader: d.getAttribute("data-lf-leader"),
+          active: d.getAttribute("data-lf-active"),
+          expect: d.getAttribute("data-lf-lead-expect"),
+          popup: d.getAttribute("data-lf-popup"),
+          wk: d.getAttribute("data-lf-whichkey"),
+          toast: d.getAttribute("data-lf-toast"),
+          focus: document.hasFocus(),
+          act: (document.activeElement && (document.activeElement.id || document.activeElement.tagName)) || ""
+        }); })()`,
+      );
+    } catch (e) {
+      return "page unreadable: " + String(e && (e as Error).message).slice(0, 120);
+    }
+  };
   const diag = async (): Promise<string> => {
+    const page = await pageFacts();
     const st = await ctx.chromeState().catch(() => null);
     const rows: any[] = (await ctx.tabsInfo().catch(() => [])) || [];
     const key = (t: any) => String((t && (t.id || t.context)) || "");
     const mine = rows.find((r) => key(r) === String(ctx.tabA)) || null;
     const act = rows.find((r) => r.active) || null;
     return JSON.stringify({
+      page: page,
       statusMounted: st && st.statusMounted,
       statusAttr: st && st.statusAttr,
       selUrl: st && st.selUrl,

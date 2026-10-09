@@ -205,13 +205,21 @@ export function installPages(
   // attempts still cover a redirect landing several seconds in — which is the
   // cancel this loop exists for — without making the suite pay for the case
   // where the navigation genuinely never starts at all.
+  // BOUNDED PER ATTEMPT, because `wait: "none"` does NOT make this command
+  // return for a target that never answers: measured on `/hang`, each navigate
+  // sat until the harness's own 30s BiDi command timeout — six attempts burned
+  // 180s, the entire test budget, so the caller's loud failure never ran.
+  // Race each attempt against a short deadline instead. The navigate itself is
+  // fire-and-forget from here on: the request still reaches the server (that
+  // is the navigation starting), and a late rejection is swallowed so it
+  // cannot surface as an unhandled rejection after the test moved on.
   ctx.navigateNoWait = async function navigateNoWait(tab, url) {
     for (let i = 0; i < 6; i++) {
-      await navigate(tab, url, "none").catch(() => {});
+      await Promise.race([navigate(tab, url, "none").catch(() => {}), sleep(1500)]);
       await activate(tab).catch(() => {});
       const u = await ctx.tabUrlOf(tab).catch(() => "");
       if (u && (u === url || u.indexOf(url) === 0)) return;
-      await sleep(500);
+      await sleep(400);
     }
   };
 
