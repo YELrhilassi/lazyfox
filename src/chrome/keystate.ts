@@ -47,6 +47,27 @@ const contentPresent = new Map<number, ContentEntry>();
 export function noteContentPresent(index: number, active: boolean, url: string): void {
   if (index < 0) return;
   if (!active) {
+    // ONLY THE DOCUMENT THAT OWNS THE RECORDED ANSWER MAY RETRACT IT.
+    //
+    // A retraction is sent by `pagehide`, which fires on the document that is
+    // LEAVING — and the document that is ARRIVING announces itself around the
+    // same moment, from a different process. The two reports are therefore
+    // ordered by luck, and a late "out" from the page the user just left used
+    // to delete the entry belonging to the page that had already replaced it.
+    // Nothing re-announces after that, so the helper went on believing a web
+    // page had no content script: it claimed the keys AND painted its own
+    // which-key overlay on top of the page's, which is exactly the "commands
+    // collide, then get confused" a user sees — and only sometimes, because it
+    // depends on which process won the race.
+    //
+    // The URL is the document's identity here, and both halves of the report
+    // already carry one (reportPresence sends `location.href` on the way in AND
+    // on the way out). So a retraction whose URL is not the one on record is by
+    // definition about a different document and is dropped. An unreadable URL
+    // ("") still retracts: a report that cannot say who it is must not be the
+    // reason a dead tab looks alive.
+    const hit = contentPresent.get(index);
+    if (hit && url && hit.url !== url) return;
     contentPresent.delete(index);
     return;
   }

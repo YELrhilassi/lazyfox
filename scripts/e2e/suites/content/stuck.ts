@@ -63,7 +63,7 @@ export async function run(ctx: any): Promise<void> {
       .then((v) => v === true)
       .catch(() => false);
 
-  const leaderAnswered = async (tab: any, timeoutMs = 8000) => {
+  const leaderAnswered = async (tab: any, timeoutMs = 8000, extra?: () => Promise<Record<string, unknown>>) => {
     const s = await waitFor(async () => {
       if (await pageArmed(tab)) return { by: "page" };
       const st = await ctx.chromeState().catch(() => null);
@@ -71,9 +71,33 @@ export async function run(ctx: any): Promise<void> {
     }, timeoutMs).catch(() => null);
     if (!s) {
       const last = await ctx.chromeState().catch(() => null);
+      // BOTH REALMS, because the reply has to separate three very different
+      // failures that a bare `leaderActive: false` collapses into one: the
+      // document never saw the key (dispatch never reached it), the document
+      // saw it and ignored it (`data-lf-lastkey` moves but the leader does
+      // not), and the document's realm is unreadable mid-navigation (evalIn
+      // itself failed, which the `.catch(() => false)` above would hide). The
+      // selection fact is here too: the chrome dispatch runs on the REAL
+      // selected tab, so an answer addressed to a tab that is no longer
+      // selected describes a different window than the one that got the key.
+      const page = await evalIn(
+        tab,
+        `JSON.stringify({
+          url: location.href,
+          ready: document.readyState,
+          lastkey: document.documentElement && document.documentElement.getAttribute("data-lf-lastkey"),
+          leader: document.documentElement && document.documentElement.getAttribute("data-lf-leader"),
+          hasFocus: document.hasFocus(),
+          active: document.activeElement && (document.activeElement.id || document.activeElement.tagName)
+        })`
+      ).catch((e) => JSON.stringify({ evalError: String((e && e.message) || e) }));
+      const rows: any[] = (await ctx.tabsInfo().catch(() => [])) || [];
+      const active = rows.find((r) => r.active);
       throw new Error(
         "the leader key was never consumed (neither the chrome helper nor the " +
-          "document itself armed): " +
+          "document itself armed): page=" +
+          page +
+          " chrome=" +
           JSON.stringify(
             last && {
               leaderActive: last.leaderActive,
@@ -82,7 +106,10 @@ export async function run(ctx: any): Promise<void> {
               selUrl: last.selUrl,
               popup: last.popup,
             }
-          )
+          ) +
+          " activeTab=" +
+          JSON.stringify(active && { id: active.id, url: active.url }) +
+          (extra ? " " + JSON.stringify(await extra()) : "")
       );
     }
     return s;
@@ -102,7 +129,18 @@ export async function run(ctx: any): Promise<void> {
   // instead would prove nothing — during a navigation the previous document
   // and its content script stay alive until the new response commits, so the
   // keyboard keeps working and the bug hides.
-  const freshTab = async (url: string) => {
+  // `hang: true` marks the one route that can NEVER be observed through the
+  // tab list: a response that never arrives never commits, so the URL keeps
+  // reporting the document that was there before (measured: it stayed on
+  // commandcenter.html for the whole 180s of the old failure). The
+  // navigation-start signal for that route is the request itself — the
+  // fixture server records every hit BEFORE it refuses to answer — so these
+  // tests wait on `ctx.server.hangHits` instead of on a URL flip that cannot
+  // happen. Everything else commits (headers arrive, or it is an about:
+  // page) and keeps the URL wait, which is what makes that wait honest.
+  const freshTab = async (url: string, opts: { hang?: boolean } = {}) => {
+    const hitsBefore = () =>
+      (ctx.server && Array.isArray(ctx.server.hangHits) ? ctx.server.hangHits.length : 0);
     // A NEW tab, and deliberately NOT ctx.probe. These tests navigate a tab
     // into states where no content script exists — a never-answering request,
     // a Firefox error page, about:config, view-source: — and ctx.probe is the
@@ -159,7 +197,30 @@ export async function run(ctx: any): Promise<void> {
         );
       }
     }
+    const before = hitsBefore();
     await ctx.navigateNoWait(tab, url);
+    if (opts.hang) {
+      // The request reaching the fixture server IS the navigation starting:
+      // it is issued before the server withholds the response, so a hit here
+      // proves the load began, while the absent response is exactly the state
+      // under test. No hit means the navigation never started — fail loudly,
+      // because a test that cannot reach the hanging state would otherwise be
+      // asserting things about whatever tab is on screen.
+      const hit = await waitFor(async () => {
+        const n = hitsBefore();
+        return n > before ? n : null;
+      }, 10000).catch(() => null);
+      if (!hit) {
+        throw new Error(
+          "harness: the navigation to " +
+            url +
+            " never reached the test server (the tab is still " +
+            (await ctx.tabUrlOf(tab).catch(() => "?")) +
+            "); without a request in flight there is no hanging page to test"
+        );
+      }
+      return tab;
+    }
     // Wait for the URL to become the one we asked for — this is the state
     // the buggy guard keyed on, so waiting for it makes the test reproduce
     // the real window rather than racing it.
@@ -187,11 +248,69 @@ export async function run(ctx: any): Promise<void> {
   };
 
   await t("a page that never responds still answers the leader key", async () => {
-    const tab = await freshTab(`${ctx.base}/hang`);
-    await ctx.sendKeys(tab, [{ k: ";" }]);
-    const s = await leaderAnswered(tab);
-    assert(s, "the leader key is answered on a page that never responds (url " +
-      JSON.stringify(await ctx.tabUrlOf(tab).catch(() => "?")) + ", by " + s.by + ")");
+    const tab = await freshTab(`${ctx.base}/hang`, { hang: true });
+    // TWO PRESS ATTEMPTS, and the recorder between them is what keeps the
+    // retry honest rather than a silent papering-over.
+    //
+    // Measured: the synthetic #lfc=keys channel sometimes delivers NOTHING
+    // during a pending navigation — no error, no reply loss, just a keydown
+    // that arrives in no realm (the chrome layer defers to the document it
+    // thinks owns the tab, and the fall-through dispatch into that document
+    // is a documented safe no-op when its window cannot be reached). A real
+    // keystroke cannot hit that path: the browser delivers it to the focused
+    // document itself. So a silent drop here is a HARNESS artefact, and
+    // retrying it tests the product rather than the channel.
+    //
+    // What must NOT be retried is a key the document RECEIVED and declined:
+    // the capture-phase recorder below proves arrival, and arrival + no arm
+    // is the product bug this test exists to catch. That path fails loudly
+    // with the page's own keytrace merged in.
+    let armed: { by: string } | null = null;
+    let delivered = false;
+    const ownId = await evalIn(tab, `browser.tabs.getCurrent().then(t => t && t.id)`).catch(() => null);
+    for (let attempt = 1; attempt <= 2 && !armed; attempt++) {
+      await evalIn(
+        tab,
+        `(() => {
+          window.__lfKeySeen = [];
+          window.addEventListener("keydown", (e) => {
+            window.__lfKeySeen.push(e.key);
+          }, true);
+          return true;
+        })()`
+      ).catch(() => {});
+      await ctx.sendKeys(tab, [{ k: ";" }]);
+      armed = await leaderAnswered(tab, 4000).catch(() => null);
+      if (armed) break;
+      const seen: string[] = JSON.parse(
+        (await evalIn(tab, `JSON.stringify(window.__lfKeySeen || [])`).catch(() => "[]")) as string
+      );
+      if (seen.length > 0) {
+        // The document GOT the key and did not arm. Retesting cannot change
+        // that — fail now with everything that separates "refused" from
+        // "never arrived".
+        delivered = true;
+        break;
+      }
+      if (attempt === 1) ctx.repaired.push("the synthetic key channel delivered nothing during the pending navigation; re-sent the key");
+    }
+    if (!armed) {
+      const extra = async () => ({
+        keydownSeenByOwnDocument: delivered
+          ? "YES — the document received the key and did not arm (product)"
+          : "NO — the synthetic channel delivered nothing (harness)",
+        ownTabId: ownId,
+        keytrace: await evalIn(tab, `document.documentElement.getAttribute("data-lf-keytrace")`).catch(() => null),
+        leadTrace: await evalIn(tab, `document.documentElement.getAttribute("data-lf-lead-trace")`).catch(() => null),
+        url: await ctx.tabUrlOf(tab).catch(() => "?"),
+      });
+      // leaderAnswered's own throw would carry the chrome state; make sure it
+      // also carries these, by invoking it once more against the empty state.
+      await leaderAnswered(tab, 1, extra);
+      throw new Error("unreachable: leaderAnswered did not throw");
+    }
+    assert(armed.by, "the leader key is answered on a page that never responds (url " +
+      JSON.stringify(await ctx.tabUrlOf(tab).catch(() => "?")) + ", by " + armed.by + ")");
     await disarm(tab);
   });
 

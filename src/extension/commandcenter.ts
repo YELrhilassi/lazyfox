@@ -38,17 +38,25 @@ import type { ContentPopupShell } from "./content/find";
 
   const store = createStore();
 
-  // Enabled quick-launch apps for the home grid. Kept mutable so a config
-  // change (options page) refreshes the grid live.
-  let apps: QuickApp[] = [];
-  function getApps(): QuickApp[] {
-    return apps;
-  }
   // The page's own view of the config. It used to read only `apps`, because the
   // leader lived in the chrome helper; now that the page arms the shared leader
   // itself it needs the same two settings every other host reads: the leader key
   // and whether the which-key overlay is enabled.
+  //
+  // It starts at the DEFAULTS, not at `{}`, and `apps` is seeded from those same
+  // defaults below. That matters for the first paint: the stored config arrives
+  // over an async storage read, and until it landed the grid rendered from an
+  // EMPTY app list — so a fresh tab showed a half-empty home page for as long
+  // as the background took to answer, and under load that was seconds. The
+  // defaults are the right first answer because they are exactly what a
+  // first-run user has, and the read replaces them the moment it arrives.
   let config: Config = mergeConfig(undefined);
+  // Enabled quick-launch apps for the home grid. Kept mutable so a config
+  // change (options page) refreshes the grid live.
+  let apps: QuickApp[] = config.apps;
+  function getApps(): QuickApp[] {
+    return apps;
+  }
   function applyConfig(c: Partial<Config> | undefined): void {
     config = mergeConfig(c);
     apps = config.apps;
@@ -268,6 +276,16 @@ import type { ContentPopupShell } from "./content/find";
   } catch (e) {
     // ignore — presence is re-derived on the next load regardless
   }
+  // Same re-assertion as the content script's, for the same reason: presence is
+  // held by the helper in a Map keyed by tab, and a single report is not a
+  // durable answer. If that entry is lost the helper claims this page's keys
+  // and paints its own overlay over the home grid's — the double-handled
+  // keystroke the presence report exists to prevent.
+  try {
+    window.addEventListener("pageshow", () => void reportPresence(true), { capture: true });
+  } catch (e) {
+    // ignore
+  }
 
   // The renderer owns the view; the key handler owns input. They depend on
   // each other (renderer drives the grid, keys drive the renderer), so wire
@@ -306,6 +324,12 @@ import type { ContentPopupShell } from "./content/find";
     openItem,
     getApps,
   });
+  // Draw the home grid NOW, from the defaults, instead of waiting for the
+  // storage read that carries the user's real config. The read is still the
+  // authority — applyConfig re-renders when it lands — but the page is
+  // usable and keyboard-driven from its first frame, which is the whole
+  // promise of opening a new tab onto this page.
+  renderer.refresh();
 
   function focusInput(): void {
     try {

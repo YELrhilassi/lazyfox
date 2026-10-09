@@ -745,7 +745,10 @@ export interface PageSpec {
 
 export function startTestServer(pages: Record<string, PageSpec>): Promise<{ server: any; port: number }> {
   return new Promise((resolvePromise) => {
-    const server = http.createServer((req, res) => {
+    // Annotated explicitly: the request callback below references `server`
+    // (to record hang hits), and an unannotated const that references itself
+    // through its own initializer is a circular-inference error.
+    const server: any = http.createServer((req, res) => {
       const path = (req.url || "/").split("?")[0];
       const page = pages[path];
       if (!page) {
@@ -759,6 +762,14 @@ export function startTestServer(pages: Record<string, PageSpec>): Promise<{ serv
         // moment the navigation starts, but no document — and so no content
         // script — exists until the response finally arrives. Never answering
         // holds that window open instead of letting it close in a millisecond.
+        //
+        // The request is also the ONLY observable navigation-start signal that
+        // exists for this URL: a hang never commits, so the tab list never
+        // shows the target URL, and `browsingContext.navigate` never returns
+        // (measured: it sits until the harness's own 30s command timeout).
+        // Tests that need "the navigation started, the response never arrives"
+        // watch `server.hangHits` instead of waiting for a URL flip.
+        (server.hangHits ||= []).push({ path, at: Date.now() });
         const socket = res.socket;
         if (socket) socket.unref();
         return;
