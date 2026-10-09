@@ -281,9 +281,32 @@ export function openHistoryPopup(ctx: PopupCtx): void {
           return false;
         }
 
-        // Every remaining intent is ours, so the key is consumed and can never
-        // reach the page behind the popup.
-        e.preventDefault();
+        // `startSearchNative` is the ONE intent that is not ours to consume.
+        //
+        // It means "switch to insert mode, but let the focused INPUT insert the
+        // character" — the chrome popup host emulates native text insertion
+        // itself and uses `defaultPrevented` as the signal that it must NOT:
+        //
+        //     const notCanceled = input.dispatchEvent(keydown);
+        //     ... maybeInsertText(input, ev, notCanceled);
+        //
+        // So preventDefaulting here is not "this key is handled", it is
+        // "do not type this" — and since the key is synthetic, the browser's
+        // own native insertion never runs as a fallback either. The character
+        // was simply gone.
+        //
+        // That made the FIRST printable key typed into a freshly-opened popup
+        // disappear, every time, and only the first: `startSearchNative` is
+        // reachable only from command mode, and every later character arrives
+        // in insert mode as `pass`, which returns before this line. Traced key
+        // by key on the history popup — `h` left the filter empty, then `e`,
+        // `l`, `l`, `o` all landed — which reads exactly like a filter that
+        // searched for `ello` instead of `hello`.
+        if (intent !== "startSearchNative") {
+          // Every other intent is ours, so the key is consumed and can never
+          // reach the page behind the popup.
+          e.preventDefault();
+        }
         return applyHistoryIntent(intent, {
           state,
           inputEl,

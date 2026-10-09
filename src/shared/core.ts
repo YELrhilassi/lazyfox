@@ -19,6 +19,12 @@ import type { DownloadEntry, HistoryRow, Lfc, NavState, RecoveryRow, VisitedItem
 export interface CoreApi {
   version(): string;
   bindings(): WkItem[];
+  // The keymap rows (spec + display chord + action id + category sub-keys) and
+  // the shift/unshift pair the TS spec normaliser is pinned against.
+  keymap(): unknown[];
+  keymapValidate(): string;
+  unshiftKey(key: string): string;
+  shiftKey(key: string): string;
   normalizeUrl(text: string): string;
   isLikelyUrl(text: string): boolean;
   rankVisited(items: VisitedItem[], query: string): VisitedItem[];

@@ -187,16 +187,14 @@ export async function run(ctx: any): Promise<void> {
     await ctx.waitTabUrl("diagnostics.html", { gone: true, timeoutMs: 8000 });
     await ctx.activateTab(ctx.tabA).catch(() => {});
   });
-  await t(";y copy URL shows the toast without errors", async () => {
-    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    await ctx.leaderPress(ctx.tabA, "y");
-    // No popup may appear. Wait a beat for anything wrong to show up, then
-    // assert absence (absence has no signal to wait for; the fixed 400ms is a
-    // bounded observation window, not a settle guess).
-    await new Promise((r) => setTimeout(r, 400));
-    assert(!(await ctx.hasHost(ctx.tabA, "lazyfox-popup")), "copy URL opens no popup");
-  });
-  await t(";= / ;- / ;0 zoom in, out, reset", async () => {
+  // `;y` used to copy the page url. It is gone — that action is `;K c` now, in
+  // the one category that holds address-shaped things, so there is a single key
+  // for it instead of two spellings at different depths. `;K c` is covered in
+  // content/links.ts and the removal is pinned in scripts/test-leader-sequences.ts.
+  // The chords are the zoom category's (`;Z i` / `;Z o` / `;Z r`); the old
+  // name spelled the keys they used to live on, which is how a test can keep
+  // passing while describing a keymap that no longer exists.
+  await t(";Z i / ;Z o / ;Z r zoom in, out, reset", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const w0 = await evalIn(ctx.tabA, `window.innerWidth`);
     await ctx.leaderSeq(ctx.tabA, ["Z", "i"]);
@@ -206,7 +204,7 @@ export async function run(ctx: any): Promise<void> {
     await ctx.leaderSeq(ctx.tabA, ["Z", "r"])
     await ctx.waitExpr(ctx.tabA, `Math.abs(window.innerWidth - ${w0}) < 2`, true, 10000);
   });
-  await t(";z zen mode toggles fullscreen", async () => {
+  await t(";W z zen mode toggles fullscreen", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await ctx.leaderSeq(ctx.tabA, ["W", "z"])
     await ctx.waitExpr(ctx.tabA, `window.fullScreen`, true, 10000);

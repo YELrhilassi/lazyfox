@@ -71,35 +71,43 @@ export async function run(ctx: any): Promise<void> {
       throw new Error("status bar did not return after fullscreen exit");
     });
   });
-  await t("leader-armed indicator: with the which-key overlay off, the bar shows LEADER", async () => {
+  await t("leader-armed indicator: with the which-key overlay off, the bar shows the leader", async () => {
     // ;q toggles the which-key overlay off. With the overlay hidden, pressing
-    // ; arms the leader with NO visible overlay — the status bar's pulsing
-    // chevron (mode LEADER) is the only sign the leader is armed. Regression:
-    // the bar used to render nothing for LEADER mode.
+    // ; arms the leader with NO visible overlay — the window bar's pulsing
+    // chevron is the only sign the leader is armed. Regression: the bar used to
+    // render nothing for the armed state.
+    //
+    // WHICH LEADER ARMS IS NOT THE POINT HERE, and it changed: the command
+    // center now runs the PAGE's own leader (the chrome helper defers on an
+    // extension page, the same way it does on a web page), so the arm signal is
+    // the page's `data-lf-leader` mirror rather than `chromeState().leaderActive`
+    // — that field describes the helper's own leader, which no longer arms
+    // here. The bar is still the helper's, so the assertion about the BAR is
+    // unchanged and is the part that matters.
     await ctx.openCC(ctx.tabA);
     // Put the overlay in a KNOWN state (ensure, not toggle): this test only
-    // cares that the bar shows LEADER when the overlay is off, and a blind
+    // cares that the bar shows the leader when the overlay is off, and a blind
     // toggle would depend on whichever value the previous test left behind.
     await ctx.ensureWhichKey(ctx.tabA, false);
     // Press ; alone: the leader arms, the overlay stays hidden.
     await ctx.press(ctx.tabA, ";");
     const armed = await waitFor(async () => {
+      const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader")`).catch(() => null);
+      if (on !== "1") return null;
       const s = await ctx.chromeState();
-      return s && s.leaderActive === true ? s : null;
-    }, 8000);
-    assert(armed && armed.leaderActive === true,
-      "leader armed with the overlay off: " + JSON.stringify(armed && { la: armed.leaderActive, st: armed.statusAttr }));
-    assert(armed && armed.statusAttr && armed.statusAttr.indexOf("|LEADER|") !== -1,
-      "status bar shows LEADER mode while armed: " + JSON.stringify(armed && armed.statusAttr));
+      return s && s.statusAttr && s.statusAttr.indexOf("|lead:") !== -1 ? s : null;
+    }, 8000).catch(() => null);
+    assert(armed && armed.statusAttr,
+      "window bar shows the armed leader while the home page's leader is up: " + JSON.stringify(armed && armed.statusAttr));
     // Escape disarms; the chevron leaves the bar.
     await ctx.press(ctx.tabA, "Escape");
     const disarmed = await waitFor(async () => {
+      const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader")`).catch(() => null);
+      if (on === "1") return null;
       const s = await ctx.chromeState();
-      return s && s.leaderActive === false ? s : null;
-    }, 8000);
-    assert(disarmed && disarmed.leaderActive === false, "Escape disarmed the leader");
-    assert(disarmed && disarmed.statusAttr && disarmed.statusAttr.indexOf("|LEADER|") === -1,
-      "status bar left LEADER mode after disarm: " + JSON.stringify(disarmed && disarmed.statusAttr));
+      return s && s.statusAttr && s.statusAttr.indexOf("|lead:") === -1 ? s : null;
+    }, 8000).catch(() => null);
+    assert(disarmed, "Escape disarmed the leader and the bar dropped the chevron");
     // Re-enable the overlay so the rest of the suite runs with hints on.
     await ctx.ensureWhichKey(ctx.tabA, true);
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
@@ -183,20 +191,28 @@ export async function run(ctx: any): Promise<void> {
     }, 25000).catch(() => null);
     assert(done, "done download keeps a green indicator: " + JSON.stringify(done && done.dlActive));
     // ;D dismisses the notification from the bar; the popup still lists it.
+    //
+    // The key runs in the PAGE's leader on the command center, and the bar it
+    // clears is the chrome helper's — so this is also the test of the relay
+    // that carries the dismissal across (it used to be a no-op in the page's
+    // ops surface, which is why `;D` did nothing here).
     await ctx.openCC(ctx.tabA);
-    await ctx.chromeLeaderPress(ctx.tabA, "D");
+    await ctx.leaderPress(ctx.tabA, "D");
     const gone = await waitFor(async () => {
       const s = await ctx.chromeState();
       return s && s.dlCount === 0 ? true : null;
     }, 8000).catch(() => null);
     assert(gone === true, "dismiss cleared the bar segment");
-    await ctx.chromeLeaderPress(ctx.tabA, "d");
-    const pop = await waitFor(async () => {
-      const s = await ctx.chromeState();
-      return s && s.popup && s.popup.current && s.popup.items && s.popup.items.length ? s.popup : null;
-    }, 8000).catch(() => null);
-    assert(pop && pop.items.some((txt) => String(txt).indexOf("lf-slow") !== -1), "popup lists the download: " + JSON.stringify(pop && pop.items));
+    // The POPUP is the page's own now (closed shadow root), so it is read the
+    // way every other home-page popup is: the title mirror and the composed
+    // list event, never the chrome helper's popup state.
+    await ctx.watchList(ctx.tabA);
+    await ctx.leaderPress(ctx.tabA, "d");
+    await ctx.waitPopupTitle(ctx.tabA, "Downloads", 8000);
+    const pop = await ctx.waitListEvent(ctx.tabA, { count: { ge: 1 } }, 8000).catch(() => null);
+    assert(pop, "the downloads popup lists the download");
     await ctx.press(ctx.tabA, "Escape");
+    await ctx.waitPopupGone(ctx.tabA, 5000);
     // Clean the file + history entry so the suite is repeatable (match by
     // fragment so numbered copies from interrupted runs are swept too).
     await evalIn(ctx.probe, `browser.downloads.search({}).then(rs => Promise.all(rs.filter(r => String(r.filename).indexOf("lf-slow") !== -1).map(r => browser.downloads.removeFile(r.id).catch(() => {}).then(() => browser.downloads.erase({ id: r.id }).catch(() => {}))))).then(() => true)`).catch(() => {});

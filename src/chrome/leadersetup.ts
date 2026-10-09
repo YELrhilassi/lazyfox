@@ -13,8 +13,6 @@
 // window beyond what it is handed, so the table can be read as a table.
 
 import { LeaderController } from "../shared/leader";
-import { registerCategories } from "../shared/popups/categories";
-import { digitExpect } from "../shared/leadersignal";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
 import { openNavPopup } from "../shared/popups/nav";
 import { toast } from "../shared/overlay";
@@ -22,47 +20,38 @@ import { toast } from "../shared/overlay";
 export interface LeaderSetupDeps {
   // The popup context, which carries the ops adapter and the popup host.
   ctx: PopupCtx;
-  // Switches to the session carrying that marker (`;'` then a digit).
-  switchSessionByMarker(marker: number): void;
   /** May the which-key overlay paint right now? Same predicate as the key path. */
   overlayAllowed(): boolean;
   /** Called on every arm/disarm, so the status-bar indicator tracks the key. */
   onChange(): void;
-  /** Does a PLAIN binding exist for this key? (A plain binding beats a category.) */
-  hasBinding(key: string): boolean;
   /** Records the binding that ran, for the debug snapshot. */
-  noteAction(key: string): void;
+  noteAction(action: string): void;
 }
 
 /**
- * Builds the leader controller AND the chrome-side binding overrides.
+ * Builds the leader controller AND the chrome-side action overrides.
  *
- * The overrides exist because a few bindings are genuinely chrome-specific and
- * cannot live in the shared table:
+ * The overrides exist because four actions are genuinely chrome-specific and
+ * cannot live in the shared table — they need a host object the shared table
+ * has no access to:
  *
- *   ;'   arms a digit capture, which needs the leader's own one-shot slot —
- *         only the controller can hand out that capture.
- *   ;G/;L  open the nav-stack popup as PLAIN bindings on the shifted keys. They
- *         used to be two-key sequences so the shifted keys could "never shadow"
- *         a plain binding, but Shift already makes G a different key from g, so
- *         the extra key bought nothing and cost the whole feature: `;G` armed a
- *         capture, showed nothing, and on timeout fell through to a plain `G`
- *         action that does not exist. The which-key table advertised
- *         ";G = back history stack" throughout, so the menu promised a key that
- *         did nothing.
- *   ;F/;B  cycle the scroll region, which the CONTENT script owns on web pages.
- *         They appear in the shared table, so answer them here with a clear note
- *         instead of a silent no-op.
+ *   backStack / forwardStack  open the nav-stack popup, which reads THIS
+ *         window's history.
+ *   scrollRegionNext / Prev  cycle the scroll region, which the CONTENT script
+ *         owns on web pages. Here they answer with a clear note instead of a
+ *         silent no-op — which is also what the keymap's own coverage test
+ *         insists on: a named host action that answers nothing is a key that
+ *         lies.
  *
- * The categories (`;W`, `;Z`) are NOT overridden: they come from the shared
- * table in categories.ts, so the chrome helper and the content script cannot
- * drift into disagreeing about what `;W |` does.
+ * Nothing here names a KEY. The keymap (core/keymap.go) owns that, which is why
+ * this file can no longer produce a binding that shadows another one.
  */
 export interface ChromeLeader {
   leader: LeaderController;
   /**
-   * The binding table, so the composition root can layer its own page-type
-   * routing on top (see the `f` split in main.ts) without rebuilding it.
+   * The action table, so the composition root can layer its own page-type
+   * routing on top (see the `startHints` split in main.ts) without rebuilding
+   * it.
    */
   actions: Record<string, () => void>;
 }
@@ -71,44 +60,24 @@ export function createChromeLeader(deps: LeaderSetupDeps): ChromeLeader {
   const { ctx } = deps;
   const leaderActions: Record<string, () => void> = makeLeaderActions(ctx);
 
+  leaderActions["backStack"] = () => openNavPopup(ctx);
+  leaderActions["forwardStack"] = () => openNavPopup(ctx);
+  leaderActions["scrollRegionNext"] = () => toast("scroll regions: web pages only");
+  leaderActions["scrollRegionPrev"] = () => toast("scroll regions: web pages only");
+
   const leader = new LeaderController(
-    (k) => {
-      deps.noteAction(k);
-      runLeaderAction(leaderActions, k);
+    (action) => {
+      deps.noteAction(action);
+      runLeaderAction(leaderActions, action);
     },
     deps.overlayAllowed,
     deps.onChange,
-    deps.hasBinding
+    // A chord the keymap does not know is reported, not swallowed. The leader
+    // owns the keyboard while it is armed, so the key is consumed either way —
+    // but silence here is what made an unbound chord look like a key that had
+    // to be pressed twice.
+    (spec) => toast("no binding for ;" + spec)
   );
-
-  // The shared table's own entries are the default; these are the additions and
-  // replacements layered on top of it.
-  leaderActions["'"] = () =>
-    leader.armPending(
-      (k) => {
-        if (/^[1-9]$/.test(k)) {
-          deps.switchSessionByMarker(Number(k));
-          return true;
-        }
-        return false;
-      },
-      {
-        timeoutMs: 3000,
-        // Markers are 1-9 by construction (core.assignSessionMarker), so this
-        // names the whole legal set rather than a hand-typed subset.
-        expect: digitExpect(9),
-      }
-    );
-
-  leaderActions["G"] = () => openNavPopup(ctx);
-  leaderActions["L"] = () => openNavPopup(ctx);
-
-  // The same shared helper the content script calls, so the two contexts derive
-  // one category table instead of each looping over it.
-  registerCategories(ctx);
-
-  leaderActions["F"] = () => toast("scroll regions: web pages only");
-  leaderActions["B"] = () => toast("scroll regions: web pages only");
 
   return { leader, actions: leaderActions };
 }

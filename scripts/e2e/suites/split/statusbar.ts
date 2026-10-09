@@ -8,7 +8,7 @@ export async function run(ctx: any): Promise<void> {
   // Tags: `--tags split` selects these. "destructive" marks tests
   // that dissolve and rebuild splits, so a quick subset can skip them.
   const TAGS: string[] = ["split"];
-  const { t, waitNoSplit, waitPlusPopup } = makeSplitHelpers(ctx, "split/statusbar", TAGS);
+  const { t, waitNoSplit, waitPlusPopup, pageState } = makeSplitHelpers(ctx, "split/statusbar", TAGS);
 
   await t("split: one window-level status bar (not one per pane)", async () => {
     // During a native split the chrome helper shows the single window bar and
@@ -46,11 +46,28 @@ export async function run(ctx: any): Promise<void> {
     // Wait for the move to land (hello is IN the split) and then for the
     // per-pane bar to actually disappear (the content poll hides it) instead
     // of a fixed sleep.
-    await waitFor(async () => {
-      const ts = await ctx.tabsInfo();
-      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
-      return sv.length === 2 && sv.some((t) => (t.url || "").includes("/hello")) ? true : null;
-    }, 10000);
+    try {
+      await waitFor(async () => {
+        const ts = await ctx.tabsInfo();
+        const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+        return sv.length === 2 && sv.some((t) => (t.url || "").includes("/hello")) ? true : null;
+      }, 10000);
+    } catch (e) {
+      // `;W m` + the digit had no effect. Which of the two it was decides where
+      // to look: the page's own state says whether the chord could even have
+      // meant anything (an input holding focus turns `;` into text), and the
+      // move trail says whether the op ran and refused.
+      const st = await ctx.chromeState().catch(() => "ERR");
+      const ts = await ctx.tabsInfo().catch(() => "ERR");
+      const page = await pageState(a);
+      throw new Error(
+        ";W m + " + helloNumber + " did not move the /hello tab into the split; " +
+          "page=" + JSON.stringify(page) +
+          " lastMoveDebug=" + JSON.stringify(st && st.lastMoveDebug) +
+          " split=" + JSON.stringify(st && st.nativeSplit && { sel: st.nativeSplit.selSplitview, hasSv: st.nativeSplit.selHasSplitview }) +
+          " tabs=" + JSON.stringify(ts)
+      );
+    }
     await waitFor(async () =>
       evalIn(b, `!document.getElementById("lazyfox-status")`).then((v) => (v ? true : null)).catch(() => null)
     , 8000).catch(() => {});

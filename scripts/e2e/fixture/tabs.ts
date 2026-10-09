@@ -339,6 +339,62 @@ export function installTabs(
   };
 
   /**
+   * The Firefox tab id behind a browsing-context handle, or null.
+   *
+   * TWO WAYS TO ASK, because one of them does not always work. A browsing
+   * context id and a Firefox tab id are different id spaces, so the answer has
+   * to come from the tab itself: `browser.tabs.getCurrent()` in its own realm.
+   * That is exact and it is the first attempt — but it needs an EXTENSION
+   * realm, and a handle pointing at a web page has none, so it throws (caught,
+   * null) and the caller is left believing the tab does not exist.
+   *
+   * That belief is not harmless, which is how this fallback was found: the leak
+   * sweep protects the CURRENT handles by id, a tabA sitting on a web page
+   * resolved to null, and the sweep therefore closed the tab it was told not to
+   * touch — taking the window's only command-center tab with it in the
+   * command-center group.
+   *
+   * So the second attempt reads the tab's URL from that same tab (BiDi answers
+   * for any page) and matches it against the strip the probe reports. A URL
+   * that matches exactly one row is an answer; zero or several is not, and
+   * "not" is reported as null rather than guessed at.
+   */
+  ctx.resolveHandle = async function resolveHandle(
+    tab,
+  ): Promise<{ id: number | null; url: string | null }> {
+    if (!tab) return { id: null, url: null };
+    // The URL is readable for ANY page, so read it first: it is both the
+    // fallback key and the guard the sweep uses when no id could be resolved.
+    const url = await evalIn(tab, "location.href").catch(() => null);
+    const direct = await ctx.tabIdOf(tab).catch(() => null);
+    if (direct != null) return { id: direct, url: url || null };
+    if (!url) return { id: null, url: null };
+    const ts = (await ctx.tabsInfo().catch(() => [])) as any[];
+    const hits = (ts || []).filter((t) => (t.url || "") === url);
+    return { id: hits.length === 1 ? hits[0].id : null, url };
+  };
+
+  /**
+   * The tabs the HARNESS is using right now, by Firefox tab id.
+   *
+   * `ctx.tabA` and `ctx.probe` are the harness's own instruments, and the leak
+   * sweep at the end of a test must never close them — see reclaimLeakedTabs
+   * for the measured consequence.
+   */
+  ctx.snapshotHandles = async function snapshotHandles(): Promise<{
+    tabA: number | null;
+    probe: number | null;
+    tabAUrl: string | null;
+    probeUrl: string | null;
+  }> {
+    const [a, p] = await Promise.all([
+      ctx.resolveHandle(ctx.tabA).catch(() => ({ id: null, url: null })),
+      ctx.probeTabId().then((id) => ({ id: id ?? null, url: null as string | null })).catch(() => ({ id: null, url: null })),
+    ]);
+    return { tabA: a.id, probe: p.id, tabAUrl: a.url, probeUrl: p.url };
+  };
+
+  /**
    * Close every real tab that is not in `keep`, then wait for the window to
    * actually reach that shape.
    *
@@ -381,18 +437,26 @@ export function installTabs(
    * tests is wrong; they were being run against a window no user would ever
    * have.
    *
-   * Two deliberate limits, both about not fighting a test that means to
+   * Three deliberate limits, all about not fighting a test that means to
    * rebuild the window:
    *
-   *  - It only closes tabs the test ITSELF opened. The set is snapshotted
-   *    before the test and the relay/probe/plumbing tabs are never touched,
-   *    so this is a leak sweep, not a reconciler: it can never close a tab
-   *    that predates the test.
+   *  - It closes tabs the test ITSELF opened (not in the pre-test snapshot),
+   *    and never a tab holding the harness's own handles: `ctx.tabA` and
+   *    `ctx.probe` are passed in as `handlesBefore` and are spared. That is a
+   *    real exception to "predates the test", and it is the one that matters:
+   *    a test that re-points ctx.tabA at a tab it opened is MOVING its handle,
+   *    not leaking — see the note in the body.
+   *  - It DOES close a handle the test abandoned, because that tab is the
+   *    actual leak in that case: the full rule is "close what the test left
+   *    behind, whether that is an extra tab or the old tabA".
    *  - It never runs while a test is rebuilding the window (a session restore
    *    or marker hot-swap replaces every tab). `ctx.rebuilding` says so, and
    *    during a rebuild the correct number of tabs is genuinely unknown.
    */
-  ctx.reclaimLeakedTabs = async function reclaimLeakedTabs(before: Set<number>): Promise<number> {
+  ctx.reclaimLeakedTabs = async function reclaimLeakedTabs(
+    before: Set<number>,
+    handlesBefore: { tabA: number | null; probe: number | null } = { tabA: null, probe: null },
+  ): Promise<number> {
     if (ctx.rebuilding) return 0;
     let ts: any[];
     try {
@@ -405,23 +469,67 @@ export function installTabs(
     if (ts.filter((t) => before.has(t.id)).length < Math.max(1, Math.ceil(before.size / 2))) {
       return 0;
     }
+    // THE HARNESS'S OWN HANDLES SURVIVE THE SWEEP.
+    //
+    // Half the suites re-point ctx.tabA at a tab they just opened (`;f`/`;K`
+    // need a page of their own, typing needs a fresh field). The tab is then
+    // NEW, so the sweep saw it as a leak and closed it — the tab the next test
+    // was going to be run in. That is where the content group's ten
+    // "reset repaired: tabA was dead; replaced" lines came from, one per test
+    // that had rebound the handle, and the replacement is not free: a fresh
+    // tabA is a DIFFERENT tab, at a different strip position, so every
+    // numbering-dependent assertion after it was being made against a window
+    // the test did not choose. The abandoned previous handle is the real leak,
+    // and `handlesBefore` is what lets the sweep close that one instead.
+    const now: { tabA: number | null; probe: number | null; tabAUrl: string | null } =
+      await ctx.snapshotHandles();
+    const keepNow = new Set<number>([now.tabA, now.probe].filter((x): x is number => x != null));
+    // When the current tabA could not be pinned to a Firefox id, its URL still
+    // identifies the row(s) it might be — so no tab on that URL is closed
+    // either. "Could not resolve" must never mean "close the tab that matches
+    // what I could not identify".
+    // A handle whose id could not be resolved is a handle this sweep cannot
+    // protect. It must therefore not close the PREVIOUS holder either: the two
+    // are the same tab in the common case (a test navigates tabA to a web page
+    // and does not replace it), and closing it is how a harness turns "I could
+    // not read the id" into "the window lost its tab". Fail safe: leave the
+    // tab, and the next sweep will see it in `before` — where it belongs.
+    const unresolved = now.tabA == null || (ctx.probe != null && now.probe == null);
     // ctx.isRealTab IS the product's rule (src/shared/transient.ts#isRelayTabUrl),
     // so the sweep and the product can never disagree about which tab is
     // plumbing — and a BORROWED tab carrying a momentary `#lfc=` hash is
     // correctly left alone rather than closed out from under a live message.
-    const leaked = ts.filter((t) => !before.has(t.id) && ctx.isRealTab(t));
-    if (!leaked.length) return 0;
+    const sameUrlAsHandle = (t: any) =>
+      now.tabAUrl != null && (t.url || "") === now.tabAUrl;
+    const leaked = ts.filter(
+      (t) =>
+        !before.has(t.id) &&
+        ctx.isRealTab(t) &&
+        !keepNow.has(t.id) &&
+        (now.tabA != null || !sameUrlAsHandle(t)),
+    );
+    const abandoned = unresolved
+      ? []
+      : ts.filter(
+          (t) =>
+            ctx.isRealTab(t) &&
+            !keepNow.has(t.id) &&
+            ((handlesBefore.tabA != null && t.id === handlesBefore.tabA) ||
+              (handlesBefore.probe != null && t.id === handlesBefore.probe)),
+        );
+    const doomed = [...leaked, ...abandoned];
+    if (!doomed.length) return 0;
     // The active tab is closed too, but only after something that survived is
     // selected — otherwise the window is left with whatever Firefox picks, and
     // a test that left exactly one leaked tab would keep it forever, because
     // the next sweep would see it in its own "before" snapshot.
-    const survivor = ts.find((t) => before.has(t.id) && ctx.isRealTab(t));
+    const survivor = ts.find((t) => ctx.isRealTab(t) && !doomed.some((d) => d.id === t.id));
     if (survivor) {
       await ctx.probeEval(`browser.tabs.update(${survivor.id}, {active: true}).catch(() => true)`).catch(() => {});
     }
-    for (const t of leaked) {
+    for (const t of doomed) {
       await ctx.probeEval(`browser.tabs.remove(${t.id}).catch(() => true)`).catch(() => {});
     }
-    return leaked.length;
+    return doomed.length;
   };
 }

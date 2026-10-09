@@ -14,6 +14,7 @@
 
 import { publishListState } from "./observability";
 import { manualTextKey } from "./manualtext";
+import { resolveRefreshIndex } from "./selectorindex";
 import type { SelectorCtl } from "./overlay-popup";
 
 export interface SelectorOpts<T> {
@@ -35,7 +36,17 @@ export interface SelectorOpts<T> {
   // insertion. Required in the content script where the window-capture
   // keydown handler preventDefaults every key before the selector sees it.
   manualText?: boolean;
-  extraKeys?: (e: KeyboardEvent, ctx: { empty: boolean; index: number; item: T | null; refresh(): void }) => boolean;
+  extraKeys?: (e: KeyboardEvent, ctx: { empty: boolean; index: number; item: T | null; refresh(): void; refreshSoon(delayMs: number): void }) => boolean;
+  // A STABLE identity for an item, used to carry the selection across a
+  // refresh. See `search()` for why a refresh must not reset the cursor.
+  keyOf?: (item: T) => string | number | undefined;
+  // Where the selection lands when the list is FIRST filled. Absent means row
+  // 0, which is right for every popup whose rows are a ranking; the navigation
+  // stack is the one list that is not, and opening it with the top row lit
+  // would put the cursor on an arbitrary end of the history instead of on the
+  // page the user is looking at. Only consulted on the first fill, so a
+  // refresh keeps the carried-over cursor.
+  initial?: (items: T[]) => number;
   // Called when Enter is pressed. When it returns true the key is consumed
   // (the default "pick the highlighted item" is skipped). Lets popups whose
   // data source is debounced/async handle Enter deterministically from the
@@ -57,6 +68,14 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
   // treated as "open what I typed", not "open the first suggestion".
   let navigated = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // The pending DELAYED re-query. At most one ever exists: a mutating key
+  // (close/move a tab) re-reads the strip twice — once now, once after the
+  // browser has actually applied the change — and that second read used to be
+  // an uncancellable `setTimeout` per keypress. Holding `;` and hammering `x`
+  // queued one per press, each of which re-rendered the whole list (a favicon
+  // <img> per row), and the pile-up is what made the popup freeze and stop
+  // answering Escape. One timer, ever, collapses that to a single extra read.
+  let soonTimer: ReturnType<typeof setTimeout> | null = null;
   const debounce = opts.debounceMs ?? 40;
   const step = opts.pageStep ?? 8;
   const maxItems = opts.maxItems ?? 100;
@@ -119,8 +138,34 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
         .search(current)
         .then((items) => {
           if (current !== (opts.inputEl.value || "")) return;
-          shown = (items || []).slice(0, maxItems);
-          idx = 0;
+          const next = (items || []).slice(0, maxItems);
+          // WHERE THE CURSOR LANDS AFTER A REFRESH.
+          //
+          // It used to be unconditionally `idx = 0`, because the only refresh
+          // anyone had was a fresh search — where row 0 genuinely is the right
+          // answer. The tab popup then reused refresh() for a different job
+          // (re-reading the strip after a close or a move), and every one of
+          // those throws the highlight to the top: close a tab at row 12 and
+          // row 0 lit up, so deleting downwards walked the list back to the top
+          // and no two deletes in a row ever acted on neighbouring tabs.
+          //
+          // With an identity function the cursor follows the row the user was
+          // actually on. When that row is GONE — which is the normal case,
+          // because closing the selected tab is the action — the index is kept
+          // and clamped, so the next tab slides up under the cursor. That is
+          // the natural deletion flow: the highlight stays where your eye is
+          // and repeatedly closing walks steadily down the strip.
+          const prevIdx = idx;
+          const prevRows = shown;
+          shown = next;
+          // The cursor policy lives in selectorindex.ts as a pure function, so
+          // it can be unit tested without the DOM this module needs. See that
+          // file for why it is not simply `idx = 0`.
+          idx = resolveRefreshIndex({ prevIdx, prev: prevRows, next, keyOf: opts.keyOf });
+          if (opts.initial && !prevRows.length && next.length) {
+            const want = opts.initial(next);
+            if (want >= 0 && want < next.length) idx = want;
+          }
           navigated = false;
           render();
         })
@@ -130,6 +175,18 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
 
   function refresh() {
     search(opts.inputEl.value || "");
+  }
+
+  // Re-read once, `delayMs` from now, for a change the browser has not
+  // applied yet. COALESCED: an already-pending read is left alone rather than
+  // replaced, so a burst of keypresses costs one extra read, not one each.
+  // Replacing it instead would starve the read entirely on a fast enough burst.
+  function refreshSoon(delayMs: number) {
+    if (soonTimer) return;
+    soonTimer = setTimeout(() => {
+      soonTimer = null;
+      refresh();
+    }, delayMs);
   }
 
   function move(d: number) {
@@ -253,7 +310,11 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
       move(-1);
       return true;
     }
-    if (k === "Enter") {
+    // A MODIFIED Enter belongs to the popup, not to this branch. Ctrl+Enter
+    // is the search popup's "into this tab" variant (see openSearchPopup), and
+    // it can only reach extraKeys if the plain-Enter path lets it past — this
+    // branch matches on the key alone and would otherwise eat the chord.
+    if (k === "Enter" && !e.ctrlKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
       const value = opts.inputEl.value || "";
       // Only hand the highlighted row to onEnter when the user actually moved
@@ -269,7 +330,16 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
     }
     if (opts.extraKeys) {
       if (
-        opts.extraKeys(e, { empty: empty, index: idx, item: shown[idx] || null, refresh: refresh }) === true
+        opts.extraKeys(
+          e,
+          {
+            empty: empty,
+            index: idx,
+            item: shown[idx] || null,
+            refresh: refresh,
+            refreshSoon: refreshSoon,
+          }
+        ) === true
       ) {
         return true;
       }
@@ -287,5 +357,15 @@ export function createSelector<T>(opts: SelectorOpts<T>): SelectorCtl {
 
   refresh();
 
-  return { onKey, refresh, close: () => {} };
+  return {
+    onKey,
+    refresh,
+    refreshSoon,
+    close: () => {
+      if (soonTimer) {
+        clearTimeout(soonTimer);
+        soonTimer = null;
+      }
+    },
+  };
 }

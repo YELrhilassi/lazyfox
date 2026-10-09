@@ -13,9 +13,9 @@ export interface SessionChannel {
     action: K,
     arg?: any
   ): void;
-  requestReply<K extends "sessionTabCopy" | "sessionTabMove">(
+  requestReply<K extends "sessionTabCopy" | "sessionTabMove" | "deleteSession">(
     action: K,
-    arg: { from: string; index: number; to: string }
+    arg: K extends "deleteSession" ? { name: string } : { from: string; index: number; to: string }
   ): Promise<any>;
   requestSessionState(): Promise<void>;
   requestSessionTabs(name: string): Promise<PopupItem[]>;
@@ -60,7 +60,20 @@ export function createSessionOps(
     saveSession: (name: string) => sessionAction("saveSession", { name }),
     newSession: (name: string) => sessionAction("newSession", { name }),
     restoreSession: (name: string) => sessionAction("restoreSession", { name }),
-    deleteSession: (name: string) => sessionAction("deleteSession", { name }),
+    // By REPLY, not fire-and-forget, and not the delayed status refresh its
+    // siblings use. `sessionAction` refreshes the status bar 900ms later, and
+    // `listSessions` reads THAT cache — so the popup's immediate re-read after
+    // a delete returned the list from before it, and `x x` looked like it had
+    // done nothing. Waiting for the reply makes the write land first, and the
+    // explicit refresh makes the cache the popup reads the post-delete one.
+    deleteSession: (name: string) =>
+      channel()
+        .requestReply("deleteSession", { name })
+        .then((r) => {
+          if (r && r.ok === false) toast("delete failed: " + (r.note || "unknown"));
+          return channel().requestSessionState();
+        })
+        .then(() => undefined),
     switchSessionByMarker: (marker: number) => sessionAction("switchSessionByMarker", { marker }),
     assignSessionMarker: (name: string, marker: number) => sessionAction("assignSessionMarker", { name, marker }),
     // These two answer with a reason when they fail, so they use the reply

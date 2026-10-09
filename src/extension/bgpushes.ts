@@ -47,3 +47,14 @@ export function pushFindStateToChrome(index: number, count: number, cur: number)
   if (index < 0) return;
   requestChrome("findState", { index, count, cur });
 }
+
+// Tell the chrome helper to clear its download notification(s).
+//
+// `;D` is a leader binding like any other, so it runs in whichever host owns
+// the keyboard — which since the command center started owning its own keys is
+// the PAGE, not the helper. The bar it clears is still the helper's, so the
+// page's request travels: content -> background (this) -> helper. Without it
+// `;D` was silently a no-op on a web page and on the home page.
+export function pushDismissDownloadsToChrome(): void {
+  requestChrome("dismissDownload", {});
+}

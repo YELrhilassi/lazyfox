@@ -1,9 +1,14 @@
 // Sessions popup: two-pane (session list | its tabs), marker jumps, pending
 // copy/move target picker, armed delete.
 import { esc } from "../dom";
+// The shared cancel predicate (Escape or Ctrl+G) — see its own note. The
+// sessions popup is the one surface with its own key routing (panes, a pending
+// copy/move picker), so it has to ask the same question rather than test for
+// Escape itself; Ctrl+G did nothing at all in here while Escape backed out.
+import { isCancel } from "../leader";
 import type { PopupCtl } from "../overlay";
 import type { PopupItem } from "../types";
-import { makeSelector, type PopupCtx } from "./kit";
+import { basePanel, makeSelector, type PopupCtx } from "./kit";
 
 export function openSessionsPopup(ctx: PopupCtx): void {
   // The session list is fetched once and cached, then filtered synchronously,
@@ -13,6 +18,11 @@ export function openSessionsPopup(ctx: PopupCtx): void {
   let sessions: PopupItem[] = [];
   let byMarker: Record<number, string> = {};
   let loaded: Promise<void> | null = null;
+  // Whether `byMarker` is the real answer yet. A digit pressed before the list
+  // lands must fall through to the input (the user may be filtering), but once
+  // the list IS known a digit that names no marker has to be answered rather
+  // than typed — see the marker branch in extraKeys.
+  let markerReady = false;
 
   const ensureLoaded = () => {
     if (!loaded) {
@@ -22,6 +32,7 @@ export function openSessionsPopup(ctx: PopupCtx): void {
         for (const it of sessions) {
           if (it.marker) byMarker[it.marker] = it.title || "";
         }
+        markerReady = true;
       });
     }
     return loaded;
@@ -70,7 +81,7 @@ export function openSessionsPopup(ctx: PopupCtx): void {
       "</div>" +
       "<div class='lf-col'><div class='lf-col-head'>Tabs</div><div class='lf-tabs'><div class='lf-tabs-empty'>select a session to see its tabs</div></div></div>" +
       "</div>" +
-      "<div class='lf-foot'><span class='lf-hint'><span class='lf-badge'>Enter</span> save/switch &middot; <span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Ctrl+1-9</span> mark &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Tab</span> tabs &middot; <span class='lf-badge'>Esc</span> close</span><span class='lf-status' style='display:none'></span></div>" +
+      "<div class='lf-foot'><span class='lf-hint'><span class='lf-badge'>Enter</span> save/switch &middot; <span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Ctrl+1-9</span> mark &middot; <span class='lf-badge'>n</span> new &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Tab</span> tabs &middot; <span class='lf-badge'>Esc</span> close</span><span class='lf-status' style='display:none'></span></div>" +
       "</div>",
     (root) => {
       // Two-step delete confirmation: the first x arms the delete (red
@@ -325,6 +336,17 @@ export function openSessionsPopup(ctx: PopupCtx): void {
         extraKeys: (e, sel) => {
           if (pending) return false;
           const k = e.key;
+          // n (empty input, so it isn't being typed as a filter): start a NEW
+          // named session. It opens its own prompt rather than growing a sub-key
+          // menu here: creating a session is a statement about where you want to
+          // be, so the prompt creates AND switches (see openNewSessionPopup),
+          // and the list does not need a row restating it. Two keystrokes — `;P`
+          // then `n` — against the old `;P` head plus a menu of eleven rows.
+          if (k === "n" && sel.empty) {
+            e.preventDefault();
+            openNewSessionPopup(ctx);
+            return true;
+          }
           // x (empty input, so it isn't being typed as a filter): first press
           // arms the delete, second press on the same row confirms it.
           if (k === "x" && sel.empty && sel.item && sel.item.kind !== "save") {
@@ -332,9 +354,15 @@ export function openSessionsPopup(ctx: PopupCtx): void {
             const name = sel.item.title || "";
             if (armDelete && armDelete.name === name) {
               disarm();
-              ctx.ops.deleteSession(name);
-              ctx.toast("deleted \u201C" + name + "\u201D");
-              void reload().then(() => sel.refresh());
+              // The list is re-read AFTER the delete has landed — see
+              // ActionOps.deleteSession. Reporting the outcome is the host's
+              // job (it is the only party that knows whether the write
+              // succeeded), so there is no toast here to contradict it.
+              void ctx.ops
+                .deleteSession(name)
+                .then(() => reload())
+                .then(() => sel.refresh())
+                .catch(() => sel.refresh());
             } else {
               if (armDelete) disarm();
               armDelete = {
@@ -364,11 +392,22 @@ export function openSessionsPopup(ctx: PopupCtx): void {
             }
             return false;
           }
-          // 1-9 (empty input) jumps to the marked session.
+          // 1-9 (empty input) dives to the marked session. A digit that names
+          // no marker is ANSWERED, not typed: letting it fall through into the
+          // filter box is a keystroke that appears to do nothing, which is the
+          // shape of bug this keymap was rebuilt to remove. (`;P` then a digit
+          // is the whole replacement for the nine marker rows that used to
+          // live in the which-key menu.)
           if (/^[1-9]$/.test(k) && sel.empty) {
-            const name = byMarker[Number(k)];
-            if (!name) return false;
+            // Nothing is known yet, so nothing can be said: the digit is the
+            // user's filter text until the list lands.
+            if (!markerReady) return false;
             e.preventDefault();
+            const name = byMarker[Number(k)];
+            if (!name) {
+              ctx.toast("no session at marker " + k);
+              return true;
+            }
             ctx.close();
             ctx.ops.restoreSession(name);
             return true;
@@ -388,14 +427,14 @@ export function openSessionsPopup(ctx: PopupCtx): void {
         onKey: (e: KeyboardEvent): boolean => {
           const k = e.key;
           if (pending) {
-            if (k === "Escape" || k === "Tab") {
+            if (isCancel(e) || k === "Tab") {
               cancelPending();
               return true;
             }
             return base.onKey(e);
           }
           if (pane === "R") {
-            if (k === "Tab" || k === "Escape") {
+            if (k === "Tab" || isCancel(e)) {
               setPane("L");
               return true;
             }
@@ -448,6 +487,51 @@ export function openSessionsPopup(ctx: PopupCtx): void {
       };
       setPane("L");
       return wrapped;
+    }
+  );
+}
+
+// `;P` then `n` — create a NAMED session and switch into it.
+//
+// tmux's `new-session` semantics: naming a new session is a statement about
+// where you want to be, so the same keystroke that creates it moves there. The
+// window you are leaving is checkpointed first (`restoreSession` autosaves the
+// current session before rebuilding), so nothing in it is lost, and a name that
+// already exists makes this a switch rather than an error.
+//
+// A prompt rather than the sessions popup's own input: the list already takes a
+// name for the two actions that need one, but reaching that input means opening
+// the list first. This is the version for when you already know what to call it.
+export function openNewSessionPopup(ctx: PopupCtx): void {
+  ctx.open(
+    basePanel(
+      "New session",
+      "type a name, then Enter",
+      "<span class='lf-badge'>Enter</span> create &amp; switch &middot; <span class='lf-badge'>Esc</span> cancel"
+    ),
+    (root) => {
+      // Built on the shared selector so the field is TYPABLE in both hosts —
+      // the content script's popup input lives in a closed shadow root and only
+      // the selector's manual-text path can put characters in it (see
+      // openEditUrlPopup, which is the same shape for the same reason).
+      const ctl = makeSelector<never>(ctx, root, {
+        debounceMs: 0,
+        emptyText: "",
+        search: async () => [],
+        render: () => "",
+        onPick: () => {},
+        onEnter: (value) => {
+          const name = (value || "").trim();
+          if (!name) return true;
+          ctx.close();
+          ctx.ops.newSession(name);
+          ctx.ops.restoreSession(name);
+          return true;
+        },
+      });
+      const input = root.querySelector(".lf-input") as HTMLInputElement | null;
+      if (input) input.focus();
+      return ctl;
     }
   );
 }

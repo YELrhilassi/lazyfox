@@ -5,6 +5,9 @@
 // the single `currentPopup` slot so the key dispatcher can route Esc/arrows.
 
 import { backdropWheel } from "../shared/keyguard";
+// The arrow-key step, shared with every other host that resizes or moves the
+// window: Shift is the fine step everywhere (shared/resize.ts).
+import { windowStep } from "../shared/resize";
 import { PANEL_CSS, type PopupCtl } from "../shared/overlay";
 import { UI_FONT } from "../shared/theme";
 import type { ChromeEnv, ChromeDocument } from "./env";
@@ -204,7 +207,7 @@ export function createPopupHost(env: ChromeEnv): PopupHost {
     // popup input ever saw them — resizing the window and swallowing the
     // popup's own navigation.
     if (!resizeHost) return false;
-    const step = e.shiftKey ? 40 : 20;
+    const step = windowStep(e);
     // The window is read through `win`, not the global `window`, so the resize
     // geometry is assertable in a test: the fake records the deltas instead of
     // asking a display server for them.

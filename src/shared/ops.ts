@@ -5,6 +5,15 @@
 // what kills the old chrome/content duplication of popups and actions.
 import type { PopupItem } from "./types";
 
+// The shape both hosts answer `navStack` with: the same one the protocol's
+// navStack carries, so the popup cannot tell (or care) which host replied.
+export interface NavStackReply {
+  canBack: boolean;
+  canForward: boolean;
+  index: number;
+  entries: { url: string; title: string }[];
+}
+
 export interface ActionOps {
   // ---- popup data sources (all async; the selector engine requires Promises) ----
   searchSuggest(q: string): Promise<PopupItem[]>;
@@ -28,6 +37,14 @@ export interface ActionOps {
   reload(): void;
   back(): void;
   forward(): void;
+  // The tab's navigation stack, oldest-first, with the current entry's index.
+  // Read through the HOST rather than the protocol: the chrome helper can read
+  // the browser's real session history, which is exact, while a content script
+  // can only get the background's reconstructed track (see shared/navtrack.ts
+  // for why the privileged API is not an option).
+  navStack(): Promise<NavStackReply | null>;
+  // Walk the stack by `steps` entries: negative is back, positive forward.
+  navGoto(steps: number): void;
   activateTab(id: number): void;
   tabNav(dir: number): void;
   tabJump(n: number): void;
@@ -54,12 +71,11 @@ export interface ActionOps {
   // Open the current page in a stealth (isolated, self-wiping) tab.
   stealthOpen(): void;
   copyUrl(): void;
-  // The link in front of the user (`;K c` / `;K e`): the hint layer's current
-  // match when it is open, otherwise the anchor under the pointer. Never
-  // "the first link on the page" — a copy command that quietly returns the
-  // wrong URL is worse than one that says it found nothing.
-  copyLink(): void;
-  editLink(): void;
+  // The current page's address, for `;K e` to pre-fill its editable field.
+  // Resolved through the HOST (the chrome helper reads the window's URI, the
+  // content script reads location) so both contexts answer from the same fact
+  // `copyUrl` copies, and the field can never disagree with what `;K c` gave.
+  pageUrl(): Promise<string>;
   muteTab(): void;
   zen(): void;
   toggleReveal(): void;
@@ -90,7 +106,9 @@ export interface ActionOps {
   saveSession(name: string): void;
   newSession(name: string): void;
   restoreSession(name: string): void;
-  deleteSession(name: string): void;
+  // Resolves once the deletion has LANDED, so a caller that re-reads the
+  // session list right afterwards cannot race the storage write.
+  deleteSession(name: string): Promise<void>;
   switchSessionByMarker(marker: number): void;
   assignSessionMarker(name: string, marker: number): void;
   // Copy / move a tab (by its index in the source session's saved tabs) into

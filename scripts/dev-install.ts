@@ -113,7 +113,7 @@ async function main() {
   console.log("");
   console.log(`${BOLD}Profile:${NC} ${profileDir}`);
   console.log(`${BOLD}Launch (default):${NC}  "${firefoxBin}"`);
-  console.log(`${BOLD}Quick test commands:${NC}  ;I  ;S  ;N`);
+  console.log(`${BOLD}Quick test commands:${NC}  ;I  ;P  ;N`);
   console.log(`\n${GREEN}==================================================`);
 }
 

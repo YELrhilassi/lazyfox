@@ -25,15 +25,22 @@
 // Run: node scripts/test-chrome-keys.ts  (part of `npm test`)
 
 import { strict as assert } from "node:assert";
-import { SPECIAL_KEYS, shiftedKey } from "../src/chrome/keys.ts";
-import {
+// Teaches Node's resolver the project's extensionless TS specifiers, which
+// src/ uses throughout (esbuild bundles them; Node does not). The src imports
+// below are DYNAMIC for the same reason: a static import is evaluated before
+// this registration call runs.
+import { register } from "node:module";
+register("./ts-resolve-hook.mjs", import.meta.url);
+
+const { SPECIAL_KEYS, shiftedKey } = await import("../src/chrome/keys.ts");
+const {
   chromeOwnsKeys,
   chromeOwnsSurfaces,
   contentScriptPresent,
   noteContentPresent,
   forgetContentFrom,
   resetContentPresence,
-} from "../src/chrome/keystate.ts";
+} = await import("../src/chrome/keystate.ts");
 
 let passed = 0;
 function ok(name: string, cond: boolean): void {
@@ -170,6 +177,40 @@ ok(
     const whilePresent = !chromeOwnsKeys(one("https://a.example/"));
     noteContentPresent(0, false, "https://a.example/");
     return whilePresent && chromeOwnsKeys(one("https://a.example/"));
+  })()
+);
+// THE COMMAND CENTER IS DEFERRED TO LIKE A WEB PAGE, once it reports in.
+//
+// It is Lazyfox's own document, but it runs the same key engine a web page's
+// content script does — its own leader, its own popups, its own typing guard,
+// the same shared binding table — and it reports presence the same way. The
+// helper claiming its keys as well ran one keypress twice whenever Firefox had
+// the tab in-process (the page's own capture listener runs first, then the
+// chrome window's), and not at all when the page could not see the key: the
+// same keystroke, two different outcomes, decided by which process the tab
+// landed in. That is what `;f works sometimes` on the home page was.
+ok(
+  "the command center is the chrome helper's until its page reports in",
+  (() => {
+    resetContentPresence();
+    return chromeOwnsKeys(one("moz-extension://abc/commandcenter.html"));
+  })()
+);
+ok(
+  "once the command center reports in, the chrome helper defers to it",
+  (() => {
+    resetContentPresence();
+    const url = "moz-extension://abc/commandcenter.html";
+    noteContentPresent(0, true, url);
+    return !chromeOwnsKeys(one(url));
+  })()
+);
+ok(
+  "a report for the command center cannot claim any OTHER extension page",
+  (() => {
+    resetContentPresence();
+    noteContentPresent(0, true, "moz-extension://abc/commandcenter.html");
+    return chromeOwnsKeys(one("moz-extension://abc/options.html"));
   })()
 );
 ok(

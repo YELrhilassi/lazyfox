@@ -270,6 +270,16 @@ strip — so a test that numbered tabs itself would disagree with the binding it
 is testing. See the next section for why `chromeState()` cannot answer it at
 all.
 
+**A test that needs the public internet must retry the LOOKUP, and never report
+it as a product verdict.** `split/lifecycle` loads two real sites (`example.com`,
+`example.org`) because the point of that test is that a native split pane hosts
+remote content with no iframe/COEP involvement. A transient resolver failure
+raises `NS_ERROR_UNKNOWN_HOST`, and reported as-is it reads as "the split did
+not load" — a product-shaped message for a DNS hiccup. The two navigations are
+attempted as a pair and retried while the panes are not both on their site;
+the assertions are untouched, so a domain that genuinely does not resolve still
+fails, with the reason attached.
+
 ### Reading chrome's state
 
 `ctx.chromeState()` asks the chrome helper about itself over `#lfc=state` and
@@ -315,6 +325,96 @@ It is now computed rather than documented: `s.isUserNumbering` compares the
 numbering against the raw strip and reports whether they agree. **Any test that
 positions a tab must use `ctx.tabNumberOf(frag)`** — a plain runtime message
 that leaves the strip alone. `realTabs` is for *looking* at chrome.
+
+### Where a test gets its numbers from
+
+A test about the tab switcher needs a NUMBER for "how many rows should that
+popup have". There are two available answers, and they are not the same answer.
+
+| Source | What it is |
+| --- | --- |
+| `ctx.tabsInfo()` filtered by `ctx.isRealTab` | an independent query from the probe's extension realm, applying the product's own `isRelayTabUrl` rule |
+| `ctx.numberedTabs()` | the product's `tabs` handler — the SAME source the popup's rows come from |
+
+The first is the harness's second opinion, and in the full-group runs where the
+two were compared it was **one higher** than the product: `;t` waited for
+`count: 13` while the popup published 12, then for 16 against 15. Waiting for a count that
+the popup is never going to publish is a bare 8-second timeout — the failure
+said nothing about the popup, and the neighbouring `;t` test failed the same way
+by pressing "2" and activating the tab that the PRODUCT numbers second, which
+is not the tab the harness counts second.
+
+So a popup assertion takes its expectation from the list the popup itself
+renders (`ctx.numberedTabs()`, or `numberingExpectation()` in the content popup
+suite, which also REPORTS a disagreement — with both URL lists — as a repair
+line rather than hiding it). Where the harness's independent count is
+legitimately needed (waiting for the strip to grow, `expectTabs`), it is still
+the right tool; it just cannot be the source of a number the product publishes.
+
+The general rule: **when a test and the product can both count the same thing,
+the test asserts the product's number against the product's own source.** A
+second opinion is only useful where the two are expected to agree and a
+disagreement is itself the finding.
+
+### The leak sweep has to keep the harness's own handles
+
+`reclaimLeakedTabs` closes the tabs a test opened and did not close. Half the
+suites re-point `ctx.tabA` at a tab they just opened (`;f` and `;K` need a page
+of their own, typing needs a fresh field) — and the sweep then saw that tab as a
+leak and closed it, because it was not in the pre-test snapshot.
+
+Measured consequence: ten `reset repaired: tabA was dead; replaced` lines in one
+content run, one per test that had rebound the handle. That is not just noise.
+A replacement tabA is a DIFFERENT tab at a different strip position, so every
+numbering assertion after it was being made against a window the test did not
+choose — the same class of failure the ninety-tab measurement is about.
+
+The sweep now takes three inputs: the pre-test id set, the ids of the harness's
+live handles (`snapshotHandles()`: `tabA` and `probe`), and — for the replaced
+case — the handles as they were before the test. It never closes a live handle,
+and it closes the handle a test ABANDONED in place of the one it is holding.
+
+**An unreadable id is not an absent tab.** The first version of this resolved a
+handle's Firefox id with `browser.tabs.getCurrent()` in the handle's own realm —
+which only exists on an extension page. A `tabA` left on a web page threw, the
+read reported null, and the sweep concluded the tab did not exist and closed it.
+Measured: the command-center group went 35/35 → 33/35 in the two tests after the
+one that leaves `tabA` on `google.com`, the second of them failing with
+`no such window` because the window had lost its last command-center tab.
+
+Resolution reads the URL first (BiDi answers for any page), then falls back to
+matching that URL against the strip; where an id still cannot be pinned, every
+row on that URL is treated as protected AND the abandoned-handle close is
+skipped. Closing one tab too few leaves a leak the next sweep sees; closing one
+too many costs the tab the rest of the group runs in.
+
+### The config comparison used a value the product never promised to keep
+
+`restoreConfig` diffs the stored config against a pristine snapshot and writes
+the whole object back through the background's own `setConfig`. It reported
+`config apps did not take` on **every test of every content run**.
+
+The reason is a false expectation, not a product bug. `setConfig` does not store
+what it is handed: the handler validates the payload per field
+(`extension/store.ts#vConfig`) and writes `mergeConfig(...)` over the defaults.
+The pristine snapshot was the raw stored value, so one normalisation the product
+performs on the way in (`vQuickApp` narrows each app to id/name/url/enabled) made
+the two permanently different — and the note fired for the rest of the run.
+
+Expected-vs-stored is only meaningful when the expectation goes through the same
+path the product uses, so the fixture now imports the product's own `vConfig`
+and `mergeConfig` and compares `storedForm(pristine)` against storage. Two
+consequences worth having: the drift check stopped rewriting the whole config
+for a difference the product itself creates, and a note that DOES fire now names
+both values and is reported once per run instead of once per test.
+
+Importing product modules into the harness is deliberate — the same rule the tab
+count follows (`isRelayTabUrl`). It needs `scripts/e2e/product-globals.d.ts`,
+because those modules read `browser` / `__DEV__`, which do not exist in Node.
+That file is NOT `src/shared/globals.d.ts`: including that one drags
+`Window.gBrowser` → `src/chrome/tabs.ts` → a DOM lib requirement into a harness
+that runs in a browser-less process, and the first error is then about a file
+the harness neither imports nor runs.
 
 ### Tags
 
@@ -428,6 +528,8 @@ What works:
 | one test fails only in a full run | order dependence — `ctx.reset()` should have handled it; check whether the test asserts a precondition instead |
 | a test that passes alone fails in a group | same, inverted: something leaked. `reset()` covers the common cases; the rest belong in it |
 | the suite is red but nothing changed | compare against `baseline.json` before reading anything — `still-broken` is not a regression |
+| `;W \|` / `;W m` "produced no pair", "did not move the tab" | read the `page=` field the split helpers attach: `active:"input"` means the chord was TEXT by the page's own rules (the home page types `;` into a focused search box) rather than a product bug, and `leaderMirror` says whether the leader armed at all |
+| `NS_ERROR_UNKNOWN_HOST` | the resolver, not the product — see the retry rule under Rules |
 ---
 
 ## What the rewrite measured
@@ -455,27 +557,35 @@ offered as one.
 | sessions | **31/31** | and the runner reports **4 fixed since the baseline**, including `restore brings back every tab's exact strip position (split included)` — the failure `docs/STATUS-AND-ROADMAP.md` §3.1 called the last one whose root cause was unpinned. The `openCC` self-heal fixed it. |
 | split | **13/13** | with the new post-`addTabs` trail readback in place. |
 | options | **5/5** | |
-| content | **104/105** and **101/105** on two of three runs | see the cluster below. |
-| commandcenter | **21/29** standalone | the same eight tests `docs/STATUS-AND-ROADMAP.md` §5 item 2 already enumerates as this group's known standalone set (`;I`, `;m`, `;n ;x ;v ;c`, `;N`, `;f` ×2, `;h`, "closing a tab down to two"). `cc4` measured 29/29 on a quiet machine; §"Known costs" below already records that this block is wall-clock, not logic. |
+| content | **114/115** | the one failure is `a page that never responds still answers the leader key`, whose baseline row already records it as a **harness gap rather than a product gap** (the navigation to the never-answering route is not observably started). Nothing else in the group fails. |
+| commandcenter | **35/35** standalone | the eight tests this section used to list as the group's known standalone set (`;I`, `;m`, `;n ;x ;v ;c`, `;N`, `;f` ×2, `;h`, "closing a tab down to two") all pass standalone on this tree, as do the modes/popups tests that used to stand or fall with `ctx.reset()`. |
 
-**The four-test cluster in `content` is pre-existing, and it is worth being
-precise about that rather than "it looks flaky".** Two `;t` tab-switcher tests
-and the two leader-indicator tests fail *together*, and `/tmp/e2e-full5.log` —
-the full run measured **before** the leader-indicator work started — fails the
-exact same four. So it is not a regression, and it is not four independent
-failures either: `;t` times out comparing the popup's row count against
-`tabCount()`, and the indicator tests then find no `lead:` on the bar. One
-strip-reading disagreement, two symptoms.
+**The four-test cluster in `content` is gone, and it had two causes rather than
+one.** The cluster — two `;t` tab-switcher tests plus the two leader-indicator
+tests — was pre-existing in the sense that it was not a regression, and the
+earlier note here guessed it was a single strip-reading disagreement presenting
+twice. Measured after the fixes were separated, it was two independent defects,
+and each is now pinned by the fix rather than by a baseline row:
 
-The three runs of the group on this tree:
+  - **`;t`** timed out comparing the popup's row count against `ctx.tabCount()`.
+    The popup's rows come from the product's `tabs` handler and the harness's
+    count from its own query, and in the failing runs those were one apart —
+    so the expected count could never arrive. The expectation now comes from the
+    list the popup itself renders, and a disagreement is REPORTED. See "Where a
+    test gets its numbers from".
+  - **the indicator tests** raced the arm they were reading: a `chromeState()`
+    read can take longer than the bare `;` arm it is looking for. They now read
+    the bar while a category is open, which never expires.
+
+The runs, in order. The first three are what made the cluster look like one
+thing; the last is this tree, with the two causes fixed:
 
 | run | result | cluster |
 | --- | --- | --- |
 | `c30` | 101/105 | the four |
 | `c31` | 104/105 | none — only the new test, whose first version raced a 4-hop read against a 3-second capture (see below) |
 | `c32` | 103/105 | the four |
-
-`c31` is the informative one: with the cluster absent, the group is clean.
+| `content3` | **114/115** | none: only the recorded harness gap |
 
 **The last column is the run, not the best of the runs.** That is the whole
 point of the change described below: every remaining source of run-to-run swing
@@ -806,29 +916,39 @@ the only unresolved *behaviour* question left in the suite.
 
 ### The wait that only looked like a wait
 
-`waitPlusPopup()` in `scripts/e2e/suites/split/_shared.ts` existed to hold the
-`;+` digit capture open long enough to type into it, and its comment said so at
-length. It did not. It polled two signals that cannot observe that state —
-`data-lf-leader` (the *content script's* mirror, on a command-center tab that
-has no content script) and the `lazyfox-popup` host (a different popup engine) —
-then swallowed the timeout, so every caller typed its digit into whatever the
-leader happened to be doing.
+`waitPlusPopup()` in `scripts/e2e/suites/split/_shared.ts` exists to hold the
+`;W m` digit capture open before the caller types a digit. Two earlier versions
+of it were wrong in opposite directions, and both are worth keeping on the
+record.
 
-The fix that reads like an improvement is to wait properly and **throw** if the
-capture does not arm. That was tried and measured, and it took the isolated
-`split` group from **13/13 to 7/13**. The reason is the real one: the capture's
-arming is only visible as `leaderPending` in the `#lfc=state` reply, and reading
-that means `chromeState()` — which briefly removes the probe tab from
-`state.realTabs` and shifts the user numbering by one. The harness's own
-contract file names this as the mistake it has already made three times.
+The first polled two signals that cannot observe that state — `data-lf-leader`,
+which is lit from the bare `;` onward and so cannot tell the category from the
+capture inside it, and the `lazyfox-popup` host, which belongs to a different
+popup engine and which this chord does not open — and then swallowed the
+timeout. Every caller typed its digit into whatever the leader happened to be
+doing, and when such a digit lands as plain text on the home page the page
+enters INSERT mode and starts typing the NEXT chord as text: one mistimed
+keystroke turned into a failure three tests later, in a different file.
 
-So the capture is genuinely **not observable from the tab that owns it**, and the
-function now says so, keeps its short best-effort pace, and no longer claims to
-be waiting for anything. Reverted, re-measured, 13/13.
+The second version waited properly and **threw**. That was measured, and it took
+the isolated group from 13/13 to **7/13** — because the signals it was strict
+about still could not see the capture. Strictness on a blind signal is not a
+stricter test; it is a test that fails when the machine is busy.
+
+What settled it is that the leader PUBLISHES what a capture expects: `signal()`
+mirrors it as `data-lf-lead-expect`, and the command center mirrors it exactly
+as a content script does. So the state IS observable from the tab that owns it —
+the earlier conclusion ("not observable") was wrong about the product rather
+than about the harness; what was missing was knowing the mirror exists. The wait
+matches the SHAPE of the hint (`/^[0-9][0-9 -]*$/`, which a category can never
+satisfy because it arms with no expectation at all), is bounded at 2s, and does
+not throw: the tests' own assertions are the verdict, and a capture that was not
+armed when the digit was typed is recorded as a repair, so a race shows up in
+the report instead of staying invisible.
 
 The general rule, which cost one full suite run to learn twice in one session: a
 helper whose comment describes an intent its body does not implement is worse
 than no helper, because it converts "the digit went nowhere" into "the split
-never formed" three steps downstream. When the honest fix is not reachable,
-write down that it is not reachable, and record the attempt that proved it.
+never formed" three steps downstream — and, in the other direction, a wait on a
+signal that cannot see its state measures noise and calls it strictness.
 

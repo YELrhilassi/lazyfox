@@ -17,7 +17,6 @@ import { relTime } from "../../shared/format";
 import { send } from "../../shared/protocol";
 import type { Config, PopupItem } from "../../shared/types";
 import { openFindPopup, openResizePopup, type ContentPopupShell } from "./find";
-import { copyLink, editLink } from "./links";
 import { tabRowMatches } from "../../shared/tabjump";
 
 export interface ContentOpsDeps {
@@ -25,8 +24,6 @@ export interface ContentOpsDeps {
   config: () => Config;
   startHints(): void;
   focusFirstInput(): void;
-  // The open hint layer, so `;K c` / `;K e` can ask it what it is pointed at.
-  hints(): { active: boolean; currentTarget(): { url: string; text: string } | null } | null;
   // Live find-in-page state for the status bar: called on every count/walk
   // change with { cur (1-based, 0 = nothing walked to yet), count }, and
   // with null when the find widget closes. The host feeds its own status bar
@@ -129,6 +126,16 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         if (r && (r as { atEnd?: boolean }).atEnd) toast("end of history");
       });
     },
+    // The background's reconstructed stack (navstore.ts): this host has no way
+    // to read the real session history, which is why the popup asks the host
+    // instead of the protocol.
+    navStack: async () => {
+      const r = await send("navStack");
+      return r || null;
+    },
+    navGoto: (steps: number) => {
+      void send("navGoto", { index: steps });
+    },
     activateTab: (id: number) => void send("activateTab", { id: id }),
     tabNav: (dir: number) => {
       void send("tabs").then((r) => {
@@ -198,8 +205,12 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     openSetup: () => void send("openSetup"),
     openDiagnostics: () => void send("openDiagnostics"),
     dismissDownload: (_key?: string) => {
-      // The content-script bar does not render download progress (the chrome
-      // helper's window bar owns that); nothing to dismiss here.
+      // The bar is the chrome helper's — a page has no download segment of its
+      // own — so the dismissal travels there through the background. This used
+      // to be a documented no-op, which meant `;D` was consumed in the menu,
+      // reported nothing, and cleared nothing on any page whose own leader owns
+      // the keys (i.e. every web page AND the command center).
+      void send("dismissDownload");
     },
     copyUrl: () => {
       void send("copyUrl").then((r) => {
@@ -222,8 +233,13 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
       toast("toolbar reveal: " + (c.hoverReveal ? "on" : "off"));
     },
     focusFirstInput: () => deps.focusFirstInput(),
-    copyLink: () => copyLink({ hints: deps.hints() }),
-    editLink: () => editLink({ hints: deps.hints() }),
+    pageUrl: async () => {
+      try {
+        return location.href;
+      } catch {
+        return "";
+      }
+    },
     startHints: () => deps.startHints(),
     listSessions: async (q: string) => {
       const r = await send("sessionList");
@@ -284,11 +300,19 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         )
       );
     },
-    deleteSession: (name: string) => {
-      void send("sessionDelete", { name: name }).then(() =>
-        toast("deleted \u201C" + name + "\u201D")
-      );
-    },
+    // The reply is awaited (returned), not discarded: the sessions popup
+    // re-reads the list as soon as this resolves, and the list it reads has to
+    // be the one with the session gone. The toast reports the OUTCOME — it used
+    // to print "deleted" unconditionally, so a refused delete looked exactly
+    // like one that worked.
+    deleteSession: (name: string) =>
+      send("sessionDelete", { name: name }).then((r) =>
+        toast(
+          r && r.ok
+            ? "deleted \u201C" + name + "\u201D"
+            : (r && r.note) || "could not delete \u201C" + name + "\u201D"
+        )
+      ),
     switchSessionByMarker: (marker: number) => {
       void send("sessionSwitchByMarker", { marker: marker }).then((r) =>
         toast(r && r.ok ? "session \u201C" + r.name + "\u201D" : "no session at marker " + marker)

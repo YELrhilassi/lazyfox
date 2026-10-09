@@ -45,6 +45,30 @@ export function installWaits(
     return waitFor(async () => !(await ctx.hasHost(tab, "lazyfox-popup")) ? true : null, timeoutMs);
   };
 
+  // WHICH panel is up, by its own title.
+  //
+  // The popup host attaches a CLOSED shadow root, so the panel's title cannot
+  // be read out of the DOM at all — the product mirrors it onto <html> as
+  // data-lf-popup-title for exactly that reason (shared/overlay-popup.ts). The
+  // chrome helper's popup needs no mirror: it mounts into the browser window's
+  // own document, which the state channel can already read.
+  ctx.popupTitle = function popupTitle(tab) {
+    return evalIn(tab, `document.documentElement.getAttribute("data-lf-popup-title")`).catch(() => null);
+  };
+  ctx.waitPopupTitle = async function waitPopupTitle(tab, want, timeoutMs = 8000) {
+    const seen = await waitFor(async () => {
+      const t = await ctx.popupTitle(tab);
+      return t === want ? t : null;
+    }, timeoutMs).catch(() => null);
+    if (seen === null) {
+      const got = await ctx.popupTitle(tab);
+      throw new Error(
+        `expected the popup titled ${JSON.stringify(want)}, but the open panel is ${JSON.stringify(got)}`
+      );
+    }
+    return seen;
+  };
+
   // Wait until `expr` (evaluated in the tab) satisfies `want`:
   //  - want omitted or `true`  -> any TRUTHY value matches. This is the
   //    common case ("a session with tabs exists", "the list has rows"), where
@@ -134,34 +158,66 @@ export function installWaits(
   // compound `(window.__lfList || {}).a === x && …` expressions, which read
   // the mirror correctly in the page but gave the harness nothing it could
   // poll reliably.
-  ctx.waitListEvent = function waitListEvent(tab, want, timeoutMs = 8000, slot: "list" | "tabs" = "list") {
+  ctx.waitListEvent = async function waitListEvent(tab, want, timeoutMs = 8000, slot: "list" | "tabs" = "list") {
     const varName = slot === "tabs" ? "__lfTabs" : "__lfList";
-    return waitFor(async () => {
-      const d = await evalIn(tab, `window.${varName}`);
-      if (!d) return null;
-      for (const k of Object.keys(want)) {
-        const w = (want as any)[k];
-        const v = d[k];
-        if (k === "min") continue;
-        if (typeof w === "object" && w !== null) {
-          if (w.ge !== undefined && !(v >= w.ge)) return null;
-          if (w.gt !== undefined && !(v > w.gt)) return null;
-          if (w.ne !== undefined && v === w.ne) return null;
-          continue;
+    // Keep the last snapshot seen. A bare `waitFor` timeout reports only
+    // "last value: null", which says nothing about WHICH field differed — the
+    // failure then needs a rerun with a hand-written probe to explain itself.
+    // Remembering the snapshot makes the timeout name the mismatch directly.
+    let last: any = null;
+    let seen: number = 0;
+    try {
+      return await waitFor(async () => {
+        const d = await evalIn(tab, `window.${varName}`);
+        last = d;
+        if (!d) return null;
+        seen++;
+        for (const k of Object.keys(want)) {
+          const w = (want as any)[k];
+          const v = d[k];
+          if (k === "min") continue;
+          if (typeof w === "object" && w !== null) {
+            if (w.ge !== undefined && !(v >= w.ge)) return null;
+            if (w.gt !== undefined && !(v > w.gt)) return null;
+            if (w.ne !== undefined && v === w.ne) return null;
+            continue;
+          }
+          if (v !== w) return null;
         }
-        if (v !== w) return null;
-      }
-      return d;
-    }, timeoutMs);
+        return d;
+      }, timeoutMs);
+    } catch (e) {
+      // The trail matters more than the last value: a popup publishes once per
+      // read, so "it published 5, then 4, then 4" and "it only ever published
+      // 4" are different bugs, and the single cached detail cannot tell them
+      // apart.
+      const trailVar = slot === "tabs" ? "__lfTabsSeen" : "__lfSeen";
+      const trail = await evalIn(tab, `JSON.stringify((window.${trailVar} || []).slice(-6))`)
+        .catch(() => null);
+      const what = last === null || last === undefined
+        ? `never published \`window.${varName}\` (the popup has not mirrored a list event)`
+        : `last mirrored ${varName}=${JSON.stringify(last)} after ${seen} poll(s)`;
+      throw new Error(
+        `waited ${timeoutMs}ms for the ${slot} list event to match ${JSON.stringify(want)}; ${what}` +
+          (trail && trail !== "[]" ? `\n       published: ${trail}` : "")
+      );
+    }
   };
 
   // Install the popup list-event listener (idempotent) and reset the cached
   // detail. Tests that read popup state through the closed shadow root call
   // this BEFORE opening the popup.
+  //
+  // Every published detail is ALSO appended to a bounded trail, cleared here:
+  // the single cached detail is what a wait reads, but when a wait times out
+  // the question is always "what did the popup publish, and in what order" —
+  // and overwriting the cache destroys exactly that evidence. The trail costs
+  // one array push per publish and turns an unexplainable timeout into a
+  // readable sequence.
   ctx.watchList = function watchList(tab) {
     return evalIn(
       tab,
-      `window.__lfList = null; if (!window.__lfListWatch) { window.__lfListWatch = true; document.addEventListener("lazyfox:list", (e) => { window.__lfList = e.detail; }, true); } true`
+      `window.__lfList = null; window.__lfSeen = []; if (!window.__lfListWatch) { window.__lfListWatch = true; document.addEventListener("lazyfox:list", (e) => { window.__lfList = e.detail; window.__lfSeen.push(e.detail); if (window.__lfSeen.length > 40) window.__lfSeen.shift(); }, true); } true`
     );
   };
 

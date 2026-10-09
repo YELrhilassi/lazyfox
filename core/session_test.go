@@ -2,7 +2,6 @@ package core
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -208,15 +207,14 @@ func TestSplitPairOf(t *testing.T) {
 // shipped advertising a binding nobody could reach.
 func TestSessionBindings(t *testing.T) {
 	want := map[string]bool{
-		"p": true, // sessions popup
+		"P": true, // sessions — ONE key, one action
 		"Q": true, // save session and quit
-		"'": true, // switch session 1-9
 	}
 	// Moved under ;W (and ;Z for zoom). None of these may be top level again.
 	moved := []string{"|", "[", "]", "{", "}", "+", ",", ".", "\\", "=", "-", "0"}
 
 	seen := map[string]bool{}
-	for _, b := range Bindings {
+	for _, b := range lazyBindings() {
 		if b.Group == "Sessions" {
 			seen[b.Key] = true
 		}
@@ -229,7 +227,7 @@ func TestSessionBindings(t *testing.T) {
 	if len(seen) != len(want) {
 		t.Errorf("Sessions group has unexpected keys: %v", seen)
 	}
-	for _, b := range Bindings {
+	for _, b := range lazyBindings() {
 		for _, k := range moved {
 			if b.Key == k {
 				t.Errorf("key %q is advertised at top level but was moved under ;W/;Z", k)
@@ -244,29 +242,45 @@ func TestSessionBindings(t *testing.T) {
 // learned, and a row reading only "Window & layout" would advertise a key and
 // explain nothing.
 func TestCategoryBindings(t *testing.T) {
+	// The sub-keys are STRUCTURED now, not crammed into the row's label
+	// string. That is the difference between a menu that is generated from the
+	// dispatch table and a hand-written summary of it: every sub-key here has an
+	// action and a label of its own, so the overlay cannot show a key that does
+	// not exist or miss one that does.
 	want := map[string][]string{
-		"W": {"|", "[", "]", "{", "}", ",", ".", "u", "m"},
+		"W": {"|", "[", "]", "{", "}", ",", ".", "u", "m", "w", "z", "e"},
 		"Z": {"i", "o", "r"},
-		"K": {"h", "c", "e"},
+		"K": {"c", "e"},
 	}
-	found := map[string]string{}
-	for _, b := range Bindings {
-		if b.Group == "Categories" {
-			found[b.Key] = b.Label
+	found := map[string][]string{}
+	for _, r := range Keymap {
+		if r.Cat == "" {
+			continue
 		}
+		keys := make([]string, 0, len(r.CatKeys))
+		for _, s := range r.CatKeys {
+			keys = append(keys, s.Key)
+		}
+		found[r.Key] = keys
 	}
 	if len(found) != len(want) {
-		t.Fatalf("Categories group has %d rows, want %d (have %v)", len(found), len(want), found)
+		t.Fatalf("keymap has %d category heads, want %d (have %v)", len(found), len(want), found)
 	}
 	for head, subs := range want {
-		label, ok := found[head]
+		got, ok := found[head]
 		if !ok {
-			t.Errorf("Categories group missing head %q", head)
+			t.Errorf("category head %q is missing", head)
 			continue
 		}
 		for _, s := range subs {
-			if !strings.Contains(label, s) {
-				t.Errorf("category %q does not advertise its sub-key %q: %q", head, s, label)
+			found := false
+			for _, g := range got {
+				if g == s {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("category %q is missing sub-key %q (have %v)", head, s, got)
 			}
 		}
 	}
@@ -276,29 +290,34 @@ func TestCategoryBindings(t *testing.T) {
 // runtime (a plain binding always beats a category head): the categories must
 // sit on keys no plain binding uses, or `;W` would arm a capture over a
 // binding that already worked.
-func TestNoCategoryHeadIsShadowed(t *testing.T) {
+func TestCategoryHeadsAreDistinctFromActions(t *testing.T) {
+	// The runtime "a plain binding beats a category head" rule is GONE: a spec
+	// now names exactly one thing, so there is no shadowing to defend against.
+	// What is left to check is the DISPLAY level — two rows that print the same
+	// chord would still make the menu unreadable even though the matcher is
+	// unambiguous.
 	heads := map[string]bool{}
-	for _, b := range Bindings {
-		if b.Group == "Categories" {
-			heads[b.Key] = true
+	for _, r := range Keymap {
+		if r.Cat != "" {
+			heads[r.Key] = true
 		}
 	}
-	for _, b := range Bindings {
-		if heads[b.Key] && b.Group != "Categories" {
-			t.Errorf("key %q is both a category head and a %s binding", b.Key, b.Group)
+	for _, r := range Keymap {
+		if r.Cat != "" {
+			continue
+		}
+		if heads[r.Key] {
+			t.Errorf("chord %q is both a category head and a %s binding", r.Key, r.Action)
 		}
 	}
-	// The head this table cannot protect against is one a HOST registers rather
-	// than a row in here: `;L` is the forward history stack, added by
-	// leadersetup.ts / content main.ts and absent from Bindings. Registering the
-	// Links category on it would have produced a category that silently never
-	// opens — so `;K` is used and the reason is asserted here rather than
-	// trusted to a comment.
-	if _, shadowed := heads["L"]; shadowed {
-		t.Error("`;L` is a live binding (forward history stack), so Links must use ;K")
+	// `;L` is the forward history stack and `;K` is the Address category: two
+	// different chords for two different things, and the reason `;L` could
+	// never be a category head is now just "it is already an action".
+	if heads["L"] {
+		t.Error("`;L` is a live binding (forward history stack), so Address must use ;K")
 	}
 	if !heads["K"] {
-		t.Error("the Links category head `;K` is missing from Bindings")
+		t.Error("the Address category head `;K` is missing from the keymap")
 	}
 }
 
