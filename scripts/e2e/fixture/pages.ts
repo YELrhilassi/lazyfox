@@ -184,9 +184,35 @@ export function installPages(
   // tab is selected. gotoPage blocks on "complete", which is exactly the
   // thing the stuck-page tests cannot wait for: the page under test is one
   // that never completes.
+  //
+  // RETRIED FOR THE WHOLE WINDOW THE CALLER WAITS IN, because a single
+  // attempt was silently fallible: the extension redirects about:newtab to
+  // the command center from the chrome side, and that redirect's loadURI (or
+  // the fresh CC document's own canonicalisation) can cancel the navigation
+  // issued here — `.catch(() => {})` swallowed the rejection, the tab stayed
+  // on commandcenter.html, and the caller's "never started loading" fired ten
+  // seconds later for what was one cancelled command. A short retry loop was
+  // not enough: measured on a full run, the cancellation still landed after
+  // the loop had given up (the very next test, on the same kind of fresh tab,
+  // navigated fine). So the loop keeps re-issuing as long as the URL is not
+  // the target — a navigation that has genuinely started is confirmed by its
+  // own URL and the loop exits at once; a cancelled one is asked again while
+  // the caller's loud failure is still the backstop for one that never starts.
+  //
+  // BOUNDED AT SIX: a longer loop was measured to turn the /hang failure into
+  // a full 180s test timeout (each attempt costs a WebDriver round trip), and
+  // a loud failure at ~20s is worth more than a silent one at 180s. Six
+  // attempts still cover a redirect landing several seconds in — which is the
+  // cancel this loop exists for — without making the suite pay for the case
+  // where the navigation genuinely never starts at all.
   ctx.navigateNoWait = async function navigateNoWait(tab, url) {
-    await navigate(tab, url, "none").catch(() => {});
-    await activate(tab).catch(() => {});
+    for (let i = 0; i < 6; i++) {
+      await navigate(tab, url, "none").catch(() => {});
+      await activate(tab).catch(() => {});
+      const u = await ctx.tabUrlOf(tab).catch(() => "");
+      if (u && (u === url || u.indexOf(url) === 0)) return;
+      await sleep(500);
+    }
   };
 
   // The selected tab's current URL, read from the tab list rather than from

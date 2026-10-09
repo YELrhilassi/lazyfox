@@ -170,6 +170,39 @@ export function installLifecycle(
     //     end of each test: a test that throws is not around to clean up.
     await ctx.repairKeyTraps();
 
+    // 5c. NO SPLIT left armed — the precondition fixture.ts has always
+    //     DECLARED ("a test may assume: … no split is armed") but never
+    //     enforced, until its absence produced a failure that read like a
+    //     product bug. `sessions › split layout is saved and restored` waits
+    //     for exactly two split-view tabs after `;W m N`; a split restored by
+    //     the PREVIOUS test (restore-with-split leaves its pair on tabs that
+    //     predate the next test, so the leak sweep must not close them) makes
+    //     that wait see four and fail — even though the move under test had
+    //     worked, both readbacks agreed, and the pair it cared about was
+    //     correct. Declaring a precondition and not establishing it is worse
+    //     than not declaring it: every test then pays for a guarantee it
+    //     cannot use. `;W u` is the product's own dissolve, pressed only when
+    //     a split actually exists, so the normal case stays free.
+    try {
+      const ts: any[] = (await ctx.tabsInfo().catch(() => [])) || [];
+      const inSplit = (t: any) => typeof t.splitViewId === "number" && t.splitViewId >= 0;
+      if (ts.some(inSplit)) {
+        await ctx.leaderSeq(ctx.tabA, ["W", "u"]).catch(() => {});
+        const gone = await waitFor(async () => {
+          const t2: any[] = (await ctx.tabsInfo().catch(() => [])) || [];
+          return t2.some(inSplit) ? null : true;
+        }, 8000).catch(() => null);
+        ctx.repaired.push(
+          gone
+            ? "dissolved a split the previous test left open"
+            : "a split the previous test left open would not dissolve",
+        );
+      }
+    } catch (e) {
+      // The split check is best-effort: a group that cannot read the tab list
+      // must not lose its whole precondition pass over it.
+    }
+
     // 6. The tab list is NOT reconciled, and must not be. The measurement that
     //    settled it is in docs/TESTING.md:
     //
