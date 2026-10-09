@@ -1210,5 +1210,335 @@
     "group": "sessions",
     "runs": 1,
     "passes": 1
+  },
+  "audit › tab: n — new tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tab: x — close tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tab: v — reopen closed tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tab: c — duplicate tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tab: j — next tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tab: k — previous tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tab: a — alternate tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tab: 2 — digit jumps to a numbered tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tab: $ — jump to the last tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › nav: r — reload": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › nav: g — back": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › nav: l — forward": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › nav: G — navigation stack popup (back)": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › nav: L — navigation stack popup (forward)": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › nav: m — mute toggles and says so": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › open: t — tab switcher": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › open: o — open URL popup": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › open: O — open URL in this tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › open: s — search popup": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › open: S — search in this tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › open: h — history popup": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › open: b — bookmarks popup": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › open: d — downloads popup": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › open: V — recently closed popup": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › open: i — focus the first input": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tools: f — link hints arm": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tools: F — scroll region next": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tools: B — scroll region previous": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tools: T — diagnostics opens": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tools: / — find widget opens": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tools: ? — help popup": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tools: q — which-key toggle confirms": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tools: N — stealth tab opens": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tools: I — setup page opens": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tools: D — dismiss download notification": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › sessions: P — sessions popup": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › sessions: Q — save and quit": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: W — window & layout menu": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: W w — resize popup": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: W z — zen mode toggles and says so": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: W e — toolbar reveal toggles and says so": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: W , / W . — move the active tab": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: W | / ] / { / u — split, switch, swap, unsplit": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: W m — move tab into split (digit capture)": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: W [ — previous pane": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: Z — zoom menu": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: Z i / Z r — zoom in, then reset": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: Z o / Z r — zoom out, then reset": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: K — address menu": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: K c — copy URL confirms": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: K e — edit URL popup": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › reliability: two ;n chords back to back open two tabs": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › reliability: a chord right after Esc from a category still runs": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › reliability: a chord right after a popup closes still runs": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › reliability: a chord after typing into an input still runs": {
+    "status": "pass",
+    "group": "audit",
+    "runs": 1,
+    "passes": 1
   }
 }

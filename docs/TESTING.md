@@ -137,6 +137,7 @@ before being believed — a test never seen failing is not evidence.
 | `npm run test:legacy` | the scripts/test-*.ts files not yet converted (see below) |
 | `npm run test:mutation` | applies five deliberate reverts and requires each to turn its tests red |
 | `npm run e2e` | the browser suite, all groups |
+| `npm run e2e -- --suite audit` | the feature audit: every leader chord pressed, a visible response required |
 | `npm run e2e -- --group content` | one group |
 | `npm run e2e -- --only "held"` | one test by id or name substring |
 | `npm run e2e -- --tags destructive` | tests carrying a tag |
@@ -422,6 +423,49 @@ Pass `{ tags: ["destructive"] }` as the third argument to `t`. Useful ones:
 `destructive` (closes tabs, restarts sessions), `slow`, `chrome` (needs the
 chrome layer), `network`. Then `npm run e2e -- --skip-tags destructive` runs
 the quick subset.
+
+---
+
+## The feature audit: did the user SEE anything?
+
+`--suite audit` (group `audit`, `scripts/e2e/suites/audit/`) is 55 tests, one
+per shipped leader chord, pressed on a real web page through the real key path.
+It answers a different question than the behavioural suites: not "did the
+command do the right thing to the right tab" (the groups own that), but **"I
+pressed the chord — did anything the user could see appear, and how long did it
+take?"** That is the symptom the suites can all stay green through: a chord
+swallowed with no UI, a popup that never opens, a command that only works on
+the second press, a relay so slow it reads as dead.
+
+Method, uniform for every entry:
+
+1. Snapshot every visible channel: the content mirrors (toast / popup host /
+popup title / leader / which-key / hints / find / yank / focus / zoom / url),
+the tab list over the probe (count, active, muted, strip order), and the chrome
+helper's state (status bar, split, last action). The content field list is a
+WHITELIST — `data-lf-lastkey` changes on every keystroke, so including it would
+make every chord "pass" without the product doing anything.
+2. Press the chord as a user would (`ctx.leaderSeq`: leader armed once, sub-keys
+in order).
+3. Poll until ANY channel changes, or until the command's own primary effect
+holds where that effect is known (a count for `;n`, a host for a popup).
+4. On timeout: fail with the full before/after of every channel and a
+screenshot — a self-explaining failure, same rule as the groups.
+
+Every passing step prints its latency into the test's note line
+(`;h: ui in 0ms via popupTitle: "" → "History"`), so a green run doubles as a
+per-chord latency table — a command that consistently takes seconds of relay
+time to paint anything shows up even while it passes.
+
+Current: **55/55 recorded in the baseline** (one run, freshly installed dev
+build). Every shipped chord answered with a visible response; all were
+immediate at first poll except `;W u` (unsplit, 204ms). Four entries are
+skipped with reasons printed in the report: `;Q` (quits the browser), `;D`
+(needs a live download — the sessions downloads flow owns that setup),
+`;W m` (needs a live split — the split group pins the move), `;W [` (the
+switch flow above pins it). Reliability entries cover the reported symptoms
+directly: two `;n` chords back to back, a chord immediately after Esc from a
+category, after a popup closes, and after typing into an input.
 
 ---
 

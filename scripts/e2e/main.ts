@@ -53,6 +53,7 @@ import * as content from "./suites/content/index.ts";
 import * as sessions from "./suites/sessions/index.ts";
 import * as split from "./suites/split/index.ts";
 import * as options from "./suites/options/index.ts";
+import * as audit from "./suites/audit/index.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const EXT_DIR = resolve(ROOT, "dist/extension");
@@ -63,6 +64,7 @@ const SUITE_MODULES: Record<string, { run: (ctx: any) => Promise<void> }> = {
   sessions,
   split,
   options,
+  audit,
 };
 
 /**

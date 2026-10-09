@@ -48,6 +48,12 @@
       "groups": [
         "options"
       ]
+    },
+    "audit": {
+      "description": "Feature audit: every leader chord pressed, visible response required.",
+      "groups": [
+        "audit"
+      ]
     }
   },
   "groups": {
@@ -65,6 +71,9 @@
     },
     "options": {
       "description": "Options page form and the action popup."
+    },
+    "audit": {
+      "description": "One test per shipped leader chord: did it produce a visible response, and how fast."
     }
   }
 }
