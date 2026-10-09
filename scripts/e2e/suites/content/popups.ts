@@ -66,14 +66,23 @@ export async function run(ctx: any): Promise<void> {
   // REPORTED rather than hidden, because "the tab switcher does not list a tab
   // the window has" is a product-shaped fact worth seeing in a passing run.
   const numberingExpectation = async () => {
-    const product: any[] = await ctx.numberedTabs();
+    const reply: any = await ctx.productTabsReply();
+    const product: any[] = (reply && reply.tabs) || [];
     const mine: any[] = (await ctx.tabsInfo()).filter((t: any) => ctx.isRealTab(t));
     const short = (u: string) => (u || "").replace(/^moz-extension:\/\/[^/]+/, "ext:").slice(0, 70);
     if (product.length !== mine.length) {
+      // The product now says what it dropped and why (omitted), so this note
+      // names the tab instead of leaving two counts to be reconciled by
+      // guessing — which is what the first version of this note did, and what
+      // made it take a second full-group run to identify the tab.
+      const omitted = Array.isArray(reply.omitted)
+        ? " omitted=[" + reply.omitted.map((o: any) => `${short(o.url)} (${o.why})`).join(" | ") + "]"
+        : "";
       ctx.repaired.push(
         `the product numbers ${product.length} tab(s), the harness's own query sees ${mine.length}` +
           ` — product=[${product.map((t: any) => short(t && (t as any).url)).join(" | ")}]` +
           ` harness=[${mine.map((t: any) => short(t && (t as any).url)).join(" | ")}]` +
+          omitted +
           // Which window each side saw is the difference that matters: the
           // probe reads `tabs.query({})` and narrows it, so "how many windows
           // did it see" is in tabCountWhy and nowhere else.
@@ -252,7 +261,15 @@ export async function run(ctx: any): Promise<void> {
     await ctx.waitListEvent(ctx.tabA, { count: rows + 3 });
     // Walk to the last of the throwaway tabs so the cursor is deep in the list
     // — the case that used to reset to the top.
-    const last = baseline + 2;
+    //
+    // `rows`, not `baseline`: the walk counts ROWS, and the rows are the
+    // product's (`rows + 3` after the throwaway tabs opened, so the last one is
+    // index `rows + 2`). Using the harness's tab count here was a second copy
+    // of the same mistake this suite just stopped making: with the two counts
+    // one apart, the walk pressed `j` past the end of the list, the index
+    // clamped, and the test failed with "the cursor walked to row 16" on a list
+    // of 13 rows.
+    const last = rows + 2;
     for (let i = 0; i < last; i++) await ctx.press(ctx.tabA, "j");
     const moved = await ctx.waitListEvent(ctx.tabA, { idx: last }, 5000).catch(() => null);
     assert(moved, `the cursor walked to row ${last} before deleting`);
