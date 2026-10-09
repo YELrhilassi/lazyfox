@@ -249,6 +249,25 @@ import type { ContentPopupShell } from "./find";
   } catch (e) {
     // ignore — presence is re-derived on the next load regardless
   }
+  // ...and assert it again whenever this document comes back, because ONE
+  // report is not a durable answer. The helper keeps presence in a Map keyed by
+  // tab, and the map has three ways to lose this document's entry while the
+  // document is still alive and answering keys: a late `pagehide` from the page
+  // it replaced (now filtered by URL, see keystate.noteContentPresent), a
+  // forgetContentFrom when a tab above it closes, and a background that was
+  // restarted. None of those is followable by a retraction, and a content
+  // script that never speaks again cannot correct the helper — which then
+  // claims the keys and paints its overlay over this page's.
+  //
+  // `pageshow` fires on every commit AND on a bfcache restore, i.e. exactly the
+  // moments this document starts answering keys again, and it costs one message
+  // per page life. Re-announcing is idempotent on the helper side (same index,
+  // same URL).
+  try {
+    window.addEventListener("pageshow", () => void reportPresence(true), { capture: true });
+  } catch (e) {
+    // ignore — the initial report already covered the normal case
+  }
   // HOST ACTIONS. Four actions need an object only this host has, so they are
   // filled in here rather than in the shared table — and they are NAMED, not
   // keyed, because the keymap that routes them is in Go and the coverage test

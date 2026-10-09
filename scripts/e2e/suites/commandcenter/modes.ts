@@ -217,18 +217,47 @@ export async function run(ctx: any): Promise<void> {
     await ctx.waitTabCount(before + 1, 10000);
     const dup = (await ctx.ccTabs())[0] || ctx.tabA;
     const dupCtx = dup.context || dup;
+    // The wait is CAUGHT and turned into an assertion that carries the page's
+    // own facts. A bare `waitFor` rejected with "timed out after 10s" and
+    // nothing else, which says only that SOME condition did not hold — while
+    // the four it tests (a rendered grid, command mode, an empty box, focus
+    // off the box) point at four completely different bugs. The facts cost
+    // one read, and only on the failing path.
     const freshReady = await waitFor(async () => {
       const f = await ctx.ccFacts(dupCtx);
       return f && f.results && f.results.length && f.state === "cmd" && f.inputVal === "" && !f.focused ? f : null;
-    }, 10000);
-    assert(freshReady, "fresh tab is in command mode with an empty input");
+    }, 10000).catch(() => null);
+    if (!freshReady) {
+      const f = await ctx.ccFacts(dupCtx).catch(() => null);
+      assert(
+        false,
+        "fresh tab is in command mode with an empty input: " +
+          JSON.stringify(f && {
+            state: f.state,
+            inputVal: f.inputVal,
+            focused: f.focused,
+            results: f.results && f.results.length,
+            modeTag: f.modeTag,
+            url: f.url,
+          })
+      );
+    }
     // `;` on the empty input arms the leader — the PAGE's own, read from the
     // page's mirror (the chrome helper does not arm on a command-center tab).
     await ctx.press(dupCtx, ";");
     await ctx
       .waitExpr(dupCtx, `document.documentElement.getAttribute("data-lf-leader") === "1"`, true, 5000)
-      .catch(() => {
-        throw new Error("; on the fresh home tab did not arm the leader");
+      .catch(async () => {
+        const f = await ctx.ccFacts(dupCtx).catch(() => null);
+        throw new Error(
+          "; on the fresh home tab did not arm the leader: " +
+            JSON.stringify(f && {
+              state: f.state,
+              inputVal: f.inputVal,
+              focused: f.focused,
+              lastkey: await evalIn(dupCtx, `document.documentElement.getAttribute("data-lf-lastkey")`).catch(() => null),
+            })
+        );
       });
     assert(!(await ctx.ccFacts(dupCtx)).inputVal, "; did not type into the empty input");
     await ctx.press(dupCtx, "Escape");
