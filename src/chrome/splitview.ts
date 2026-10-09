@@ -154,14 +154,69 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     removeSplitPanelPanes(sv, isSplitPanelTab, (t) => win.gBrowser.removeTab(t));
   function splitCurrentTab(orientation: "horizontal" | "vertical"): boolean {
     if (orientation !== "horizontal") return false; // native is side-by-side only
+    // Each attempt owns its trail, exactly as each MOVE does (see the note in
+    // addTabToSplitByIndex). This op is fire-and-forget from the extension's
+    // side — the page that asked is told `ok` before anything here runs — so
+    // when the strip shows no pair the only readable account of what happened
+    // is the one written here: did Firefox refuse, did the pair appear and then
+    // come apart, or did the op not run at all?
     try {
-      if (!nativeSplitAvailable()) return false;
+      deps.onMoveReset && deps.onMoveReset();
+    } catch (e) {
+      /* ignore */
+    }
+    const sp = (msg: string) => {
+      try {
+        deps.onMove && deps.onMove(msg);
+      } catch (e) {
+        /* ignore */
+      }
+    };
+    // Who a tab IS, in the trail: the id the tabs API uses and the URL the
+    // reader recognises. "panes=2" alone cannot say WHICH two, and "a split
+    // exists that the extension never sees" is unreadable without them.
+    const who = (t: ChromeTab | null | undefined): string => {
+      try {
+        return t ? "#" + idOf(t) + " " + tabUrl(t) : "none";
+      } catch (e) {
+        return "?";
+      }
+    };
+    // How many panes the native split actually has RIGHT NOW, and which. -1 is
+    // "could not be read", which must not be confused with 0 = no split at all.
+    const panes = (): number => {
+      try {
+        const sv = activeSplitView();
+        return sv && Array.isArray(sv.tabs) ? sv.tabs.length : 0;
+      } catch (e) {
+        return -1;
+      }
+    };
+    const svWho = (): string => {
+      try {
+        const sv = activeSplitView();
+        const list = sv && Array.isArray(sv.tabs) ? sv.tabs.map(who).join(", ") : "none";
+        return "strip=" + win.gBrowser.tabs.length + " panes=" + panes() + " [" + list + "]";
+      } catch (e) {
+        return "unreadable";
+      }
+    };
+    try {
+      if (!nativeSplitAvailable()) {
+        sp("no-native-split");
+        return false;
+      }
       const active = win.gBrowser.selectedTab;
-      if (!active || active.pinned) return false;
+      if (!active || active.pinned) {
+        sp("refused: " + (!active ? "no-selected-tab" : "pinned"));
+        return false;
+      }
       // A stale .splitview reference can linger after an unsplit on some
       // builds; dissolve it first so `;|` on the very same tab works again
       // instead of failing with a spurious "needs Firefox 149+" toast.
-      if (typeof active.splitview?.unsplitTabs === "function") {
+      const stale = typeof active.splitview?.unsplitTabs === "function";
+      if (stale) {
+        sp("dissolved stale splitview on the tab");
         try {
           active.splitview.unsplitTabs();
         } catch (e) {
@@ -179,6 +234,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
           break;
         }
       }
+      sp("active=" + who(active) + " panel=" + (blank ? "reused" : "created") + " stale=" + stale);
       if (!blank) {
         blank = win.gBrowser.addTab(splitPanelUrl, {
           // Keep the original tab selected: the pane the user was looking at
@@ -208,11 +264,19 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         // ignore
       }
       const preStrip = stripSnapshot();
-      try {
-        // nativeSplitAvailable() already established the method exists; the
-        // optional call is so the type reflects the version gate.
-        win.gBrowser.addTabSplitView?.([active, blank], splitInsertOpt([active, blank]));
-      } catch (e) {
+      const attempt = (): string => {
+        try {
+          // nativeSplitAvailable() already established the method exists; the
+          // optional call is so the type reflects the version gate.
+          win.gBrowser.addTabSplitView?.([active, blank], splitInsertOpt([active, blank]));
+          return "ok";
+        } catch (e) {
+          return "threw:" + String((e && (e as any).message) || e);
+        }
+      };
+      let first = attempt();
+      sp("split=" + first + " " + svWho() + " newPane=" + who(blank));
+      if (first !== "ok") {
         // First attempt can fail with stale internal split state; dissolve the
         // active tab's split group and retry once.
         try {
@@ -222,7 +286,21 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         } catch (e2) {
           // ignore
         }
-        win.gBrowser.addTabSplitView?.([active, blank], splitInsertOpt([active, blank]));
+        first = attempt();
+        sp("split-retry=" + first + " " + svWho());
+      }
+      // The strip is the verdict, read again after the platform has had a beat.
+      // Firefox creates and (re)parks a split asynchronously, so a pair that is
+      // absent NOW may simply be late — but a pair that is still absent later
+      // means this call reported success on a split that does not exist, which
+      // is exactly the case a bare `return true` cannot tell the user about.
+      try {
+        env.setTimeout(
+          () => sp("after400ms " + svWho() + " newPaneConnected=" + (blank ? !!blank.isConnected : "n/a")),
+          400
+        );
+      } catch (e) {
+        /* ignore */
       }
       // addTabSplitView may still regroup the pair (moving it to the end); pin
       // the whole strip back to its pre-split order so the pairing lands where
@@ -388,6 +466,16 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   }
 
   function unsplit(): boolean {
+    // Say so in the trail the split op keeps, BEFORE deciding anything. Every
+    // path that takes a split apart — `;W u`, a stale reference being dissolved,
+    // the auto-unsplit after a pane closes — ends up here, and a split that was
+    // created a moment ago and is then gone is unreadable unless the thing that
+    // removed it is on the record.
+    try {
+      deps.onMove && deps.onMove("unsplit CALLED (active-sv=" + (activeSplitView() ? "yes" : "no") + ")");
+    } catch (e) {
+      /* ignore */
+    }
     try {
       const sv = activeSplitView();
       if (!sv || typeof sv.unsplitTabs !== "function") return false;

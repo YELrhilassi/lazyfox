@@ -30,12 +30,18 @@ export async function run(ctx: any): Promise<void> {
     // ;d opens the downloads popup. `r` retries the failed download (its
     // startTime moves — Firefox restarts it from the source, same entry); `y`
     // copies the link and keeps the popup open; Esc closes.
+    //
+    // The popup is the PAGE's own (the command center runs the shared key
+    // engine, and its popups live in a closed shadow root in the page), so it
+    // is observed through the page's title mirror and list event rather than
+    // through the chrome helper's popup state, which stays empty here.
     await ctx.openCC(ctx.tabA);
-    await ctx.chromeLeaderPress(ctx.tabA, "d");
-    await waitFor(async () => {
-      const s = await ctx.chromeState();
-      return s && s.popup && s.popup.current && s.popup.items && s.popup.items.length ? true : null;
-    }, 8000).catch(() => null);
+    await ctx.watchList(ctx.tabA);
+    await ctx.leaderPress(ctx.tabA, "d");
+    await ctx.waitPopupTitle(ctx.tabA, "Downloads", 8000);
+    await ctx.waitListEvent(ctx.tabA, { count: { ge: 1 } }, 8000).catch(() => {
+      throw new Error("the downloads popup never listed the failed download");
+    });
     const t0 = await evalIn(ctx.probe, `browser.downloads.search({}).then(rs => { const d = rs.filter(r => String(r.filename).indexOf("lf-fail") !== -1)[0]; return d && d.startTime ? d.startTime : ""; })`);
     // Keys inside an OPEN popup go straight to it (a leading `;` would be
     // typed into the popup's search box and empty the list).
@@ -46,9 +52,12 @@ export async function run(ctx: any): Promise<void> {
     }, 10000).catch(() => null);
     assert(retried, "retry restarted the download (new startTime): before=" + t0 + " after=" + retried);
     await ctx.press(ctx.tabA, "y");
-    const stillOpen = await ctx.chromeState();
-    assert(stillOpen && stillOpen.popup && stillOpen.popup.current, "copy link keeps the popup open");
+    assert(
+      await ctx.hasHost(ctx.tabA, "lazyfox-popup"),
+      "copy link keeps the popup open"
+    );
     await ctx.press(ctx.tabA, "Escape");
+    await ctx.waitPopupGone(ctx.tabA, 5000);
     // Sweep the failed downloads so the suite stays repeatable.
     await evalIn(ctx.probe, `browser.downloads.search({}).then(rs => Promise.all(rs.filter(r => String(r.filename).indexOf("lf-fail") !== -1).map(r => browser.downloads.removeFile(r.id).catch(() => {}).then(() => browser.downloads.erase({ id: r.id }).catch(() => {}))))).then(() => true)`).catch(() => {});
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);

@@ -13,23 +13,35 @@
 //   leader-css.ts     the style sheet and the static markup
 //   leadercapture.ts  the one-shot key capture (armed, consumed, expired)
 //   leaderpanel.ts    the persistent closed-shadow host and its painting
-//   leadersequence.ts the two-key `;<head>;<final>` grammar
 //   leadersignal.ts   the one-value readout every host forwards to its status bar
+//
+// It owns NO key table. The chord -> action mapping is core/keymap.go, fetched
+// on boot (see keymap.ts), and the chord -> what-it-does mapping is
+// popups/leader.ts. This file only decides which of the two to consult for a
+// given keystroke, and it never folds a modifier away to do it: every
+// keystroke becomes a canonical spec first, so `p`, `P` and `Ctrl+P` are three
+// different chords here rather than one.
 
 import { core } from "./core";
 import { LeaderCapture } from "./leadercapture";
 import { makeLeaderSignal, type LeaderSignal } from "./leadersignal";
-import { buildSequenceArm } from "./leadersequence";
+import {
+  chordFor,
+  keymapReady,
+  loadKeymap,
+  matchCatKey,
+  matchKey,
+  specForChord,
+  specOf,
+  type KeyLike,
+  type KeymapCatKey,
+} from "./keymap";
 import { WK_CSS } from "./leader-css";
 import { LeaderPanel } from "./leaderpanel";
 import { mirrorFlag } from "./observability";
 import type { WkItem } from "./types";
 import { WkSession, wkBodyHtml, wkCategoryHtml, wkFootHtml, wkHeadHtml } from "./wk";
 
-// Normalizes a key event into a leader-binding key. Shift is already
-// reflected in e.key for printable characters ("p" vs "P", "|" vs "\\"), so it
-// is deliberately left out of the prefix; Ctrl/Alt/Meta are prepended so a
-// binding can be "leader+Ctrl+key" as well as "leader+key".
 /**
  * The cancel chord: Escape, or Ctrl+G.
  *
@@ -57,43 +69,6 @@ export function isCancel(e: {
   // user has to aim precisely is not a cancel.
   return !!(e.ctrlKey && !e.altKey && !e.metaKey && (e.key === "g" || e.key === "G"));
 }
-
-export function leaderCombo(e: KeyboardEvent): string {
-  const mods: string[] = [];
-  if (e.ctrlKey) mods.push("Ctrl");
-  if (e.altKey) mods.push("Alt");
-  if (e.metaKey) mods.push("Meta");
-  const k = e.key;
-  return mods.length ? mods.join("+") + "+" + k : k;
-}
-
-// Two-key leader sequences: `;<first>;<final>` style prefixes, e.g. `;W|` for
-// "split side-by-side" within the window category. Each sequence maps its
-// first key to the table of final keys.
-//
-// A sequence head must NEVER shadow a plain binding. The rule is enforced by
-// the host's `hasBinding` predicate rather than left to registration order,
-// because the failure it prevents is invisible: registering a sequence for a
-// key that already had a plain binding makes that binding arm a silent capture
-// and only run if it times out, so the key appears to do nothing at all. That
-// is exactly how `;G` and `;L` shipped as advertised-but-dead for a while.
-export interface LeaderSequence {
-  final: Record<string, () => void>;
-  // What each sub-key does, for the which-key overlay. Declared by the table
-  // that decides what the keys DO, so the menu cannot advertise a key the
-  // sequence does not have, or mislabel one it does.
-  labels?: Record<string, string>;
-  // The category's title, shown as the overlay's heading once the head is
-  // pressed. Absent for sequences that are not categories (`;G`, `;'`), which
-  // keep the flat top-level table.
-  category?: string;
-  timeoutMs?: number;
-}
-
-// Populated by the host (main.ts / content main.ts) after makeLeaderActions —
-// module-level because the leader controller consults it in handleKey.
-export const leaderSequences: Record<string, LeaderSequence> = {};
-const SEQUENCES = leaderSequences;
 
 export { WK_CSS };
 
@@ -126,48 +101,98 @@ export class LeaderController {
   sticky = false;
 
   // While the leader is held, a binding runs WITHOUT disarming. The prefix is
-  // cleared either way so a sequence never bleeds into the next action.
-  private runOrStay(combo: string): void {
+  // cleared either way so a chord never bleeds into the next action.
+  private runOrStay(action: string): void {
     if (this.sticky) {
       this.prefix = "";
       if (this.onChange) this.onChange();
-      this.run(combo);
+      this.run(action);
       return;
     }
     this.hide();
-    this.run(combo);
+    this.run(action);
   }
 
-  // The leader action dispatcher built from each context's ops adapter.
-  private run: (key: string) => void;
-  // Whether a PLAIN binding exists for this key. Supplied by the host because
-  // the controller cannot tell "no binding for this key" from "a binding that
-  // did nothing" — `run` is fire-and-forget. Without it, registering a
-  // sequence for a key that already had a plain binding would silently
-  // shadow that binding, which is the ;G / ;L bug.
-  private hasBinding: (key: string) => boolean;
+  // The leader action dispatcher built from each context's ops adapter. It is
+  // keyed by ACTION ID, not by key: the keymap decides which chord means
+  // which action, and this table decides what the action does. Those are two
+  // different questions, and keeping them apart is what lets the keymap be a
+  // validated table (in Go) without the action table having to repeat a single
+  // key combination.
+  private run: (action: string) => void;
+  // Called when a chord names nothing. The host shows it to the user.
+  //
+  // This exists because the alternative is a keystroke that visibly does
+  // nothing. The old dispatcher discarded every capture's "I did not take this
+  // key" answer and swallowed the key anyway, so a mistyped sub-key vanished
+  // with no output at all — and the only way to make anything happen was to
+  // press it again. Saying "no binding for ;jq" turns the same event from a
+  // mystery into an answer.
+  private onMiss?: (spec: string) => void;
   // Whether the overlay is allowed by config.
   private enabled: () => boolean;
   // Fired whenever the leader arms or disarms, so hosts can reflect the
   // state immediately (the chrome helper re-renders its status bar the
   // moment `;` is pressed instead of waiting for the 500ms poll).
   private onChange?: () => void;
+  // The chords that arrived before the keymap finished loading, in the order
+  // they were pressed. It is resolved the moment the table lands, so the first
+  // keys of a cold start are neither dropped nor guessed at.
+  //
+  // A QUEUE, not one slot, because a chord is more than one key: `;W |` typed
+  // into a page whose table has not landed yet is TWO keystrokes, and a
+  // one-slot buffer kept the `|` and threw the `W` away. The chord then ran
+  // nothing at all — which is the "I had to press that key twice" symptom this
+  // whole rework exists to end, and it was still reachable on exactly the
+  // pages where a user tries a new key first: a page that has just loaded.
+  //
+  // BUFFER_LIMIT is a backstop, not a policy. The table lands in milliseconds
+  // and a chord is at most a few keys, so the only way to reach the limit is a
+  // fetch that keeps failing; a queue that grew without bound for the life of
+  // a broken page would be a leak, and dropping the OLDEST keys is the right
+  // end to drop from (the newest keystrokes are the ones the user is making
+  // now).
+  private buffered: KeyLike[] = [];
+  private static readonly BUFFER_LIMIT = 8;
 
   // Explicit fields rather than TypeScript parameter properties: strip-only
   // TypeScript loaders (the unit tests) cannot compile parameter properties.
   constructor(
-    run: (key: string) => void,
+    run: (action: string) => void,
     enabled: () => boolean,
     onChange?: () => void,
-    hasBinding?: (key: string) => void | boolean
+    onMiss?: (spec: string) => void
   ) {
     this.run = run;
     this.enabled = enabled;
     this.onChange = onChange;
+    this.onMiss = onMiss;
     this.capture = new LeaderCapture(() => {
       if (this.onChange) this.onChange();
     });
-    this.hasBinding = (k) => !!(hasBinding && hasBinding(k));
+    void loadKeymap().then(() => {
+      // A fetch that failed leaves the table missing; the keys stay buffered
+      // and the next keystroke retries the fetch (see handleKey).
+      if (!keymapReady()) return;
+      const held = this.buffered;
+      this.buffered = [];
+      for (const e of held) this.dispatchHeld(e);
+    });
+  }
+
+  /**
+   * One buffered keystroke, dispatched by the SAME rule every host uses for a
+   * live one: an armed capture is consulted first, the keymap second.
+   *
+   * The order matters and is not cosmetic. Replaying a two-key chord in order
+   * means the first key can OPEN a category; the second then belongs to that
+   * category's capture (`;W` then `|`), not to the top-level table, where
+   * `shift+\` is not a binding at all. Handing both to handleKey would run the
+   * head and then report the sub-key as an unknown chord.
+   */
+  private dispatchHeld(e: KeyLike): void {
+    if (this.hasPending()) this.handlePending(e);
+    else this.handleKey(e);
   }
 
   /**
@@ -217,19 +242,24 @@ export class LeaderController {
    * whether it consumed the key); it auto-disarms after timeoutMs, running
    * onTimeout (if given) when it expires unused.
    *
+   * The capture receives the WHOLE event, not a bare character. A capture that
+   * can see the modifiers is what lets the same capture take a plain digit and
+   * still read a Ctrl+Enter or a Shift+Tab correctly — the alternative is a
+   * string that has already thrown that information away.
+   *
    * `expect` is the human-readable description of what fn will accept, shown on
    * the status-bar indicator for the life of the capture. See
    * leadercapture.ts for why it is declared by the armer. */
   armPending(
-    fn: (k: string) => boolean,
+    fn: (e: KeyLike) => boolean,
     opts?: { timeoutMs?: number; onTimeout?: () => void; expect?: string }
   ): void {
     this.capture.arm(fn, opts);
   }
 
   /** Consumes the pending key, if any. Returns whether it was consumed. */
-  handlePending(k: string): boolean {
-    return this.capture.handle(k);
+  handlePending(e: KeyLike): boolean {
+    return this.capture.handle(e);
   }
 
   /** Cancels an armed one-shot capture without running it. Used when the user
@@ -287,30 +317,54 @@ export class LeaderController {
   }
 
   /**
-   * The registered sequence for a key.
+   * Open a category: remember what is on screen and arm the one-shot capture
+   * that reads its sub-keys.
    *
-   * A CATEGORY head is also accepted in the opposite case. The heads are
-   * capital letters (`;W`, `;Z`, `;K`) because that is what reads as a
-   * CATEGORY next to the lowercase verbs — but it made the whole two-key
-   * grammar unreachable for anyone who typed `;w`, and lowercase is what a
-   * keyboard produces without Shift. Measured in a browser: `;w` left the
-   * leader unarmed and did nothing at all, with no error and nothing on screen.
-   *
-   * ONLY categories get this. A blanket case-insensitive lookup is a
-   * different bug and it was caught the moment it was written: `;G` is a
-   * sequence head (the back history stack), so making every head match either
-   * case meant `;g` — plain Back — armed that capture instead of going back.
-   * A capital is how a category says "I am a category"; for anything else it is
-   * a real difference between two bindings.
+   * The capture closes over the head's SPEC rather than its display chord,
+   * because the sub-keys are matched in the head's own namespace (`;W m` and a
+   * top-level `m` are different bindings that happen to share a letter) and the
+   * namespace key is the spec.
    */
-  private findSequence(combo: string): LeaderSequence | undefined {
-    const direct = SEQUENCES[combo];
-    if (direct) return direct;
-    if (combo.length === 1 && /[a-z]/.test(combo)) {
-      const up = SEQUENCES[combo.toUpperCase()];
-      if (up && up.category) return up;
+  private openCategory(headSpec: string, chord: string, title: string, keys: KeymapCatKey[]): void {
+    const labels: Record<string, string> = {};
+    const display: string[] = [];
+    for (const k of keys) {
+      labels[k.key] = k.label;
+      display.push(k.key);
     }
-    return undefined;
+    this.prefix = chord;
+    this.activeCategory = { head: chord, title, labels, keys: display };
+    if (this.onChange) this.onChange();
+    this.armPending(
+      (e) => this.consumeCatKey(headSpec, e),
+      // A category is something you READ, not a chord you fly through, so it
+      // does not expire. The old 1.5s window was shorter than choosing from a
+      // menu takes, which is why sub-keys evaporated under the user's hand and
+      // `;W` felt broken rather than fast.
+      { timeoutMs: 0 }
+    );
+    // Repaint with THIS category's contents rather than leaving the top-level
+    // table up. A menu that still lists every binding while a category is armed
+    // is not a reminder, it is a lie.
+    if (this.shown()) void this.render();
+  }
+
+  private consumeCatKey(headSpec: string, e: KeyLike): boolean {
+    const m = matchCatKey(headSpec, specOf(e));
+    this.prefix = "";
+    this.activeCategory = null;
+    if (this.onChange) this.onChange();
+    if (!m.found) {
+      // The key is still ours — the menu is up, so a stray character must not
+      // reach the page — but it is NOT silently swallowed. Saying what was
+      // pressed is the difference between a keymap you can learn and one you
+      // learn by pressing things twice.
+      if (this.onMiss) this.onMiss(specOf(e));
+      if (!this.sticky) this.hide();
+      return true;
+    }
+    this.runOrStay(m.action);
+    return true;
   }
 
   private async render(): Promise<void> {
@@ -353,6 +407,12 @@ export class LeaderController {
     this.active = false;
     this.prefix = "";
     this.activeCategory = null;
+    // A chord still waiting on the keymap goes with it. Every host cancels
+    // through hide() — Escape, Ctrl+G, losing ownership of the page — so a
+    // buffered chord that replayed afterwards would run an action the user had
+    // already backed out of, seconds late and with nothing on screen to
+    // explain it.
+    this.buffered = [];
     if (this.onChange) this.onChange();
     this.unpaint();
   }
@@ -363,7 +423,14 @@ export class LeaderController {
     // lazyBindings mirrors that ordering, so index it directly instead of
     // the full table (which would hit native rows or past the end).
     const it = items.length ? this.lazyBindings[this.wk.sel] : undefined;
-    if (it && !it.native) this.run(it.key);
+    if (!it || it.native) return;
+    // The overlay prints the DISPLAY chord; the dispatch needs the SPEC. The
+    // reverse index is the only bridge between the two, so pressing Enter on a
+    // highlighted row runs exactly what pressing its chord runs — not a
+    // parallel lookup that can disagree with it.
+    const spec = specForChord(it.key);
+    const m = spec ? matchKey(spec) : undefined;
+    if (m && m.found && !m.category) this.runOrStay(m.action);
   }
 
   /**
@@ -373,14 +440,11 @@ export class LeaderController {
    * other key runs its binding immediately (the overlay is a reminder, never a
    * blocker).
    */
-  handleKey(e: KeyboardEvent): boolean {
+  handleKey(e: KeyLike): boolean {
     const k = e.key;
-    // Modifier-only keydowns (Shift, Ctrl, Alt, Meta) precede the actual key
-    // on a physical keyboard. They must never consume the leader — otherwise
-    // a shifted binding like `;|` (Shift+\) would dismiss the leader on the
-    // Shift press before the `|` ever arrives. Keep the leader armed and let
-    // the next (character) key drive the dispatch; leaderCombo() folds the
-    // held modifiers back in for `;Ctrl+key` style bindings.
+    // A modifier on its own is not a chord. It precedes the real key on a
+    // physical keyboard, and consuming it is one half of why a shifted binding
+    // used to feel like it needed pressing twice.
     if (
       k === "Shift" ||
       k === "Control" ||
@@ -394,45 +458,40 @@ export class LeaderController {
       this.hide();
       return true;
     }
-    // Two-key sequences: the first key of a registered sequence arms a
-    // one-shot capture for the second instead of running an action. The
-    // prefix shows in the status-bar indicator meanwhile (`;W` …).
+    // The keymap is fetched once at startup; the first chords of a cold start
+    // can beat it. Buffer rather than drop: every key is resolved the moment
+    // the table lands, in the order it was pressed, and nothing is guessed at
+    // in the meantime.
     //
-    // A plain binding for the same key WINS. Registering a category must never
-    // be able to take over a key that already worked — see LeaderSequence.
-    const combo = leaderCombo(e);
-    const seq = this.hasBinding(combo) ? undefined : this.findSequence(combo);
-    if (seq) {
-      this.prefix = combo;
-      this.activeCategory = seq.category
-        ? { head: combo, title: seq.category, labels: seq.labels || {}, keys: Object.keys(seq.final) }
-        : null;
-      if (this.onChange) this.onChange();
-      const arm = buildSequenceArm({
-        final: seq.final,
-        timeoutMs: seq.timeoutMs,
-        isActive: () => this.active,
-        isSticky: () => this.sticky,
-        setPrefix: (v) => {
-          this.prefix = v;
-          if (this.onChange) this.onChange();
-        },
-        hide: () => this.hide(),
-        runOrStay: (c) => this.runOrStay(c),
-        combo
-      });
-      this.armPending(arm.consume, {
-        timeoutMs: arm.timeoutMs,
-        onTimeout: arm.onTimeout
-      });
-      // Repaint the overlay with THIS category's contents rather than leaving
-      // the top-level table up as a reminder. A menu that still lists every
-      // binding while a category is armed is not a reminder, it is a lie: the
-      // keys that work right now are the category's, and nothing on screen
-      // said so.
-      if (this.shown()) void this.render();
+    // Asking for the table again is what makes a FAILED fetch self-healing: it
+    // is a no-op while a fetch is in flight, and a fresh attempt once one has
+    // given up. Without it the first failure was permanent, and because a
+    // leader with no table buffers instead of reporting, the visible symptom
+    // was a keyboard that accepted `;` and then ate everything.
+    if (!keymapReady()) {
+      this.buffered.push(e);
+      if (this.buffered.length > LeaderController.BUFFER_LIMIT) this.buffered.shift();
+      void loadKeymap();
       return true;
     }
+    const spec = specOf(e);
+    const m = matchKey(spec);
+    if (!m.found) {
+      // A chord the leader does not know. The leader owns the keyboard while
+      // it is armed, so the key does not belong to the page — but it must not
+      // vanish either. SAYING SO is the fix for "that key did nothing, so I
+      // pressed it again": a nameable miss is learnable, a silent one is not.
+      if (this.onMiss) this.onMiss(spec);
+      if (!this.sticky) this.hide();
+      return true;
+    }
+    if (m.category) {
+      this.openCategory(spec, chordFor(spec, m), m.catLabel, m.catKeys);
+      return true;
+    }
+    // The overlay's own navigation. Tab and the arrows steer the panel only
+    // while it is actually on screen; everywhere else they are ordinary keys,
+    // and an unlisted chord is answered with a message rather than silence.
     if (this.shown()) {
       if (k === "Tab") {
         void this.wk.flip(e.shiftKey ? -1 : 1).then(() => this.render());
@@ -460,7 +519,7 @@ export class LeaderController {
         return true;
       }
     }
-    this.runOrStay(leaderCombo(e));
+    this.runOrStay(m.action);
     return true;
   }
 

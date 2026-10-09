@@ -19,6 +19,8 @@ import { KeyGuard } from "../shared/keyguard";
 import { LeaderController, isCancel } from "../shared/leader";
 import {
   blurFocusedElement,
+  dispatchToCCPage,
+  focusCCBody,
   signalCommandCenterFind
 } from "./commandcenterfocus";
 import { chromeOwnsKeys, isAboutPage, isChromeUiFocus, isCommandCenterTab } from "./keystate";
@@ -108,6 +110,41 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
   function chromeKeyDown(e: ActorKey, fromActor?: boolean, noKeyup?: boolean): boolean {
     if (e.isComposing) return false;
 
+    // LAZYFOX'S OWN PAGE OWNS ITS OWN KEYS (see keystate.chromeOwnsKeys).
+    //
+    // The command center runs the same key engine a web page's content script
+    // does, so this helper must not claim its keys as well — that is what made a
+    // key run twice while the tab was in-process, and what made `;f` behave
+    // differently from one new tab to the next. Three cases arrive here, and
+    // each has exactly one right answer:
+    //
+    //   * SYNTHETIC (the #lfc=keys channel, or the window actor): the page never
+    //     saw it, so forward it into the page's document and let the page act.
+    //     That is also the only key path a test has, because WebDriver cannot
+    //     focus a moz-extension document at all.
+    //   * REAL, with focus in the chrome UI (the hidden URL bar Firefox parks
+    //     focus in on a fresh tab): the page cannot see it either. The honest
+    //     fix is to put focus back into the page so the NEXT key lands in the
+    //     grid — never to run a binding from this realm while the page believes
+    //     it owns the keyboard.
+    //   * REAL, with focus in the page: the page's own listener already ran. Do
+    //     nothing (returning false leaves the event exactly as the page left
+    //     it).
+    if (isCommandCenterTab(win) && !popup.isOpen()) {
+      if (fromActor || noKeyup) {
+        // The modifiers travel with it: the page's own typing guard and its
+        // Ctrl/Alt pairs read them, and a forwarded Ctrl+Enter that arrived as
+        // a bare Enter would run the wrong action.
+        dispatchToCCPage(win, e.key, e);
+        return true;
+      }
+      if (!isChromeUiFocus(win, typing, e as KeyboardEvent)) return false;
+      if (e.key === deps.leaderKey() && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        focusCCBody(win);
+      }
+      return false;
+    }
+
     // Web pages are the content script's territory (its own leader, popups,
     // hints and typing guard). If Firefox forwards their keys to this chrome
     // window listener (some builds do), never consume them here. An
@@ -146,26 +183,73 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     const typingValue = typing.focusedTypingValue(e as KeyboardEvent);
 
     // The leader (or a one-shot capture) is armed: the next key is a binding —
-    // but only while the user isn't composing text. A field HOLDING text means
-    // typing wins: a stale leader/capture must disarm and the key must type.
-    // An EMPTY focused field keeps the binding (the command-center home input
-    // and an about: page's search box hold focus but no text).
+    // but not while the user is typing.
+    //
+    // TYPING WINS. A field that holds TEXT always wins, and so does any field in
+    // the page itself — including an EMPTY one, which is where this used to go
+    // wrong: the empty-field exception rendered the whole page as "keeps the
+    // binding", so arm the leader (one `;`), click into any of about:
+    // preferences' empty inputs, type, and the first character ran a command
+    // instead of appearing in the box. That is exactly "the shortcuts fire while
+    // I am typing in an input field". The browser's own chrome UI keeps its old
+    // behaviour (an empty URL bar is where a sequence continues after a failed
+    // navigation), and the only other exception is one key wide: the LEADER KEY
+    // in an empty field on a Lazyfox-owned page, so `;` still arms without a
+    // click or an Escape first.
     if (l.active || l.hasPending()) {
-      if (
-        typingNow &&
-        !(typingValue === "" && (isCommandCenterTab(win) || isAboutPage(win))) &&
-        !isChromeUiFocus(win, typing, e as KeyboardEvent)
-      ) {
+      // ONE cancel ends the WHOLE chain.
+      //
+      // A category is a capture AND an armed leader at the same time (the head
+      // arms the capture, the leader stays up behind it), and the capture is
+      // consulted first. So Escape used to be handed to the category's sub-key
+      // table, which has no Escape row: the capture was spent, the leader
+      // stayed armed, and the second Escape is what finally dismissed it.
+      // Escaping a two-key sequence therefore cost two presses, and from the
+      // user's side `;W` then Esc looked like the key did nothing at all.
+      //
+      // The chord and the menu it opened are one user action, so they end in one
+      // keystroke — and Ctrl+G is the same cancel, which is why this uses the
+      // shared predicate rather than testing for Escape alone. Ctrl+G is the
+      // one that works even on pages that bind Escape themselves.
+      if (isCancel(e)) {
+        l.cancelPending();
+        l.hide();
+        return true;
+      }
+      const chromeUiFocus = isChromeUiFocus(win, typing, e as KeyboardEvent);
+      const leaderKeyPress =
+        e.key === deps.leaderKey() && !e.ctrlKey && !e.altKey && !e.metaKey;
+      const emptyLazyfoxField =
+        typingValue === "" && (isCommandCenterTab(win) || isAboutPage(win));
+      // "The user is writing something." A field with text, or a field in the
+      // page rather than in the browser's chrome UI.
+      const typingWins = typingNow && (!chromeUiFocus || typingValue !== "");
+      if (typingWins && !(leaderKeyPress && emptyLazyfoxField)) {
         if (l.active) l.hide();
         if (l.hasPending()) l.cancelPending();
         return false;
       }
+      if (
+        typingNow &&
+        leaderKeyPress &&
+        (emptyLazyfoxField || (chromeUiFocus && typingValue === ""))
+      ) {
+        // The leader key in the one field where it is still a chord. Treat it as
+        // a fresh press (re-arm, so holding `;` carries the sequence across) and
+        // consume it — never hand it to an armed capture as if it were a
+        // sub-key, which is what made `;` after `;W` do something arbitrary.
+        if (armHeldLeader(l, e, noKeyup)) return true;
+      }
       if (l.hasPending()) {
-        l.handlePending(e.key);
+        l.handlePending(e);
         return true;
       }
-      l.handleKey(e as KeyboardEvent);
-      return true;
+      // `handleKey` reports whether it CONSUMED the key, and that answer is
+      // honoured. It used to be discarded here and in every other host, which
+      // meant a key the leader declined — a bare modifier press, a chord with
+      // no binding — was swallowed with nothing on screen saying so. The user
+      // pressed it again, because the first press had visibly done nothing.
+      return l.handleKey(e);
     }
 
     // Esc on chrome-owned pages blurs the focused element so the page returns

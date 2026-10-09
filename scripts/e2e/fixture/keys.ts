@@ -91,14 +91,54 @@ ctx.leaderSeq = async function leaderSeq(tab, keys, opts) {
     await sleep(150);
   }
   throw new Error("leader did not arm for chord " + JSON.stringify(keys) + " (3 attempts)");
-};
+};  // Put a chrome-owned page into the state a leader CHORD assumes — and say so
+  // when it had to, or refuse the chord when it cannot.
+  //
+  // The home page types EVERY printable key into its search box while that box
+  // has focus, by design ("every key types, so you can search for anything"),
+  // which is exactly why `;` arms the leader only in command mode. A chord
+  // pressed with the box focused is therefore not a chord at all: it is the
+  // TEXT `;W|`, typed. What follows is a silent no-op that reads like a product
+  // bug — the split never formed, the move never happened — while the product
+  // is behaving as documented. That is the most expensive kind of harness bug
+  // there is, so it is removed rather than left to be diagnosed again.
+  //
+  // Returning to command mode is the product's OWN transition (its load handler
+  // blurs the input and focuses the body), not a state invented here. When the
+  // page had to be returned, the repair is RECORDED, so the report shows it: a
+  // page that keeps taking the keyboard back is worth knowing about, and
+  // quietly fixing that here would be hiding it. When it cannot be returned at
+  // all, the chord is refused — every key of it would go into the box.
+  ctx.chordReady = async function chordReady(tab) {
+    const state = await evalIn(
+      tab,
+      `(() => {
+        const input = document.getElementById("input");
+        if (!input) return "no-input";
+        if (document.activeElement !== input) return "command";
+        try { input.blur(); } catch (e) {}
+        if (document.activeElement === input) {
+          const body = document.body;
+          try { body.setAttribute("tabindex", "-1"); body.focus({ preventScroll: true }); } catch (e) {}
+        }
+        return document.activeElement === input ? "insert" : "returned to command mode";
+      })()`
+    ).catch(() => "unreadable");
+    if (state === "insert") {
+      throw new Error(
+        "the command center is in INSERT mode and its search box took the focus back: a leader chord would be typed into it, not run"
+      );
+    }
+    if (state === "returned to command mode") ctx.repaired.push("the home page was in insert mode; returned it to command mode");
+  };
 
-ctx.chromeLeaderSeq = async function chromeLeaderSeq(tab, keys, opts) {
-  // Same rationale as chromeLeaderPress: the chrome document captures the
-  // leader key synchronously, so no page focus and no clicks (a click near a
-  // split-pane border would switch the active pane underneath the action).
-  await evalIn(tab, `document.activeElement && document.activeElement.blur ? (document.activeElement.blur(), true) : true`).catch(() => {});
-  await ctx.press(tab, ";");
+  ctx.chromeLeaderSeq = async function chromeLeaderSeq(tab, keys, opts) {
+    // Same rationale as chromeLeaderPress: the chrome document captures the
+    // leader key synchronously, so no page focus and no clicks (a click near a
+    // split-pane border would switch the active pane underneath the action).
+    await ctx.chordReady(tab);
+    await evalIn(tab, `document.activeElement && document.activeElement.blur ? (document.activeElement.blur(), true) : true`).catch(() => {});
+    await ctx.press(tab, ";");
   // No page-realm arm signal exists for the chrome leader, so this is bounded
   // pacing between the leader and the first binding key — anything longer
   // races the leader's own arm timeout and the key lands as plain typing.
@@ -161,11 +201,36 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
     if (!(await ctx.probeIsLive())) {
       await ctx.ensureProbe().catch(() => {});
     }
+    // START FROM AN EMPTY SLOT, and then insist the reply is OURS.
+    //
+    // `#lfc=` is ONE url slot on the probe tab, and the helper answers it by
+    // rewriting the fragment one macrotask later. Two things follow, and both
+    // cost a silently dropped keystroke:
+    //
+    //   * a reply can still be sitting there from the previous request (the
+    //     strip below races the helper's deferred write), and
+    //   * the reply pattern used to be matched WITHOUT the nonce, so that
+    //     leftover counted as this request's success.
+    //
+    // The harness then moved on immediately, and the very next
+    // `location.hash = …` OVERWROTE a request the helper had not read yet. The
+    // key was never dispatched and nothing reported it — the test just saw one
+    // character missing from a filter box (the `;h` history test lost exactly
+    // its first character this way, traced key by key). Clearing the slot first
+    // cannot fix a stale write that lands afterwards, which is why the nonce
+    // check below is the part that actually closes it: a reply that is not ours
+    // is not a reply.
+    await evalIn(ctx.probe, `history.replaceState(null, "", location.href.split("#")[0]); true`).catch(() => {});
     await evalIn(ctx.probe, `location.hash = ${JSON.stringify("lfc=keys." + payload + "." + nonce)}; true`);
     const ok = await waitFor(async () => {
       const u = await evalIn(ctx.probe, `location.href`);
-      const m = u && u.match(/#lfc=keys\.(ok|err)\.[^#]*$/);
-      return m ? m[1] === "ok" : null;
+      const m = u && u.match(/#lfc=keys\.(ok|err)\.([^#]*)$/);
+      if (!m) return null;
+      // `err` carries a base64 message before the nonce, so the nonce is the
+      // TRAILING segment in both forms; anything else is a previous request's
+      // reply and must not be read as this one's.
+      if (!m[2].endsWith(nonce)) return null;
+      return m[1] === "ok";
     }, 10000).catch(() => null);
     // Strip the reply hash so the probe tab no longer looks like an #lfc=
     // transient: the tabs popup's listTabs skips #lfc= tabs, so a dirty probe

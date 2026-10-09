@@ -102,7 +102,7 @@ func TestMakeHints(t *testing.T) {
 }
 
 func TestWhichKeyPagination(t *testing.T) {
-	flat := Bindings
+	flat := DisplayBindings()
 	var lazyCount, nativeCount int
 	for _, b := range flat {
 		if b.Native {
@@ -194,10 +194,7 @@ func TestWhichKeyPagination(t *testing.T) {
 // in it. Guard their presence and reject key collisions.
 func TestBindingsContainNewActions(t *testing.T) {
 	keys := map[string]string{}
-	for _, b := range Bindings {
-		if b.Native {
-			continue
-		}
+	for _, b := range lazyBindings() {
 		if prev, dup := keys[b.Key]; dup {
 			t.Fatalf("duplicate lazy key %q (%q and %q)", b.Key, prev, b.Label)
 		}

@@ -64,6 +64,16 @@ export interface BgApi {
   removeDownload: { req: { id: string }; res: { ok: boolean } };
   openDownloadLocation: { req: { id: string }; res: { ok: boolean } };
   retryDownload: { req: { id: string }; res: { ok: boolean; error?: string; resumed?: boolean } };
+  // Dismiss the download notification(s) shown on the status bar.
+  //
+  // The BAR belongs to the chrome helper, so this cannot be done from where the
+  // key is pressed: a `;D` on a web page or on the command center runs the
+  // page's own ops surface, which has no bar to clear. The background relays it
+  // to the helper (see ChromeApi["dismissDownload"]). Before that relay existed
+  // the action was a documented no-op in the content ops, so the key was bound
+  // in the menu, consumed, and did nothing — on every surface except the one
+  // where the chrome helper happened to own the keyboard.
+  dismissDownload: { req: Record<string, never>; res: { ok: boolean } };
   stealthOpen: { req: Record<string, never>; res: { ok: boolean; error?: string } };
   openSetup: { req: Record<string, never>; res: { ok: boolean } };
   // Open the diagnostics & performance page (the "special page": live page
@@ -139,9 +149,25 @@ export interface BgApi {
   // test to the DOM test. The tab's own script is the only thing that can
   // answer, so it answers.
   syncContent: {
+    // `hold` rides back on the reply: a content script that has just booted
+    // asks "is the leader key still physically down?", and the background is
+    // the only party that can answer for a document this one has never seen.
     req: { active: boolean; url: string };
-    res: { ok: boolean };
+    res: { ok: boolean; hold?: boolean };
   };
+  // The HELD leader key, as a per-tab fact rather than per-document state.
+  //
+  // The hold used to live in the content script that set it, which made it
+  // invisible to the document that came next — and the document that comes
+  // next is exactly what the hold is FOR. Holding `;` and pressing `x` closes
+  // a tab; the tab that takes focus runs a brand-new content script whose
+  // `sticky` is false, so the second `x` went to the page as a literal
+  // character and the chain died on precisely the actions worth repeating
+  // (close, back, forward). Same for `;g`/`;l`, which navigate.
+  //
+  // Stored as a tab session value, like syncTyping, because that is the one
+  // store that survives the content script being torn down and rebuilt.
+  syncHold: { req: { hold: boolean }; res: { ok: boolean } };
   // Content script -> background: live find-in-page state (1-based current
   // match, 0 = nothing walked to yet; total matches). The background relays it
   // to the chrome helper so its window-level status bar shows the find count
@@ -151,7 +177,10 @@ export interface BgApi {
   sessionSave: { req: { name: string }; res: { ok: boolean; session?: Session } };
   sessionNew: { req: { name: string }; res: { ok: boolean; note?: string } };
   sessionRestore: { req: { name: string }; res: { ok: boolean } };
-  sessionDelete: { req: { name: string }; res: { ok: boolean } };
+  // `note` because deleteSession ANSWERS with a reason ("no such session") —
+  // the caller toasts the outcome, and an outcome it cannot read is an outcome
+  // it cannot report. See the relay-side declaration for the ordering half.
+  sessionDelete: { req: { name: string }; res: { ok: boolean; note?: string } };
   sessionSwitchByMarker: { req: { marker: number }; res: { ok: boolean; name?: string } };
   sessionAssignMarker: { req: { name: string; marker: number }; res: { ok: boolean; note?: string } };
   sessionTabCopy: { req: { from: string; index: number; to: string }; res: { ok: boolean; note?: string } };
@@ -251,12 +280,6 @@ export interface RelayApi {
   // Ask the active tab's content script to start hinting / focus its first
   // field. Best-effort: a tab with no content script is a normal outcome.
   startHints: { req: Record<string, never>; res: null };
-  // Ask the active tab's content script to copy / edit the link in front of the
-  // user (`;K c` and `;K e`). Best-effort and silent on a tab with no content
-  // script, exactly like startHints: the chrome helper has no page of its own,
-  // so the only place this can be answered is the page.
-  copyLink: { req: Record<string, never>; res: null };
-  editLink: { req: Record<string, never>; res: null };
   focusFirstInput: { req: Record<string, never>; res: null };
   openOptions: { req: Record<string, never>; res: null };
   openSetup: { req: Record<string, never>; res: null };
@@ -275,7 +298,13 @@ export interface RelayApi {
   saveSession: { req: { name: string }; res: null };
   newSession: { req: { name: string }; res: null };
   restoreSession: { req: { name: string }; res: null };
-  deleteSession: { req: { name: string }; res: null };
+  // deleteSession ANSWERS, unlike its siblings, because a deletion has to be
+  // observable before anything re-reads the list. The sessions popup used to
+  // fire the delete and immediately re-fetch, and the re-fetch could land
+  // before the storage write did — so `x x` left the deleted session sitting
+  // in the list, which reads as "the delete did nothing". A reply the caller
+  // can await is the only ordering guarantee that does not rest on a timer.
+  deleteSession: { req: { name: string }; res: { ok: boolean; note?: string } };
   switchSessionByMarker: { req: { marker: number }; res: null };
   assignSessionMarker: { req: { name: string; marker: number }; res: null };
   // These two answer with a human-readable `note` on failure ("no such tab",
@@ -333,6 +362,9 @@ export interface ChromeApi {
   // `tabs.create` resolves — pairing early pairs the tabs being torn down.
   restoreSplits: { req: { groups: number[][]; expect?: number }; res: void };
   sessionState: { req: RelaySessionState; res: void };
+  // Clear the bar's download notification(s). Pushed (not requested) because the
+  // page that pressed `;D` has nothing left to do once the bar is told.
+  dismissDownload: { req: Record<string, never>; res: void };
   leaderState: {
     // index + the same one-value signal; see BgApi["syncLeader"].
     req: { index: number; signal: LeaderSignal };

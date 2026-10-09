@@ -47,7 +47,7 @@ export interface QuickActions {
 // The home screen command grid, grouped into sections. `group` drives the
 // section headers; items are rendered in order within each section. This list
 // is deliberately SHORT: everything already on the which-key leader menu
-// (`;n` new tab, `;x` close, `;z` zen, `;w` resize, `;S` strip, sessions, ...)
+// (`;n` new tab, `;x` close, `;W z` zen, `;W w` resize, `;P` sessions, ...)
 // is removed so the home page only surfaces what the leader does not — the
 // browser page access and Lazyfox settings, plus the quick-launch apps below.
 export interface QuickCmd {

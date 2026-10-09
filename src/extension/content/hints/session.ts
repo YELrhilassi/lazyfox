@@ -31,8 +31,22 @@ import { collectHintables } from "./collect";
 import { targetKey } from "./select";
 import { createHintResolve } from "./hintresolve";
 
+// Label re-anchoring cadence. See `frame()` for why these are floors rather
+// than triggers.
+const SWEEP_FAST_MS = 50; // 20 sweeps/second while something is moving
+const SWEEP_IDLE_MS = 125; // ~8 sweeps/second on a still page
+// How long a sweep that found movement keeps the fast rate. Bounded so one
+// permanently-animating element cannot hold the loop at the fast rate forever.
+const FAST_WINDOW_MS = 400;
+
 export interface LinkHints {
   readonly active: boolean;
+  // True between the `;f` keypress and the moment the batch is on screen.
+  // start() is async, so this window is real and can be long on a heavy page.
+  // Hosts MUST gate their cancel paths on `active || starting`: gating on
+  // `active` alone drops the cancel and lets the batch appear after the user
+  // has already pressed Escape.
+  readonly starting: boolean;
   start(): Promise<void>;
   handleKey(e: KeyboardEvent): boolean;
   exit(): void;
@@ -43,15 +57,6 @@ export interface LinkHints {
   // appears in the one state a user cannot otherwise detect (an ambiguous typed
   // prefix), so it is part of the same self-report the diagnostics page reads.
   enterBadge(): { shown: boolean; glyph: string };
-  // The link this session is currently pointed at: the first on-screen match
-  // for the typed prefix, i.e. exactly what Enter would activate right now.
-  // null when the layer is not open or nothing matches.
-  //
-  // This is what lets "copy link" and "edit link" mean the same thing the user
-  // can SEE rather than a second, hidden idea of "current link". It is computed
-  // from the same predicate Enter uses, deliberately: a copy action that
-  // disagreed with what Enter would open is worse than no copy action.
-  currentTarget(): { url: string; text: string } | null;
 }
 
 export function createLinkHints(getHintChars: () => string): LinkHints {
@@ -81,6 +86,17 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   // capture it and bail if a newer session took over (e.g. ESC during the
   // await) so stale state never repopulates after exit.
   let session = 0;
+  // True between the `;f` keypress and the moment the batch is actually built.
+  // `start()` is async — it walks the whole document and then awaits the core
+  // for the key pool — so for a noticeable window on a heavy page the session
+  // exists but `active` is still false. Escape during that window used to do
+  // nothing at all (the hosts only called exit() once `active` was true), and
+  // because nothing bumped `session`, the start completed anyway: the batch
+  // appeared AFTER the user had already pressed Escape to cancel it. That is
+  // the "hints get stuck and Escape does not work" report — the cancel arrived
+  // first and was silently dropped, and the layer that survived it ignored the
+  // next Escape for a whole frame of layout work.
+  let starting = false;
   // rAF loop state: pages can shift under the hints at any moment (a carousel
   // auto-slide, a lazy image landing, a layout shift, the user's own wheel
   // scroll), so hints are re-anchored to their elements every frame. Reading
@@ -120,8 +136,25 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   }
 
   async function start(): Promise<void> {
-    if (active) return;
+    // A start already in flight is a start the user can still cancel. Without
+    // this the second `;f` ran a second full collect + core call, and the two
+    // raced to install overlapping batches.
+    if (active || starting) return;
     const mySession = ++session;
+    starting = true;
+    try {
+      await runStart(mySession);
+    } finally {
+      if (session === mySession) starting = false;
+    }
+  }
+
+  // The body of start(), split out so `starting` is cleared on EVERY exit path
+  // — including the early returns below — by one finally rather than by a
+  // hand-placed `starting = false` on each branch. Miss one and the layer can
+  // never be started again on that page: `;f` would return immediately, with
+  // no error and nothing on screen.
+  async function runStart(mySession: number): Promise<void> {
     pool = collectHintables();
     if (!pool.length) {
       toast("no hints");
@@ -136,6 +169,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
       return;
     }
     if (session !== mySession) return; // exited (ESC) during the await
+    starting = false;
     // If the current viewport has no links (e.g. a blank section), page down
     // until a batch of links comes into view.
     let vis = resolve.viewportItems();
@@ -359,11 +393,28 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     lastW = w;
     lastH = h;
     if (viewChanged) resyncAt = now + RESYNC_DELAY;
-    if (now < fastUntil || viewChanged || now - lastSweep > 100) {
+    // HOW OFTEN the labels may be re-anchored.
+    //
+    // A sweep calls `render()`, which resolves every hinted element and reads
+    // its rect — a forced layout for each one. The old condition ran that on
+    // ANY animation frame, and `render()` returning true (something on the
+    // page moved) pushed `fastUntil` a full second into the future, which the
+    // next frame extended again. So on any page with a carousel, a video
+    // player, a clock or a CSS transition, the loop pinned the main thread at
+    // 60 sweeps/second x MAX_HINTS layout reads — and a main thread in that
+    // state does not dispatch key events. Escape was queued behind the sweep
+    // loop, which is exactly "the hints are stuck and Escape does nothing".
+    //
+    // The fix is a floor on the interval rather than a smarter trigger: labels
+    // tracking at 20/second is visually identical for repositioning, and the
+    // headroom is what lets a keystroke through. Idle pages still drop to ~8
+    // sweeps/second.
+    const gap = now - lastSweep;
+    if (gap >= (now < fastUntil ? SWEEP_FAST_MS : SWEEP_IDLE_MS)) {
       lastSweep = now;
       // The page is animating (carousel slide, scroll, layout shift): keep
-      // tracking every frame for a while so hints glide WITH the links.
-      if (render()) fastUntil = now + 1000;
+      // tracking at the fast rate for a while so hints glide WITH the links.
+      if (render()) fastUntil = now + FAST_WINDOW_MS;
     }
     if (resyncAt && now >= resyncAt) {
       resyncAt = 0;
@@ -518,25 +569,13 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     activator.activate(el, "click");
   }
 
-  // The link Enter would open right now, resolved to an absolute href and the
-  // text that names it. Shares `typed` and the on-screen filter with
-  // activate/Enter by construction, so the three can never disagree.
-  function currentTarget(): { url: string; text: string } | null {
-    if (!active) return null;
-    const found = items.filter((i) => i.key.indexOf(typed) === 0 && resolve.onScreen(i));
-    const it = found[0];
-    if (!it) return null;
-    const el = resolve.resolve(it) || it.el;
-    if (!el || !el.isConnected) return null;
-    const url = targetKey(el);
-    if (!url) return null;
-    const text = ((el as HTMLElement).innerText || el.textContent || "").replace(/\s+/g, " ").trim();
-    return { url, text: text.slice(0, 200) };
-  }
-
   function exit(): void {
+    // Bumping the session is what CANCELS a start that is still in flight, so
+    // Escape works even in the window before `active` is set. It is also what
+    // makes exit() safe to call when nothing is happening.
     session++;
     active = false;
+    starting = false;
     unwatchDom();
     if (rafId) {
       cancelAnimationFrame(rafId);
@@ -552,9 +591,11 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
 
   return {
     enterBadge: () => overlay.enterBadge(),
-    currentTarget,
     get active() {
       return active;
+    },
+    get starting() {
+      return starting;
     },
     start,
     handleKey,

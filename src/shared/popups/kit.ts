@@ -7,6 +7,7 @@
 // them here meant a content script that only wanted relTime had to import the
 // overlay and the ops surface to get it.
 import { esc } from "../dom";
+import type { KeyLike } from "../keymap";
 import { createSelector, type PopupCtl } from "../overlay";
 import type { ActionOps } from "../ops";
 import type { WkItem } from "../types";
@@ -19,8 +20,12 @@ export interface PopupCtx {
   open(html: string, build: (root: HTMLElement) => PopupCtl): PopupCtl;
   close(): void;
   toast(msg: string): void;
-  // Runs a leader binding by key (used by the help popup).
-  runAction(key: string): void;
+  // Runs a leader ACTION ID — not a printed chord. The help popup holds chords
+  // (that is what a row shows), so it resolves one to an id through the keymap
+  // before calling this; every host then hands the id straight to the action
+  // table, which is keyed by id. Passing a chord here would be a second lookup
+  // that could disagree with the dispatcher's.
+  runAction(action: string): void;
   // The leader binding list, in core order.
   bindings(): Promise<WkItem[]>;
   // Arms a one-shot digit capture and hands the next digit to `apply`.
@@ -34,7 +39,10 @@ export interface PopupCtx {
   // rather than in a side channel because the armer is the ONLY party that
   // knows it: the digits still legal after `;W m 1` depend on the tab count,
   // which only the action knows.
-  armDigits(apply: (k: string) => boolean, timeoutMs?: number, expect?: string): void;
+  //
+  // The callback receives the WHOLE event rather than a bare character, so a
+  // capture can still tell `1` from `Shift+1` and Enter from Ctrl+Enter.
+  armDigits(apply: (e: KeyLike) => boolean, timeoutMs?: number, expect?: string): void;
   // Content scripts preventDefault every key before it reaches the popup input,
   // so their selector must insert text manually; chrome's input receives keys
   // natively.
@@ -72,10 +80,17 @@ export function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
   debounceMs?: number;
   itemClass?: string;
   vimNav?: boolean;
-  extraKeys?: (e: KeyboardEvent, sel: { empty: boolean; item: T | null; refresh(): void }) => boolean;
+  extraKeys?: (e: KeyboardEvent, sel: { empty: boolean; item: T | null; refresh(): void; refreshSoon(delayMs: number): void }) => boolean;
   onEnter?: (value: string, item: T | null) => boolean;
   onChange?: (idx: number, item: T | null, count: number) => void;
   groupBy?: (item: T) => string;
+  // Stable identity used to carry the selection across a refresh. See
+  // overlay-selector.ts `search()` — without it every re-read throws the
+  // highlight back to row 0, which is wrong for any popup that refreshes to
+  // show a MUTATED list rather than a fresh search.
+  keyOf?: (item: T) => string | number | undefined;
+  // Where the selection lands on the first fill (see overlay-selector.ts).
+  initial?: (items: T[]) => number;
 }): PopupCtl {
   const listEl = root.querySelector(".lf-list") as HTMLElement;
   // A keyPanel has no input. The selector's text handling is written against
@@ -104,10 +119,13 @@ export function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
     onEnter: opts.onEnter,
     onChange: opts.onChange,
     groupBy: opts.groupBy,
+    keyOf: opts.keyOf,
+    initial: opts.initial,
   });
   return {
     onKey: sel.onKey,
     refresh: sel.refresh,
+    refreshSoon: (ms: number) => sel.refreshSoon && sel.refreshSoon(ms),
     close: sel.close,
     focus: () => {
       if (inputEl.isConnected) inputEl.focus();

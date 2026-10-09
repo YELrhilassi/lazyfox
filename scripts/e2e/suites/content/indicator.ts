@@ -30,14 +30,22 @@ export async function run(ctx: any): Promise<void> {
       return on ? true : null;
     }, 8000).catch(() => null);
     assert(contentArmed, "the content leader armed after ;");
-    // The chrome bar is downstream of that relay (content -> background ->
-    // relay port -> helper), so it is polled with a generous window: the bound
-    // is the transport, not the keypress.
+    // THE ARMED STATE HAS TO OUTLIVE THE READ, so the read happens while a
+    // CATEGORY is open. A bare `;` arm lives for the leader's own window, and a
+    // `chromeState()` read is a probe -> helper -> background -> re-activate
+    // round trip that under load takes seconds — the first version of this test
+    // was a race between the two, which is how it came to be recorded as passing
+    // 2 of 3 runs. A category capture never expires (leader.ts#openCategory:
+    // "a category is something you READ, not a chord you fly through"), so the
+    // bar read has an unbounded window and the assertion stops being a coin
+    // toss. What is asserted is unchanged: the bar mirrors an ARMED leader,
+    // with the committed prefix on it.
+    await ctx.press(ctx.tabA, "W");
     const armed = await waitFor(async () => {
       const s = await ctx.chromeState();
       return s && s.statusAttr && s.statusAttr.indexOf("lead:") !== -1 ? s.statusAttr : null;
     }, 15000).catch(() => null);
-    assert(armed, "indicator armed after ; : " + JSON.stringify(armed));
+    assert(armed, "indicator armed after ; (read while ;W was open): " + JSON.stringify(armed));
     await ctx.press(ctx.tabA, "Escape");
     const after = await waitFor(async () => {
       const s = await ctx.chromeState();
@@ -55,6 +63,11 @@ export async function run(ctx: any): Promise<void> {
     // value can never flip this the wrong way.
     await ctx.ensureWhichKey(ctx.tabA, false);
     await ctx.press(ctx.tabA, ";");
+    // Same rule as the test above: open a category so the armed state cannot
+    // expire while the (slow) bar read is in flight — and a category works
+    // with the overlay OFF, which is the point of this test: the bar is the
+    // only evidence left when the which-key menu is disabled.
+    await ctx.press(ctx.tabA, "W");
     const armed = await waitFor(async () => {
       const s = await ctx.chromeState();
       return s && s.statusAttr && s.statusAttr.indexOf("lead:") !== -1 ? s.statusAttr : null;

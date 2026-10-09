@@ -22,6 +22,10 @@ type P<T> = Promise<T>;
 export interface CoreFacade {
   version(): P<string>;
   bindings(): P<WkItem[]>;
+  keymap(): P<unknown[]>;
+  keymapValidate(): P<string>;
+  unshiftKey(key: string): P<string>;
+  shiftKey(key: string): P<string>;
   normalizeUrl(text: string): P<string>;
   isLikelyUrl(text: string): P<boolean>;
   rankVisited(items: VisitedItem[], query: string): P<VisitedItem[]>;
@@ -101,6 +105,10 @@ type TableMethods = Omit<CoreFacade, "statusBatch">;
 const METHODS: { [K in keyof TableMethods]: SyncMethod } = {
   version: (a) => a.version(),
   bindings: (a) => a.bindings(),
+  keymap: (a) => a.keymap(),
+  keymapValidate: (a) => a.keymapValidate(),
+  unshiftKey: (a, [k]) => a.unshiftKey(k),
+  shiftKey: (a, [k]) => a.shiftKey(k),
   normalizeUrl: (a, [text]) => a.normalizeUrl(text),
   isLikelyUrl: (a, [text]) => a.isLikelyUrl(text),
   rankVisited: (a, [items, q]) => a.rankVisited(items, q),

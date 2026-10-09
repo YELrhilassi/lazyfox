@@ -37,11 +37,18 @@ import { noteContentPresent, resetContentPresence } from "../../src/chrome/keyst
 import { releaseHoldOnKeyup, releaseLostHold, visibilityLostHold } from "../../src/shared/holdrelease.ts";
 import { fakeWindow, fakeLeader } from "./support.ts";
 
-const CC_URL = "moz-extension://abc/commandcenter.html";
+// The default page for these tests is a CHROME-OWNED one (an about: page), not
+// the command center. The command center now runs its own leader and reports
+// presence for it, so the chrome helper deliberately declines its keys (see
+// keystate.chromeOwnsKeys, and the ownership cases in test-chrome-keys.ts) —
+// asserting the HELD-leader rule against the command center would therefore be
+// asserting the old double-owner bug. `about:preferences` is chrome territory
+// with no page engine behind it, which is what this file is about.
+const ABOUT = "about:preferences";
 const WEB = "https://example.com/";
 
 /** Build a dispatcher over a fresh leader, and hand both back. */
-function setup(spec = CC_URL) {
+function setup(spec = ABOUT) {
   resetContentPresence();
   const leader = fakeLeader();
   const down = createChromeKeyDown({

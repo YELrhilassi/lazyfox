@@ -312,7 +312,6 @@ import { createTypingChannel } from "./typing";
   // what stops a keymap change from reading as a rewiring change.
   const built = createChromeLeader({
     ctx,
-    switchSessionByMarker: (m) => chromeOps.switchSessionByMarker(m),
     // The overlay may only paint while the chrome helper owns the page. On a
     // web page the content script owns the leader and paints its own overlay
     // there; without this gate the chrome one — a persistent host that only
@@ -337,12 +336,11 @@ import { createTypingChannel } from "./typing";
       status.setLeaderSignal(built.leader.signal());
       status.compute();
     },
-    // A plain binding always beats a category head. Supplying this is what
-    // stops registering `;W` / `;Z` from ever being able to take over a key
-    // that already worked.
-    hasBinding: (k) => !!built.actions[k],
-    noteAction: (k) => {
-      lastAction = k;
+    // The action table records what RAN, by action id. Nothing here decides which
+    // key means that action: the keymap (core/keymap.go) does, and it cannot
+    // disagree with the menu because it IS the menu.
+    noteAction: (action) => {
+      lastAction = action;
     },
   });
   leader = built.leader;
@@ -423,6 +421,7 @@ import { createTypingChannel } from "./typing";
 split,
     status,
     setContentPresent: noteContentPresent,
+    dismissDownloads: () => void chromeOps.dismissDownload(),
     cfg,
     debug,
     cache,

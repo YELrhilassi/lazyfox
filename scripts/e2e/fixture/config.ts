@@ -10,9 +10,21 @@
 // Installed onto the shared ctx by fixture.ts; see that file for the shape
 // and for why reset() exists.
 
-import {
-  evalIn,
-} from "../bidi.ts";
+import { evalIn } from "../bidi.ts";
+// The product's OWN schema and merge, imported rather than re-implemented.
+//
+// `setConfig` does not store what it is handed: the handler validates the
+// payload per field (extension/store.ts#vConfig) and writes
+// `mergeConfig(...)` over the defaults (extension/handlers/sync.ts). A harness
+// that compares the stored config against the object it SENT is therefore
+// comparing against a value the product never promised to keep — and it
+// reported `config apps did not take` on every single test of a content run,
+// because one app entry the harness held did not survive the product's
+// per-app normalisation (`vQuickApp` keeps exactly id/name/url/enabled).
+// Expected-vs-stored is only meaningful when the expectation goes through the
+// same path, so it does — the same rule the tab-count predicate follows.
+import { vConfig } from "../../../src/extension/store.ts";
+import { mergeConfig } from "../../../src/shared/config.ts";
 
 export function installConfig(
   // The per-test context bag. Typed as any deliberately: the helpers are
@@ -65,6 +77,30 @@ export function installConfig(
    * would be silently undone. Whole object, whole write, then verify from
    * storage — the same shape as ensureWhichKey, with the diff generalised.
    */
+  // What the product holds after being handed `partial`: its own validation,
+  // then its own merge over the defaults. Pure, so it can be compared directly
+  // against what storage reads back.
+  const storedForm = (partial: any): any => mergeConfig(vConfig(partial) || {});
+
+  // One line per RUN, not per test. A config note that repeats sixty times (see
+  // the note above) buries every other repair in the report, and the first
+  // occurrence already says everything the sixtieth would.
+  const noteOnce = (msg: string): void => {
+    ctx.configNotes = ctx.configNotes || new Set<string>();
+    if (ctx.configNotes.has(msg)) return;
+    ctx.configNotes.add(msg);
+    ctx.repaired.push(msg);
+  };
+
+  // The keys of `a` whose value differs from `b`, comparing JSON so an array or
+  // an object is compared by value rather than by identity.
+  const differingKeys = (a: any, b: any): string[] =>
+    Object.keys(a).filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+  const show = (v: any): string => {
+    const s = JSON.stringify(v);
+    return s === undefined ? "undefined" : s.length > 120 ? s.slice(0, 117) + "..." : s;
+  };
+
   ctx.restoreConfig = async function restoreConfig(): Promise<void> {
     if (!ctx.probe) ctx.probe = await ctx.makeProbeTab();
     const read = async () => {
@@ -91,8 +127,12 @@ export function installConfig(
     if (!pristine) return;
     const now = await read();
     if (!now) return;
-    const drifted = Object.keys(pristine).filter((k) => now[k] !== pristine[k]);
-    const added = Object.keys(now).filter((k) => !(k in pristine));
+    // Compare against the form the product would STORE for this baseline, not
+    // against the baseline itself: a field the product normalises on the way in
+    // (apps, whose entries are narrowed to id/name/url/enabled) is not drift.
+    const expected = storedForm(pristine);
+    const drifted = differingKeys(expected, now);
+    const added = Object.keys(now).filter((k) => !(k in expected));
     if (!drifted.length && !added.length) return;
     const keys = drifted.concat(added.map((k) => k + " (added)"));
     const applied = await evalIn(
@@ -118,9 +158,19 @@ export function installConfig(
     ).catch(() => null);
     if (after) {
       const got = JSON.parse(after as string);
-      const still = Object.keys(pristine).filter((k) => got[k] !== pristine[k]);
+      const still = differingKeys(expected, got);
       if (still.length) {
-        ctx.repaired.push(`config ${still.join(", ")} did not take`);
+        // Name the value the product kept. "did not take" on its own is the
+        // kind of note that gets skimmed past for sixty tests; with the two
+        // values beside it, the reader can see WHICH normalisation happened —
+        // and see it once.
+        noteOnce(
+          `config ${still.join(", ")} did not take (asked ${show(
+            still.length === 1 ? expected[still[0]] : still.map((k) => [k, expected[k]]),
+          )}, product kept ${show(
+            still.length === 1 ? got[still[0]] : still.map((k) => [k, got[k]]),
+          )})`,
+        );
         return;
       }
       // A key the product added back while settling is a DEFAULT it

@@ -60,12 +60,14 @@ export async function run(ctx: any): Promise<void> {
       const n = await evalIn(ctx.tabA, `document.querySelectorAll("#results.quick .result .hintkey").length`);
       return n > 0 ? n : null;
     }, 15000);
-    // The chrome helper arms a one-shot capture for the pick: the next key is
-    // intercepted at the window level and forwarded into the page, so a hint
-    // letter works even when Firefox's (hidden) URL bar holds focus on a fresh
-    // new tab. leaderPending must be true while hint-pick is armed.
+    // The PAGE owns this pick, and the chrome helper must NOT have claimed it
+    // too. Two owners for one keystroke is exactly what made `;f` work only
+    // sometimes: the helper's leader used to arm its own capture for the same
+    // letter while the page armed hint-pick, and which one answered depended on
+    // whether Firefox had put the tab in its own process. `leaderPending` is
+    // the chrome helper's capture slot, so it must be empty here.
     const s = await ctx.chromeState();
-    assert(s && s.leaderPending, "chrome armed the hint-pick key capture (leaderPending)");
+    assert(s && !s.leaderPending, "the chrome helper did not also arm a capture (leaderPending)");
     // `k` is the hint letter for index 10 — the "History" tile with the default
     // 6 quick-launch apps (6 apps + 6 browser-access commands). Pressing it
     // sets the History mode IN PLACE (no navigation), which makes the pick

@@ -1,8 +1,17 @@
 # Multi-key layout — analysis and proposed draft
 
-Status: **proposed, not implemented.** Nothing here has been built. Every
-statement about current behaviour was read out of `core/bindings.go` and
-`src/shared/popups/leader.ts`, not assumed.
+Status: **implemented, and since revised.** The categories below (`;W`, `;Z`,
+`;K`) ship as declared, and the cancel and held-leader decisions in §8 ship
+with them. What changed after this draft is the part that made every key a
+guess: the keymap is now ONE table of data (`core/keymap.go`) which the menu,
+the help popup and the dispatch all read, and the sessions family (`;p` / `'` /
+nine marker rows) collapsed into the single key `;P` plus keys inside the popup
+it opens. See "the keymap was two tables" in FINDINGS.md. Read this document for
+the reasoning, `core/keymap.go` for what is bound, and §1 below as the STATE AT
+THE TIME OF WRITING rather than as a description of today's leader.
+
+Every statement about behaviour at the time of writing was read out of
+`core/bindings.go` and `src/shared/popups/leader.ts`, not assumed.
 
 ---
 
@@ -58,7 +67,7 @@ exactly what a category is for.
 
 Only two. That is the whole proposal.
 
-### `;W` — Window & layout (13 keys)
+### `;W` — Window & layout (12 keys)
 
 Absorbs the entire split-view family plus the window-level toggles.
 
@@ -72,8 +81,8 @@ Absorbs the entire split-view family plus the window-level toggles.
 | `;W ]` | next split pane |
 | `;W {` | swap pane left |
 | `;W }` | swap pane right |
-| `;W \` | close split view |
-| `;W +` | move tab N into the split |
+| `;W u` | close split view (unsplit) |
+| `;W m` | move tab N into the split |
 | `;W ,` | move tab left |
 | `;W .` | move tab right |
 
@@ -113,8 +122,15 @@ Hot and mnemonic keys are untouched:
 search · `o`/`O` open URL · `h` history · `b` bookmarks · `d` downloads ·
 `j`/`k` next/prev tab · `g`/`l` back/forward · `G`/`L` nav stack · `r` reload ·
 `n`/`x`/`v` new/close/reopen · `V` recently closed · `c` duplicate ·
-`a` alternate · `y` copy URL · `m` mute · `i` focus input · `/` find ·
-`?` help · `p` sessions · `'` switch session 1-9 · `q` which-key toggle.
+`a` alternate · `m` mute · `i` focus input · `/` find · `?` help ·
+`q` which-key toggle.
+
+The one part of that list the shipped keymap does NOT follow: `y` copy URL,
+`p` sessions and `'` switch session were three keys for two actions, spelled at
+two different depths. Copying the address is `;K c` (one spelling, and the `;K`
+category means one thing), and the sessions family is `;P` plus its own keys —
+marker switches included — inside the popup. Removing a duplicate spelling is
+not the same as removing the action; both actions are still one chord away.
 
 Cold-but-alone keys also stay flat, because a category of one is just a longer
 name: `T` diagnostics, `N` stealth tab, `D` dismiss download, `F`/`B` scroll

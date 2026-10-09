@@ -15,6 +15,11 @@
 
 import { getActiveTab, realTabsInWindow } from "./tabs";
 import { reconcileStealth, stealthContainers } from "./stealth";
+import {
+  alternateTarget,
+  forgetTab as forgetTabEntry,
+  noteActivation,
+} from "../shared/alttab";
 
 // Re-exported, not re-implemented: these are part of the leader key surface,
 // and an importer that reaches for `reopenTab` should not have to know which
@@ -35,41 +40,66 @@ export {
 
 /* ---------- alternate-tab (last used tab) ---------- */
 
-// Per-window most-recently-activated tab, so `;a` can toggle between the
+// Per-window most-recently-used tab list, so `;a` can toggle between the
 // current tab and the one active before it. Fed by the background's
 // tabs.onActivated listener (any activation — chrome helper or content).
-const lastActivated = new Map<number, number>();
-const prevActivated = new Map<number, number>();
+//
+// A LIST, not the pair of ids this used to be: the pair could only answer one
+// toggle, and it went permanently silent the moment its remembered partner was
+// closed (`tabs.get` rejected, the entry was dropped, and nothing re-armed it
+// until the user activated a tab again). See shared/alttab.ts — the rule is
+// pure and unit-tested there, because a silent no-op is invisible in a browser.
+const mruByWindow = new Map<number, number[]>();
 
 export function noteTabActivation(windowId: number, tabId: number): void {
   if (windowId == null || tabId == null) return;
-  const last = lastActivated.get(windowId);
-  if (last != null && last !== tabId) prevActivated.set(windowId, last);
-  lastActivated.set(windowId, tabId);
+  mruByWindow.set(windowId, noteActivation(mruByWindow.get(windowId) || [], tabId));
 }
 
 export function forgetTab(windowId: number, tabId: number): void {
-  if (prevActivated.get(windowId) === tabId) prevActivated.delete(windowId);
-  if (lastActivated.get(windowId) === tabId) lastActivated.delete(windowId);
+  if (windowId == null || tabId == null) return;
+  const cur = mruByWindow.get(windowId);
+  if (!cur) return;
+  mruByWindow.set(windowId, forgetTabEntry(cur, tabId));
 }
 
 export async function alternateTab(): Promise<{ ok: boolean }> {
   const active = await getActiveTab();
   if (!active || active.id == null) return { ok: false };
-  const target = prevActivated.get(active.windowId);
-  if (target == null || target === active.id) return { ok: false };
+  const target = alternateTarget(mruByWindow.get(active.windowId) || [], active.id);
+  if (target == null) return { ok: false };
   try {
     const t = await browser.tabs.get(target);
     if (!t || t.windowId !== active.windowId) {
-      prevActivated.delete(active.windowId);
+      forgetTab(active.windowId, target);
       return { ok: false };
     }
     await browser.tabs.update(target, { active: true });
     await browser.windows.update(active.windowId, { focused: true });
     return { ok: true };
   } catch (e) {
-    prevActivated.delete(active.windowId);
+    forgetTab(active.windowId, target);
     return { ok: false };
+  }
+}
+
+/**
+ * Seed one entry per window from the tabs that are active right now.
+ *
+ * Not a fix for the first press after a cold start (nothing anywhere knows
+ * which tab preceded the current one — that fact died with the previous
+ * process), but it keeps the map non-empty for every window that exists, so a
+ * window that has never seen an activation still has an entry the first time
+ * one is needed. Called once, at background load.
+ */
+export async function primeActivation(): Promise<void> {
+  try {
+    const tabs = await browser.tabs.query({ active: true });
+    for (const t of tabs as Array<{ id?: number; windowId?: number }>) {
+      if (t && t.id != null && t.windowId != null) noteTabActivation(t.windowId, t.id);
+    }
+  } catch {
+    // The list is built from the first activation instead.
   }
 }
 

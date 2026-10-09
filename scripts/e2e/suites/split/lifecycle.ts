@@ -78,17 +78,41 @@ export async function run(ctx: any): Promise<void> {
     const blankPane = pair.find((t) => (t.url || "").includes("splitpanel.html")) || pair.find((t) => !t.active);
     assert(blankPane, "found the split panel pane in the split pair: " + JSON.stringify(pair));
     // Real websites with no captcha: IETF example domains are static and safe.
-    await evalIn(ctx.probe, `browser.tabs.update(${blankPane.id}, { url: "https://example.org" })`);
-    await navigate(ctx.tabA, "https://example.com", "complete");
-    await waitFor(async () => {
-      const ts = await ctx.tabsInfo();
-      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
-      const urls = sv.map((t) => t.url || "").join(" ");
-      return sv.length === 2 && urls.includes("example.com") && urls.includes("example.org") ? sv : null;
-    }, 20000);
+    //
+    // The RESOLVER is the one part of this that is not the product, and a
+    // transient DNS failure raises NS_ERROR_UNKNOWN_HOST — which failed the
+    // whole group with a product-shaped message ("the split did not load") for
+    // an event that had nothing to do with the split. So the two navigations
+    // are made as a pair and retried while the panes are not both on their
+    // site. The assertions below are untouched: a domain that genuinely does
+    // not resolve still fails the test, after the retries, with the reason it
+    // failed attached instead of a bare timeout.
+    let loaded: any = null;
+    let lastErr = "";
+    for (let attempt = 1; attempt <= 3 && !loaded; attempt++) {
+      try {
+        await evalIn(ctx.probe, `browser.tabs.update(${blankPane.id}, { url: "https://example.org" })`);
+      } catch (e) {
+        lastErr = "example.org: " + String((e && (e as any).message) || e);
+      }
+      try {
+        await navigate(ctx.tabA, "https://example.com", "complete");
+      } catch (e) {
+        lastErr = "example.com: " + String((e && (e as any).message) || e);
+      }
+      loaded = await waitFor(async () => {
+        const now = await ctx.tabsInfo();
+        const panes = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+        const urls = panes.map((t) => t.url || "").join(" ");
+        return panes.length === 2 && urls.includes("example.com") && urls.includes("example.org") ? panes : null;
+      }, 8000).catch(() => null);
+    }
     const ts = await ctx.tabsInfo();
-    const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
-    assert(sv.length === 2, "both panes still share the split after loading: " + JSON.stringify(ts));
+    const sv = loaded || ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+    assert(
+      sv.length === 2,
+      "both panes still share the split after loading: " + JSON.stringify(ts) + " lastError=" + lastErr
+    );
     assert(sv.some((t) => (t.url || "").includes("example.com")), "pane 1 loaded example.com: " + JSON.stringify(sv.map((t) => t.url)));
     assert(sv.some((t) => (t.url || "").includes("example.org")), "pane 2 loaded example.org: " + JSON.stringify(sv.map((t) => t.url)));
     // Clean up: close pane 2; Firefox auto-unsplits the remaining tab.

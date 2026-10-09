@@ -187,21 +187,24 @@ export async function run(ctx: any): Promise<void> {
     f = await ctx.ccFacts(ctx.tabA);
     assert(f.inputVal === "x;don't", "input typed x;don't, got " + JSON.stringify(f.inputVal));
     assert(f.state === "insert", "still insert while typing");
-    const s = await ctx.chromeState();
-    assert(s && !s.leaderActive, "chrome leader never armed while composing");
-    assert(s && !s.leaderPending, "no one-shot capture armed while composing");
+    // The leader that matters here is the PAGE's own (the home page runs the
+    // shared key engine itself; the chrome helper defers on it, which is why
+    // chromeState().leaderActive would be reading the wrong host).
+    // `data-lf-leader` is the page's mirror of `armed` — the leader AND an
+    // armed one-shot capture, i.e. "the next keystroke is ours".
+    const armed = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader")`);
+    assert(armed !== "1", "the leader never armed while composing (data-lf-leader=" + armed + ")");
     await ctx.press(ctx.tabA, "Escape");
     await factsWhere((f) => f.state === "cmd");
     f = await ctx.ccFacts(ctx.tabA);
     assert(f.state === "cmd", "back to cmd after Esc");
     // Command mode: ; still arms the leader (home-screen shortcuts).
     await ctx.press(ctx.tabA, ";");
-    await waitFor(async () => {
-      const s2 = await ctx.chromeState();
-      return s2 && s2.leaderActive ? s2 : null;
-    }, 5000);
-    const s2 = await ctx.chromeState();
-    assert(s2 && s2.leaderActive, "; in command mode still arms the leader");
+    await ctx
+      .waitExpr(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader") === "1"`, true, 5000)
+      .catch(() => {
+        throw new Error("; in command mode did not arm the leader");
+      });
     await ctx.press(ctx.tabA, "Escape");
   });
   await t("command center: a fresh tab opens in command mode so `;` arms the leader", async () => {
@@ -219,14 +222,14 @@ export async function run(ctx: any): Promise<void> {
       return f && f.results && f.results.length && f.state === "cmd" && f.inputVal === "" && !f.focused ? f : null;
     }, 10000);
     assert(freshReady, "fresh tab is in command mode with an empty input");
-    // `;` on the empty input arms the leader.
+    // `;` on the empty input arms the leader — the PAGE's own, read from the
+    // page's mirror (the chrome helper does not arm on a command-center tab).
     await ctx.press(dupCtx, ";");
-    await waitFor(async () => {
-      const s = await ctx.chromeState();
-      return s && s.leaderActive ? s : null;
-    }, 5000);
-    const s = await ctx.chromeState();
-    assert(s && s.leaderActive, "; on the fresh home tab arms the leader");
+    await ctx
+      .waitExpr(dupCtx, `document.documentElement.getAttribute("data-lf-leader") === "1"`, true, 5000)
+      .catch(() => {
+        throw new Error("; on the fresh home tab did not arm the leader");
+      });
     assert(!(await ctx.ccFacts(dupCtx)).inputVal, "; did not type into the empty input");
     await ctx.press(dupCtx, "Escape");
     // Cleanup: close the extra tab.

@@ -25,9 +25,14 @@ export function createUiOps(deps: {
   applyHoverRevealPref(cfg: ChromeCfg): void;
   popup: { openResizePopup(): void };
   channel: {
-    requestBg(action: "focusFirstInput" | "startHints" | "copyLink" | "editLink" | "openSetup" | "openDiagnostics" | "toggleWhichKey" | "quit", arg?: any): void;
+    requestBg(action: "focusFirstInput" | "startHints" | "openSetup" | "openDiagnostics" | "toggleWhichKey" | "quit", arg?: any): void;
     requestReply(action: "stealthOpen"): Promise<any>;
   };
+  // The window's current address, for `;K e` to pre-fill. Resolved locally, not
+  // relayed: it is a window fact the helper already owns, and routing it
+  // through the background and back would make the field's contents depend on
+  // a round trip that can fail.
+  pageUrl(): string;
 }) {
   const win = deps.env.window as any;
   const doc = deps.env.document as any;
@@ -118,13 +123,12 @@ export function createUiOps(deps: {
     startHints: () => {
       deps.channel.requestBg("startHints");
     },
-    // The page owns the links, so these are relayed rather than answered here:
-    // the chrome helper is a privileged document with no DOM of its own.
-    copyLink: () => {
-      deps.channel.requestBg("copyLink");
-    },
-    editLink: () => {
-      deps.channel.requestBg("editLink");
+    // The page's address is a window fact, not a DOM fact, so the chrome
+    // helper reads it from the same `currentURI` copyUrl() copies. Answering
+    // it here (rather than relaying for the content script) is what keeps
+    // `;K e`'s pre-filled field and `;K c`'s clipboard from ever disagreeing.
+    pageUrl: async () => {
+      return deps.pageUrl();
     },
     openSetup: () => {
       deps.channel.requestBg("openSetup");

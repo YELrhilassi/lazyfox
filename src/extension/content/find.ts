@@ -32,6 +32,7 @@
 import { copyText, removeHtmlAttr, setHtmlAttr } from "../../shared/dom";
 import { manualTextKey, type PopupCtl } from "../../shared/overlay";
 import { send } from "../../shared/protocol";
+import { windowStep } from "../../shared/resize";
 import { createSession, createTextModel } from "./find/model";
 import { flashOverlay, hitOverlay } from "./find/overlays";
 import { createScrollMemory } from "./find/scroll";
@@ -368,7 +369,7 @@ export function openResizePopup(shell: ContentPopupShell): void {
     return {
       onKey: (e) => {
         const k = e.key;
-        const fine = e.shiftKey ? 8 : 32;
+        const fine = windowStep(e);
         if (k === "ArrowLeft") { rzResize(-fine, 0); return true; }
         if (k === "ArrowRight") { rzResize(fine, 0); return true; }
         if (k === "ArrowUp") { rzResize(0, -fine); return true; }

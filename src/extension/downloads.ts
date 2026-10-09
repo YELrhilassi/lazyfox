@@ -92,16 +92,25 @@ export async function retryDownload(id: string) {
     const found = await browser.downloads.search({ id: n });
     const d = found && found[0];
     if (!d || !d.url) return { ok: false, error: "download not found" };
-    // Resume a paused download in place; otherwise restart from the source
-    // URL as a fresh copy (never overwrite the existing file).
+    // Resume a paused download in place.
     if (d.state === "paused" && d.canResume) {
       await browser.downloads.resume(n);
       return { ok: true, resumed: true };
     }
+    // A FAILED download is retried as the same download, not as a second copy
+    // of it. The chrome helper can call Firefox's internal `retry()` on the
+    // download object; an extension cannot, and calling `download()` alone
+    // makes a NEW history entry — so the old failed row stayed in the list
+    // forever and the new file landed beside it as "file(1).bin". Clearing the
+    // dead entry first is what keeps the row the user pressed `r` on the row
+    // that is downloading again.
+    const filename = d.filename ? String(d.filename).split(/[\\/]/).pop() : undefined;
+    await browser.downloads.removeFile(n).catch(() => {});
+    await browser.downloads.erase({ id: n }).catch(() => {});
     await browser.downloads.download({
       url: d.url,
-      filename: d.filename ? String(d.filename).split(/[\\/]/).pop() : undefined,
-      conflictAction: "uniquify",
+      filename: filename,
+      conflictAction: "overwrite",
       saveAs: false,
     });
     return { ok: true };

@@ -36,10 +36,6 @@ export interface ContentDomDeps {
   syncTypingAttr(): void;
   /** Ask the extension to start link hints. */
   startHints(): Promise<unknown>;
-  // The `;K` link actions, answered by the page because the page is the only
-  // place a link under the pointer exists. The chrome helper relays them here.
-  copyLink(): void;
-  editLink(): void;
   /** Focus the page's first text input (the `;f` flow). */
   focusFirstInput(): void;
   /** The hint badge state, for the `hintBadge` message. */
@@ -130,14 +126,6 @@ export function installContentDom(deps: ContentDomDeps): void {
       if (msg && msg.action === "startHints") {
         void deps.startHints();
         return Promise.resolve({ ok: true });
-      }
-      if (msg && msg.action === "copyLink") {
-        deps.copyLink();
-        return true;
-      }
-      if (msg && msg.action === "editLink") {
-        deps.editLink();
-        return true;
       }
       if (msg && msg.action === "focusFirstInput") {
         deps.focusFirstInput();

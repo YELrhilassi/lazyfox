@@ -137,6 +137,39 @@ export function installChromestate(
     return last as ChromeStateHandle;
   };
 
+  // The `#lfc=diag` reply: what the BROWSER thinks about itself, decoded.
+  //
+  // Distinct from chromeState(), which reports what the Lazyfox helper believes.
+  // This one answers questions about the platform the helper is running on —
+  // most importantly `perTab.remote`, whether the selected tab's content runs
+  // in its own process. That single fact decides whether the chrome side can
+  // reach into the selected tab's window at all (`gBrowser.selectedBrowser.
+  // contentWindow` is null for an out-of-process tab), which is the difference
+  // between "the home page's ;f works here" and "it is dead in a real
+  // install". geckodriver forces extension pages in-process, so a green e2e
+  // run cannot answer it; this can.
+  ctx.chromeDiag = async function chromeDiag(): Promise<any> {
+    await ctx.ensureProbe().catch(() => {});
+    const nonce = "d" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+    await evalIn(ctx.probe, `location.hash = ${JSON.stringify("lfc=diag." + nonce)}; true`);
+    try {
+      return await waitFor(async () => {
+        const u = await evalIn(ctx.probe, `location.href`);
+        const at = String(u || "").indexOf("#lfc=diag.");
+        if (at < 0) return null;
+        const tail = String(u).slice(at + "#lfc=diag.".length);
+        const dot = tail.indexOf(".");
+        if (dot < 0) return null;
+        if (tail.slice(dot + 1) !== nonce) return null;
+        const b64 = tail.slice(0, dot);
+        if (!b64) return null;
+        return JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+      }, 8000);
+    } finally {
+      await evalIn(ctx.probe, `history.replaceState(null, "", location.href.split("#")[0]); true`).catch(() => {});
+    }
+  };
+
   // Is the chrome helper the owner of leader keys in this context? Extension
   // pages run in-process under automation, so the chrome window's capture
   // listener sees their keys; remote web content does not reach it.
@@ -176,6 +209,10 @@ export function installChromestate(
     // pane underneath the action. Just ensure no input holds focus (the
     // chrome helper's typing guard would otherwise let the leader key pass
     // into the input) and press.
+    // A chord assumes COMMAND mode. A home page whose search box holds focus
+    // types the chord as text instead of running it (see ctx.chordReady), and
+    // the resulting silence looks exactly like a product bug.
+    await ctx.chordReady(tab);
     await evalIn(tab, `document.activeElement && document.activeElement.blur ? (document.activeElement.blur(), true) : true`).catch(() => {});
     await ctx.press(tab, ";");
     // The chrome helper captures the leader key synchronously in the chrome

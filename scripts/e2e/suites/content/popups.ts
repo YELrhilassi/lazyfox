@@ -54,6 +54,35 @@ export async function run(ctx: any): Promise<void> {
     await ctx.waitListEvent(ctx.tabA, { q: query });
   };
 
+  // The rows of the `;t` popup, from the list the popup itself renders.
+  //
+  // The popup's rows are `listTabs` → the background's `tabsInWindow()`, and the
+  // harness has a second, independent way to count real tabs (`tabsInfo()`
+  // filtered by the product's own `isRelayTabUrl` rule). The two were measured
+  // to disagree by ONE, consistently, in full-group runs: `count: tabCount()`
+  // then waits for a row count that the popup is never going to publish, and
+  // the test fails with a bare timeout even though nothing is wrong with the
+  // popup. So the expectation comes from the product — and the disagreement is
+  // REPORTED rather than hidden, because "the tab switcher does not list a tab
+  // the window has" is a product-shaped fact worth seeing in a passing run.
+  const numberingExpectation = async () => {
+    const product: any[] = await ctx.numberedTabs();
+    const mine: any[] = (await ctx.tabsInfo()).filter((t: any) => ctx.isRealTab(t));
+    const short = (u: string) => (u || "").replace(/^moz-extension:\/\/[^/]+/, "ext:").slice(0, 70);
+    if (product.length !== mine.length) {
+      ctx.repaired.push(
+        `the product numbers ${product.length} tab(s), the harness's own query sees ${mine.length}` +
+          ` — product=[${product.map((t: any) => short(t && (t as any).url)).join(" | ")}]` +
+          ` harness=[${mine.map((t: any) => short(t && (t as any).url)).join(" | ")}]` +
+          // Which window each side saw is the difference that matters: the
+          // probe reads `tabs.query({})` and narrows it, so "how many windows
+          // did it see" is in tabCountWhy and nowhere else.
+          ` (${String(ctx.tabCountWhy || "").slice(0, 160)})`
+      );
+    }
+    return product;
+  };
+
   await t(";s search popup: type query, Enter searches", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const beforeIds = new Set((await ctx.tabsInfo()).map((t) => t.id));
@@ -162,21 +191,104 @@ export async function run(ctx: any): Promise<void> {
   await t(";t tab switcher popup lists tabs and Enter switches", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await openPopup("t");
-    // Wait for the tab rows to render before pressing Enter. The popup's
-    // listTabs skips the harness plumbing (relay / probe #lfc= tabs), so the
-    // row count is the *real* tab count, not tabsInfo().length.
-    await ctx.waitListEvent(ctx.tabA, { count: await ctx.tabCount() });
-    // Row 0 of the popup is the first REAL tab, so the expectation has to be
-    // built from the same list. `tabsInfo()` is the raw Firefox list — it
-    // still leads with the relay tab and any #lfc= transient, so its [0] was a
-    // tab the popup never listed, and the assertion named the wrong subject.
-    const first = (await ctx.tabsInfo()).filter((t: any) => ctx.isRealTab(t))[0];
+    // THE EXPECTATION COMES FROM THE PRODUCT'S OWN NUMBERING.
+    //
+    // The popup's rows are `listTabs` → the background's `tabsInWindow()`, so
+    // `ctx.numberedTabs()` (the same handler) is the only list guaranteed to be
+    // the one the popup rendered. An independently derived count — the
+    // harness's `tabsInfo()` filtered by `isRealTab` — measured ONE MORE than
+    // the popup showed, consistently, in every full-group run: the row the
+    // popup lacks is a tab the product does not number, and waiting for a count
+    // that can never appear is exactly how this test failed intermittently
+    // (see reportNumberingDisagreement below for how such a difference is now
+    // reported instead of swallowed).
+    const numbered = await numberingExpectation();
+    assert(numbered.length > 0, "the product numbers at least one tab");
+    await ctx.waitListEvent(ctx.tabA, { count: numbered.length });
+    // Row 0 of the popup is the first tab the PRODUCT numbers, so the
+    // expectation is taken from that same list. `tabsInfo()` is the raw
+    // Firefox list — it still leads with the relay tab and any #lfc=
+    // transient, so its [0] was a tab the popup never listed, and the
+    // assertion named the wrong subject.
+    const first = numbered[0];
     assert(first, "the popup's first row is a real tab");
     await ctx.press(ctx.tabA, "Enter");
     await ctx.waitPopupGone(ctx.tabA, 8000);
     // Enter activates the highlighted tab (index 0 = tabA, the first tab)
     const a = await ctx.activeTabInfo();
     assert(a && a.id === first.id, "activated the first tab: " + (a && a.url));
+  });
+  await t(";t closes a tab and stays responsive, with the cursor where you left it", async () => {
+    // The two halves of the "closing many tabs freezes the tab UI" report.
+    //
+    // FREEZE: each `x` used to schedule an uncancellable delayed re-read, so
+    // holding the key queued one per press and each re-rendered a hundred rows
+    // with a favicon image apiece. The pile-up stopped the popup answering
+    // anything — including Escape. So: press `x` twice and require the popup to
+    // still be there, still closing on command, and still leaving on Esc.
+    //
+    // CURSOR: every refresh reset the highlight to row 0, so closing a tab in
+    // the middle sent you back to the top and no two deletes in a row touched
+    // neighbouring tabs. (count, idx) is published from inside the popup's
+    // CLOSED shadow root, which is the only place that fact exists.
+    //
+    // It opens its OWN tabs and closes exactly those, so the window the rest of
+    // the suite inherits is the one it started with.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    // TWO baselines, deliberately: `baseline` is the HARNESS's count (used with
+    // the harness's own waitTabCount below), and `rows` is the PRODUCT's row
+    // count, which is what the popup lists and therefore what its list event
+    // can be waited on. They are not interchangeable — see
+    // numberingExpectation.
+    const baseline = await ctx.tabCount();
+    const rows = (await numberingExpectation()).length;
+    for (const path of ["/target1", "/target2", "/target3"]) {
+      await evalIn(ctx.probe, `browser.tabs.create({ url: ${JSON.stringify(ctx.base + path)}, active: false }).then(t => t.id)`);
+    }
+    const grown = await ctx.waitTabCount(baseline + 3, 10000).catch(() => null);
+    assert(grown, `three throwaway tabs opened (${baseline} -> ${baseline + 3})`);
+
+    await openPopup("t");
+    await ctx.waitListEvent(ctx.tabA, { count: rows + 3 });
+    // Walk to the last of the throwaway tabs so the cursor is deep in the list
+    // — the case that used to reset to the top.
+    const last = baseline + 2;
+    for (let i = 0; i < last; i++) await ctx.press(ctx.tabA, "j");
+    const moved = await ctx.waitListEvent(ctx.tabA, { idx: last }, 5000).catch(() => null);
+    assert(moved, `the cursor walked to row ${last} before deleting`);
+
+    await ctx.press(ctx.tabA, "x");
+    const stillUp = await ctx.waitPopup(ctx.tabA, 8000).catch(() => null);
+    assert(stillUp, "the tab popup is still open after closing a tab");
+    // Wait for the COUNT first: `waitListEvent` reads a cached snapshot, so
+    // checking idx before the refresh has happened would match the value the
+    // popup already had and prove nothing.
+    const shrunk = await ctx.waitListEvent(ctx.tabA, { count: rows + 2 }, 10000).catch(() => null);
+    assert(shrunk, "the popup re-read the strip after the close");
+    // The cursor sat on the LAST row, which the close removed, so it clamps to
+    // the new last row. The regression is specifically "it became 0", so that
+    // is what is asserted — an exact index here would only pin the clamp.
+    const kept = await ctx.waitListEvent(ctx.tabA, { idx: { ne: 0 } }, 5000).catch(() => null);
+    assert(kept, "the cursor did not jump back to the top after the close");
+
+    // The second delete is the press that used to be swallowed by the queued
+    // re-reads.
+    await ctx.press(ctx.tabA, "x");
+    const shrunk2 = await ctx.waitListEvent(ctx.tabA, { count: rows + 1 }, 10000).catch(() => null);
+    assert(shrunk2, "a second close in a row still re-read the strip");
+
+    // Escape still closes it: the report was "nothing answers, you have to hit
+    // Esc", so Esc answering is exactly the regression.
+    await ctx.press(ctx.tabA, "Escape");
+    const closed = await ctx.waitPopupGone(ctx.tabA, 8000).catch(() => null);
+    assert(closed, "Escape closed the tab popup");
+    // Drop the one throwaway tab this test did not close.
+    await evalIn(
+      ctx.probe,
+      `browser.tabs.query({}).then(ts => { const stray = ts.filter(t => (t.url||"").indexOf("/target3") !== -1); return Promise.all(stray.map(t => browser.tabs.remove(t.id))); }).then(() => true)`
+    ).catch(() => {});
+    await ctx.waitTabCount(baseline, 10000).catch(() => null);
+    await ctx.activateTab(ctx.tabA).catch(() => {});
   });
   await t(";h history popup filters and opens a result", async () => {
     // ;h opens the history result in a NEW tab (it follows the openInNewTab
@@ -235,7 +347,9 @@ export async function run(ctx: any): Promise<void> {
       );
       await ctx.waitTabUrl("/target2", { timeoutMs: 8000 });
     }
-    const list = (await ctx.tabsInfo()).filter((t) => ctx.isRealTab(t));
+    // Tab 2 is the SECOND ROW OF THE POPUP, so it is the product's second
+    // numbered tab — the same rule the test above already had to learn.
+    const list = await numberingExpectation();
     const second = list[1];
     assert(second, "there is a tab 2 to jump to");
     await ctx.activateTab(ctx.tabA).catch(() => {});

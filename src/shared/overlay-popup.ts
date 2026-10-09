@@ -9,6 +9,7 @@
 
 import { backdropWheel } from "./keyguard";
 import { PANEL_CSS } from "./overlaycss";
+import { mirror } from "./observability";
 
 export const HOST_CSS =
   "all:initial;position:fixed;inset:0;z-index:2147483647;display:block;";
@@ -16,6 +17,9 @@ export const HOST_CSS =
 export interface SelectorCtl {
   onKey(e: KeyboardEvent): boolean;
   refresh(): void;
+  // One coalesced delayed re-read, for a change the browser has not applied
+  // yet. Optional because a popup that never re-reads needs no timer.
+  refreshSoon?(delayMs: number): void;
   close(): void;
 }
 
@@ -45,10 +49,40 @@ export function openPopup(
   sh.appendChild(root);
   document.documentElement.appendChild(host);
 
+  // PUBLISH WHICH PANEL IS UP.
+  //
+  // The panel is built inside a CLOSED shadow root, so its title is unreadable
+  // from the page and from any host that only has the document — which left
+  // "did ;o open the URL popup or the search one?" answerable only by looking
+  // at the screen. `data-lf-toast` was added for exactly this kind of question
+  // and this is the same trick: the panel's OWN label, which is static UI text
+  // and never a row's data (the rows stay count-only on purpose — they carry
+  // other tabs' titles and URLs).
+  try {
+    // `.lf-title` is the selector popups' heading; `.rz-title` is the resize
+    // panel's own (it is a custom panel, not a selector). Either one is the
+    // panel's identity.
+    const titleEl =
+      (root.querySelector(".lf-title") as HTMLElement | null) ||
+      (root.querySelector(".rz-title") as HTMLElement | null);
+    const title = titleEl ? String(titleEl.textContent || "").trim() : "";
+    mirror("popup-title", title || null);
+  } catch (e) {
+    // observability only — a popup that renders must not die reporting itself
+  }
+
   root.addEventListener("click", (e) => {
     if (e.target === root) {
+      // The host is ALWAYS removed, and this is not tidiness.
+      //
+      // The host is a full-viewport, max-z-index element: leaving it behind
+      // after a backdrop click left an invisible sheet over the page that
+      // swallowed every later click, and made "is the popup closed?"
+      // unanswerable from the DOM. `onClose` is the caller's state hook, not a
+      // substitute for the teardown.
+      host.remove();
+      mirror("popup-title", null);
       if (onClose) onClose();
-      else host.remove();
     }
   });
   // A wheel event that lands on the backdrop must not scroll the page behind
@@ -84,6 +118,7 @@ export function openPopup(
     close: () => {
       inner.close();
       host.remove();
+      mirror("popup-title", null);
     },
     focus: inner.focus,
   };

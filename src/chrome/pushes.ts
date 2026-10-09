@@ -25,6 +25,9 @@ export interface PushDeps {
   // Per-tab / per-session page-cache enforcement (the global scope is owned by
   // the extension background).
   cache: CacheCtl;
+  // Clears the bar's download notification(s). A page that pressed `;D` asks
+  // for this over the relay: it owns its own keyboard, but the bar is here.
+  dismissDownloads(): void;
 }
 
 export type PushDispatcher = (action: string, arg: unknown) => void;
@@ -45,6 +48,10 @@ export function createPushDispatcher(deps: PushDeps): PushDispatcher {
       restoreSplits: (req) => deps.split.restoreSplits(req.groups, req.expect),
       // Status-bar push/reply: the fresh session summary as an object.
       sessionState: (req) => deps.status.applySessionState(req),
+      // `;D` from a page (web page or the command center): clear the bar's
+      // download notification(s). The page keeps no state about the bar, so
+      // there is nothing to report back.
+      dismissDownload: () => deps.dismissDownloads(),
       // Content-script leader arm/disarm, cached per tab-strip index so the
       // window-level status bar can show the pulsing LEADER chevron on web
       // pages, where the content script owns the leader key. The chord and the

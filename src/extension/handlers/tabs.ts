@@ -6,6 +6,7 @@
 // SessionStore's "most recently closed" is usually one of the extension's own
 // hidden plumbing tabs.
 import { CC_URL, getActiveTab, realTabsInWindow } from "../tabs";
+import { tabTrack } from "../navstore";
 import { activateTabByIndex, noteClosedTab, tabsInWindow } from "../windowops";
 import type { NavEntry } from "../../shared/types";
 import type { Domain } from "./types";
@@ -142,40 +143,37 @@ export function createTabHandlers(deps: TabDeps): Domain<Owns> {
     },
 
     // The active tab's navigation stack, oldest-first with the current entry
-    // included. Session history is a privileged API (browser.sessionStore),
-    // so this runs in the background.
+    // included.
+    //
+    // THIS IS THE REBUILD, NOT THE BROWSER'S OWN STACK. The obvious source was
+    // `browser.sessionStore.getTabState(tab.id)` — a system-extension API that
+    // simply does not exist for a WebExtension. `ss` was therefore always
+    // undefined, the whole block was skipped, and every call fell through to
+    // the one-row answer below: `;G` showed the current page and nothing else,
+    // on every web page, no matter how far the user had browsed. The chrome
+    // helper reads the real history for the pages it owns (see
+    // chrome/ops.ts — `sessionHistory` IS reachable from there), and this path
+    // serves the content script, which has no such door.
+    //
+    // What the background has instead is the tab's URL stream (navstore.ts),
+    // which is enough to rebuild the stack: a step back or forward is
+    // recognised by where the URL already sits, and anything else is a new
+    // visit that truncates the forward tail, exactly as the browser does.
     navStack: async () => {
       const tab = await getActiveTab();
       if (!tab || tab.id == null) return { canBack: false, canForward: false, index: 0, entries: [] };
-      try {
-        // tabSessions (Firefox's sessionStore API via sessions.getTabValue is
-        // not the history); the real path is `browser.sessionStore` in older
-        // APIs but today the supported surface is:
-        const ss = (browser as any).sessionStore;
-        if (ss && ss.getTabState) {
-          const raw = ss.getTabState(tab.id);
-          const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-          const entriesRaw = parsed?.entries || [];
-          const index = typeof parsed?.index === "number" ? parsed.index - 1 : Math.max(0, entriesRaw.length - 1);
-          const entries: NavEntry[] = entriesRaw.map((e: any) => ({
-            url: e.url || "",
-            title: e.title || e.url || "",
-          }));
-          return {
-            canBack: index > 0,
-            canForward: index < entries.length - 1,
-            index,
-            entries,
-          };
-        }
-      } catch {
-        // fall through to the minimal answer
-      }
+      const track = tabTrack(tab.id, tab.url || "", tab.title || "");
+      const entries: NavEntry[] = track.entries.map((e) => ({
+        url: e.url || "",
+        title: e.title || e.url || "",
+      }));
+      if (!entries.length) return { canBack: false, canForward: false, index: 0, entries: [] };
+      const index = Math.max(0, Math.min(track.index, entries.length - 1));
       return {
-        canBack: false,
-        canForward: false,
-        index: 0,
-        entries: [{ url: tab.url || "", title: tab.title || tab.url || "" }],
+        canBack: index > 0,
+        canForward: index < entries.length - 1,
+        index,
+        entries,
       };
     },
 
