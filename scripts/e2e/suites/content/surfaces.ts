@@ -36,36 +36,6 @@ async function contentOverlayLit(tab: any): Promise<boolean> {
   return !!on;
 }
 
-// What the failure has to say, and why it is more than the count.
-//
-// "the chrome overlay stood down ... still lit: 1" names the symptom and
-// nothing else, and the symptom has exactly two causes that call for opposite
-// fixes: the helper never heard that it no longer owns the tab, or it heard
-// and failed to stand the overlay down. The chrome state splits them in one
-// read — `chromeOwnsKeys` is the helper's own verdict on ownership, so a `true`
-// there is a presence/ownership problem and a `false` beside a lit overlay is
-// a repaint problem. The page's own mirror says whether the realm that should
-// have taken over is even running.
-async function diag(ctx: any, tab: any): Promise<string> {
-  const s = await ctx.chromeState().catch(() => null);
-  const page = await evalIn(
-    tab,
-    `(() => { const d = document.documentElement; return JSON.stringify({
-      lastkey: d.getAttribute("data-lf-lastkey"),
-      leader: d.getAttribute("data-lf-leader"),
-      url: location.href,
-      ready: document.readyState
-    }); })()`
-  ).catch((e: unknown) => "unreadable: " + String(e && (e as Error).message).slice(0, 80));
-  return JSON.stringify({
-    page: page,
-    chromeOwnsKeys: s && s.chromeOwnsKeys,
-    selUrl: s && s.selUrl,
-    wkOn: s && s.popup ? s.popup.wkOn : null,
-    leaderActive: s && s.leaderActive,
-  });
-}
-
 export async function run(ctx: any): Promise<void> {
   // The test id is "<group>/<file> › <name>", so two tests with the same
   // name in different files of one group cannot collide.
@@ -102,10 +72,7 @@ export async function run(ctx: any): Promise<void> {
     }, 8000).catch(() => null);
     assert(
       gone !== null,
-      "the chrome overlay stood down after the switch, still lit: " +
-        (await chromeOverlays(ctx)) +
-        " " +
-        (await diag(ctx, ctx.tabA))
+      "the chrome overlay stood down after the switch, still lit: " + (await chromeOverlays(ctx))
     );
 
     // And now the content one is the only overlay: exactly one, never two.
@@ -138,10 +105,7 @@ export async function run(ctx: any): Promise<void> {
     );
     assert(
       gone,
-      "the chrome overlay stood down after an in-tab navigation, still " +
-        (await chromeOverlays(ctx)) +
-        " " +
-        (await diag(ctx, ctx.tabA))
+      "the chrome overlay stood down after an in-tab navigation, still " + (await chromeOverlays(ctx))
     );
     await ctx.press(ctx.tabA, "Escape");
   });
