@@ -118,6 +118,18 @@ export function sha256File(p: string): string {
 const SOURCE_DIRS = ["src", "core", "native-host"];
 const SOURCE_FILES = ["build.ts", "go.mod", "go.sum"];
 
+// Build output that the build REGENERATES, placed inside the source tree.
+//
+// Both files are gitignored, but they sit under `core/` and `src/`, so a plain
+// directory walk picks them up — and the wasm's bytes are not reproducible
+// across builds (the Go build ID it embeds differs), so `wasm-embed.ts` differs
+// too. Including them made the fingerprint move every time the builder ran,
+// which broke the one property the check exists for: CI asserts `npm run check`
+// passes BOTH before and after `npm run build`, and a fingerprint that changes
+// when the build runs can never satisfy that. It reported "source changed" for
+// a tree nobody had edited, and the only escape was to rebuild forever.
+const GENERATED = new Set(["core/js/core.wasm", "src/shared/wasm-embed.ts"]);
+
 /**
  * sourceHash fingerprints everything the build reads to produce dist/ and the
  * installers.
@@ -131,7 +143,18 @@ const SOURCE_FILES = ["build.ts", "go.mod", "go.sum"];
  *
  * Test files are excluded deliberately: they do not change any artifact, and
  * including them would report "stale" after a test-only edit and train people to
- * ignore the check.
+ * ignore the check. So are the files the build regenerates (see GENERATED): a
+ * fingerprint that moves when the builder runs cannot answer "did I edit
+ * something and forget to rebuild?".
+ *
+ * Line endings are normalised to LF before hashing, because the fingerprint is
+ * a statement about the SOURCE, and the checkout is not the source: this repo
+ * develops on Windows with `core.autocrlf=true` and runs CI on Linux with LF,
+ * and the same commit must hash the same on both. Without this, a hash written
+ * on one platform could never be verified on the other, so the gate would fail
+ * in CI for every commit — the fastest possible way to teach people to ignore
+ * it. Only sourceHash normalises: payloadHash must keep hashing exact bytes,
+ * because those bytes are what actually ships.
  */
 export function sourceHash(root: string): string {
   const h = createHash("sha256");
@@ -143,23 +166,42 @@ export function sourceHash(root: string): string {
       if (e.name === "node_modules" || e.name === "testdata" || e.name.startsWith(".")) continue;
       const rel = `${prefix}/${e.name}`;
       if (e.isDirectory()) walk(join(dir, e.name), rel);
-      else if (!e.name.endsWith("_test.go")) files.push(rel);
+      else if (!e.name.endsWith("_test.go") && !GENERATED.has(rel)) files.push(rel);
     }
   };
   for (const d of SOURCE_DIRS) walk(join(root, d), d);
   for (const f of SOURCE_FILES) if (existsSync(join(root, f))) files.push(f);
   files.sort();
-  hashFiles(h, root, files);
+  hashFiles(h, root, files, true);
   return h.digest("hex");
 }
 
-/** SHA-256 over a sorted list of files' contents (labels included in the mix). */
-function hashFiles(h: ReturnType<typeof createHash>, root: string, files: string[]): void {
+/**
+ * SHA-256 over a sorted list of files' contents (labels included in the mix).
+ *
+ * `normalizeEol` is for sourceHash only — see its comment. It rewrites CRLF to
+ * LF so the same commit hashes identically on a Windows and a Linux checkout.
+ */
+function hashFiles(
+  h: ReturnType<typeof createHash>,
+  root: string,
+  files: string[],
+  normalizeEol = false,
+): void {
   for (const rel of files) {
     h.update(rel);
     h.update("\0");
-    h.update(sha256File(join(root, rel)));
+    h.update(normalizeEol ? sha256FileLf(join(root, rel)) : sha256File(join(root, rel)));
     h.update("\0");
+  }
+}
+
+/** SHA-256 of a file with CRLF collapsed to LF ('' when unreadable). */
+function sha256FileLf(p: string): string {
+  try {
+    return createHash("sha256").update(readFileSync(p).toString("latin1").replace(/\r\n/g, "\n"), "latin1").digest("hex");
+  } catch {
+    return "";
   }
 }
 

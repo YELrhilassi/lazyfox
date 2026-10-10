@@ -66,7 +66,17 @@ const BUNDLES: Bundle[] = [
 
 const wasmOut = join(root, "core", "js", "core.wasm");
 console.log("[wasm] building core.wasm (GOOS=js GOARCH=wasm)...");
-run("go", ["build", "-ldflags=-s -w", "-o", wasmOut, "./core/js"], {
+// -trimpath, exactly as the native host is built below. Without it the compiler
+// writes every source file's ABSOLUTE path into the wasm (the commit carried
+// "C:/Users/<name>/Documents/Default Project/lazyfox/core/keymap.go" into every
+// shipped bundle), and Go derives the build ID from those paths — so the
+// compiled core depended on where the checkout lived and which toolchain
+// compiled it, not on the source. Every rebuild then differed from the committed
+// dist/ no matter what anyone edited, which is indistinguishable from "someone
+// edited the source and forgot to rebuild", the one thing the payload check
+// exists to detect. Trimmed, the same source builds the same bytes on any
+// machine with the same toolchain.
+run("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", wasmOut, "./core/js"], {
   cwd: root,
   env: { ...process.env, GOOS: "js", GOARCH: "wasm" },
 });

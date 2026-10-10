@@ -12,10 +12,11 @@
 // Run: node scripts/test-payload.ts  (part of `npm test`)
 
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { zipStore } from "./amo-lib.ts";
 import {
   LOADER_FILES,
   STAGED_CHROME_FILES,
@@ -125,6 +126,28 @@ try {
   writeFileSync(join(tmp, "core", "js", "core.go"), "package js // real\n");
   ok("a Go core file does change the source hash", sourceHash(tmp) !== baseSource);
   rmSync(join(tmp, "core"), { recursive: true, force: true });
+
+  // The fingerprint must NOT move when the build regenerates its own output.
+  // Both of these are gitignored build products that live inside the source
+  // tree (GENERATED in payload.ts), and the wasm's bytes differ a little on
+  // every build — so including them made `npm run check` fail the instant a
+  // build ran, which is the exact opposite of what CI asks for (check, then
+  // build, then check again, all three green).
+  mkdirSync(join(tmp, "core", "js"), { recursive: true });
+  writeFileSync(join(tmp, "core", "js", "core.wasm"), "wasm-bytes");
+  ok("a regenerated core.wasm does not change the source hash", sourceHash(tmp) === baseSource);
+  mkdirSync(join(tmp, "src", "shared"), { recursive: true });
+  writeFileSync(join(tmp, "src", "shared", "wasm-embed.ts"), "// generated\n");
+  ok("a regenerated wasm-embed.ts does not change the source hash", sourceHash(tmp) === baseSource);
+  rmSync(join(tmp, "core"), { recursive: true, force: true });
+
+  // The same commit must hash the same on a Windows and a Linux checkout: this
+  // repo develops on Windows with core.autocrlf=true and runs CI on Linux, so a
+  // CRLF re-save is not a source change and must not read as one.
+  writeFileSync(join(tmp, "src", "extension", "hints.ts"), "export const x = 1;\r\n");
+  ok("a CRLF re-save does not change the source hash", sourceHash(tmp) === baseSource);
+  writeFileSync(join(tmp, "src", "extension", "hints.ts"), "export const x = 1;\n");
+  ok("restoring LF restores the source hash", sourceHash(tmp) === baseSource);
   // The fixture tree is back to its starting shape; re-baseline so the verdict
   // checks below compare against the tree as it actually is.
   baseSource = sourceHash(tmp);
@@ -201,6 +224,54 @@ try {
   ok("a recorded but absent binary is reported missing", v.some((x) => x.status === "missing"));
 } finally {
   rmSync(tmp, { recursive: true, force: true });
+}
+
+/* ---------- 4. the add-on archive is byte-reproducible ---------- */
+
+// The payload hash includes the xpi's bytes, so an archive that differs on
+// every build silently invalidates all six committed installers and leaves the
+// committed xpi looking dirty against a tree nobody edited. It did: zipStore
+// stamped every entry with `new Date()`. These pin the fix in the artefact the
+// whole check is built on.
+{
+  const tmp = mkdtempSync(join(tmpdir(), "lazyfox-zip-"));
+  try {
+    mkdirSync(join(tmp, "extension"), { recursive: true });
+    writeFileSync(join(tmp, "extension", "manifest.json"), '{"version":"1.0.0"}\n');
+    writeFileSync(join(tmp, "extension", "content.js"), "void 0;\n");
+
+    const a = join(tmp, "a.xpi");
+    const b = join(tmp, "b.xpi");
+    zipStore(join(tmp, "extension"), a);
+    zipStore(join(tmp, "extension"), b);
+    ok("two zips of the same tree are byte-identical", readFileSync(a).equals(readFileSync(b)));
+
+    // Compare the header BYTES, not just two archives: two zips written in the
+    // same second would agree even with a timestamp taken from the clock, so an
+    // equality check alone would not catch the regression.
+    const head = readFileSync(a);
+    const pinnedDate = ((2020 - 1980) << 9) | (1 << 5) | 1;
+    ok(
+      "the zip stamps a fixed DOS date, not the build clock",
+      head.readUInt16LE(10) === 0 && head.readUInt16LE(12) === pinnedDate,
+    );
+
+    // SOURCE_DATE_EPOCH (the reproducible-builds convention) must be honoured,
+    // so a release pipeline can still stamp a deliberate time.
+    const prev = process.env.SOURCE_DATE_EPOCH;
+    process.env.SOURCE_DATE_EPOCH = String(Date.UTC(2021, 0, 1) / 1000);
+    const c = join(tmp, "c.xpi");
+    zipStore(join(tmp, "extension"), c);
+    const stamped = readFileSync(c);
+    ok(
+      "SOURCE_DATE_EPOCH overrides the pinned date",
+      stamped.readUInt16LE(12) === (((2021 - 1980) << 9) | (1 << 5) | 1),
+    );
+    if (prev === undefined) delete process.env.SOURCE_DATE_EPOCH;
+    else process.env.SOURCE_DATE_EPOCH = prev;
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 console.log(`\n${passed} payload checks passed`);
