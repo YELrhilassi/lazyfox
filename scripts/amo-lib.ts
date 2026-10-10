@@ -130,13 +130,42 @@ function crc32(buf: Buffer): number {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-function dosDateTime(d: Date = new Date()): [number, number] {
-  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
-  const date = (d.getFullYear() - 1980) << 9 | (d.getMonth() + 1) << 5 | d.getDate();
+// Zip entry timestamps are PINNED, because they were the reason the build was not
+// reproducible. A zip header carries a DOS date and time, and `new Date()` put
+// the moment of the build into every entry — so `dist/lazyfox2-<ver>.xpi`
+// differed on every `npm run build` even from identical source. That is not a
+// cosmetic annoyance: the installer payload hash includes the xpi's bytes, so
+// every rebuild silently invalidated all six committed installer binaries and
+// the committed xpi looked permanently dirty against a tree nobody had edited.
+// "Is the committed add-on the current source?" became unanswerable by inspection.
+//
+// A fixed date makes the same source produce the same bytes, so `npm run build`
+// is a no-op on a clean tree and the payload check means what it says.
+// SOURCE_DATE_EPOCH (the reproducible-builds convention) is honoured when set,
+// so a release pipeline can still stamp a real time deliberately.
+const DEFAULT_ZIP_EPOCH_MS = Date.UTC(2020, 0, 1, 0, 0, 0);
+
+function zipEpochMs(): number {
+  const raw = process.env.SOURCE_DATE_EPOCH;
+  if (!raw) return DEFAULT_ZIP_EPOCH_MS;
+  const secs = Number(raw);
+  return Number.isFinite(secs) && secs > 0 ? secs * 1000 : DEFAULT_ZIP_EPOCH_MS;
+}
+
+// DOS date/time fields, read in UTC so the same instant encodes identically on
+// any machine.
+function dosDateTime(ms: number = zipEpochMs()): [number, number] {
+  const d = new Date(ms);
+  const time = (d.getUTCHours() << 11) | (d.getUTCMinutes() << 5) | (d.getUTCSeconds() >> 1);
+  const date = ((d.getUTCFullYear() - 1980) << 9) | ((d.getUTCMonth() + 1) << 5) | d.getUTCDate();
   return [time >>> 0, date >>> 0];
 }
 
 // Write a valid (store) zip archive of every regular file under `dir`.
+//
+// Deterministic by construction: entries are sorted, stored uncompressed, and
+// stamped with a fixed date (see dosDateTime). Two builds of the same tree
+// produce byte-identical archives.
 export function zipStore(dir: string, outPath: string): void {
   const files = [];
   (function walk(p) {
