@@ -1339,3 +1339,62 @@ delivery (reachable only in that window; it costs a record on a tab showing the
 very same page, which is why the record also carries the nonce). And the e2e
 cases prove the helper's ANSWER for a tab, not where a record sits: placement is
 pinned by the unit checks, which read the same map through the same resolution.
+
+## 18.6 The status store's per-tab badges are keyed by index, and its two ends disagree
+
+Found by following the §18.5 fix into the one place that keeps the same
+coordinate. `StatusSetLeader(index, active)` and `StatusSetFind(index, cur,
+count)` (`core/status.go`) store into `leaderByIndex` / `findByIndex`, and the
+snapshot reads them **by the selected index** (`status.go:364`, `:377`). The
+index is the one the content script's push carried through the background
+(`sender.tab.index`) — a strip position computed in another process, i.e. the
+same coordinate §18.5 was about, kept for a *badge* instead of for key dispatch:
+
+- a strip change between the push and its delivery files the badge against
+  whichever tab now holds that index. The store cannot do better: the push
+  carries no identity for the tab it is about;
+- a strip change with no new push leaves the entry where it was, so the selected
+  tab can light with another tab's chevron (or another tab's `n/m` find count)
+  until something re-pushes;
+- `StatusSetTab` prunes only entries beyond the tab count, so a reorder clears
+  nothing.
+
+The failure is a wrong indicator, not a dead keyboard, which is why it is
+recorded rather than patched in the same pass as the presence fix — but it is not
+a "harmless" one either: the whole reason the leader indicator exists is that
+`;W` and a digit capture are otherwise invisible, and an indicator that lights on
+the wrong tab is a statement about the keyboard that is not true.
+
+**Why one half is worse than neither.** The bar's MODE for the selected tab comes
+from the store (`chromeLeader || leaderByIndex[selectedIndex]`) while the chord
+TEXT comes from the chrome helper's own resolved signal
+(`resolveLeaderSignal`/`leaderseq` in `chrome/statusbar.ts`). Keying only the
+chrome side by tab identity — the obvious half fix — lets the store resurrect a
+badge the view had just decided to drop, which is precisely the "the indicator is
+visibly out of sync with the key" class the comments in `statusbar.ts` already
+describe as a fixed bug. So the coherent fix is ONE coordinate for both ends:
+
+- give the batch a stable per-tab identity (a tab nonce generated once per tab on
+  the chrome side, compared in the store, exactly as the document nonce is
+  compared in `keystate`), or
+- have the chrome side push only the SELECTED tab's badge state and re-push on
+  `TabSelect`, so the store never holds an answer about a tab it cannot name.
+
+Either way the JS↔Go protocol changes, so it needs its own pass with
+`core/status_test.go` updated — not a bolt-on to the presence work.
+
+**Falsifier, in the suite that already exists.** Arm `;` on a web page (badge
+lit), move that tab (`;W ,` or a drag), select the neighbour, and read the
+`leader` / `find` segments of `#lfc=state` for the selected tab; the expectation
+is that the badge follows the DOCUMENT, not the slot. `content/ownership` already
+drives the browser's own strip, so this is a small extension of it rather than a
+new fixture.
+
+**Fixture found on the way.** `extensions.webextensions.restrictedDomains` set to
+`localhost` in the e2e profile gives the suite an `http(s)` page the extension
+cannot run on — the same test server, reached through a host Firefox refuses to
+inject into. That is what closes the last e2e gap in the ownership model (every
+other page the harness serves has a content script): see
+`content/ownership › a page the extension cannot run on is the chrome helper's`,
+which asserts the helper owns a tab whose URL is `http://` precisely because
+nothing there can answer a key.
