@@ -86,3 +86,48 @@ export function releaseLostHold(leader: ReleasableLeader | null | undefined): bo
 export function visibilityLostHold(visibilityState: string): boolean {
   return visibilityState !== "visible";
 }
+
+/**
+ * How long a published hold is still believable.
+ *
+ * A hold is a claim about a PHYSICAL key: the leader key is down and its keyup
+ * has not arrived yet. It is published to the background so it can survive a
+ * navigation (see content/main.ts: `;` held across `;g`), which means the claim
+ * outlives the document that made it — and a document that is gone cannot
+ * retract anything. A claim about a held key is therefore only worth believing
+ * while the key could still plausibly BE held: long enough to cover the gap a
+ * navigation takes (a few hundred milliseconds), short enough that a claim from
+ * a document that died mid-release cannot arm a leader nobody is holding.
+ *
+ * The failure it bounds is the worst shape this class of bug has. A restored
+ * hold marks the leader as physically held with no keyup left to release it, so
+ * the leader never disarms: every later key is dispatched as a `;x` binding
+ * (Chrome loses a tab, `g` navigates) while the which-key overlay — if it is
+ * even enabled — looks exactly as it does during a normal sequence. That is the
+ * reported "it stops responding to any input and then starts again and I never
+ * know why".
+ */
+export const HOLD_RESTORE_GRACE_MS = 2500;
+
+/**
+ * May a hold published by an earlier document be re-armed here?
+ *
+ * `publishedAt` is the wall-clock time the document that observed the press
+ * wrote the claim (0/NaN for a claim from a host that did not record one, which
+ * is refused rather than trusted). A claim that arrived without a timestamp is
+ * the old, unbounded rule, and refusing it is the whole point of the change.
+ */
+export function shouldRestoreHold(
+  hold: boolean,
+  publishedAt: number,
+  now: number,
+): boolean {
+  if (!hold) return false;
+  if (!Number.isFinite(publishedAt) || publishedAt <= 0) return false;
+  const age = Number(now) - publishedAt;
+  // A claim from the future is a clock the two realms disagree about; treating
+  // it as fresh is the safe direction (the alternative is refusing every
+  // restore on a host whose clock is skewed backwards).
+  if (age < 0) return true;
+  return age <= HOLD_RESTORE_GRACE_MS;
+}

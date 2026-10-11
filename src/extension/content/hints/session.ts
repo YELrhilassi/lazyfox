@@ -684,6 +684,23 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
 
   function handleKey(e: KeyboardEvent): boolean {
     const chars = hintChars();
+    // A LAYER WITH NOTHING USABLE ON SCREEN MUST NOT KEEP THE KEYBOARD.
+    //
+    // The batch and the session can disagree in the one direction that matters:
+    // if no label is placed (the placement pass hid them all, the page moved the
+    // batch off screen), `typeChar` finds no match and every hint letter is
+    // swallowed for nothing — the layer looks up, answers nothing, and the keys
+    // it eats are the ones the user needs to get out, including the leader.
+    // Tearing the dead layer down and DECLINING the key hands it straight back
+    // to the host, where the leader and the scroll keys still work: the reported
+    // "hints are stuck, unresponsive, and the leader does nothing" cannot
+    // survive this. Safe at `;f` time because `assign()` runs synchronously
+    // before control returns to the event loop, so a keydown can never be
+    // processed against a batch that has not been assigned yet.
+    if (!items.length || overlay.shownKeys().size === 0) {
+      exit();
+      return false;
+    }
     // A MODIFIED keystroke is never a hint key.
     //
     // The hint alphabet is plain letters (`asdfjklgh` by default) and this
@@ -733,15 +750,22 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     if (!el || !el.isConnected) return;
     const t = el.tagName;
     if (t === "INPUT" || t === "TEXTAREA" || t === "SELECT") {
+      // FOCUS IS THE ACTIVATOR'S JOB now (activate.ts aims at the editable root
+      // and verifies that focus landed, with one retry), and it must stay that
+      // way: the focus attempt and the verdict about it are two halves of one
+      // question, and splitting them is how a successful focus came to be
+      // reported as a failure.
+      //
       // Hints are only offered for on-screen elements, so focusing must not
       // move the page: `preventScroll` keeps the user's scroll position exactly
       // (the old `scrollIntoView({block:"center"})` jumped the viewport every
       // time a field was hinted).
-      try {
-        (el as HTMLElement).focus({ preventScroll: true });
-      } catch (e) {
-        (el as HTMLElement).focus();
-      }
+      //
+      // Selecting the field's text is a convenience the field offers once it
+      // HAS focus, and it is deliberately not part of the verdict: a field that
+      // refused focus is reported, not papered over by a selection that did
+      // nothing.
+      activator.activate(el, "focus");
       const anyEl = el as HTMLInputElement;
       if (anyEl.select) {
         try {
@@ -750,15 +774,11 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
           // ignore
         }
       }
-      activator.activate(el, "focus");
       return;
     }
     if ((el as HTMLElement).isContentEditable) {
-      try {
-        (el as HTMLElement).focus({ preventScroll: true });
-      } catch (e) {
-        (el as HTMLElement).focus();
-      }
+      // Includes any node INSIDE an editable subtree, which is the ChatGPT
+      // composer shape; the activator resolves the editable root itself.
       activator.activate(el, "focus");
       return;
     }

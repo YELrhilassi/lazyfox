@@ -26,7 +26,16 @@
 //     cursor:pointer + shadow-root discovery walk stops when the budget runs out
 //     and SAYS SO in the stats. Truncation is stated rather than silent — the
 //     same rule the chrome-side hint engine follows for its ninth link.
-import { HINTABLE_SELECTOR, MAX_SCAN, MEDIA_SELECTOR, SHADOW_DEPTH } from "./selectors";
+import {
+  HINTABLE_SELECTOR,
+  MAX_SCAN,
+  MEDIA_SELECTOR,
+  MEDIA_SURFACE_MIN_AREA,
+  MEDIA_SURFACE_MIN_H,
+  MEDIA_SURFACE_MIN_W,
+  MEDIA_SURFACE_SELECTOR,
+  SHADOW_DEPTH,
+} from "./selectors";
 import { createVisibilityPass, type VisibilityPass } from "./visibility";
 import { shadowRootOf, walkElements } from "../../../shared/dom";
 
@@ -121,6 +130,8 @@ export function isMediaOnlyWrapper(el: Element): boolean {
 export interface CollectStats {
   shadowRoots: number;
   pointerControls: number;
+  /** Candidates that qualified only as a large media surface (see isLargeMediaSurface). */
+  mediaSurfaces: number;
   /**
    * The per-node discovery walk hit the time budget (or MAX_SCAN) before the
    * document was exhausted. The selector matches are still complete; what may be
@@ -140,6 +151,39 @@ export interface CollectStats {
 // knowledge in one place instead of re-deriving it in the selection pass.
 export const weakHintables = new WeakSet<Element>();
 
+// Elements collected because they ARE a large media surface (see
+// MEDIA_SURFACE_*): a player's video, whose only clickable behaviour is its own
+// click handler and which carries no text, no role and no cursor:pointer to be
+// collected by any other rule.
+//
+// A WeakSet for the same reason as weakHintables: the selection pass has to know
+// how a candidate qualified, and re-deriving it there (a second rect read plus a
+// second selector match per candidate) is how two answers to one question start
+// to disagree.
+export const mediaSurfaces = new WeakSet<Element>();
+
+// Is this element a media surface big enough to be a primary part of the screen?
+// The thresholds live in selectors.ts with the rest of the engine's limits.
+export function isLargeMediaSurface(el: Element): boolean {
+  try {
+    if (!el.matches(MEDIA_SURFACE_SELECTOR)) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width < MEDIA_SURFACE_MIN_W || r.height < MEDIA_SURFACE_MIN_H) return false;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    if (vw <= 0 || vh <= 0) return false;
+    return r.width * r.height >= MEDIA_SURFACE_MIN_AREA * vw * vh;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Was this candidate collected AS a media surface? Used by the selection pass,
+// where it means "this is a different action from a control drawn over it".
+export function isMediaSurface(el: Element): boolean {
+  return mediaSurfaces.has(el);
+}
+
 // How specific a candidate is, for the nesting decision. Higher wins.
 //
 // The order is "how explicitly does this element ask to be clicked":
@@ -152,6 +196,11 @@ export const weakHintables = new WeakSet<Element>();
 //      in preference to something inside it
 export function specificity(el: Element): number {
   if (weakHintables.has(el)) return 0;
+  // A large media surface is a real action (clicking the video toggles it) but
+  // it is not a named control, so it sits below any link or ARIA widget that
+  // wraps or labels it — a thumbnail LINK must still win over the video inside
+  // it, while the surface stays in the batch on its own when nothing does.
+  if (mediaSurfaces.has(el)) return 2;
   const tag = el.tagName;
   if (tag === "BUTTON" || tag === "SUMMARY") return 5;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return 5;
@@ -274,6 +323,15 @@ export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): E
         if (stats) stats.shadowRoots++;
         walk(sr, depth + 1);
       }
+      // A large media surface, which nothing else collects: no text, no role,
+      // no cursor:pointer. Added BEFORE the cursor:pointer test so the two can
+      // never both claim one element (seen is checked, but the order also decides
+      // which tag an element ends up wearing when it qualifies as both).
+      if (!seen.has(el) && isLargeMediaSurface(el)) {
+        if (stats) stats.mediaSurfaces++;
+        mediaSurfaces.add(el);
+        add(el);
+      }
       // The cursor:pointer pass, on the same walk (one DOM traversal).
       if (!seen.has(el) && leafClickable(el, vis)) {
         if (stats) stats.pointerControls++;
@@ -291,6 +349,7 @@ export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): E
     stats.truncated = false;
     stats.visited = 0;
     stats.budgetMs = budgetMs;
+    stats.mediaSurfaces = 0;
   }
   walk(document, 0);
   if (stats) {

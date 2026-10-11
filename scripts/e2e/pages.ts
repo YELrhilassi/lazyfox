@@ -71,6 +71,12 @@ export const pages = {
     body: `<!DOCTYPE html><html><head><title>LF Test Page</title></head>
 <body>
 <h1>Lazyfox Test Page</h1>
+<!-- Room above the first row, so a 250px shift keeps it on screen. Without it
+     the whole first-row batch (everything hintable on this page) scrolls out of
+     view at once, the labels are correctly HIDDEN rather than re-anchored, and
+     "hints track a page that shifts under them" could not observe anything —
+     its premise is a control that moves while still being visible. -->
+<div style="height:380px"></div>
 <a id="link1" href="/target1">Link One</a>
 <a id="link2" href="/target2">Link Two</a>
 <input id="inp1" type="text" placeholder="search box">
@@ -547,7 +553,11 @@ html,body{margin:0}
      the media exemption. It is also big, which is what made it win. */
   #player { position:relative; width:760px; height:430px; background:#15151c;
             cursor:pointer; }
-  #player > video { position:absolute; inset:0; width:100%; height:100%; }
+  /* Inset rather than flush with the wrapper, and that matters to the HARNESS:
+     a hint position is matched back to an element by its top-left corner, and a
+     video at inset:0 was indistinguishable from the wrapper it fills. */
+  #player > video { position:absolute; inset:10px; width:calc(100% - 20px);
+                    height:calc(100% - 20px); }
   /* The ad overlay sitting on top of the lower third, as an ad layer does. */
   #adlayer { position:absolute; left:0; right:0; bottom:0; height:120px;
              background:linear-gradient(transparent, rgba(0,0,0,.75)); z-index:3; }
@@ -578,7 +588,7 @@ html,body{margin:0}
        inside it, as a real card/player does, so a test can tell "the button
        was pressed" from "the wrapper was pressed". -->
   <div id="player" data-id="player" onclick="if (event.target === this) document.title = 'PLAYER'">
-    <video></video>
+    <video data-id="surface"></video>
     <div id="adlayer" data-id="adlayer"></div>
     <button id="skipad" data-id="skipad" onclick="document.title='SKIPPED'">Skip ad <span data-id="skipad-inner">now</span></button>
   </div>
@@ -614,6 +624,13 @@ html,body{margin:0}
   // END of the body so the element exists.
   document.getElementById("deaf").addEventListener("click", function (e) {
     if (e.isTrusted) document.title = "DEAF-PRESSED";
+  });
+
+  // The video SURFACE itself. In the shapes where a player's controls are drawn
+  // as siblings over the video, the video is the only clickable thing there — so
+  // it has to be hinted, and its key has to reach the player's click handling.
+  document.querySelector("#player video").addEventListener("click", function () {
+    window.__videoClicks = (window.__videoClicks || 0) + 1;
   });
 
 
@@ -681,6 +698,117 @@ html,body{margin:0}
   })();
 </script>
 </main>
+</body></html>`,
+  },
+  // A TEXT FIELD page, for the keys that get you OUT of one.
+  //
+  // Escape is contested: this page binds it to close its own dialog (with a form
+  // in it), which is exactly the accident a user hits when all they wanted was to
+  // leave a field. So the page records Escape presses and whether its dialog is
+  // still up, and the suite asserts the two cancel keys do DIFFERENT things:
+  // Escape still reaches the page and keeps the caret, the cancel chord leaves
+  // the field and tells the page nothing.
+  "/field": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>FIELD</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:#0b0b0f; color:#eee; }
+  main { padding:16px; max-width:640px; }
+  input, [contenteditable] { font:14px system-ui,sans-serif; }
+  #field { display:block; width:320px; padding:8px; }
+  #composer { display:block; width:420px; min-height:64px; margin-top:14px; padding:10px;
+              border:1px solid #444; background:#15151c; }
+  closed-field { display:block; margin-top:14px; }
+  /* A dialog with a form in it: the thing the user does NOT want dismissed when
+     all they meant was "stop typing here". */
+  #dialog { position:fixed; right:16px; bottom:16px; width:260px; padding:12px;
+            background:#20202a; border:1px solid #555; border-radius:8px; }
+  #dialog-input { display:block; width:220px; padding:6px; margin:8px 0; }
+</style></head>
+<body>
+<main>
+  <input id="field" data-id="field" placeholder="type here">
+  <div id="composer" data-id="composer" contenteditable="true"><p data-id="composer-para">Ask anything</p></div>
+  <closed-field id="closedfield" data-id-owner="shadow-in"></closed-field>
+</main>
+<div id="dialog" data-id="dialog">
+  <p style="margin:0 0 6px">A dialog with a form in it.</p>
+  <input id="dialog-input" data-id="dialog-input" placeholder="your name">
+  <button id="dialog-close">Save</button>
+</div>
+<script>
+  window.__escapes = 0;
+  window.__dialogUp = true;
+  // A page that binds Escape for its own action — the whole reason a second,
+  // non-Escape way out of a field exists.
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    window.__escapes++;
+    window.__dialogUp = false;
+    document.getElementById("dialog").style.display = "none";
+  });
+  // The component-library shape: the real input lives in a CLOSED shadow root,
+  // so document.activeElement reports the HOST and page script cannot reach the
+  // field at all. innerBounds() is how the harness maps a hint position back to
+  // the control it was drawn on; innerFocusId() is how it proves where focus
+  // really landed.
+  class ClosedField extends HTMLElement {
+    connectedCallback() {
+      if (this.__root) return;
+      var root = this.attachShadow({ mode: "closed" });
+      var input = document.createElement("input");
+      input.id = "shadow-in";
+      input.placeholder = "shadow field";
+      input.style.cssText = "display:block;width:300px;padding:8px;";
+      root.appendChild(input);
+      this.__root = root;
+    }
+    innerBounds() {
+      var root = this.__root;
+      return (root && root.querySelector("input") ? root.querySelector("input") : this).getBoundingClientRect();
+    }
+    innerFocusId() {
+      return this.__root && this.__root.activeElement ? this.__root.activeElement.id : null;
+    }
+  }
+  customElements.define("closed-field", ClosedField);
+</script>
+</body></html>`,
+  },
+  // A page that NEVER goes quiet, with a control that only answers a TRUSTED
+  // click. This is the shape the privileged retry exists for and the shape that
+  // used to make it unreachable: the page-level signal answered "the page updated
+  // itself" for a control that had done nothing, so the retry never ran.
+  "/busy": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>BUSY</title>
+<style>
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:#0b0b0f; color:#eee; }
+  main { padding:16px; }
+  #gated { display:block; width:160px; height:34px; margin-top:12px; background:#333;
+           color:#eee; border:0; font:13px system-ui,sans-serif; cursor:pointer; }
+</style></head>
+<body>
+<main>
+  <p id="ticker">0</p>
+  <button id="gated" data-id="gated">Skip ad</button>
+</main>
+<script>
+  // The heartbeat: a player's progress bar, a clock, a chat transcript. Nothing
+  // about the user's action, but it is observed page activity all the same.
+  setInterval(function () {
+    var t = document.getElementById("ticker");
+    t.textContent = String((Number(t.textContent) || 0) + 1);
+  }, 16);
+  // Answer only a genuine press, the way YouTube's Skip button does. The BiDi
+  // harness runs without the chrome layer (no window actor), so the fact under
+  // test is observed through the content script's own report: a trustedRetry of
+  // false means "the target was silent, so the retry was warranted, and no
+  // privileged path was available here" — not through a page-side listener,
+  // which cannot see an event dispatched from the content script's realm.
+  document.getElementById("gated").addEventListener("click", function (e) {
+    if (e.isTrusted) document.title = "GATED-OK";
+  });
+</script>
 </body></html>`,
   },
   "/uitest": {
