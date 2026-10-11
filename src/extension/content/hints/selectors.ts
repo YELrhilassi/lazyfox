@@ -9,6 +9,11 @@
 export interface HintLabel extends HTMLSpanElement {
   _x?: number;
   _y?: number;
+  // Cached label size, measured once per text change so the reposition sweep can
+  // place everything without a layout read per hint (see the two-phase note in
+  // overlay.reposition). 0 means "measure it again".
+  _w?: number;
+  _h?: number;
 }
 
 export interface HintItem {
@@ -32,12 +37,19 @@ export const HINT_CSS =
   // The enter-affordance badge. It is sized off the SAME 12px/1 metric as .hint
   // so a glance can compare it to a letter rather than having to judge two
   // unrelated sizes: the point is to read as "a key you press", not as chrome.
-  // Fixed (not bottom-right) so it sits next to the labels rather than in the
-  // corner the browser UI occupies, and the same colours so it reads as part of
-  // the same overlay.
-  ".hint-enter{position:fixed;left:8px;bottom:8px;z-index:2147483647;background:#2ac3de;color:#16161e;" +
+  //
+  // Its POSITION IS NOT SET HERE. It used to be `left:8px; bottom:8px` — a fixed
+  // corner of the window — which meant the glyph answering "how do I take this
+  // row?" was drawn as far from the row as the viewport allows. overlay.placeEnter
+  // now puts it beside the row Enter would commit, and these defaults only exist
+  // so it is never painted at an unset position for a frame.
+  ".hint-enter{position:fixed;left:0;top:0;display:none;z-index:2147483647;background:#2ac3de;color:#16161e;" +
   "font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;padding:2px 5px;border-radius:4px;" +
   "pointer-events:none;white-space:pre;box-shadow:0 2px 6px rgba(0,0,0,.4),0 0 0 1px rgba(22,22,30,.55)}" +
+  // The row whose key the user has already typed in full, while a longer key
+  // still shares that prefix. It keeps its whole key (never an empty box) and is
+  // outlined so the ⏎ beside it reads as "this one, press Enter".
+  ".hint.hint-wait{background:#7aa2f7;box-shadow:0 0 0 2px #c0caf5,0 2px 6px rgba(0,0,0,.45)}" +
   // Off-screen hint labels are hidden, not moved; see the note in overlay.ts.
   ".hint[style*='display:none'],.hint-off{display:none}";
 

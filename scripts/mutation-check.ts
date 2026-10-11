@@ -36,6 +36,13 @@
 //                   The chooser would never open, and a digit past nine would
 //                   silently pick a tab instead of admitting it cannot tell.
 //
+//   cc-forward-always  the command-center "no engine yet" rescue removed
+//                      The helper forwards a key into the home page and trusts it
+//                      to act. A document that has not run its script yet (a tab
+//                      caught mid-redirect) has no engine, so the keystroke was
+//                      consumed by nobody and `;` on that tab left the keyboard
+//                      dead.
+//
 // Run: npm run test:mutation
 //
 // It is a SEPARATE command from `npm test` on purpose. It rewrites source
@@ -63,6 +70,20 @@ interface Mutation {
 }
 
 const MUTATIONS: Mutation[] = [
+  {
+    name: "cc-forward-always",
+    file: "src/chrome/keysdispatch.ts",
+    // The rescue, disabled — which is exactly the shipped behaviour it was
+    // added to fix: the forward happens unconditionally, so a command-center
+    // page with no engine takes the key and answers nothing. (Anchored on the
+    // condition line alone: keysdispatch.ts is a CRLF file, so a multi-line
+    // pattern would not match it.)
+    find: "if (!commandCenterPageReady(win) && isLeaderKeyPress(e)) {",
+    replace: "if (false && isLeaderKeyPress(e)) { // mutated: the page is trusted without an engine",
+    tests: ["scripts/test/keyhold.test.ts"],
+    because:
+      "the leader key is handed to a command-center page whose engine has not loaded, so the keystroke vanishes and the keyboard stays dead",
+  },
   {
     name: "keyhold-stick",
     file: "src/chrome/keysdispatch.ts",
@@ -125,6 +146,88 @@ const MUTATIONS: Mutation[] = [
     replace: "if (cands.length <= 1)",
     tests: ["scripts/test/tabjump.test.ts"],
     because: "the ambiguity chooser never opens, so a digit past nine silently guesses",
+  },
+  {
+    name: "coalesce-dedupe",
+    file: "src/shared/coalesce.ts",
+    find: "      if (handle !== null) return; // one trailing run is already due",
+    replace: "      // mutated: no dedupe guard",
+    tests: ["scripts/test/coalesce.test.ts"],
+    because:
+      "removing the 'one trailing run is already due' guard turns coalescing back into a run per request — the full-document walk that ran once per mutation batch (second-pass audit §12.1)",
+  },
+  {
+    name: "chord-case-means-shift",
+    file: "src/shared/keymap.ts",
+    find: '    : shift && base.length === 1 && base >= "a" && base <= "z"',
+    replace: '    : base.length === 1 && base >= "a" && base <= "z"',
+    tests: ["scripts/test/keymap.test.ts"],
+    because:
+      "printing a capital for a chord that held no Shift: the miss toast said `;Ctrl+Alt+R` for a hand that pressed `;Ctrl+Alt+r`, in the one notation where a capital means Shift (audit §14)",
+  },
+  {
+    name: "miss-message-translated",
+    file: "src/extension/commandcenter.ts",
+    find: 'toast("no binding for ;" + specToText(spec));',
+    replace: 'toast("no binding for ;" + spec);',
+    tests: ["scripts/test/keymap.test.ts"],
+    because:
+      "one host printing the canonical spec while the menu prints the chord it names: `no binding for ;shift+d` next to a key the overlay labels `D` (audit §6), which the source guard in keymap.test.ts must catch at the call site",
+  },
+  {
+    name: "presence-index-trusted",
+    file: "src/chrome/keystate.ts",
+    // The URL repair in presenceTabFor, removed: the strip index the sender
+    // computed in another process is trusted on its own.
+    find: "if (hit && (!wanted || urlOfTab(hit) === wanted)) return hit;",
+    replace: "if (hit) return hit; // mutated: the stale index is trusted alone",
+    tests: ["scripts/test-chrome-keys.ts"],
+    because:
+      "a presence report that arrived while the strip was changing is filed against whichever tab now holds the reported index, so the helper defers on a tab with no content script — the dead keyboard on a freshly opened tab (Cmd+T, audit §18.5)",
+  },
+  {
+    name: "presence-url-identifies-document",
+    file: "src/chrome/keystate.ts",
+    // The rule that fixed SPA presence, reverted: a record's URL is compared to
+    // the tab's current URL again.
+    find: "    if (hit.doc) return true;",
+    replace:
+      '    if (hit.doc) { const bb = browser as any; const sp = bb && bb.currentURI ? String(bb.currentURI.spec || "") : ""; return !!hit.url && hit.url === sp; } // mutated: the URL identifies the document',
+    tests: ["scripts/test-chrome-keys.ts"],
+    because:
+      "the first history.pushState on any single-page app expires a live document's presence for the rest of its life: the helper claims the keys and paints its own overlay over the page's, on GitHub/YouTube/every SPA (audit §18.5)",
+  },
+  {
+    name: "retraction-retracts-anything",
+    file: "src/chrome/keystate.ts",
+    // A retraction is trusted whatever document it names.
+    find: "    if (hit.doc && id && hit.doc !== id) return;",
+    replace: "    if (false) return; // mutated: any document may retract any record",
+    tests: ["scripts/test-chrome-keys.ts"],
+    because:
+      "the replaced page's late pagehide deletes the entry belonging to the page that already took its place, and nothing re-announces: the helper claims the keys on a live web page and paints a second which-key overlay over the page's own, intermittently (audit §6)",
+  },
+  {
+    name: "cache-switch-follows-scope",
+    file: "src/extension/cache-policy.ts",
+    find: '  return !(scope === "global" && mode === "off");',
+    replace: '  return scope === "global" ? mode !== "off" : false;',
+    tests: ["scripts/test/cache-policy.test.ts"],
+    because:
+      "the browser-wide cache switch stops following the scope, so 'this tab only' leaves the cache off for every tab while the panel describes a per-tab policy (audit §15)",
+  },
+  {
+    name: "presence-by-position",
+    file: "src/chrome/keystate.ts",
+    // The whole resolution rule in one line: the index is tried first and the
+    // URL repairs it. Returning on the index alone leaves the raw position,
+    // which is what the model used to be.
+    find: "    const hit = at(index);",
+    replace:
+      "    const hit = at(index);\n    return hit || null; // mutated: the index alone decides which tab this is about",
+    tests: ["scripts/test-chrome-keys.ts"],
+    because:
+      "a presence report is filed at the strip index it arrived with instead of on the tab showing the reported document — position-keying, which is how a tab inserted before a live web page inherited its answer and gave the user a dead keyboard on `Cmd+T` (audit §18.5)",
   },
 ];
 

@@ -8,6 +8,7 @@
 // overlay and the ops surface to get it.
 import { esc } from "../dom";
 import type { KeyLike } from "../keymap";
+import type { CaptureResult } from "../leadercapture";
 import { createSelector, type PopupCtl } from "../overlay";
 import type { ActionOps } from "../ops";
 import type { WkItem } from "../types";
@@ -42,7 +43,27 @@ export interface PopupCtx {
   //
   // The callback receives the WHOLE event rather than a bare character, so a
   // capture can still tell `1` from `Shift+1` and Enter from Ctrl+Enter.
-  armDigits(apply: (e: KeyLike) => boolean, timeoutMs?: number, expect?: string): void;
+  //
+  // It returns a HANDLE, and both members of that handle exist for the same
+  // reason: a sequence can span several keys and its resolution can involve an
+  // await (the tab count is a background round trip).
+  //
+  //   retarget(next)  the digits that are legal change as the position is typed,
+  //                   so the bar's "what comes next" has to be able to move with
+  //                   them. Advertising the first key's expectation for the whole
+  //                   sequence is how a live capture ends up describing a state
+  //                   that has already passed.
+  //   cancel()        a resolution that lands ASYNCHRONOUSLY (the count arrived,
+  //                   the position is complete) must be able to disarm, or the
+  //                   capture outlives its menu and swallows the next keystroke —
+  //                   the "limbo" report, where a key disappears with nothing on
+  //                   screen to explain it.
+  armDigits(
+    apply: (e: KeyLike) => CaptureResult,
+    timeoutMs?: number,
+    expect?: string,
+    onTimeout?: () => void
+  ): { cancel(): void; retarget(next: string): void; isActive(): boolean };
   // Content scripts preventDefault every key before it reaches the popup input,
   // so their selector must insert text manually; chrome's input receives keys
   // natively.

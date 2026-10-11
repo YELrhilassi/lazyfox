@@ -74,9 +74,10 @@ export async function run(ctx: any): Promise<void> {
       // BOTH REALMS, because the reply has to separate three very different
       // failures that a bare `leaderActive: false` collapses into one: the
       // document never saw the key (dispatch never reached it), the document
-      // saw it and ignored it (`data-lf-lastkey` moves but the leader does
-      // not), and the document's realm is unreadable mid-navigation (evalIn
-      // itself failed, which the `.catch(() => false)` above would hide). The
+      // saw it and ignored it (the PULLED dispatch trace's `key` moves but the
+      // leader does not), and the document's realm is unreadable mid-navigation
+      // (evalIn itself failed, which the `.catch(() => false)` above would
+      // hide). The
       // selection fact is here too: the chrome dispatch runs on the REAL
       // selected tab, so an answer addressed to a tab that is no longer
       // selected describes a different window than the one that got the key.
@@ -85,18 +86,20 @@ export async function run(ctx: any): Promise<void> {
         `JSON.stringify({
           url: location.href,
           ready: document.readyState,
-          lastkey: document.documentElement && document.documentElement.getAttribute("data-lf-lastkey"),
           leader: document.documentElement && document.documentElement.getAttribute("data-lf-leader"),
           hasFocus: document.hasFocus(),
           active: document.activeElement && (document.activeElement.id || document.activeElement.tagName)
         })`
       ).catch((e) => JSON.stringify({ evalError: String((e && e.message) || e) }));
+      const trace = await ctx.dispatchTrace(tab).catch(() => null);
       const rows: any[] = (await ctx.tabsInfo().catch(() => [])) || [];
       const active = rows.find((r) => r.active);
       throw new Error(
         "the leader key was never consumed (neither the chrome helper nor the " +
           "document itself armed): page=" +
           page +
+          " trace=" +
+          JSON.stringify(trace) +
           " chrome=" +
           JSON.stringify(
             last && {
@@ -267,6 +270,19 @@ export async function run(ctx: any): Promise<void> {
     // with the page's own keytrace merged in.
     let armed: { by: string } | null = null;
     let delivered = false;
+    // WHAT THE PAGE LOOKED LIKE WHEN THE KEY ARRIVED, read INSIDE the attempt
+    // loop rather than after it.
+    //
+    // Read at the end, these were empty in the failure this test actually
+    // produced: the document that received the key was gone by then (the
+    // pending navigation finally committed), so the read answered `undefined`
+    // and the failure line carried nothing but a URL. The page's own mirrors —
+    // `data-lf-keytrace` tags every key it SAW with the state it arrived in
+    // (`;:cmd` = command mode, `a:ins` = typed into the search box), and
+    // `data-lf-lead-trace` holds the last decision — are the two facts that
+    // separate "the key was typed instead of run" from "the page refused it".
+    // They only exist while the document does, so they are read here.
+    let atPress: any = null;
     const ownId = await evalIn(tab, `browser.tabs.getCurrent().then(t => t && t.id)`).catch(() => null);
     for (let attempt = 1; attempt <= 2 && !armed; attempt++) {
       await evalIn(
@@ -276,15 +292,51 @@ export async function run(ctx: any): Promise<void> {
           window.addEventListener("keydown", (e) => {
             window.__lfKeySeen.push(e.key);
           }, true);
+          const root = document.documentElement;
+          const input = document.getElementById("input");
+          window.__lfPre = {
+            active: document.activeElement && (document.activeElement.id || document.activeElement.tagName),
+            inputFocused: !!input && document.activeElement === input,
+            inputValue: input ? input.value : null,
+            mode: (document.getElementById("modeTag") || {}).textContent,
+            leader: root && root.getAttribute("data-lf-leader"),
+            hasFocus: document.hasFocus(),
+            keytrace: root && root.getAttribute("data-lf-keytrace"),
+            leadTrace: root && root.getAttribute("data-lf-lead-trace"),
+          };
           return true;
         })()`
       ).catch(() => {});
       await ctx.sendKeys(tab, [{ k: ";" }]);
       armed = await leaderAnswered(tab, 4000).catch(() => null);
       if (armed) break;
-      const seen: string[] = JSON.parse(
-        (await evalIn(tab, `JSON.stringify(window.__lfKeySeen || [])`).catch(() => "[]")) as string
-      );
+      const snap: any = await evalIn(
+        tab,
+        `JSON.stringify({
+          seen: window.__lfKeySeen || [],
+          pre: window.__lfPre || null,
+          after: (function () {
+            const root = document.documentElement;
+            const input = document.getElementById("input");
+            return {
+              active: document.activeElement && (document.activeElement.id || document.activeElement.tagName),
+              inputValue: input ? input.value : null,
+              mode: (document.getElementById("modeTag") || {}).textContent,
+              leader: root && root.getAttribute("data-lf-leader"),
+              keytrace: root && root.getAttribute("data-lf-keytrace"),
+              leadTrace: root && root.getAttribute("data-lf-lead-trace"),
+            };
+          })()
+        })`
+      ).catch(() => undefined);
+      if (snap) {
+        try {
+          atPress = JSON.parse(snap as string);
+        } catch (e) {
+          // keep the previous snapshot rather than reporting nothing
+        }
+      }
+      const seen: string[] = (atPress && atPress.seen) || [];
       if (seen.length > 0) {
         // The document GOT the key and did not arm. Retesting cannot change
         // that — fail now with everything that separates "refused" from
@@ -300,8 +352,10 @@ export async function run(ctx: any): Promise<void> {
           ? "YES — the document received the key and did not arm (product)"
           : "NO — the synthetic channel delivered nothing (harness)",
         ownTabId: ownId,
-        keytrace: await evalIn(tab, `document.documentElement.getAttribute("data-lf-keytrace")`).catch(() => null),
-        leadTrace: await evalIn(tab, `document.documentElement.getAttribute("data-lf-lead-trace")`).catch(() => null),
+        // Read INSIDE the loop, so it survives a document that went away
+        // afterwards. `pre` is the page just before the press, `after` is the
+        // page once the attempt had failed.
+        atPress: atPress,
         url: await ctx.tabUrlOf(tab).catch(() => "?"),
       });
       // leaderAnswered's own throw would carry the chrome state; make sure it

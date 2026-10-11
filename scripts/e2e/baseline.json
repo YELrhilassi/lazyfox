@@ -302,92 +302,92 @@
   "content/hints › link hints: ;f then hint key activates the link": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 2
+    "runs": 6,
+    "passes": 5
   },
   "content/hints › link hints: hints track a page that shifts under them": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: ] pages down to links below the fold": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: hidden, inert and occluded elements are never hinted": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: a control inside a clickable media container wins the hint": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: a click the page ignores is reported, not silent": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 2
+    "runs": 6,
+    "passes": 5
   },
   "content/hints › link hints: the actor's trusted click produces a trusted event": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: the control inside the media container really activates": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 2
+    "runs": 6,
+    "passes": 5
   },
   "content/hints › link hints: the page receives a trusted, well-formed click": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: a control that tracks press state still activates": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 2
+    "runs": 6,
+    "passes": 5
   },
   "content/hints › link hints: an ambiguous prefix shows an enter badge, and it clears": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 2
+    "runs": 6,
+    "passes": 5
   },
   "content/hints › link hints: nested targets collapse and labels never overlap": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: activating never scrolls the page (button and input)": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: scrolling to a new section re-hints its links": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: a dense grid yields unique, capped hints": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: a control inside an open shadow root is hinted and clicks": {
     "status": "pass",
@@ -398,26 +398,26 @@
   "content/hints › link hints: clickable image and video thumbnails are hinted and click": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: a control inserted after ;f gets a working hint": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: a framework re-render keeps the same key and still clicks": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/hints › link hints: a late control does not reshuffle existing keys": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 6,
+    "passes": 6
   },
   "content/popups › ;s search popup: type query, Enter searches": {
     "status": "pass",
@@ -664,13 +664,6 @@
     "group": "content",
     "runs": 3,
     "passes": 2
-  },
-  "content/multidigit › the window is left as it was found": {
-    "status": "fail",
-    "group": "content",
-    "runs": 2,
-    "passes": 0,
-    "flakeRate": 1
   },
   "content/stuck › a page that never responds still answers the leader key": {
     "status": "fail",
@@ -1538,6 +1531,54 @@
   "audit › reliability: a chord after typing into an input still runs": {
     "status": "pass",
     "group": "audit",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: a page whose controls are all in a frame says WHY, and stays off": {
+    "status": "pass",
+    "group": "content",
+    "runs": 4,
+    "passes": 4
+  },
+  "content/hints › link hints: controls inside open and closed shadow roots are hinted and click": {
+    "status": "pass",
+    "group": "content",
+    "runs": 3,
+    "passes": 3
+  },
+  "content/hints › link hints: aria-hidden ancestors hide controls inside closed shadow roots": {
+    "status": "pass",
+    "group": "content",
+    "runs": 3,
+    "passes": 3
+  },
+  "content/hints › link hints: Ctrl+G cancels the batch instead of typing the letter g": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
+  },
+  "content/hints › link hints: a capture that declines a key does not swallow it": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/ownership › a tab opened next to a reporting tab does not inherit its answer": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/ownership › moving a reporting tab takes its answer with it": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/ownership › closing a tab does not cost a live page its answer": {
+    "status": "pass",
+    "group": "content",
     "runs": 1,
     "passes": 1
   }

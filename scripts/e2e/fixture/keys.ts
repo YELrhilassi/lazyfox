@@ -170,9 +170,15 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
     }
     const d = await evalIn(
       tab,
-      `JSON.stringify({active: document.activeElement && (document.activeElement.id || document.activeElement.tagName), val: (document.getElementById("input")||{}).value, mode: (document.getElementById("modeTag")||{}).textContent, host: !!document.getElementById("lazyfox-leader"), hasFocus: document.hasFocus(), lastkey: document.documentElement.getAttribute("data-lf-lastkey"), seen: (window.__keys || []).slice(-8)})`
+      `JSON.stringify({active: document.activeElement && (document.activeElement.id || document.activeElement.tagName), val: (document.getElementById("input")||{}).value, mode: (document.getElementById("modeTag")||{}).textContent, host: !!document.getElementById("lazyfox-leader"), hasFocus: document.hasFocus(), seen: (window.__keys || []).slice(-8)})`
     );
-    throw new Error("leader did not arm for key '" + key + "' (3 attempts): " + d);
+    // The page's own dispatch trace, PULLED (the product writes nothing per
+    // keystroke). `key` missing from it means the document never saw the key at
+    // all, which is a different failure from "it saw it and did not arm".
+    const trace = await ctx.dispatchTrace(tab).catch(() => null);
+    throw new Error(
+      "leader did not arm for key '" + key + "' (3 attempts): " + d + " trace=" + JSON.stringify(trace)
+    );
   };
 
   // Send keys through the synthetic #lfc=keys channel.

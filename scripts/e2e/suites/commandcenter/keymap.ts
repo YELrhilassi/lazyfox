@@ -91,7 +91,13 @@ export async function run(ctx: any): Promise<void> {
     await ctx.openCC(ctx.tabA);
     await evalIn(ctx.tabA, `window.__kmapMark = "alive"; true`);
     await ctx.leaderPress(ctx.tabA, "r", { ctrl: true, alt: true });
-    await ctx.waitToast(ctx.tabA, /no binding for ;ctrl\+alt\+r\b/, 8000);
+    // The report names the chord the HAND made, not the keymap's canonical
+    // spec (`ctrl+alt+r`): this page prints the which-key table right next to
+    // the toast, and letting the two answer the same question in two notations
+    // is the defect that produced the original "does it want a capital?" report.
+    // Capital here means exactly one thing — Shift is held — which is why the
+    // letter is lowercase and the modifier words are not.
+    await ctx.waitToast(ctx.tabA, /^no binding for ;Ctrl\+Alt\+r$/, 8000);
     const mark = await evalIn(ctx.tabA, `window.__kmapMark || ""`).catch(() => "");
     assert(mark === "alive", "the plain ;r binding ran on a Ctrl+Alt chord (the page reloaded)");
     // And the plain chord is still there: `;r` DOES reload, which is what makes

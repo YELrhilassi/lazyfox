@@ -5,6 +5,7 @@
 // for the input element it focuses/types into.
 
 import { core } from "../../shared/core";
+import { isCancel } from "../../shared/leader";
 import { copyText } from "../../shared/dom";
 import { send } from "../../shared/protocol";
 import { windowStep } from "../../shared/resize";
@@ -228,8 +229,21 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
     // popups, and a key added anywhere works here too.
     if (deps.overlayKey(e)) return;
 
-    // While hint-pick is armed on the home grid, every key is a hint letter
-    // (or Esc to cancel) — before leader/typing/resize handling.
+    // While hint-pick is armed on the home grid, every PLAIN key is a hint
+    // letter (or Esc to cancel) — before leader/typing/resize handling.
+    //
+    // A MODIFIED key is not a hint letter, and here the alphabet is all
+    // twenty-six, so `Ctrl+G` used to be the letter `g`: instead of backing out
+    // it OPENED whichever tile was labelled `g`. The universal cancel must never
+    // be re-spelled by whatever happens to be on screen, so it cancels here, and
+    // any other modified key drops the pick and belongs to the browser (not
+    // prevented — Ctrl+T is still Ctrl+T).
+    if (store.get().hintArmed && (e.ctrlKey || e.altKey || e.metaKey)) {
+      store.patch({ hintArmed: false });
+      renderer.refresh();
+      if (isCancel(e)) e.preventDefault();
+      return;
+    }
     if (store.get().hintArmed) {
       handleHintPick(e);
       return;

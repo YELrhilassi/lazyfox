@@ -33,7 +33,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { createChromeKeyDown } from "../../src/chrome/keysdispatch.ts";
-import { noteContentPresent, resetContentPresence } from "../../src/chrome/keystate.ts";
+import { noteContentPresent, presenceTabFor, resetContentPresence } from "../../src/chrome/keystate.ts";
 import { releaseHoldOnKeyup, releaseLostHold, visibilityLostHold } from "../../src/shared/holdrelease.ts";
 import { fakeWindow, fakeLeader } from "./support.ts";
 
@@ -51,8 +51,11 @@ const WEB = "https://example.com/";
 function setup(spec = ABOUT) {
   resetContentPresence();
   const leader = fakeLeader();
+  // The window is RETURNED because presence is a fact about a TAB, and these
+  // tests need the same tab they reported through in order to read it back.
+  const win = fakeWindow(spec) as any;
   const down = createChromeKeyDown({
-    win: fakeWindow(spec) as any,
+    win,
     leader: () => leader,
     popup: { isOpen: () => false, handleKey: () => false, close() {}, resizeOnKey: () => false },
     typing: { focusedIsTyping: () => false, focusedTypingValue: () => "", focusedTypingTarget: () => null },
@@ -63,7 +66,47 @@ function setup(spec = ABOUT) {
     handleScrollKeys: () => false,
     runWebHints: () => {},
   } as any) as any;
-  return { leader, down };
+  return { leader, down, win };
+}
+
+/** Record presence the way the sender does: by index, resolved to a tab here. */
+function report(win: any, active: boolean, url: string): void {
+  noteContentPresent(presenceTabFor(win, 0, url), active, url);
+}
+
+/**
+ * A dispatcher over a COMMAND-CENTER tab, with the page's engine either present
+ * or absent.
+ *
+ * The fake window's `contentWindow` is what `commandCenterPageReady` reads, and
+ * the product is asked about the exact state a fresh new tab is in for a moment:
+ * the URL has committed, the static markup is parsed, and the script that
+ * installs the page's key engine has not run yet.
+ */
+function setupCC(pageReady: boolean) {
+  resetContentPresence();
+  const leader = fakeLeader();
+  const win = fakeWindow("moz-extension://abc/commandcenter.html") as any;
+  win.gBrowser.selectedBrowser.contentWindow = {
+    document: {
+      documentElement: {
+        getAttribute: (name: string) => (name === "data-lf-engine" && pageReady ? "1" : null),
+      },
+    },
+  };
+  const down = createChromeKeyDown({
+    win,
+    leader: () => leader,
+    popup: { isOpen: () => false, handleKey: () => false, close() {}, resizeOnKey: () => false },
+    typing: { focusedIsTyping: () => false, focusedTypingValue: () => "", focusedTypingTarget: () => null },
+    keyGuard: { shouldIgnore: () => false },
+    leaderKey: () => ";",
+    handleHotkeyCombo: () => false,
+    switchSessionByMarker: () => {},
+    handleScrollKeys: () => false,
+    runWebHints: () => {},
+  } as any) as any;
+  return { leader, down, win };
 }
 
 /** A keydown with the shape the dispatcher accepts. */
@@ -150,11 +193,11 @@ describe("ownership and keyup are separate facts", () => {
   // content script owns. Claiming ownership there would handle one keystroke
   // twice, so `fromActor` must stay independent of `noKeyup`.
   test("a keyup-less key does not steal a web page's keys", () => {
-    const { leader, down } = setup(WEB);
+    const { leader, down, win } = setup(WEB);
     // A web page whose content script HAS arrived — the case where the chrome
     // helper must defer, and therefore the case the keyup-less path must not
     // override.
-    noteContentPresent(0, true, WEB);
+    report(win, true, WEB);
     // Not fromActor, so the "web pages belong to the content script" gate must
     // decline it even though no keyup will follow.
     assert.equal(down.chromeKeyDown(keydown(";"), false, true), false);
@@ -162,8 +205,8 @@ describe("ownership and keyup are separate facts", () => {
   });
 
   test("an actor key IS owned, because the actor only speaks for pages with no content script", () => {
-    const { leader, down } = setup(WEB);
-    noteContentPresent(0, true, WEB);
+    const { leader, down, win } = setup(WEB);
+    report(win, true, WEB);
     assert.equal(down.chromeKeyDown(keydown(";"), true, true), true);
     assert.equal(leader.active, true);
   });
@@ -171,8 +214,8 @@ describe("ownership and keyup are separate facts", () => {
   test("an actor key is NOT marked held", () => {
     // The actor synthesizes a keydown and nothing else. Claiming a hold there
     // is exactly the stuck-keyboard bug.
-    const { leader, down } = setup(WEB);
-    noteContentPresent(0, true, WEB);
+    const { leader, down, win } = setup(WEB);
+    report(win, true, WEB);
     down.chromeKeyDown(keydown(";"), true, true);
     assert.equal(leader.sticky, false);
   });
@@ -315,5 +358,68 @@ describe("only hiding releases — becoming visible again does not", () => {
   });
   test("visible does not", () => {
     assert.equal(visibilityLostHold("visible"), false);
+  });
+});
+// ---------------------------------------------------------------------------
+// The leader key on a command-center tab that cannot answer yet.
+//
+// The helper FORWARDS a key into the command center rather than running it
+// itself (that page owns its own keys, and the `#lfc=keys` channel plus the
+// content-process actor both arrive through this forward). Forwarding is right
+// while the page is there — but a command-center document caught mid-redirect
+// (URL committed, script not run yet; every fresh new tab for a moment) has
+// none of its engine, so the key was handed to a page that could not act on it
+// and the keystroke simply disappeared. `;` on such a tab left the keyboard
+// dead until the user navigated away, which is the "nothing responds, not even
+// the leader key" report.
+//
+// So the page declares whether it answers keys (`data-lf-engine`, set in the
+// same statement that installs its listener) and the LEADER KEY is answered
+// here when it does not. These tests pin both directions and the blast radius:
+// only the leader key is rescued, and a ready page is untouched.
+// ---------------------------------------------------------------------------
+
+describe("a command-center page with no engine cannot swallow the leader key", () => {
+  test("the leader key is answered HERE when the page has not loaded its engine", () => {
+    const { leader, down } = setupCC(false);
+    const took = down.chromeKeyDown(keydown(";"), false, true);
+    assert.equal(took, true, "the key is consumed by somebody");
+    assert.equal(leader.active, true, "and somebody armed — the keyboard is alive");
+  });
+
+  test("a page that HAS its engine gets the key, exactly as before", () => {
+    const { leader, down } = setupCC(true);
+    const took = down.chromeKeyDown(keydown(";"), false, true);
+    assert.equal(took, true, "consumed");
+    assert.equal(leader.active, false, "the page owns its keys; the helper must not arm as well");
+  });
+
+  test("only the LEADER key is rescued — nothing else arms the helper", () => {
+    // A second opinion about every key would be the double-owner bug wearing a
+    // different hat: `j` on the home grid is a grid move, not a scroll.
+    const { leader, down } = setupCC(false);
+    const took = down.chromeKeyDown(keydown("j"), false, true);
+    assert.equal(took, true, "still consumed (forwarded to the page)");
+    assert.equal(leader.active, false, "a non-leader key never arms the helper");
+  });
+
+  test("a modified leader key is not the leader key", () => {
+    // Ctrl+; is not the escape hatch and not an arm: the numeric hot-swap and
+    // the browser's own chords live in that space.
+    const { leader, down } = setupCC(false);
+    // `keydown()` takes the REAL event field names (`ctrlKey`), and this test
+    // exists because getting that wrong is exactly how a modifier rule ends up
+    // asserted against an unmodified key.
+    down.chromeKeyDown(keydown(";", { ctrlKey: true }), false, true);
+    assert.equal(leader.active, false);
+  });
+
+  test("a REAL key on a ready command-center tab is unchanged", () => {
+    // The branch the fallback must not disturb: with focus in the page the
+    // page's own listener has already run, so the helper returns false.
+    const { leader, down } = setupCC(true);
+    const took = down.chromeKeyDown(keydown(";"), false, false);
+    assert.equal(took, false);
+    assert.equal(leader.active, false);
   });
 });

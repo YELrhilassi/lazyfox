@@ -19,11 +19,18 @@ import { KeyGuard } from "../shared/keyguard";
 import { LeaderController, isCancel } from "../shared/leader";
 import {
   blurFocusedElement,
+  commandCenterPageReady,
   dispatchToCCPage,
   focusCCBody,
   signalCommandCenterFind
 } from "./commandcenterfocus";
-import { chromeOwnsKeys, isAboutPage, isChromeUiFocus, isCommandCenterTab } from "./keystate";
+import {
+  chromeOwnsKeys,
+  commandCenterDocumentPresent,
+  isAboutPage,
+  isChromeUiFocus,
+  isCommandCenterTab,
+} from "./keystate";
 import type { ChromeEnv, ChromeWindow } from "./env";
 import type { PopupHost } from "./popup";
 import { createChromePageHints } from "./pagehints";
@@ -71,6 +78,19 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
   const pageHints = createChromePageHints(deps.env, win, deps.leader);
   const leader = () => deps.leader();
 
+  // "This tab's document is Lazyfox's own page", asked of the DOCUMENT as well
+  // as of the URL.
+  //
+  // The two halves are not the same question and the difference is reachable:
+  // `isCommandCenterTab` reads currentURI, which during a provisional navigation
+  // is already the URL being loaded while the document on screen is still the
+  // command center. Keyed on the URL alone, every branch below then treated that
+  // tab as a web page — so a key aimed at it (the `#lfc=keys` channel's, or the
+  // actor's) was declined as "the content script owns it" and forwarded to a
+  // document that did not exist yet, while the document that DID exist and was
+  // still answering keys got nothing. See keystate.commandCenterDocumentPresent.
+  const ccOwnsTab = (): boolean => isCommandCenterTab(win) || commandCenterDocumentPresent(win);
+
   // ;f is link-hints. Web pages run a content script that owns them; the
   // command-center home has no page links, so there it arms hint-PICK (each
   // grid tile gets a letter and the next key runs it); and on chrome-owned
@@ -79,7 +99,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
   function runHintsAction(): void {
     const l = leader();
     if (!l) return;
-    if (isCommandCenterTab(win)) {
+    if (ccOwnsTab()) {
       signalCommandCenterFind(win, l);
       return;
     }
@@ -91,6 +111,13 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     }
     // Web pages: the content script (or the shared popup engine) owns hints.
     deps.runWebHints();
+  }
+
+  // The leader key with no modifier on it — the one keystroke that must never
+  // vanish, and the only key the command-center fallback below answers itself.
+  // Written once because all four call sites mean exactly this.
+  function isLeaderKeyPress(e: ActorKey): boolean {
+    return e.key === deps.leaderKey() && !e.ctrlKey && !e.altKey && !e.metaKey;
   }
 
   // `fromActor` and `noKeyup` are DIFFERENT facts and must not be conflated.
@@ -130,8 +157,28 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     //   * REAL, with focus in the page: the page's own listener already ran. Do
     //     nothing (returning false leaves the event exactly as the page left
     //     it).
-    if (isCommandCenterTab(win) && !popup.isOpen()) {
+    if (ccOwnsTab() && !popup.isOpen()) {
       if (fromActor || noKeyup) {
+        // THE PAGE HAS TO BE ABLE TO ANSWER, and the helper can now tell.
+        //
+        // Forwarding is right — this page runs the same key engine a content
+        // script does — but it was UNCONDITIONAL, and a command-center document
+        // that has not finished loading its script yet (a tab caught mid-
+        // redirect, i.e. a fresh new tab for a moment, or one whose reload is in
+        // flight) has the URL and the static markup and none of the engine.
+        // A key handed to that page was consumed by nobody: pressing `;` there
+        // left the keyboard dead and only a navigation brought it back, which is
+        // the "nothing responds, not even the leader key" report.
+        //
+        // The page declares whether it answers keys (`data-lf-engine`, set where
+        // its listener is installed), so when it does not, the LEADER KEY is
+        // answered here instead of vanishing. Every other key is forwarded
+        // exactly as before — this is a rescue for the one key that has to work
+        // on every tab, not a second opinion about the page's keys.
+        if (!commandCenterPageReady(win) && isLeaderKeyPress(e)) {
+          const l = leader();
+          if (l && armHeldLeader(l, e, noKeyup)) return true;
+        }
         // The modifiers travel with it: the page's own typing guard and its
         // Ctrl/Alt pairs read them, and a forwarded Ctrl+Enter that arrived as
         // a bare Enter would run the wrong action.
@@ -139,7 +186,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         return true;
       }
       if (!isChromeUiFocus(win, typing, e as KeyboardEvent)) return false;
-      if (e.key === deps.leaderKey() && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (isLeaderKeyPress(e)) {
         focusCCBody(win);
       }
       return false;
@@ -217,8 +264,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         return true;
       }
       const chromeUiFocus = isChromeUiFocus(win, typing, e as KeyboardEvent);
-      const leaderKeyPress =
-        e.key === deps.leaderKey() && !e.ctrlKey && !e.altKey && !e.metaKey;
+      const leaderKeyPress = isLeaderKeyPress(e);
       const emptyLazyfoxField =
         typingValue === "" && (isCommandCenterTab(win) || isAboutPage(win));
       // "The user is writing something." A field with text, or a field in the
@@ -241,8 +287,11 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         if (armHeldLeader(l, e, noKeyup)) return true;
       }
       if (l.hasPending()) {
-        l.handlePending(e);
-        return true;
+        // The capture's answer is honoured: `false` means "this key is not part
+        // of the sequence I am collecting" (`;W m` then a letter, a leading
+        // zero, or anything with Ctrl/Alt/Meta held). It used to be swallowed
+        // here anyway, which is the one thing the handler promises not to do.
+        return l.handlePending(e);
       }
       // `handleKey` reports whether it CONSUMED the key, and that answer is
       // honoured. It used to be discarded here and in every other host, which
@@ -255,23 +304,17 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // Esc on chrome-owned pages blurs the focused element so the page returns
     // to a neutral state. NOT consumed: the page also receives Esc. The
     // command center owns its Esc, and web pages are the content script's.
+    //
+    // A second Ctrl+G branch used to sit just below this one — "back out of an
+    // armed leader without giving up the key" — and it was UNREACHABLE, because
+    // the `l.active || l.hasPending()` block above returns on every path, so by
+    // the time control arrives here `l.active` is false by construction. It read
+    // like the escape hatch while the live one (the `isCancel` check at the top
+    // of that block) sat somewhere else entirely, which is precisely how a
+    // safety net gets "fixed" twice and tested once. Removed.
     if (e.key === "Escape") {
-      if (!isCommandCenterTab(win)) blurFocusedElement(win);
+      if (!ccOwnsTab()) blurFocusedElement(win);
       return false;
-    }
-
-    // Ctrl+G backs out of an armed leader without giving up the key. Escape
-    // cannot: it is deliberately NOT consumed for a chrome page, because the
-    // page itself receives it (see the comment above), so there was no way to
-    // cancel a sequence that also worked while the leader was held.
-    if (
-      l.active &&
-      e.ctrlKey && !e.altKey && !e.metaKey &&
-      (e.key === "g" || e.key === "G")
-    ) {
-      l.hide();
-      if (l.hasPending()) l.cancelPending();
-      return true;
     }
 
     // Typing in an editable: never intercept — the leader key types like any
@@ -283,8 +326,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // is supposed to rescue). Only the leader key is excepted there.
     if (typingNow) {
       if (
-        e.key === deps.leaderKey() &&
-        !e.ctrlKey && !e.altKey && !e.metaKey &&
+        isLeaderKeyPress(e) &&
         (typingValue === "" || isChromeUiFocus(win, typing, e as KeyboardEvent)) &&
         (isCommandCenterTab(win) || isAboutPage(win))
       ) {
@@ -297,11 +339,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // blurred) the leader key must arm here so the home-screen shortcuts
     // work; in insert mode the typing check above already let `;` through.
     const k = e.key;
-    if (
-      k === deps.leaderKey() &&
-      !e.ctrlKey && !e.altKey && !e.metaKey &&
-      isCommandCenterTab(win)
-    ) {
+    if (isLeaderKeyPress(e) && isCommandCenterTab(win)) {
       if (armHeldLeader(l, e, noKeyup)) return true;
     }
 

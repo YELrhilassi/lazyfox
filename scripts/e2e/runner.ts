@@ -34,6 +34,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { newTestNotice } from "./notices.ts";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 export interface TestResult {
@@ -56,6 +58,8 @@ export const results: TestResult[] = [];
 export function assert(cond: unknown, msg?: string): asserts cond {
   if (!cond) throw new Error(msg || "assertion failed");
 }
+
+
 
 // --- configuration ---------------------------------------------------------
 
@@ -93,6 +97,10 @@ export function parseArgs(argv: string[]): Args {
   const out: Args = { suite: null, group: null, only: null, tags: null, skipTags: null, list: false, help: false };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    // `args[i]` is `string | undefined` under noUncheckedIndexedAccess. An
+    // undefined entry is not a flag and cannot be a suite name, so it is
+    // skipped rather than coerced — the loop already ends at the array's end.
+    if (a === undefined) continue;
     if (a === "--suite" || a === "-s") out.suite = args[++i] ?? null;
     else if (a === "--group" || a === "-g") out.group = args[++i] ?? null;
     else if (a === "--only" || a === "-o") out.only = args[++i] ?? null;
@@ -160,11 +168,14 @@ export function printHelp(config: Config): void {
   console.log("Suites:");
   for (const name of Object.keys(config.suites)) {
     const s = config.suites[name];
+    if (!s) continue;
     console.log("  " + name.padEnd(16) + s.description + "  ->  " + s.groups.join(", "));
   }
   console.log("\nGroups:");
   for (const g of groupOrder(config)) {
-    console.log("  " + g.padEnd(16) + config.groups[g].description);
+    const def = config.groups[g];
+    if (!def) continue;
+    console.log("  " + g.padEnd(16) + def.description);
   }
 }
 
@@ -270,8 +281,12 @@ export function createRunner(selection: Selection, hooks: RunnerHooks = {}) {
   ): Promise<void> {
     // Suites pass their FILE ("content/multidigit"), not their group, so the
     // id is "<group>/<file> › <name>" and two tests with the same name in
-    // different files cannot collide. The group is the first path segment.
-    const group = file.split("/")[0];
+    // different files cannot collide. The group is the first path segment, and a
+    // file with no separator (a suite that names its group directly) IS its own
+    // group rather than `undefined` — which under noUncheckedIndexedAccess is
+    // what `[0]` gives, and which silently failed every `selection.enabled.has`
+    // test for such a suite.
+    const group = file.split("/")[0] ?? file;
     const id = `${file} › ${name}`;
     const tags = opts.tags || [];
 
@@ -362,10 +377,22 @@ async function runOne(
 /**
  * The summary, and the regression verdict.
  *
- * Returns `{ ok, regressions, fixed, flake }`. `ok` is FALSE only when there is
- * a regression or an unrecorded test — that is the gate.
+ * Returns `{ ok, regressions, fixed, flake, newOnes, stale }`. `ok` is FALSE
+ * when there is a regression, an unrecorded test, or a baseline row that
+ * describes a test nobody has — that is the gate. With `updateBaseline` the two
+ * record problems are FIXED in `baseline` (the caller writes it), so the run
+ * that cleans the record is also the run that can pass.
  */
-export function summary(baseline: Baseline, updateBaseline = false): {
+export function summary(
+  baseline: Baseline,
+  updateBaseline = false,
+  // Whether this run exercised the whole of every group it selected. FALSE when
+  // `--only` / `--tags` / `--skip-tags` narrowed the selection, because then a
+  // test that did not run is a test that was not asked for, not a test that
+  // stopped existing. See the stale-row check below for why the distinction has
+  // to be made here rather than guessed at.
+  wholeGroups = true,
+): {
   ok: boolean;
   ran: number;
   failed: number;
@@ -373,6 +400,7 @@ export function summary(baseline: Baseline, updateBaseline = false): {
   fixed: TestResult[];
   flake: TestResult[];
   newOnes: TestResult[];
+  stale: string[];
   unknown: string[];
 } {
   const ran = results.filter((r) => !r.skipped);
@@ -402,6 +430,32 @@ export function summary(baseline: Baseline, updateBaseline = false): {
   // Tests the baseline knows about that did not run in this selection are not
   // "unknown" — they simply were not exercised. Only tests that RAN and whose
   // baseline row is missing are a problem.
+  // A BASELINE ROW FOR A TEST THAT NO LONGER EXISTS IS A LIE IN THE RECORD.
+  //
+  // The baseline is the only place "known broken" is written down, and readers
+  // trust it — including the next session, which will spend an hour reproducing
+  // a failure whose test was deleted. That is not hypothetical: this ran with a
+  // `content/multidigit › the window is left as it was found` row marked `fail`
+  // for a test that no longer exists under any name, so the record claimed a
+  // real product defect that nothing was checking at all.
+  //
+  // STALE IS DECIDED PER GROUP, not globally: a row is stale when the group it
+  // belongs to RAN in this selection (so the group's tests were being exercised)
+  // and its test still did not appear. Groups the selection did not include say
+  // nothing either way, which is what keeps `--suite content` from pruning the
+  // whole sessions record. And `wholeGroups` keeps the tag/text filters from
+  // doing the same thing by accident.
+  const declared = new Set(results.map((r) => r.id));
+  const groupsRun = new Set(results.map((r) => r.group));
+  const stale: string[] = [];
+  if (wholeGroups) {
+    for (const [id, entry] of Object.entries(baseline)) {
+      if (declared.has(id)) continue;
+      if (!entry.group || !groupsRun.has(entry.group)) continue;
+      stale.push(id);
+    }
+  }
+
   if (updateBaseline) {
     for (const r of ran) {
       baseline[r.id] = {
@@ -412,7 +466,17 @@ export function summary(baseline: Baseline, updateBaseline = false): {
         passes: (baseline[r.id]?.passes || 0) + (r.pass ? 1 : 0),
       };
     }
-    saveBaseline(baseline);
+    // Recording the run is also the moment to remove what it proved does not
+    // exist. `--update-baseline` is the documented way to change the record, so
+    // it must be able to both add and delete — otherwise the only way to fix a
+    // rename is by hand-editing JSON, and nobody does.
+    //
+    // Mutating the map only: WRITING it is the caller's job (main.ts), so this
+    // function stays a report over an object it was handed. That separation is
+    // not tidiness — it is what lets the unit suite attack this rule with a
+    // synthetic baseline, which it could not do if calling it wrote the real
+    // scripts/e2e/baseline.json.
+    for (const id of stale) delete baseline[id];
   }
 
   const effectiveFailed = failed.length - knownBroken.length;
@@ -433,10 +497,14 @@ export function summary(baseline: Baseline, updateBaseline = false): {
     console.log(`\n++ ${fixed.length} fixed since the baseline:`);
     for (const r of fixed) console.log(`   + ${r.id}`);
   }
-  if (newOnes.length) {
-    console.log(`\n?? ${newOnes.length} test(s) with no baseline row — run with --update-baseline to record them:`);
-    for (const r of newOnes.slice(0, 20)) console.log(`   ? ${r.id}`);
-    if (newOnes.length > 20) console.log(`   … and ${newOnes.length - 20} more`);
+  for (const line of newTestNotice(newOnes, updateBaseline)) console.log(line);
+  if (stale.length) {
+    console.log(
+      `\n?? ${stale.length} baseline row(s) describe test(s) that no longer exist` +
+        (updateBaseline ? " — REMOVED by --update-baseline:" : " — remove them (--update-baseline does it):"),
+    );
+    for (const id of stale.slice(0, 20)) console.log(`   ? ${id}`);
+    if (stale.length > 20) console.log(`   ? ...and ${stale.length - 20} more`);
   }
 
   const hardFailures = failed.filter((r) => baseline[r.id]?.status !== "fail" && baseline[r.id]?.status !== "quarantine");
@@ -446,13 +514,28 @@ export function summary(baseline: Baseline, updateBaseline = false): {
   }
 
   return {
-    ok: regressions.length === 0 && newOnes.length === 0,
+    // A test with no baseline row is UNACCOUNTED FOR, which is why it blocks by
+    // default: a suite nobody has catalogued cannot detect anything (see the
+    // header). Once --update-baseline has written those rows — a few lines
+    // above — they are accounted for, and the run that recorded them must exit
+    // on its real result. Otherwise the report says "recorded in the baseline"
+    // while the exit code says "something is wrong", and the reader goes looking
+    // for the thing that the line they just read already fixed.
+    // Stale rows block UNLESS this run is the one that removes them: a record
+    // that describes tests nobody has is worse than no record, because it is
+    // read as evidence. (Not `stale` after an --update-baseline run, which
+    // emptied it a few lines above.)
+    ok:
+      regressions.length === 0 &&
+      (updateBaseline || newOnes.length === 0) &&
+      (updateBaseline || stale.length === 0),
     ran: ran.length,
     failed: failed.length,
     regressions,
     fixed,
     flake,
     newOnes,
+    stale,
     unknown,
   };
 }

@@ -49,8 +49,8 @@ import {
   chromeOwnsKeys,
   chromeOwnsSurfaces,
   contentScriptPresent,
-  isCommandCenterTab,
   noteContentPresent,
+  presenceTabFor,
 } from "./keystate";
 import { createChromeOps } from "./ops";
 import { createPrimitives } from "./ops/primitives";
@@ -189,9 +189,15 @@ import { createTypingChannel } from "./typing";
     bindings: () => (leader ? leader.bindings() : Promise.resolve([])),
     // A sub-key that takes a NUMBER (move tab N into the split) needs the
     // leader's one-shot capture; the leader controller owns it.
-    armDigits: (apply, timeoutMs, expect) => {
-      if (!leader) return;
-      leader.armPending(apply, { timeoutMs: timeoutMs || 3000, expect });
+    armDigits: (apply, timeoutMs, expect, onTimeout) => {
+      const generation = leader?.armPending(apply, { timeoutMs: timeoutMs || 3000, expect, onTimeout });
+      return {
+        cancel: () => { if (generation !== undefined) leader?.cancelPendingGeneration(generation); },
+        retarget: (next: string) => {
+          if (generation !== undefined && leader?.isPendingGeneration(generation)) leader.setPendingExpect(next);
+        },
+        isActive: () => generation !== undefined && !!leader?.isPendingGeneration(generation),
+      };
     },
     manualText: false,
   };
@@ -346,23 +352,32 @@ import { createTypingChannel } from "./typing";
   leader = built.leader;
   leaderActions = built.actions;
 
-  // ;f is link-hints, and who handles it depends on the page: the command
-  // center arms hint-PICK and chrome-owned pages (about:, error pages) draw
-  // their own hints — both live in the dispatcher — while web pages run the
-  // shared popup engine's hint action (makeLeaderActions put it there). The
-  // leader table keeps ONE entry that routes by page type.
-  const startHintsAction = leaderActions["f"];
+  // ;f is link-hints, and which engine runs it is the dispatcher's decision —
+  // made in ONE place.
+  //
+  // This used to be a gate here AND a decision inside `runHintsAction`, keyed on
+  // the same two predicates ("is this the command center" / "does the helper own
+  // the keys"), which is how two answers to one question drift: this copy asked
+  // `isCommandCenterTab`, the URL, while the other asks the document. During a
+  // provisional navigation out of the command center the two disagree, and the
+  // copy that ran first — this one — sent `;f` to the shared engine for a page
+  // that was still our own. Now the dispatcher's `runHintsAction` is the whole
+  // rule (command center → the page's own picker; chrome-owned → the helper's
+  // own hints; a web page → the shared engine, which `setWebHints` wires back
+  // here), so there is nothing left to keep in step.
+  // The shared engine's own `f` action, captured BEFORE the table entry is
+  // replaced. It is the web-page answer, and it must be captured rather than
+  // looked up later: once the entry below points at the dispatcher, reading
+  // `leaderActions["f"]` from the web-page path would call the dispatcher again,
+  // which would route back here for ever.
+  const engineHintsAction = leaderActions["f"];
   leaderActions["f"] = () => {
-    if (isCommandCenterTab(win) || chromeOwnsKeys(win)) {
-      dispatch.runHintsAction();
-      return;
-    }
-    if (startHintsAction) startHintsAction();
+    dispatch.runHintsAction();
   };
   // The dispatcher's web-page path (a key forwarded to chrome on a page it
   // does not own) routes back to the shared engine's action.
   dispatch.setWebHints(() => {
-    if (startHintsAction) startHintsAction();
+    if (engineHintsAction) engineHintsAction();
   });
 
   // Warm the wasm core AND the which-key bindings so the first leader press
@@ -420,7 +435,14 @@ import { createTypingChannel } from "./typing";
     ops: chromeOps as unknown as { openTarget(which: string): boolean; openUrlNative(url: string): boolean; openResize(): void },
 split,
     status,
-    setContentPresent: noteContentPresent,
+    // A presence report arrives carrying a STRIP INDEX, because that is the only
+    // coordinate the sending document can be given — and it is resolved to the
+    // tab it is about at the door. Everything past this point is keyed by the
+    // tab itself, so a reorder cannot attach a live document's answer to
+    // whatever tab slid into its slot (keystate.presenceTabFor, and the
+    // §18.5 failure it closes).
+    setContentPresent: (index, active, url, doc) =>
+      noteContentPresent(presenceTabFor(win, index, url), active, url, doc),
     dismissDownloads: () => void chromeOps.dismissDownload(),
     cfg,
     debug,

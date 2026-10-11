@@ -289,6 +289,20 @@ html,body{margin:0}
     headers: { "X-Frame-Options": "DENY" },
     body: `<!DOCTYPE html><title>FRAMED PAGE</title><h1 id="marker">Framed content</h1>`,
   },
+  // A page whose ONLY controls are inside a visible frame. Hints are
+  // top-frame-only by policy (`all_frames: false`), so this page is the one
+  // where "nothing to hint" and "I do not look there" produce the same silence
+  // unless the product says which it is — which is the whole point of the
+  // fixture, and the report it stands in for ("link hints doesn't launch
+  // everywhere"). The inner link is deliberately real: a frame with nothing in
+  // it would pass a test that only checked the toast was absent.
+  "/framedhints": {
+    body:
+      `<!DOCTYPE html><title>FRAMED HINTS</title>\n` +
+      `<style>html,body{margin:0}iframe{display:block;width:80vw;height:300px;border:0}</style>\n` +
+      `<h1 id="top">Framed hints</h1>\n` +
+      `<iframe id="inner" srcdoc="<!DOCTYPE html><body><a id='inlink' href='/hello'>inside the frame</a></body>"></iframe>\n`,
+  },
   // A realistic-looking article page used for screenshots (README images).
   "/news": {
     body: `<!DOCTYPE html><html lang="en"><head>
@@ -703,6 +717,7 @@ html,body{margin:0}
   <div class="row"><button id="act-btn" data-id="act-btn" onclick="document.title='ACTIVATED'">Act</button></div>
   <div class="row"><input id="scroll-input" data-id="scroll-input" placeholder="type here"></div>
   <div class="row menu"><a id="hidden-opacity-link" data-id="hidden-opacity-link" href="#op">opacity menu link</a></div>
+  <div class="row" aria-hidden="true"><lf-hidden-shadow-button id="hidden-shadow-btn"></lf-hidden-shadow-button></div>
   <div class="row vishide"><a id="hidden-vis-link" data-id="hidden-vis-link" href="#vis">visibility hidden link</a></div>
   <div class="row" aria-hidden="true"><a id="hidden-aria-link" data-id="hidden-aria-link" href="#aria">aria hidden link</a></div>
   <div class="row"><button id="pe-none-btn" data-id="pe-none-btn" class="pe" onclick="document.title='PE'">pointer-events none</button></div>
@@ -711,6 +726,7 @@ html,body{margin:0}
   <div id="badgewrap"><button id="body-visible" data-id="body-visible" onclick="document.title='BODY'">Body with a badge over its centre</button><span id="badge"></span></div>
   <div id="tinygrid"></div>
   <div class="row"><lf-shadow-button id="shadow-btn"></lf-shadow-button></div>
+  <div class="row"><lf-closed-shadow-button id="closed-shadow-btn" data-id-owner="closed-shadow-inner"></lf-closed-shadow-button></div>
   <div class="spacer">scroll space</div>
   <div class="row"><a id="deep-link" data-id="deep-link" href="#deep">Deep Link</a></div>
 </main>
@@ -760,6 +776,39 @@ html,body{margin:0}
       b.setAttribute("data-id", "shadow-inner");
       b.addEventListener("click", function () { document.title = "SHADOW-CLICKED"; });
       sh.appendChild(b);
+    }
+  });
+  customElements.define("lf-hidden-shadow-button", class extends HTMLElement {
+    constructor() {
+      super();
+      const root = this.attachShadow({ mode: "closed" });
+      const b = document.createElement("button");
+      b.textContent = "hidden closed-root button";
+      b.setAttribute("data-id", "hidden-shadow-inner");
+      root.appendChild(b);
+      this.innerBounds = function () {
+        const r = root.querySelector("button").getBoundingClientRect();
+        return { left: r.left, top: r.top, width: r.width, height: r.height };
+      };
+      Object.defineProperty(this, "shadowRoot", { get: function () { return null; } });
+    }
+  });
+  customElements.define("lf-closed-shadow-button", class extends HTMLElement {
+    constructor() {
+      super();
+      const root = this.attachShadow({ mode: "closed" });
+      const b = document.createElement("button");
+      b.textContent = "closed shadow action";
+      b.setAttribute("data-id", "closed-shadow-inner");
+      b.addEventListener("click", function () { document.title = "CLOSED-SHADOW-CLICKED"; });
+      root.appendChild(b);
+      // The page can report inner geometry to the harness but cannot query the
+      // closed tree through the normal shadowRoot API.
+      this.innerBounds = function () {
+        const r = root.querySelector("button").getBoundingClientRect();
+        return { left: r.left, top: r.top, width: r.width, height: r.height };
+      };
+      Object.defineProperty(this, "shadowRoot", { get: function () { return null; } });
     }
   });
 </script>

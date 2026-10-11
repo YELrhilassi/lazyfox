@@ -38,9 +38,14 @@ export function pushLeaderStateToChrome(index: number, signal: LeaderSignal): vo
 
 // Relay the content script's find-in-page count to the chrome helper so its
 // window-level status bar shows "🔍 cur/count" on web pages.
-export function pushContentStateToChrome(index: number, active: boolean, url: string): void {
+export function pushContentStateToChrome(
+  index: number,
+  active: boolean,
+  url: string,
+  doc?: string
+): void {
   if (index < 0) return;
-  requestChrome("contentState", { index, active, url });
+  requestChrome("contentState", { index, active, url, doc: doc || "" });
 }
 
 export function pushFindStateToChrome(index: number, count: number, cur: number): void {
