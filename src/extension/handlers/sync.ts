@@ -78,16 +78,27 @@ export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
       // A booting content script also learns whether the leader key is still
       // physically down. Without this the hold is per-document and dies at
       // every navigation and every tab close, which is where it always died.
+      //
+      // The claim travels with the time it was MADE, because the document that
+      // made it is gone by the time this reads it and only the reader can
+      // decide whether it is still believable. See shouldRestoreHold: a hold
+      // that is re-armed with no keyup left to release it is a leader that
+      // never disarms, which is a keyboard that answers every key as a binding.
       let hold = false;
+      let holdAt = 0;
       try {
         const id = tab && tab.id != null ? tab.id : null;
-        if (id != null) hold = (await browser.sessions.getTabValue(id, "lfHold")) === "1";
+        if (id != null) {
+          hold = (await browser.sessions.getTabValue(id, "lfHold")) === "1";
+          holdAt = Number(await browser.sessions.getTabValue(id, "lfHoldAt")) || 0;
+        }
       } catch (e) {
         // A tab that closed during boot, or a store that is not ready. The
         // safe answer is "not held": a wrongly-held leader eats keystrokes.
         hold = false;
+        holdAt = 0;
       }
-      return { ok: true, hold };
+      return { ok: true, hold, holdAt };
     },
 
     syncHold: async (data, sender) => {
@@ -95,6 +106,12 @@ export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
       if (tab && tab.id != null) {
         try {
           await browser.sessions.setTabValue(tab.id, "lfHold", data.hold ? "1" : "0");
+          // WHEN the claim was made. Only the writer can say, and it is the one
+          // fact that lets the next document refuse a stale one — see
+          // shouldRestoreHold. Written on every change of the flag, including
+          // the release, so a `false` never leaves an old timestamp behind for
+          // a later `true` to inherit.
+          await browser.sessions.setTabValue(tab.id, "lfHoldAt", String(Date.now()));
         } catch (e) {
           // The tab can close between the message and this write; the hold it
           // carried died with it, which is correct.

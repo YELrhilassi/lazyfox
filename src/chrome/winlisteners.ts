@@ -163,6 +163,15 @@ export function installWinListeners(deps: WinListenersDeps): void {
         const leader = deps.leader();
         if (leader) leader.hide();
         if (deps.popup.isOpen()) deps.popup.close();
+        // ...and the frame script's typing latch, which describes a focused
+        // element in the tab that was JUST LEFT. It is reset on window blur and
+        // never otherwise, so without this a caret in tab A's field keeps the
+        // helper believing tab B is typing — and on a chrome-owned tab that
+        // belief is the difference between the leader key working and the whole
+        // keyboard being declined. A tab switch is exactly the moment the
+        // answer changes; the frame script only speaks on focus changes, so
+        // nothing would correct it on the way back in either.
+        deps.typing.reset();
       } catch (e) {
         // ignore — a mid-collapse read must not break the tab switch
       }

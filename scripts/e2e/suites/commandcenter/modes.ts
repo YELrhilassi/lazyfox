@@ -207,6 +207,42 @@ export async function run(ctx: any): Promise<void> {
       });
     await ctx.press(ctx.tabA, "Escape");
   });
+  await t("command center: an armed leader never steals a character from the input", async () => {
+    // The report, reproduced exactly: "while I'm typing I have to hit g or
+    // similar keys multiple times for it to type". The sequence is ordinary —
+    // arm the leader in command mode, click into the search box, type. The
+    // shared surfaces were asked FIRST, so the first character was dispatched as
+    // a `;x` binding (`g` is Back: the tab was navigated away) and a character
+    // that named no binding was swallowed with a toast. Either way the second
+    // press is the one that typed.
+    await ctx.openCC(ctx.tabA);
+    await ctx.press(ctx.tabA, ";");
+    await ctx.waitExpr(
+      ctx.tabA,
+      `document.documentElement.getAttribute("data-lf-leader") === "1"`,
+      true,
+      5000
+    );
+    // Focus the field the way a user does — a click on the box (or its mode
+    // button) — and NOT by pressing `i`, which is itself a binding while the
+    // leader is armed (a different rule, pinned above).
+    await evalIn(ctx.tabA, `document.getElementById("input").focus(); true`);
+    await ctx.typeIn(ctx.tabA, "g");
+    const f = await factsWhere((x) => x.inputVal === "g");
+    assert(f.inputVal === "g", "the character must reach the input: " + JSON.stringify(f.inputVal));
+    assert(f.state === "insert", "typing starts insert mode, got " + f.state);
+    assert(
+      String(f.url).includes("commandcenter.html"),
+      "the chord must not have run in place of the click (`;g` is Back): " + f.url
+    );
+    assert(
+      (await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader")`)) !== "1",
+      "the armed leader must stand down rather than take the key"
+    );
+    await ctx.press(ctx.tabA, "Escape");
+    await factsWhere((x) => x.state === "cmd" && x.inputVal === "");
+  });
+
   await t("command center: a fresh tab opens in command mode so `;` arms the leader", async () => {
     // A new command-center tab must be keyboard-first: command mode, an empty
     // input, and `;` arms the leader immediately (commands chain with no mouse

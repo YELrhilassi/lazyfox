@@ -39,13 +39,20 @@ function eq(name: string, actual: unknown, expected: unknown): void {
 // state.
 await loadKeymap();
 
-const key = (k: string, mods: Partial<Record<"shift" | "ctrl" | "alt" | "meta", boolean>> = {}) =>
+// `repeat` is the OS re-firing one press, and it is part of the dispatch
+// decision rather than a detail of the transport — see the "a held key is
+// reported once" case below.
+const key = (
+  k: string,
+  mods: Partial<Record<"shift" | "ctrl" | "alt" | "meta", boolean>> & { repeat?: boolean } = {}
+) =>
   ({
     key: k,
     ctrlKey: !!mods.ctrl,
     altKey: !!mods.alt,
     metaKey: !!mods.meta,
     shiftKey: !!mods.shift,
+    repeat: !!mods.repeat,
     preventDefault() {},
     stopImmediatePropagation() {},
   }) as unknown as KeyboardEvent;
@@ -174,6 +181,43 @@ function arm(leader: any): any {
   eq("and is reported", misses.join(","), "q");
   ok("and the capture is spent", leader.hasPending() === false);
   ok("and the leader is disarmed, not left armed", leader.active === false);
+}
+
+/* ---------- a HELD key is reported once, not at the OS repeat rate ---------- */
+
+{
+  // The message names the chord the user pressed, so repeating it is
+  // information-free — and a held key that misses is not a corner case: the
+  // LEADER KEY itself is one, because an armed leader treats a second `;` as a
+  // binding like any other key and `;` has no row of its own. Holding `;` used
+  // to fire "no binding for ;;" ~30 times a second for as long as the key was
+  // down, which is exactly the shape of "the leader looks unresponsive".
+  // `;p` is the file's canonical MISS (a plain binding exists only as `;P`).
+  const { leader, runs, misses } = makeLeader();
+  arm(leader);
+  ok("a repeat that names no binding is still consumed", leader.handleKey(key("p", { repeat: true })) === true);
+  eq("but is not announced", misses.join(","), "");
+  eq("and runs nothing", runs.join(","), "");
+
+  // The first press is still announced: the fix must not silence misses.
+  const b = makeLeader();
+  arm(b.leader);
+  b.leader.handleKey(key("p"));
+  eq("a real miss is still reported", b.misses.join(","), "p");
+
+  // And a held LEADER key, which is the common way to reach this path.
+  const c = makeLeader();
+  arm(c.leader);
+  ok("a repeat of the leader key is consumed", c.leader.handleKey(key(";", { repeat: true })) === true);
+  eq("and says nothing", c.misses.join(","), "");
+
+  // Inside a category too: a held sub-key is one report, not thirty.
+  const d = makeLeader();
+  arm(d.leader);
+  d.leader.handleKey(key("W", { shift: true }));
+  ok("the menu is up", d.leader.hasPending() === true);
+  d.leader.handlePending(key("q", { repeat: true }));
+  eq("a held sub-key is not re-announced", d.misses.join(","), "");
 }
 
 /* ---------- a category capture never expires ---------- */

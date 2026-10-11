@@ -23,6 +23,15 @@ export const LIFE_WATCH_MS = 320;
 // after a transition).
 export const LIFE_TICKS_MS = [0, 60, 160, LIFE_WATCH_MS];
 
+// How long to keep watching AFTER the privileged press has been dispatched.
+//
+// The trusted press's effect cannot be observed from the content realm (the
+// actor calls windowUtils out of band), so neither outcome may be declared at
+// dispatch time: this window is what turns the two cases that used to be
+// indistinguishable — "the real press worked" and "even a real press did
+// nothing" — into a success and a toast.
+export const ESCALATION_WATCH_MS = 420;
+
 export interface LifeSnapshot {
   connected: boolean;
   cls: string;
@@ -108,28 +117,51 @@ export function snapshotLife(el: Element): LifeSnapshot {
   };
 }
 
-// Compare a fresh snapshot with the pre-click one. Returns a short name for the
-// first difference found, or "" when nothing changed.
-export function lifeSignal(el: Element, before: LifeSnapshot): string {
+// THE TARGET's own reaction, with none of the page-level signals folded in.
+//
+// The split exists because the two answers are needed for two different
+// decisions. "Did the page do anything" is the verdict (permissive on purpose,
+// see lifeSignal). "Did the CONTROL do anything" is the trigger for the
+// privileged retry — and while they were one function, that retry was
+// unreachable on exactly the pages it was built for: a video player, a chat
+// transcript or a clock mutates continuously, so the page-level half always
+// reported life and a trust-gated control that ignored the click was never
+// escalated. Measured on the fixture in the hint suite: with a mutation
+// heartbeat running, the isTrusted-gated control stayed silent and untried.
+export function targetSignal(el: Element, before: LifeSnapshot): string {
   // A framework that swapped the node for a fresh one is the strongest possible
   // "it worked" — checked first because it is the most common on SPA pages.
-  if (!el.isConnected) return "the element was replaced";
+  if (!el.isConnected || !before.connected) return "the element was replaced";
   const now = snapshotLife(el);
-  if (!before.connected) return "the element was replaced";
   if (now.disabled !== before.disabled) return "it became disabled";
   if (now.cls !== before.cls) return "its class changed";
   if (now.aria !== before.aria) return "its ARIA state changed";
   if (now.value !== before.value) return "its value changed";
   if (now.checked !== before.checked) return "it got toggled";
   if (now.href !== before.href) return "its link changed";
-  // Element-local state is unchanged, but the page moved: title, route or
-  // scroll. All three are ordinary consequences of a click that WORKED.
+  return "";
+}
+
+// Everything AROUND the target: title, route, scroll, any mutation anywhere in
+// the document. All of these are ordinary consequences of a click that worked,
+// so any of them counts as success — the caller must never accuse a working
+// click of doing nothing.
+export function pageSignal(el: Element, before: LifeSnapshot): string {
+  if (!el.isConnected || !before.connected) return "the element was replaced";
+  const now = snapshotLife(el);
   if (now.title !== before.title) return "the page title changed";
   if (now.scrollX !== before.scrollX || now.scrollY !== before.scrollY) {
     return "the page scrolled";
   }
   if (now.mutations > before.mutations) return "the page updated itself";
   return "";
+}
+
+// The combined verdict: the target first (it is the specific answer), then the
+// page. Returns a short name for the first difference found, or "" only when
+// nothing anywhere changed.
+export function lifeSignal(el: Element, before: LifeSnapshot): string {
+  return targetSignal(el, before) || pageSignal(el, before);
 }
 
 // A short, human description of an element, for the "nothing happened" toast

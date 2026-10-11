@@ -7,6 +7,7 @@ import * as scroll from "./scroll.ts";
 import * as hints from "./hints.ts";
 import * as links from "./links.ts";
 import * as typing from "./typing.ts";
+import * as field from "./field.ts";
 import * as popups from "./popups.ts";
 import * as find from "./find.ts";
 import * as indicator from "./indicator.ts";
@@ -32,6 +33,11 @@ export async function run(ctx: any): Promise<void> {
   // Typing safety next: it is a guard against Lazyfox stealing keystrokes, so
   // it must run before anything that leaves an armed leader behind.
   await typing.run(ctx);
+  // The field/cancel surfaces: where focus is, and which key leaves it. Placed
+  // here because it leaves the browser on a page whose page-side counters the
+  // later popup tests do not use, and because it drives the hint layer the same
+  // way the typing tests just did.
+  await field.run(ctx);
   await popups.run(ctx);
   await find.run(ctx);
   await indicator.run(ctx);
