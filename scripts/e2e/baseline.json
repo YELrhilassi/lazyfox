@@ -1567,16 +1567,22 @@
   "content/ownership › a tab opened next to a reporting tab does not inherit its answer": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "content/ownership › moving a reporting tab takes its answer with it": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "content/ownership › closing a tab does not cost a live page its answer": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
+  },
+  "content/ownership › an in-page navigation keeps the page's own answer": {
     "status": "pass",
     "group": "content",
     "runs": 1,
