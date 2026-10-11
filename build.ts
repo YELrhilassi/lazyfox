@@ -76,7 +76,21 @@ console.log("[wasm] building core.wasm (GOOS=js GOARCH=wasm)...");
 // edited the source and forgot to rebuild", the one thing the payload check
 // exists to detect. Trimmed, the same source builds the same bytes on any
 // machine with the same toolchain.
-run("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", wasmOut, "./core/js"], {
+//
+// -buildvcs=false, for the same reason one step further down the same road. Go
+// stamps the VCS state into the binary by default — commit hash, commit time and
+// a `vcs.modified` flag for a dirty worktree — and the build ID is derived from
+// it. Trimpath alone therefore left the promise half-kept: the artifacts were
+// reproducible only until the next commit, so the build produced before a commit
+// and the one after it differed by the build ID even with NO source change, and
+// a worktree with anything unstaged built differently from a clean one.
+// Measured before the fix: two builds of `core/js` from identical sources, one
+// with a dirty tree and one after committing, differed in the wasm build ID
+// alone (the rest of the bundle was byte-identical), which is exactly the
+// "dist/ does not match the source" signal the payload check exists to raise.
+// With it, `-buildvcs=false -trimpath` is deterministic: the same source and
+// toolchain give the same bytes whatever the git state is.
+run("go", ["build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", wasmOut, "./core/js"], {
   cwd: root,
   env: { ...process.env, GOOS: "js", GOARCH: "wasm" },
 });
@@ -138,7 +152,10 @@ console.log("[static] src/static/{extension,chrome} -> dist/");
   const out = join(hostDir, process.platform === "win32" ? "lazyfox-host.exe" : "lazyfox-host");
   console.log(`[native-host] building lazyfox-host for ${process.platform}/${process.arch}…`);
   try {
-    run("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", out, "."], {
+    // -buildvcs=false for the reason the wasm step gives: the VCS stamp is part
+    // of the build ID, so a rebuild after any commit differed from the committed
+    // binary even with no source change.
+    run("go", ["build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", out, "."], {
       cwd: join(root, "native-host"),
     });
     console.log(`[native-host] ${out}`);

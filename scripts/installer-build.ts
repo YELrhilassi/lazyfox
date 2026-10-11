@@ -184,7 +184,11 @@ export function buildInstallerSet(opts: {
     const hostDst = join(payloadData, "native-host", t.goos, hostExe);
     mkdirSync(dirname(hostDst), { recursive: true });
     try {
-      execFileSync("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", hostDst, "."], {
+      // -buildvcs=false: the installer's own build below already passes it (that
+      // is what `wails build` does), and the host is embedded in every installer
+      // payload — so without it each payload hash moved with the git state and a
+      // rebuild after a commit produced different binaries from the same source.
+      execFileSync("go", ["build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", hostDst, "."], {
         cwd: join(root, "native-host"),
         env: { ...process.env, GOOS: t.goos, GOARCH: t.arch },
         stdio: "inherit",
