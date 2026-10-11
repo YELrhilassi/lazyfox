@@ -563,6 +563,34 @@ keeping — the pointer walk could never have changed an answer, because
 the hidden/inert/aria-hidden walk, and those are tracked in the plan as §12.4a
 (one chain per candidate) and §12.4b (memoise across candidates in a pass).
 
+**Update (2026-10-10): §12.4a and §12.4b are CLOSED, and not by memoising the
+walks in place.** Both predicates moved into one pass,
+`content/hints/visibility.ts`, created per collection/selection run and shared by
+both halves — which is the only way the two rules can hold at once, because a
+memo that lives beside a per-element predicate is a cache nobody owns and nobody
+invalidates. Inside the pass:
+
+- `hiddenByAttribute` and `opacityZero` are computed by RECURSION over the
+  composed parent, so a node's answer is its own attribute/style plus its
+  parent's: one visit per distinct element per pass, instead of a walk to the top
+  per candidate (§12.4b);
+- the element's own `getComputedStyle` is read once per element per pass and
+  reused by the display/visibility check, the opacity check and the
+  pointer-events check (§12.4a, and the three reads per element are gone);
+- the caches are `WeakMap`s owned by that pass and never outlive it, so the
+  staleness question is answered by construction: a page that changed its styles
+  is re-read by re-running the pass, which is what the session already does on
+  movement and on mutation.
+
+The cost claim is COUNTED rather than asserted, which is why the pass takes its
+style reader as a parameter: `scripts/test/hints-visibility.test.ts` drives 200
+candidates that share one wrapper and one root and measures 202 style reads
+(one per distinct element, each element read at most once), where the
+per-element predicates cost at least 600 — and it also pins that a NEW pass
+re-reads and can change its answer, which is the property a stale cache would
+have broken. The remaining per-candidate cost is the rect read in `basicVisible`,
+which is the geometry answer itself and is tracked under the plan's §2.2.
+
 ### b. `docs/MULTIKEY-DESIGN.md` contradicts the shipped keymap
 
 The document is honest about this in its own header ("STATE AT THE TIME OF

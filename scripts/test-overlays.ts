@@ -36,7 +36,8 @@ const {
   makeLeaderSignal,
 } = await import("../src/shared/leadersignal.ts");
 const { isCancel } = await import("../src/shared/leader.ts");
-const { wkCategoryHtml, wkHeadHtml, wkFootHtml } = await import("../src/shared/wk.ts");
+const { wkBodyHtml, wkCategoryHtml, wkHeadHtml, wkFootHtml, wkExpectTitle, wkPanelHtml } =
+  await import("../src/shared/wk.ts");
 
 let passed = 0;
 function ok(name: string, cond: boolean): void {
@@ -627,7 +628,241 @@ ok(
     "a category foot does not advertise navigation it does not have",
     wkFootHtml(0, 1, true).indexOf("Enter run") === -1
   );
+  // ESCAPE IS NAMED WHERE IT IS THE ONLY WAY OUT, AND NOWHERE ELSE.
+  //
+  // The top level had five hints on one line and read as a toolbar; the sixth
+  // ("Esc cancel") told the reader nothing they had not already learned, since
+  // Escape leaves every surface in this product. On a capture it is the whole
+  // exit — the keys are being swallowed, so the foot has to say so.
+  ok(
+    "the top-level foot does not spend a word on Escape",
+    wkFootHtml(0, 3, false).indexOf("Esc") === -1
+  );
+  ok(
+    "a capture's foot does, because that is the only way out of one",
+    wkFootHtml(0, 1, true).indexOf("Esc cancel") > -1
+  );
+  eq(
+    "the top-level foot is four hints and the page number, not a toolbar of six",
+    (wkFootHtml(0, 3, false).match(/<span/g) || []).length,
+    5
+  );
 }
+
+/* ---------- the which-key redesign's contract ---------- */
+//
+// A redesign is mostly taste, and taste is not testable — so what is pinned here
+// is only the part of it that is a CLAIM. Three of those are load-bearing:
+//
+//   1. the panel has not moved (its size and anchor are what the user has
+//      learned; a redesign is of the content inside that box),
+//   2. **nothing draws a box**: no border, no background on a row or a key, no
+//      inset shadow. That is the design, not a coincidence of the current
+//      numbers — the panel is a list of keys, read by alignment and ink, and a
+//      single stray border or bevel brings back the card-of-capsules look this
+//      sheet was rewritten to remove. `border-radius` is allowed (the panel's
+//      own corners and the selected row's tint); `border:` is not,
+//   3. the class that means "panel header" is not also the class that means
+//      "category row". Sharing the name forced the two designs to be separated
+//      by source order, and the header lost: it was rendered with the row's flat
+//      background and left accent bar.
+{
+  const { WK_CSS, WK_HOST_HTML } = await import("../src/shared/leader-css.ts");
+  ok("the panel's anchor is unchanged", WK_CSS.indexOf("right:24px;bottom:30px") > -1);
+  ok("the panel's width is unchanged", WK_CSS.indexOf("width:360px") > -1);
+  ok(
+    "the host owns exactly one panel header",
+    WK_HOST_HTML.indexOf("class='wk-head'") > -1 &&
+      WK_HOST_HTML.indexOf("class='wk-head'") === WK_HOST_HTML.lastIndexOf("class='wk-head'") &&
+      WK_HOST_HTML.indexOf("wk-door") === -1
+  );
+  ok(
+    "the header and a row that opens something are different elements",
+    WK_CSS.indexOf(".wk-head{") > -1 && WK_CSS.indexOf(".wk-door") > -1
+  );
+  // ONE ACCENT, AND A DOOR IS A COUNT.
+  //
+  // The door used to carry a colour of its own (cyan against the keys' blue),
+  // which is a legend the reader has to learn from a panel 360px wide — and
+  // multi-hue accents in a corner overlay are the most reliable tell of a UI
+  // that was styled by a template. What marks a door now is the count of what is
+  // behind it (`12 ›`), which needs no legend. Both halves are pinned: no second
+  // hue, and the count still drawn a shade brighter than other dim text.
+  ok(
+    "a door is not a different colour from a binding",
+    WK_CSS.indexOf(".wk-door .wk-kbd") === -1 && WK_CSS.indexOf("#2ac3de") === -1
+  );
+  ok(
+    "a door still carries the count of what is behind it",
+    WK_CSS.indexOf(".wk-door .wk-more") > -1
+  );
+  // The key column is what aligns every label in a group; a flex row with a
+  // `min-width` badge (what this replaced) leaves the labels ragged. The width
+  // is asserted as "a fixed px column, then a fluid one" rather than as the
+  // exact number, so the rule survives a key size change and still fails if the
+  // first column stops being fixed.
+  ok(
+    "rows align their labels on a fixed key column",
+    /\.wk-item\{[^}]*grid-template-columns:\d+px minmax\(0,1fr\)/.test(WK_CSS),
+  );
+  ok(
+    "keys are monospace, per the theme's own rule",
+    /\.wk-kbd\{[^}]*monospace/.test(WK_CSS)
+  );
+  // THE FLAT RULE. `border-radius` is allowed and `border:` is not, so the panel
+  // may have soft corners but nothing may have an edge drawn around it.
+  ok(
+    "nothing in the sheet draws a border",
+    !/\bborder(?!-radius)/.test(WK_CSS),
+  );
+  ok(
+    "no row and no key carries a background",
+    !/(\.wk-item|\.wk-kbd|\.wk-chord|\.wk-foot|\.wk-head)\{[^}]*background/.test(WK_CSS),
+  );
+  ok(
+    "the only shadow in the sheet is the panel's own (no inset bars or bevels)",
+    !/box-shadow:[^;}]*inset/.test(WK_CSS),
+  );
+  ok(
+    "the selected row is lit by ink and a whisper of tint, not by a container",
+    /\.wk-item\.sel\{background:rgba\(255,255,255,\.0\d+\)/.test(WK_CSS),
+  );
+  // The most recognisable version of the look this sheet avoids: small capitals
+  // with wide tracking over every group name. Because the panel's whole job is
+  // being read quickly, it is worth asserting rather than trusting.
+  ok(
+    "no text is shouted in capitals or tracked out",
+    !/text-transform/.test(WK_CSS) && !/letter-spacing/.test(WK_CSS),
+  );
+
+  // A page with one door and one binding: the row markup for both.
+  const page = {
+    items: [
+      { key: "W", label: "Window & layout", group: "Tabs", lazyIndex: 0, cat: true, subs: 12, native: false },
+      { key: "n", label: "New tab", group: "Tabs", lazyIndex: 1, cat: false, subs: 0, native: false },
+    ],
+    selFirst: 0,
+    selLast: 1,
+  } as unknown as Parameters<typeof wkBodyHtml>[0];
+  const body = wkBodyHtml(page, 0);
+  ok("a category row is marked as a door", body.indexOf("wk-door") > -1);
+  ok(
+    "a category row is never the panel header's class",
+    body.indexOf("wk-head") === -1
+  );
+  ok(
+    "the door carries the count of what is behind it",
+    body.indexOf("12 \u203a") > -1
+  );
+  ok(
+    "every row labels its text with the class the sheet ellipsizes",
+    body.split("wk-label").length - 1 === 2 && body.split("wk-item").length - 1 === 2
+  );
+  ok(
+    "the selected row is the one the cursor is on",
+    body.indexOf("wk-item wk-door sel") > -1
+  );
+}
+
+/* ---------- what the panel shows, as a state machine ---------- */
+//
+// The panel has three contents — the map, a category's menu, and a multi-key
+// action in flight — and `wkPanelHtml` is the WHOLE of that decision. It is a
+// pure function for a reason: the panel lives in a closed shadow root, so its
+// contents cannot be read back from a page (not by the e2e suite, not by the
+// debug snapshot) and a decision made inside the controller could not be checked
+// by anything at all.
+//
+// The precedence is the part that made this worth extracting. Opening a category
+// ARMS a capture — that is how its sub-keys are read — so for every open menu
+// "a category is open" and "a capture is armed" are both true, and testing the
+// capture first renders every category as "waiting for a key": the menu the user
+// just opened would never appear.
+{
+  const page = {
+    items: [
+      { key: "W", label: "Window & layout", group: "Tabs", lazyIndex: 0, cat: true, subs: 12, native: false },
+      { key: "n", label: "New tab", group: "Tabs", lazyIndex: 1, cat: false, subs: 0, native: false },
+    ],
+    selFirst: 0,
+    selLast: 1,
+  } as unknown as Parameters<typeof wkBodyHtml>[0];
+  // A thunk that FAILS the test if it is called: the map is the only content
+  // that needs a page of rows, and asking the core for one while a menu or a
+  // sequence is on screen is work done on every repaint of the states that
+  // repaint most (a sub-key press repaints twice).
+  let asked = 0;
+  const pageThunk = () => {
+    asked++;
+    return Promise.resolve(page);
+  };
+  const totalThunk = () => {
+    asked++;
+    return Promise.resolve(3);
+  };
+
+  const top = await wkPanelHtml({ page: pageThunk, sel: 0, pageNum: 1, total: totalThunk });
+  ok("the map draws the page it was given", top.body.indexOf("Window &amp; layout") > -1);
+  ok(
+    "the map's foot says where the cursor is (Enter open on a door)",
+    top.foot.indexOf("Enter open") > -1 && top.foot.indexOf("2/3") > -1
+  );
+  eq("and the map is the only state that asks the core for rows", asked, 2);
+
+  const cat = await wkPanelHtml({
+    category: { head: "W", title: "Window & layout", keys: ["w"], labels: { w: "Resize window" } },
+    page: pageThunk,
+    sel: 0,
+    pageNum: 0,
+    total: totalThunk,
+  });
+  ok(
+    "a category draws its own sub-keys under its own chord",
+    cat.head.indexOf("wk-chord'>W<") > -1 && cat.body.indexOf("Resize window") > -1
+  );
+  ok("and does not advertise Enter on a menu that has no cursor", cat.foot.indexOf("Enter") === -1);
+  eq("a menu costs the core nothing", asked, 2);
+
+  const pend = await wkPanelHtml({
+    pending: { chord: "W m", expect: "1-9" },
+    page: pageThunk,
+    sel: 0,
+    pageNum: 0,
+    total: totalThunk,
+  });
+  ok(
+    "a sequence in flight names its chord and what it wants next",
+    pend.head.indexOf("wk-chord'>W m<") > -1 && pend.head.indexOf("next 1-9") > -1
+  );
+  eq(
+    "and does NOT draw the map under it — those keys cannot fire",
+    pend.body,
+    ""
+  );
+  ok("and its foot names Escape, which is how you leave one", pend.foot.indexOf("Esc cancel") > -1);
+  eq("a sequence in flight costs the core nothing either", asked, 2);
+
+  // BOTH TRUE AT ONCE, which is the real state of every open menu.
+  const both = await wkPanelHtml({
+    category: { head: "W", title: "Window & layout", keys: ["w"], labels: { w: "Resize window" } },
+    pending: { chord: "W m", expect: "1-9" },
+    page: pageThunk,
+    sel: 0,
+    pageNum: 0,
+    total: totalThunk,
+  });
+  ok(
+    "an open menu wins over its own capture, or every category would render as a sequence",
+    both.body.indexOf("Resize window") > -1 && both.head.indexOf("next 1-9") === -1
+  );
+}
+
+/* ---------- the words a sequence uses ---------- */
+
+eq("a digit expectation reads as what comes next", wkExpectTitle("1-9"), "next 1-9");
+eq("an any-key capture says so in words", wkExpectTitle(ANY_KEY_EXPECT), "any key");
+eq("a capture with nothing to promise still says something", wkExpectTitle(""), "any key");
+eq("and so does whitespace", wkExpectTitle("  "), "any key");
 // A forward-any capture is a REAL modal state: the keystroke is being eaten and
 // handed to another realm. It must be visibly different from "nothing pending".
 ok("an any-key capture has its own words", ANY_KEY_EXPECT.length > 0);

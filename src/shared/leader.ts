@@ -40,7 +40,7 @@ import { WK_CSS } from "./leader-css";
 import { LeaderPanel } from "./leaderpanel";
 import { mirrorFlag } from "./observability";
 import type { WkItem } from "./types";
-import { WkSession, wkBodyHtml, wkCategoryHtml, wkFootHtml, wkHeadHtml } from "./wk";
+import { WkSession, wkPanelHtml } from "./wk";
 
 /**
  * The cancel chord: Escape, or Ctrl+G.
@@ -85,7 +85,16 @@ export class LeaderController {
   // The category whose head was pressed, or null at the top level. Drives the
   // overlay's contents and heading; cleared by hide() so a fired chord returns
   // to the full table instead of leaving a stale menu up.
-  private activeCategory: { head: string; title: string; labels: Record<string, string>; keys: string[] } | null = null;
+  private activeCategory: { head: string; title: string; labels: Record<string, string>; keys: string[]; chordOf: Record<string, string> } | null = null;
+  // The chord of the multi-key action that is COLLECTING, so the panel can say
+  // which sequence is waiting and for what.
+  //
+  // It is not derived from `prefix`: committing a sub-key clears the prefix (it
+  // is the same field the status bar shows, and the sequence `;W m` is no longer
+  // "at W" once `m` is pressed — it is waiting for a digit). The chord that was
+  // committed is only known at the moment the sub-key is consumed, which is where
+  // this is set, and it is cleared by every path that ends the sequence.
+  private pendingChord = "";
   // The one-shot key capture. It is its own object (leadercapture.ts) because
   // it arms and disarms independently of the leader and can be cancelled
   // outright, which nothing else here can do.
@@ -168,7 +177,11 @@ export class LeaderController {
     this.onChange = onChange;
     this.onMiss = onMiss;
     this.capture = new LeaderCapture(() => {
+      // A capture that is no longer collecting has no chord to advertise; left
+      // set, it would label the NEXT sequence with the previous one's keys.
+      if (!this.hasPending()) this.pendingChord = "";
       if (this.onChange) this.onChange();
+      this.repaint();
     });
     void loadKeymap().then(() => {
       // A fetch that failed leaves the table missing; the keys stay buffered
@@ -312,6 +325,19 @@ export class LeaderController {
   }
 
   /**
+   * Repaint the panel if it is on screen, from the CURRENT state.
+   *
+   * Every state change that the panel draws (a category opening, a sub-key
+   * starting a sequence, a sequence ending) calls this rather than deciding for
+   * itself whether a repaint is wanted. The panel is a view of the leader's
+   * state — the bug class this exists to end is a view that is one step behind
+   * the thing it describes, which reads as "the menu is lying to me".
+   */
+  private repaint(): void {
+    if (this.panel.shown()) void this.render();
+  }
+
+  /**
    * Tears the overlay down without touching the armed state.
    *
    * The overlay host is persistent — it keeps its DOM node and merely loses its
@@ -351,12 +377,18 @@ export class LeaderController {
   private openCategory(headSpec: string, chord: string, title: string, keys: KeymapCatKey[]): void {
     const labels: Record<string, string> = {};
     const display: string[] = [];
+    const chordOf: Record<string, string> = {};
     for (const k of keys) {
       labels[k.key] = k.label;
       display.push(k.key);
+      // The SPEC a sub-key is matched by is not always its display key (`shift+\`
+      // is shown as `|`), so the map from one to the other is built where both
+      // are known — on the keymap's own row — rather than guessed from the spec
+      // later, which is how the chord badge would print an internal spelling.
+      chordOf[k.spec] = k.key;
     }
     this.prefix = chord;
-    this.activeCategory = { head: chord, title, labels, keys: display };
+    this.activeCategory = { head: chord, title, labels, keys: display, chordOf };
     if (this.onChange) this.onChange();
     this.armPending(
       (e) => this.consumeCatKey(headSpec, e),
@@ -369,11 +401,20 @@ export class LeaderController {
     // Repaint with THIS category's contents rather than leaving the top-level
     // table up. A menu that still lists every binding while a category is armed
     // is not a reminder, it is a lie.
-    if (this.shown()) void this.render();
+    this.repaint();
   }
 
   private consumeCatKey(headSpec: string, e: KeyLike): boolean {
-    const m = matchCatKey(headSpec, specOf(e));
+    const cat = this.activeCategory;
+    const subSpec = specOf(e);
+    // The chord this key makes, computed BEFORE the state is cleared: after a
+    // sub-key that starts a sequence (`;W m`, waiting for a tab position) this is
+    // the only record of what the user pressed, and the panel shows it as the
+    // sequence it is part of.
+    const chord =
+      (this.prefix ? this.prefix + " " : "") +
+      ((cat && cat.chordOf[subSpec]) || subSpec);
+    const m = matchCatKey(headSpec, subSpec);
     this.prefix = "";
     this.activeCategory = null;
     if (this.onChange) this.onChange();
@@ -384,42 +425,41 @@ export class LeaderController {
       // learn by pressing things twice.
       if (this.onMiss) this.onMiss(specOf(e));
       if (!this.sticky) this.hide();
+      else this.repaint();
       return true;
     }
     this.runOrStay(m.action);
+    // A sub-key can ARM something: `;W m` waits for a tab position afterwards.
+    // The panel then shows that sequence — with these two keys as its chord and
+    // the capture's own expectation as what it wants next — instead of a menu of
+    // keys that cannot fire while the capture has the keyboard.
+    this.pendingChord = this.hasPending() ? chord : "";
+    this.repaint();
     return true;
   }
 
   private async render(): Promise<void> {
     if (!this.panel.current()) return;
-    const cat = this.activeCategory;
-    if (cat) {
-      this.panel.fill(
-        wkHeadHtml(cat.head, cat.title),
-        wkCategoryHtml(cat.keys, cat.labels),
-        wkFootHtml(0, 1, true)
-      );
-      return;
-    }
-    const total = await this.wk.pageCount();
-    const page = await this.wk.slice();
-    // The footer is built from what the HIGHLIGHTED row can actually do: a
-    // category head opens a menu, an ordinary binding runs, and the panel says
-    // which. `sel` is a lazy index, which is exactly what a row carries.
-    const selRow = page.items.filter((r) => r.lazyIndex === this.wk.sel)[0];
-    this.panel.fill(
-      // No chord badge at the top level: there is no committed sequence yet, and
-      // inventing one (`⌘`) was a key the keymap does not have.
-      wkHeadHtml("", ""),
-      wkBodyHtml(page, this.wk.sel),
-      wkFootHtml(this.wk.page, total, false, !!(selRow && selRow.cat))
-    );
+    // WHAT to draw is decided in `wkPanelHtml` (wk.ts), which is pure and
+    // therefore assertable — the panel itself lives in a closed shadow root and
+    // cannot be read back from a page, so a decision made here could not be
+    // checked by anything. This method only supplies the state.
+    const v = await wkPanelHtml({
+      category: this.activeCategory,
+      pending: this.hasPending() ? { chord: this.pendingChord, expect: this.pendingExpect } : null,
+      page: () => this.wk.slice(),
+      sel: this.wk.sel,
+      pageNum: this.wk.page,
+      total: () => this.wk.pageCount(),
+    });
+    this.panel.fill(v.head, v.body, v.foot);
   }
 
   show(): void {
     this.active = true;
     this.prefix = "";
     this.activeCategory = null;
+    this.pendingChord = "";
     if (this.onChange) this.onChange();
     if (!this.enabled()) {
       // Overlay disabled by config, OR this context does not own the page any
@@ -440,6 +480,7 @@ export class LeaderController {
     this.active = false;
     this.prefix = "";
     this.activeCategory = null;
+    this.pendingChord = "";
     // A chord still waiting on the keymap goes with it. Every host cancels
     // through hide() — Escape, Ctrl+G, losing ownership of the page — so a
     // buffered chord that replayed afterwards would run an action the user had
@@ -457,11 +498,12 @@ export class LeaderController {
     // the full table (which would hit native rows or past the end).
     const it = items.length ? this.lazyBindings[this.wk.sel] : undefined;
     if (!it || it.native) return;
-    // The overlay prints the DISPLAY chord; the dispatch needs the SPEC. The
-    // reverse index is the only bridge between the two, so pressing Enter on a
-    // highlighted row runs exactly what pressing its chord runs — not a
-    // parallel lookup that can disagree with it.
-    const spec = specForChord(it.key);
+    // The overlay prints the DISPLAY chord; the dispatch needs the SPEC. The row
+    // carries one when the display key is not itself a dispatch key (the
+    // collapsed `1-9` run), and otherwise the reverse index bridges the two — so
+    // pressing Enter on a highlighted row runs exactly what pressing its chord
+    // runs, not a parallel lookup that can disagree with it.
+    const spec = it.spec || specForChord(it.key);
     const m = spec ? matchKey(spec) : undefined;
     if (!m || !m.found) {
       if (fromEnter) this.hide();

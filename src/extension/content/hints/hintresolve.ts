@@ -15,6 +15,7 @@
 import { collectHintables } from "./collect";
 import { selectHintables, targetKey } from "./select";
 import { basicVisible, deepHit } from "./probe";
+import { createVisibilityPass, type VisibilityPass } from "./visibility";
 import { HINTABLE_SELECTOR, MAX_HINTS, PAGE_FACTOR, type HintItem } from "./selectors";
 
 export interface HintResolveDeps {
@@ -27,11 +28,26 @@ export interface HintResolveDeps {
   // rather than imported so the resolution rules are testable against a
   // different cap without touching the pool.
   maxHints?: number;
+  /**
+   * A fresh visibility pass. Injected for the tests; the real one is
+   * `createVisibilityPass()`.
+   */
+  newPass?(): VisibilityPass;
 }
 
 export interface HintResolve {
   /** The hintable elements currently in the viewport. */
   viewportItems(): Element[];
+  /**
+   * Rebuild the pool from the live document, with a fresh visibility pass.
+   *
+   * This is the ONLY way the pool is rebuilt, because the pool and the pass are
+   * a pair: the pass holds what it learned about the document the pool came
+   * from, so re-collecting through the old pass would answer about a tree that
+   * no longer exists. Callers therefore cannot get this wrong by forgetting to
+   * pass a cache — there is nothing to pass.
+   */
+  refreshPool(): Element[];
   /** Re-find the live element for an item, or null if it is genuinely gone. */
   resolve(it: HintItem): Element | null;
   /** The element nearest an item's last screen centre. */
@@ -41,10 +57,25 @@ export interface HintResolve {
 }
 
 export function createHintResolve(deps: HintResolveDeps): HintResolve {
+  const makePass = deps.newPass || (() => createVisibilityPass());
+  // ONE pass per pool generation, shared by collection and selection. They ask
+  // about the same elements (the in-viewport set is a subset of the collected
+  // set), so a shared cache means selection does not re-walk the ancestors
+  // collection just walked — and because the pass is replaced together with the
+  // pool, the cache can never describe a stale document.
+  let pass = makePass();
+
+  function refreshPool(): Element[] {
+    pass = makePass();
+    const next = collectHintables(undefined, pass);
+    deps.setPool(next);
+    return next;
+  }
+
   // The currently-hintable elements: everything in `pool` that is in the
   // viewport, CSS-visible, not occluded and not a nested/duplicate target.
   function viewportItems(): Element[] {
-    return selectHintables(deps.pool(), deps.maxHints ?? MAX_HINTS).kept;
+    return selectHintables(deps.pool(), deps.maxHints ?? MAX_HINTS, pass).kept;
   }
 
   function pageScroll(dir: number): void {
@@ -91,7 +122,7 @@ export function createHintResolve(deps: HintResolveDeps): HintResolve {
     if (it.el && it.el.isConnected) return it.el;
     let found = nearest(it, deps.pool());
     if (!found) {
-      deps.setPool(collectHintables());
+      refreshPool();
       found = nearest(it, deps.pool());
     }
     if (found) {
@@ -115,6 +146,6 @@ export function createHintResolve(deps: HintResolveDeps): HintResolve {
   // with the consequence that the two could disagree and a hidden hint kept a
   // typeable key. Visibility is now reported by the thing that places the
   // labels (`overlay.shownKeys()`), so there is one answer and it cannot drift.
-  return { viewportItems, resolve, nearest, pageScroll };
+  return { viewportItems, refreshPool, resolve, nearest, pageScroll };
 }
 
