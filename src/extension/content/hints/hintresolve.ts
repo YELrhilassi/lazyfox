@@ -34,8 +34,6 @@ export interface HintResolve {
   viewportItems(): Element[];
   /** Re-find the live element for an item, or null if it is genuinely gone. */
   resolve(it: HintItem): Element | null;
-  /** Is this element on screen right now? */
-  onScreen(it: HintItem): boolean;
   /** The element nearest an item's last screen centre. */
   nearest(it: HintItem, list: Element[]): Element | null;
   /** Scroll the window by `dir` viewports, so a hint set stays in reach. */
@@ -112,20 +110,11 @@ export function createHintResolve(deps: HintResolveDeps): HintResolve {
     return null;
   }
 
-  function onScreen(it: HintItem): boolean {
-    const el = resolve(it);
-    if (!el) return false;
-    let r: DOMRect;
-    try {
-      r = el.getBoundingClientRect();
-    } catch (e) {
-      return false;
-    }
-    const vw = window.innerWidth || 0;
-    const vh = window.innerHeight || 0;
-    return r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
-  }
-
-  return { viewportItems, resolve, onScreen, nearest, pageScroll };
+  // There is deliberately no `onScreen` here any more. There used to be, and it
+  // was a second answer to a question the overlay's placement already answers —
+  // with the consequence that the two could disagree and a hidden hint kept a
+  // typeable key. Visibility is now reported by the thing that places the
+  // labels (`overlay.shownKeys()`), so there is one answer and it cannot drift.
+  return { viewportItems, resolve, nearest, pageScroll };
 }
 

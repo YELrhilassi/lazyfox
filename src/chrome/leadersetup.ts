@@ -13,6 +13,7 @@
 // window beyond what it is handed, so the table can be read as a table.
 
 import { LeaderController } from "../shared/leader";
+import { specToText } from "../shared/keymap";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
 import { openNavPopup } from "../shared/popups/nav";
 import { toast } from "../shared/overlay";
@@ -76,7 +77,14 @@ export function createChromeLeader(deps: LeaderSetupDeps): ChromeLeader {
     // owns the keyboard while it is armed, so the key is consumed either way —
     // but silence here is what made an unbound chord look like a key that had
     // to be pressed twice.
-    (spec) => toast("no binding for ;" + spec)
+    //
+    // Printed as the user TYPED it (`D`, `?`), never as the internal spec
+    // (`shift+d`, `shift+/`): the overlay next to it labels the same key `D`, and
+    // a message that answers in a notation nobody typed is how "the categories
+    // work regardless of case" became a bug report. The content script already
+    // did this; the helper and the command center were the two surfaces that
+    // still leaked the spec.
+    (spec) => toast("no binding for ;" + specToText(spec))
   );
 
   return { leader, actions: leaderActions };

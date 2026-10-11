@@ -18,6 +18,8 @@
 // An inner target is outlined so the user can see where the keys land; the
 // document scroller needs no outline.
 
+import { shadowRootOf, walkElements } from "../../shared/dom";
+import { createCoalescer } from "../../shared/coalesce";
 import { toast } from "../../shared/overlay";
 import type { ScrollRegionInfo } from "../../shared/types";
 
@@ -69,11 +71,173 @@ export function createScrollController(): ScrollController {
   let pointerX = -1;
   let pointerY = -1;
   let pointerSeen = false;
+  // The pane the pointer was last found over, and whether it still needs
+  // resolving. Cached because deciding it means an elementFromPoint plus a walk
+  // of up to 60 ancestors with a computed-style read each — per scroll keypress,
+  // which is a cost the user feels as a sluggish keyboard (see current()).
+  let pointerTarget: HTMLElement | null = null;
+  let pointerValid = false;
+  // The last region scan, with the time it was taken. A page that scrolls its
+  // document never needs one at all; a page that does not has to look, and the
+  // look is `querySelectorAll("*")` over up to 12000 elements with two computed
+  // style reads per node. Repeating that on every `j`/`k`/`d`/`u` is a full
+  // document scan per keystroke, so the answer is held briefly and dropped when
+  // the page changes under it.
+  let scanCache: HTMLElement[] | null = null;
+  let scanAt = 0;
+  // The list has been invalidated since it was taken. A FLAG rather than a
+  // dropped cache, because dropping it handed the next keystroke a full-document
+  // style scan: a `childList` mutation (every framework insertion, including
+  // this extension appending its own overlay host) used to null the list, and
+  // the next `j` paid for a re-scan of up to MAX_SCAN elements with two computed
+  // style reads each. Attribute churn had already been taken off the keystroke
+  // path (§12.2); node churn had not, and it is the more common of the two.
+  //
+  // So the list is refreshed under ONE of two rate limits, whichever the cause
+  // allows (see regionsCached): at most once per SCAN_TTL_MS normally, and at
+  // most once per STRUCTURAL_RESCAN_MS when the page itself has changed shape.
+  // The page's own keypress rate bounds both from above, and an explicit region
+  // request (`;F`, diagnostics) is not rate-limited at all — the user asked.
+  let scanStale = false;
+  const SCAN_TTL_MS = 1000;
+  const STRUCTURAL_RESCAN_MS = 500;
+  const observedRoots = new WeakSet<ShadowRoot>();
 
   function trackPointer(e: PointerEvent): void {
     pointerX = e.clientX;
     pointerY = e.clientY;
     pointerSeen = true;
+    // The pointer moved: resolve the pane under its NEW coordinates. This is
+    // independent of the list of scrollable regions, whose membership and rank
+    // did not change just because the pointer did.
+    pointerValid = false;
+  }
+
+  function invalidateRegions(): void {
+    // STRUCTURAL invalidation: a pane may have been inserted or removed, so the
+    // list itself (and the ranking inside it) is no longer trustworthy.
+    scanStale = true;
+    // A newly inserted pane may now outrank the automatic target. Re-evaluate
+    // it on demand instead of keeping a still-scrollable but stale `autoEl`
+    // forever.
+    autoEl = null;
+  }
+
+  // PRESENTATIONAL invalidation: a class / style / hidden attribute changed.
+  //
+  // That cannot put a NEW scroll container into the document — only the ranking
+  // of the ones already found can have moved — so the cached list is KEPT and
+  // only the chosen target is re-derived. Keeping the list is the whole point:
+  // every attribute mutation used to run invalidateRegions(), and on any page
+  // whose classes change while you read it (a hover state, a video player's
+  // chrome, an ad rotator) that dropped a full-document style scan
+  // (querySelectorAll("*") plus getComputedStyle per node, up to MAX_SCAN) into
+  // the NEXT scroll keypress — once per keypress, indefinitely. Re-deriving the
+  // target from a still-valid cache is one array read.
+  //
+  // Nothing is lost: a pane that BECOMES scrollable through a style change is
+  // found when the TTL backstop expires the list (see regionsCached), because
+  // the next request re-scans; and the cached target itself is re-validated by
+  // isScrollable() on every use (see autoTarget and current).
+  function invalidateTarget(): void {
+    autoEl = null;
+  }
+
+  try {
+    // Viewport size changes affect visibility and which pane dominates.
+    window.addEventListener("resize", invalidateRegions, { passive: true });
+  } catch (e) {
+    // ignore — a missing resize listener only costs a stale scan for a moment
+  }
+  // Region membership is a DOM/CSS fact, not a pointer fact. Invalidate the
+  // list when a pane appears/disappears or its inline/class styling changes,
+  // then scan lazily at the next explicit region request. MutationObserver
+  // callbacks never scan/layout-read, so framework churn itself stays cheap.
+  let regionObserver: MutationObserver | null = null;
+  const scrollObservers: MutationObserver[] = [];
+
+  // What one mutation batch means for the caches. Structural changes drop the
+  // list; presentational ones only drop the chosen target. See the two
+  // invalidators above for why the difference is the whole cost model.
+  function onMutations(records: MutationRecord[]): void {
+    let structural = false;
+    for (const rec of records) {
+      if (rec.type === "childList") {
+        structural = true;
+        break;
+      }
+    }
+    if (structural) invalidateRegions();
+    else invalidateTarget();
+    rootsDiscovery.request();
+  }
+
+  // ---- finding shadow roots is a FULL-DOCUMENT WALK, so it is coalesced ----
+  //
+  // `watchShadowRoots` runs querySelectorAll("*") over every node (up to
+  // MAX_SCAN) looking for roots nobody observes yet. Paying that once, when the
+  // controller is built, is a reasonable price. Paying it per mutation batch is
+  // not, and that is what it was: the document observer called it synchronously,
+  // so a page whose class/style attributes change (every framework page) ran a
+  // full-document walk dozens of times a second, on the main thread, whether or
+  // not the user ever pressed a scroll key — and the observer is installed on
+  // EVERY page for the life of the document. The walk does no layout reads, but
+  // it does walk every node, which is exactly the shape of work this module
+  // moved off the keystroke path.
+  //
+  // The rule lives in shared/coalesce.ts, where it is unit-tested, because the
+  // hint session needs exactly the same rule for exactly the same reason. Roots
+  // are therefore found up to a second late, and nothing depends on finding them
+  // immediately: a root's own observer only exists to invalidate a cache, and
+  // the caches already have a TTL backstop.
+  const ROOTS_DISCOVERY_MS = 1000;
+  // Elements one discovery pass may visit per walked root. The walk restarts
+  // from the document on every pass, so the budget delays finding a root in a
+  // very large subtree rather than losing it.
+  const ROOTS_WALK_BUDGET = 4000;
+  const rootsDiscovery = createCoalescer({
+    everyMs: ROOTS_DISCOVERY_MS,
+    run: () => watchShadowRoots(document, 0),
+  });
+
+  function watchShadowRoots(root: ParentNode, depth: number): void {
+    if (depth >= 6) return;
+    // Lazy and budgeted (shared/dom.ts walkElements): the previous version
+    // materialized an array of every element in the subtree and only then
+    // applied MAX_SCAN to its length, so the cap did not bound the allocation.
+    walkElements(root, ROOTS_WALK_BUDGET, (el) => {
+      const shadow = shadowRootOf(el);
+      if (!shadow || observedRoots.has(shadow)) return;
+      observedRoots.add(shadow);
+      // A mutation INSIDE an observed root means the same thing a mutation
+      // anywhere else does, so it goes through the same handler. The recursion
+      // below happens when the root is DISCOVERED (it may contain nested roots),
+      // not on every mutation inside it.
+      const observer = new MutationObserver(onMutations);
+      observer.observe(shadow, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class", "style", "hidden"],
+      });
+      scrollObservers.push(observer);
+      watchShadowRoots(shadow, depth + 1);
+    });
+  }
+
+  try {
+    if (typeof MutationObserver !== "undefined" && document.documentElement) {
+      regionObserver = new MutationObserver(onMutations);
+      regionObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class", "style", "hidden"],
+      });
+      rootsDiscovery.request();
+    }
+  } catch (e) {
+    regionObserver = null;
   }
   try {
     window.addEventListener("pointermove", trackPointer, { capture: true, passive: true });
@@ -166,7 +330,29 @@ export function createScrollController(): ScrollController {
   }
 
   // Every scrollable element on the page, largest visible area first. Bounded
-  // so a giant framework DOM cannot hang a keypress.
+  // so a giant framework DOM cannot hang an explicit region-list request.
+  // The scan is memoised until the DOM/style/viewport changes, with the TTL as
+  // a backstop for environmental changes that emit no observable event.
+  // Scroll-key dispatch itself does not request a region list when the document
+  // scrolls, and pointer movement only invalidates the pointer target — not this
+  // expensive list. See scanCache and invalidateRegions.
+  function regionsCached(force: boolean = false): HTMLElement[] {
+    const now = performance.now();
+    if (!force && scanCache) {
+      const age = now - scanAt;
+      // A cache the page has invalidated may be refreshed sooner, because the
+      // reason to refresh it is real (a pane appeared or vanished); a cache
+      // nobody has invalidated waits out the TTL, because there is no reason to
+      // look again at all. Either way the answer is a cache or ONE scan.
+      const budget = scanStale ? STRUCTURAL_RESCAN_MS : SCAN_TTL_MS;
+      if (age < budget) return scanCache;
+    }
+    scanCache = scanRegions();
+    scanAt = now;
+    scanStale = false;
+    return scanCache;
+  }
+
   function scanRegions(): HTMLElement[] {
     const out: HTMLElement[] = [];
     let all: NodeListOf<Element>;
@@ -206,8 +392,11 @@ export function createScrollController(): ScrollController {
     }
     let depth = 0;
     while (el && depth < 6) {
-      const sr = (el as HTMLElement).shadowRoot;
-      if (!sr || sr.mode !== "open") break;
+      // Closed roots included: an app whose scrolling pane lives in one would
+      // otherwise never be found under the pointer, so hover-driven scrolling
+      // would silently do nothing there (see shadowRootOf).
+      const sr = shadowRootOf(el);
+      if (!sr) break;
       let inner: Element | null = null;
       try {
         inner = sr.elementFromPoint(x, y);
@@ -246,8 +435,20 @@ export function createScrollController(): ScrollController {
   function pickUnderPointer(): Target | null {
     if (!pointerSeen) return null;
     if (pointerX < 0 || pointerY < 0) return null;
-    const el = scrollableAncestorFrom(deepHit(pointerX, pointerY));
+    if (!pointerValid) {
+      pointerTarget = scrollableAncestorFrom(deepHit(pointerX, pointerY));
+      pointerValid = true;
+    }
+    const el = pointerTarget;
     if (!el) return null;
+    // The pane can vanish under a stationary pointer (SPA re-render, a sidebar
+    // that collapses): drop the cache so the NEXT press resolves it again rather
+    // than concluding "the pointer is over nothing" forever.
+    if (!el.isConnected || !isScrollable(el)) {
+      pointerValid = false;
+      pointerTarget = null;
+      return null;
+    }
     return { el: el, label: labelOf(el) };
   }
 
@@ -255,9 +456,14 @@ export function createScrollController(): ScrollController {
   // (bottom-to-top apps whose shell swallows the document scroller).
   function autoTarget(): Target {
     if (documentScrolls()) return windowTarget();
-    if (autoEl && isScrollable(autoEl)) return { el: autoEl, label: labelOf(autoEl) };
+    if (autoEl && isScrollable(autoEl)) {
+      // Expensive region ordering is refreshed lazily on an explicit cycle or
+      // diagnostics pull, not on a scroll-key dispatch. Keep the current target
+      // until an observer/resize invalidates it or it is no longer scrollable.
+      return { el: autoEl, label: labelOf(autoEl) };
+    }
     autoEl = null;
-    const regions = scanRegions();
+    const regions = regionsCached();
     if (regions.length) {
       autoEl = regions[0]!;
       return { el: autoEl, label: labelOf(autoEl) };
@@ -315,7 +521,9 @@ export function createScrollController(): ScrollController {
 
   function cycleTargets(): Target[] {
     const list: Target[] = [];
-    const regions = scanRegions();
+    // An EXPLICIT request: `;F` is the user asking what can scroll, so it must
+    // never answer from a cache the page has invalidated.
+    const regions = regionsCached(true);
     // Offer the document scroller first whenever it can actually scroll.
     if (documentScrolls()) list.push(windowTarget());
     for (const el of regions) list.push({ el, label: labelOf(el) });
@@ -419,7 +627,8 @@ export function createScrollController(): ScrollController {
   function regions(): ScrollRegionInfo[] {
     const out: ScrollRegionInfo[] = [];
     if (documentScrolls()) out.push(regionInfoOf(windowTarget()));
-    for (const el of scanRegions()) out.push(regionInfoOf({ el: el, label: labelOf(el) }));
+    // Diagnostics ask what is true NOW, so this path never uses the cache.
+    for (const el of regionsCached(true)) out.push(regionInfoOf({ el: el, label: labelOf(el) }));
     return out;
   }
 

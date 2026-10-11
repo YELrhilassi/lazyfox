@@ -589,14 +589,32 @@ ok(
     wkCategoryHtml(["z"], {}).indexOf(">z<") > -1
   );
   eq("an empty category says so", wkCategoryHtml([], {}), "<div class='wk-group'>—</div>");
-  ok(
-    "the heading names the chord and the category",
-    // The title goes through esc(), so "Window & layout" is "Window &amp;
-    // layout" in the markup. Asserting the ESCAPED form is the point: this is
-    // an HTML builder, and a title containing markup must not reach the DOM.
-    wkHeadHtml("W", "Window & layout").indexOf("⌘W") > -1 &&
-      wkHeadHtml("W", "Window & layout").indexOf("Window &amp; layout") > -1
-  );
+  {
+    const cat = wkHeadHtml("W", "Window & layout");
+    ok(
+      "the heading names the chord and the category",
+      // The badge is the keymap's OWN chord (`W`), and it is asserted in the
+      // chord span rather than anywhere in the string so a title that happens
+      // to contain the letter cannot satisfy it. It used to be `⌘` + head: a
+      // Mac command glyph drawn as if it were a key on the user's keyboard, on
+      // every platform, in a product whose leader is `;`. A header that shows a
+      // key the keymap does not contain is worse than no badge at all, because
+      // the reader tries to press it.
+      cat.indexOf("wk-chord'>W<") > -1 &&
+        cat.indexOf("\u2318") === -1
+    );
+    ok(
+      "the heading title is escaped, and the top level claims no chord",
+      // The title goes through esc(), so "Window & layout" is "Window &amp;
+      // layout" in the markup. Asserting the ESCAPED form is the point: this is
+      // an HTML builder, and a title containing markup must not reach the DOM.
+      // At the top level there is no committed sequence, so there is no chord
+      // to show and the heading says only that these are all the keys.
+      cat.indexOf("Window &amp; layout") > -1 &&
+        wkHeadHtml("", "").indexOf("wk-chord") === -1 &&
+        wkHeadHtml("", "").indexOf("All keys") > -1
+    );
+  }
   ok(
     "the heading is CONTENT, not a second .wk-head element",
     // Wrapping the content in its own .wk-head nests a flex item inside a flex

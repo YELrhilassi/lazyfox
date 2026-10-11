@@ -23,7 +23,7 @@
 // different chords here rather than one.
 
 import { core } from "./core";
-import { LeaderCapture } from "./leadercapture";
+import { LeaderCapture, type CaptureResult } from "./leadercapture";
 import { makeLeaderSignal, type LeaderSignal } from "./leadersignal";
 import {
   chordFor,
@@ -251,10 +251,33 @@ export class LeaderController {
    * the status-bar indicator for the life of the capture. See
    * leadercapture.ts for why it is declared by the armer. */
   armPending(
-    fn: (e: KeyLike) => boolean,
+    fn: (e: KeyLike) => CaptureResult,
     opts?: { timeoutMs?: number; onTimeout?: () => void; expect?: string }
-  ): void {
-    this.capture.arm(fn, opts);
+  ): number {
+    return this.capture.arm(fn, opts);
+  }
+
+  isPendingGeneration(generation: number): boolean {
+    return this.capture.isArmed(generation);
+  }
+
+  cancelPendingGeneration(generation: number): void {
+    this.capture.cancel(generation);
+  }
+
+  /**
+   * Replaces the "what does the next key have to be" hint on a capture that is
+   * already armed.
+   *
+   * A multi-key sequence learns things as it goes — a tab position becomes
+   * ambiguous once the count arrives, so the digits that are legal next change
+   * after the first one is pressed. Without this the status bar would keep
+   * advertising the first key's expectation for the whole sequence, which is the
+   * "which-key shows stale information" complaint in miniature: a live capture
+   * whose readout describes a state that has already passed.
+   */
+  setPendingExpect(expect: string): void {
+    this.capture.setExpectation(expect);
   }
 
   /** Consumes the pending key, if any. Returns whether it was consumed. */
@@ -380,7 +403,17 @@ export class LeaderController {
     }
     const total = await this.wk.pageCount();
     const page = await this.wk.slice();
-    this.panel.fill(wkHeadHtml("", ""), wkBodyHtml(page, this.wk.sel), wkFootHtml(this.wk.page, total));
+    // The footer is built from what the HIGHLIGHTED row can actually do: a
+    // category head opens a menu, an ordinary binding runs, and the panel says
+    // which. `sel` is a lazy index, which is exactly what a row carries.
+    const selRow = page.items.filter((r) => r.lazyIndex === this.wk.sel)[0];
+    this.panel.fill(
+      // No chord badge at the top level: there is no committed sequence yet, and
+      // inventing one (`⌘`) was a key the keymap does not have.
+      wkHeadHtml("", ""),
+      wkBodyHtml(page, this.wk.sel),
+      wkFootHtml(this.wk.page, total, false, !!(selRow && selRow.cat))
+    );
   }
 
   show(): void {
@@ -417,7 +450,7 @@ export class LeaderController {
     this.unpaint();
   }
 
-  private async runSel(): Promise<void> {
+  private async runSel(fromEnter: boolean): Promise<void> {
     const items = await this.bindings();
     // wk.sel is the lazy index (position among runnable, non-native items);
     // lazyBindings mirrors that ordering, so index it directly instead of
@@ -430,7 +463,24 @@ export class LeaderController {
     // parallel lookup that can disagree with it.
     const spec = specForChord(it.key);
     const m = spec ? matchKey(spec) : undefined;
-    if (m && m.found && !m.category) this.runOrStay(m.action);
+    if (!m || !m.found) {
+      if (fromEnter) this.hide();
+      return;
+    }
+    if (m.category) {
+      // ENTER ON A HEAD OPENS THE MENU.
+      //
+      // It used to check `!m.category`, find a category, and do NOTHING — no
+      // toast, no movement, no close — on a row whose footer advertised "Enter
+      // run". The panel stays up: opening a menu is not leaving it.
+      this.openCategory(spec, it.key, m.catLabel, m.catKeys);
+      return;
+    }
+    // A tap closes the panel as usual; a HELD leader keeps it, exactly as
+    // runOrStay would, so Enter cannot break the "consecutive actions in one
+    // hold" rule that every other binding follows.
+    if (fromEnter && !this.sticky) this.hide();
+    this.runOrStay(m.action);
   }
 
   /**
@@ -514,8 +564,9 @@ export class LeaderController {
         return true;
       }
       if (k === "Enter") {
-        this.hide();
-        void this.runSel();
+        // Whether this closes the panel is the SELECTION's business (a head
+        // opens instead), so it is decided inside runSel where the row is known.
+        void this.runSel(true);
         return true;
       }
     }

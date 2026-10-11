@@ -20,8 +20,9 @@ import type { StatusBarCtl } from "./statusbar";
 export interface PushDeps {
   split: SplitView;
   status: StatusBarCtl;
-  // Records that a tab's own content script is running.
-  setContentPresent(index: number, active: boolean, url: string): void;
+  // Records that a tab's own content script is running. `doc` identifies the
+  // reporting document; the URL only describes it (see noteContentPresent).
+  setContentPresent(index: number, active: boolean, url: string, doc?: string): void;
   // Per-tab / per-session page-cache enforcement (the global scope is owned by
   // the extension background).
   cache: CacheCtl;
@@ -63,7 +64,8 @@ export function createPushDispatcher(deps: PushDeps): PushDispatcher {
       // "A content script is running in this tab", pushed by the tab itself.
       // The helper cannot work this out on its own — see noteContentPresent.
       contentState: (req) => {
-        if (req.index >= 0) deps.setContentPresent(req.index, !!req.active, String(req.url || ""));
+        if (req.index >= 0)
+          deps.setContentPresent(req.index, !!req.active, String(req.url || ""), String(req.doc || ""));
       },
       // Content-script find-in-page count, cached the same way.
       findState: (req) => {

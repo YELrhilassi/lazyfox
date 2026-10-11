@@ -59,7 +59,9 @@ export interface ChannelDeps {
   split: SplitView;
   status: StatusBarCtl;
   // Records that a tab's own content script is running (see noteContentPresent).
-  setContentPresent(index: number, active: boolean, url: string): void;
+  // `doc` identifies the reporting DOCUMENT — the URL describes it but cannot
+  // identify it across a single-page navigation.
+  setContentPresent(index: number, active: boolean, url: string, doc?: string): void;
   // Clear the bar's download notification(s) at a page's request (`;D` runs in
   // the page's own leader, but the bar is this side's).
   dismissDownloads(): void;

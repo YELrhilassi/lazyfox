@@ -152,7 +152,7 @@ export interface BgApi {
     // `hold` rides back on the reply: a content script that has just booted
     // asks "is the leader key still physically down?", and the background is
     // the only party that can answer for a document this one has never seen.
-    req: { active: boolean; url: string };
+    req: { active: boolean; url: string; doc?: string };
     res: { ok: boolean; hold?: boolean };
   };
   // The HELD leader key, as a per-tab fact rather than per-document state.
@@ -370,7 +370,12 @@ export interface ChromeApi {
     req: { index: number; signal: LeaderSignal };
     res: void;
   };
-  contentState: { req: { index: number; active: boolean; url: string }; res: void };
+  // `doc` is the reporting document's own nonce. The URL rides along to describe
+  // the page, but it cannot IDENTIFY the document: a single-page navigation
+  // rewrites the URL without replacing the document, so a URL-keyed record goes
+  // stale on the first pushState and presence silently expires. See
+  // keystate.noteContentPresent.
+  contentState: { req: { index: number; active: boolean; url: string; doc?: string }; res: void };
   findState: { req: { index: number; count: number; cur: number }; res: void };
   cacheGlobal: { req: { mode: CacheMode }; res: void };
   cachePolicy: { req: { mode: CacheMode; tabIds: number[] }; res: void };

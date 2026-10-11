@@ -202,6 +202,31 @@ real keymap first and, if the key already does something on its own, runs that
 instead. That rule exists because `;G` / `;L` once shipped as sequences that
 shadowed nothing, which is exactly why they were unreachable.
 
+### How a chord is spelled
+
+Five rules, and they are rules rather than conventions — each one is asserted in
+`core/keymap_test.go` and `scripts/test/keymap.test.ts`, so the documentation and
+the keyboard cannot drift apart:
+
+- **A capital is Shift.** `;W` is Window & layout; `;w` is nothing. Case is never
+  "handled for you": `;P` (Sessions) and `;p` are different chords, and the one
+  that names nothing tells you so instead of guessing.
+- **A modifier is part of the chord.** `;Ctrl+Alt+r` is not `;r`, and it runs
+  nothing — including when a page binds `Ctrl+Alt+r` itself, in which case the
+  page gets it.
+- **A head opens a namespace.** `;W m` then a digit is one sequence, and the
+  sub-keys of a head cannot collide with the top level (`;W m` and a bare `;m`
+  are different keys). A head is a menu of things that *differ*; a "category"
+  whose rows all run the same action is just a slower key.
+- **Digits are positions, and they compose.** With nine tabs or fewer, `;1`…`;9`
+  each go straight to their tab. Past nine a digit that could be a prefix waits
+  for one more keystroke: `;11` is tab 11, and `;1` followed by nothing still
+  works once the sequence resolves.
+- **What is bound is the table, not this page.** `;?` is the live, searchable
+  index of every key (including the leaves inside each head), `core/keymap.go` is
+  the table it is generated from, and the which-key overlay is the same answer
+  for the keys you are reading right now.
+
 ### Scrolling
 
 The vim keys (`j` `k` `d` `u`, `gg`/`G`) follow the page's scroll target. On an

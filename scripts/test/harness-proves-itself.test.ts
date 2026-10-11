@@ -29,6 +29,8 @@ import {
 } from "../../src/shared/lfcreplay.ts";
 import { CHROME_STATE_VERSION } from "../../src/chrome/stateapi.ts";
 import { ChromeStateHandle, chromeStateHandle } from "../e2e/chrome-state.ts";
+import { newTestNotice } from "../e2e/notices.ts";
+import { summary, results, type Baseline } from "../e2e/runner.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -177,5 +179,136 @@ describe("the state contract catches a version skew", () => {
   test("an incomplete snapshot cannot be read as a healthy one", () => {
     const reply: any = { v: CHROME_STATE_VERSION, ok: false, error: "helper is gone", realTabs: [], strip: [] };
     assert.throws(() => new ChromeStateHandle(reply), /did not complete/);
+  });
+});
+// The runner's own report, attacked the same way the audits above are: with the
+// input that made it lie.
+//
+// `--update-baseline` records the missing rows and THEN the summary printed
+// "…no baseline row — run with --update-baseline to record them", so the one
+// message a reader acts on pointed at a problem that had just been fixed. Both
+// halves of the notice are pure text, so this is a unit test rather than a
+// browser run.
+describe("the summary does not tell you to do what you just did", () => {
+  const row = (id: string): any => ({ id, name: id, group: "content", pass: true });
+
+  test("with --update-baseline the notice says they were recorded", () => {
+    const lines = newTestNotice([row("content/x › y")], true);
+    const text = lines.join("\n");
+    assert.match(text, /1 new test\(s\) recorded in the baseline/);
+    assert.doesNotMatch(text, /run with --update-baseline/, "the flag it was just given must not be recommended");
+    assert.match(text, /\+ content\/x › y/, "the id still has to be listed");
+  });
+
+  test("without it, the instruction stays and is exact", () => {
+    const lines = newTestNotice([row("content/x › y")], false);
+    const text = lines.join("\n");
+    assert.match(text, /run with --update-baseline to record them/);
+    assert.doesNotMatch(text, /recorded in the baseline/);
+    assert.match(text, /\? content\/x › y/);
+  });
+
+  test("no new tests, no notice at all", () => {
+    // Not even a blank line: an empty notice would print as a stray newline in
+    // the middle of the report.
+    assert.deepEqual(newTestNotice([], true), []);
+    assert.deepEqual(newTestNotice([], false), []);
+  });
+
+  test("a long list is truncated and says how many it dropped", () => {
+    const many = Array.from({ length: 25 }, (_, i) => row("content/x › y" + i));
+    const lines = newTestNotice(many, false);
+    assert.equal(lines.length, 1 + 20 + 1, "header, 20 ids, the count of the rest");
+    assert.match(lines[lines.length - 1]!, /and 5 more/);
+  });
+});
+
+// The baseline is the only place "known broken" is written down, so a row for a
+// test that no longer exists is not clutter: it is a claim about the product
+// that nothing checks. This ran with exactly one — `content/multidigit › the
+// window is left as it was found`, marked `fail` — and it cost a session's worth
+// of work reproducing a failure whose test had been renamed out of existence.
+//
+// So the rule is pinned with the input that made it lie, in the same spirit as
+// the audits above: the summary over a SYNTHETIC baseline and a synthetic result
+// list, with no browser and no writes to the real record.
+describe("a baseline row for a test that no longer exists is not a pass", () => {
+  const result = (id: string, group: string, pass = true): any => ({
+    id,
+    name: id,
+    group,
+    pass,
+  });
+
+  // `summary` reads the module's own result list, so the test fills it and puts
+  // it back afterwards — the runner is shared with nothing here, but a leaked
+  // result would make the next test in this file answer for two runs.
+  const withResults = <T,>(rs: any[], fn: () => T): T => {
+    const saved = results.splice(0, results.length);
+    results.push(...rs);
+    try {
+      return fn();
+    } finally {
+      results.splice(0, results.length);
+      results.push(...saved);
+    }
+  };
+
+  const baselineWithStale = (): Baseline => ({
+    "content/a › exists": { status: "pass", group: "content" },
+    "content/gone › renamed away": { status: "fail", group: "content", runs: 2, passes: 0 },
+    "sessions/b › exists": { status: "fail", group: "sessions" },
+  });
+
+  test("a full run that finds it fails, and names it", () => {
+    withResults([result("content/a › exists", "content")], () => {
+      const rep = summary(baselineWithStale(), false, true);
+      assert.deepEqual(rep.stale, ["content/gone › renamed away"]);
+      assert.equal(rep.ok, false, "the record is wrong, so the run cannot be green");
+    });
+  });
+
+  test("--update-baseline removes it, and then the run can be green", () => {
+    withResults([result("content/a › exists", "content")], () => {
+      const baseline = baselineWithStale();
+      const rep = summary(baseline, true, true);
+      assert.deepEqual(rep.stale, ["content/gone › renamed away"], "still reported, as removed");
+      assert.equal("content/gone › renamed away" in baseline, false, "the row is gone from the record");
+      assert.equal(rep.ok, true, "the run that cleans the record exits on its real result");
+    });
+  });
+
+  test("a group the run did not select is left alone", () => {
+    // `--suite content` must not delete the sessions record: those rows say
+    // nothing about a run that never exercised them.
+    withResults([result("content/a › exists", "content")], () => {
+      const baseline = baselineWithStale();
+      const rep = summary(baseline, true, true);
+      assert.deepEqual(Object.keys(baseline).sort(), ["content/a › exists", "sessions/b › exists"]);
+      assert.ok(!rep.stale.includes("sessions/b › exists"));
+    });
+  });
+
+  test("a FILTERED run says nothing about stale rows, because it did not look", () => {
+    // --only / --tags narrow the selection, so a test that did not run is a test
+    // that was not asked for. Blocking there would make the record look wrong
+    // every time somebody ran one test.
+    withResults([result("content/a › exists", "content")], () => {
+      const baseline = baselineWithStale();
+      const rep = summary(baseline, false, false);
+      assert.deepEqual(rep.stale, []);
+      assert.equal(rep.ok, true);
+      assert.equal("content/gone › renamed away" in baseline, true, "nothing is pruned either");
+    });
+  });
+
+  test("a skipped test is not a missing one", () => {
+    // The tag filters push skipped results into the list, and a skipped result
+    // still DECLARES the test — reporting those as stale would fire on every
+    // --skip-tags run.
+    withResults([result("content/a › exists", "content"), { ...result("content/gone › renamed away", "content"), skipped: true }], () => {
+      const rep = summary(baselineWithStale(), false, true);
+      assert.deepEqual(rep.stale, []);
+    });
   });
 });

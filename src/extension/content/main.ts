@@ -11,6 +11,7 @@ import { dbg } from "../../shared/dev";
 import { installContentDom } from "./contentdom";
 import { LeaderController, isCancel } from "../../shared/leader";
 import { idleSignal, type LeaderSignal } from "../../shared/leadersignal";
+import { specToText } from "../../shared/keymap";
 import {
   releaseHoldOnKeyup,
   releaseLostHold as releaseLostHoldOnBlur,
@@ -116,7 +117,19 @@ import type { ContentPopupShell } from "./find";
   const contentOps = createContentOps({
     shell: shell,
     config: () => config,
-    startHints: () => void hints.start(),
+    // Taking the keyboard FOR the hints means handing it over first. This is one
+    // half of the one-owner rule (the other half is the leader-key branch in
+    // onKeyDown); without it a held `;f` left the leader armed underneath the
+    // hint layer, and because a key the hints do not consume falls through to
+    // the leader dispatcher, every hint letter ALSO ran a binding — `d` opened
+    // Downloads, `g`/`l` navigated, `r` reloaded. That was the reported
+    // "hints sometimes run my shortcuts", and it was intermittent only because
+    // it depended on whether the leader was held.
+    startHints: () => {
+      if (leader.active) leader.hide();
+      if (leader.hasPending()) leader.cancelPending();
+      void hints.start();
+    },
     focusFirstInput: focusFirstInput,
     // Live find count: relay it to the chrome helper's window-level bar (the
     // only bar — this content script never draws one) so "N/M" follows the
@@ -137,8 +150,15 @@ import type { ContentPopupShell } from "./find";
     bindings: () => leader.bindings(),
     // A sub-key that takes a NUMBER (move tab N into the split) needs the
     // leader's one-shot capture; the leader controller owns it.
-    armDigits: (apply, timeoutMs, expect) => {
-      leader.armPending(apply, { timeoutMs: timeoutMs || 3000, expect });
+    armDigits: (apply, timeoutMs, expect, onTimeout) => {
+      const generation = leader.armPending(apply, { timeoutMs: timeoutMs || 3000, expect, onTimeout });
+      return {
+        cancel: () => leader.cancelPendingGeneration(generation),
+        retarget: (next: string) => {
+          if (leader.isPendingGeneration(generation)) leader.setPendingExpect(next);
+        },
+        isActive: () => leader.isPendingGeneration(generation),
+      };
     },
     manualText: true,
   };
@@ -189,7 +209,7 @@ import type { ContentPopupShell } from "./find";
     // consumed either way — but the user is told which chord went nowhere, which
     // is the difference between a keymap they can learn and one they learn by
     // pressing things twice to see what sticks.
-    (spec) => toast("no binding for ;" + spec)
+    (spec) => toast("no binding for ;" + specToText(spec))
   );
   // Clear any stale leader state this tab carried from a previous page (the
   // leader starts disarmed on every fresh load).
@@ -204,6 +224,18 @@ import type { ContentPopupShell } from "./find";
   //
   // The URL travels with the report so the helper can throw the answer away
   // the moment this tab navigates, rather than trusting it until reload.
+  // The identity of THIS document, for the lifetime of this script.
+  //
+  // The URL cannot do this job. `reportPresence` used to send only a URL, and
+  // the chrome helper identified the report by it — so the first
+  // `history.pushState` on any single-page app made the recorded URL stop
+  // matching the tab's current one, and the helper concluded this document had
+  // no content script for the rest of its life. It then claimed the keys and the
+  // surfaces it should have deferred on, while the retraction guard dropped this
+  // document's own pagehide for the same reason. A nonce is generated once, per
+  // document, and compared only against the record it created.
+  const docId =
+    String(Date.now()) + "-" + Math.random().toString(36).slice(2, 10);
   const reportPresence = (active: boolean) => {
     let href = "";
     try {
@@ -211,7 +243,7 @@ import type { ContentPopupShell } from "./find";
     } catch (e) {
       // ignore — an unreadable location simply reports no URL
     }
-    return send("syncContent", { active, url: href });
+    return send("syncContent", { active, url: href, doc: docId });
   };
   // THE HELD LEADER, ACROSS DOCUMENTS.
   //
@@ -250,14 +282,17 @@ import type { ContentPopupShell } from "./find";
     // ignore — presence is re-derived on the next load regardless
   }
   // ...and assert it again whenever this document comes back, because ONE
-  // report is not a durable answer. The helper keeps presence in a Map keyed by
-  // tab, and the map has three ways to lose this document's entry while the
-  // document is still alive and answering keys: a late `pagehide` from the page
-  // it replaced (now filtered by URL, see keystate.noteContentPresent), a
-  // forgetContentFrom when a tab above it closes, and a background that was
-  // restarted. None of those is followable by a retraction, and a content
-  // script that never speaks again cannot correct the helper — which then
-  // claims the keys and paints its overlay over this page's.
+  // report is not a durable answer. The helper keeps presence ON THE TAB, and
+  // two things can still leave it without this document's entry while the
+  // document is alive and answering keys: a late `pagehide` from the page this
+  // one replaced (now filtered by the document nonce, see
+  // keystate.noteContentPresent) and a background that was restarted. Neither
+  // is followable by a retraction, and a content script that never speaks again
+  // cannot correct the helper — which then claims the keys and paints its
+  // overlay over this page's. (A THIRD cause used to be listed here: the
+  // helper dropping every record above a closed tab, because records were kept
+  // by strip position. Presence is keyed by the tab now, so closing a tab no
+  // longer costs a live neighbour its answer.)
   //
   // `pageshow` fires on every commit AND on a bfcache restore, i.e. exactly the
   // moments this document starts answering keys again, and it costs one message
@@ -300,18 +335,27 @@ import type { ContentPopupShell } from "./find";
 
   /* ==================== key dispatch ==================== */
 
+  // The dispatch trace, IN MEMORY — never in the document.
+  //
+  // This is the "last key the content script saw, and the state it dispatched
+  // under" readout the e2e harness reads when a key did not do what a test
+  // expected. It used to be three attributes on <html>, written on EVERY
+  // keydown (and a fourth on every leader dispatch). Root-attribute writes
+  // invalidate style and fire the page's own MutationObservers, so the product
+  // paid for its own instrumentation on the one path where the cost is a
+  // keystroke — on every page, for a reader that is not the user.
+  //
+  // It is a PULL now: the fields below are plain JS (a property write is free)
+  // and `dispatchTrace()` hands them over when something asks — the dev-only
+  // message handler in contentdom.ts. Same information, zero DOM cost, and
+  // nothing on the page can observe the user's typing through it.
+  const trace = { key: "", active: "?", popup: "0", dispatched: "" };
+
   function onKeyDown(e: KeyboardEvent) {
     if (__DEV__) {
-      // Dev-only trace: the last key the content script saw and the state it
-      // dispatched under (page realm reads these attributes in the BiDi suite).
-      try {
-        const d = document.documentElement;
-        d.setAttribute("data-lf-lastkey", e.key);
-        d.setAttribute("data-lf-active", leader ? (leader.active ? "1" : "0") : "?");
-        d.setAttribute("data-lf-popup", currentPopup ? "1" : "0");
-      } catch (x) {
-        // ignore
-      }
+      trace.key = e.key;
+      trace.active = leader ? (leader.active ? "1" : "0") : "?";
+      trace.popup = currentPopup ? "1" : "0";
     }
     if (e.isComposing) return;
     if (currentPopup) {
@@ -378,15 +422,21 @@ import type { ContentPopupShell } from "./find";
         // and no hint character means anything yet, so let the key fall
         // through to the leader/popups rather than swallowing it.
       } else if (leader.active) {
-        // The LEADER takes precedence over the hints. The hint layer is a
-        // keyboard trap otherwise: it owned every key on the page, so while it
-        // was open not one Lazyfox binding could be pressed — and `;K c`, whose
-        // whole job is to act on the link the hints are pointed at, was
-        // unreachable from the state it was designed for.
+        // ONE OWNER AT A TIME.
         //
-        // It keeps running underneath. Pressing `;` does not exit it, so the
-        // hint target `;K c`/`;K e` act on is still the one on screen; only the
-        // keyboard moves. Esc still drops the hints outright, below.
+        // The leader and the hints must never both hold the keyboard, and this
+        // branch is where that used to break: it did nothing, so a hint letter
+        // fell through to the leader dispatcher below and ran a BINDING. That is
+        // the reported "while hinting, typing `d` opens Downloads" — reachable
+        // whenever the leader was still armed, which a held `;f` guaranteed
+        // (sticky runs the action without hiding, see runOrStay).
+        //
+        // The state is now unrepresentable rather than merely unlikely: the
+        // hints claim ownership when they start, and this is the reverse
+        // transition — the leader taking the keyboard back means the hints stop.
+        // Nothing is lost: `;K c` acts on the PAGE url, so it does not need the
+        // hint target that this branch used to protect.
+        hints.exit();
       } else {
         // Only swallow what the hints actually handled. This branch used to
         // preventDefault unconditionally, which meant `;` — the leader key, not
@@ -408,6 +458,26 @@ import type { ContentPopupShell } from "./find";
     // MUST own the leader, popups, hints, Esc and scroll keys itself — the
     // chrome helper only receives keys on in-process pages (about:, the
     // command center), where this content script does not run.
+    // Focus is in a text field. A stale leader or one-shot capture must never
+    // eat what the user is typing: pressing `;` on the page and then clicking
+    // into a search box used to swallow the first character (and a stray `'`
+    // re-armed the marker capture, so the next digit switched sessions).
+    // Disarm both and let the key reach the field.
+    //
+    // THE TYPING GUARD COMES BEFORE THE CANCEL — deliberately, and it used to be
+    // the other way round. Cancel blurs the focused element, so Escape while
+    // typing used to take the caret out of the box the user was writing in: the
+    // one key everybody presses to dismiss a stray suggestion became a keystroke
+    // that destroyed their place. An edit in progress outranks every overlay
+    // state, because there is nothing Lazyfox can be showing that justifies
+    // interrupting it. Escape and Ctrl+G still reach the field's own semantics
+    // (a page closing its own menu), and still cancel Lazyfox whenever focus is
+    // NOT in a field, which is every case the cancel exists for.
+    if (isTypingEvent(e)) {
+      if (leader.active) leader.hide();
+      if (leader.hasPending()) leader.cancelPending();
+      return;
+    }
     if (isCancel(e)) {
       // The universal cancel key — Escape, or Ctrl+G for pages that own Escape
       // themselves. Clear every Lazyfox overlay state so the next invocation
@@ -452,33 +522,34 @@ import type { ContentPopupShell } from "./find";
       }
       return;
     }
-    // Focus is in a text field. A stale leader or one-shot capture must never
-    // eat what the user is typing: pressing `;` on the page and then clicking
-    // into a search box used to swallow the first character (and a stray `'`
-    // re-armed the marker capture, so the next digit switched sessions).
-    // Disarm both and let the key reach the field.
-    if (isTypingEvent(e)) {
-      if (leader.active) leader.hide();
-      if (leader.hasPending()) leader.cancelPending();
-      return;
-    }
     if (leader.hasPending()) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      leader.handlePending(e);
-      return;
+      // A CAPTURE CAN DECLINE THE KEY, AND THE HOST HONOURS THAT.
+      //
+      // The armed capture is a sequence the user is in the middle of (`;W m`
+      // then a digit), and its handler answers `false` for a key that is not
+      // part of it — a letter, a leading zero, or anything with Ctrl/Alt/Meta
+      // held. Every host discarded that answer and consumed the key anyway, so
+      // the handler's own comment ("let the key through untouched") was a lie
+      // and the keystroke vanished with nothing on screen to explain it: press
+      // it again and maybe it works. Declining now means "not ours", and the
+      // keystroke continues to the rest of this dispatcher and to the page,
+      // exactly as if no capture had been armed.
+      // `true` = taken: swallow it. `false` = declined, and the capture has
+      // already disarmed itself, so this key falls THROUGH the rest of the
+      // dispatcher exactly as if no capture had ever been armed — `;` arms the
+      // leader, `j` scrolls, Ctrl+1 switches session, a modified key returns to
+      // the page. Only the taken case consumes anything.
+      if (leader.handlePending(e)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
     }
     if (leader.active) {
       e.preventDefault();
       e.stopImmediatePropagation();
       leader.handleKey(e);
-      if (__DEV__) {
-        try {
-          document.documentElement.setAttribute("data-lf-dispatched", e.key);
-        } catch (x) {
-          // ignore
-        }
-      }
+      if (__DEV__) trace.dispatched = e.key;
       return;
     }
     // Ctrl+1-9: hot-swap to the session with that marker (tmux-style). Skips
@@ -508,6 +579,11 @@ import type { ContentPopupShell } from "./find";
       if (e.repeat) return;
       // Held down: bindings run and the leader stays armed, so `;` then
       // back/forward (or close-tab twice) costs one keystroke per action.
+      //
+      // The hints give the keyboard up here, which is the reverse of the
+      // transition in startHints: the two surfaces are never armed at once, so
+      // a key can never mean two things. See the owner rule in onKeyDown.
+      if (hints.active || hints.starting) hints.exit();
       leader.sticky = true;
       publishHold(true);
       leader.show();
@@ -603,13 +679,6 @@ import type { ContentPopupShell } from "./find";
       }
     });
 
-  // True while any Lazyfox surface owns the keyboard: a popup (including the
-  // find widget and the resize panel), the leader bar, an armed one-shot
-  // capture, or live link hints.
-  function overlayOwnsKeys(): boolean {
-    return !!currentPopup || hints.active || hints.starting || leader.active || leader.hasPending();
-  }
-
   /* ==================== DOM wiring ==================== */
 
   // Every listener on window/document, plus the extension message port. Split
@@ -618,7 +687,6 @@ import type { ContentPopupShell } from "./find";
   // modules themselves.
   installContentDom({
     onKeyDown,
-    overlayOwnsKeys,
     closePopup,
     hintsActive: () => hints.active,
     exitHints: () => hints.exit(),
@@ -630,7 +698,14 @@ import type { ContentPopupShell } from "./find";
     startHints: () => hints.start(),
     focusFirstInput,
     hintBadge: () => hints.enterBadge(),
+    hintSnapshot: () => hints.snapshot(),
     pageReport: () => collectPageReport(scroll, hints),
+    dispatchTrace: () => ({
+      key: trace.key,
+      active: trace.active,
+      popup: trace.popup,
+      dispatched: trace.dispatched,
+    }),
     isDev: () => __DEV__,
     logError: (what, err) => dbg(what, (err && (err as Error).message) || String(err)),
   });

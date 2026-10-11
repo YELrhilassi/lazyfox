@@ -1,8 +1,11 @@
 // DEV-only trace of the home page's key path, mirrored onto <html>.
 //
-// The content script has had this from the start (`data-lf-lastkey`,
-// `data-lf-active`, `data-lf-popup` — see content/main.ts) and the BiDi suite
-// reads it. The command center, which now runs the SAME key engine a web page
+// The content script has had the same readout from the start — but it keeps
+// its copy in MEMORY and answers a `dispatchTrace` message on demand (see
+// content/main.ts), because a web page must not pay a root-attribute write per
+// keystroke for a test to be able to look. The command center CAN afford the
+// mirrors below: it is the extension's own page, opened deliberately for
+// diagnosis, and nothing else is running in it. The BiDi suite reads it. The command center, which now runs the SAME key engine a web page
 // does, had nothing: a chord that did not take effect there left no trace at
 // all. That made a whole class of failure unanswerable from the outside, because
 // every mirror it does publish is transient by design — the toast clears itself

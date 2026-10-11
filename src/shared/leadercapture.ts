@@ -40,12 +40,30 @@ export interface CaptureKey {
   metaKey?: boolean;
 }
 
+/**
+ * Returned by a handler that CONSUMED the key but is not finished collecting.
+ *
+ * This is what makes a multi-key sequence one sequence instead of two chords.
+ * The capture used to clear its handler before calling it, so any handler that
+ * needed a second key had to re-arm itself from inside — and in the window
+ * between the first key and the re-arm the capture was DISARMED, so the second
+ * key was dispatched by the leader as an unrelated binding. That is the source
+ * of both reported symptoms at once: a two-key position that only worked if
+ * typed slowly, and keystrokes that vanished into "limbo" (the re-arm landed
+ * after the user had already moved on, leaving an armed capture with no menu on
+ * screen to explain it).
+ */
+export const KEEP_ARMED = "keep-armed" as const;
+export type CaptureResult = boolean | typeof KEEP_ARMED;
+
 export class LeaderCapture {
   /** What the next key must be. "" when the capture takes anything. */
   expect = "";
-  private fn: ((k: CaptureKey) => boolean) | null = null;
+  private fn: ((k: CaptureKey) => CaptureResult) | null = null;
   private timeoutFn: (() => void) | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private timerMs = 0;
+  private generation = 0;
   private readonly onChange: (() => void) | undefined;
 
   // Explicit field rather than a constructor parameter property: the unit tests
@@ -70,12 +88,14 @@ export class LeaderCapture {
    * that times out into its plain binding) should say nothing rather than
    * guess.
    */
-  arm(fn: (k: CaptureKey) => boolean, opts?: CaptureOpts): void {
+  arm(fn: (k: CaptureKey) => CaptureResult, opts?: CaptureOpts): number {
+    const generation = ++this.generation;
     this.fn = fn;
     this.timeoutFn = (opts && opts.onTimeout) || null;
     this.setExpect((opts && opts.expect) || "");
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.timerMs = 0;
     // `timeoutMs: 0` means NO EXPIRY. This is what every category uses, and it
     // is the single most important change in the two-key grammar: the capture
     // used to give up after 1.5s, which is shorter than it takes to read eleven
@@ -89,44 +109,96 @@ export class LeaderCapture {
     // things the user DID; a timeout was the only thing that ended it without
     // them, and it ended it while they were still reading.
     const ms = opts && opts.timeoutMs !== undefined ? opts.timeoutMs : 3000;
-    if (ms > 0) {
-      this.timer = setTimeout(() => {
-        this.fn = null;
-        const to = this.timeoutFn;
-        this.timeoutFn = null;
-        this.timer = null;
-        // Cleared before onTimeout runs: a timeout handler that arms a fresh
-        // capture must not have its own hint wiped by the timer that expired
-        // the previous one.
-        this.setExpect("");
-        if (to) to();
-      }, ms);
-    }
+    this.timerMs = ms;
+    if (ms > 0) this.startTimer(generation);
+    return generation;
   }
 
-  /** Consumes the pending key, if any. Returns whether it was consumed. */
+  // Arms the expiry timer. Extracted so a sequence that consumes a key but is
+  // still collecting (KEEP_ARMED) can RESTART it: each key of a sequence buys
+  // the full window to press the next one, which is how `;W m` then `1` `0`
+  // behaves on a slow keyboard without either digit being lost.
+  private startTimer(generation: number): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      if (generation !== this.generation || !this.fn) return;
+      this.generation++;
+      this.fn = null;
+      const to = this.timeoutFn;
+      this.timeoutFn = null;
+      this.timer = null;
+      // Cleared before onTimeout runs: a timeout handler that arms a fresh
+      // capture must not have its own hint wiped by the timer that expired
+      // the previous one.
+      this.setExpect("");
+      if (to) to();
+    }, this.timerMs);
+  }
+
+  /** Replaces the "what comes next" hint on a capture that is already armed. */
+  setExpectation(v: string): void {
+    this.setExpect(v);
+  }
+
+  /**
+   * Consumes the pending key, if any. Returns whether it was consumed.
+   *
+   * The handler runs BEFORE the capture disarms, so a handler that answers
+   * KEEP_ARMED leaves the capture exactly as it was — same callback, same
+   * promise about what comes next — and the following key of the sequence is
+   * delivered here rather than to the keymap. Everything else disarms, which is
+   * the one-shot behaviour every single-key capture relies on.
+   */
   handle(k: CaptureKey): boolean {
     const fn = this.fn;
-    this.fn = null;
-    this.timeoutFn = null;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
+    if (!fn) return false;
+    const generation = this.generation;
+    let res: CaptureResult;
+    try {
+      res = fn(k);
+    } catch (err) {
+      // A throwing action must not leave the old capture armed to swallow every
+      // future key. If the handler replaced/cancelled the capture before
+      // throwing, preserve that newer state and rethrow for the host to report.
+      if (generation === this.generation) this.cancel(generation);
+      throw err;
     }
-    this.setExpect("");
-    return fn ? fn(k) : false;
+    // A handler may synchronously arm a DIFFERENT capture (for example, a
+    // category's split-move sub-key starts the following digit sequence).
+    // Never let completion of this older handler clear that replacement.
+    if (generation !== this.generation) return true;
+    if (res === KEEP_ARMED) {
+      // Still collecting: keep the handler and restart the window so the next
+      // key of the sequence is not fighting the clock that was set for the
+      // previous one.
+      if (this.timerMs > 0) this.startTimer(generation);
+      return true;
+    }
+    this.cancel(generation);
+    return res;
   }
 
-  /** Cancels an armed capture without running it — used when the user moves
-   * focus into a text field or otherwise stops intending to complete it. */
-  cancel(): void {
+  isArmed(generation?: number): boolean {
+    return this.fn !== null && (generation === undefined || generation === this.generation);
+  }
+
+  /** Cancel only this capture generation; stale async work cannot cancel its successor. */
+  cancel(generation?: number): void {
+    if (generation !== undefined && generation !== this.generation) return;
+    this.generation++;
     this.fn = null;
     this.timeoutFn = null;
+    this.timerMs = 0;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
     this.setExpect("");
+  }
+
+  /** The generation returned by arm(), for lease-scoped async follow-up work. */
+  currentGeneration(): number {
+    return this.generation;
   }
 
   // Changing the hint repaints the bar. Guarded so an unchanged arm (the common

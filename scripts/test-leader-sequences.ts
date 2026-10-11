@@ -276,24 +276,57 @@ function arm(leader: any): any {
 
 {
   const { armTabPosition } = await import("../src/shared/popups/leader.ts");
+  const { KEEP_ARMED } = await import("../src/shared/leadercapture.ts");
   const applied: number[] = [];
-  let capture: ((e: { key: string }) => boolean) | null = null;
+  // A FAITHFUL stand-in for LeaderCapture, and the fidelity is the point: the
+  // handler is kept exactly when it answers KEEP_ARMED, the lease is what the
+  // host hands back, and a lease can only act while ITS OWN generation is the
+  // armed one — cancel() from a superseded lease is a no-op, exactly as
+  // LeaderCapture.cancel(generation) is. Without that last part the test would
+  // be modelling a capture that accepts cancellation from a previous arm, which
+  // is the very race the block below exists to cover: the async count resolving
+  // after the sequence had already been replaced or cancelled.
+  let capture: ((e: { key: string }) => unknown) | null = null;
+  let expect = "";
+  let generation = 0;
+  let countDelay = 0; // microtask hops before tabCount answers
+  const disarm = (): void => {
+    generation++;
+    capture = null;
+    expect = "";
+  };
   const ctx: any = {
-    ops: { tabCount: async () => 12, splitAddTabByIndex: (n: number) => applied.push(n) },
-    armDigits: (fn: any) => {
+    ops: {
+      tabCount: async () => {
+        for (let i = 0; i < countDelay; i++) await Promise.resolve();
+        return 12;
+      },
+      splitAddTabByIndex: (n: number) => applied.push(n),
+    },
+    armDigits: (fn: any, _ms: number, exp: string) => {
+      const mine = ++generation;
       capture = fn;
+      expect = exp;
+      return {
+        cancel: () => {
+          if (mine !== generation) return;
+          disarm();
+        },
+        retarget: (next: string) => {
+          if (mine === generation) expect = next;
+        },
+        isActive: () => capture !== null && mine === generation,
+      };
     },
   };
-  armTabPosition(ctx, (n) => applied.push(n));
   const press = async (k: string) => {
     const fn = capture!;
-    capture = null;
-    fn({ key: k });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    const res = fn({ key: k });
+    if (res !== KEEP_ARMED) disarm();
+    for (let i = 0; i < 4; i++) await Promise.resolve();
   };
 
+  armTabPosition(ctx, (n) => applied.push(n));
   await press("3");
   eq("one unambiguous digit resolves immediately", applied.join(","), "3");
   ok("and disarms", capture === null);
@@ -306,18 +339,69 @@ function arm(leader: any): any {
   eq("the second digit completes the position", applied.join(","), "3,11");
   ok("and then disarms", capture === null);
 
+  // THE RACE THE SEQUENCE USED TO LOSE.
+  //
+  // The tab count is a background round trip, so for a few milliseconds after
+  // the first digit the sequence does not know whether it is finished. It used
+  // to resolve the first digit through that await with the capture already
+  // disarmed, so a second digit typed in the window was dispatched by the leader
+  // as an unrelated binding — and then a capture was re-armed behind the user's
+  // back, swallowing whatever key came next. Both halves are asserted here: the
+  // digits accumulate into ONE position, and nothing is left armed.
+  applied.length = 0;
+  countDelay = 2; // make the count slow enough to race
+  armTabPosition(ctx, (n) => applied.push(n));
+  const racing = capture!;
+  eq("a digit arriving while the count is in flight is consumed", racing({ key: "1" }), KEEP_ARMED);
+  eq("and so is the next one", racing({ key: "1" }), KEEP_ARMED);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  eq("a position typed fast is never split into two chords", applied.join(","), "11");
+  ok("and the sequence disarms itself once it resolves", capture === null);
+  countDelay = 0;
+
   // A non-digit must be declined, not swallowed: the keystroke after `;W m`
   // has to stay predictable.
   armTabPosition(ctx, (n) => applied.push(n));
   const fn = capture!;
   capture = null;
   eq("a letter is not consumed", fn({ key: "q" }), false);
-  eq("and runs no action", applied.join(","), "3,11");
+  eq("and runs no action", applied.join(","), "11");
 
   // A leading zero cannot start a position, and must not be eaten.
   armTabPosition(ctx, () => {});
   const fn2 = capture!;
   eq("a leading zero is not consumed", fn2({ key: "0" }), false);
+
+  // A MODIFIED key is not a digit of a position, and declining it is what makes
+  // the hosts' "the capture's answer is honoured" rule worth anything: `Ctrl+1`
+  // is the session-marker hot-swap one layer out and `Alt+1` is the browser's
+  // own tab switch, so answering either as "position 1" consumes a keystroke the
+  // user aimed at something else. The digits themselves must keep working with
+  // nothing held — that is the assertion pair below.
+  applied.length = 0;
+  armTabPosition(ctx, (n) => applied.push(n));
+  const fn3 = capture!;
+  eq("Ctrl+1 is not a position", fn3({ key: "1", ctrlKey: true }), false);
+  eq("and runs no action", applied.join(","), "");
+  armTabPosition(ctx, (n) => applied.push(n));
+  const fn4 = capture!;
+  eq("Alt+1 is not a position either", fn4({ key: "1", altKey: true }), false);
+  armTabPosition(ctx, (n) => applied.push(n));
+  const fn5 = capture!;
+  eq("Meta+1 is not a position either", fn5({ key: "1", metaKey: true }), false);
+  armTabPosition(ctx, (n) => applied.push(n));
+  // Let the tab count land first, so the digits below are judged by a resolved
+  // sequence rather than by the "count still in flight" branch.
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  const fn6 = capture!;
+  eq("and a plain digit still is", fn6({ key: "1" }) !== false, true);
+  // Still nothing APPLIED, and that is correct rather than a miss: with twelve
+  // tabs `1` is a legal prefix of 10/11/12, so the sequence stays open and the
+  // next digit decides. What this pair pins is that the modifier rule did not
+  // turn the digits off with it.
+  eq("and the sequence is still open", applied.join(","), "");
+  eq("and its second digit completes it", fn6({ key: "2" }) !== false, true);
+  eq("and that resolved to the position", applied.join(","), "12");
 }
 
 /* ---------- the capture's "what we need next" hint ---------- */

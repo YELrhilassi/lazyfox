@@ -35,7 +35,7 @@ export function favicon(url: string): string {
 // first and the `browser.dom` call is the fallback for a host that only
 // exposes the function form. In a plain page neither exists and the call falls
 // through to the page's own view, which is all a page can ever see.
-function shadowRootFor(el: Element): ShadowRoot | null {
+export function shadowRootOf(el: Element): ShadowRoot | null {
   try {
     const prop = (el as Element & { openOrClosedShadowRoot?: ShadowRoot | null }).openOrClosedShadowRoot;
     if (prop) return prop;
@@ -55,9 +55,53 @@ function shadowRootFor(el: Element): ShadowRoot | null {
     // Not a WebExtension context, or the element hosts no root.
   }
   return (el as HTMLElement).shadowRoot;
+}// Visit up to `limit` elements of a subtree, WITHOUT materializing the tree.
+//
+// Two callers walk a whole document looking for shadow roots (hints and the
+// scroll controller), and both used to do it as
+// `Array.prototype.slice.call(root.querySelectorAll("*"))` followed by
+// `Math.min(all.length, MAX_SCAN)`. The cap was cosmetic: `querySelectorAll`
+// had already built a NodeList of EVERY element and `slice` copied all of it
+// into an array, so the bound applied to the loop and not to the allocation.
+// On a large framework page that is a five-figure-element array allocated on
+// every coalesced discovery tick, for a walk that stops at the first few
+// thousand nodes anyway.
+//
+// A TreeWalker is lazy in exactly the way that was wanted: one node is produced
+// at a time from any root (document, shadow root, element) and the loop can
+// stop at the budget with nothing left over to collect. `truncated` says so, so
+// a caller that hits the cap can state it rather than silently reporting "no
+// more roots".
+export function walkElements(
+  root: ParentNode,
+  limit: number,
+  visit: (el: Element) => void,
+): { visited: number; truncated: boolean } {
+  let visited = 0;
+  try {
+    const doc = (root as Document).createTreeWalker
+      ? (root as Document)
+      : ((root as ShadowRoot).ownerDocument as Document);
+    if (!doc || typeof doc.createTreeWalker !== "function") {
+      return { visited: 0, truncated: false };
+    }
+    // `root` may be a ShadowRoot, and createTreeWalker lives on Document but
+    // accepts any node as the root of the walk.
+    const walker = doc.createTreeWalker(root as unknown as Node, NodeFilter.SHOW_ELEMENT);
+    let node = walker.nextNode();
+    while (node) {
+      if (visited >= limit) return { visited, truncated: true };
+      visit(node as Element);
+      visited++;
+      node = walker.nextNode();
+    }
+  } catch (e) {
+    // A hostile page's tree must not break the caller; report what was seen.
+  }
+  return { visited, truncated: false };
 }
 
-// Deepest element actually focused inside a shadow root. Custom
+// Deepest element actually focused inside a shadow root. Custom 
 // elements (Reddit's <faceplate-search-input>, YouTube's search box, ...)
 // host their real <input>/<textarea> in shadow DOM; the focused element the
 // page reports (document.activeElement / the retargeted event target) is the
@@ -74,7 +118,7 @@ export function deepTypingFocus(el: Element | null): Element | null {
   let cur = el;
   let depth = 0;
   while (cur && depth < 10) {
-    const sr = shadowRootFor(cur);
+    const sr = shadowRootOf(cur);
     if (!sr) break;
     const ae = sr.activeElement as Element | null;
     if (!ae) break;
@@ -90,6 +134,25 @@ export function deepTypingFocus(el: Element | null): Element | null {
 export function isTypingTarget(el: Element | null): boolean {
   const target = deepTypingFocus(el);
   if (!target || !target.tagName) return false;
+  // `designMode` documents are typing surfaces EVERYWHERE.
+  //
+  // A document with designMode on makes its whole body editable — this is how
+  // Google Docs and most legacy rich-text editors implement their canvas — so
+  // none of the per-element tests below can identify it: the caret sits in a
+  // <div>, there is no contenteditable attribute, and there is no focusable
+  // field at all. Without this branch the guard answered "not typing" there and
+  // every shortcut letter was consumed as a page key (the scroll keys take j, k,
+  // d, u, g) while the user was writing a document. Measured behaviour before
+  // the fix: typing `d` in a designMode editor scrolled the page instead.
+  let doc: Document | null = null;
+  try {
+    doc = (target.ownerDocument || null) as Document | null;
+  } catch (e) {
+    doc = null;
+  }
+  if (doc && String((doc as Document & { designMode?: string }).designMode || "").toLowerCase() === "on") {
+    return true;
+  }
   const tag = String(target.tagName).replace(/^[^:]+:/, "").toUpperCase();
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "ISINDEX") {
     return true;
@@ -135,9 +198,34 @@ export function typingTargetOf(e: Event): Element | null {
   return deepTypingFocus(e.target as Element | null);
 }
 
-/** Is this event happening somewhere the user is typing? */
+/**
+ * Is this event happening somewhere the user is typing?
+ *
+ * MEMOISED PER EVENT, and that is not only about cost. The answer is a property
+ * of the EVENT ("where did this keystroke happen"), not of the live DOM, so
+ * recomputing it can only ever produce a worse answer. It also used to produce a
+ * DIFFERENT one: the content dispatcher asks this question three times for one
+ * keydown (the hint branch, the typing guard, the Ctrl+digit branch), and any
+ * handler that runs in between can move focus — so the same keystroke could be
+ * classified "typing" in one place and "not typing" twenty lines later, and the
+ * two halves of one dispatch disagreed about whether the user was editing text.
+ * Caching it also removes the real cost: each call allocates a composedPath and
+ * walks up to six composed ancestors through the extension's shadow-root door.
+ *
+ * A WeakMap, not a property on the event: the event objects belong to the page's
+ * realm and must not be mutated (a page can read what the extension writes to
+ * its own objects in the same process), and a keypress/keyup tail is a DIFFERENT
+ * event object that answers for itself.
+ */
+const typingAnswer = new WeakMap<Event, boolean>();
+
 export function isTypingEvent(e: Event): boolean {
-  return isTypingTarget(typingTargetOf(e));
+  let answer = typingAnswer.get(e);
+  if (answer === undefined) {
+    answer = isTypingTarget(typingTargetOf(e));
+    typingAnswer.set(e, answer);
+  }
+  return answer;
 }
 
 export function isVisible(el: Element): boolean {

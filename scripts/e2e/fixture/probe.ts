@@ -13,6 +13,7 @@ import {
   createTab,
   navigate,
   waitFor,
+  sleep,
   closeContext,
   attempt,
   isDeadContextError,
@@ -56,6 +57,94 @@ export function installProbe(
     ).catch(() => null);
   };
 
+  // Ask a page's CONTENT SCRIPT something, on demand.
+  //
+  // The content script answers a small set of PULL requests (pageReport,
+  // hintBadge, hintSnapshot, dispatchTrace) over browser.tabs.sendMessage. Reading its state
+  // this way — instead of reading an attribute the product mirrors on every
+  // keystroke — is the rule this harness is built on: the product does no work
+  // for the test, and the answer is computed when the test asks for it.
+  //
+  // THE ID COMES FROM resolveHandle, NOT FROM tabIdOf, and that is the whole
+  // subtlety. A Firefox tab id can only be read from inside a tab that has an
+  // EXTENSION realm (`browser.tabs.getCurrent()`); a handle pointing at a web
+  // page — which is every page a content test cares about — throws, and this
+  // function used to turn that into `return null`. Every caller then saw
+  // "nothing", the snapshot wrappers below turned "nothing" into empty
+  // geometry, and eighteen hint tests failed with `last value: null` while the
+  // product was hinting perfectly. resolveHandle() adds the exact URL match on
+  // the probe's own tab strip, so a page tab can be addressed after all.
+  //
+  // A failure to ADDRESS the tab is therefore an error, never an empty answer:
+  // "I could not ask" and "the page said no hints" must not look alike. Only a
+  // delivered reply returns, and a reply the product explicitly refused
+  // (`ok: false`) is reported as the error it is.
+  ctx.contentCall = async function contentCall(tab, action, data: any = {}) {
+    const peek = async () => {
+      const h = await ctx.resolveHandle(tab).catch(() => ({ id: null, url: null }));
+      return h as { id: number | null; url: string | null };
+    };
+    let handle = await peek();
+    if (handle.id == null) {
+      // One bounded retry: a handle that just navigated can be mid-flight, when
+      // its URL matches no row of the strip yet. Not a sleep-and-hope — the
+      // second look either resolves the tab or the error below is true.
+      await sleep(150);
+      handle = await peek();
+    }
+    const where = handle.url || (tab && tab.id) || String(tab);
+    if (handle.id == null) {
+      throw new Error(
+        `contentCall(${action}): no tab id for ${where} — no extension realm, and its URL ` +
+          `matched ${handle.url ? "zero or several" : "no"} rows of the tab strip`,
+      );
+    }
+    const reply = await evalIn(
+      ctx.probe,
+      `browser.tabs.sendMessage(${handle.id}, { action: ${JSON.stringify(
+        action,
+      )}, data: ${JSON.stringify(data)} }).then(r => ({ r }), e => ({ e: String((e && e.message) || e) }))`,
+    ).catch((err) => ({ e: String((err && err.message) || err) }));
+    if (reply && reply.e) {
+      throw new Error(`contentCall(${action}): no content script answered in ${where}: ${reply.e}`);
+    }
+    const r = reply && (reply.r as any);
+    if (r && r.ok === false) {
+      throw new Error(
+        `contentCall(${action}): ${where} refused the request (ok:false) — this is a release ` +
+          `build; the e2e suite installs a --dev build`,
+      );
+    }
+    return r;
+  };
+
+  // The last key the PAGE's own dispatcher saw, and the state it ran under:
+  // `{ key, active, popup, dispatched }`. Throws when the tab cannot be asked
+  // at all (see contentCall); every caller here treats a trace as an
+  // EXPLANATION appended to a failure, so it is read through .catch(() => null)
+  // and a missing trace never becomes the failure itself.
+  ctx.dispatchTrace = async function dispatchTrace(tab) {
+    const r = await ctx.contentCall(tab, "dispatchTrace");
+    return (r && r.trace) || null;
+  };
+
+  // Pull hint geometry from a content document only when a test explicitly
+  // asks for it. The product's rAF reposition loop never serializes label
+  // positions or writes instrumentation attributes; diagnostics pay this cost
+  // here, on demand, instead.
+  //
+  // It THROWS rather than inventing `{positions: [], boxes: []}`. The fabricated
+  // empty answer is what hid the addressing bug above: "the content script says
+  // no hint is on screen" and "the harness never reached the content script"
+  // became the same value, so a broken instrument read as a broken product.
+  ctx.hintSnapshot = async function hintSnapshot(tab) {
+    const r = await ctx.contentCall(tab, "hintSnapshot");
+    if (!r || !r.snapshot) {
+      throw new Error("hintSnapshot: the content script returned no snapshot");
+    }
+    return r.snapshot;
+  };
+
   // The window's tabs in the order the PRODUCT numbers them: what `;N` jumps
   // to. Derived from the background so it can never disagree with a binding.
   ctx.numberedTabs = async function numberedTabs(): Promise<any[]> {
@@ -90,6 +179,29 @@ export function installProbe(
         await waitFor(async () => {
           const u = await evalIn(p, `location.href`);
           return u && u.includes("commandcenter.html") ? u : null;
+        }, 8000);
+        // AND THE PAGE HAS TO BE ABLE TO ANSWER KEYS, not merely be at the
+        // right URL.
+        //
+        // The new-tab redirect COMMITS the command-center document before its
+        // script runs, so a tab handed out at the URL check alone can be a
+        // document with the markup and none of the engine — and whatever the
+        // test does next (navigating it to a hanging page, an error page, a
+        // file URL) can leave that script permanently unrun. Measured: it is the
+        // state `content/stuck › a page that never responds` failed in, one run
+        // in three, reported as "the document received the key and did not arm".
+        // The product no longer dies in that state (the helper answers the
+        // leader key itself when the page has no engine — see
+        // commandCenterPageReady), but a fixture that hands out an
+        // uninitialised page makes every test that presses a key on it a test of
+        // a race. `data-lf-engine` is the page's own statement that its key
+        // listener is installed, set in the same statement that installs it.
+        await waitFor(async () => {
+          const ready = await evalIn(
+            p,
+            `document.documentElement.getAttribute("data-lf-engine") === "1"`,
+          );
+          return ready === true ? true : null;
         }, 8000);
         return p;
       } catch (e) {

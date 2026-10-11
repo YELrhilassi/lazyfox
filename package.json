@@ -41,6 +41,7 @@
     "test:legacy": "node scripts/test-chrome-keys.ts && node scripts/test-store.ts && node --experimental-strip-types scripts/test-render-escaping.ts && node --experimental-strip-types scripts/test-overlays.ts && node --experimental-strip-types scripts/test-observability.ts && node --experimental-strip-types scripts/test-leader-sequences.ts && node scripts/test-history-related.ts && node scripts/test-dev-helpers.ts && node scripts/test-page-text.ts && node scripts/test-find-text.ts && node scripts/test-payload.ts && node scripts/test-installer.ts",
     "e2e": "node scripts/e2e/main.ts",
     "e2e:hints": "node scripts/e2e/main.ts --suite content --only \"link hints:\"",
+    "e2e:audit": "node scripts/e2e/main.ts --suite audit",
     "e2e:baseline": "node scripts/e2e/main.ts --update-baseline",
     "test:mutation": "node scripts/mutation-check.ts"
   },

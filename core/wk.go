@@ -18,6 +18,14 @@ type WkRow struct {
 	GroupStart bool
 	Native     bool
 	LazyIndex  int // index among non-native (runnable) items, or -1
+	// Cat marks a CATEGORY HEAD: a row that opens a menu instead of running an
+	// action. The overlay has to draw that differently — a head is not a binding
+	// and must not advertise "Enter run" — and the row is the only place that
+	// knows, because the menu-ness lives in the keymap.
+	Cat bool
+	// Subs is how many keys are inside a head's menu, for the "12 ›" affordance
+	// that tells the reader what opening it will get them.
+	Subs int
 }
 
 type WkPage struct {
@@ -41,6 +49,28 @@ func lazyBindings() []WkItem {
 		out = append(out, WkItem{Key: r.Key, Label: r.Label, Group: r.Group})
 	}
 	return out
+}
+
+// isCategoryHead reports whether a display key opens a menu rather than running
+// an action. Read from the keymap instead of carried on WkItem so the projection
+// stays a projection: there is no second place for "is this a head" to drift.
+func isCategoryHead(key string) bool {
+	for _, r := range Keymap {
+		if r.Key == key && r.Cat != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// subKeyCount is how many keys a head's menu holds (0 for an ordinary binding).
+func subKeyCount(key string) int {
+	for _, r := range Keymap {
+		if r.Key == key && r.Cat != "" {
+			return len(r.CatKeys)
+		}
+	}
+	return 0
 }
 
 // wkGroups returns the item index range of each group, in order.
@@ -114,6 +144,8 @@ func WkPageSlice(page int) WkPage {
 			GroupStart: groupStart,
 			Native:     false,
 			LazyIndex:  li,
+			Cat:        isCategoryHead(it.Key),
+			Subs:       subKeyCount(it.Key),
 		})
 	}
 	return WkPage{Items: rows, SelFirst: first, SelLast: last}

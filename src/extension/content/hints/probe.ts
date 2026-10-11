@@ -7,6 +7,7 @@
 // invisible but computes to 1; pointer-events IS inherited; a closed shadow
 // root is unreachable by construction). Keeping them together, stateless and
 // separately readable is what makes them reviewable at all.
+import { shadowRootOf } from "../../../shared/dom";
 import { SHADOW_DEPTH } from "./selectors";
 
 export function describeTarget(el: Element): string {
@@ -39,16 +40,51 @@ export function describeTarget(el: Element): string {
   return name ? kind + " \u201c" + name + "\u201d" : kind;
 }
 
+function hasHiddenComposedAncestor(el: Element): boolean {
+  let current: Element | null = el;
+  // Walk the composed ancestor chain, including shadow hosts and assigned
+  // slots. Element.closest() stops at a ShadowRoot, so it misses e.g. an
+  // aria-hidden custom-element host around a control in a closed root.
+  for (let hops = 0; current && hops < 512; hops++) {
+    try {
+      if (
+        current.hasAttribute("hidden") ||
+        current.hasAttribute("inert") ||
+        (current.getAttribute("aria-hidden") || "").toLowerCase() === "true"
+      ) {
+        return true;
+      }
+      const slot: HTMLSlotElement | null =
+        (current as Element & { assignedSlot?: HTMLSlotElement | null }).assignedSlot || null;
+      if (slot) {
+        current = slot;
+        continue;
+      }
+      if (current.parentElement) {
+        current = current.parentElement;
+        continue;
+      }
+      const root: { host?: Element } | null = current.getRootNode
+        ? (current.getRootNode() as { host?: Element })
+        : null;
+      current = (root && root.host) || null;
+    } catch (e) {
+      // A hostile node must not prevent the rest of the candidate checks.
+      return false;
+    }
+  }
+  return false;
+}
+
 export function basicVisible(el: Element): boolean {
   if (!el || !el.isConnected) return false;
   const he = el as HTMLElement;
   try {
     if (he.hasAttribute("disabled")) return false;
-    // A hidden / inert / aria-hidden ANCESTOR hides the whole subtree, not
-    // just the node carrying the attribute — menus, modals and off-screen
-    // drawers are almost always hidden at the container. Checking only the
-    // element's own attributes left every child of a closed menu hintable.
-    if (el.closest("[hidden], [inert], [aria-hidden='true']")) return false;
+    // A hidden / inert / aria-hidden ANCESTOR hides the whole composed subtree,
+    // including shadow descendants — menus, modals and off-screen drawers are
+    // commonly hidden at their host rather than at each inner control.
+    if (hasHiddenComposedAncestor(el)) return false;
   } catch (e) {
     // ignore
   }
@@ -82,6 +118,9 @@ export function hintVisible(el: Element): boolean {
   if (typeof cv.checkVisibility === "function") {
     let visible = true;
     try {
+      // Firefox supports checkVisibility, but older releases ignore the
+      // options argument. The explicit composed-ancestor checks below retain
+      // opacity/pointer rules even there.
       visible = cv.checkVisibility({
         checkOpacity: true,
         checkVisibilityCSS: true,
@@ -110,11 +149,20 @@ export function hintVisible(el: Element): boolean {
   }
   // Ancestor opacity: opacity is NOT inherited, so a child of an `opacity:0`
   // container computes to 1 while being fully invisible (checkVisibility's
-  // opacity check is on the node itself). Walk a bounded number of ancestors so
-  // links inside a faded-out fly-out are not hinted. pointer-events IS
-  // inherited, so the element's own computed value already reflects ancestors.
+  // opacity check is on the node itself). Cross composed ancestors too: CSS
+  // opacity on a custom-element host applies to controls in its shadow tree.
+  //
+  // COST NOTE, because this is the most expensive loop in the whole hints pass:
+  // one `getComputedStyle` per composed ancestor per candidate, to the top of
+  // the tree. It cannot be skipped (that is the whole reason it exists) and it
+  // cannot be answered from the element's own style (opacity does not inherit),
+  // so the remaining fix is memoisation ACROSS candidates within one pass — many
+  // candidates share ancestors, and today each one re-reads the same chain. It is
+  // left explicit here rather than half-done: see ISSUES-FIX-PLAN §12.4b, which
+  // owns that change together with the profiler run that has to accompany it.
+  // Bounded so a malformed tree cannot spin (a cyclic slot/parent chain).
   let anc: Element | null = el;
-  for (let hops = 0; anc && hops < 20; hops++) {
+  for (let hops = 0; anc && hops < 512; hops++) {
     let op = 1;
     try {
       op = parseFloat(getComputedStyle(anc).opacity);
@@ -122,11 +170,32 @@ export function hintVisible(el: Element): boolean {
       op = 1;
     }
     if (op === 0) return false;
-    anc = anc.parentElement;
+    const slot: HTMLSlotElement | null =
+      (anc as Element & { assignedSlot?: HTMLSlotElement | null }).assignedSlot || null;
+    if (slot) {
+      anc = slot;
+    } else if (anc.parentElement) {
+      anc = anc.parentElement;
+    } else {
+      const root: { host?: Element } | null = anc.getRootNode
+        ? (anc.getRootNode() as { host?: Element })
+        : null;
+      anc = (root && root.host) || null;
+    }
   }
-  // checkVisibility does not cover pointer input; an element (or ancestor) that
-  // opted out of the pointer cannot be clicked. Focusable form controls are the
-  // exception: they can still be focused.
+  // checkVisibility does not cover pointer input; an element that opted out of
+  // the pointer cannot be clicked. Focusable form controls are the exception:
+  // they can still be focused.
+  //
+  // ONE READ, not an ancestor walk. `pointer-events` is an INHERITED property,
+  // so the element's own computed value already reflects every ancestor, and
+  // inheritance crosses from a shadow host into its tree — which is why the
+  // ancestor walk this replaced could never find anything the single read does
+  // not. Measured: the walk was one `getComputedStyle` per composed ancestor per
+  // candidate, up to 512 of them, on a pass that already reads the element's own
+  // style, and it changed no answer. (The OPACITY walk above is a different
+  // matter: opacity does NOT inherit, so a faded-out container is invisible to a
+  // single read and has to be walked.)
   let pointer = "";
   try {
     pointer = getComputedStyle(el).pointerEvents;
@@ -142,14 +211,18 @@ export function hintVisible(el: Element): boolean {
   return true;
 }
 
-// The topmost element at (x, y), piercing open shadow roots (the document's
-// elementFromPoint only sees the shadow host).
+// The topmost element at (x, y), piercing open AND extension-visible closed
+// shadow roots (document.elementFromPoint only sees the host). Collection already
+// walks closed roots through shadowRootOf(); if hit-testing only pierced open
+// roots, every candidate we correctly collected from a closed root would then
+// fail the reachability filter and `;f` would still act as if those controls did
+// not exist. Keep discovery, reachability and activation on the same door.
 export function deepHit(x: number, y: number): Element | null {
   let el: Element | null = document.elementFromPoint(x, y);
   let depth = 0;
   while (el && depth < SHADOW_DEPTH) {
-    const sr = (el as HTMLElement).shadowRoot;
-    if (!sr || sr.mode !== "open") break;
+    const sr = shadowRootOf(el);
+    if (!sr) break;
     let inner: Element | null = null;
     try {
       inner = sr.elementFromPoint(x, y);

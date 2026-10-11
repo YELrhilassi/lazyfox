@@ -26,9 +26,12 @@ export async function run(ctx: any): Promise<void> {
       } catch (e) {
         const d = await evalIn(
           ctx.tabA,
-          `JSON.stringify({hasFocus: document.hasFocus(), active: document.activeElement && (document.activeElement.id || document.activeElement.tagName), lastkey: document.documentElement.getAttribute("data-lf-lastkey"), scrollY: window.scrollY})`
+          `JSON.stringify({hasFocus: document.hasFocus(), active: document.activeElement && (document.activeElement.id || document.activeElement.tagName), scrollY: window.scrollY})`
         );
-        throw new Error("scroll " + label + " did not move: " + d);
+        // What the PAGE's dispatcher saw, pulled on demand — the product writes
+        // nothing per keystroke, so this is the only honest way to ask.
+        const trace = await ctx.dispatchTrace(ctx.tabA).catch(() => null);
+        throw new Error("scroll " + label + " did not move: " + d + " trace=" + JSON.stringify(trace));
       }
     };
     await ctx.press(ctx.tabA, "j");

@@ -40,6 +40,37 @@ export function focusCCBody(win: ChromeWindow): void {
   }
 }
 
+/**
+ * Whether the command-center document in the selected tab ANSWERS KEYS.
+ *
+ * The page declares it itself, with `data-lf-engine` on its root, set in the
+ * same statement that installs its keydown listener (src/extension/
+ * commandcenter.ts) — so "it has an engine" cannot be true without the listener
+ * that acts on the keys, and the chrome helper can tell the difference between a
+ * page that took a key and a page that was not there yet.
+ *
+ * That distinction is the whole point: the helper forwards a key into this page
+ * for the `#lfc=keys` channel and for the content-process actor, and a
+ * command-center document caught mid-redirect (URL committed, script still
+ * loading — every fresh new tab for a moment) would take the key and drop it.
+ * `;` on such a tab left the keyboard dead, and this is how the helper knows to
+ * answer the leader key itself instead.
+ *
+ * False when the document cannot be reached at all (cross-process, torn down):
+ * "no engine" is the honest answer there too, and the caller's fallback is safe
+ * in exactly that case.
+ */
+export function commandCenterPageReady(win: ChromeWindow): boolean {
+  try {
+    const cw = (win as any).gBrowser.selectedBrowser.contentWindow;
+    const doc = cw && cw.document;
+    const root = doc && doc.documentElement;
+    return !!root && root.getAttribute("data-lf-engine") === "1";
+  } catch {
+    return false;
+  }
+}
+
 // Move keyboard focus into the command-center tab's content document (out of
 // the hidden URL bar / chrome UI), leaving it in command mode. Focuses the
 // page body, never the <browser> element (which grabs the search input).

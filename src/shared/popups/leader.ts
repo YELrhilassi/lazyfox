@@ -8,6 +8,7 @@
 import type { PopupCtx } from "./kit";
 import type { PopupItem } from "../types";
 import type { KeyLike } from "../keymap";
+import { KEEP_ARMED, type CaptureResult } from "../leadercapture";
 import { openEditUrlPopup, openSearchPopup, openUrlPopup, openTabsPopup } from "./search-url-tabs";
 import { openHistoryPopup } from "./history";
 import { openRecentlyClosedPopup } from "./recovery";
@@ -87,17 +88,73 @@ export function armTabPosition(
 ): void {
   let count = -1;
   let prefix = "";
-  // Re-arm the capture with the digits that are actually legal next, so the
-  // status bar can say so. The label comes from the same candidate set the
-  // planner and the chooser use, so it cannot promise a digit that does
-  // nothing — which is the one thing a "press this next" hint must never do.
-  const rearm = (ms: number) =>
-    ctx.armDigits(handler, ms, tabDigitHint(count < 0 ? 0 : count, prefix));
-  // The host's capture is one-shot: it disarms after the key it consumes. A
-  // position can need two digits, so an ambiguous prefix re-arms the SAME
-  // handler rather than relying on the caller to press the leader again.
-  const handler = (e: KeyLike): boolean => {
+  let full = 0; // the tab count the planner uses (0 until the ops answer)
+
+  let handle: ReturnType<PopupCtx["armDigits"]> | null = null;
+  let bufferedDigits = "";
+  const say = () => handle?.retarget(tabDigitHint(full, prefix));
+
+  // Resolve what has been typed against a known count. Returns whether the
+  // sequence is FINISHED; a false answer means "more digits are legal".
+  const settle = (n: number): boolean => {
+    const plan = planTabJump(n, prefix, Number(prefix));
+    if (plan.kind === "jump") {
+      prefix = "";
+      apply(plan.n);
+      return true;
+    }
+    if (plan.kind === "none") {
+      // The window is too short for this number: fall back to the digits typed
+      // so far rather than turning a live key into a dead one.
+      const typed = Number(prefix);
+      prefix = "";
+      apply(typed);
+      return true;
+    }
+    // Ambiguous — more than one tab carries this prefix. The bar has to say
+    // which digits are legal now, because they changed with the first one.
+    say();
+    return false;
+  };
+
+  // THE HANDLER IS SYNCHRONOUS AND STATEFUL, AND THE CAPTURE STAYS ARMED.
+  //
+  // Both halves matter, and they are the fix for the sequence that only worked
+  // if typed slowly. The old version resolved the FIRST digit through an await on
+  // the tab count, and the capture disarmed before the handler ran, so between
+  // the first key and the count arriving nothing owned the keyboard: a second
+  // digit typed in that window was dispatched by the leader as an unrelated
+  // binding ("10" fired whatever `;0` would), and when the count finally landed
+  // the code re-armed a capture the user had already moved past — an armed
+  // capture with no menu on screen, swallowing the next keystroke silently. That
+  // is the reported "keys get stuck in limbo and things happen without me
+  // expecting it".
+  //
+  // Now the digit is consumed and remembered immediately (KEEP_ARMED), so the
+  // next digit of the same position always arrives here, and the count is only
+  // needed to decide whether to finish or keep collecting.
+  const handleTimeout = (): void => {
+    // The count is still unresolved; don't act on a stale buffered prefix.
+    // Put the user-visible leader back in an idle state rather than leaving a
+    // silent capture after its three-second lease expires.
+    bufferedDigits = "";
+    prefix = "";
+    ctx.toast("tab position timed out");
+  };
+  const handler = (e: KeyLike): CaptureResult => {
     const k = e.key;
+    // A MODIFIED key is not a digit of a position.
+    //
+    // `Ctrl+1-9` is the session-marker hot-swap one layer out, and `Alt+1` is
+    // the browser's own tab switch, so answering either as "tab position 1"
+    // consumes a keystroke the user aimed at something else — which is exactly
+    // what the `return false` below promises not to do. Declining is the honest
+    // answer, and the host now lets a declined key continue (see the hosts'
+    // `handlePending` branches).
+    if (e.ctrlKey || e.altKey || e.metaKey) {
+      prefix = "";
+      return false;
+    }
     if (!/^[0-9]$/.test(k)) {
       // Not a digit: drop the position and let the key through untouched.
       // Swallowing it would make the keystroke after `;W m` unpredictable.
@@ -107,44 +164,39 @@ export function armTabPosition(
     // A leading zero cannot start a position, and must not be swallowed.
     if (!prefix && k === "0") return false;
     prefix += k;
-    const resolved = (n: number) => {
-      const plan = planTabJump(n, prefix, Number(prefix));
-      if (plan.kind === "jump") {
-        prefix = "";
-        apply(plan.n);
-        return;
-      }
-      if (plan.kind === "none") {
-        // The window is too short for this number: fall back to the digits
-        // typed so far rather than turning a live key into a dead one.
-        const typed = Number(prefix);
-        prefix = "";
-        apply(typed);
-        return;
-      }
-      // Ambiguous — more than one tab carries this prefix. Stay armed for the
-      // next digit, and say which ones.
-      rearm(1500);
-    };
-    if (count >= 0) {
-      resolved(count);
-    } else {
-      void ctx.ops
-        .tabCount()
-        .then((n) => {
-          count = n;
-          resolved(n);
-        })
-        .catch(() => {
-          count = 0;
-          resolved(0);
-        });
+    if (count < 0) {
+      bufferedDigits = prefix;
+      return KEEP_ARMED; // the count is still in flight
     }
-    return true;
+    return settle(count) ? true : KEEP_ARMED;
   };
-  // Nothing typed yet, so every first digit is legal; `tabDigitHint` says so
-  // without needing the count, which is why this can arm synchronously.
-  rearm(3000);
+  // Armed FIRST and synchronously, so a digit pressed while the count is in
+  // flight lands here and not in the keymap.
+  handle = ctx.armDigits(handler, 3000, tabDigitHint(0, prefix), handleTimeout);
+  // Keep the timeout semantics honest even while tabCount is pending. The
+  // previous KEEP_ARMED path restarted the lease on each key but the async
+  // continuation could still settle/cancel after a timeout, potentially acting
+  // on a prefix whose user had already abandoned it.
+  const lease = handle;
+  const capturedGenerationIsLive = () => lease.isActive();
+  void ctx.ops
+    .tabCount()
+    .then((n) => {
+      if (!capturedGenerationIsLive()) return;
+      count = n;
+      full = n;
+      if (!bufferedDigits) return;
+      prefix = bufferedDigits;
+      if (settle(n)) lease.cancel();
+    })
+    .catch(() => {
+      if (!capturedGenerationIsLive()) return;
+      count = 0;
+      full = 0;
+      if (!bufferedDigits) return;
+      prefix = bufferedDigits;
+      if (settle(0)) lease.cancel();
+    });
 }
 // The single leader ACTION table.
 //

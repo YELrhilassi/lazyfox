@@ -46,6 +46,10 @@ export interface WkRow {
   groupStart: boolean;
   native: boolean;
   lazyIndex: number;
+  /** A category HEAD: pressing its key opens a menu instead of running. */
+  cat?: boolean;
+  /** How many keys that menu holds, for the row's affordance. */
+  subs?: number;
 }
 
 import type { LeaderSignal } from "./leadersignal";
@@ -314,6 +318,11 @@ export interface CacheState {
   mode: CacheMode;
   // Whether the browser exposes the global cache switch (browserSettings).
   globalSupported: boolean;
+  // The switch's CURRENT value, or null when this build will not say. Read from
+  // browserSettings rather than inferred from the policy: the switch is a
+  // browser-wide setting that outlives the policy record, so "what is in force"
+  // cannot be answered from the record alone.
+  globalOn: boolean | null;
   // Whether the chrome helper is alive and can enforce the per-tab scopes.
   chromeSupported: boolean;
   // Tabs the current session/tab policy covers (empty for a global policy).

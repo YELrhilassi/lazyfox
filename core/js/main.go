@@ -145,6 +145,8 @@ func wkPageObj(p core.WkPage) js.Value {
 		ro.Set("groupStart", r.GroupStart)
 		ro.Set("native", r.Native)
 		ro.Set("lazyIndex", r.LazyIndex)
+		ro.Set("cat", r.Cat)
+		ro.Set("subs", r.Subs)
 		items.SetIndex(i, ro)
 	}
 	o.Set("items", items)

@@ -76,9 +76,12 @@ interface Entry {
 
 // ONE evalIn for every content-side mirror: five round trips per poll would
 // make the poll itself slower than the effects it is waiting for. The field
-// list is a WHITELIST on purpose — data-lf-lastkey / data-lf-dispatched change
-// on every keystroke of every chord, so including them would make every entry
-// pass trivially and the audit would measure nothing.
+// list is a WHITELIST on purpose — a mirror that changes on every keystroke of
+// every chord (the page's dispatch trace is exactly that) would make every
+// entry pass trivially and the audit would measure nothing. The trace is
+// therefore not a mirror at all any more: the suite PULLS it
+// (ctx.dispatchTrace) when a failure needs explaining, and never folds it into
+// a baseline.
 const CONTENT_EXPR = `JSON.stringify((() => {
   const a = (n) => document.documentElement.getAttribute("data-lf-" + n) || "";
   return {

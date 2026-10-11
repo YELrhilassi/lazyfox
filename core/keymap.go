@@ -218,8 +218,6 @@ var Keymap = []KeymapRow{
 
 	// ---- Tools ----
 	{Spec: "f", Key: "f", Action: "startHints", Label: "Link hints", Group: "Tools"},
-	{Spec: "shift+f", Key: "F", Action: "scrollRegionNext", Label: "Scroll target: next region", Group: "Tools"},
-	{Spec: "shift+b", Key: "B", Action: "scrollRegionPrev", Label: "Scroll target: previous region", Group: "Tools"},
 	{Spec: "shift+t", Key: "T", Action: "diagnostics", Label: "Diagnostics & performance", Group: "Tools"},
 	{Spec: "/", Key: "/", Action: "find", Label: "Find in page", Group: "Tools"},
 	{Spec: "shift+/", Key: "?", Action: "help", Label: "Keybindings help", Group: "Tools"},
@@ -228,26 +226,21 @@ var Keymap = []KeymapRow{
 	{Spec: "shift+n", Key: "N", Action: "stealthOpen", Label: "Stealth tab (isolated, wiped on close)", Group: "Tools"},
 	{Spec: "shift+i", Key: "I", Action: "openSetup", Label: "Install & setup", Group: "Tools"},
 
-	// ---- Sessions ----
-	//
-	// ONE key, ONE action. The sessions family used to be `;p` for the list and
-	// `;P` for a menu of eleven rows, nine of which were nine spellings of the
-	// same "switch to session N". Two keys for one thing, and a menu that spent
-	// nine lines saying it again. `;P` opens the popup, and everything the family
-	// can do — switch by marker (`1-9`), assign one (`Ctrl+1-9`), save, create
-	// (`n`), rename, delete (`x x`) — is a key INSIDE that popup, next to the
-	// markers it acts on. Nothing is lost by having one row here instead of
-	// eleven: a menu whose rows all name the same action is not a menu.
-	{Spec: "shift+p", Key: "P", Action: "sessions", Label: "Sessions", Group: "Sessions"},
-	{Spec: "shift+q", Key: "Q", Action: "quit", Label: "Save session and quit", Group: "Sessions"},
-
-	// ---- Categories ----
+	// ---- Window & layout ----
 	//
 	// A category head is not an action: it opens a menu of sub-keys that all do
 	// DIFFERENT things. That is the test a head has to pass. A menu of nine
 	// rows that all switch session is not a category, it is a bad menu.
+	//
+	// WHERE A HEAD LIVES IS PART OF THE DESIGN, and this is what "Categories" as
+	// a GROUP got wrong: filing `W`, `Z` and `K` together under a heading that
+	// names the mechanism rather than the subject put each menu as far as
+	// possible from the things inside it, and left the reader with a panel whose
+	// last three rows were a taxonomy. A head now sits with its family (window and
+	// layout, zoom, address) and the F/B scroll-region keys sit with it too, since
+	// "which region am I driving" and "which pane am I in" are one question.
 	{
-		Spec: "shift+w", Key: "W", Action: "category", Label: "Window & layout", Group: "Categories",
+		Spec: "shift+w", Key: "W", Action: "category", Label: "Window & layout", Group: "Window & layout",
 		Cat: "Window & layout", CatLabel: "Window & layout",
 		CatKeys: []CatKey{
 			{Spec: "w", Key: "w", Action: "resizeWindow", Label: "Resize window"},
@@ -264,8 +257,10 @@ var Keymap = []KeymapRow{
 			{Spec: "m", Key: "m", Action: "moveTabIntoSplit", Label: "Move tab into split…"},
 		},
 	},
+	{Spec: "shift+f", Key: "F", Action: "scrollRegionNext", Label: "Scroll target: next region", Group: "Window & layout"},
+	{Spec: "shift+b", Key: "B", Action: "scrollRegionPrev", Label: "Scroll target: previous region", Group: "Window & layout"},
 	{
-		Spec: "shift+z", Key: "Z", Action: "category", Label: "Zoom", Group: "Categories",
+		Spec: "shift+z", Key: "Z", Action: "category", Label: "Zoom", Group: "Zoom",
 		Cat: "Zoom", CatLabel: "Zoom",
 		CatKeys: []CatKey{
 			{Spec: "i", Key: "i", Action: "zoomIn", Label: "Zoom in"},
@@ -274,13 +269,29 @@ var Keymap = []KeymapRow{
 		},
 	},
 	{
-		Spec: "shift+k", Key: "K", Action: "category", Label: "Address", Group: "Categories",
+		Spec: "shift+k", Key: "K", Action: "category", Label: "Address", Group: "Address",
 		Cat: "Address", CatLabel: "Address",
 		CatKeys: []CatKey{
 			{Spec: "c", Key: "c", Action: "copyUrl", Label: "Copy page URL"},
 			{Spec: "e", Key: "e", Action: "editUrl", Label: "Edit page URL…"},
 		},
 	},
+
+	// ---- Sessions ----
+	//
+	// ONE key, ONE action. The sessions family used to be `;p` for the list and
+	// `;P` for a menu of eleven rows, nine of which were nine spellings of the
+	// same "switch to session N". Two keys for one thing, and a menu that spent
+	// nine lines saying it again. `;P` opens the popup, and everything the family
+	// can do — switch by marker (`1-9`), assign one (`Ctrl+1-9`), save, create
+	// (`n`), rename, delete (`x x`) — is a key INSIDE that popup, next to the
+	// markers it acts on. Nothing is lost by having one row here instead of
+	// eleven: a menu whose rows all name the same action is not a menu.
+	//
+	// LAST, deliberately: the sessions popup is where a session is chosen, and a
+	// group that opens a whole other surface is the least-used part of the panel.
+	{Spec: "shift+p", Key: "P", Action: "sessions", Label: "Sessions", Group: "Sessions"},
+	{Spec: "shift+q", Key: "Q", Action: "quit", Label: "Save session and quit", Group: "Sessions"},
 }
 
 // keymapIndex is the single lookup built from Keymap. Built once at init so a

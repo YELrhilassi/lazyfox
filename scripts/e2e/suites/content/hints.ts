@@ -19,19 +19,13 @@ export async function run(ctx: any): Promise<void> {
   const pageSettled = (ms = 5000) =>
     ctx.waitExpr(ctx.tabA, `document.readyState`, "complete", ms);
 
-  const hintPos = (key) =>
-    evalIn(
-      ctx.tabA,
-      `(function(){
-        const raw = document.getElementById("lazyfox-hints") && document.getElementById("lazyfox-hints").getAttribute("data-lf-pos");
-        if (!raw) return null;
-        try {
-          const items = JSON.parse(raw);
-          for (const it of items) if (it.key === ${JSON.stringify(key)}) return { x: it.x, y: it.y };
-        } catch (e) {}
-        return null;
-      })()`
-    );
+  // Geometry is pulled from the content script only when a test needs it;
+  // the live reposition loop must not serialize/write it on the user's page.
+  const hintSnapshot = () => ctx.hintSnapshot(ctx.tabA);
+  const hintPos = async (key) => {
+    const snap = await hintSnapshot();
+    return (snap.positions || []).find((it) => it.key === key) || null;
+  };
   const waitHint = async (key, pred?, ms = 5000) =>
     waitFor(async () => {
       const p = await hintPos(key);
@@ -81,20 +75,14 @@ export async function run(ctx: any): Promise<void> {
     await ctx.leaderPress(ctx.tabA, "f");
     await hintsOn();
     // The hint key currently assigned to inp2, or null while it is out of view.
-    const keyForInp2 = () =>
-      evalIn(
-        ctx.tabA,
-        `(function(){
-          const host = document.getElementById("lazyfox-hints");
-          const raw = host && host.getAttribute("data-lf-pos");
-          if (!raw) return null;
-          const items = JSON.parse(raw);
-          const r = document.getElementById("inp2").getBoundingClientRect();
-          const x = Math.round(r.left), y = Math.round(r.top);
-          for (const it of items) if (Math.abs(it.x - x) <= 2 && Math.abs(it.y - y) <= 2) return it.key;
-          return null;
-        })()`
-      );
+    const keyForInp2 = async () => {
+      const snap = await hintSnapshot();
+      const r = await evalIn(ctx.tabA, `(() => { const r = document.getElementById("inp2").getBoundingClientRect(); return {x: Math.round(r.left), y: Math.round(r.top)}; })()`);
+      for (const it of snap.positions || []) {
+        if (Math.abs(it.x - r.x) <= 2 && Math.abs(it.y - r.y) <= 2) return it.key;
+      }
+      return null;
+    };
     let key = null;
     for (let i = 0; i < 12 && !key; i++) {
       await ctx.press(ctx.tabA, "]");
@@ -120,39 +108,33 @@ export async function run(ctx: any): Promise<void> {
   // The `data-id` on every interactive element of /uitest lets the harness map
   // a broadcast hint position back to the element it was assigned to, so these
   // tests assert *which* elements were hinted, not just how many.
-  const readHints = () =>
-    evalIn(
+  const readHints = async () => {
+    const snap = await hintSnapshot();
+    const pos = snap.positions || [];
+    const els = await evalIn(
       ctx.tabA,
       `(function(){
-        const host = document.getElementById("lazyfox-hints");
-        const raw = host && host.getAttribute("data-lf-pos");
-        const pos = raw ? JSON.parse(raw) : [];
-        function collect(root, out) {
-          root.querySelectorAll("[data-id]").forEach((e) => out.push(e));
-          root.querySelectorAll("*").forEach((e) => { if (e.shadowRoot) collect(e.shadowRoot, out); });
-        }
-        const els = []; collect(document, els);
         const out = [];
-        for (const p of pos) {
-          let id = null;
-          for (const el of els) {
-            const r = el.getBoundingClientRect();
-            if (Math.abs(Math.round(r.left) - p.x) <= 2 && Math.abs(Math.round(r.top) - p.y) <= 2) { id = el.getAttribute("data-id"); break; }
-          }
-          out.push({ key: p.key, id: id, x: p.x, y: p.y });
+        function collect(root) {
+          root.querySelectorAll("[data-id], [data-id-owner]").forEach((e) => out.push(e));
+          root.querySelectorAll("*").forEach((e) => {
+            if (e.shadowRoot) collect(e.shadowRoot);
+            else if (typeof e.innerBounds === "function") out.push(e);
+          });
         }
-        return out;
+        collect(document);
+        return out.map((el) => {
+          var bounds = typeof el.innerBounds === "function" ? el.innerBounds() : el.getBoundingClientRect();
+          return {id: el.id, dataId: el.getAttribute("data-id") || el.getAttribute("data-id-owner"), x: Math.round(bounds.left), y: Math.round(bounds.top)};
+        });
       })()`
     );
-  const readBoxes = () =>
-    evalIn(
-      ctx.tabA,
-      `(function(){
-        const host = document.getElementById("lazyfox-hints");
-        const raw = host && host.getAttribute("data-lf-box");
-        return raw ? JSON.parse(raw) : [];
-      })()`
-    );
+    return pos.map((p) => {
+      const el = (els || []).find((candidate) => Math.abs(candidate.x - p.x) <= 2 && Math.abs(candidate.y - p.y) <= 2);
+      return { key: p.key, id: el ? el.id : null, dataId: el ? el.dataId : null, x: p.x, y: p.y };
+    });
+  };
+  const readBoxes = async () => (await hintSnapshot()).boxes || [];
   // Ask the CONTENT SCRIPT for its page report through the extension realm of
   // the probe tab. This is the diagnostics page's own data source, so these
   // tests read exactly what a user would read — including the last activation.
@@ -178,14 +160,14 @@ export async function run(ctx: any): Promise<void> {
   const beginHints = async () => {
     await ctx.leaderPress(ctx.tabA, "f");
     await hintsOn();
-    await ctx.waitExpr(ctx.tabA, `(JSON.parse(document.getElementById("lazyfox-hints") && document.getElementById("lazyfox-hints").getAttribute("data-lf-pos") || "[]")).length > 0`, true, 5000);
+    await waitFor(async () => ((await hintSnapshot()).positions || []).length > 0 ? true : null, 5000);
   };
   // Activate the hint currently assigned to `id`. Single-character keys can be
   // a prefix of longer ones, in which case typing the key narrows instead of
   // activating, so fall back to Enter (which activates the first match).
   const activateHint = async (id, after?) => {
     const m = await readHints();
-    const h = m.find((x) => x.id === id);
+    const h = m.find((x) => x.id === id || x.dataId === id);
     assert(h, "no hint for " + id + " (hinted: " + m.map((x) => x.id).join(",") + ")");
     for (const ch of h.key) await ctx.press(ctx.tabA, ch);
     const still = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
@@ -197,10 +179,10 @@ export async function run(ctx: any): Promise<void> {
     await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
     await scrollDone(0);
     await beginHints();
-    const ids = (await readHints()).map((x) => x.id);
+    const ids = (await readHints()).map((x) => x.id || x.dataId);
     const must = ["visible-link", "nested-btn", "act-btn", "scroll-input", "nearby-link", "body-visible"];
     for (const id of must) assert(ids.indexOf(id) !== -1, "expected a hint for " + id + " (got: " + ids.join(",") + ")");
-    const mustNot = ["hidden-opacity-link", "hidden-vis-link", "hidden-aria-link", "pe-none-btn", "covered-link"];
+    const mustNot = ["hidden-opacity-link", "hidden-vis-link", "hidden-aria-link", "hidden-shadow-inner", "pe-none-btn", "covered-link"];
     for (const id of mustNot) assert(ids.indexOf(id) === -1, "a non-actionable element was hinted: " + id);
     await ctx.press(ctx.tabA, "Escape");
   });
@@ -212,7 +194,7 @@ export async function run(ctx: any): Promise<void> {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/playerlike`);
     await pageSettled();
     await beginHints();
-    const ids = (await readHints()).map((x) => x.id);
+    const ids = (await readHints()).map((x) => x.id || x.dataId);
     assert(
       ids.indexOf("skipad") !== -1,
       "the button inside the player must be hinted (got: " + ids.join(",") + ")"
@@ -598,7 +580,7 @@ export async function run(ctx: any): Promise<void> {
     await scrollDone(0);
     await beginHints();
     const m = await readHints();
-    const ids = m.map((x) => x.id);
+    const ids = m.map((x) => x.id || x.dataId);
     assert(ids.indexOf("nested-btn") !== -1, "the outer button must be hinted");
     assert(ids.indexOf("nested-span") === -1, "the span inside the button must NOT be hinted separately");
     const positions = {};
@@ -662,7 +644,7 @@ export async function run(ctx: any): Promise<void> {
     assert(top.indexOf("deep-link") === -1, "the link below the fold is not hinted at the top");
     await evalIn(ctx.tabA, `window.scrollTo(0, document.body.scrollHeight); true`);
     const bottom = await waitFor(async () => {
-      const ids = (await readHints()).map((x) => x.id);
+      const ids = (await readHints()).map((x) => x.id || x.dataId);
       return ids.indexOf("deep-link") !== -1 ? ids : null;
     }, 6000);
     assert(bottom.indexOf("visible-link") === -1, "the stale top-section hint is gone after scrolling");
@@ -685,12 +667,12 @@ export async function run(ctx: any): Promise<void> {
       assert(!positions[k], "duplicate hint position: " + k);
       positions[k] = 1;
     }
-    const ids = m.map((x) => x.id).filter(Boolean);
+    const ids = m.map((x) => x.id || x.dataId).filter(Boolean);
     assert(new Set(ids).size === ids.length, "each element is hinted at most once");
     assert(ids.some((id) => /^tiny\d+$/.test(id)), "tiny grid buttons are hinted");
     await ctx.press(ctx.tabA, "Escape");
   });
-  await t("link hints: a control inside an open shadow root is hinted and clicks", async () => {
+  await t("link hints: controls inside open and closed shadow roots are hinted and click", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
     await evalIn(
       ctx.tabA,
@@ -701,7 +683,52 @@ export async function run(ctx: any): Promise<void> {
     await activateHint("shadow-inner", async () => {
       await ctx.waitExpr(ctx.tabA, `document.title`, "SHADOW-CLICKED", 5000);
     });
-    assert((await evalIn(ctx.tabA, `document.title`)) === "SHADOW-CLICKED", "the shadow-root button was clicked");
+    assert((await evalIn(ctx.tabA, `document.title`)) === "SHADOW-CLICKED", "the open shadow-root button was clicked");
+
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(
+      ctx.tabA,
+      `(function(){ const r = document.getElementById("closed-shadow-btn").getBoundingClientRect(); window.scrollBy(0, Math.round(r.top - 60)); return window.scrollY; })()`
+    );
+    await pageSettled();
+    await beginHints();
+    await activateHint("closed-shadow-inner", async () => {
+      await ctx.waitExpr(ctx.tabA, `document.title`, "CLOSED-SHADOW-CLICKED", 5000);
+    });
+    assert((await evalIn(ctx.tabA, `document.title`)) === "CLOSED-SHADOW-CLICKED", "the closed shadow-root button was clicked");
+  });
+  await t("link hints: a page whose controls are all in a frame says WHY, and stays off", async () => {
+    // The frame policy is top-frame-only, and that decision is allowed. What is
+    // not allowed is the two outcomes being indistinguishable: `;f` on a page
+    // whose controls are all in a frame used to report "no hints", which reads
+    // as "this page has nothing to click" and was reported as "link hints
+    // doesn't launch on a lot more sites". So the toast must name the frame, and
+    // the keyboard must NOT be taken for a batch that does not exist.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/framedhints`);
+    await pageSettled();
+    await ctx.leaderPress(ctx.tabA, "f");
+    const said = await waitFor(async () => {
+      const m = await evalIn(
+        ctx.tabA,
+        `document.documentElement.getAttribute("data-lf-toast") || ""`
+      );
+      return m.indexOf("iframe") !== -1 ? m : null;
+    }, 5000);
+    assert(
+      typeof said === "string" && said.indexOf("iframe") !== -1,
+      "the toast names the frame blind spot: " + JSON.stringify(said)
+    );
+    const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+    assert(on !== "1", "hints must not be armed on a page it could not hint");
+  });
+  await t("link hints: aria-hidden ancestors hide controls inside closed shadow roots", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await scrollDone(0);
+    await beginHints();
+    const ids = (await readHints()).map((x) => x.id || x.dataId);
+    assert(ids.indexOf("hidden-shadow-inner") === -1, "closed-root target under aria-hidden host is not hinted");
+    await ctx.press(ctx.tabA, "Escape");
   });
   await t("link hints: clickable image and video thumbnails are hinted and click", async () => {
     // Regression: the "no text/label ⇒ decorative" rule dropped cursor:pointer
@@ -710,7 +737,7 @@ export async function run(ctx: any): Promise<void> {
     await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
     await scrollDone(0);
     await beginHints();
-    const ids = (await readHints()).map((x) => x.id);
+    const ids = (await readHints()).map((x) => x.id || x.dataId);
     assert(ids.indexOf("thumb") !== -1, "the clickable <img> is hinted (got: " + ids.join(",") + ")");
     assert(ids.indexOf("vid-thumb") !== -1, "the clickable <video> is hinted (got: " + ids.join(",") + ")");
     await activateHint("thumb", async () => {
@@ -726,11 +753,11 @@ export async function run(ctx: any): Promise<void> {
     await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
     await scrollDone(0);
     await beginHints();
-    const before = (await readHints()).map((x) => x.id);
+    const before = (await readHints()).map((x) => x.id || x.dataId);
     assert(before.indexOf("late-skip") === -1, "the late control is not hinted before it exists");
     await evalIn(ctx.tabA, `window.__addLateSkip()`);
     await waitFor(async () => {
-      const ids = (await readHints()).map((x) => x.id);
+      const ids = (await readHints()).map((x) => x.id || x.dataId);
       return ids.indexOf("late-skip") !== -1 ? ids : null;
     }, 6000);
     // The insertion re-keys the whole batch ONCE (the batch grew); wait until
@@ -738,7 +765,7 @@ export async function run(ctx: any): Promise<void> {
     // the test presses the key the user would actually see.
     let stable = null;
     for (let i = 0; i < 20; i++) {
-      const h = (await readHints()).find((x) => x.id === "late-skip");
+      const h = (await readHints()).find((x) => x.id === "late-skip" || x.dataId === "late-skip");
       const key = h && h.key;
       if (key && key === stable) break;
       stable = key;
@@ -760,7 +787,7 @@ export async function run(ctx: any): Promise<void> {
     await beginHints();
     await evalIn(ctx.tabA, `window.__addLateSkip()`);
     const first = await waitFor(async () => {
-      const h = (await readHints()).find((x) => x.id === "late-skip");
+      const h = (await readHints()).find((x) => x.id === "late-skip" || x.dataId === "late-skip");
       return h && h.key ? h : null;
     }, 6000);
     assert(first.key, "the late control is hinted");
@@ -786,22 +813,68 @@ export async function run(ctx: any): Promise<void> {
     await scrollDone(0);
     await beginHints();
     const before = await readHints();
-    const keysBefore = new Map(before.filter((h) => h.id).map((h) => [h.id, h.key]));
+    const keysBefore = new Map(before.filter((h) => h.id || h.dataId).map((h) => [h.id || h.dataId, h.key]));
     assert(keysBefore.size > 3, "the page starts with a real batch (" + keysBefore.size + ")");
     await evalIn(ctx.tabA, `window.__addLateSkip()`);
     const after = await waitFor(async () => {
       const m = await readHints();
-      return m.find((x) => x.id === "late-skip") ? m : null;
+      return m.find((x) => x.id === "late-skip" || x.dataId === "late-skip") ? m : null;
     }, 6000);
     const used = new Set(after.map((h) => h.key));
     assert(used.size === after.length, "every hint key is unique after the insertion");
     let changed = 0;
     for (const h of after) {
-      if (!h.id || h.id === "late-skip") continue;
-      const k = keysBefore.get(h.id);
+      const id = h.id || h.dataId;
+      if (!id || id === "late-skip") continue;
+      const k = keysBefore.get(id);
       if (k && k !== h.key) changed++;
     }
     assert(changed === 0, "no existing hint changed key (" + changed + " did)");
     await ctx.press(ctx.tabA, "Escape");
+  });
+
+  await t("link hints: Ctrl+G cancels the batch instead of typing the letter g", async () => {
+    // §4.4's promise: there is always a way back, and Ctrl+G is the one cancel
+    // that works on every page (a chord no site can receive as text). The hint
+    // matcher looked at `e.key` alone, and `g` IS a hint letter, so pressing it
+    // typed `g` into the batch — with a single candidate left that ACTIVATES THE
+    // LINK, i.e. the escape hatch did the opposite of escaping. Here nothing may
+    // be clicked, the batch must go away, and the keyboard must come back.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await pageSettled();
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await scrollDone(0);
+    await beginHints();
+    const before = await evalIn(ctx.tabA, `location.pathname`);
+    await ctx.press(ctx.tabA, "g", { ctrl: true });
+    await waitFor(async () => {
+      const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+      return on === "1" ? null : true;
+    }, 5000);
+    const after = await evalIn(ctx.tabA, `location.pathname`);
+    assert(after === before, `Ctrl+G navigated to ${after}: it was taken as the hint letter g`);
+    // And the keyboard is usable again, which is what "cancel" has to mean.
+    await beginHints();
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
+  await t("link hints: a capture that declines a key does not swallow it", async () => {
+    // `;W m` arms a digit capture ("which tab position?"), and its handler
+    // DECLINES anything that is not a digit of a position — a letter, a leading
+    // zero, or a modified key. Every host discarded that answer and consumed the
+    // key anyway, so the handler's own comment ("let the key through untouched")
+    // was a lie and the keystroke vanished with nothing on screen to explain it.
+    // The observable proof is the leader key itself: after a declined `;` the
+    // rest of the dispatcher must run, and `;` must arm the leader as always.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await pageSettled();
+    await ctx.leaderSeq(ctx.tabA, ["W"], { shift: true });
+    await ctx.press(ctx.tabA, "m");
+    await ctx.press(ctx.tabA, ";");
+    await ctx.waitExpr(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader")`, "1", 5000).catch(() => {
+      throw new Error("; after `;W m` was swallowed: the capture declined it and the host consumed it anyway");
+    });
+    await ctx.press(ctx.tabA, "Escape");
+    await ctx.waitLeaderGone();
   });
 }

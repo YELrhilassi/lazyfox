@@ -1,11 +1,9 @@
 // shared/keyguard.ts — the one place that stops keys typed into a Lazyfox
 // overlay from leaking to the page/browser behind it.
 //
-// The bug these pin: a consumed keydown's keypress/keyup tail must be
-// swallowed, but only ONCE. An implementation that short-circuits past
-// ownsTail() (or makes it non-consuming) leaves a stale record that later
-// swallows a legitimate press of the same key while the user is typing — which
-// broke `;` in a text field.
+// The bug these pin: both tails of a consumed physical press must be swallowed,
+// repeated keypress tails must remain owned during auto-repeat, and a missing
+// keyup must not make the next physical press untypeable.
 //
 // Each of the eight concerns below was previously a bare `{ … }` block of
 // `ok()` calls, where the first failure hid the rest. They are now independent
@@ -21,17 +19,28 @@ const ev = (key: string, code?: string): { key: string; code?: string } =>
   code === undefined ? { key } : { key, code };
 
 describe("the tail of a consumed key is owned exactly once", () => {
-  test("the first keypress/keyup after a consumed keydown is owned", () => {
+  test("both keypress and keyup tails of a consumed keydown are owned", () => {
     const g = new KeyGuard();
     g.consume(ev("j"));
-    assert.equal(g.ownsTail(ev("j")), true);
+    assert.equal(g.ownsTail({ ...ev("j"), type: "keypress" }), true);
+    assert.equal(g.ownsTail({ ...ev("j"), type: "keyup" }), true);
   });
 
-  test("the same tail is not owned twice", () => {
+  test("keypress tails are owned until keyup closes the physical press", () => {
     const g = new KeyGuard();
     g.consume(ev("j"));
-    g.ownsTail(ev("j"));
-    assert.equal(g.ownsTail(ev("j")), false, "a second claim must find nothing");
+    assert.equal(g.ownsTail({ ...ev("j"), type: "keypress" }), true);
+    assert.equal(g.ownsTail({ ...ev("j"), type: "keypress" }), true, "auto-repeat keypresses stay owned");
+    assert.equal(g.ownsTail({ ...ev("j"), type: "keyup" }), true);
+    assert.equal(g.ownsTail({ ...ev("j"), type: "keyup" }), false, "keyup closes the record");
+  });
+
+  test("a repeated keydown does not clear the original press record", () => {
+    const g = new KeyGuard();
+    g.consume(ev("j"));
+    g.beginPress({ ...ev("j"), repeat: true });
+    assert.equal(g.ownsTail({ ...ev("j"), type: "keypress" }), true);
+    assert.equal(g.ownsTail({ ...ev("j"), type: "keyup" }), true);
   });
 });
 
@@ -41,22 +50,25 @@ describe("a stale record can never swallow a legitimate press", () => {
   test("a later ; typed into an input is not owned", () => {
     const g = new KeyGuard();
     g.consume(ev(";"));
-    assert.equal(g.ownsTail(ev(";")), true, "the consumed ; tail is owned");
-    assert.equal(g.ownsTail(ev(";")), false, "but the user's own ; is not");
+    assert.equal(g.ownsTail({ ...ev(";"), type: "keyup" }), true, "the consumed ; keyup is owned");
+    g.consume(ev(";"));
+    g.beginPress(ev(";"));
+    assert.equal(g.ownsTail({ ...ev(";"), type: "keypress" }), false, "but the user's next ; is not");
   });
 });
 
 describe("a consumed keydown has exactly one tail to reconcile", () => {
-  // Firefox does not fire keypress for a preventDefaulted keydown, so in
-  // practice the record is spent by the keyup; duplicate records for the same
-  // key collapse instead of growing (a double-tap's second tail is covered by
-  // the overlay still being up).
-  test("duplicate records collapse, nothing left over", () => {
+  // Auto-repeat keydowns are part of the same physical press. They must not
+  // erase or duplicate the record: every repeated keypress is owned, then one
+  // keyup closes it.
+  test("auto-repeat keydowns preserve one record until keyup", () => {
     const g = new KeyGuard();
     g.consume(ev("x"));
+    g.beginPress({ ...ev("x"), repeat: true });
     g.consume(ev("x"));
-    assert.equal(g.ownsTail(ev("x")), true, "one tail owned for a repeated key");
-    assert.equal(g.ownsTail(ev("x")), false, "and nothing beyond it");
+    assert.equal(g.ownsTail({ ...ev("x"), type: "keypress" }), true);
+    assert.equal(g.ownsTail({ ...ev("x"), type: "keyup" }), true);
+    assert.equal(g.ownsTail({ ...ev("x"), type: "keyup" }), false);
   });
 });
 
@@ -64,19 +76,32 @@ describe("the same key with a different physical code is a different key", () =>
   test("a differing code is not the same key", () => {
     const g = new KeyGuard();
     g.consume(ev("Enter", "NumpadEnter"));
-    assert.equal(g.ownsTail(ev("Enter", "Enter")), false);
+    assert.equal(g.ownsTail({ ...ev("Enter", "Enter"), type: "keyup" }), false);
   });
 
   test("a matching code is owned", () => {
     const g = new KeyGuard();
     g.consume(ev("Enter", "NumpadEnter"));
-    assert.equal(g.ownsTail(ev("Enter", "NumpadEnter")), true);
+    assert.equal(g.ownsTail({ ...ev("Enter", "NumpadEnter"), type: "keyup" }), true);
+  });
+
+  test("a modifier change does not change physical-key ownership", () => {
+    const g = new KeyGuard();
+    g.consume(ev("!", "Digit1"));
+    assert.equal(g.ownsTail({ ...ev("1", "Digit1"), type: "keypress" }), true);
+    assert.equal(g.ownsTail({ ...ev("1", "Digit1"), type: "keyup" }), true);
+  });
+
+  test("events without a physical code still match by key", () => {
+    const g = new KeyGuard();
+    g.consume(ev("a"));
+    assert.equal(g.ownsTail({ ...ev("a"), type: "keyup" }), true);
   });
 });
 
 describe("unconsumed keys are never owned", () => {
   test("an unconsumed keypress is not owned", () => {
-    assert.equal(new KeyGuard().ownsTail(ev("a")), false);
+    assert.equal(new KeyGuard().ownsTail({ ...ev("a"), type: "keypress" }), false);
   });
 });
 
@@ -87,7 +112,7 @@ describe("clear() drops everything", () => {
     const g = new KeyGuard();
     g.consume(ev("q"));
     g.clear();
-    assert.equal(g.ownsTail(ev("q")), false);
+    assert.equal(g.ownsTail({ ...ev("q"), type: "keyup" }), false);
   });
 });
 
@@ -96,13 +121,13 @@ describe("the record set is bounded", () => {
   test("recent keys are still tracked", () => {
     const g = new KeyGuard();
     for (let i = 0; i < 200; i++) g.consume(ev("k" + i));
-    assert.equal(g.ownsTail(ev("k199")), true);
+    assert.equal(g.ownsTail({ ...ev("k199"), type: "keyup" }), true);
   });
 
   test("the oldest keys have fallen off", () => {
     const g = new KeyGuard();
     for (let i = 0; i < 200; i++) g.consume(ev("k" + i));
-    assert.equal(g.ownsTail(ev("k0")), false);
+    assert.equal(g.ownsTail({ ...ev("k0"), type: "keyup" }), false);
   });
 });
 
