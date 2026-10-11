@@ -71,6 +71,11 @@ export interface KeyLike {
   ctrlKey?: boolean;
   altKey?: boolean;
   metaKey?: boolean;
+  // The OS re-firing the SAME press. It is part of the key's identity for a
+  // dispatch decision (a held key says nothing new) and must not be folded into
+  // the chord, which is why it is declared here and read rather than filtered
+  // by whoever happens to remember. See LeaderController.handleKey.
+  repeat?: boolean;
 }
 
 // The US layout's shifted characters, as `shifted character → base key`. The

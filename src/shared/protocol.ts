@@ -153,7 +153,7 @@ export interface BgApi {
     // asks "is the leader key still physically down?", and the background is
     // the only party that can answer for a document this one has never seen.
     req: { active: boolean; url: string; doc?: string };
-    res: { ok: boolean; hold?: boolean };
+    res: { ok: boolean; hold?: boolean; holdAt?: number };
   };
   // The HELD leader key, as a per-tab fact rather than per-document state.
   //

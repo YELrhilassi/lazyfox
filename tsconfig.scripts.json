@@ -82,6 +82,24 @@
 // The keymap module it checks (shared/keymap.ts) is DOM-free and typechecked
 // by tsconfig.json; only this Node-side harness is out of scope here.
 //
+// scripts/test/typing-signals.test.ts is the eighteenth, and it is the same
+// shape as keyhold.test.ts: it drives chrome/typing.ts, whose signature is typed
+// against the DOM (KeyboardEvent, Element) and whose collaborators are Firefox
+// chrome globals (SessionStore, Services, window.gBrowser) that only src/chrome's
+// ambient declarations name. The module is typechecked by tsconfig.json; only the
+// Node-side test of it is out of scope here. It is the one test in this list
+// whose SUBJECT is a trust rule rather than a computation — "is this typing
+// signal still true?" — and the rule lives in a DOM-free seam precisely so that
+// it can be pinned here at all; only the channel that reads it is DOM-typed.
+//
+// scripts/test/hints-focus.test.ts and scripts/test/hints-activation.test.ts are
+// the sixteenth and seventeenth, and they are the same shape as
+// typing-target.test.ts: each drives DOM-typed modules — shared/dom.ts's focus
+// aim and verdict, hints/life.ts's target/page signal split, hints/escalate.ts's
+// retry rule and hints/collect.ts's media-surface threshold — with synthetic
+// element objects that a DOM-less config cannot name. All of those modules are
+// typechecked by tsconfig.json, which owns the browser tree.
+//
 // scripts/test/hints-visibility.test.ts, scripts/test/hints-motion.test.ts and
 // scripts/wk-preview.ts are the thirteenth, fourteenth and fifteenth, for the
 // same reason in three shapes. The two tests drive
@@ -125,6 +143,9 @@
     "scripts/test/keymap.test.ts",
     "scripts/test/hints-visibility.test.ts",
     "scripts/test/hints-motion.test.ts",
+    "scripts/test/hints-focus.test.ts",
+    "scripts/test/hints-activation.test.ts",
+    "scripts/test/typing-signals.test.ts",
     "scripts/wk-preview.ts"
   ],
   "compilerOptions": {

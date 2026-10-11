@@ -135,6 +135,109 @@ export function deepTypingFocus(el: Element | null): Element | null {
   return cur;
 }
 
+// The element that should RECEIVE focus for `el`.
+//
+// `el.isContentEditable` is true for every descendant of an editable root — it
+// is inherited — so "the target is editable, focus it" sent focus to a `<p>`
+// inside a composer such as ChatGPT's (whose editor is a contenteditable div
+// full of them). `HTMLElement.focus()` on a non-focusable descendant moves
+// nothing, and the field was then reported as refusing focus. The focusable
+// thing is the closest editable ROOT, so that is what this answers: an input
+// itself, and for anything inside a contenteditable, the host of the subtree.
+//
+// `closest` returns the element itself when it matches, and `contenteditable=""`
+// means true; only an explicit `"false"` opts out (a non-editable island inside
+// an editable document must never be promoted to the focus target).
+export function editableRootOf(el: Element | null): Element | null {
+  if (!el) return null;
+  let tag = "";
+  try {
+    tag = String(el.tagName || "").replace(/^[^:]+:/, "").toUpperCase();
+  } catch (e) {
+    tag = "";
+  }
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return el;
+  try {
+    if (typeof el.closest === "function") {
+      const ce = el.closest("[contenteditable]");
+      if (ce) {
+        const v = String(ce.getAttribute("contenteditable") || "true").toLowerCase();
+        if (v !== "false") return ce;
+      }
+    }
+  } catch (e) {
+    // A hostile page's DOM must not break the caller.
+  }
+  return el;
+}
+
+// Did focus land on `original`, or on something that legitimately stands in for
+// it? Two stand-ins are real rather than theoretical, and both used to be
+// reported as a failure:
+//
+//   * the editable ROOT of a composer, when the node we aimed at is a paragraph
+//     inside it (`focus()` on a non-focusable descendant moves nothing, so the
+//     root is what actually takes focus);
+//   * the host a field inside a CLOSED shadow root reports: `document.activeElement`
+//     is the host there, and `deepTypingFocus` resolves it back to the field, so
+//     the field is the answer as long as the caller goes through the deep walk.
+//
+// `aimed` is the element `focus()` was actually given, when the caller aimed at
+// a root rather than at the original node. `body` never counts: focus falling
+// back to the document is exactly the failure this exists to detect.
+export function focusLandedOn(original: Element, aimed?: Element | null): boolean {
+  try {
+    if (!original) return false;
+    const target = aimed || editableRootOf(original) || original;
+    const active = document.activeElement;
+    const deep = deepTypingFocus(active) || active;
+    if (!deep) return false;
+    if (deep === document.body || deep === document.documentElement) return false;
+    if (deep === target || target.contains(deep)) return true;
+    if (deep === original || original.contains(deep)) return true;
+    const root = editableRootOf(original);
+    return !!root && deep === root;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Blur whatever actually holds focus, following shadow roots, and answer
+// whether the user is no longer typing anywhere. Focus inside a closed root
+// lives on the deep element while `document.activeElement` reports the host, so
+// blurring only `activeElement` is a no-op there (a custom element host is not
+// focusable) — the deep element is tried first, then the editable root, then
+// the host.
+export function blurTypingFocus(): boolean {
+  let active: Element | null = null;
+  try {
+    active = document.activeElement;
+  } catch (e) {
+    return true;
+  }
+  const deep = deepTypingFocus(active);
+  const candidates: Array<Element | null> = [deep, editableRootOf(deep), active];
+  for (const c of candidates) {
+    try {
+      if (!isTypingTarget(document.activeElement)) break;
+    } catch (e) {
+      break;
+    }
+    if (!c || c === document.body || c === document.documentElement) continue;
+    try {
+      const he = c as HTMLElement;
+      if (typeof he.blur === "function") he.blur();
+    } catch (e) {
+      // ignore — one candidate failing must not stop the next
+    }
+  }
+  try {
+    return !isTypingTarget(document.activeElement);
+  } catch (e) {
+    return true;
+  }
+}
+
 // Unified typing-target predicate. Strips any "html:" style namespace prefix
 // (chrome's Services.focus reports namespaced tag names) and accepts the
 // superset of conditions the old content/chrome/frame copies each knew.

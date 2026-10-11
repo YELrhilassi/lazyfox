@@ -416,9 +416,9 @@ that is what made the bug undiagnosable:
 
 | value | meaning |
 |---|---|
-| absent | the click worked, or was never ignored — no retry happened |
-| `false` | ignored, and **no actor was listening** — the privileged path was never tried (standalone mode, or no chrome layer) |
-| `true` | the privileged path **was** tried and the page still did nothing |
+| absent | no escalation was WARRANTED — the target itself reacted, or the element is one the retry must never repeat |
+| `false` | the target was silent, so the retry **was** warranted, and **no privileged path was listening** (standalone mode, or no chrome layer). Recorded even when the page itself was busy, which is what makes the trigger observable without an actor |
+| `true` | the privileged press **was** dispatched (see §8.1 for the extra watch window that follows it) |
 
 `true` is the interesting one: it means the control is not a control, and no
 amount of event synthesis will reach it. The BiDi suite pins the `false` case,
@@ -554,3 +554,228 @@ the committed `dist/`, which this environment does not have. The three claims a
 profile would confirm are: no repeated long tasks while hints sit idle, keystrokes
 dispatched within one frame while hints are open, and the label set tracking a
 scrolling page without tearing.
+
+---
+
+## 8. The field reports (2026-10-11): four failures, each measured
+
+Four things a user hit in daily use, all of them invisible in the code that
+supposedly covered them.
+
+### 8.1 The privileged retry was unreachable on any page that moves
+
+The retry existed and its plumbing worked, and on the page it was written for it
+never ran. The trigger was "NOTHING changed anywhere" (`lifeSignal`), and a
+player, a chat transcript or a clock mutates continuously — so the page-level
+half always answered "the page updated itself", the verdict was success, and a
+control that had ignored the untrusted click was never escalated. YouTube's ad
+overlay never goes quiet, so the fix for the ad-skip button could not fire on the
+ad-skip button.
+
+`life.ts` now answers the two questions separately: `targetSignal` (the
+element's own class/ARIA/value/checked/href/connected) and `pageSignal` (title,
+scroll, any mutation anywhere). The verdict asks the TARGET first and uses the
+page's permissive signals as the fallback, so a working click whose only trace is
+elsewhere is still a success — the old rule that made the watcher useful.
+
+The retry fires when the target was silent AND `canEscalate(el)` holds
+(`escalate.ts`): never on an anchor or a `download`, because the synthetic click
+has already navigated (or opened a tab) and a second, genuinely trusted press
+would do it twice. `trustedRetry` becomes the precise tri-state the diagnostics
+page needed, and after dispatch the watch is extended by one window
+(`ESCALATION_WATCH_MS = 420`) instead of declaring either outcome immediately.
+
+**The cost, stated rather than waved at:** a control whose effect is elsewhere
+and leaves no trace on itself now gets one extra real press on a busy page. That
+is bounded by the one-retry rule and the two exclusions, and it is the trade the
+ad-skip case requires.
+
+Pinned by `scripts/e2e/suites/content/field.ts` on a fixture (`/busy`) whose
+heartbeat keeps the document mutating while a `isTrusted`-gated button ignores
+the click: the report must carry `trustedRetry: false` (the trigger fired; BiDi
+has no actor) and `ignored: false`. The other direction is pinned too: a control
+that flips its own `aria-pressed` must carry no `trustedRetry` at all.
+
+### 8.2 Escape is not the key that leaves a field
+
+Two complaints in one: Escape in a field must NOT be Lazyfox's business (a page
+that binds it — a dialog with a form in it — closes it, and the user has to redo
+the form), and the cancel chord (Ctrl+G) did **nothing** while the caret was in a
+field, because the typing guard ran first and simply returned. The one key a user
+reaches for to leave an input was the one key that could not work. The
+typing guard now handles the cancel CHORD itself: while the caret is in a
+field, Ctrl+G clears every Lazyfox overlay, blurs the deep focus (through shadow
+roots, `blurTypingFocus`), and is consumed — so the page receives nothing and its
+dialog survives. Escape was deliberately left unchanged at the time: it still
+reached the field and the page, and still left the caret exactly where the user
+was writing. **That half was reversed the same day — see §9.1: Escape does the
+whole of what Ctrl+G does, and the only difference left is that the page still
+sees it.** The working part is the assignment below: the cancel is a CHORD whose
+burden is to leave the page alone. The same rule is implemented for the command
+center's own input (`commandcenter/keys.ts`), which used to hand the chord to the
+browser.
+
+Pinned by `/field`: Ctrl+G must blur, must not produce a single Escape in the
+page (`window.__escapes === 0`), must leave the dialog up, and the leader must
+arm on the next keystroke; Escape must run the page's own action and keep the
+caret in the field.
+
+### 8.3 A focus that landed was reported as a failure
+
+Two shapes, both real:
+
+* a paragraph INSIDE a contenteditable composer (ChatGPT's editor): focus() on
+  a non-focusable descendant moves nothing, so the activation "failed";
+* a field inside a CLOSED shadow root: `document.activeElement` is the HOST, and
+  the old check (`el === activeElement || el.contains(activeElement)`) called a
+  successful focus a failure and toasted at the user.
+
+Focus is now aimed at the element that can take it (`editableRootOf`: the
+editable root of a composer, the input itself for a form control), verified
+through the deep walk (`focusLandedOn`, which resolves closed roots), and retried
+once on the next frame for frameworks that move focus during their own render.
+`;i` got the same treatment plus a better target rule: the field a user means is
+the LARGEST visible one, not the first in document order (which is usually a tiny
+utility field in a header), and `contenteditable=""` / `role=textbox` are now
+matched.
+
+### 8.4 A layer with no usable labels kept the keyboard, and the video was not hinted
+
+The label set and the session could disagree in one direction: if no label was
+placed (placement hid them all, the page scrolled the batch away), every hint
+letter was swallowed for nothing — a layer that answers nothing while eating the
+keys needed to escape it, including the leader. `handleKey` now sees that state
+and exits, DECLINING the key, so it falls through to the leader and the scroll
+keys. The leader key also tears a hint layer down explicitly instead of relying
+on the hint alphabet never containing it.
+
+A large `<video>` (`MEDIA_SURFACE_*`: at least 12% of the viewport, with a
+160×90 floor) is now a candidate in its own right, and a media surface and a
+control drawn over it coexist instead of one suppressing the other — a player's
+video and its "Skip ad" button are different actions, and which is discovered
+first only depends on DOM order. Nothing else was widened: images, canvases and
+small videos stay out, which is what keeps this from becoming the
+"hints everywhere" flood the early engine was.
+
+The lockout was the part worth pinning hardest, because it looked like a hung
+browser rather than a bug: two `content/field` tests drive `;f` on a hinted page
+and then press, first the leader key and then Escape, asserting the layer stands
+down and that the NEXT keystroke arms the leader — so the fix cannot regress into
+"the fall-through happened to work because the alphabet happened not to contain
+`;`".
+
+---
+
+## 9. The second field report (2026-10-11): Escape's job, and four ways the keyboard went quiet
+
+### 9.1 Escape is the master cancel again; Ctrl+G is the one that keeps quiet
+
+§8.2 made the caret in a field outrank Escape entirely, on the reasoning that
+leaving an edit in progress is the accident Escape must not cause. That was the
+wrong trade in daily use: Escape is the key every user already reaches for, so
+"it does nothing here" reads as broken, not as safe.
+
+The rule is now one sentence per key:
+
+* **Escape does everything.** Every Lazyfox surface stands down — hints, leader,
+  capture, scroll target — *and* the caret leaves the field, and the key is
+  **not** consumed, so a page that binds Escape still acts on it. One key, the
+  master cancel, nothing to remember.
+* **Ctrl+G does the same and consumes the keystroke**, so a page with its own
+  Escape binding — the dialog with a form in it — sees nothing and keeps its UI.
+  It exists for exactly that choice, so it is now the *only* difference between
+  the two keys.
+
+Pinned by `content/field › Escape is the master cancel: the page still sees it
+and the caret leaves the field` (page-side counters: one Escape seen, dialog
+gone, `activeElement` no longer the field) next to the Ctrl+G case, which must
+see zero Escapes and a dialog still up.
+
+### 9.2 The command center let an armed leader outrank the caret
+
+The page with the most typing on it was the one host that got the precedence
+backwards. `;` arms the leader in command mode (correctly — that is how the home
+grid chains commands with no mouse), and then the user clicks the search box and
+types. Its own `overlayKey` ran **before** its insert-mode handling, so the first
+character was dispatched as a `;x` binding: `g` navigated the tab Back, `t`
+opened the tab switcher, and an unbound letter was swallowed with a "no binding"
+toast. The letter never reached the box, and the second press is the one that
+typed it — the report, verbatim: *"while I'm typing I have to hit g or similar
+keys multiple times for it to type"*.
+
+The caret now wins, in the same shape the content script and the chrome helper
+already used, and the leader is **stood down** rather than merely skipped (an
+armed leader that declines one key would take the next one). Popups keep their
+claim: an explicit surface the user opened, whose own field is a closed shadow
+root, so the two states cannot coexist.
+
+Verified RED/GREEN: with the branch disabled the new test fails exactly where the
+bug is (`factsWhere(x => x.inputVal === "g")` times out — the character never
+arrives), and with it restored the test passes.
+
+### 9.3 A typing signal that outlives its document turns the keyboard off
+
+The chrome helper cannot see a remote page's focused element, so two of its
+typing signals come from page content: `contentTyping` (a latch fed by the frame
+script, reset only on window blur) and `lfTyping` (a session value on the tab,
+written by whichever content script last saw a caret in a field). Neither is
+retracted when the document they describe goes away.
+
+While one of them says "typing", the helper declines **every** key, and on a
+chrome-owned page there is no content script to answer instead. The visible
+result is bizarre and completely reproducible from the report: the **leader key
+still works** (it has its own rescue branch) while `;f`, `;t`, the scroll keys
+and every binding are dead — and a fresh tab in the same window works perfectly.
+*"Some keys work and others don't"* was this, and so was *"it stops responding and
+then comes back and I never know why"*: the flag dies with a window blur or a
+content script that finally reports.
+
+The signals are now believed only while this tab still has a content script to
+keep them honest (`TypingChannelOptions.contentSignalsLive`, wired to
+`!chromeOwnsKeys`), and the frame latch is cleared on a tab switch as well as on
+blur. The per-keystroke signals — the event's own target, the command dispatcher,
+`Services.focus` — are always consulted, and they are the ones a chrome-owned
+page needs.
+
+Pinned by `scripts/test/typing-signals.test.ts`, which drives the real channel
+through the same fakes it reads in the browser (`SessionStore.getCustomTabValue`,
+`window.gBrowser`, the frame script's message listener).
+
+### 9.4 A held leader key is not a chord
+
+The chrome helper has always dropped auto-repeat for the leader key
+(`armHeldLeader`: "a repeat carries no new intent"). The content script did not,
+and the difference was ugly: the first keydown arms the leader, and every
+auto-repeat that followed landed in the leader branch as a chord — `;` has no row
+of its own, so each one was a **miss**, i.e. the panel repainted and a "no
+binding for ;;" toast fired at the OS repeat rate for as long as the key was
+down. Holding the leader is a supported, documented way to use it, and it looked
+like a malfunctioning key.
+
+Repeats of the leader key are now dropped before the capture is consulted too (a
+held `;` must not be handed to `;W m`'s digit capture as an answer), and
+`LeaderController` reports a repeated miss once rather than once per repeat: the
+message names the chord the user pressed, which makes repeating it
+information-free.
+
+### 9.5 A restored hold is believed only while it could still be true
+
+The hold is published to the background so it survives a navigation (hold `;`,
+press `g`, and the new document still knows the key is down). That means the
+claim outlives the document that made it, and a document that is gone cannot
+retract anything. If the release was lost in the gap — the user let go during the
+navigation — the incoming document re-armed a leader marked as *physically held*
+with no keyup left to release it. It then never disarms: every later key is
+dispatched as a `;x` binding (`g` navigates, `x` closes a tab) and a miss does
+not even hide it, because staying armed is what "held" means. With the which-key
+overlay off there is nothing on screen at all, which is the purest form of the
+report: *"sometimes it stops responding to any input and resumes without me
+knowing what and why it happened"*.
+
+The claim now travels with the time it was made (`lfHoldAt`) and is restored only
+inside a 2.5 second window (`shouldRestoreHold`) — long enough to cover the gap a
+navigation takes, short enough that a stale claim cannot arm a leader nobody is
+holding. A claim with no timestamp is refused rather than trusted, and a claim
+from the future is kept, because a skewed clock must not read as "infinitely
+old". Pinned in `scripts/test/keyhold.test.ts` against the shared module both
+hosts import.

@@ -222,7 +222,14 @@ import { createTypingChannel } from "./typing";
     noKeyup?: boolean
   ) => boolean = () => false;
 
-  const typing = createTypingChannel();
+  // The typing channel, told WHEN its two content-derived signals may be
+  // believed: only while this tab still has a content script to keep them
+  // honest. They outlive the document that set them, and a stale "typing" does
+  // not merely mis-rank one key — it makes the helper decline every key on the
+  // pages where nobody else can answer it (see TypingChannelOptions).
+  const typing = createTypingChannel({
+    contentSignalsLive: () => !chromeOwnsKeys(win),
+  });
   const handleScrollKeys = createScrollKeys(() => cfg.config);
 
   /* ===================== key dispatch ===================== */

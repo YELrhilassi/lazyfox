@@ -257,7 +257,45 @@ import type { ContentPopupShell } from "./content/find";
         e.stopImmediatePropagation();
         leader.cancelPending();
         leader.hide();
+        // ...AND THE FIELD WITH IT, in the same press. The master cancel means
+        // one thing on every surface: the overlays are gone AND the caret is
+        // out. Leaving the box focused here would make Escape and Ctrl+G differ
+        // on this page for no reason a user could name — there is no site UI to
+        // protect here, which is the only thing the two keys disagree about.
+        if (document.activeElement === refs.input) {
+          refs.input.blur();
+          renderer.setStateTag("cmd");
+        }
         return true;
+      }
+      // TYPING WINS OVER THE LEADER, HERE TOO — and this host is where it used
+      // to lose.
+      //
+      // `;` arms the leader in command mode (the caret is deliberately out of
+      // the box there, so the leader is free to). The user then clicks the
+      // search box, or a mode button, and types: this function runs FIRST, so
+      // the first character was dispatched as a `;x` binding — `g` navigated
+      // back, `t` opened the tab switcher, `x` closed a tab — and a character
+      // that named no binding was swallowed with a "no binding" toast. Either
+      // way it never reached the box, and the second press is the one that
+      // typed it. That is the report, verbatim: "while I'm typing I have to hit
+      // g or similar keys multiple times for it to type".
+      //
+      // The content script and the chrome helper both already rank the caret
+      // above an armed leader (isTypingEvent, typingWins). This page had the
+      // order reversed, and it is the page with the most typing on it. The
+      // leader is STOOD DOWN rather than merely skipped, because an armed
+      // leader that declines one key would take the next one — the user's
+      // gesture was "I am writing in the box now".
+      //
+      // A POPUP keeps its claim: it is a surface the user opened explicitly, and
+      // its own field (a closed shadow root the page cannot focus) never makes
+      // the home box the focused element, so the two states do not coexist.
+      if (document.activeElement === refs.input) {
+        traceDecision("typing-wins");
+        leader.cancelPending();
+        leader.hide();
+        return false;
       }
       // Then the leader (or its capture) gets the key — and its answer is
       // honoured. A capture says `false` for a key that is not part of the

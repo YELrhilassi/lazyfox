@@ -34,7 +34,13 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { createChromeKeyDown } from "../../src/chrome/keysdispatch.ts";
 import { noteContentPresent, presenceTabFor, resetContentPresence } from "../../src/chrome/keystate.ts";
-import { releaseHoldOnKeyup, releaseLostHold, visibilityLostHold } from "../../src/shared/holdrelease.ts";
+import {
+  HOLD_RESTORE_GRACE_MS,
+  releaseHoldOnKeyup,
+  releaseLostHold,
+  shouldRestoreHold,
+  visibilityLostHold,
+} from "../../src/shared/holdrelease.ts";
 import { fakeWindow, fakeLeader } from "./support.ts";
 
 // The default page for these tests is a CHROME-OWNED one (an about: page), not
@@ -129,6 +135,52 @@ function keydown(key: string, extra: Record<string, unknown> = {}): any {
 // release path and leaving every test green. That is exactly the failure a
 // restatement-of-the-code test cannot catch, and it is why the rule is now a
 // shared module rather than a convention.
+
+// THE CLAIM A DOCUMENT LEAVES BEHIND.
+//
+// The hold is published to the background so it can survive a navigation (hold
+// `;`, press `g`, and the new document still knows the key is down), which means
+// the claim outlives the document that made it — and a document that is gone
+// cannot retract anything. What is left is a claim about a PHYSICAL key that
+// nothing can verify, so the reader judges it by age. The failure it bounds is
+// the one that looks like a frozen browser: a restored hold marks the leader as
+// held with no keyup left to release it, so it never disarms and every later
+// key is dispatched as a `;x` binding.
+describe("a published hold is only believed while it could still be true", () => {
+  const now = 1_000_000;
+
+  test("a fresh claim is restored", () => {
+    assert.equal(shouldRestoreHold(true, now - 40, now), true);
+  });
+
+  test("a claim from inside the grace window is restored", () => {
+    assert.equal(shouldRestoreHold(true, now - HOLD_RESTORE_GRACE_MS, now), true);
+  });
+
+  test("a stale claim is refused", () => {
+    // The document that made it is gone by the time a leader key could still be
+    // down; believing it arms a leader for a key nobody is holding.
+    assert.equal(shouldRestoreHold(true, now - HOLD_RESTORE_GRACE_MS - 1, now), false);
+  });
+
+  test("a claim with no timestamp is refused", () => {
+    // The old, unbounded rule. Refusing it is the whole point of the change: a
+    // host that cannot say WHEN cannot be believed to be saying NOW.
+    assert.equal(shouldRestoreHold(true, 0, now), false);
+    assert.equal(shouldRestoreHold(true, NaN, now), false);
+    assert.equal(shouldRestoreHold(true, undefined as unknown as number, now), false);
+  });
+
+  test("no claim at all is refused", () => {
+    assert.equal(shouldRestoreHold(false, now, now), false);
+  });
+
+  test("a claim from the future is kept", () => {
+    // Two realms disagreeing about the clock must not be read as "infinitely
+    // old": refusing every restore on a skewed host is the worse failure.
+    assert.equal(shouldRestoreHold(true, now + 500, now), true);
+  });
+});
 
 describe("a real press is a hold", () => {
   test("a real leader press is consumed", () => {

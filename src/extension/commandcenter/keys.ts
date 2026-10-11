@@ -253,6 +253,22 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
     if (state.moveOpen && handleMoveKey(e)) return;
     if (state.resizeOpen || state.moveOpen) return;
 
+    // THE UNFOCUS CHORD, the same rule the content script follows: while the
+    // caret is in the input, Ctrl+G leaves the field and nothing else. It sits
+    // ABOVE the modifier fall-through below, which is why it was previously
+    // unreachable here — a chord with Ctrl in it was handed straight to the
+    // browser, so the one key a user reaches for to leave an input did nothing
+    // on Lazyfox's own page either. Escape is left alone on purpose: on this
+    // page Escape clears the typed query first, and a key that empties the box
+    // is not the key that leaves it.
+    if (inInput && isCancel(e) && k !== "Escape") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      input.blur();
+      renderer.setStateTag("cmd");
+      return;
+    }
+
     // Modifier shortcuts must never get swallowed by the typing path below:
     // let Ctrl+?/Alt+?/Meta+? fall through to the browser unless it is a
     // known leader combo (handled while leaderPending above).

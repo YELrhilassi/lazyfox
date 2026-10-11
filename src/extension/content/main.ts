@@ -6,7 +6,7 @@
 
 import { mergeConfig } from "../../shared/config";
 import { ensureCore } from "../../shared/core";
-import { isTypingEvent, isTypingTarget } from "../../shared/dom";
+import { blurTypingFocus, isTypingEvent, isTypingTarget } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { installContentDom } from "./contentdom";
 import { LeaderController, isCancel } from "../../shared/leader";
@@ -15,6 +15,7 @@ import { specToText } from "../../shared/keymap";
 import {
   releaseHoldOnKeyup,
   releaseLostHold as releaseLostHoldOnBlur,
+  shouldRestoreHold,
   visibilityLostHold,
 } from "../../shared/holdrelease";
 import { openNavPopup } from "../../shared/popups/nav";
@@ -267,7 +268,13 @@ import type { ContentPopupShell } from "./find";
     void send("syncHold", { hold });
   };
   void reportPresence(true).then((r) => {
-    if (!r || !r.hold) return;
+    // BOUNDED IN TIME. The claim was written by a document that no longer
+    // exists, and only a recently-made one can still be true — the whole point
+    // of the restore is to survive the gap a navigation takes, not to arm a
+    // leader for a key nobody is holding. A stale restore is the worst failure
+    // in this file: the leader is marked held with no keyup left to release it,
+    // so it never disarms and every subsequent key runs as a `;x` binding.
+    if (!r || !shouldRestoreHold(!!r.hold, Number(r.holdAt) || 0, Date.now())) return;
     leader.sticky = true;
     leader.show();
   });
@@ -351,6 +358,40 @@ import type { ContentPopupShell } from "./find";
   // nothing on the page can observe the user's typing through it.
   const trace = { key: "", active: "?", popup: "0", dispatched: "" };
 
+  // Clear every Lazyfox overlay state and give the focus back to the page.
+  //
+  // ONE function, called from the Escape/Ctrl+G cancel and from the unfocus
+  // chord while a field has the caret. They started as one keystroke path, and
+  // splitting the second key out must not let the two drift: "cancel" means the
+  // same thing in both places — hints gone, capture dropped, leader hidden, the
+  // scroll target back to automatic, and no field left focused that the user did
+  // not ask to keep.
+  function cancelOverlays(): void {
+    if (hints.active || hints.starting) hints.exit();
+    if (leader.hasPending()) leader.cancelPending();
+    if (leader.active) leader.hide();
+    // Return the scroll keys to the automatic target (document scroller on
+    // ordinary pages) so a cycled sidebar can never trap them.
+    if (scroll.isCustom()) scroll.reset();
+    // Unfocus whatever holds focus (an input, a button, a link) so the page
+    // returns to its default state. A FIELD is blurred through the deep helper:
+    // a field inside a closed shadow root reports its HOST as activeElement, and
+    // blurring the host — a custom element that is not focusable — leaves the
+    // caret exactly where it was.
+    if (isTypingTarget(document.activeElement)) {
+      blurTypingFocus();
+      return;
+    }
+    const ae = document.activeElement;
+    if (ae && ae !== document.body && ae !== document.documentElement) {
+      try {
+        (ae as HTMLElement).blur();
+      } catch (err) {
+        // ignore
+      }
+    }
+  }
+
   function onKeyDown(e: KeyboardEvent) {
     if (__DEV__) {
       trace.key = e.key;
@@ -399,7 +440,16 @@ import type { ContentPopupShell } from "./find";
       return;
     }
     if (hints.active || hints.starting) {
-      if (isTypingEvent(e)) {
+      if (e.key === config.leader) {
+        // THE LEADER ALWAYS WINS OVER A HINT LAYER, explicitly. The hint
+        // alphabet never contains the leader key, so this used to work by
+        // falling through `handleKey`'s "not mine" answer — which is a
+        // property of the DEFAULT hint chars and of a session that is still
+        // answering at all. Saying it here makes it a rule instead of a
+        // coincidence: the leader tears the layer down and falls through to
+        // arm, so a hint layer can never make the leader key dead.
+        hints.exit();
+      } else if (isTypingEvent(e)) {
         // The user focused a text field mid-hints: the hint batch must not
         // eat what they type there. Drop the hints and let the key through.
         hints.exit();
@@ -470,10 +520,46 @@ import type { ContentPopupShell } from "./find";
     // one key everybody presses to dismiss a stray suggestion became a keystroke
     // that destroyed their place. An edit in progress outranks every overlay
     // state, because there is nothing Lazyfox can be showing that justifies
-    // interrupting it. Escape and Ctrl+G still reach the field's own semantics
-    // (a page closing its own menu), and still cancel Lazyfox whenever focus is
-    // NOT in a field, which is every case the cancel exists for.
+    // interrupting it — which is still the rule for every OTHER key. See below
+    // for the cancel itself, which is the one exception the guard cannot make:
+    // "leave this field" is exactly what it used to be unable to express.
     if (isTypingEvent(e)) {
+      // THE CANCEL, IN A FIELD: the same two keys, with the same one difference.
+      //
+      // Ctrl+G is the chord this codebase already teaches (isCancel), and until
+      // recently it did NOTHING while the caret was in a field: this guard ran
+      // first and simply returned, so the key a user reaches for to leave an
+      // input was the key that could not. It now means "leave the field, cancel
+      // Lazyfox, tell the page nothing", and it is consumed so a site with its
+      // own Escape binding (a dialog with a form in it, a cookie wall, a player)
+      // sees nothing and keeps its UI.
+      //
+      // Escape means the same thing AND lets the page act, because it is the key
+      // every user already reaches for and "nothing happens here" reads as
+      // broken rather than as safe. Being the master cancel is worth more than
+      // protecting an edit nobody asked to protect: the caret is one click away
+      // again, and the page's own Escape semantics are not Lazyfox's to deny.
+      if (isCancel(e)) {
+        // ESCAPE IS THE MASTER CANCEL HERE TOO, and it used to not be: while the
+        // caret was in a field, Escape was passed straight through with the
+        // overlays left standing, so the one key every user reaches for both
+        // ways out was the only key that did nothing at all. It now clears
+        // every Lazyfox surface exactly as the chord does — hints, leader,
+        // capture, scroll target — and it still reaches the page, because that
+        // is what Escape means on the web (a site closing its own menu, a
+        // player leaving fullscreen).
+        //
+        // Ctrl+G is the difference the user gets to choose: the SAME cleanup,
+        // consumed, so a page with its own Escape binding — the dialog with a
+        // form in it — sees nothing and keeps its UI. Two keys, one meaning,
+        // and the only disagreement is whether the page is told.
+        cancelOverlays();
+        if (e.key !== "Escape") {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+        return;
+      }
       if (leader.active) leader.hide();
       if (leader.hasPending()) leader.cancelPending();
       return;
@@ -493,22 +579,7 @@ import type { ContentPopupShell } from "./find";
       // call ran the capture with the string "Escape", i.e. it pressed a key
       // on the user's behalf to say they wanted to press none.
       const cancelChord = e.key !== "Escape";
-      if (hints.active || hints.starting) hints.exit();
-      if (leader.hasPending()) leader.cancelPending();
-      if (leader.active) leader.hide();
-      // Return the scroll keys to the automatic target (document scroller on
-      // ordinary pages) so a cycled sidebar can never trap them.
-      if (scroll.isCustom()) scroll.reset();
-      // Unfocus whatever element holds focus (an input, a button, a link) so
-      // the page returns to its default state.
-      const ae = document.activeElement;
-      if (ae && ae !== document.body && ae !== document.documentElement) {
-        try {
-          (ae as HTMLElement).blur();
-        } catch (err) {
-          // ignore
-        }
-      }
+      cancelOverlays();
       // Esc is deliberately NOT consumed: the page must also receive it so it
       // can close its own popups, info bars, cookie banners and fullscreen
       // video.
@@ -520,6 +591,26 @@ import type { ContentPopupShell } from "./find";
         e.preventDefault();
         e.stopImmediatePropagation();
       }
+      return;
+    }
+    // A HELD LEADER KEY IS NOT A CHORD — it is the OS restating one press.
+    //
+    // This is the same rule the chrome helper has always applied in
+    // `armHeldLeader` ("a repeat carries no new intent"), and without it here a
+    // HELD leader key was the single worst way to use the leader: the first
+    // keydown arms it, and every auto-repeat that follows lands in the branch
+    // below as a chord — `;` is not in the keymap, so each one is a MISS, i.e.
+    // the panel repaints and a "no binding for ;;" toast is fired ~30 times a
+    // second for as long as the key is down. The user sees the overlay flicker
+    // and a message about a key they did not press, while the leader itself
+    // looks unresponsive.
+    //
+    // Dropped BEFORE the capture is asked, too: a held `;` while `;W m` waits
+    // for its digit must not be handed to that capture as if it were an answer
+    // to it.
+    if (e.repeat && e.key === config.leader && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
       return;
     }
     if (leader.hasPending()) {

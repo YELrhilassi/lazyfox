@@ -16,6 +16,8 @@ export interface HintDiagnosticsSnapshot {
   rejected: { hidden: number; covered: number; duplicate: number };
   shadowRoots: number;
   pointerControls: number;
+  /** Candidates that qualified only as a large media surface (a player's video). */
+  mediaSurfaces: number;
   probes: HintProbe[];
 }
 
@@ -27,6 +29,7 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
   const stats: CollectStats = {
     shadowRoots: 0,
     pointerControls: 0,
+    mediaSurfaces: 0,
     truncated: false,
     visited: 0,
     budgetMs: 0,
@@ -75,6 +78,7 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     rejected: { hidden: sel.hidden, covered: sel.covered, duplicate: sel.duplicate },
     shadowRoots: stats.shadowRoots,
     pointerControls: stats.pointerControls,
+    mediaSurfaces: stats.mediaSurfaces,
     probes: probes,
   };
 }

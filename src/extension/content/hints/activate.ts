@@ -11,15 +11,19 @@
 // is judged by whether focus actually landed. A field that refuses focus is the
 // same silent failure as a button that ignores a click.
 import { toast } from "../../../shared/overlay";
+import { editableRootOf, focusLandedOn } from "../../../shared/dom";
 import { deepHit, describeTarget } from "./probe";
+import { canEscalate } from "./escalate";
 import {
+  ESCALATION_WATCH_MS,
   LIFE_TICKS_MS,
   LIFE_WATCH_MS,
   type LifeSnapshot,
-  lifeSignal,
+  pageSignal,
   snapshotLife,
   startLifeCounting,
   stopLifeCounting,
+  targetSignal,
 } from "./life";
 import type { HintActivation } from "../../../shared/types";
 
@@ -156,7 +160,7 @@ export function createActivator(): Activator {
   // This is the escalation path, and it is deliberately the second attempt
   // rather than the first: the synthetic sequence above is free, instant and in
   // process, and it handles the overwhelming majority of controls. Only when
-  // the watcher can prove the page did nothing does this get tried, because it
+  // the watcher can prove the TARGET did nothing does this get tried, because it
   // costs a privileged path and is the one route a page could try to abuse.
   //
   // Returns false when the actor is not listening — on any page without the
@@ -197,7 +201,8 @@ export function createActivator(): Activator {
   function watchForLife(el: Element, before: LifeSnapshot, desc: string): void {
     const timers: number[] = [];
     let done = false;
-    const finish = (signal: string): void => {
+    // Record a verdict once and release everything this watch held.
+    const settle = (rec: HintActivation): void => {
       if (done) return;
       done = true;
       for (const t of timers) clearTimeout(t);
@@ -205,44 +210,127 @@ export function createActivator(): Activator {
       window.removeEventListener("pagehide", onLeave);
       window.removeEventListener("hashchange", onLeave);
       stopLifeCounting();
-      if (signal) {
-        lastAct = { target: desc, signal: signal, watchedMs: LIFE_WATCH_MS, ignored: false };
+      lastAct = rec;
+    };
+    const finish = (signal: string): void => {
+      if (done) return;
+      // The empty string is the "decide now" call, not a signal.
+      if (!signal) return decide();
+      settle({
+        target: desc,
+        signal: signal,
+        watchedMs: LIFE_WATCH_MS,
+        ignored: false,
+      });
+    };
+    const decide = (): void => {
+      // THE VERDICT, and the ORDER of the two questions is the whole fix.
+      //
+      // The target's own state is asked FIRST, the page's permissive signals
+      // second. Deciding on page activity alone was how the privileged retry
+      // became unreachable exactly where it was built for: a video player, a
+      // chat transcript or a clock mutates continuously, so `pageSignal`
+      // always reported "the page updated itself" and a control that ignores
+      // untrusted events was never escalated. Measured on the hint suite's
+      // fixture: with a mutation heartbeat running, the isTrusted-gated control
+      // stayed silent and untried; with the split, it escalates.
+      const own = targetSignal(el, before);
+      if (own) {
+        settle({ target: desc, signal: own, watchedMs: LIFE_WATCH_MS, ignored: false });
         return;
       }
-      // Total silence. Before calling it a failure, try the privileged path
-      // once: a site that filters on event.isTrusted (YouTube's ad skip button
-      // is the canonical case) rejects the synthetic click outright, and the
-      // user has no way to know that. One retry, never a loop — a loop would
-      // re-run activation on any control that legitimately does nothing.
-      let escalated = false;
-      try {
-        const r = el.getBoundingClientRect();
-        escalated = trustedClick(r.left + r.width / 2, r.top + r.height / 2);
-      } catch (e) {
-        escalated = false;
-      }
-      lastAct = {
-        target: desc,
-        signal: "",
-        watchedMs: LIFE_WATCH_MS,
-        ignored: !escalated,
-        // Recorded so the diagnostics page can distinguish "we never even
-        // tried the trusted path" from "we tried and the page still ignored
-        // it" — the second one means the button is not a button.
-        trustedRetry: escalated,
-      };
-      // Say it plainly, and say which of the two things happened. The user
-      // pressed a key for a specific control and got nothing; naming the
-      // control turns a mystery into a fact.
+      // The target did not react. Before calling that a failure, try the
+      // privileged path once: a site that filters on event.isTrusted (YouTube's
+      // ad skip button is the canonical case) rejects the synthetic click
+      // outright, and the user has no way to know that. One retry, never a
+      // loop.
       //
-      // This only fires when NOTHING observable happened anywhere on the page
-      // — no element change, no title, no route, no scroll, no mutation, no
-      // focus. Anything short of that silence is treated as success, because
-      // accusing a working click is worse than staying quiet.
-      toast(
-        escalated
-          ? "still no response from " + desc
-          : "no response from " + desc,
+      // The cost of widening the trigger from "total silence" to "the TARGET
+      // was silent" is an extra real press on a control whose effect is
+      // elsewhere and leaves no trace on itself; that is a far better trade
+      // than a privileged path that only ever fires on a page that is not
+      // rendering anything, and it is bounded by canEscalate (never a link,
+      // never a download) plus the one-retry rule.
+      const page = pageSignal(el, before);
+      let escalated = false;
+      const warranted = canEscalate(el);
+      if (warranted) {
+        try {
+          const r = el.getBoundingClientRect();
+          escalated = trustedClick(r.left + r.width / 2, r.top + r.height / 2);
+        } catch (e) {
+          escalated = false;
+        }
+      }
+      if (!escalated) {
+        // THREE CASES, and the report has to tell them apart — that is the
+        // whole point of the tri-state `trustedRetry`:
+        //
+        //   absent     no escalation was warranted (the target reacted, or the
+        //              element is one the retry must never repeat)
+        //   false      the target was silent so the retry WAS warranted, and no
+        //              privileged path was available (standalone mode, or no
+        //              chrome layer). Recorded even when the page was busy,
+        //              which is what makes the trigger observable without an
+        //              actor listening.
+        //   true       the press was dispatched (recorded after the extra
+        //              watch window, below)
+        if (warranted) {
+          settle({
+            target: desc,
+            signal: page,
+            watchedMs: LIFE_WATCH_MS,
+            ignored: !page,
+            trustedRetry: false,
+          });
+          if (!page) toast("no response from " + desc);
+          return;
+        }
+        if (page) {
+          // Anything the page did counts as success: accusing a working click
+          // is worse than staying quiet.
+          settle({ target: desc, signal: page, watchedMs: LIFE_WATCH_MS, ignored: false });
+          return;
+        }
+        settle({
+          target: desc,
+          signal: "",
+          watchedMs: LIFE_WATCH_MS,
+          ignored: true,
+        });
+        toast("no response from " + desc);
+        return;
+      }
+      // A genuinely trusted press is out. Its effect is NOT observable from
+      // this realm, so the watch is extended by one window rather than
+      // declaring either outcome now: a target that comes back to life (or a
+      // page that moves) is the press working, and continued silence after a
+      // real press is the one honest "still no response".
+      const afterBefore = snapshotLife(el);
+      timers.push(
+        window.setTimeout(() => {
+          if (done) return;
+          const own2 = targetSignal(el, afterBefore);
+          const page2 = pageSignal(el, afterBefore);
+          if (own2 || page2) {
+            settle({
+              target: desc,
+              signal: own2 || page2,
+              watchedMs: LIFE_WATCH_MS + ESCALATION_WATCH_MS,
+              ignored: false,
+              trustedRetry: true,
+            });
+            return;
+          }
+          settle({
+            target: desc,
+            signal: page,
+            watchedMs: LIFE_WATCH_MS + ESCALATION_WATCH_MS,
+            ignored: true,
+            trustedRetry: true,
+          });
+          toast("still no response from " + desc);
+        }, ESCALATION_WATCH_MS) as unknown as number,
       );
     };
     function onFocus(e: FocusEvent): void {
@@ -269,34 +357,79 @@ export function createActivator(): Activator {
             finish("the element was replaced");
             return;
           }
-          const signal = lifeSignal(el, before);
-          if (signal) finish(signal);
-          else if (ms >= LIFE_WATCH_MS) finish("");
+          // Only the TARGET's own reaction short-circuits the watch. Page
+          // activity is deliberately NOT a fast finish any more: it is the
+          // verdict's fallback, and finishing on it early is what made a busy
+          // page skip the privileged retry entirely.
+          const own = targetSignal(el, before);
+          if (own) finish(own);
+          else if (ms >= LIFE_WATCH_MS) decide();
         }, ms) as unknown as number,
       );
     }
   }
 
-  // A FIELD is judged differently: focusing a field is the activation, and a
-  // field that took focus is already observable — but a field that REFUSED
-  // focus (covered, readonly in a custom widget, inside a modal that stole it)
-  // is exactly the silent failure worth reporting. So this is the focus-route
-  // counterpart of watchForLife: no waiting, just "did focus actually land?".
-  function reportActivation(el: Element): void {
+  // FOCUS IS THE ACTIVATION for a field, so it gets the same treatment as a
+  // click: aim at the element that can actually take focus, verify that focus
+  // landed, and give a framework one frame to move it before saying it failed.
+  // Three real shapes motivated each part:
+  //
+  //   * a paragraph INSIDE a contenteditable (ChatGPT's composer): focus() on a
+  //     non-focusable descendant moves nothing, so the editable ROOT is the
+  //     target — that is what the user meant by "the text field";
+  //   * a field inside a CLOSED shadow root: document.activeElement reports the
+  //     HOST, so the old check (`el === activeElement || el.contains(...)`)
+  //     called a successful focus a failure and toasted at the user;
+  //   * a framework that moves focus during its own render after the keystroke:
+  //     one retry on the next frame turns a false failure into the result the
+  //     user expected.
+  function focusAndReport(el: Element): void {
     const desc = describeTarget(el);
-    const took = document.activeElement === el || el.contains(document.activeElement);
+    // The element that can actually take focus. For a node inside an editable
+    // subtree that is the subtree's ROOT, not the node itself.
+    const target = editableRootOf(el) || el;
+    const attempt = (): boolean => {
+      try {
+        (target as HTMLElement).focus({ preventScroll: true });
+      } catch (e) {
+        try {
+          (target as HTMLElement).focus();
+        } catch (e2) {
+          // ignore — the verdict below reports the outcome either way
+        }
+      }
+      return focusLandedOn(el, target);
+    };
+    if (attempt()) {
+      recordFocus(desc, true);
+      return;
+    }
+    try {
+      requestAnimationFrame(() => {
+        if (attempt()) recordFocus(desc, true);
+        else recordFocus(desc, false);
+      });
+    } catch (e) {
+      recordFocus(desc, false);
+    }
+  }
+
+  function recordFocus(desc: string, took: boolean): void {
     lastAct = {
       target: desc,
       signal: took ? "it took focus" : "",
       watchedMs: 0,
       ignored: !took,
     };
-    if (!took) toast("no response from " + desc);
+    // Named the same way as the click route's failure, because it IS the same
+    // failure from the user's side: they pressed a key for a specific thing and
+    // it did not happen. The target is named so the message identifies it.
+    if (!took) toast("could not focus " + desc);
   }
 
   function activate(el: Element, kind: "click" | "focus"): void {
     if (kind === "focus") {
-      reportActivation(el);
+      focusAndReport(el);
       return;
     }
     // Activation is the synthetic sequence in emulateClick, and nothing else.

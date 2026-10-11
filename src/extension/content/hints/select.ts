@@ -5,7 +5,7 @@
 // numbers it reports are the numbers `;f` acted on.
 import { hintVisible, inViewport, reachable } from "./probe";
 import { createVisibilityPass, type VisibilityPass } from "./visibility";
-import { specificity } from "./collect";
+import { isMediaSurface, specificity } from "./collect";
 
 export interface SelectResult {
   kept: Element[];
@@ -101,6 +101,14 @@ export function selectHintables(
         break;
       }
       const sr = s.r;
+      // A media surface and a control drawn over it are DIFFERENT actions (Skip
+      // ad over a video, a play button over a thumbnail), and which of the two is
+      // seen first depends only on how the control was discovered — selector
+      // matches first, then walk order. So the "sits almost entirely inside an
+      // earlier box" rule is skipped for such a pair, in EITHER direction, and
+      // both keep their own key. The same-box rule below is NOT skipped: two
+      // candidates on identical pixels are one click area whatever they are.
+      const mediaPair = isMediaSurface(el) || isMediaSurface(s.el);
       // Same box within a couple of pixels: a wrapper/copy of the same target.
       if (
         Math.abs(r.left - sr.left) <= 2 &&
@@ -113,7 +121,7 @@ export function selectHintables(
       }
       // This box sits almost entirely inside an earlier one: an absolutely
       // positioned overlay or inner copy of the same click area.
-      if (overlapFraction(r, sr) >= 0.85) {
+      if (!mediaPair && overlapFraction(r, sr) >= 0.85) {
         dup = true;
         break;
       }

@@ -422,8 +422,9 @@ export class LeaderController {
       // The key is still ours — the menu is up, so a stray character must not
       // reach the page — but it is NOT silently swallowed. Saying what was
       // pressed is the difference between a keymap you can learn and one you
-      // learn by pressing things twice.
-      if (this.onMiss) this.onMiss(specOf(e));
+      // learn by pressing things twice. Held keys are reported once, exactly as
+      // they are at the top level: a repeat says nothing new.
+      if (this.onMiss && !e.repeat) this.onMiss(specOf(e));
       if (!this.sticky) this.hide();
       else this.repaint();
       return true;
@@ -573,7 +574,14 @@ export class LeaderController {
       // it is armed, so the key does not belong to the page — but it must not
       // vanish either. SAYING SO is the fix for "that key did nothing, so I
       // pressed it again": a nameable miss is learnable, a silent one is not.
-      if (this.onMiss) this.onMiss(spec);
+      //
+      // ONCE, though, and not once per auto-repeat. The message names the chord
+      // the user pressed, which makes repeating it information-free; a HELD key
+      // that misses (the leader key itself while the leader is armed is the
+      // common one) would otherwise fire the same toast at the OS repeat rate
+      // and leave the user staring at a complaint about a key they pressed
+      // once. The key is still taken, and a held leader still stays armed.
+      if (this.onMiss && !e.repeat) this.onMiss(spec);
       if (!this.sticky) this.hide();
       return true;
     }

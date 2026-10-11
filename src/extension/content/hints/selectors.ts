@@ -94,6 +94,25 @@ export const HINTABLE_SELECTOR = [
 export const MEDIA_SELECTOR =
   "img, video, picture, canvas, [role='img'], [role='video']";
 
+// A media ELEMENT large enough to be a primary part of the screen is a hintable
+// control in its own right, even though it has no text, no role and usually no
+// cursor:pointer. This is the "click the video itself" case: a player whose only
+// clickable surface is the video, with its controls laid on top as SIBLINGS (so
+// neither is an ancestor of the other and neither suppresses the other).
+//
+// Kept deliberately narrow — a large `<video>`/`[role=video]` and nothing else —
+// because the alternative (hinting every image and canvas) is the "hints
+// everywhere" flood that made this engine's early versions unusable.
+export const MEDIA_SURFACE_SELECTOR = "video, [role='video']";
+// The fraction of the viewport a media element must cover to qualify. Small
+// videos (autoplaying feed previews, thumbnails) stay out, which is what keeps
+// this rule from adding a label per card on a media-heavy page.
+export const MEDIA_SURFACE_MIN_AREA = 0.12;
+// ...and a floor on each dimension, so a tall narrow column or a wide strip of a
+// video does not qualify on area alone.
+export const MEDIA_SURFACE_MIN_W = 160;
+export const MEDIA_SURFACE_MIN_H = 90;
+
 // Cap per viewport. With the default 9 hint chars this keeps every key at one
 // or two characters (9 + 81 = 90 > 80), so labels never sprawl.
 export const MAX_HINTS = 80;
