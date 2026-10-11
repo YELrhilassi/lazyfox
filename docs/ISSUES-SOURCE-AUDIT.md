@@ -1398,3 +1398,41 @@ other page the harness serves has a content script): see
 `content/ownership › a page the extension cannot run on is the chrome helper's`,
 which asserts the helper owns a tab whose URL is `http://` precisely because
 nothing there can answer a key.
+
+## 18.7 The committed artifacts were reproducible only until the next commit
+
+Found by doing what the previous pass claimed was possible — rebuilding with no
+source change and expecting nothing to move. `dist/` and every installer binary
+are committed, and the payload check (`scripts/check-installer-payload.ts`,
+`npm run check`) exists to raise the one signal that matters: "the committed
+artifact does not match the source". That signal was being raised by the build
+itself.
+
+The build already passed `-trimpath` — and `build.ts` documents exactly why: Go
+writes absolute source paths into the binary AND derives the build ID from them,
+so an untrimmed build depended on where the checkout lived (the commit that fixed
+it carried `C:/Users/<name>/Documents/Default Project/lazyfox/core/keymap.go`
+into every shipped bundle). Trimpath fixed the *machine* half. It did not fix the
+*git* half: **Go stamps the repository state into a binary by default** (commit
+hash, commit time, and a `vcs.modified` flag for a dirty worktree) and that stamp
+is part of the build ID. Measured on `core/js`:
+
+    # tree dirty, then committed, same source either way
+    go build -trimpath -ldflags="-s -w" …      # two different build IDs
+    go build -buildvcs=false -trimpath …       # byte-identical, twice
+
+Everything except the embedded wasm build ID was identical between the two
+builds, which is what made the symptom so confusing: `git status` after any
+`npm run sync` showed `dist/extension/*.js`, the xpi and every installer as
+modified, with a diff nobody wrote. And because the wasm is embedded in every
+bundle and inside each installer's payload, one changed build ID moved every
+artifact and every recorded payload hash.
+
+The fix is three call sites: the wasm core and the platform native host in
+`build.ts`, and the cross-compiled native host in `scripts/installer-build.ts`
+(the installer's own binary already passed `-buildvcs=false`, because that is
+what `wails build` does). Verified end to end: with the fix in place,
+`npm run dev-install:clean` — which runs a full build and then installs — leaves
+`git status` EMPTY against the committed artifacts. That is the property the
+committed binaries were supposed to have, and it is now checked by simply
+running the build rather than by trusting the claim.
