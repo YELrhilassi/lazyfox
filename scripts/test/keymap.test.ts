@@ -20,6 +20,9 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { register } from "node:module";
 register("../ts-resolve-hook.mjs", import.meta.url);
 
@@ -36,6 +39,7 @@ import {
   shiftKey,
   specForChord,
   specOf,
+  specToText,
   unshiftKey,
 } from "../../src/shared/keymap.ts";
 import { HOST_ACTIONS, makeLeaderActions } from "../../src/shared/popups/leader.ts";
@@ -50,7 +54,10 @@ function stubCtx(): any {
     toast: noop,
     runAction: noop,
     bindings: () => Promise.resolve([]),
-    armDigits: noop,
+    // The host handle a digit sequence needs: see PopupCtx.armDigits. Returned
+    // rather than ignored because a sequence that resolves asynchronously has to
+    // be able to disarm and to move its "what comes next" with the position.
+    armDigits: () => ({ cancel: noop, retarget: noop, isActive: () => true }),
     manualText: false,
   };
 }
@@ -170,6 +177,47 @@ describe("modifiers are explicit and exact", () => {
     assert.equal(specOf(key("/", { shift: true })), "shift+/");
     assert.equal(specOf(key("$")), "shift+4");
   });
+
+  // The miss message is the one place a spec becomes PROSE. `no binding for
+  // ;shift+d` named an internal spelling nobody typed, which is how "the
+  // categories work whether I use the capital or the regular letter" got
+  // reported as a bug in the first place. What the user reads back has to be
+  // the key their hand made, and — since a capital in this product's own menus
+  // means `Shift` (`P`, `?`, `$`) — a capital must never appear on a chord that
+  // did not hold Shift.
+  test("the MISS message prints the chord the hand made, not the spec", () => {
+    assert.equal(specToText(specOf(key("p"))), "p");
+    assert.equal(specToText(specOf(key("P"))), "P");
+    assert.equal(specToText(specOf(key("?"))), "?");
+    assert.equal(specToText("shift+\\"), "|");
+    assert.equal(specToText(specOf(key("r", { ctrl: true, alt: true }))), "Ctrl+Alt+r");
+    assert.equal(specToText(specOf(key("p", { ctrl: true, shift: true }))), "Ctrl+Shift+P");
+    // Named keys are spelled the way the badge next to them is: a keyboard has
+    // no `enter` and no `space`, and `no binding for ; ` is not a sentence.
+    assert.equal(specToText("enter"), "Enter");
+    assert.equal(specToText("ctrl+enter"), "Ctrl+Enter");
+    assert.equal(specToText("shift+enter"), "Shift+Enter");
+    assert.equal(specToText(" "), "Space");
+    assert.equal(specToText("escape"), "Esc");
+    assert.equal(specToText("tab"), "Tab");
+    assert.equal(specToText("arrowleft"), "ArrowLeft");
+    assert.equal(specToText("f5"), "F5");
+    assert.equal(specToText("ctrl+f5"), "Ctrl+F5");
+  });
+
+  // A printed chord must never claim a modifier the user did not hold. This is
+  // the property the e2e suite caught as a regression: `;Ctrl+Alt+r` was being
+  // answered with `Ctrl+Alt+R`, a capital in a notation where a capital means
+  // Shift.
+  test("a printed chord never invents a Shift", () => {
+    for (const spec of ["ctrl+alt+r", "ctrl+p", "alt+p", "meta+p"]) {
+      const text = specToText(spec);
+      assert.ok(text.indexOf("Shift") < 0, `${spec} printed as ${text} names a Shift nobody held`);
+      const base = text.split("+").pop() || "";
+      assert.equal(base, base.toLowerCase(), `${spec} printed as ${text} begs a capital it did not have`);
+    }
+    assert.ok(specToText("ctrl+shift+p").indexOf("Shift") > 0, "a real Shift must still be named");
+  });
 });
 
 describe("categories are menus of different things", () => {
@@ -277,5 +325,65 @@ describe("the searchable reference is the keymap, leaf keys included", () => {
       assert.ok(leaf.group.length > 0, `leaf ${leaf.key} is filed under no group`);
       assert.ok(routed.has(leaf.action), `leaf ${leaf.key} names unrouted action ${leaf.action}`);
     }
+  });
+});
+// The miss message is not one function's private business: three hosts print it
+// (a web page, the chrome helper, the command center) and one of them printing
+// the canonical spec instead of the chord is exactly audit §6.1 — a toast that
+// reads `no binding for ;shift+d` sitting next to a menu that labels the same
+// key `D`. A unit-tested translation does not prevent that, because the bug is
+// at the CALL SITE: the next host can simply forget it, and nothing outside that
+// host's own e2e suite would notice.
+//
+// So this scans the source. The literal searched for includes its own quote on
+// each side, which is what keeps it off the prose in the doc comments above
+// (they quote the phrase as `"no binding for ;jq"`, and the closing quote that
+// would have to follow the semicolon is not there).
+describe("every host translates a miss through specToText", () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const LITERAL = '"no binding for ;"';
+
+  function sourceFiles(): string[] {
+    const out: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (entry.name.endsWith(".ts")) out.push(full);
+      }
+    };
+    walk(join(ROOT, "src"));
+    return out;
+  }
+
+  test("no file prints the miss message with a raw spec", () => {
+    const printers: string[] = [];
+    for (const file of sourceFiles()) {
+      const src = readFileSync(file, "utf8");
+      let at = src.indexOf(LITERAL);
+      while (at >= 0) {
+        printers.push(file.slice(ROOT.length + 1).split(sep).join("/"));
+        // Whatever follows the literal must be the translation. `+ spec` — the
+        // spelling that shipped the bug — fails here, and so does anything else
+        // that is not exactly this call.
+        const after = src.slice(at + LITERAL.length, at + LITERAL.length + 40);
+        assert.match(
+          after,
+          /^\s*\+\s*specToText\(/,
+          `${file.slice(ROOT.length + 1)} prints a miss without specToText: ${LITERAL}${after.split("\n")[0]}`,
+        );
+        at = src.indexOf(LITERAL, at + LITERAL.length);
+      }
+    }
+    // A guard over nothing is worse than no guard: if the message is renamed,
+    // this test must fail rather than quietly pass.
+    assert.deepEqual(
+      printers.sort(),
+      ["src/chrome/leadersetup.ts", "src/extension/commandcenter.ts", "src/extension/content/main.ts"],
+      "the set of hosts that print a miss message changed — a new one must translate it, and a removed one means this guard is stale",
+    );
   });
 });

@@ -14,7 +14,7 @@
 // channel) are created after this runs.
 
 import type { KeyGuard } from "../shared/keyguard";
-import { chromeOwnsKeys, chromeOwnsSurfaces, forgetContentFrom } from "./keystate";
+import { chromeOwnsKeys } from "./keystate";
 import type { ChromeEnv } from "./env";
 
 export interface WinListenersDeps {
@@ -50,6 +50,10 @@ export function installWinListeners(deps: WinListenersDeps): void {
   win.addEventListener(
     "keydown",
     (e: KeyboardEvent) => {
+      // Drop a record left over from an earlier press of this key: its tail
+      // never arrived, so it would be spent by THIS press's keypress and eat a
+      // character the user typed. See keyguard.beginPress.
+      deps.keyGuard.beginPress(e);
       if (deps.chromeKeyDown(e)) {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -113,22 +117,16 @@ export function installWinListeners(deps: WinListenersDeps): void {
     }, 0);
   });
 
-  try {
-    // Presence is cached by tab POSITION, and removing a tab slides every tab
-    // above it down one slot. Without this the map drifts by one per close, and
-    // a stale "a content script is here" would be attributed to whatever page
-    // inherited the slot — the helper would then defer on a page it should own,
-    // which is the dead keyboard again, one tab-closing session later.
-    win.gBrowser.tabContainer.addEventListener("TabClose", (e: Event) => {
-      try {
-        forgetContentFrom(Number((e as unknown as { index?: number }).index));
-      } catch (err) {
-        // ignore
-      }
-    });
-  } catch {
-    // ignore
-  }
+  // THERE IS NO `TabClose` PRESENCE LISTENER ANY MORE, and its absence is the
+  // fix rather than an omission. Presence is stored ON THE TAB ELEMENT
+  // (keystate.noteContentPresent), so a closed tab's record dies with the tab
+  // and no later tab can inherit it — which is the same guarantee the listener
+  // used to give, without the cost it used to charge: it deleted every record at
+  // or after the closed index, so every live document above the close lost its
+  // answer and the helper claimed keys it should have deferred on until that
+  // page happened to re-report. The other two strip changes (an INSERTION before
+  // a reporting tab, and a MOVE, which is a permutation no event describes) were
+  // never compensated at all and are now unrepresentable for the same reason.
 
   try {
     win.gBrowser.tabContainer.addEventListener("TabSelect", () => {
@@ -150,12 +148,21 @@ export function installWinListeners(deps: WinListenersDeps): void {
       // Leaving it armed was worse than useless — the status bar's leader
       // indicator reads that flag, so a web page showed a permanently lit
       // leader chevron while the content script's leader was dark.
+      //
+      // UNCONDITIONAL, and it used to be gated on `!chromeOwnsSurfaces(win)`.
+      // That gate made the teardown depend on an answer this very module cannot
+      // verify (see keystate.ts: presence is inferred, and an inferred "yes"
+      // expires on the first pushState), so on an SPA the helper kept a lit
+      // overlay for as long as the window lived — two which-key panels, one of
+      // them a ghost. Standing down costs nothing when this window DOES own the
+      // tab: the next keypress re-arms the leader, exactly as if the panel had
+      // never been painted, and a popup is a surface the user opened here, on
+      // this tab, which the switch closes on purpose. There is no state this
+      // can lose that a keypress cannot restore.
       try {
-        if (!chromeOwnsSurfaces(win)) {
-          const leader = deps.leader();
-          if (leader) leader.hide();
-          if (deps.popup.isOpen()) deps.popup.close();
-        }
+        const leader = deps.leader();
+        if (leader) leader.hide();
+        if (deps.popup.isOpen()) deps.popup.close();
       } catch (e) {
         // ignore — a mid-collapse read must not break the tab switch
       }

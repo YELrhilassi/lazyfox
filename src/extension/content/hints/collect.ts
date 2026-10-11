@@ -6,6 +6,7 @@
 // filter that is right for one question silently breaks the other.
 import { HINTABLE_SELECTOR, MAX_SCAN, MEDIA_SELECTOR, SHADOW_DEPTH } from "./selectors";
 import { basicVisible } from "./probe";
+import { shadowRootOf } from "../../../shared/dom";
 
 export function isOrHasMedia(el: Element): boolean {
   try {
@@ -141,7 +142,7 @@ export function specificity(el: Element): number {
 }
 
 // Collect every hintable element in (approximate) document order, descending
-// into open shadow roots so custom elements are covered.
+// into open and extension-visible closed shadow roots so custom elements are covered.
 export function collectHintables(stats?: CollectStats): Element[] {
   const out: Element[] = [];
   const seen = new Set<Element>();
@@ -170,8 +171,18 @@ export function collectHintables(stats?: CollectStats): Element[] {
     const n = Math.min(all.length, MAX_SCAN);
     for (let i = 0; i < n; i++) {
       const el = all[i]!;
-      const sr = (el as HTMLElement).shadowRoot;
-      if (sr && sr.mode === "open") {
+      // CLOSED ROOTS COUNT, and they are the majority of the ones that matter.
+      //
+      // This used to read `el.shadowRoot` and require `mode === "open"`, so every
+      // control inside a closed root was invisible to hints — YouTube's search
+      // box, Reddit's inputs, most component libraries, and anything built with a
+      // Shadow-DOM-based design system. The asymmetry was the tell: the TYPING
+      // guard (shared/dom.ts) already reaches closed roots through the
+      // extension's own door and answers correctly there, while hints claimed
+      // there was nothing to hint. Same door, same walk, one place it was
+      // forgotten.
+      const sr = shadowRootOf(el);
+      if (sr) {
         if (stats) stats.shadowRoots++;
         walk(sr, depth + 1);
       }

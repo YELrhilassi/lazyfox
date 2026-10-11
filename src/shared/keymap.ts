@@ -284,6 +284,111 @@ export function chordFor(spec: string, _m?: KeymapMatch): string {
 }
 
 /**
+ * A canonical spec rendered the way the user's hand produces it: `shift+d` →
+ * `D`, `shift+/` → `?`, `ctrl+alt+r` → `Ctrl+Alt+r`, `ctrl+shift+p` →
+ * `Ctrl+Shift+P`.
+ *
+ * This exists because the MISS path used to print the spec itself, so a mistyped
+ * `;D` told the user "no binding for ;shift+d" — an internal spelling, next to a
+ * menu that prints `D`. A keymap you cannot read back is one you learn by
+ * accident, and the report that produced this function was "the categories work
+ * whether I use the capital or the regular letter", which is what a person
+ * concludes when the keyboard answers in a notation they never typed.
+ *
+ * TWO RULES, and they have to agree with the overlay:
+ *
+ * 1. SHIFT IS FOLDED INTO THE CHARACTER when it is the ONLY modifier, because
+ *    that is the truth on a US layout: `Shift+p` produces `P` and nothing else,
+ *    and printing `Shift+P` for a key the menu labels `P` would reintroduce the
+ *    same disagreement in a new place.
+ * 2. CASE MEANS SHIFT — ALWAYS. With another modifier held the word `Shift`
+ *    stays (so `ctrl+shift+p` reads `Ctrl+Shift+P`, the form the menu in
+ *    core/keymap.go is written in) and the base key is printed as the character
+ *    the keystroke actually produces: lowercase `r` for `ctrl+alt+r`. Forcing
+ *    that letter to uppercase for no better reason than "chords look tidy in
+ *    caps" is how `no binding for ;Ctrl+Alt+R` came to name a key with a Shift
+ *    that was never held — in a notation where a capital is exactly how this
+ *    product spells "Shift is down" (the overlay prints `P`, `?`, `$`). A
+ *    message that misreports which modifiers were held is the same class of bug
+ *    as one that misreports the key.
+ */
+/**
+ * Named keys, spelled the way a keyboard spells them.
+ *
+ * A spec's base key is the lowercase name a browser event uses (`enter`, ` `),
+ * because that is what the event field says; the key cap says `Enter`, and so
+ * does every badge this product draws (`kit.ts` prints `Enter`, `Esc`, `Tab`,
+ * `Ctrl+Enter`). A miss message that answered "no binding for ;enter", or — for
+ * the spacebar — a toast reading `no binding for ; ` (the letter case rule does
+ * nothing for a key that has no case), is the same defect as `;shift+d` in a
+ * smaller size: the product answering a hand in the spelling of a field.
+ */
+const KEY_NAMES: Record<string, string> = {
+  enter: "Enter",
+  escape: "Esc",
+  tab: "Tab",
+  " ": "Space",
+  space: "Space",
+  backspace: "Backspace",
+  delete: "Delete",
+  insert: "Insert",
+  home: "Home",
+  end: "End",
+  pageup: "PageUp",
+  pagedown: "PageDown",
+  arrowleft: "ArrowLeft",
+  arrowright: "ArrowRight",
+  arrowup: "ArrowUp",
+  arrowdown: "ArrowDown",
+};
+
+/** Function keys print as the cap spells them (`f5` → `F5`); nothing else changes. */
+function functionKey(base: string): string {
+  return /^f([1-9]|1[0-9]|2[0-4])$/.test(base) ? base.toUpperCase() : base;
+}
+
+/** The printed spelling of a named key, or "" when `base` is not one. */
+function keyName(base: string): string {
+  // `hasOwnProperty` rather than a truthiness test on the lookup: a base of
+  // `constructor` or `toString` must not be answered with a function from
+  // Object.prototype, and the table is a plain object literal.
+  return Object.prototype.hasOwnProperty.call(KEY_NAMES, base) ? KEY_NAMES[base] || base : "";
+}
+
+export function specToText(spec: string): string {
+  if (!spec) return "";
+  const parts = spec.split("+");
+  const base = parts.pop() || "";
+  const named = keyName(base) !== "";
+  const names: string[] = [];
+  let shift = false;
+  for (const m of parts) {
+    if (m === "ctrl") names.push("Ctrl");
+    else if (m === "alt") names.push("Alt");
+    else if (m === "meta") names.push("Meta");
+    else if (m === "shift") shift = true;
+  }
+  // A named key has no shifted character to fold into: `Shift+Enter` is two
+  // words, and the fold below only makes sense for a letter or a symbol.
+  if (!named) {
+    if (shift && names.length === 0) return shiftKey(base);
+    if (names.length === 0) return functionKey(base);
+  } else if (names.length === 0 && !shift) {
+    return keyName(base);
+  }
+  if (shift) names.push("Shift");
+  // The capital is the SHIFT bit, not decoration. A symbol or a named key
+  // (`Ctrl+Enter`, `Alt+ArrowLeft`) needs no such mark and is already
+  // unambiguous.
+  const shown = named
+    ? keyName(base)
+    : shift && base.length === 1 && base >= "a" && base <= "z"
+      ? base.toUpperCase()
+      : functionKey(base);
+  return names.join("+") + "+" + shown;
+}
+
+/**
  * The ACTION ID a printed chord runs, or "" when it names nothing — or when it
  * names a category head, which is not an action (it opens a menu).
  *
@@ -351,8 +456,7 @@ export function keymapAllActions(): string[] {
     if (r.cat) {
       for (const sk of r.catKeys || []) out.push(sk.action);
       continue;
-    }
-    out.push(r.action);
+    }    out.push(r.action);
   }
   return out;
 }

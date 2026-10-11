@@ -54,15 +54,32 @@ export function createActivator(): Activator {
     const r = el.getBoundingClientRect();
     const x = r.left + r.width / 2;
     const y = r.top + r.height / 2;
-    // The sequence goes to the DEEPEST thing under the pointer (the label or
-    // icon INSIDE a button) rather than always to the outer box, because a
-    // framework widget may attach its handler to that inner node or read
-    // event.target. deepHit can only return something that really is on top at
-    // those coordinates, so the guard below is about a stale rect rather than
-    // about hit-testing accuracy.
+    // WHICH NODE RECEIVES THE SYNTHETIC SEQUENCE, and the rule is narrow on
+    // purpose: the target, or a node inside it, and never anything else.
+    //
+    // Going one level deeper than `el` is what makes a framework widget work —
+    // a button whose handler sits on the inner span, a player that reads
+    // event.target — and the hit test answers "what is really on top at those
+    // coordinates" so the sequence lands where a real pointer would. But a hit
+    // target that is NEITHER the control NOR inside it is a third party: some
+    // other element is covering the control right now. Delivering a pointer
+    // press to it would let a hint key operate an element the user never chose
+    // (a sticky banner, an ad layer, a modal backdrop), while the native click
+    // below still fires at the control — i.e. two different elements would act
+    // on one keystroke. A covered control is instead reported by the watcher,
+    // which is the honest outcome: the press was attempted on what the user
+    // asked for, and the page did nothing.
+    //
+    // Measured cost of the guard: none for the shapes that matter (the control's
+    // own centre is covered by its own child, and the fixture's player button,
+    // inner span, media wrapper and video are all self-or-descendant cases).
     let dispatchTo: Element = el;
-    const deepest = deepHit(x, y);
-    if (deepest && (deepest === el || el.contains(deepest))) dispatchTo = deepest;
+    try {
+      const hit = deepHit(x, y);
+      if (hit && (hit === el || el.contains(hit))) dispatchTo = hit;
+    } catch (e) {
+      // A hostile page's hit test must not prevent the click.
+    }
 
     // `buttons` is the set of buttons CURRENTLY HELD DOWN, and it is the
     // field a press-state machine reads. The old code passed buttons:1 to

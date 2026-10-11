@@ -472,17 +472,7 @@ export async function run(ctx: any): Promise<void> {
     // start showed a filtered/empty set instead of every link. Esc must fully
     // clear the hints and the next ;f must re-hint everything again.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/hints`);
-    const hintList = () =>
-      evalIn(
-        ctx.tabA,
-        `(function(){
-          const host = document.getElementById("lazyfox-hints");
-          if (!host) return null;
-          const raw = host.getAttribute("data-lf-pos");
-          if (!raw) return null;
-          try { return JSON.parse(raw); } catch (e) { return null; }
-        })()`
-      );
+    const hintList = async () => (await ctx.hintSnapshot(ctx.tabA)).positions || [];
     const startHints = async () => {
       await ctx.leaderPress(ctx.tabA, "f");
       await hintsOn();

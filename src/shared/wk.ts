@@ -82,16 +82,31 @@ export function wkBodyHtml(page: WkPage, sel: number): string {
       html += "<div class='wk-group'>" + esc(it.group) + "</div><div class='wk-grid'>";
       group = it.group;
     }
-    if (!it.native) {
-      html +=
-        "<div class='wk-item" + (it.lazyIndex === sel ? " sel" : "") + "'>" +
-        "<span class='wk-kbd'>" + esc(it.key) + "</span><span>" + esc(it.label) +
-        "</span></div>";
-    } else {
+    if (it.native) {
       html +=
         "<div class='wk-item dim'><span class='wk-kbd'>" + esc(it.key) + "</span><span>" +
         esc(it.label) + "</span></div>";
+      continue;
     }
+    // A CATEGORY HEAD IS A MENU, and it says so.
+    //
+    // It used to be drawn identically to a binding — same row, same key badge —
+    // while Enter on it did nothing at all. A row that opens eleven keys has to
+    // look like a door: the trailing count is what tells the reader it is worth
+    // pressing, and the footer stops promising "Enter run" on it.
+    if (it.cat) {
+      const n = typeof it.subs === "number" && it.subs > 0 ? String(it.subs) : "";
+      html +=
+        "<div class='wk-item wk-head" + (it.lazyIndex === sel ? " sel" : "") + "'>" +
+        "<span class='wk-kbd'>" + esc(it.key) + "</span><span>" + esc(it.label) +
+        "</span>" +
+        "<span class='wk-more'>" + esc(n ? n + " \u203a" : "\u203a") + "</span></div>";
+      continue;
+    }
+    html +=
+      "<div class='wk-item" + (it.lazyIndex === sel ? " sel" : "") + "'>" +
+      "<span class='wk-kbd'>" + esc(it.key) + "</span><span>" + esc(it.label) +
+      "</span></div>";
   }
   if (group !== null) html += "</div>";
   if (!html) html = "<div class='wk-group'>\u2014</div>";
@@ -116,11 +131,16 @@ export function wkBodyHtml(page: WkPage, sel: number): string {
  * line under the title, not as the edge of a header.
  */
 export function wkHeadHtml(head: string, title: string): string {
-  const chord = head ? "⌘" + esc(head) : "⌘";
-  return (
-    "<span class='wk-chord'>" + chord + "</span>" +
-    "<span class='wk-title'>" + esc(title || "All keys") + "</span>"
-  );
+  // The chord badge shows the sequence that got here — `W` inside Window &
+  // layout — and NOTHING at the top level.
+  //
+  // It used to render `⌘` unconditionally: a Mac command glyph, drawn as if it
+  // were a key on the user's keyboard, on every platform, in a product whose
+  // leader is `;`. A header that shows a key the keymap does not contain is
+  // worse than a header with no badge at all, because the reader tries to press
+  // it, and it was the first thing in the panel to be wrong.
+  const chord = head ? "<span class='wk-chord'>" + esc(head) + "</span>" : "";
+  return chord + "<span class='wk-title'>" + esc(title || "All keys") + "</span>";
 }
 
 /**
@@ -149,7 +169,12 @@ export function wkCategoryHtml(keys: string[], labels: Record<string, string>): 
   return html;
 }
 
-export function wkFootHtml(pageNum: number, total: number, isCategory = false): string {
+export function wkFootHtml(
+  pageNum: number,
+  total: number,
+  isCategory = false,
+  selIsHead = false,
+): string {
   if (isCategory) {
     // Inside a category the overlay is not a navigable list — there is no
     // cursor to move and no Enter to run — so the foot says only what is true:
@@ -159,8 +184,20 @@ export function wkFootHtml(pageNum: number, total: number, isCategory = false): 
   // With a single page (every binding visible) there is nothing to flip;
   // only show the Tab hint when paging actually exists.
   const pageHint = total > 1 ? "<span>Tab page</span>" : "";
+  // THE FOOTER ONLY PROMISES WHAT THE HIGHLIGHTED ROW CAN DO.
+  //
+  // "Enter run" was printed unconditionally, including on the category heads,
+  // where Enter now opens a menu and on which it used to do nothing whatsoever. A
+  // keymap that advertises an inert key is the same lie as a menu row for an
+  // unbound chord.
+  const enter = selIsHead ? "<span>Enter open</span>" : "<span>Enter run</span>";
+  // `?` is named here on purpose: this panel lists the LEADER's bindings, and
+  // Firefox's own shortcuts are intentionally not among them. Saying where the
+  // rest lives is what keeps the two surfaces from looking like they disagree.
+  const reference = pageNum + 1 === 1 ? "<span>? all keys</span>" : "";
   return (
-    "<span>\u2191/\u2193 move</span>" + pageHint + "<span>Enter run</span><span>Esc cancel</span>" +
+    "<span>\u2191/\u2193 move</span>" + pageHint + enter + "<span>Esc cancel</span>" +
+    reference +
     "<span class='wk-page'>" + (pageNum + 1) + "/" + total + "</span>"
   );
 }

@@ -443,8 +443,10 @@ Method, uniform for every entry:
 popup title / leader / which-key / hints / find / yank / focus / zoom / url),
 the tab list over the probe (count, active, muted, strip order), and the chrome
 helper's state (status bar, split, last action). The content field list is a
-WHITELIST — `data-lf-lastkey` changes on every keystroke, so including it would
-make every chord "pass" without the product doing anything.
+WHITELIST — a mirror that changes on every keystroke would make every chord
+"pass" without the product doing anything, so the page's dispatch trace is not
+part of it: the suite pulls that on demand (`ctx.dispatchTrace`) when a failure
+needs explaining.
 2. Press the chord as a user would (`ctx.leaderSeq`: leader armed once, sub-keys
 in order).
 3. Poll until ANY channel changes, or until the command's own primary effect
@@ -552,8 +554,11 @@ What works:
 
 - **Anchor on the product's own mirrors.** `data-lf-leader` flips in the same
   task as the dispatch (`armed` on press, cleared when the action runs);
-  `data-lf-whichkey`, `data-lf-hints`, `data-lf-typing`, `data-lf-dispatched`
-  and the `lazyfox:list` event mark what became visible.
+  `data-lf-whichkey`, `data-lf-hints`, `data-lf-typing` and the `lazyfox:list`
+  event mark what became visible. (`data-lf-dispatched` is gone on purpose: the
+  page keeps its dispatch trace in memory and answers `dispatchTrace` when
+  asked, because per-keystroke root-attribute writes cost the user frames on
+  every page for a reader that is not the user.)
 - **Stamp inside the page.** A `setInterval(…, 4)` poller in the page records
   `performance.now()` the first time each fact is true, so no protocol round
   trip is inside the number. The tab must be focused or the interval is

@@ -14,6 +14,7 @@ import * as sequences from "./sequences.ts";
 import * as tabsmodal from "./tabsmodal.ts";
 import * as multidigit from "./multidigit.ts";
 import * as surfaces from "./surfaces.ts";
+import * as ownership from "./ownership.ts";
 import * as stuck from "./stuck.ts";
 import * as held from "./held.ts";
 
@@ -37,6 +38,12 @@ export async function run(ctx: any): Promise<void> {
   // Before the popups: it arms the leader on about: pages, and a leftover
   // armed leader would make every later keypress ambiguous.
   await surfaces.run(ctx);
+  // Reorders the strip around a live web page. It states the shape of the
+  // window it needs itself (each case collapses the window first), so it does
+  // not inherit whatever ran before it — and it leaves the window collapsed,
+  // which is why it sits with the other tab-churning tests rather than at the
+  // start of the group.
+  await ownership.run(ctx);
   await sequences.run(ctx);
   await tabsmodal.run(ctx);
   // Opens a dozen tabs and closes them again, so it runs after every test that

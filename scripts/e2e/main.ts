@@ -43,6 +43,7 @@ import {
   printHelp,
   loadBaseline,
   recordRun,
+  saveBaseline,
   flakeReport,
   type Baseline,
 } from "./runner.ts";
@@ -185,7 +186,22 @@ async function main(): Promise<void> {
     console.log(flakeReport(baseline));
   }
 
-  const rep = summary(baseline, updateBaseline);
+  // "Did this run exercise the whole of every group it selected?" — the e2e
+  // analogue of not grading a subset. A narrowed run cannot testify that a
+  // baseline row's test is gone (see summary's stale-row check), so the
+  // narrowing has to be reported, not inferred.
+  const wholeGroups = !selection.only.length && !selection.tags.length && !selection.skipTags.length;
+  if (selection.only.length || selection.tags.length || selection.skipTags.length) {
+    console.log(
+      "\n(filtered selection: baseline rows for tests this run did not select are left alone)",
+    );
+  }
+  const rep = summary(baseline, updateBaseline, wholeGroups);
+  // `--update-baseline` is the only mode that changes the record, and writing it
+  // is owned here rather than by the summary: the summary is a report over the
+  // object it is given, which is what makes its stale-row rule testable without
+  // rewriting the committed baseline from a unit test.
+  if (updateBaseline) saveBaseline(baseline);
 
   if (!rep.ok) {
     process.exitCode = 1;

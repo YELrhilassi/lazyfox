@@ -7,6 +7,7 @@
 import { mergeConfig } from "../shared/config";
 import { core, ensureCore } from "../shared/core";
 import { LeaderController, isCancel } from "../shared/leader";
+import { specToText } from "../shared/keymap";
 import { mirror, mirrorFlag } from "../shared/observability";
 import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../shared/overlay";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
@@ -181,8 +182,15 @@ import type { ContentPopupShell } from "./content/find";
       runLeaderAction(leaderActions, k);
     },
     bindings: () => leader.bindings(),
-    armDigits: (apply, timeoutMs, expect) => {
-      leader.armPending(apply, { timeoutMs: timeoutMs || 3000, expect });
+    armDigits: (apply, timeoutMs, expect, onTimeout) => {
+      const generation = leader.armPending(apply, { timeoutMs: timeoutMs || 3000, expect, onTimeout });
+      return {
+        cancel: () => leader.cancelPendingGeneration(generation),
+        retarget: (next: string) => {
+          if (leader.isPendingGeneration(generation)) leader.setPendingExpect(next);
+        },
+        isActive: () => leader.isPendingGeneration(generation),
+      };
     },
     // The popup's input lives in a CLOSED shadow root, so no real keystroke ever
     // reaches it and the selector has to insert text itself. Same setting as the
@@ -208,10 +216,13 @@ import type { ContentPopupShell } from "./content/find";
       void send("syncLeader", { signal: sig });
     },
     // An unknown chord is reported rather than swallowed, exactly as on a web
-    // page. The home page is where a new key is most often tried first.
+    // page. The home page is where a new key is most often tried first — and it
+    // says what was pressed the way the user pressed it (`D`, not `shift+d`),
+    // because this page also prints the which-key table right next to it. The
+    // internal spec stays on the trace line, where the reader is a program.
     (spec) => {
       traceDecision("miss:" + spec);
-      toast("no binding for ;" + spec);
+      toast("no binding for ;" + specToText(spec));
     }
   );
 
@@ -239,15 +250,25 @@ import type { ContentPopupShell } from "./content/find";
       // whole sequence silently shifts by one. Naming the surface is what makes
       // that readable instead of mysterious.
       traceDecision(leader.hasPending() ? "capture" : "leader");
-      e.preventDefault();
-      e.stopImmediatePropagation();
+      // The cancel is decided FIRST and unconditionally: it is the escape hatch,
+      // and no surface may be able to keep it.
       if (isCancel(e)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
         leader.cancelPending();
         leader.hide();
         return true;
       }
-      if (leader.hasPending()) leader.handlePending(e);
-      else leader.handleKey(e);
+      // Then the leader (or its capture) gets the key — and its answer is
+      // honoured. A capture says `false` for a key that is not part of the
+      // sequence it is collecting; consuming it anyway is how a keystroke the
+      // user aimed at the page disappeared on the home page too. The key is only
+      // swallowed once somebody says they took it, which is the rule this page's
+      // own tracer reports as `leader` / `capture`.
+      const took = leader.hasPending() ? leader.handlePending(e) : leader.handleKey(e);
+      if (!took) return false;
+      e.preventDefault();
+      e.stopImmediatePropagation();
       return true;
     }
     return false;
@@ -261,6 +282,12 @@ import type { ContentPopupShell } from "./content/find";
   // command center as chrome territory and armed its OWN leader for the same
   // keypress the page was handling — so a key ran twice when the tab happened to
   // be in-process, and the two answers disagreed (";f works sometimes").
+  // This DOCUMENT's identity, generated once. The URL cannot serve as one: the
+  // command center is a single-page app, so its URL changes without a navigation
+  // and a URL-keyed record went stale the moment it did (see
+  // keystate.noteContentPresent). Same nonce, same reason, as the content script.
+  const docId =
+    String(Date.now()) + "-" + Math.random().toString(36).slice(2, 10);
   const reportPresence = (active: boolean) => {
     let href = "";
     try {
@@ -268,7 +295,7 @@ import type { ContentPopupShell } from "./content/find";
     } catch (e) {
       // ignore — an unreadable location simply reports no URL
     }
-    return send("syncContent", { active, url: href });
+    return send("syncContent", { active, url: href, doc: docId });
   };
   void reportPresence(true);
   try {
@@ -340,6 +367,25 @@ import type { ContentPopupShell } from "./content/find";
   }
 
   window.addEventListener("keydown", keyHandler.onKeyDown, true);
+
+  // THIS DOCUMENT ANSWERS KEYS — and says so in the same statement that makes it
+  // true, so the two can never disagree.
+  //
+  // The chrome helper forwards a key INTO this page rather than run it itself
+  // (its `#lfc=keys` channel and the content-process actor both arrive that way,
+  // and so does every key the harness sends). A command-center document that has
+  // not finished loading its script yet — a tab caught mid-redirect, which is
+  // exactly what a fresh new tab is for a moment, or one whose reload is in
+  // flight — has the URL and the static markup and none of the engine, and a key
+  // handed to it there was consumed by nobody: `;` on such a tab left the
+  // keyboard dead until the user navigated away. The helper needs to be able to
+  // tell "the page took it" from "there is no page here yet" (see
+  // chrome/keysdispatch.ts, and commandCenterPageReady in commandcenterfocus.ts).
+  //
+  // Unconditional, NOT `if (__DEV__)`: the release build's page has the same
+  // engine and the same problem, and this is the one thing the helper reads to
+  // decide whether to answer the key itself.
+  mirrorFlag("engine", true);
 
   refs.input.addEventListener("focus", () => {
     renderer.setStateTag("insert");

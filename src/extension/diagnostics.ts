@@ -198,7 +198,21 @@ function renderCache(s: CacheState, note?: string): void {
   desc.textContent = s.note;
   rows(host, [
     ["In force", scopeLabel + " · " + (s.mode === "normal" ? "Firefox default" : s.mode === "fresh" ? "revalidate every load" : "no cached copies"), s.mode === "normal" ? "ok" : "warn"],
-    ["Global switch", s.globalSupported ? "available" : "not exposed by this Firefox build", s.globalSupported ? "ok" : "warn"],
+    // The switch's VALUE, not merely whether the build has one: this row is the
+    // only place the browser-wide setting is visible at all, and a row that says
+    // "available" for a switch that is off is how a user concludes the cache is
+    // on for everything except the tabs they picked.
+    [
+      "Global switch",
+      !s.globalSupported
+        ? "not exposed by this Firefox build"
+        : s.globalOn === null
+          ? "on (the build will not report it)"
+          : s.globalOn
+            ? "on"
+            : "off — applies to every tab",
+      !s.globalSupported || s.globalOn === false ? "warn" : "ok",
+    ],
     ["Per-tab enforcement", s.chromeSupported ? "chrome layer installed" : "needs the window chrome (installer)", s.chromeSupported ? "ok" : "warn"],
     ["Covered tabs", s.scope === "global" ? "everywhere" : s.tabIds.length ? s.tabIds.join(", ") : "none", ""],
   ]);

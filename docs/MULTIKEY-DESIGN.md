@@ -6,19 +6,34 @@ with them. What changed after this draft is the part that made every key a
 guess: the keymap is now ONE table of data (`core/keymap.go`) which the menu,
 the help popup and the dispatch all read, and the sessions family (`;p` / `'` /
 nine marker rows) collapsed into the single key `;P` plus keys inside the popup
-it opens. See "the keymap was two tables" in FINDINGS.md. Read this document for
-the reasoning, `core/keymap.go` for what is bound, and §1 below as the STATE AT
-THE TIME OF WRITING rather than as a description of today's leader.
+it opens. See "the keymap was two tables" in FINDINGS.md.
 
 Every statement about behaviour at the time of writing was read out of
 `core/bindings.go` and `src/shared/popups/leader.ts`, not assumed.
 
+**NO KEY LIST IN THIS DOCUMENT IS NORMATIVE.** It is a design record from a
+date, and it says so:
+
+| If you want… | Read |
+| --- | --- |
+| what is bound right now | `core/keymap.go` — the one table the overlay, the help popup and the dispatch all read |
+| what a user sees | `;?` (the searchable reference) or the `;` which-key overlay itself |
+| why the layout has this shape | this document — §2's rule, §7's rejected alternatives, §8's decisions |
+
+Any key list *in here* is a snapshot from the day it was written, kept as
+evidence for the argument that follows. It was not kept up to date, and it must
+not be: a key table maintained by hand in a design document is a second keymap,
+which is the defect this project has already paid for twice (audit §7 — two
+surfaces answering "what is my keyboard" with two answers). The snapshot in §1
+therefore stays exactly as it was written, dated, rather than being regenerated
+to look current — its job is to show the problem the draft was solving.
+
 ---
 
-## 1. What is actually on the leader today
+## 1. What was on the leader the day this was written (snapshot, not current)
 
-35 real bindings (plus 15 Firefox-native rows that are display only). Grouped
-as the which-key table groups them:
+At the time of writing: 35 real bindings (plus 15 Firefox-native rows that are
+display only), grouped as the which-key table then grouped them:
 
 | Group | Keys | n |
 | --- | --- | --- |
@@ -27,6 +42,11 @@ as the which-key table groups them:
 | Open | `o O t s S h b G L d i` | 11 |
 | Tools | `f F B T w / ? q e z D N` | 12 |
 | Sessions | `p Q ' | [ ] { } + , . \` | 12 |
+
+**This table is history** — the current table is `core/keymap.go`, and today's
+shape is 7 groups of which 3 are menus. It is kept here because the argument
+below is about *these* numbers: the day the draft was written, one flat
+namespace held all of it.
 
 That is 35 top-level keys behind one leader. This is the actual ergonomic
 problem, and it is worth being precise about why: **the leader is a flat

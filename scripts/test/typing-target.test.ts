@@ -196,3 +196,56 @@ describe("the ordinary cases are unchanged", () => {
     );
   });
 });
+
+describe("the typing answer belongs to the EVENT, and is computed once", () => {
+  // The content dispatcher asks this question up to three times for ONE keydown
+  // (the link-hint branch, the typing guard, and the Ctrl+digit branch). Each
+  // ask used to walk the composed path and then up to six nodes through the
+  // extension's shadow-root door — and, worse than the cost, the three asks were
+  // free to DISAGREE, because anything that ran in between can move focus (the
+  // hint branch exits hints, a popup handler focuses its own input). So one
+  // keystroke could be classified "the user is typing" in one place and "not
+  // typing" twenty lines later, and the two halves of the same dispatch
+  // contradicted each other about whether an edit was in progress.
+  //
+  // The answer is therefore a property of the event: "where did this keystroke
+  // happen" cannot become a different question because the DOM moved on.
+
+  test("a second ask does not re-derive the answer", () => {
+    let walks = 0;
+    const target = el("INPUT");
+    const e = {
+      key: "a",
+      target,
+      composedPath: () => {
+        walks++;
+        return [target];
+      },
+    } as unknown as Event;
+    assert.equal(isTypingEvent(e), true);
+    assert.equal(isTypingEvent(e), true);
+    assert.equal(isTypingEvent(e), true);
+    assert.equal(walks, 1, "the composed path is walked once per event, not once per question");
+  });
+
+  test("the answer cannot change under the caller's feet", () => {
+    const target = el("DIV");
+    const e = { key: "a", target, composedPath: () => [target] } as unknown as Event;
+    assert.equal(isTypingEvent(e), false);
+    // Something focuses an editable mid-dispatch. The key already being handled
+    // still happened where it happened.
+    target.isContentEditable = true;
+    assert.equal(isTypingEvent(e), false, "the first answer stands for this event");
+  });
+
+  test("a different event is a different question", () => {
+    // The memo must not become a global mode: the NEXT keystroke has to be
+    // classified from the DOM as it is then, or typing would be decided by
+    // whatever the last event happened to look like.
+    const target = el("DIV");
+    const ev = () => ({ key: "a", target, composedPath: () => [target] }) as unknown as Event;
+    assert.equal(isTypingEvent(ev()), false);
+    target.isContentEditable = true;
+    assert.equal(isTypingEvent(ev()), true, "a new event is asked afresh");
+  });
+});

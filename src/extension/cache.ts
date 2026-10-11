@@ -15,6 +15,7 @@
 // re-pushed to the chrome helper whenever the helper announces itself alive.
 
 import type { CacheMode, CacheScope, CacheState } from "../shared/types";
+import { cacheNote, globalSwitchFor } from "./cache-policy";
 import { readKey, writeKey, vTabIds, type CachePolicy } from "./store";
 import { sessionState } from "./sessions";
 
@@ -81,12 +82,28 @@ async function liveTabIds(ids: number[]): Promise<number[]> {
   return out;
 }
 
-function describe(scope: CacheScope, mode: CacheMode): string {
-  if (mode === "normal") return "Firefox's default cache behaviour.";
-  const what = mode === "off" ? "no cached copies (every request hits the network)" : "revalidate every load";
-  if (scope === "global") return "Everywhere: " + what + ".";
-  if (scope === "session") return "This session's tabs: " + what + ".";
-  return "This tab only: " + what + ".";
+/**
+ * The switch's CURRENT value, or null when this build does not expose it.
+ *
+ * Read rather than assumed, because the switch is the one part of a cache policy
+ * that lives OUTSIDE the policy record: it is a browser-wide setting that
+ * outlives the Lazyfox session, the background page and the add-on's own idea of
+ * what the user chose. Anything that reports "what is in force" about the cache
+ * has to ask the browser, not the stored policy, or it reports the intention
+ * rather than the state.
+ */
+async function globalCacheValue(): Promise<boolean | null> {
+  try {
+    const bs = browser.browserSettings;
+    if (bs && bs.cacheEnabled && typeof bs.cacheEnabled.get === "function") {
+      const o = await bs.cacheEnabled.get({});
+      const v = o && (o as { value?: unknown }).value;
+      if (typeof v === "boolean") return v;
+    }
+  } catch (e) {
+    // A switch that cannot be read is reported as unknown, never guessed at.
+  }
+  return null;
 }
 
 export function createCacheController(deps: CacheDeps) {
@@ -108,19 +125,17 @@ export function createCacheController(deps: CacheDeps) {
     const pol = await readPolicy();
     const tabIds = pol.scope === "global" ? [] : await liveTabIds(pol.tabIds);
     const chromeSupported = deps.isChromeAlive();
-    let note = describe(pol.scope, pol.mode);
-    // A global "fresh" is the one mode the background cannot enforce alone: it
-    // needs the helper's revalidate pref. Say so instead of implying it is live.
-    if (pol.scope === "global" && pol.mode === "fresh" && !chromeSupported) {
-      note += " (Needs the Lazyfox window chrome to actually revalidate — install it, then apply again.)";
-    }
+    // Asked, not assumed: see globalCacheValue. `null` is "this build will not
+    // say", which the note treats differently from "off".
+    const globalOn = await globalCacheValue();
     return {
       scope: pol.scope,
       mode: pol.mode,
       globalSupported: !!globalCacheSwitch(),
+      globalOn: globalOn,
       chromeSupported: chromeSupported,
       tabIds: tabIds,
-      note: note,
+      note: cacheNote(pol.scope, pol.mode, { globalOn: globalOn, chromeAlive: chromeSupported }),
     };
   }
 
@@ -130,21 +145,16 @@ export function createCacheController(deps: CacheDeps) {
     if (scope !== "global" && !deps.isChromeAlive()) {
       return { ok: false, error: "Per-tab cache control needs the Lazyfox window chrome (run the installer)." };
     }
-    if (scope === "global") {
-      const sw = globalCacheSwitch();
-      if (mode === "off" && !sw) {
-        return { ok: false, error: "Firefox does not expose the global cache switch on this build." };
-      }
-      try {
-        if (sw) await sw.get(mode !== "off");
-      } catch (e) {
-        return { ok: false, error: "Firefox refused the cache switch." };
-      }
-      // "fresh" (and leaving "off") needs the revalidate pref, which only the
-      // chrome helper can set. Push it; if the helper is down "fresh" degrades
-      // to "normal" and the note that comes back says so.
-      deps.requestChrome("cacheGlobal", mode);
+    const sw = globalCacheSwitch();
+    if (scope === "global" && mode === "off" && !sw) {
+      return { ok: false, error: "Firefox does not expose the global cache switch on this build." };
     }
+    // Resolve what the policy COVERS before anything is written. The order used
+    // to be write-then-check, so refusing an empty scope still left that empty
+    // policy stored and pushed to the helper: the panel said "No tabs matched
+    // that scope" while the helper was already enforcing an empty list, and the
+    // refusal had changed the machine. Nothing is persisted now until the policy
+    // is one that can be enforced.
     let tabIds: number[] = [];
     if (scope === "session") {
       try {
@@ -158,16 +168,38 @@ export function createCacheController(deps: CacheDeps) {
         const ts = await browser.tabs.query({ currentWindow: true, active: true });
         if (ts && ts[0] && ts[0].id) tabIds = [ts[0].id];
       } catch (e) {
-        // ignore
+        // A query that throws covers nothing, which is the branch below.
       }
+    }
+    if (scope !== "global" && !tabIds.length) {
+      return { ok: false, error: "No tabs matched that scope — nothing was changed.", state: await cacheState() };
+    }
+    // The browser-wide switch is set from the SCOPE, not only when the scope is
+    // global: leaving it off would silently apply a global "off" to every tab
+    // while the panel described a per-tab policy. See globalSwitchFor.
+    if (sw) {
+      try {
+        await sw.get(globalSwitchFor(scope, mode));
+      } catch (e) {
+        // "off everywhere" is the one case where the switch IS the policy, so a
+        // refusal there is a failed apply rather than something to report later.
+        if (scope === "global" && mode === "off") {
+          return { ok: false, error: "Firefox refused the cache switch." };
+        }
+        // Otherwise the helper still enforces the chosen scope; the note that
+        // comes back says the browser-wide switch is still off rather than
+        // implying the apply did everything it promised.
+      }
+    }
+    if (scope === "global") {
+      // "fresh" (and leaving "off") needs the revalidate pref, which only the
+      // chrome helper can set. Push it; if the helper is down "fresh" degrades
+      // to "normal" and the note that comes back says so.
+      deps.requestChrome("cacheGlobal", mode);
     }
     const pol: CachePolicy = { scope: scope, mode: mode, tabIds: tabIds };
     await writePolicy(pol);
     await pushToChrome(pol);
-    // If the scope is narrow but nothing could be captured, say so.
-    if (scope !== "global" && !tabIds.length) {
-      return { ok: false, error: "No tabs matched that scope.", state: await cacheState() };
-    }
     return { ok: true, state: await cacheState() };
   }
 

@@ -394,7 +394,11 @@ answer rather than against a second copy in TypeScript).
 away the capture's "I did not take this" verdict and swallowed the key anyway,
 so a mistyped sub-key vanished with no output — which is why the only way to
 make a key work was to press it again. A miss now reports the chord it got
-(`no binding for ;ctrl+alt+r`), in all three hosts.
+(`no binding for ;Ctrl+Alt+r` — the chord the hand made, not the canonical
+`ctrl+alt+r`), in all three hosts. `specToText()` is the single translation, and
+it has two rules: Shift folds into the character when it is the only modifier
+(`shift+p` → `P`), and otherwise a capital means Shift (`Ctrl+Shift+P`) while the
+plain letter stays plain (`Ctrl+Alt+r`).
 
 **A category is a menu of things that DIFFER.** `;W` (12 window/layout keys),
 `;Z` (3 zoom keys) and `;K` (2 address keys) are heads; their sub-keys are

@@ -18,8 +18,6 @@ export interface ContentDomDeps {
   // The single keydown dispatcher. A throw inside it must not kill the
   // listener, so the wrapper catches and keeps going.
   onKeyDown(e: KeyboardEvent): void;
-  /** True while any Lazyfox surface owns the keyboard. */
-  overlayOwnsKeys(): boolean;
   /** Close whatever popup is open, if any. */
   closePopup(): void;
   /** True while link hints are showing. */
@@ -40,8 +38,20 @@ export interface ContentDomDeps {
   focusFirstInput(): void;
   /** The hint badge state, for the `hintBadge` message. */
   hintBadge(): Record<string, unknown>;
+  /** Explicitly requested hint geometry for tests and diagnostics. */
+  hintSnapshot(): Record<string, unknown>;
   /** The diagnostics page's self-report for this tab. */
   pageReport(): Promise<any>;
+  /**
+   * The last key this document saw and the state it dispatched under.
+   *
+   * Pulled on demand (the `dispatchTrace` message) rather than mirrored onto
+   * <html> per keystroke: the mirror cost the user a root-attribute write on
+   * every key of every page so that a test could read it afterwards. The value
+   * is kept in memory and recomputed into the reply when asked; nothing on the
+   * page can see it.
+   */
+  dispatchTrace(): Record<string, unknown>;
   /** Only log a thrown handler when the dev build is on. */
   isDev(): boolean;
   logError(what: string, err: unknown): void;
@@ -53,6 +63,10 @@ export function installContentDom(deps: ContentDomDeps): void {
   window.addEventListener(
     "keydown",
     (e) => {
+      // A record left over from an earlier press of this key (its tail never
+      // arrived) would be spent by THIS press's keypress and eat the user's
+      // character. The new keydown supersedes it. See keyguard.beginPress.
+      keyGuard.beginPress(e);
       // A page-specific exception (a hostile handler, an unexpected element)
       // must not take down key handling for the whole session: catch it, keep
       // the listener, and let the next key try again.
@@ -71,15 +85,31 @@ export function installContentDom(deps: ContentDomDeps): void {
   );
 
   // keypress/keyup do NOT obey the keydown's preventDefault, so swallowing
-  // keydown alone is not enough. Swallow the tail of every key we consumed,
-  // and everything at all while an overlay owns the keyboard, so nothing the
-  // user types into Lazyfox can leak to the page behind it.
+  // keydown alone is not enough. Swallow the tail of every key we actually
+  // consumed — and ONLY those.
+  //
+  // This used to also swallow everything at all while an overlay flag was
+  // true, on the theory that a live overlay must stop input reaching the page.
+  // That clause was both redundant and harmful:
+  //
+  //   redundant, because every path that consumes a keydown already calls
+  //   preventDefault, and the wrapper above records the key in the KeyGuard on
+  //   exactly that condition (`e.defaultPrevented`). So a consumed key's tail is
+  //   swallowed by the guard alone.
+  //
+  //   harmful, because the overlay flags are state, not events: any moment one
+  //   was left set — a stale leader, a hint session mid-exit, a capture nobody
+  //   cancelled — every subsequent `keypress` was preventDefaulted while
+  //   `keydown` still passed through. Firefox inserts text on the keypress
+  //   default action, so the visible result was "the letter does not print",
+  //   selectively, with no error anywhere. Text a user is typing must never be
+  //   gated on an overlay's bookkeeping.
   function onKeyTail(e: KeyboardEvent): void {
     // Always reconcile the guard (never short-circuit): a key we consumed once
     // must have its record cleared by the tail that follows, or a later,
     // legitimate press of the same key while typing would be swallowed too.
     const tail = keyGuard.ownsTail(e);
-    if (deps.overlayOwnsKeys() || tail) {
+    if (tail) {
       e.preventDefault();
       e.stopImmediatePropagation();
       return;
@@ -133,6 +163,16 @@ export function installContentDom(deps: ContentDomDeps): void {
       }
       if (msg && msg.action === "hintBadge") {
         return Promise.resolve({ ok: true, id: "amb", ...deps.hintBadge() });
+      }
+      if (msg && msg.action === "hintSnapshot") {
+        if (!deps.isDev()) return Promise.resolve({ ok: false, snapshot: null });
+        return Promise.resolve({ ok: true, snapshot: deps.hintSnapshot() });
+      }
+      if (msg && msg.action === "dispatchTrace") {
+        // Dev-only: a release build keeps no trace to answer with, and says so
+        // instead of pretending the key never arrived.
+        if (!deps.isDev()) return Promise.resolve({ ok: false, trace: null });
+        return Promise.resolve({ ok: true, trace: deps.dispatchTrace() });
       }
       if (msg && msg.action === "pageReport") {
         // The diagnostics page asks the ACTIVE tab's content script for a live
