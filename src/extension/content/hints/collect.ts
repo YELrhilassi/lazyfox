@@ -4,9 +4,31 @@
 // COULD be hinted", select.ts answers "what SHOULD be". Mixing them is how a
 // page ends up with either no hints at all or a wall of them, because a
 // filter that is right for one question silently breaks the other.
+//
+// THREE THINGS THIS PASS DOES NOT DO ANY MORE, each with the cost it removed:
+//
+//   * it does not materialise the tree. The per-node walk used to be
+//     `Array.prototype.slice.call(root.querySelectorAll("*"))` followed by
+//     `Math.min(all.length, MAX_SCAN)` — so the cap bounded the LOOP and not the
+//     ALLOCATION: a five-figure-element array per root, on a pass that stops
+//     after a few thousand nodes anyway. It is a lazy TreeWalker now
+//     (`shared/dom.ts walkElements`), so the budget is the only thing that
+//     bounds it.
+//   * it does not re-derive visibility per element. `basicVisible` was walked for
+//     every candidate: the composed ancestor chain, once per node, to answer a
+//     question the previous node had usually already answered about the same
+//     ancestors. The pass object from hints/visibility.ts caches one answer per
+//     ELEMENT, so siblings and their whole ancestry are walked once.
+//   * it does not run unbounded. A document can be arbitrarily large and the
+//     pass runs inside a keystroke handler, so the per-node work is on a soft
+//     DEADLINE: the cheap `querySelectorAll` matches are always collected (they
+//     are one query per root and they are the primary candidates), while the
+//     cursor:pointer + shadow-root discovery walk stops when the budget runs out
+//     and SAYS SO in the stats. Truncation is stated rather than silent — the
+//     same rule the chrome-side hint engine follows for its ninth link.
 import { HINTABLE_SELECTOR, MAX_SCAN, MEDIA_SELECTOR, SHADOW_DEPTH } from "./selectors";
-import { basicVisible } from "./probe";
-import { shadowRootOf } from "../../../shared/dom";
+import { createVisibilityPass, type VisibilityPass } from "./visibility";
+import { shadowRootOf, walkElements } from "../../../shared/dom";
 
 export function isOrHasMedia(el: Element): boolean {
   try {
@@ -22,7 +44,7 @@ export function isOrHasMedia(el: Element): boolean {
 // container: few element children, short text, and no hintable descendant. The
 // computed-style read is gated behind those cheap checks so a huge page does
 // not pay for it on every node.
-export function leafClickable(el: Element): boolean {
+export function leafClickable(el: Element, pass?: VisibilityPass): boolean {
   if (el === document.body || el === document.documentElement) return false;
   let children = 0;
   try {
@@ -56,11 +78,20 @@ export function leafClickable(el: Element): boolean {
   ) {
     return false;
   }
+  // The cursor read comes from the pass, so the node's style is read at most
+  // once per pass even though the visibility checks asked about it too. A node
+  // that is not visible is not clickable, so this is also the cheapest place to
+  // drop it.
+  const cs = pass ? pass.styleOf(el) : null;
   let cursor = "";
-  try {
-    cursor = getComputedStyle(el).cursor;
-  } catch (e) {
-    return false;
+  if (pass) {
+    cursor = cs ? cs.cursor : "";
+  } else {
+    try {
+      cursor = getComputedStyle(el).cursor;
+    } catch (e) {
+      return false;
+    }
   }
   return cursor === "pointer";
 }
@@ -90,6 +121,15 @@ export function isMediaOnlyWrapper(el: Element): boolean {
 export interface CollectStats {
   shadowRoots: number;
   pointerControls: number;
+  /**
+   * The per-node discovery walk hit the time budget (or MAX_SCAN) before the
+   * document was exhausted. The selector matches are still complete; what may be
+   * missing is a control that only the cursor:pointer pass would have found.
+   */
+  truncated: boolean;
+  /** Nodes the discovery walk visited, and the budget it was given. */
+  visited: number;
+  budgetMs: number;
 }
 
 // Elements that are hintable ONLY because they wrap media (see the
@@ -141,36 +181,84 @@ export function specificity(el: Element): number {
   return named ? 2 : 1;
 }
 
-// Collect every hintable element in (approximate) document order, descending
-// into open and extension-visible closed shadow roots so custom elements are covered.
-export function collectHintables(stats?: CollectStats): Element[] {
+/**
+ * The default per-node discovery budget, in milliseconds.
+ *
+ * This is the pass that runs inside the keystroke that opened hints, so it is
+ * bounded by WALL TIME rather than by node count: a hundred thousand nodes of
+ * flat markup and a hundred thousand nodes of nested custom elements are not the
+ * same cost, and the previous cap (MAX_SCAN) could not tell them apart. 12ms is
+ * about one frame at 80Hz — enough for every document measured in the suite
+ * (the largest fixture is a few thousand nodes) and short enough that no single
+ * hint pass can own the main thread.
+ */
+export const COLLECT_BUDGET_MS = 12;
+
+function nowMs(): number {
+  try {
+    if (typeof performance !== "undefined" && performance && typeof performance.now === "function") {
+      return performance.now();
+    }
+  } catch (e) {
+    // fall through
+  }
+  return Date.now();
+}
+
+/**
+ * Collect every hintable element in (approximate) document order, descending
+ * into open and extension-visible closed shadow roots so custom elements are
+ * covered.
+ *
+ * The pass is passed IN so collection and selection share one set of cached
+ * visibility answers about the same document; given none, one is created here
+ * (which is the same cost as before this was cacheable, and leaves nothing
+ * behind).
+ */
+export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): Element[] {
+  const vis = pass || createVisibilityPass();
   const out: Element[] = [];
   const seen = new Set<Element>();
+  const budgetMs = stats ? stats.budgetMs || COLLECT_BUDGET_MS : COLLECT_BUDGET_MS;
+  const deadline = nowMs() + budgetMs;
+  let visited = 0;
+  let truncated = false;
 
   function add(el: Element): void {
-    if (seen.has(el) || !basicVisible(el)) return;
+    if (seen.has(el) || !vis.visible(el)) return;
     seen.add(el);
     out.push(el);
   }
 
   function walk(root: ParentNode, depth: number): void {
+    // The cheap, primary candidates first: ONE query per root for the whole
+    // selector list, in document order, before the discovery walk below. This is
+    // the order the engine has always produced, and it is load-bearing: keys are
+    // handed out in candidate order, so the first link on the page keeps the
+    // shortest key.
     let nodes: Element[];
     try {
       nodes = Array.prototype.slice.call(root.querySelectorAll(HINTABLE_SELECTOR));
     } catch (e) {
-      return;
+      nodes = [];
     }
     for (const el of nodes) add(el);
-    if (depth >= SHADOW_DEPTH) return;
-    let all: Element[];
-    try {
-      all = Array.prototype.slice.call(root.querySelectorAll("*"));
-    } catch (e) {
-      return;
-    }
-    const n = Math.min(all.length, MAX_SCAN);
-    for (let i = 0; i < n; i++) {
-      const el = all[i]!;
+    if (depth >= SHADOW_DEPTH || truncated) return;
+    // NOTE: the shadow recursion below happens INSIDE the discovery walk, not
+    // after it, because that is the order the engine has always produced: a
+    // custom element's inner controls are appended where the host appears, so a
+    // host's controls keep the position of the host in the key order.
+    // The discovery walk: shadow roots (which the selector query cannot see) and
+    // the cursor:pointer pass. Lazily walked, so MAX_SCAN bounds the WORK rather
+    // than the allocation.
+    const result = walkElements(root, MAX_SCAN, (el) => {
+      // Checked every 256 nodes: one clock read per 256 nodes is free next to
+      // the per-node work, and stopping MID-root is the whole point of a budget.
+      if (visited > 0 && (visited & 255) === 0 && nowMs() > deadline) {
+        truncated = true;
+        return false;
+      }
+      visited++;
       // CLOSED ROOTS COUNT, and they are the majority of the ones that matter.
       //
       // This used to read `el.shadowRoot` and require `mode === "open"`, so every
@@ -186,8 +274,8 @@ export function collectHintables(stats?: CollectStats): Element[] {
         if (stats) stats.shadowRoots++;
         walk(sr, depth + 1);
       }
-      // The cursor:pointer pass, on the same walk (one DOM sweep).
-      if (!seen.has(el) && leafClickable(el)) {
+      // The cursor:pointer pass, on the same walk (one DOM traversal).
+      if (!seen.has(el) && leafClickable(el, vis)) {
         if (stats) stats.pointerControls++;
         // leafClickable's media exemption is what makes an unlabelled wrapper
         // hintable at all; record that this candidate qualified on that basis
@@ -195,10 +283,19 @@ export function collectHintables(stats?: CollectStats): Element[] {
         if (isMediaOnlyWrapper(el)) weakHintables.add(el);
         add(el);
       }
-    }
+    });
+    if (result.truncated) truncated = true;
   }
 
+  if (stats) {
+    stats.truncated = false;
+    stats.visited = 0;
+    stats.budgetMs = budgetMs;
+  }
   walk(document, 0);
+  if (stats) {
+    stats.truncated = truncated;
+    stats.visited = visited;
+  }
   return out;
 }
-

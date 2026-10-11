@@ -75,30 +75,37 @@ export function shadowRootOf(el: Element): ShadowRoot | null {
 export function walkElements(
   root: ParentNode,
   limit: number,
-  visit: (el: Element) => void,
-): { visited: number; truncated: boolean } {
+  // `visit` may return `false` to STOP the walk: a caller with its own bound
+  // (a time budget, a page that turned hostile) needs to end the traversal
+  // rather than keep paying for the cap. `stopped` says which happened, so the
+  // two reasons a walk ends early — the cap was reached and the caller gave up
+  // — are never confused for each other in a report.
+  visit: (el: Element) => void | boolean,
+): { visited: number; truncated: boolean; stopped: boolean } {
   let visited = 0;
   try {
     const doc = (root as Document).createTreeWalker
       ? (root as Document)
       : ((root as ShadowRoot).ownerDocument as Document);
     if (!doc || typeof doc.createTreeWalker !== "function") {
-      return { visited: 0, truncated: false };
+      return { visited: 0, truncated: false, stopped: false };
     }
     // `root` may be a ShadowRoot, and createTreeWalker lives on Document but
     // accepts any node as the root of the walk.
     const walker = doc.createTreeWalker(root as unknown as Node, NodeFilter.SHOW_ELEMENT);
     let node = walker.nextNode();
     while (node) {
-      if (visited >= limit) return { visited, truncated: true };
-      visit(node as Element);
+      if (visited >= limit) return { visited, truncated: true, stopped: false };
+      if (visit(node as Element) === false) {
+        return { visited, truncated: false, stopped: true };
+      }
       visited++;
       node = walker.nextNode();
     }
   } catch (e) {
     // A hostile page's tree must not break the caller; report what was seen.
   }
-  return { visited, truncated: false };
+  return { visited, truncated: false, stopped: false };
 }
 
 // Deepest element actually focused inside a shadow root. Custom 

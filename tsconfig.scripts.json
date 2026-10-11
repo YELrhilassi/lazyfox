@@ -82,6 +82,21 @@
 // The keymap module it checks (shared/keymap.ts) is DOM-free and typechecked
 // by tsconfig.json; only this Node-side harness is out of scope here.
 //
+// scripts/test/hints-visibility.test.ts, scripts/test/hints-motion.test.ts and
+// scripts/wk-preview.ts are the thirteenth, fourteenth and fifteenth, for the
+// same reason in three shapes. The two tests drive
+// content/hints/visibility.ts and content/hints/motion.ts — modules whose whole
+// subject IS the DOM (Element, CSSStyleDeclaration, window, document) — with
+// synthetic elements and real EventTargets; the preview renders the real
+// which-key markup from shared/wk.ts, which reaches shared/dom.ts. All four
+// modules are DOM-typed on purpose and are typechecked by tsconfig.json, which
+// owns the browser tree; what is out of scope here is only the Node-side USE of
+// them. Note which module is deliberately not on this list:
+// content/hints/frames.ts (the measurement-pass coalescer and the safety net's
+// cadence) is DOM-free by construction — its frame host is injected — so it IS
+// checked here, and its test is too. That is the half of the frames work a Node
+// test can pin exactly, and the split is why it can.
+//
 // Worth being precise about what is and is not checked here. src/chrome/
   // env.ts and src/chrome/stateapi.ts — the two modules these tests exist to
   // cover — are DOM-free and DO typecheck cleanly under this config, which is
@@ -107,7 +122,10 @@
     "scripts/test/wire-replay.test.ts",
     "scripts/test/relay-queue.test.ts",
     "scripts/test/typing-target.test.ts",
-    "scripts/test/keymap.test.ts"
+    "scripts/test/keymap.test.ts",
+    "scripts/test/hints-visibility.test.ts",
+    "scripts/test/hints-motion.test.ts",
+    "scripts/wk-preview.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

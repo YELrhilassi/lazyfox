@@ -27,19 +27,24 @@ import {
 } from "./selectors";
 import { createHintOverlay } from "./overlay";
 import { createActivator } from "./activate";
-import { collectHintables } from "./collect";
 import { targetKey } from "./select";
 import { createHintResolve } from "./hintresolve";
+// NOTE: collection is reached through `resolve.refreshPool()` rather than by
+// calling `collectHintables` here, so the pool and the visibility pass it is
+// selected with are always built together.
 import { shadowRootOf, walkElements } from "../../../shared/dom";
 import { createCoalescer } from "../../../shared/coalesce";
+import { createMotionWatch, type MotionKind, type MotionWatch } from "./motion";
+import { createFrameCoalescer, nextMeasurementDelay, FAST_EPISODE_MS } from "./frames";
 
-// Label re-anchoring cadence. See `frame()` for why these are floors rather
-// than triggers.
-const SWEEP_FAST_MS = 50; // 20 sweeps/second while something is moving
-const SWEEP_IDLE_MS = 125; // ~8 sweeps/second on a still page
-// How long a sweep that found movement keeps the fast rate. Bounded so one
-// permanently-animating element cannot hold the loop at the fast rate forever.
-const FAST_WINDOW_MS = 400;
+// WHEN A PASS RUNS — the rules, and the tests that pin them, live in frames.ts.
+//
+// The short version: a motion event REQUESTS a re-anchor, and frames.ts folds
+// everything asked for in one frame into one measurement pass (a scroll burst
+// raises more events than the display has frames). A timer is kept for movement
+// nothing announces — a page animating its own layout from a rAF loop, which
+// raises no event we can observe — and frames.ts owns its bounded cadence.
+// This file only decides WHAT a pass does (sweep, below).
 
 export interface LinkHints {
   readonly active: boolean;
@@ -102,19 +107,24 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   // first and was silently dropped, and the layer that survived it ignored the
   // next Escape for a whole frame of layout work.
   let starting = false;
-  // rAF loop state: pages can shift under the hints at any moment (a carousel
-  // auto-slide, a lazy image landing, a layout shift, the user's own wheel
-  // scroll), so hints are re-anchored to their elements every frame. Reading
-  // rects forces layout, so the loop runs at full speed only while elements
-  // are actually moving (or the viewport is) and backs off to ~10 sweeps/s
-  // when the page is still.
-  let rafId = 0;
-  let lastSweep = 0;
-  let fastUntil = 0;
-  let lastSx = 0,
-    lastSy = 0,
-    lastW = 0,
-    lastH = 0;
+  // Re-anchoring state.
+  //   anchorFrames — the one-pass-per-frame coalescer (frames.ts). A motion
+  //                  event requests a pass; many events in a frame are one pass.
+  //   tickTimer    — the safety net, re-armed whenever its cadence changes.
+  //   episodeUntil — the deadline on the fast cadence (FAST_EPISODE_MS).
+  const anchorFrames = createFrameCoalescer(
+    {
+      request: (cb) => requestAnimationFrame(cb),
+      cancel: (handle) => cancelAnimationFrame(handle),
+    },
+    () => {
+      if (active) sweep();
+    }
+  );
+  let tickTimer: ReturnType<typeof setInterval> | null = null;
+  let tickPeriod = 0;
+  let episodeUntil = 0;
+  let motion: MotionWatch | null = null;
   // Viewport settled and a batch re-hint is due (see syncViewport).
   let resyncAt = 0;
   // A re-hint triggered by scrolling is in flight.
@@ -190,7 +200,9 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   // never be started again on that page: `;f` would return immediately, with
   // no error and nothing on screen.
   async function runStart(mySession: number): Promise<void> {
-    pool = collectHintables();
+    // Through the resolve layer, so the pool and the visibility pass it will be
+    // selected with are built TOGETHER (see hintresolve.refreshPool).
+    pool = resolve.refreshPool();
     // The content script is intentionally top-frame-only today. A visible
     // iframe is a real part of the screen, so silently presenting the top
     // document's partial set as "all hints" is misleading. Say so on each
@@ -246,7 +258,8 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     active = true;
     overlay.mount();
     watchDom();
-    rafId = requestAnimationFrame(frame);
+    watchMotion();
+    ensureTick();
     await assign(vis);
     if (session !== mySession) return; // exited (ESC) during the await
     if (!items.length) exit();
@@ -411,6 +424,10 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
           domSyncFirst = now;
         }
         domResyncAt = Math.min(now + DOM_RESYNC_DELAY, domSyncFirst + DOM_RESYNC_MAX_WAIT);
+        // The net may be sitting at a coarser delay than the re-hint now owes
+        // (it is a still page, so SAFETY_MS); arm it for the shorter wait so an
+        // inserted control gets its key from the mutation that announced it.
+        ensureTick();
       };
       domObserver = new MutationObserver((records) => {
         let changed = false;
@@ -486,46 +503,13 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     domSyncFirst = 0;
   }
 
-  // rAF loop: keep the hints glued to their links while the page moves.
-  function frame(): void {
-    if (!active) {
-      rafId = 0;
-      return;
-    }
+  // ONE measurement pass: re-anchor every label, then run any owed re-hint.
+  // Everything calls THIS, so "the labels track the page" has exactly one
+  // implementation and no second loop that could disagree with it.
+  function sweep(): void {
+    if (!active) return;
     const now = performance.now();
-    const sx = window.scrollX,
-      sy = window.scrollY;
-    const w = window.innerWidth,
-      h = window.innerHeight;
-    const viewChanged = sx !== lastSx || sy !== lastSy || w !== lastW || h !== lastH;
-    lastSx = sx;
-    lastSy = sy;
-    lastW = w;
-    lastH = h;
-    if (viewChanged) resyncAt = now + RESYNC_DELAY;
-    // HOW OFTEN the labels may be re-anchored.
-    //
-    // A sweep calls `render()`, which resolves every hinted element and reads
-    // its rect — a forced layout for each one. The old condition ran that on
-    // ANY animation frame, and `render()` returning true (something on the
-    // page moved) pushed `fastUntil` a full second into the future, which the
-    // next frame extended again. So on any page with a carousel, a video
-    // player, a clock or a CSS transition, the loop pinned the main thread at
-    // 60 sweeps/second x MAX_HINTS layout reads — and a main thread in that
-    // state does not dispatch key events. Escape was queued behind the sweep
-    // loop, which is exactly "the hints are stuck and Escape does nothing".
-    //
-    // The fix is a floor on the interval rather than a smarter trigger: labels
-    // tracking at 20/second is visually identical for repositioning, and the
-    // headroom is what lets a keystroke through. Idle pages still drop to ~8
-    // sweeps/second.
-    const gap = now - lastSweep;
-    if (gap >= (now < fastUntil ? SWEEP_FAST_MS : SWEEP_IDLE_MS)) {
-      lastSweep = now;
-      // The page is animating (carousel slide, scroll, layout shift): keep
-      // tracking at the fast rate for a while so hints glide WITH the links.
-      if (render()) fastUntil = now + FAST_WINDOW_MS;
-    }
+    render();
     if (resyncAt && now >= resyncAt) {
       resyncAt = 0;
       syncViewport();
@@ -537,10 +521,85 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     if (domDirty && now >= domResyncAt) {
       domDirty = false;
       domResyncAt = 0;
-      pool = collectHintables();
+      pool = resolve.refreshPool();
       syncViewport();
     }
-    rafId = requestAnimationFrame(frame);
+  }
+
+  // Re-anchor on the next frame, at most once per frame. Every motion event
+  // calls this; while the user is scrolling it is the thing that tracks the
+  // labels, and it is why the safety timer is allowed to be slow.
+  function anchor(): void {
+    if (!active) return;
+    anchorFrames.request();
+  }
+
+  // The safety net's delay, from now. The policy — a bounded fast episode, and
+  // the earliest owed work winning over a coarser safety rate — is frames.ts,
+  // where it is tested as a function rather than read off a timer.
+  function tickDelay(now: number): number {
+    return nextMeasurementDelay({
+      now: now,
+      moving: !!motion && motion.moving(),
+      episodeUntil: episodeUntil,
+      resyncAt: resyncAt,
+      domResyncAt: domDirty ? domResyncAt : 0,
+    });
+  }
+
+  function stopTick(): void {
+    if (tickTimer !== null) clearInterval(tickTimer);
+    tickTimer = null;
+    tickPeriod = 0;
+  }
+
+  // (Re-)arm the safety net. Called from everything that can change the
+  // cadence — a motion event, a scheduled re-hint, the net's own tick — and
+  // idempotent for a delay already in force, so a scroll burst does not rebuild
+  // the interval once per event.
+  function ensureTick(): void {
+    if (!active) return;
+    const period = tickDelay(performance.now());
+    if (tickTimer !== null && tickPeriod === period) return;
+    stopTick();
+    tickPeriod = period;
+    tickTimer = setInterval(onTick, period);
+  }
+
+  function onTick(): void {
+    if (!active) {
+      stopTick();
+      return;
+    }
+    sweep();
+    // The cadence can change under the timer (the fast episode ended, or new
+    // motion opened one); re-arming is what applies it.
+    ensureTick();
+  }
+
+  // A motion event. Scroll and resize mean the batch on screen may be the WRONG
+  // batch — the user scrolled to a new section — so they also schedule the
+  // debounced re-hint; a transition or an animation is the same batch moving, so
+  // it only re-anchors. Both open or refresh the fast episode.
+  function noteMotion(kind: MotionKind): void {
+    if (!active) return;
+    const now = performance.now();
+    if (kind !== "animation") {
+      // Pushed forward by every event while the page moves, so the re-hint runs
+      // once the movement SETTLES rather than mid-flight.
+      resyncAt = now + RESYNC_DELAY;
+    }
+    if (now >= episodeUntil) episodeUntil = now + FAST_EPISODE_MS;
+    anchor();
+    ensureTick();
+  }
+
+  // Start watching for the things that mean "the page moved". Idempotent, and
+  // disposed by exit().
+  function watchMotion(): void {
+    if (motion) return;
+    motion = createMotionWatch(noteMotion);
+    episodeUntil = performance.now() + FAST_EPISODE_MS;
   }
 
   // Scroll to the next / previous batch of links and re-hint it. Keeps paging
@@ -714,10 +773,13 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     active = false;
     starting = false;
     unwatchDom();
-    if (rafId) {
-      cancelAnimationFrame(rafId);
-      rafId = 0;
+    anchorFrames.cancel();
+    stopTick();
+    if (motion) {
+      motion.dispose();
+      motion = null;
     }
+    episodeUntil = 0;
     overlay.unmount();
     items = [];
     pool = [];

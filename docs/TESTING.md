@@ -92,6 +92,22 @@ same constraint is why `tsconfig.scripts.json` carries no DOM lib: a `src/`
 module that enters the scripts graph with a DOM type in its signature fails
 `npm run typecheck`, which is the check catching it before the test does.
 
+### Testing a claim about cost, not about behaviour
+
+Three checks in the hints engine exist to pin SCHEDULING and COST, which are the
+claims a behaviour test cannot see and a comment cannot keep true:
+
+| File | pins | how it can fail |
+| --- | --- | --- |
+| `scripts/test/hints-visibility.test.ts` | one composed-ancestor walk per distinct element per pass, and one style read per element | the pass takes its style reader as a parameter, so the test COUNTS the reads: 200 candidates over a shared chain are 202 reads, where the per-element predicates cost 600+ |
+| `scripts/test/hints-frames.test.ts` | one measurement pass per frame; the safety net's cadence and its 1.5s episode cap; the earliest owed re-hint wins | the frame host is a manual clock, so 150 requests in "one frame" are one call, and a `cancel` is asserted to have reached the host |
+| `scripts/test/hints-motion.test.ts` | the event list, the kind each event reports, the `moving()` window's boundary, and that `dispose()` unregisters exactly what it registered | real `EventTarget`s, so the assertions are about the wiring rather than a stub that agrees with them |
+
+The pattern to copy from these: **make the cost countable and then count it.**
+The visibility pass is injectable, the frame host is injectable, and the motion
+watcher takes its targets — in each case because the alternative was asserting
+the claim in a comment beside the code it describes.
+
 ### A near-miss worth recording: the fix that was worse than the bug
 
 e2e reported `sessions: ;p saves a session with marker 1` as a new failure. The
