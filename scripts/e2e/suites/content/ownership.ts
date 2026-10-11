@@ -311,6 +311,43 @@ export async function run(ctx: any): Promise<void> {
     );
   });
 
+  await t("a page the extension cannot run on is the chrome helper's", async () => {
+    // THE OTHER HALF OF THE SAME QUESTION, and the one no other e2e case covers:
+    // an `http(s)` tab whose document has NO content script is the helper's,
+    // because nothing else there can answer a key. It is the rescue the whole
+    // presence model exists for (§18.3 answers the leader key there), and until
+    // now it was only ever asserted in unit checks — every page the harness
+    // serves gets a content script.
+    //
+    // The fixture is the harness's own server seen through a host Firefox
+    // refuses to inject into (`restrictedDomains` in the e2e profile): the same
+    // origin, the same page, no script. So the tab must report HELPER-OWNED even
+    // though its URL is `http://`, which is exactly what the URL-only rule this
+    // model replaced would have got wrong.
+    await ctx.collapseWindow();
+    const a = await createTab();
+    await ctx.gotoPage(a, HOME);
+    const aId = await idByUrl(HOME);
+    assert(aId != null, "the web tab is in the strip");
+    await expectOwnership(
+      aId as number,
+      HOME,
+      false,
+      "the injected page owns its own keys before the move to the restricted host"
+    );
+
+    const RESTRICTED = ctx.base.replace("127.0.0.1", "localhost") + "/hello";
+    await ctx.gotoPage(a, RESTRICTED);
+    // No content script runs there, so nothing re-reports — and nothing is
+    // allowed to keep answering for the document that was replaced.
+    await expectOwnership(
+      aId as number,
+      RESTRICTED,
+      true,
+      "an http page the extension cannot run on must be the chrome helper's, not a page whose script is gone"
+    );
+  });
+
   await t("closing a tab does not cost a live page its answer", async () => {
     // WHAT THE OLD COMPENSATION COST. Closing a tab above a reporting tab
     // re-keyed the map by DELETING every record at or after the closed index, so
