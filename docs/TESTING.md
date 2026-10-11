@@ -281,6 +281,28 @@ attempted as a pair and retried while the panes are not both on their site;
 the assertions are untouched, so a domain that genuinely does not resolve still
 fails, with the reason attached.
 
+**A race is not evidence: wait for the answer, then assert it.** Two latencies sit
+between "the page booted its script" and "the helper knows" — the report is
+pushed content → background → relay → chrome, and the answer is read back through
+an HTTP-shaped state query — so a test that reads once asserts whichever one won.
+The ownership cases in `content/ownership` poll until the product's answer IS the
+expected one and then report the answer that persisted, which reads the same on
+success and is debuggable on failure ("it kept saying true"). A wrong answer is
+not a race: nothing re-reports for those tabs, so the wrong value stays wrong.
+
+### The page the extension cannot run on
+
+The e2e profile sets `extensions.webextensions.restrictedDomains` to `localhost`
+instead of clearing it. The test server is bound to `127.0.0.1` and answers on
+`localhost` too, so the suite has, at the same origin, both an injected page
+(`http://127.0.0.1:PORT/…`) and — this is the point — a page Firefox refuses to
+inject into (`http://localhost:PORT/…`). That is the only way to test what a tab
+itself must do when NO content script is there to answer a key, which is the
+whole premise of the chrome helper's ownership rule; every other page the
+harness serves has a script. Tests that do not ask for it use the `127.0.0.1`
+form and are unaffected, and `addons.mozilla.org` stays off the list, so the AMO
+test still exercises the lifted restriction it exists for.
+
 ### Reading chrome's state
 
 `ctx.chromeState()` asks the chrome helper about itself over `#lfc=state` and

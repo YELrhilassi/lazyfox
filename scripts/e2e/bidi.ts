@@ -714,8 +714,16 @@ export async function makeProfile(): Promise<string> {
     ["browser.fullscreen.autohide", true],
     // Mirror the installer's user.js: Firefox blocks content scripts on
     // restricted domains AND hardcodes addons.mozilla.org as an add-on site;
-    // both must be lifted so the AMO tests exercise the real installed state.
-    ["extensions.webextensions.restrictedDomains", ""],
+    // both must be lifted so the AMO tests exercise the real installed state —
+    // with ONE domain put back on the list, on purpose.
+    //
+    // `localhost` is the harness's own fixture for the page the extension cannot
+    // run on: the test server is bound to 127.0.0.1 and answers on `localhost`
+    // too, so the SAME origin serves both an injected page and an uninjected one
+    // with no second origin to stand up. Every test that does not ask for it
+    // uses the 127.0.0.1 form and is unaffected. See the ownership case "a page
+    // the extension cannot run on is the chrome helper's".
+    ["extensions.webextensions.restrictedDomains", "localhost"],
     ["privacy.resistFingerprinting.block_mozAddonManager", true],
   ];
   writeFileSync(
