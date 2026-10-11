@@ -38,7 +38,9 @@ const {
   commandCenterDocumentPresent,
   isCommandCenterTab,
   chromeOwnsSurfaces,
+  LOCATION_CHANGE_SAME_DOCUMENT,
   noteContentPresent,
+  noteLocationChange,
   presenceTabFor,
   resetContentPresence,
 } = await import("../src/chrome/keystate.ts");
@@ -531,6 +533,81 @@ ok(
         },
       },
     } as unknown as Window);
+  })()
+);
+
+// --- a record cannot outlive its document, even with no pagehide ----------
+//
+// The hole the audit carried as the worst report in the set ("nothing responds,
+// not even the leader"): a content process that dies announces nothing, so the
+// record survives; a replacement document only ever REPLACES a record, never
+// removes one; so a page whose replacement has no content script of its own
+// inherits the dead document's answer and answers no keys at all. The browser's
+// own "this document was replaced" notification is `onLocationChange` without
+// LOCATION_CHANGE_SAME_DOCUMENT, and it drops the stale record — while an
+// IN-PAGE navigation is marked as the same document and must keep it.
+
+// A window whose gBrowser can name the tab a browser belongs to, the way
+// Firefox's does. `browser.tab` is the link the fake uses to reach it.
+function winOf(tabs: FakeTab[]): any {
+  const gb: any = {
+    tabs,
+    selectedBrowser: tabs[0],
+    selectedTab: tabs[0],
+    getTabForBrowser: (b: any) => (b && b.tab) || null,
+  };
+  return { gBrowser: gb };
+}
+const browserOf = (t: any) => ({ tab: t });
+
+const SAME_DOC = {
+  nsIWebProgressListener: { LOCATION_CHANGE_SAME_DOCUMENT: LOCATION_CHANGE_SAME_DOCUMENT },
+};
+
+resetContentPresence();
+ok(
+  "a real navigation drops the record — and only that tab's",
+  (() => {
+    resetContentPresence();
+    const a = makeTab("https://a.example/");
+    const b = makeTab("https://b.example/");
+    const w = winOf([a, b]);
+    noteContentPresent(presenceTabFor(w, 0, "https://a.example/"), true, "https://a.example/");
+    noteContentPresent(presenceTabFor(w, 1, "https://b.example/"), true, "https://b.example/");
+    // Both deferred to before the navigation, or the check proves nothing.
+    const before = !owns(winOf([a, b])) && !owns(winOf([b, a]));
+    // A real navigation in tab a: no SAME_DOCUMENT flag.
+    noteLocationChange(w, browserOf(a), 0, SAME_DOC);
+    select(w, 0);
+    const aHandedBack = owns(w);
+    select(w, 1);
+    return before && aHandedBack && !owns(w);
+  })()
+);
+ok(
+  "an in-page navigation keeps the record (the flag is the whole distinction)",
+  (() => {
+    resetContentPresence();
+    const a = makeTab("https://spa.example/list");
+    const w = winOf([a]);
+    report(w, true, "https://spa.example/list", "doc-1");
+    // pushState: the URL moves, the document does not. Without the flag this
+    // would drop a LIVE record, which is the SPA dead keyboard all over again.
+    noteLocationChange(w, browserOf(a), LOCATION_CHANGE_SAME_DOCUMENT, SAME_DOC);
+    return !owns(w);
+  })()
+);
+ok(
+  "an unreadable browser or an unknown tab is ignored, never thrown",
+  (() => {
+    resetContentPresence();
+    const a = makeTab("https://a.example/");
+    const w = winOf([a]);
+    report(w, true, "https://a.example/");
+    noteLocationChange(w, { notATab: true }, 0, SAME_DOC);
+    noteLocationChange({ gBrowser: undefined } as any, browserOf(a), 0, SAME_DOC);
+    noteLocationChange(w, null, 0, undefined);
+    return !owns(w);
   })()
 );
 

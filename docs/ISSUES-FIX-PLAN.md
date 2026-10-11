@@ -275,7 +275,7 @@ what is not.
 | §8.5 one typing answer per keystroke | **DONE** | Audit §12.3. |
 | §8.6 scroll target is not re-scanned per keypress | **DONE** | TTL + structural invalidation (`scroll.ts:85-131`, and the §12.2 fix). |
 | §9.1 presence cannot go stale in a document | **DONE** | Per-document nonce (`content/main.ts:238-246`, `commandcenter.ts:283-292`, `keystate.ts:59-100`). |
-| §9.2 unknown must not mean "the helper owns it" | **PARTIAL, and now precisely stated** | `chromeOwnsSurfaces` is literally `chromeOwnsKeys`, and a record with a document id is authoritative with no "unknown" state. Audit §14b works out the one reachable sequence that still ends in a dead keyboard (a killed content process whose `pagehide` never arrives, an `http(s)` URI that survives, and a replacement document with no content script), names the signal that closes it (`onLocationChange` + `LOCATION_CHANGE_SAME_DOCUMENT`) and why it was not applied blind. |
+| §9.2 unknown must not mean "the helper owns it" | **DONE (the mechanism), residual stated** | `chromeOwnsSurfaces` is still literally `chromeOwnsKeys`, and a record with a document id is still authoritative — but the sequence audit §14b wrote down is closed by a rule of its own: **a record never outlives its document**, even when the document cannot say so itself. `noteLocationChange(win, browser, flags, ci)` (`chrome/keystate.ts`, called from the tab-progress listener in `chrome/winsync.ts`) drops the tab's record on a CROSS-DOCUMENT location change, and keeps it for the in-page navigations the same notification marks with `LOCATION_CHANGE_SAME_DOCUMENT`. What is left is the general rule — with no record at all the helper owns the keys, which is the deliberate answer for the navigation window (a chrome-side leader during a load beats dead keys), and the leader is answered by the helper whenever the page cannot act (§18.3). Verified: three checks in `test-chrome-keys.ts` (54), the mutation `in-page-navigation-forgets` DETECTED, and the e2e case `content/ownership › an in-page navigation keeps the page's own answer` — a real `pushState` in a real remote tab, which is the one way the fix could have gone badly wrong (a lost flag would expire every SPA's presence). The BENEFIT direction has no fixture and is recorded as such: it needs a killing content process, which nothing in the harness can produce; the retraction path masks the drop in every case the suite can drive. |
 | §9.3 stand down unconditionally on tab switch | **DONE** | `chrome/winlisteners.ts:138-172` — the `TabSelect` teardown is no longer gated on an ownership answer the module cannot verify. |
 
 | §15 cache scopes told the truth | **DONE** | Scopes from the diagnostics panel; the global switch now follows the scope, the panel reads its value instead of its existence, and a refused apply writes nothing. Decisions split into `extension/cache-policy.ts` and pinned by `scripts/test/cache-policy.test.ts` (audit §15). |
@@ -336,14 +336,33 @@ checks, and three end-to-end cases that drive the real strip — the `Cmd+T`
 insertion between two reporting pages, a swap, and a close above a reporting page
 (`content/ownership`, 3/3, now in the baseline).
 
-The next session's shape, in order of what a user would feel: **§9.2**, now the
-only known way to reach a stale record (a killed content process whose `pagehide`
-never arrives, an `http(s)` URI that survives, and a replacement document with no
-script) — audit §14b names the signal (`onLocationChange` +
-`LOCATION_CHANGE_SAME_DOCUMENT`) and the crash-simulation fixture that would
-falsify the fix, and §9.2's row above says precisely which state is unsettled.
-Then the two performance items that need a profiler run beside them (§12.4's
-three composed-ancestor walks, §2.1/§2.6's scan and sweep) and §18.1's one
-missing line of coverage (`--suite audit` still is not in the `full` selection,
-so `npm run e2e` never runs the feature audit). The feature audit itself is the
-cheapest regression check to run beside any of them: `npm run e2e:audit`, 55/55.
+**Also closed in the fifth pass: §9.2's mechanism.** The residual the fourth pass
+wrote down was the one way left to reach a stale record — a killed content
+process sends no `pagehide`, and a replacement document only ever *replaces* a
+record, never removes one, so a page with no content script of its own inherits a
+dead document's answer and answers no keys at all. The rule that closes it is one
+sentence: **a record never outlives its document.** `noteLocationChange` drops a
+tab's record on a cross-document location change (the browser's own "this
+document was replaced" notification, which the helper was already receiving) and
+keeps it for the in-page navigations the same notification flags as the same
+document.
+
+That fix has two halves and only one of them can be falsified by the suite, which
+is worth stating plainly. The RISK half can be, and is: a lost or unreliable
+`LOCATION_CHANGE_SAME_DOCUMENT` on the remote-browser path would expire every
+SPA's presence at its first `pushState` — the original bug — so
+`content/ownership › an in-page navigation keeps the page's own answer` drives a
+real `pushState` in a real tab and asserts the product still defers to the page.
+The BENEFIT half cannot: it needs a content process that dies mid-life, which
+nothing in the harness can produce, and the `pagehide` path masks the drop in
+every case the suite can drive. So the drop is pinned by unit checks on the
+decision (in-page vs. replaced, one tab and not its neighbours, an unreadable
+browser ignored) and by a mutation, and the case it exists for is recorded as
+unreachable rather than claimed as tested.
+
+The next session's shape, in order of what a user would feel: the two performance
+items that need a profiler run beside them (§12.4's three composed-ancestor walks,
+§2.1/§2.6's scan and sweep), then §18.1's one missing line of coverage (`--suite
+audit` still is not in the `full` selection, so `npm run e2e` never runs the
+feature audit). The feature audit itself is the cheapest regression check to run
+beside any of them: `npm run e2e:audit`, 55/55.

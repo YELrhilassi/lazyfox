@@ -222,6 +222,95 @@ export function resetContentPresence(): void {
   presenceEpoch++;
 }
 
+// ---------------------------------------------------------------------------
+// A RECORD MUST NOT OUTLIVE ITS DOCUMENT, even when no `pagehide` arrives
+// ---------------------------------------------------------------------------
+//
+// Everything above relies on the document that announced itself retracting the
+// announcement. That is the whole of the honesty the model has, and it has one
+// hole: a content process that dies (a crash, an OOM kill, a debugger detaching)
+// never sends anything at all. The record then describes a document that no
+// longer exists — and it is not self-correcting, because a replacement document
+// only ever REPLACES a record, it never removes one. If that replacement has no
+// content script of its own (a PDF viewer, a page the extension is not injected
+// into, anything on a restricted domain), nothing ever reports for that tab
+// again, so `chromeOwnsKeys` answers "not mine" forever and the tab answers no
+// keys at all: `;`, the leader, hints, popups. That is the shape of the worst
+// report the audit carried, "nothing responds, not even the leader".
+//
+// The signal that closes it is the browser's own statement that a document was
+// REPLACED, which the chrome helper is already told: `onLocationChange` carries
+// `LOCATION_CHANGE_SAME_DOCUMENT`, set for the in-page navigations
+// (`pushState`, `replaceState`, a hash change) that keep the document and
+// cleared for a real navigation. So a cross-document location change on a tab
+// is proof that the announced document is gone, and the record is dropped
+// there — the one place the distinction the whole file turns on is handed to us
+// rather than inferred from a URL.
+//
+// Why this does not re-open the bug the URL comparison caused: an in-page
+// navigation is EXACTLY the case the flag marks as the same document, so the
+// record survives it untouched (that is checked, in both the unit checks and
+// end to end — the e2e case is what proves this Firefox build really delivers
+// the flag for `pushState`, on the real remote-browser path). And dropping
+// early is the safe direction: the arriving document re-announces itself at
+// `document_start`, while between the two the helper owns the keys and answers
+// the leader key itself (the §18.3 rescue), which is the same window a fresh
+// tab has always been in.
+
+/**
+ * `nsIWebProgressListener.LOCATION_CHANGE_SAME_DOCUMENT`.
+ *
+ * Spelled as a literal here only as the fallback for a host that cannot reach
+ * `Ci` (the Node checks); the real path reads the interface constant, so a
+ * Firefox that ever moves it is followed rather than overruled. The value is
+ * part of the frozen flag block (`nsIWebProgressListener.idl`), not an
+ * internal: `LOCATION_CHANGE_SAME_DOCUMENT = 0x00000040`.
+ */
+export const LOCATION_CHANGE_SAME_DOCUMENT = 0x00000040;
+
+/**
+ * Drop the record belonging to a tab, because the document that made it is gone.
+ *
+ * Takes the BROWSER rather than the tab because that is what a progress
+ * notification names, and `gBrowser.getTabForBrowser` is the one supported way
+ * back to the strip element — the same element `noteContentPresent` keys on.
+ * An unreadable browser (a torn-down tab mid-collapse) is nothing to forget,
+ * never an error: this runs on every navigation in every tab.
+ */
+export function forgetContentOfBrowser(win: ChromeWindow, browser: unknown): void {
+  try {
+    const gb = (win as any).gBrowser;
+    const tab =
+      gb && typeof gb.getTabForBrowser === "function" ? gb.getTabForBrowser(browser) : null;
+    if (tab) contentPresent.delete(tab);
+  } catch (e) {
+    // a tab that is being torn down has no record worth keeping
+  }
+}
+
+/**
+ * React to a location change: keep the record for an in-page navigation, drop it
+ * for a real one.
+ *
+ * The decision lives here rather than in the listener so that it can be
+ * exercised without a browser — the listener's own job is then one call with the
+ * flags it was handed, and `ci` is the interface constants when the host has
+ * them.
+ */
+export function noteLocationChange(
+  win: ChromeWindow,
+  browser: unknown,
+  flags: number,
+  ci?: any
+): void {
+  const bit =
+    ci && ci.nsIWebProgressListener && typeof ci.nsIWebProgressListener.LOCATION_CHANGE_SAME_DOCUMENT === "number"
+      ? ci.nsIWebProgressListener.LOCATION_CHANGE_SAME_DOCUMENT
+      : LOCATION_CHANGE_SAME_DOCUMENT;
+  if (Number(flags) & bit) return;
+  forgetContentOfBrowser(win, browser);
+}
+
 // Is this URL the command center page? The one LAZYFOX-OWNED document that runs
 // a full key engine of its own — its own leader, its own popups, its own typing
 // guard, all from the shared modules a web page's content script uses.
