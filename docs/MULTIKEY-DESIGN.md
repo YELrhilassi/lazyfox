@@ -606,3 +606,138 @@ beats a sequence head, so registering a category on `;L` produces a category
 that silently never opens. That is the `;G`/`;L` bug this document has warned
 about since §8, so the choice is asserted in `core/session_test.go` rather than
 left to a comment.
+
+---
+
+## 12. The panel was rewritten flat, and made dynamic (2026-10-10)
+
+§11's overlay was functionally right and visually wrong. It took two passes to
+say what "wrong" meant, and the second pass is the one that shipped, so both are
+recorded: the first pass is the most likely thing for the next person to
+re-invent.
+
+**The constraint, first.** *Position and size are the contract*:
+`position:fixed; right:24px; bottom:30px; width:360px`. That is where the panel
+has always appeared and where the user's eye already looks for it, and it is an
+overlay in the corner of a page somebody is reading. The redesign is of
+everything INSIDE that box. `scripts/test-overlays.ts` asserts the anchor and the
+width, so a future tidy-up that drifts them fails instead of surprising anyone.
+
+### 12.1 The first pass drew a dashboard
+
+It kept the position and replaced the content with chrome: a bordered card, a key
+cap with a border and a bottom bevel on every row, a gradient across the header,
+an inset accent bar on the selected row, a hairline running from each group
+heading to the panel edge, and a pill around the page number. Each of those is a
+boundary the eye has to cross, and together they are the visual language of a
+settings panel — rounded capsules floating on a card with rules under the
+headings.
+
+The verdict on it was immediate and is the reason this section exists: *it looks
+generated.* That is not a style complaint about one colour. A corner overlay that
+draws a box around every row, a second accent hue for one kind of row, small
+capitalised headings with wide tracking, and a chip in the footer is a UI whose
+decisions were made by a template rather than by someone reading a page.
+
+### 12.2 What replaced it: no boxes, three alignments, one accent
+
+The sheet now draws **no boxes at all** — no `border` anywhere in it, no
+background on a row or a key, no inset shadow, no gradients, no hairlines, no
+uppercase, no tracking, no pill. `border-radius` remains for the panel's own
+corners and for the selected row's tint; `border:` does not exist in the file, and
+that is asserted in `scripts/test-overlays.ts` rather than trusted.
+
+What is left is three alignments and two inks, and they carry the whole panel:
+
+1. **The key column is fixed width** (`38px | 1fr | auto`), so every label in a
+   group starts at the same x and the eye can run down either column. A fixed
+   column does for alignment what a box does, without a rectangle per row.
+2. **The key is the loudest thing on the row** — monospace, `15.5px` against a
+   `12.5px` label. You scan for a key and then read what it does; a key that is
+   the same size as its label gives the eye nothing to scan for, and a key with
+   room only for one character needs a box the moment it holds two.
+3. **One accent colour, and a door is a count.** Every key in the panel is the
+   same blue. A row that OPENS something is marked by the count of what is behind
+   it (`12 ›`, plain right-aligned text) and by the footer, which says `Enter
+   open` only while the cursor is on one. Rows used to carry a second hue — cyan
+   for a door, blue for a binding — which is a legend the reader has to learn from
+   a panel 360px wide.
+
+Everything is also **one line per row**. Two-line labels were tried and reverted:
+a list with two row heights in it reads as broken, and the full wording of any
+label is one keystroke away in `;?`, which is a surface built for reading rather
+than for glancing. Labels that do not fit are ellipsized, and nothing else on the
+row ever is — a clipped key or count would misreport the line.
+
+The footer was cut from six items to four (`↑↓ move`, `Tab page`, `Enter
+run|open`, `? all keys`, plus the page number). `Esc cancel` is named on the
+capture's foot, where it is the only way out, and nowhere else; a row of six tiny
+hints reads as a toolbar.
+
+### 12.3 The digits are one row, not nine
+
+The panel listed a row per tab position: `1` … `9`, nine lines saying "go to the
+tab at this position", which is one thought and was eight of the panel's rows
+spent on the least surprising thing a keyboard does. `DisplayRows` (core) now
+projects a RUN of single-digit bindings in one group as a single row — key
+`1-9`, label `Go to tab 1-9` — while `Keymap` keeps all nine specs, because the
+menu is a projection and the dispatch table is not: `;7` has to resolve.
+
+The collapsed row carries the **spec of the run's first member** (`WkItem.Spec`,
+grep it), so pressing Enter on it runs exactly what the row's key column stands
+for, and the leader no longer needs a reverse lookup that has no entry for a
+range. `scripts/test/keymap.test.ts` pins both halves: one row for the run, and
+nine matchable specs behind it.
+
+### 12.4 The panel is a view of the leader's state, and it changes with it
+
+Until this pass the panel showed exactly one thing — the top-level table — and
+left it on screen while a category was open (the menu was the same panel with
+subtly wrong contents) or while a multi-key action was collecting. That is the
+"I can't tell what state I am in" reading of the same surface.
+
+Three contents now, decided in one pure function, `wkPanelHtml` in
+`src/shared/wk.ts`:
+
+- **the map** — the top level, one page at a time, footer promising `Enter run` or
+  `Enter open` for the row the cursor is on;
+- **a category** — its own sub-keys, one per row, under the chord that opened it
+  (`W`), footer `press a key · Esc cancel`;
+- **a sequence in flight** — `;W m` waiting for a tab position reads `W m` /
+  `next 1-9` and **draws no body at all**. While a capture is armed the keyboard
+  belongs to the capture, so a map of top-level rows would be a menu of keys that
+  cannot fire — the same lie as a row for an unbound chord. The smallest state the
+  panel has is also its most honest.
+
+Two properties are pinned because they are easy to break by being helpful:
+
+- **A category wins over its own capture.** Opening a category ARMS a capture —
+  that is how its sub-keys are read — so "a category is open" and "a capture is
+  armed" are both true for every menu. Testing the capture first renders every
+  category as waiting-for-a-key and the menu never appears.
+- **Only the map asks the core for rows.** The page is a thunk, so the states
+  that repaint most (a sub-key press repaints twice) do no core work.
+
+The controller repaints through one `repaint()` call on every state change that
+the panel draws, rather than each call site deciding whether a repaint is wanted.
+A view that is one step behind the thing it describes is what "the menu is lying
+to me" means.
+
+### 12.5 How this is checked, when a test cannot see it
+
+`npm run wk:preview` renders the panel from the REAL stylesheet, the REAL markup
+builders and the REAL keymap out of the wasm core into
+`build/wk-preview/index.html` (gitignored), toggling between every page of the
+keymap, every category, and a sequence in flight. A test can prove class names and
+row order; it cannot see a ragged label edge or a header that lost its background
+to a rule written for rows, and both of those shipped. The preview is where the
+panel is judged, and it is regenerated from source so it cannot drift into a
+mock-up. Its own page is deliberately plain — a text menu over a document, no
+cards and no chips — because a preview that looks like a dashboard is what the
+panel ends up looking like.
+
+What IS pinned, in `scripts/test-overlays.ts`: the anchor and width, one
+`.wk-head` in the host and none in a row, the fixed key column, monospace keys
+larger than their labels, the absence of any border or row background, exactly one
+accent hue (no second one for doors), the count on a door, the four-item foot, and
+all three panel states with the category-over-capture precedence.

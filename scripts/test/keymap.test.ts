@@ -111,14 +111,47 @@ describe("the keymap is loaded and internally consistent", () => {
   test("every menu row is a bindable chord", async () => {
     // The menu is a projection of the keymap. If a row cannot be resolved back
     // to a spec, the overlay is advertising a chord that does nothing.
+    //
+    // TWO WAYS TO RESOLVE, and the second is not a loophole. A display key is
+    // usually its own spec (`n` is `n`), but a COLLAPSED row is a range: `1-9`
+    // stands for nine bindings and has no entry in any reverse index, so the row
+    // carries the spec of the run's first member and that is what Enter runs.
+    // Requiring the carrier here is the point of the check — a projected row with
+    // neither one is exactly the row-that-does-nothing this test exists to
+    // catch, and the digit run is the only row allowed to be one.
     const rows = (await core.bindings()).filter((b) => !b.native);
     assert.ok(rows.length > 0, "the menu must have rows");
     for (const row of rows) {
-      const spec = specForChord(row.key);
+      const spec = row.spec || specForChord(row.key);
       assert.notEqual(spec, "", `menu row ${row.key} (${row.label}) has no spec behind it`);
       const m = matchKey(spec);
       assert.ok(m.found, `menu row ${row.key} does not resolve`);
-      assert.equal(m.label, row.label, `menu row ${row.key} and the keymap disagree on its label`);
+      // A collapsed row's label describes the RANGE, so it cannot be the label of
+      // the binding under it; every other row must agree with the keymap exactly.
+      if (!row.spec || row.spec === specForChord(row.key)) {
+        assert.equal(m.label, row.label, `menu row ${row.key} and the keymap disagree on its label`);
+      }
+    }
+  });
+
+  test("the collapsed digit run is one row, and it runs the first position", async () => {
+    // The six rows this replaced said the same thing nine times. What has to stay
+    // true is that the ONE row is still pressable: it carries the run's first
+    // spec, so Enter on it arms the same digit capture `;1` does.
+    const rows = (await core.bindings()).filter((b) => !b.native);
+    const digits = rows.filter((r) => r.spec === "1");
+    assert.equal(digits.length, 1, "exactly one row stands for the digit positions");
+    assert.equal(digits[0]!.key, "1-9", "and it names the range, not one position");
+    for (let d = 2; d <= 9; d++) {
+      assert.ok(
+        !rows.some((r) => r.key === String(d)),
+        `position ${d} does not get a row of its own`
+      );
+    }
+    // The nine specs are still MATCHABLE: the menu is a projection, the dispatch
+    // table is not, and `;7` has to resolve to a binding.
+    for (let d = 1; d <= 9; d++) {
+      assert.ok(matchKey(String(d)).found, `;${d} must still resolve to an action`);
     }
   });
 });

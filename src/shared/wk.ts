@@ -10,6 +10,7 @@
 
 import { core, coreReady, coreSync } from "./core";
 import { esc } from "./dom";
+import { ANY_KEY_EXPECT } from "./leadersignal";
 import type { WkPage } from "./types";
 
 export class WkSession {
@@ -73,6 +74,12 @@ export class WkSession {
 // Builds the overlay body HTML for one page. Lazyfox bindings are selectable
 // (highlighted when they carry the current selection); native shortcuts are
 // dimmed reference rows.
+//
+// ONE ROW SHAPE, three columns: the key, the label, and (for a door) what is
+// behind it. The label always carries `.wk-label` and the key cap always carries
+// `.wk-kbd`, because the stylesheet aligns labels by a fixed FIRST column and
+// ellipsizes only the label — class names a style depends on belong on every row
+// that style applies to, not on "the second child".
 export function wkBodyHtml(page: WkPage, sel: number): string {
   let html = "";
   let group: string | null = null;
@@ -84,8 +91,8 @@ export function wkBodyHtml(page: WkPage, sel: number): string {
     }
     if (it.native) {
       html +=
-        "<div class='wk-item dim'><span class='wk-kbd'>" + esc(it.key) + "</span><span>" +
-        esc(it.label) + "</span></div>";
+        "<div class='wk-item dim'><span class='wk-kbd'>" + esc(it.key) +
+        "</span><span class='wk-label'>" + esc(it.label) + "</span></div>";
       continue;
     }
     // A CATEGORY HEAD IS A MENU, and it says so.
@@ -94,19 +101,25 @@ export function wkBodyHtml(page: WkPage, sel: number): string {
     // while Enter on it did nothing at all. A row that opens eleven keys has to
     // look like a door: the trailing count is what tells the reader it is worth
     // pressing, and the footer stops promising "Enter run" on it.
+    //
+    // The row class is `wk-door`, NOT `wk-head`. Reusing the panel header's own
+    // class for a row meant the two designs had to be told apart by source order,
+    // and the header lost that contest: it rendered with the row's background and
+    // left accent bar. `.wk-head` means the panel header, `.wk-door` means a row
+    // that opens something.
     if (it.cat) {
       const n = typeof it.subs === "number" && it.subs > 0 ? String(it.subs) : "";
       html +=
-        "<div class='wk-item wk-head" + (it.lazyIndex === sel ? " sel" : "") + "'>" +
-        "<span class='wk-kbd'>" + esc(it.key) + "</span><span>" + esc(it.label) +
-        "</span>" +
+        "<div class='wk-item wk-door" + (it.lazyIndex === sel ? " sel" : "") + "'>" +
+        "<span class='wk-kbd'>" + esc(it.key) + "</span><span class='wk-label'>" +
+        esc(it.label) + "</span>" +
         "<span class='wk-more'>" + esc(n ? n + " \u203a" : "\u203a") + "</span></div>";
       continue;
     }
     html +=
       "<div class='wk-item" + (it.lazyIndex === sel ? " sel" : "") + "'>" +
-      "<span class='wk-kbd'>" + esc(it.key) + "</span><span>" + esc(it.label) +
-      "</span></div>";
+      "<span class='wk-kbd'>" + esc(it.key) + "</span><span class='wk-label'>" +
+      esc(it.label) + "</span></div>";
   }
   if (group !== null) html += "</div>";
   if (!html) html = "<div class='wk-group'>\u2014</div>";
@@ -163,7 +176,7 @@ export function wkCategoryHtml(keys: string[], labels: Record<string, string>): 
     const label = labels && labels[k] ? labels[k] : "";
     html +=
       "<div class='wk-item wk-cat'><span class='wk-kbd'>" + esc(k) + "</span>" +
-      "<span>" + esc(label) + "</span></div>";
+      "<span class='wk-label'>" + esc(label) + "</span></div>";
   }
   if (!html) html = "<div class='wk-group'>—</div>";
   return html;
@@ -178,7 +191,8 @@ export function wkFootHtml(
   if (isCategory) {
     // Inside a category the overlay is not a navigable list — there is no
     // cursor to move and no Enter to run — so the foot says only what is true:
-    // these keys are live now, and Escape ends it.
+    // these keys are live now, and Escape ends it. The SAME words serve an armed
+    // multi-key action, because it is the same state: a capture is collecting.
     return "<span class='wk-live'>press a key</span><span>Esc cancel</span>";
   }
   // With a single page (every binding visible) there is nothing to flip;
@@ -195,9 +209,120 @@ export function wkFootHtml(
   // Firefox's own shortcuts are intentionally not among them. Saying where the
   // rest lives is what keeps the two surfaces from looking like they disagree.
   const reference = pageNum + 1 === 1 ? "<span>? all keys</span>" : "";
+  // THE TOP LEVEL NAMES FOUR THINGS, NOT SIX.
+  //
+  // "Esc cancel" was printed here too, and it was the one item that told the
+  // reader nothing they had not already learned: Escape is how every surface in
+  // this product is left, and it is the ONLY way out of a capture — which is
+  // exactly why it is still named in the foot that belongs to a capture (above)
+  // and not on the page that is just a list. Four items read as a line of help;
+  // five read as a toolbar.
+  //
+  // The arrows read as one glyph pair, not as prose ("↑/↓ move" was longer and
+  // asked the eye to parse a slash for no information), and the page number is
+  // the only thing on the line that ends it.
   return (
-    "<span>\u2191/\u2193 move</span>" + pageHint + enter + "<span>Esc cancel</span>" +
-    reference +
+    "<span>\u2191\u2193 move</span>" + pageHint + enter + reference +
     "<span class='wk-page'>" + (pageNum + 1) + "/" + total + "</span>"
   );
+}
+
+/**
+ * The heading title for an armed MULTI-KEY ACTION: what the next key can be.
+ *
+ * The panel is a view of the leader's state, and "a sequence is collecting" is a
+ * state — a different one from "the map is up". While a capture is armed the
+ * keys it collects belong to the capture, so the top-level map is not available
+ * and leaving it on screen is worse than saying nothing: the reader presses a row
+ * that cannot fire. This is the panel's own wording for such a state, derived
+ * from the armer's expectation (the same string the status bar prints) rather
+ * than from a second guess about what a sequence accepts.
+ */
+export function wkExpectTitle(expect: string): string {
+  const t = (expect || "").trim();
+  // "" and "any" are the same promise to the reader — nothing is required — and
+  // the armer's own word for it is "any" (see ANY_KEY_EXPECT). Mixing the two
+  // would print "next any" for one capture and "next key" for an identical one.
+  if (!t || t === ANY_KEY_EXPECT) return "any key";
+  return "next " + t;
+}
+
+/** One panel's worth of markup: the three parts `LeaderPanel.fill` takes. */
+export interface WkPanelHtml {
+  head: string;
+  body: string;
+  foot: string;
+}
+
+/**
+ * The leader state the panel draws, as plain data.
+ *
+ * `page` is a THUNK because it is core work: the map is the only content that
+ * needs a page of rows, and asking the core for one while a category or a
+ * sequence is on screen is wasted work on every repaint of the states that
+ * repaint most (a sub-key press repaints twice).
+ */
+export interface WkPanelInput {
+  category?: { head: string; title: string; labels: Record<string, string>; keys: string[] } | null;
+  pending?: { chord: string; expect: string } | null;
+  page: () => Promise<WkPage>;
+  sel: number;
+  pageNum: number;
+  total: () => Promise<number>;
+}
+
+/**
+ * WHAT THE PANEL SHOWS, as a pure function of the leader's state.
+ *
+ * The panel has three contents and no more: the map, a category's menu, and a
+ * multi-key action in flight. All three are decided here rather than inside the
+ * controller's render() because the panel lives in a CLOSED shadow root — its
+ * contents cannot be read back from a page, not by the e2e suite and not by the
+ * debug snapshot — so a decision made there is a decision nothing can check.
+ * Pure, it is assertable directly, and the controller is left with plumbing.
+ *
+ * THE ORDER OF THE TWO TESTS IS LOAD-BEARING. Opening a category ARMS a capture
+ * — that is how its sub-keys are read — so `category` and `pending` are true at
+ * the same time for every open menu. Testing `pending` first would render every
+ * category as "a sequence is waiting for a key" and the menu the user just
+ * opened would never appear. A menu the user can still read wins over a capture
+ * that is merely its reader.
+ */
+export async function wkPanelHtml(s: WkPanelInput): Promise<WkPanelHtml> {
+  if (s.category) {
+    const c = s.category;
+    return {
+      head: wkHeadHtml(c.head, c.title),
+      body: wkCategoryHtml(c.keys, c.labels),
+      // The same foot an armed capture gets, because it is the same state: these
+      // keys are live now and Escape is how you leave.
+      foot: wkFootHtml(0, 1, true),
+    };
+  }
+  if (s.pending) {
+    // The map is deliberately NOT drawn under a sequence in flight. While a
+    // capture is armed the keyboard belongs to the capture — `;W m` then `3` is
+    // tab 3, not the binding on `3` — so a list of top-level rows would offer
+    // keys that cannot fire, which is the same lie as a row for an unbound
+    // chord. What is left is the honest part: which sequence is waiting, and
+    // what it wants next. It is also the smallest state the panel has.
+    return {
+      head: wkHeadHtml(s.pending.chord, wkExpectTitle(s.pending.expect)),
+      body: "",
+      foot: wkFootHtml(0, 1, true),
+    };
+  }
+  const page = await s.page();
+  const total = await s.total();
+  // The footer is built from what the HIGHLIGHTED row can actually do: a
+  // category head opens a menu, an ordinary binding runs, and the panel says
+  // which. `sel` is a lazy index, which is exactly what a row carries.
+  const selRow = page.items.filter((r) => r.lazyIndex === s.sel)[0];
+  return {
+    // No chord badge at the top level: there is no committed sequence yet, and
+    // inventing one (`⌘`) was a key the keymap does not have.
+    head: wkHeadHtml("", ""),
+    body: wkBodyHtml(page, s.sel),
+    foot: wkFootHtml(s.pageNum, total, false, !!(selRow && selRow.cat)),
+  };
 }

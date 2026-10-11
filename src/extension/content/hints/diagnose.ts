@@ -6,6 +6,7 @@
 import { rectCenter, reachable, shortName, deepHit, inViewport, hintVisible } from "./probe";
 import { collectHintables, type CollectStats } from "./collect";
 import { selectHintables } from "./select";
+import { createVisibilityPass } from "./visibility";
 import { MAX_HINTS } from "./selectors";
 import type { HintProbe } from "../../../shared/types";
 
@@ -23,10 +24,19 @@ export interface HintDiagnosticsSnapshot {
 // reports is exactly what `;f` would do — not a second, drifting code path.
 // Nothing here clicks anything.
 export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
-  const stats: CollectStats = { shadowRoots: 0, pointerControls: 0 };
-  const pool = collectHintables(stats);
+  const stats: CollectStats = {
+    shadowRoots: 0,
+    pointerControls: 0,
+    truncated: false,
+    visited: 0,
+    budgetMs: 0,
+  };
+  // ONE pass for both halves, so the report describes the run the live flow
+  // makes (same caches, same order, same costs).
+  const pass = createVisibilityPass();
+  const pool = collectHintables(stats, pass);
   // Same selection the live flow runs, so the counters are the truth.
-  const sel = selectHintables(pool, MAX_HINTS);
+  const sel = selectHintables(pool, MAX_HINTS, pass);
 
   const probes: HintProbe[] = [];
   for (const el of pool.slice(0, Math.max(0, limit))) {
@@ -40,7 +50,7 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     } catch (e) {
       // ignore
     }
-    const vis = inViewport(el) && hintVisible(el);
+    const vis = inViewport(el) && hintVisible(el, pass);
     const center = rectCenter(el);
     const hit = vis ? deepHit(center[0], center[1]) : null;
     const reach = vis && reachable(el);

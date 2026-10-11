@@ -43,6 +43,21 @@
 //                      consumed by nobody and `;` on that tab left the keyboard
 //                      dead.
 //
+//   frames-coalesce    the per-frame dedupe removed
+//                      NOT a reverted fix — a reverted SHAPE of the defect the
+//                      hint engine already shipped once: measuring on every
+//                      event instead of once per frame, so a wheel flick costs
+//                      more passes than the display has frames, each one a
+//                      forced layout over the live labels.
+//
+//   frames-episode-cap the deadline on the fast cadence removed
+//                      The same shipped defect one step further in: a page whose
+//                      animation never ends (a spinner, a marquee) fires motion
+//                      forever, and without the cap those events hold the safety
+//                      net at 20 passes/second for as long as the hints are open.
+//                      That is the pinned main thread that made Escape stop
+//                      working, at a lower number.
+//
 // Run: npm run test:mutation
 //
 // It is a SEPARATE command from `npm test` on purpose. It rewrites source
@@ -173,6 +188,24 @@ const MUTATIONS: Mutation[] = [
     tests: ["scripts/test/keymap.test.ts"],
     because:
       "one host printing the canonical spec while the menu prints the chord it names: `no binding for ;shift+d` next to a key the overlay labels `D` (audit §6), which the source guard in keymap.test.ts must catch at the call site",
+  },
+  {
+    name: "frames-coalesce",
+    file: "src/extension/content/hints/frames.ts",
+    find: "      if (handle) return;",
+    replace: "      // mutated: no per-frame dedupe",
+    tests: ["scripts/test/hints-frames.test.ts"],
+    because:
+      "every request for a measurement pass runs one, so a burst of motion events becomes a burst of forced layouts instead of one pass per frame",
+  },
+  {
+    name: "frames-episode-cap",
+    file: "src/extension/content/hints/frames.ts",
+    find: "  let delay = i.moving && i.episodeUntil > i.now ? FAST_MS : SAFETY_MS;",
+    replace: "  let delay = i.moving ? FAST_MS : SAFETY_MS; // mutated: no episode cap",
+    tests: ["scripts/test/hints-frames.test.ts"],
+    because:
+      "the fast cadence has no deadline, so a page with an infinite animation holds the safety net at 20 passes/second for as long as the hints are open",
   },
   {
     name: "in-page-navigation-forgets",

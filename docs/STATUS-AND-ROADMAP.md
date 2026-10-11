@@ -312,6 +312,49 @@ must be counted.** Both halves of that mistake — a fix that made the suite wor
 and a test suite that had to be re-measured to find out — are the reason this is
 written down rather than just fixed.
 
+### 2.9 The hints pass: told when to measure, and counted when it does
+
+Three questions about the hint engine were answered by one closure with a rAF
+loop in it, and the answers could not be checked by reading them. They are now
+three modules with tests that count what they do:
+
+| File | was | now | owns |
+| --- | --- | --- | --- |
+| `content/hints/visibility.ts` | — | 260 | "would a human see this", answered for a whole PASS: one style read per element, the two ancestor predicates memoised per distinct element, created per collection/selection run and never outliving it |
+| `content/hints/motion.ts` | — | 164 | the events that mean "the page moved", with what each kind implies (scroll/resize can invalidate the batch; a transition cannot), and a bounded `moving()` window |
+| `content/hints/frames.ts` | — | 118 | one measurement pass per frame, and the safety net's cadence (250ms idle, 50ms moving, capped at 1.5s per episode) |
+| `content/hints/session.ts` | 606 | 805 | the one `;f` press — including the glue that arms the timer and applies the cadence |
+
+The earlier split (`hintresolve`) took this file from 606 to 538; this pass added
+back the scheduling glue and its reasoning, which is why it is 805 today. The
+policies are NOT in it — `nextMeasurementDelay` and `createFrameCoalescer` are
+tested functions in `frames.ts` — but the file is the largest in the engine and
+the next candidate for a cut. The boundary is named rather than left to taste:
+the mutation/root WATCHER (`watchDom`/`unwatchDom`/`observeRoots`, ~120 lines)
+is self-contained and reports through one callback, while the deferred-work
+state (`resyncAt`, `domDirty`) is entangled with `syncViewport` and `assign` and
+should stay where those live.
+
+What the pass replaced, in the terms the fix plan uses (§2.6): the old loop
+re-anchored on ANY animation frame, extended its own fast window whenever
+`render()` reported movement, and so ran at 60 sweeps/second × up to 80 rect
+reads on any page with a clock or a carousel — a main thread that does not
+dispatch key events, which is the "hints are stuck and Escape does nothing"
+report. Now a still page costs four passes a second, a scrolling page costs one
+pass per frame and only while it scrolls, and a transition costs 20/second for
+at most 1.5 seconds. `IntersectionObserver` and `ResizeObserver` are still
+deliberately absent (an IntersectionObserver reports visibility crossings, not
+movement, which is exactly the case the old sweep existed for).
+
+**What is verified, and what is not.** Verified: the three new test files (23
+checks), the whole unit tier (650 checks), the typecheck of all four configs, and
+the panel redesign's contract. NOT verified: the in-browser profile §2.6 asks
+for as its acceptance test — long tasks while hints sit idle, keystroke latency
+with hints open. No Firefox session was available in this pass, so the timer
+claims are pinned by unit tests over the scheduler and by construction (nothing
+loops while the page is still), not by measured frames. That is recorded in
+`docs/HINTS.md` §7.4 rather than left to be assumed.
+
 ---
 
 ## 3. What is known broken

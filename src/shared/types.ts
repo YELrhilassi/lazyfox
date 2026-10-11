@@ -37,6 +37,12 @@ export interface WkItem {
   label: string;
   group: string;
   native: boolean;
+  // The binding this row runs, when the display key is not itself a dispatch
+  // key — the collapsed `1-9` run shows a range while the binding behind it is
+  // `1`. Empty for native (reference-only) rows. Absent on rows that came from
+  // an older core, which is why the leader still falls back to the reverse
+  // lookup by display key.
+  spec?: string;
 }
 
 export interface WkRow {

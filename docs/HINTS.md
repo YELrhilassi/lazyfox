@@ -431,3 +431,126 @@ bound), because those live in the actor's listener and page script cannot reach
 `windowUtils`; standing in for the actor would test a stub. An earlier version
 of that test asserted the validation anyway and would have passed no matter what
 the actor did. The bounds are commented in the code instead.
+
+---
+
+## 7. The measurement pass: what runs, and how often (2026-10-10)
+
+This is the performance half of the engine, and it is written down because the
+previous arrangement could not be checked by reading it: a rAF loop with two
+magic intervals owned both the *trigger* and the *rate*, and the visibility
+predicates walked the same ancestor chain once per candidate.
+
+Three modules now own the three questions, and each is pinned by tests that
+count what it does rather than assert what it says.
+
+### 7.1 One visibility pass, not one predicate per element
+
+`probe.ts` used to answer "is this visible" with a per-element walk: the
+composed ancestor chain for hidden/inert/`aria-hidden`, the chain AGAIN for
+`opacity:0` (opacity is not inherited, so a child of a faded-out menu computes
+to 1 while being invisible), and the element's own `getComputedStyle` up to
+three times. Collection ran it for every candidate, and the selection pass ran
+it again for the ones that survived.
+
+`visibility.ts` answers it for a whole pass:
+
+- the element's own computed style is read **once per element per pass**;
+- `hiddenByAttribute` and `opacityZero` are ANCESTOR predicates, computed by
+  recursion, so a node's answer is its own attribute/style plus its parent's —
+  which is a one-time cost per distinct element instead of a walk to the top per
+  candidate;
+- `pointer-events` is read from the element's own computed value, because it is
+  an inherited property: the ancestor walk that used to guard it could never
+  change an answer (measured and removed in the same change that moved the rest
+  here);
+- the pass is created per collection/selection run and never outlives it, so a
+  page that changes its styles is re-read by re-running the pass — the rule the
+  rest of the engine follows.
+
+Measured cost, from `scripts/test/hints-visibility.test.ts` (the pass takes its
+style reader as a parameter, which is what makes the claim countable): 200
+candidates that share one wrapper and one root cost **202 style reads**, one per
+distinct element, where the per-element predicates cost at least 600 (200 × 3
+for the opacity walk alone, plus the hidden walk). Repeating a question inside
+one pass reads nothing; a NEW pass re-reads and can change its answer.
+
+### 7.2 The page says when it moved, instead of being asked 60 times a second
+
+`motion.ts` is the list of events that mean "the page moved":
+
+| event | phase | what it implies |
+|---|---|---|
+| `scroll` | capture, passive, on `window` | a scrolling inner pane (a chat transcript, a code editor, a table body) never reaches a window listener otherwise; passive means the listener can never delay the browser's own scrolling |
+| `resize` | capture, passive | every label position is suspect |
+| `transitionrun` / `transitionstart` / `transitionend` / `transitioncancel` and the four `animation*` siblings | capture, on `document` | something is animating in place: the batch is the same, so the labels are re-anchored but the keys are NOT reassigned |
+
+An `IntersectionObserver` is deliberately **not** on that list, and the reason is
+in the module: it observes visibility CROSSINGS, not movement — an element that
+slides from one side of the viewport to the other stays fully intersecting and
+fires nothing, which is exactly the case the old sweep existed for.
+
+`moving()` is a window (`MOTION_WINDOW_MS` after the last event), so the burst at
+the start of a half-second transition does not drop to the idle cadence halfway
+through it. `dispose()` removes exactly the listeners it added — the registered
+list is kept with its options, because a leaked closure here would outlive the
+session it belongs to and `removeEventListener` only matches on capture.
+
+Pinned by `scripts/test/hints-motion.test.ts`: the event list, the kind each
+event reports, the window's boundaries, the capture/passive wiring, a hostile
+target that throws on `addEventListener`, and that nothing listens after
+`dispose()`.
+
+### 7.3 One measurement pass per frame, and a bounded safety net
+
+`frames.ts` owns the two rules that decide when labels are measured:
+
+**One pass per frame.** Every motion event REQUESTS a pass; requests raised in
+the same frame fold into one. A wheel flick raises far more events than the
+display has frames, and one pass per frame is what keeps the burst from costing
+more than the frames it was trying to keep up with. A pass that discovers new
+work schedules the NEXT frame rather than recursing.
+
+**A safety net for movement nothing announces.** A page that animates its own
+layout from a rAF loop — a JS carousel, a canvas game, a marquee built from
+`style.transform` assignments — raises no event we can observe. The net measures
+at `SAFETY_MS` (250ms: four passes a second) on a still page and tightens to
+`FAST_MS` (50ms) while the page is demonstrably moving, bounded by
+`FAST_EPISODE_MS` (1500ms): a page with an INFINITE animation fires events
+forever, and without that cap those events would hold the net at the fast rate
+for as long as the hints are open — the same pinned main thread as the old loop,
+just at a lower number. After the cap the net falls back to the safety rate, and
+the next NEW episode (a fresh transition, a scroll) gets its own budget.
+
+The net also serves owed work sooner than its own rate: a settled scroll wants
+its re-hint `RESYNC_DELAY` after the last event, and a mutation wants its
+re-collect `DOM_RESYNC_DELAY` after the first one, so the EARLIEST deadline wins.
+It never returns 0 — an interval armed at 0 runs as fast as the event loop
+allows, which is the failure the module exists to prevent.
+
+Pinned by `scripts/test/hints-frames.test.ts`, including the case that matters
+most: 150 events in one frame are one pass, and a page whose fast episode has
+expired is measured at the safety rate even while it keeps reporting motion.
+
+### 7.4 What this replaced, in numbers
+
+The old loop re-anchored on ANY animation frame and extended its own fast window
+whenever `render()` reported movement, so on a page with a clock, a carousel or a
+CSS transition it ran at 60 sweeps/second × up to `MAX_HINTS` (80) rectangle
+reads, and a main thread in that state does not dispatch key events — Escape sat
+behind the sweep loop, which is the "hints are stuck and Escape does nothing"
+report. Its final form before this pass had floors of 20 sweeps/second while
+moving and ~8/second idle, still with a full measure of every live label.
+
+Now: a still page costs four passes a second (~320 rectangle reads/second at
+80 hints, in four batches), a scrolling page costs one pass per frame and only
+while the user scrolls, and a transition costs 20/second for at most 1.5
+seconds. Nothing loops when the page is still and the hints are open.
+
+**Honest scope.** The structural claims above are pinned by tests; the
+in-browser profile the fix plan asks for (§2.6's acceptance is a measurement,
+not a green suite) was NOT run in this pass — it needs a Firefox session driving
+the committed `dist/`, which this environment does not have. The three claims a
+profile would confirm are: no repeated long tasks while hints sit idle, keystrokes
+dispatched within one frame while hints are open, and the label set tracking a
+scrolling page without tearing.

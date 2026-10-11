@@ -66,6 +66,10 @@ func wkItemObj(it core.WkItem) js.Value {
 	o.Set("label", it.Label)
 	o.Set("group", it.Group)
 	o.Set("native", it.Native)
+	// The spec travels WITH the row, so a display key that is not a dispatch key
+	// (the collapsed `1-9` run) still runs the right action on Enter instead of
+	// relying on a reverse lookup that has no entry for a range.
+	o.Set("spec", it.Spec)
 	return o
 }
 

@@ -192,6 +192,33 @@ plus the find-in-page widget — a flat, shadow-piercing page-text model that
 feeds both the search hit list and the Go-backed yank mode), `splitpanel.ts`
 (the split companion pane), `options.ts` and `popup.ts`.
 
+`content/hints/` is the link-hints pipeline, split so that each question has one
+owner:
+
+- `selectors.ts` — what counts as hintable, and every limit the engine works
+  within (cap, walk budgets, resync delays).
+- `collect.ts` — walking the page, open AND closed shadow roots included.
+- `visibility.ts` — "would a human see this, and could they click it?", answered
+  for a whole PASS: the element's own style is read once, and the ancestor
+  predicates (hidden/inert/aria-hidden, `opacity:0`) are memoised per element so
+  a candidate list sharing ancestors does not re-walk them per candidate. A pass
+  never outlives the collection/selection run that made it.
+- `select.ts` — which candidates get a label, in document order up to the cap.
+- `overlay.ts` — the label DOM and where each badge goes; the single answer to
+  "is this hint on screen" (`shownKeys()`).
+- `activate.ts` + `life.ts` — clicking a target, and what counts as "the page did
+  something" afterwards.
+- `hintresolve.ts` — re-finding the element a label belongs to after the page
+  replaced it (framework re-render, late insert).
+- `motion.ts` — the events that mean "the page moved", with what each kind
+  implies (a scroll can invalidate the batch, a transition cannot).
+- `frames.ts` — one measurement pass per frame, and the bounded cadence of the
+  safety net that covers movement nothing announces.
+- `session.ts` — the one `;f` press: the state that is genuinely session-scoped,
+  and the composition of everything above.
+- `diagnose.ts`, `index.ts` — the "why is this not hinted" report, and the
+  import face the content script uses.
+
 ## How a keypress flows
 
 1. You press `;`. Either the content script or the chrome helper intercepts

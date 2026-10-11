@@ -4,6 +4,7 @@
 // The order matters and the diagnostics page runs this exact function, so the
 // numbers it reports are the numbers `;f` acted on.
 import { hintVisible, inViewport, reachable } from "./probe";
+import { createVisibilityPass, type VisibilityPass } from "./visibility";
 import { specificity } from "./collect";
 
 export interface SelectResult {
@@ -57,13 +58,22 @@ export function targetKey(el: Element): string {
 // and the `<span>` inside it never produce two labels on the same pixels.
 // The diagnostics page runs this exact function, so its numbers cannot drift
 // from what `;f` really does.
-export function selectHintables(candidates: Element[], limit: number): SelectResult {
+export function selectHintables(
+  candidates: Element[],
+  limit: number,
+  // The SAME pass collection used, when the caller has one: the two halves ask
+  // about the same elements (in-viewport is a subset of collected), so sharing
+  // the cache means the selector matches are not re-walked here. Given none, a
+  // one-shot pass is created — the pre-cache cost, nothing left behind.
+  pass?: VisibilityPass
+): SelectResult {
+  const vis = pass || createVisibilityPass();
   const kept: Array<{ el: Element; r: DOMRect; key: string }> = [];
   let hidden = 0;
   let covered = 0;
   let duplicate = 0;
   for (const el of candidates) {
-    if (!inViewport(el) || !hintVisible(el)) {
+    if (!inViewport(el) || !hintVisible(el, vis)) {
       hidden++;
       continue;
     }

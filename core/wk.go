@@ -44,11 +44,7 @@ func WkPerPage() int { return wkPerPage }
 // tall and wide, and they are not pressable from the leader, so offering them as
 // selectable rows was a lie about what the keyboard will do.
 func lazyBindings() []WkItem {
-	out := make([]WkItem, 0, len(Keymap))
-	for _, r := range Keymap {
-		out = append(out, WkItem{Key: r.Key, Label: r.Label, Group: r.Group})
-	}
-	return out
+	return DisplayRows()
 }
 
 // isCategoryHead reports whether a display key opens a menu rather than running
