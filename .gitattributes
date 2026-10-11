@@ -1,0 +1,21 @@
+# dist/ is committed build output, and its BYTES are hashed: payloadHash in
+# scripts/payload.ts is a content hash over dist/chrome, dist/chrome/loader and
+# the xpi, recorded per binary in installer/bin/payload-state.json and checked by
+# `npm run check`. It has to hash exact bytes — those are what ships — which
+# makes line-ending conversion a correctness problem, not a cosmetic one.
+#
+# This repo develops on Windows with core.autocrlf=true, so without this file
+# every `git checkout` rewrote the committed (LF) bundles to CRLF in the working
+# tree. The result was a `npm run check` that failed immediately after any branch
+# switch — "built from an older payload" for all six installers, "staged payload
+# is out of date: data/chrome/userChrome.uc.js differs from dist/chrome/
+# userChrome.uc.js" — with no source edit behind it, and only `npm run build`
+# (which rewrites dist as LF) clearing it. CI on Linux, where autocrlf is off,
+# never saw it.
+#
+# -text means "never convert": git writes these blobs verbatim and compares them
+# byte-for-byte, so the working tree matches what was committed on every
+# platform, and the recorded hash keeps describing the tree. It also keeps the
+# binaries under dist/ (the xpi, the icons) safe from a `text` attribute, which
+# would try to normalize them.
+dist/** -text
