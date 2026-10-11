@@ -266,6 +266,51 @@ export async function run(ctx: any): Promise<void> {
     await evalIn(ctx.probe, `browser.tabs.remove(${blankId}).catch(() => {})`);
   });
 
+  await t("an in-page navigation keeps the page's own answer", async () => {
+    // WHAT THIS CASE IS FOR, in a real browser. A tab's record is dropped when
+    // its DOCUMENT is replaced, because that is the one case a killed content
+    // process cannot announce for itself. The safety of that rests entirely on
+    // the browser telling the two apart — `LOCATION_CHANGE_SAME_DOCUMENT` on
+    // the navigation notification — and the distinction has to hold on the
+    // REMOTE (out-of-process) path, which is where every real web page lives.
+    // Get it wrong and an SPA's first `pushState` looks like a replaced
+    // document: the helper claims the keys and paints its own which-key overlay
+    // over the page's, which is the exact bug the presence model exists to
+    // prevent. So this case drives a REAL `pushState` in a REAL tab and asks
+    // the product whose keys it owns.
+    await ctx.collapseWindow();
+    const a = await createTab();
+    await ctx.gotoPage(a, HOME);
+    const aId = await idByUrl(HOME);
+    assert(aId != null, "the web tab is in the strip");
+    await expectOwnership(
+      aId as number,
+      HOME,
+      false,
+      "the live web page owns its own keys before the in-page navigation"
+    );
+
+    // An in-page navigation: the URL moves on, the document does not, and
+    // neither `pagehide` nor `pageshow` fires to announce anything.
+    await evalIn(a, `history.pushState({}, "", "/hello")`);
+    await expectOwnership(
+      aId as number,
+      HELLO,
+      false,
+      "an in-page navigation must not cost the live page its answer"
+    );
+
+    // And the record is still the SAME document's: a real navigation to a URL
+    // whose document reports for itself leaves the tab owning its own keys.
+    await ctx.gotoPage(a, HOME);
+    await expectOwnership(
+      aId as number,
+      HOME,
+      false,
+      "the replacement document answers for itself after a real navigation"
+    );
+  });
+
   await t("closing a tab does not cost a live page its answer", async () => {
     // WHAT THE OLD COMPENSATION COST. Closing a tab above a reporting tab
     // re-keyed the map by DELETING every record at or after the closed index, so

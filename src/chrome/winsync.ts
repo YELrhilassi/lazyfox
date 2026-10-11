@@ -15,6 +15,7 @@
 
 import { chromeOwnsSurfaces } from "./keystate";
 import { isCommandCenterTab } from "./keystate";
+import { noteLocationChange } from "./keystate";
 import { focusCommandCenterContent } from "./commandcenterfocus";
 import type { ChromeEnv } from "./env";
 
@@ -93,8 +94,18 @@ export function installWinSync(deps: WinSyncDeps): void {
 
   win.gBrowser.addTabsProgressListener({
     QueryInterface: env.ChromeUtils!.generateQI(["nsIWebProgressListener"]),
-    onLocationChange(browser: any, _webProgress: any, _request: any, loc: any) {
+    onLocationChange(browser: any, _webProgress: any, _request: any, loc: any, flags: any) {
       if (!loc) return;
+      // A REAL NAVIGATION MEANS THE DOCUMENT THAT ANNOUNCED ITSELF IS GONE, and
+      // this is the only notification that says so when the document could not
+      // say it itself (a killed content process sends no `pagehide`, and a
+      // replacement document only ever REPLACES a record — so a page with no
+      // content script of its own would inherit the dead one's answer forever).
+      // An in-page navigation is marked as the same document and keeps its
+      // record; see keystate.noteLocationChange for the whole argument, and the
+      // e2e case that proves this build really delivers the flag for
+      // `pushState` on a remote browser.
+      noteLocationChange(win, browser, Number(flags) || 0, env.Ci);
       // The selected tab may have crossed the web/chrome boundary (e.g. a web
       // page navigated to about:preferences): remount the chrome status bar
       // accordingly. update is cheap and idempotent, and the status module

@@ -175,6 +175,17 @@ const MUTATIONS: Mutation[] = [
       "one host printing the canonical spec while the menu prints the chord it names: `no binding for ;shift+d` next to a key the overlay labels `D` (audit §6), which the source guard in keymap.test.ts must catch at the call site",
   },
   {
+    name: "in-page-navigation-forgets",
+    file: "src/chrome/keystate.ts",
+    // The same-document distinction dropped: every location change is treated as
+    // a replaced document.
+    find: "  if (Number(flags) & bit) return;",
+    replace: "  if (false) return; // mutated: every location change forgets the record",
+    tests: ["scripts/test-chrome-keys.ts"],
+    because:
+      "a pushState is mistaken for a replaced document, so every single-page app loses its presence at its first in-page navigation — the helper claims the keys and paints its own overlay over the page's, which is exactly the SPA bug the URL identity caused (audit §18.5)",
+  },
+  {
     name: "presence-index-trusted",
     file: "src/chrome/keystate.ts",
     // The URL repair in presenceTabFor, removed: the strip index the sender

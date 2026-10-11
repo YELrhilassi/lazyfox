@@ -935,6 +935,31 @@ down with the exact flags and the exact three-step sequence so that it can be
 implemented and *falsified* (a crash-simulation page served with an
 `http(s)` URL and no content script) rather than argued about.
 
+**Resolved (later pass), by the signal this section named — and only half of it
+could be falsified.** The listener already existed: `winsync.ts` registers an
+`onLocationChange` for the `#lfc=` route, and it was reading neither the flags
+nor the document. It now calls `keystate.noteLocationChange(win, browser,
+flags, env.Ci)`, which drops the tab's record when the change is NOT inside the
+current document (`LOCATION_CHANGE_SAME_DOCUMENT`), i.e. when the browser itself
+says the announced document was replaced. The decision is a function in
+`keystate.ts` rather than a branch in the listener so it can be exercised
+without a browser: three checks in `test-chrome-keys.ts` (a real navigation drops
+that tab's record and leaves a neighbour's alone; an in-page navigation keeps it;
+an unreadable browser or an unknown tab is ignored, never thrown) plus the
+mutation `in-page-navigation-forgets`.
+
+The two halves are not equally testable, and the difference matters more than the
+fix. The RISK of this change is a flag that does not arrive on the remote-browser
+path — that would expire every SPA's presence at its first `pushState`, worse
+than the hole being closed — so it is falsified end to end instead of argued:
+`content/ownership › an in-page navigation keeps the page's own answer` drives a
+real `pushState` in a real tab and requires the product to go on deferring to the
+page. The BENEFIT needs a content process that dies mid-life; nothing in the
+harness can produce one, and the existing `pagehide` path masks the drop in every
+case the suite can drive. That half is therefore recorded as unreachable rather
+than claimed as covered — the difference between "this is tested" and "this is
+reasoned, and here is the reasoning".
+
 ## 16. The harness's own report told the reader to undo-and-redo
 
 Two lines in the e2e runner's summary, both found while recording two new tests
