@@ -9,7 +9,7 @@
       "xpiVersion": "0.5.8",
       "payload": "9fcf5d946e452ceb60667120bb0627ba9f7d524f9dcdedffa5da29ed5f2d3d43",
       "source": "cd17d8c7ba3ff717cb750cb264311bd3533ffedc21cfa0819b23a6e5f9e90419",
-      "bin": "597854a79c418c65786dcbd2a48c9dea3231373472c62b4d6edb91538638bf5f"
+      "bin": "c847ee2779db376edcfc256980a3bf570127b928eee63db56f0c3d2ff6f3f94b"
     },
     "lazyfox-install-dev-darwin": {
       "out": "lazyfox-install-dev-darwin",
@@ -20,7 +20,7 @@
       "xpiVersion": "0.5.8",
       "payload": "9fcf5d946e452ceb60667120bb0627ba9f7d524f9dcdedffa5da29ed5f2d3d43",
       "source": "cd17d8c7ba3ff717cb750cb264311bd3533ffedc21cfa0819b23a6e5f9e90419",
-      "bin": "e5eb4be64d164133379a2b0c0a0f3abdc906a8fd94118c4ad3b4ae331b5f8489"
+      "bin": "ceed5fd75c61f33c1655089cd4489967414df7c2ce1195c8c4506c315dd59d84"
     },
     "lazyfox-install-dev-windows.exe": {
       "out": "lazyfox-install-dev-windows.exe",
