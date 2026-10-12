@@ -125,6 +125,19 @@ import type { ContentPopupShell } from "./find";
     open: (html, build) => {
       closePopup();
       leader.hide();
+      // AND THE HINT LAYER WITH THEM. `startHints` already stands the leader
+      // down before taking the keyboard; this is the reverse direction, and it
+      // was missing. A popup opened over a live hint layer (any `;`-chord with
+      // a menu, `;/`, the resize panel) left the layer RUNNING: its badges were
+      // still drawn, its 250ms measurement net and its MutationObserver were
+      // still installing work on the page's main thread, and its keys were dead
+      // — the popup branch in the dispatcher takes every keystroke first. So a
+      // user who looked at hints, opened something, and came back found a
+      // layer that answered none of their keys while still costing them
+      // frames: "the hints get broken and unresponsive". One owner at a time is
+      // the rule this file states for the other direction; this makes it a
+      // rule in both.
+      if (hints.active || hints.starting) hints.exit();
       const ctl = overlayOpenPopup(html, (root) => build(root), () => {
         currentPopup = null;
       });
