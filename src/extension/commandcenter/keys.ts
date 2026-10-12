@@ -245,8 +245,26 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
       return;
     }
     if (store.get().hintArmed) {
-      handleHintPick(e);
-      return;
+      // THE LEADER KEY ALWAYS WINS OVER A HINT PICK — the same rule the content
+      // script states for its own hint layer (see content/main.ts, "THE LEADER
+      // ALWAYS WINS OVER A HINT LAYER"), and here it was the opposite: `;` was
+      // not in HINT_CHARS, so it fell into handleHintPick's "any other key ends
+      // the pick" branch and was spent CANCELING instead of arming. Arming the
+      // leader after glancing at the badges therefore cost two presses of the
+      // leader key — the reported "the leader key needs pressing twice" — and
+      // the key a user reaches for to DO something was the key that undid what
+      // they had just asked for. The pick is dropped and this key falls through
+      // to the leader branch below, exactly as if no pick had been armed.
+      //
+      // A MODIFIED key never reaches here — the branch above already dropped the
+      // pick and returned for those — so this is only ever a plain `;`.
+      if (k === deps.leaderKey()) {
+        store.patch({ hintArmed: false });
+        renderer.refresh();
+      } else {
+        handleHintPick(e);
+        return;
+      }
     }
 
     if (state.resizeOpen && handleResizeKey(e)) return;
