@@ -153,7 +153,7 @@ export interface BgApi {
     // asks "is the leader key still physically down?", and the background is
     // the only party that can answer for a document this one has never seen.
     req: { active: boolean; url: string; doc?: string };
-    res: { ok: boolean; hold?: boolean; holdAt?: number };
+    res: { ok: boolean; hold?: boolean; holdAt?: number; holdDoc?: string; holdGeneration?: number };
   };
   // The HELD leader key, as a per-tab fact rather than per-document state.
   //
@@ -167,7 +167,7 @@ export interface BgApi {
   //
   // Stored as a tab session value, like syncTyping, because that is the one
   // store that survives the content script being torn down and rebuilt.
-  syncHold: { req: { hold: boolean }; res: { ok: boolean } };
+  syncHold: { req: { hold: boolean; generation: number; doc: string }; res: { ok: boolean; error?: string } };
   // Content script -> background: live find-in-page state (1-based current
   // match, 0 = nothing walked to yet; total matches). The background relays it
   // to the chrome helper so its window-level status bar shows the find count

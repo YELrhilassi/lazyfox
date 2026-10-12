@@ -32,6 +32,9 @@ export interface WinListenersDeps {
   typing: { focusedIsTyping(e: Event): boolean; reset(): void };
   // The chrome leader, late-bound: it does not exist yet at install time.
   leader(): { active: boolean; hide(): void } | null;
+  // Release a physical hold when the selected tab changes; the chrome window
+  // itself may stay focused, so a window blur is not guaranteed.
+  releaseLeaderHoldOnTabSwitch(): void;
   // Recompute the status bar after a tab switch.
   status: { compute(): void };
   // Is this still the focused OS window? Injected because the answer lives on
@@ -54,13 +57,17 @@ export function installWinListeners(deps: WinListenersDeps): void {
       // never arrived, so it would be spent by THIS press's keypress and eat a
       // character the user typed. See keyguard.beginPress.
       deps.keyGuard.beginPress(e);
+      // The same rule the content script follows, for the same reason: only a
+      // key THIS dispatch cut off has a tail that is ours to swallow (see
+      // keyguard.consumeIfNewlyPrevented). Another chrome script's own gesture
+      // has already had its keydown prevented, and its keypress still belongs
+      // to whatever the user is typing into.
+      const preventedBefore = e.defaultPrevented;
       if (deps.chromeKeyDown(e)) {
         e.preventDefault();
         e.stopImmediatePropagation();
       }
-      // Record every key the chrome helper consumed so its keypress/keyup
-      // tail is swallowed too — keydown's preventDefault does not cancel them.
-      if (e.defaultPrevented) deps.keyGuard.consume(e);
+      deps.keyGuard.consumeIfNewlyPrevented(e, preventedBefore, e.defaultPrevented);
     },
     true
   );
@@ -175,6 +182,7 @@ export function installWinListeners(deps: WinListenersDeps): void {
       try {
         const leader = deps.leader();
         if (leader) leader.hide();
+        deps.releaseLeaderHoldOnTabSwitch();
         if (deps.popup.isOpen()) deps.popup.close();
         // ...and the frame script's typing latch, which describes a focused
         // element in the tab that was JUST LEFT. It is reset on window blur and

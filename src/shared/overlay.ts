@@ -18,7 +18,7 @@
 //
 // Style sheets live in overlaycss.ts; every module here is behavior only.
 
-export { HOST_CSS, openPopup } from "./overlay-popup";
+export { HOST_CSS, openPopup, popupIsAlive } from "./overlay-popup";
 export type { PopupCtl, SelectorCtl } from "./overlay-popup";
 export { createSelector } from "./overlay-selector";
 export type { SelectorOpts } from "./overlay-selector";

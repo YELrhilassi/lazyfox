@@ -21,6 +21,25 @@
 //                   window. Without the release, alt-tabbing mid-hold leaves
 //                   the leader armed forever.
 //
+//   keyhold-restore-forgets  the `ranWhileHeld` mark on a restored hold removed
+//                   A hold that crosses a navigation (`;` held, `g` twice) is
+//                   restored by the NEXT document, which never saw a binding
+//                   run — so the restore looked exactly like a tap and left the
+//                   overlay up, eating the next keystroke as a `;x` binding.
+//                   That is "I can do `;g` to go back but the which-key and the
+//                   leader key stay active".
+//
+//   keyhold-cancel-keeps-claim  the cancel path stops releasing the hold
+//                   Escape / Ctrl+G hid the overlay and left the PUBLISHED claim
+//                   standing, so the next navigation restored a gesture the user
+//                   had explicitly backed out of — on a page where nobody
+//                   pressed the leader key at all.
+//
+//   cancel-chord-reaches-browser  Ctrl+G stops being consumed on chrome-owned pages
+//                   Firefox binds Ctrl+G to FIND AGAIN, and a page with no
+//                   content script had nothing else to do with it: the universal
+//                   abort opened the native find bar instead.
+//
 //   borrowed-keys   "keys" removed from BORROWED_CHANNELS
 //                   The key synthesizer borrows a tab the user already has.
 //                   Treating it as plumbing removed that tab from the numbering
@@ -91,8 +110,8 @@ const MUTATIONS: Mutation[] = [
     // The rescue, disabled — which is exactly the shipped behaviour it was
     // added to fix: the forward happens unconditionally, so a command-center
     // page with no engine takes the key and answers nothing. (Anchored on the
-    // condition line alone: keysdispatch.ts is a CRLF file, so a multi-line
-    // pattern would not match it.)
+    // condition line alone, deliberately: it is the whole rule, and a one-line
+    // anchor survives reformatting around it.)
     find: "if (!commandCenterPageReady(win) && isLeaderKeyPress(e)) {",
     replace: "if (false && isLeaderKeyPress(e)) { // mutated: the page is trusted without an engine",
     tests: ["scripts/test/keyhold.test.ts"],
@@ -110,33 +129,55 @@ const MUTATIONS: Mutation[] = [
   {
     name: "keyhold-blur",
     file: "src/shared/holdrelease.ts",
-    // Anchored on the doc line above `releaseLostHold` so the pattern is
-    // unique — the same three lines also appear in `releaseHoldOnKeyup`, and a
-    // mutation that matches twice is a mutation that does not run.
+    // Anchored on the declaration AND its body, so the pattern is unique —
+    // `return endHold(leader)` alone appears in four functions, and a mutation
+    // that matches twice is a mutation that does not run.
     find: [
-      " * outstanding, so it cannot disturb a leader that was never held.",
-      " *",
-      " * Returns true when a hold was actually released.",
-      " */",
       "export function releaseLostHold(leader: ReleasableLeader | null | undefined): boolean {",
-      "  if (!leader) return false;",
-      "  if (!leader.sticky) return false;",
-      "  leader.sticky = false;",
-      "  return true;",
+      "  return endHold(leader);",
+      "}",
     ].join("\n"),
     replace: [
-      " * outstanding, so it cannot disturb a leader that was never held.",
-      " *",
-      " * Returns true when a hold was actually released.",
-      " */",
       "export function releaseLostHold(leader: ReleasableLeader | null | undefined): boolean {",
-      "  if (!leader) return false;",
-      "  if (!leader.sticky) return false;",
       "  /* mutated: the hold is never actually released */",
       "  return false;",
+      "}",
     ].join("\n"),
     tests: ["scripts/test/keyhold.test.ts"],
     because: "the release path becomes unreachable, so a lost keyup leaves the leader armed forever",
+  },
+  {
+    name: "keyhold-restore-forgets",
+    file: "src/shared/holdrelease.ts",
+    // The mark, removed: the restored hold is re-armed as if it were a tap.
+    find: "  leader.sticky = true;\n  leader.ranWhileHeld = true;",
+    replace: "  leader.sticky = true; // mutated: a restored hold forgets that it ran something",
+    tests: ["scripts/test/keyhold.test.ts"],
+    because:
+      "a hold restored after a navigation ends like a tap, so the overlay stays up on the new page and the next keystroke is dispatched as a `;x` binding",
+  },
+  {
+    name: "keyhold-cancel-keeps-claim",
+    file: "src/chrome/keysdispatch.ts",
+    // A cancel hides the overlay and leaves the HOLD standing, which is the
+    // half-finished cancel: `hide()` is the pixels, the host's callback is the
+    // claim.
+    find: "        deps.cancelLeaderHold();",
+    replace: "        // mutated: the hold outlives the cancel",
+    tests: ["scripts/test/keyhold.test.ts"],
+    because:
+      "Escape/Ctrl+G stops the gesture without ending the hold, so the next page the user lands on restores an armed leader nobody is holding",
+  },
+  {
+    name: "cancel-chord-reaches-browser",
+    file: "src/chrome/keysdispatch.ts",
+    // Ctrl+G allowed to fall through to the browser again, where it is Find
+    // Again.
+    find: '    if (isCancel(e) && e.key !== "Escape") return true;',
+    replace: '    if (false) return true; // mutated: Ctrl+G falls through to Find Again',
+    tests: ["scripts/test/keyhold.test.ts"],
+    because:
+      "the universal cancel opens Firefox's native find bar on every page the helper owns (about:, the command center before its engine loads), which is the reported 'Ctrl+G sometimes opens the page's own search'",
   },
   {
     name: "borrowed-keys",
@@ -308,7 +349,21 @@ for (const m of MUTATIONS) {
   const path = join(ROOT, m.file);
   const original = readFileSync(path, "utf8");
 
-  const occurrences = original.split(m.find).length - 1;
+  // LINE ENDINGS ARE A PROPERTY OF THE CHECKOUT, NOT OF THE SOURCE.
+  //
+  // This repo develops on Windows with core.autocrlf=true, so the tracked
+  // sources arrive here as CRLF while the same blobs are LF in CI — and a
+  // multi-line pattern written with "\n" therefore matched on one machine and
+  // reported "the source moved and this mutation needs updating" on the other.
+  // For a PROOF that is the worst possible behaviour: the gate passes on the
+  // machine that never sees the regression. So the source is normalised for
+  // matching and converted back on write, which keeps the working tree's
+  // convention (and its diff) untouched.
+  const crlf = original.includes("\r\n");
+  const source = crlf ? original.replace(/\r\n/g, "\n") : original;
+  const toDisk = (text: string) => (crlf ? text.replace(/\n/g, "\r\n") : text);
+
+  const occurrences = source.split(m.find).length - 1;
   if (occurrences !== 1) {
     console.log(`  ?? ${m.name}: SKIPPED — "${m.find}" appears ${occurrences} times in ${m.file}`);
     console.log(`     (expected exactly 1; the source moved and this mutation needs updating)`);
@@ -318,7 +373,7 @@ for (const m of MUTATIONS) {
 
   process.stdout.write(`  .. ${m.name} … `);
   try {
-    writeFileSync(path, original.replace(m.find, m.replace));
+    writeFileSync(path, toDisk(source.replace(m.find, m.replace)));
     const r = runTests(m.tests);
     if (r.failed > 0) {
       console.log(`DETECTED (${r.failed}/${r.total} went red)`);

@@ -9,7 +9,12 @@ import { core, ensureCore } from "../shared/core";
 import { LeaderController, isCancel } from "../shared/leader";
 import { specToText } from "../shared/keymap";
 import { mirror, mirrorFlag } from "../shared/observability";
-import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../shared/overlay";
+import {
+  openPopup as overlayOpenPopup,
+  popupIsAlive,
+  toast,
+  type PopupCtl,
+} from "../shared/overlay";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
 import { send } from "../shared/protocol";
 import { readKey, vBoolean, vConfig, vStealth, vString } from "./store";
@@ -231,6 +236,10 @@ import type { ContentPopupShell } from "./content/find";
   // closing); then the leader — cancel first, so ONE Escape backs all the way
   // out of a category, then the armed capture, then the binding.
   function overlayKey(e: KeyboardEvent): boolean {
+    // Same stale-panel rule as the content script's dispatcher, for the same
+    // reason: this page is a single-page app that re-renders, and a panel whose
+    // host the page removed must not keep the keyboard. See popupIsAlive.
+    if (currentPopup && !popupIsAlive(currentPopup)) closePopup();
     if (currentPopup) {
       traceDecision("popup");
       e.preventDefault();

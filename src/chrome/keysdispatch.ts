@@ -17,6 +17,7 @@
 
 import { KeyGuard } from "../shared/keyguard";
 import { LeaderController, isCancel } from "../shared/leader";
+import { noteHoldAlive } from "../shared/holdrelease";
 import {
   blurFocusedElement,
   commandCenterPageReady,
@@ -59,6 +60,24 @@ export interface KeyDispatchDeps {
   // composition root after the leader actions are built (breaks the mutual
   // reference).
   runWebHints: () => void;
+  // Called on every fresh leader press AND on every auto-repeat of the leader
+  // key, i.e. on the evidence that the key is still physically down. The
+  // composition root wires it to the hold watchdog (shared/holdrelease.ts),
+  // which stands a hold down once nothing is holding it any more.
+  onLeaderHeld?: () => void;
+  // End an outstanding HOLD because the user CANCELLED the gesture (Esc or
+  // Ctrl+G) rather than because the key came up.
+  //
+  // A callback and not something this module does itself: `l.hide()` clears the
+  // overlay, but the host is the party that also OWNS the published claim (the
+  // per-tab hold the background keeps so a hold survives a navigation), and a
+  // hold that ends without publishing its release is a hold the next page
+  // dutifully restores — an armed leader for a key nobody is holding.
+  cancelLeaderHold: () => void;
+  // Stop the watchdog when this tab loses focus or changes ownership. The same
+  // host that starts it owns cancellation, because its release may need to be
+  // published across a navigation.
+  releaseLeaderHoldOnLostFocus: () => void;
 }
 
 // The actor-forwarded key shape (see actor-parent.ts). Those keys can only
@@ -261,6 +280,11 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       if (isCancel(e)) {
         l.cancelPending();
         l.hide();
+        // A cancel ends the HOLD too, not just the overlay. `hide()` clears the
+        // pixels; the host is the one that knows the hold also has to be
+        // published as released, or the next page to load restores a gesture
+        // the user explicitly backed out of.
+        deps.cancelLeaderHold();
         return true;
       }
       const chromeUiFocus = isChromeUiFocus(win, typing, e as KeyboardEvent);
@@ -273,6 +297,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       if (typingWins && !(leaderKeyPress && emptyLazyfoxField)) {
         if (l.active) l.hide();
         if (l.hasPending()) l.cancelPending();
+        deps.releaseLeaderHoldOnLostFocus();
         return false;
       }
       if (
@@ -335,6 +360,23 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       return false;
     }
 
+    // Ctrl+G IS LAZYFOX'S CHORD, SO IT NEVER REACHES THE BROWSER.
+    //
+    // Escape is deliberately left alone here — the page still gets it, which is
+    // what Escape means on the web — but Ctrl+G has no page meaning at all on a
+    // chrome-owned page, and Firefox's is FIND AGAIN. Falling through to it
+    // opened the native find bar over an about: page or the command center,
+    // which is the reported "sometimes Ctrl+G opens the page's own search":
+    // "sometimes" is exactly the set of pages this helper owns rather than a
+    // content script, and the popup/leader branches above are the ones that
+    // already consumed the chord when something was up.
+    //
+    // It sits AFTER the typing guard on purpose: Ctrl+G while the caret is
+    // somewhere in the browser's own chrome UI (the URL bar on a fresh tab) is
+    // the browser's chord, and stealing it from there would break find-again on
+    // the one surface where nothing of ours is on screen.
+    if (isCancel(e) && e.key !== "Escape") return true;
+
     // The command center is Lazyfox's own page. In command mode (input
     // blurred) the leader key must arm here so the home-screen shortcuts
     // work; in insert mode the typing check above already let `;` through.
@@ -395,9 +437,20 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // `unknown` because the two callers are not the same shape: a real DOM
     // KeyboardEvent carries `repeat`, while a synthesized ActorKey does not
     // have that field at all (and is never a repeat — see below).
-    if (!!(e as { repeat?: boolean }).repeat) return true;
+    // A repeat is DROPPED as intent and KEPT as evidence: it proves the key is
+    // still down, which is the only thing that lets a hold be told apart from a
+    // claim nobody is holding (see shared/holdrelease.ts). Dropping it silently
+    // is what left a held leader armed forever after a release this host never
+    // saw.
+    if (!!(e as { repeat?: boolean }).repeat) {
+      noteHoldAlive(l);
+      if (deps.onLeaderHeld) deps.onLeaderHeld();
+      return true;
+    }
     l.sticky = !noKeyup;
+    noteHoldAlive(l);
     l.show();
+    if (deps.onLeaderHeld) deps.onLeaderHeld();
     return true;
   }
 

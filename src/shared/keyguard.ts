@@ -12,6 +12,12 @@
 // KeyGuard is the one place that tracks which keys were consumed, so the tail
 // of a key (its keypress/keyup) can be swallowed even after the overlay that
 // consumed the keydown has already closed itself.
+//
+// "Consumed" means THIS host's dispatcher called preventDefault — see
+// consumeIfNewlyPrevented, the only entry point its callers use. A keydown that
+// some other script had ALREADY prevented is not ours to swallow: its keypress
+// still carries the character the user is typing, and recording it here is how
+// a letter stops printing on exactly the sites that prevent keys.
 
 export interface KeyLike {
   key: string;
@@ -50,6 +56,27 @@ export class KeyGuard {
     const s = sig(down);
     const i = this.consumed.indexOf(s);
     if (i >= 0) this.consumed.splice(i, 1);
+  }
+
+  /**
+   * Records a keydown the host consumed, so its keypress/keyup are swallowed
+   * too — but ONLY when this dispatch is what consumed it.
+   *
+   * `e.defaultPrevented` after the handler runs is not the same question as "did
+   * we consume this key". A page's own capture-phase listener can prevent a
+   * keydown (a site's shortcut, a canvas editor that inserts text itself, a
+   * reading-mode shield), and so can another extension — and in those cases the
+   * host took nothing, yet the key was recorded as ours and its KEYPRESS was
+   * swallowed. Firefox inserts a character on the keypress default action, so
+   * the visible result is a letter that does not print, selectively, on exactly
+   * the sites that prevent keys: "I have to type some keys twice".
+   *
+   * So the caller passes whether the event was ALREADY prevented before its own
+   * handler ran, and only a false→true transition is ours.
+   */
+  consumeIfNewlyPrevented(down: KeyLike, preventedBefore: boolean, preventedAfter: boolean): void {
+    if (preventedBefore || !preventedAfter) return;
+    this.consume(down);
   }
 
   /** Records a keydown the host consumed, so its keypress/keyup are swallowed too. */

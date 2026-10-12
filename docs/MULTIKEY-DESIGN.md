@@ -444,9 +444,12 @@ cancels a sequence *and* is impossible for a site to want.
 A leader is "held" from a keydown until a keyup arrives. Every way that
 arithmetic can come out wrong is a dead keyboard rather than a wrong badge,
 because a leader stuck *held* stays armed after every binding and eats the
-user's next ordinary keystroke. Three cases, all handled in the dispatchers
-(`src/chrome/keysdispatch.ts`, `src/chrome/main.ts`,
-`src/extension/content/main.ts`) and pinned by `scripts/test-keyhold.ts`:
+user's next ordinary keystroke. The rule — and every way a hold can end, all of
+which go through ONE body so no caller can implement half of it — is one module,
+`src/shared/holdrelease.ts`. The hosts (`src/chrome/keysdispatch.ts`,
+`src/chrome/main.ts`, `src/extension/content/main.ts`) only decide *when* to ask
+it, and `scripts/test/keyhold.test.ts` pins the implementations rather than a
+restatement of them:
 
 - **A keydown with no keyup to match.** The content-process actor bridge and
   the `#lfc=keys` channel both dispatch a bare keydown, and neither wire format
@@ -466,8 +469,29 @@ user's next ordinary keystroke. Three cases, all handled in the dispatchers
   Both hosts therefore drop the hold on `blur` and on `visibilitychange`. Only
   the hold is cleared: losing focus is not the user changing their mind about
   the sequence, so the leader stays armed exactly as a released tap leaves it.
+- **A window where nothing is holding it.** All of the above are ways to
+  *observe* the end of a hold, and a hold nobody observes is a keyboard nobody
+  gets back. A held key is therefore kept alive by evidence — its own
+  auto-repeat — and a hold that goes quiet for `HOLD_LIVENESS_MS` stands down and
+  is published as released, so a document that dies mid-release cannot leave a
+  claim behind that a later page restores.
+- **A hold that crossed a document.** The hold is published to the background so
+  it can outlive the document that made it (`;` held, `g` pressed, back
+  navigates), and the next document reads it back. That restored hold is a hold
+  that ALREADY RAN something — the only thing that replaces a document mid-hold
+  is an action the hold ran — so it must end like a finished gesture, not like a
+  tap. A fresh document has no memory of a binding having run, so forgetting to
+  say so explicitly left the overlay up on the new page with every later key
+  dispatched as a `;x` binding. The claim is also refreshed by the same
+  auto-repeat, because a claim is a statement about NOW: without that, holding
+  `;` for longer than the grace window before pressing `g` made the navigation
+  land on a document that refused to restore the hold.
+- **The user cancels.** `Esc` / `Ctrl+G` end the gesture, so they end the hold
+  and publish the release with it. Hiding the overlay while leaving the claim
+  standing is the half-finished cancel that comes back: the user backs out, then
+  navigates, and the next page restores a leader nobody armed.
 
-The synthetic `#lfc=keys` channel cannot exercise the third case end to end: a
+The synthetic `#lfc=keys` channel cannot exercise a LOST keyup end to end: a
 web page's content script lives in another process, so the channel's
 `contentWindow` fallback is null there, and BiDi releases a key source when its
 action list ends, so a keydown with no keyup is unreachable through real input.

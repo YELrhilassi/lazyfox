@@ -17,7 +17,8 @@ export type LeaderHost = HTMLElement & { _sh: ShadowRoot };
 export class LeaderPanel {
   private host: LeaderHost | null = null;
 
-  /** The live host, creating and attaching it on first use. */
+  /** The live host, creating it on first use and RE-attaching it if the page
+   * detached it. */
   ensure(): LeaderHost {
     if (!this.host) {
       const host = document.createElement("div") as unknown as LeaderHost;
@@ -27,6 +28,26 @@ export class LeaderPanel {
       host._sh = sh;
       document.documentElement.appendChild(host);
       this.host = host;
+      return this.host;
+    }
+    // A PAGE CAN TAKE THE HOST AWAY WHILE THE OVERLAY IS UP.
+    //
+    // The host is a child of <html>, and a page that re-renders the root — a
+    // framework hydration swap, a `documentElement.replaceChildren()`, a
+    // document-write-style shell — removes it without ever telling us. The
+    // overlay then keeps its state (armed, with a which-key that is painted
+    // into a node nobody can see) while the SHADOW ROOT still answers, so
+    // `shown()` is true and every keystroke is dispatched as a `;x` binding
+    // against an invisible menu: the reported "the leader key and the which-key
+    // stay active and then nothing responds". Re-attaching is what makes the
+    // state and the pixels agree again, and it costs one isConnected read.
+    if (!this.host.isConnected) {
+      try {
+        document.documentElement.appendChild(this.host);
+      } catch (e) {
+        // A page that refuses the append must not break the leader; the next
+        // press tries again.
+      }
     }
     return this.host;
   }
