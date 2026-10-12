@@ -251,7 +251,18 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
 
     if (state.resizeOpen && handleResizeKey(e)) return;
     if (state.moveOpen && handleMoveKey(e)) return;
-    if (state.resizeOpen || state.moveOpen) return;
+    if (state.resizeOpen || state.moveOpen) {
+      // The modal key handlers only own their arrows and Escape. Ctrl+G must
+      // still be an unconditional cancel rather than falling through this
+      // modal's early-return and opening Firefox's native Find Again.
+      if (isCancel(e) && k !== "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (state.resizeOpen) renderer.toggleResize(false);
+        if (state.moveOpen) renderer.toggleMove(false);
+      }
+      return;
+    }
 
     // THE UNFOCUS CHORD, the same rule the content script follows: while the
     // caret is in the input, Ctrl+G leaves the field and nothing else. It sits
@@ -266,6 +277,21 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
       e.stopImmediatePropagation();
       input.blur();
       renderer.setStateTag("cmd");
+      return;
+    }
+
+    // Ctrl+G IS THE ABORT CHORD HERE TOO, AND IT MUST NOT REACH THE BROWSER.
+    //
+    // Nothing is left to cancel at this point — a popup or an armed leader is
+    // handled in overlayKey above, a hint pick in its own branch, and the caret
+    // case in the unfocus chord just above — so this branch exists for one
+    // reason: the page has no find bar of its own, so an unconsumed Ctrl+G is
+    // Firefox's FIND AGAIN, and it opened the native find bar over the home
+    // grid. The universal cancel must never be re-interpreted as the one thing
+    // it most looks like.
+    if (isCancel(e) && k !== "Escape") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
       return;
     }
 

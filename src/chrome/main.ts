@@ -26,6 +26,8 @@ import type { LeaderController } from "../shared/leader";
 // one implementation and a unit test can pin the implementation, not a
 // restatement of it. See that file for why that distinction mattered.
 import {
+  cancelHold,
+  createHoldWatchdog,
   releaseHoldOnKeyup,
   releaseLostHold as releaseLostHoldOnBlur,
 } from "../shared/holdrelease";
@@ -257,6 +259,22 @@ import { createTypingChannel } from "./typing";
       const startHints = leaderActions["f"];
       if (startHints) startHints();
     },
+    onLeaderHeld: () => holdWatchdog.keepAlive(),
+    // Esc / Ctrl+G: the overlay goes, and so does the hold. See
+    // holdrelease.cancelHold — the part that is easy to leave out is not the
+    // overlay but the claim, and a claim left standing is restored by the next
+    // page the user lands on.
+    cancelLeaderHold: () => {
+      cancelHold(leader);
+      holdWatchdog.stop();
+    },
+    // The user moved the caret into text after arming the leader. Doing so
+    // already stands the sequence down; the physical hold and its published
+    // claim must stand down as well or a subsequent navigation can resurrect
+    // the leader over the field/page they chose instead.
+    releaseLeaderHoldOnLostFocus: () => {
+      if (releaseLostHoldOnBlur(leader)) holdWatchdog.stop();
+    },
   });
   chromeKeyDown = dispatch.chromeKeyDown;
 
@@ -273,9 +291,26 @@ import { createTypingChannel } from "./typing";
   // release means, because the held-leader feature is exactly that agreement:
   // if the synthetic path skipped it, the harness could not express a hold at
   // all and every synthetic `;` would look permanently pressed.
+  // A HOLD MUST BE KEPT ALIVE BY THE KEY ITSELF. This host clears a hold on the
+  // keyup and on blur; a release that arrives at neither (the window was
+  // replaced, the keyup went somewhere this listener never sees) used to leave
+  // `sticky` set for the rest of the session — and while it is set every binding
+  // runs AND LEAVES THE LEADER ARMED, so the keyboard becomes a chain of `;x`
+  // bindings that never ends. The evidence that a hold is still a hold is the
+  // leader key's auto-repeat (keysdispatch calls onLeaderHeld on the press and on
+  // every repeat), so a hold that goes quiet stands down after HOLD_LIVENESS_MS.
+  const holdWatchdog = createHoldWatchdog({
+    leader: () => leader,
+    now: () => env.window.Date.now(),
+    setTimer: (fn, ms) => env.setTimeout(fn, ms),
+    clearTimer: (handle) => env.clearTimeout(handle),
+  });
+
   const releaseLeaderHold = (key: string): void => {
     try {
-      releaseHoldOnKeyup(leader, (cfg.config && cfg.config.leader) || ";", key);
+      if (releaseHoldOnKeyup(leader, (cfg.config && cfg.config.leader) || ";", key)) {
+        holdWatchdog.stop();
+      }
     } catch (err) {
       // ignore — a dead view must not break the key path
     }
@@ -304,7 +339,7 @@ import { createTypingChannel } from "./typing";
   // only does anything while a hold is actually outstanding.
   const releaseLostHold = (): void => {
     try {
-      releaseLostHoldOnBlur(leader);
+      if (releaseLostHoldOnBlur(leader)) holdWatchdog.stop();
     } catch (err) {
       // ignore — a dead view must not break the key path
     }
@@ -507,6 +542,9 @@ split,
     popup,
     typing,
     leader: () => leader,
+    releaseLeaderHoldOnTabSwitch: () => {
+      if (releaseLostHoldOnBlur(leader)) holdWatchdog.stop();
+    },
     status,
     isWindowActive: () => env.services.focus.activeWindow === win,
     setTimeout: (fn, ms) => env.setTimeout(fn, ms),

@@ -109,17 +109,62 @@ export class LeaderController {
   // own the keydown/keyup that drives this.
   sticky = false;
 
+  // Whether the hold has DONE anything yet, which is what tells a hold apart
+  // from a tap when the key comes up.
+  //
+  // A tap (`;` down, up, then a binding) must leave the leader armed — that is
+  // the ordinary which-key gesture. A hold that already ran something is a
+  // finished gesture the moment the key comes up, and the leader has to stand
+  // down: the user asked for `;` held + `g g g g g` and should get the page
+  // back when they let go, not an overlay still holding the keyboard. Both
+  // hosts read this in shared/holdrelease.ts (see releaseHoldOnKeyup).
+  ranWhileHeld = false;
+
   // While the leader is held, a binding runs WITHOUT disarming. The prefix is
   // cleared either way so a chord never bleeds into the next action.
   private runOrStay(action: string): void {
     if (this.sticky) {
+      this.ranWhileHeld = true;
       this.prefix = "";
       if (this.onChange) this.onChange();
-      this.run(action);
+      this.dispatch(action);
       return;
     }
     this.hide();
-    this.run(action);
+    this.dispatch(action);
+  }
+
+  /**
+   * Run one action, and never let it take the keyboard down with it.
+   *
+   * The action table is where the product meets the browser: opening a popup,
+   * reading history, switching a session. Any of those can throw on a page or a
+   * profile the code has not met, and the throw used to travel straight out of
+   * the key dispatcher — which is the one place in the product that must stay
+   * predictable. Two things go wrong when it does, and both are the reported
+   * "everything stopped responding":
+   *
+   *   * the key is already swallowed by the time the action runs (every host
+   *     preventDefaults before dispatching), so a throw means a keystroke that
+   *     vanishes with nothing on screen to explain it; and
+   *   * a throw from the HEAD of a held sequence leaves `sticky` set with the
+   *     leader armed, so every later keystroke is dispatched as a `;x` binding
+   *     — the keyboard looks dead on a page that never armed anything.
+   *
+   * Reporting it is the same rule the rest of this file follows: a failure the
+   * user cannot see is a key that did nothing, so it is named in the console the
+   * trace audit already reads.
+   */
+  private dispatch(action: string): void {
+    try {
+      this.run(action);
+    } catch (err) {
+      try {
+        console.error("lazyfox: leader action \"" + action + "\" threw", err);
+      } catch (e) {
+        // A host whose console is gone must not re-throw into the dispatcher.
+      }
+    }
   }
 
   // The leader action dispatcher built from each context's ops adapter. It is
@@ -424,7 +469,16 @@ export class LeaderController {
       // pressed is the difference between a keymap you can learn and one you
       // learn by pressing things twice. Held keys are reported once, exactly as
       // they are at the top level: a repeat says nothing new.
-      if (this.onMiss && !e.repeat) this.onMiss(specOf(e));
+      //
+      // Guarded for the same reason as the top-level miss: a reporter that
+      // throws must not be able to skip the disarm that follows it.
+      if (this.onMiss && !e.repeat) {
+        try {
+          this.onMiss(specOf(e));
+        } catch (err) {
+          // Reported to nobody; the menu still closes.
+        }
+      }
       if (!this.sticky) this.hide();
       else this.repaint();
       return true;
@@ -581,7 +635,20 @@ export class LeaderController {
       // common one) would otherwise fire the same toast at the OS repeat rate
       // and leave the user staring at a complaint about a key they pressed
       // once. The key is still taken, and a held leader still stays armed.
-      if (this.onMiss && !e.repeat) this.onMiss(spec);
+      //
+      // The report is GUARDED, and the disarm comes after it on purpose: a
+      // reporter that throws (a toast host the page removed, a console that a
+      // hostile page replaced) used to skip the hide() below and leave the
+      // leader ARMED on a miss — i.e. every subsequent keystroke of the user's
+      // was eaten as a chord on a page where the overlay might not even be
+      // painted. Reporting a miss must never be able to hold the keyboard.
+      if (this.onMiss && !e.repeat) {
+        try {
+          this.onMiss(spec);
+        } catch (err) {
+          // The miss is still reported to nobody, but the keyboard is released.
+        }
+      }
       if (!this.sticky) this.hide();
       return true;
     }

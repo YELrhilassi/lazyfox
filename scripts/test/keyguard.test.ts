@@ -105,6 +105,34 @@ describe("unconsumed keys are never owned", () => {
   });
 });
 
+describe("only a key THIS handler consumed is recorded", () => {
+  // The reported "I have to type some keys twice": Firefox inserts a character
+  // on the keypress default action, so a record written for a keydown Lazyfox
+  // never took swallows that character — and the shape that produces it is a
+  // page (or another extension) preventing the keydown first, which the old
+  // `if (e.defaultPrevented) consume(e)` could not tell apart from its own
+  // preventDefault. See consumeIfNewlyPrevented.
+  test("a key some other script had already prevented is not ours", () => {
+    const g = new KeyGuard();
+    g.consumeIfNewlyPrevented(ev("a"), true, true);
+    assert.equal(g.ownsTail({ ...ev("a"), type: "keypress" }), false, "the character must still print");
+    assert.equal(g.ownsTail({ ...ev("a"), type: "keyup" }), false);
+  });
+
+  test("a key this handler prevented IS ours", () => {
+    const g = new KeyGuard();
+    g.consumeIfNewlyPrevented(ev("a"), false, true);
+    assert.equal(g.ownsTail({ ...ev("a"), type: "keypress" }), true);
+    assert.equal(g.ownsTail({ ...ev("a"), type: "keyup" }), true);
+  });
+
+  test("a key nobody prevented is not ours", () => {
+    const g = new KeyGuard();
+    g.consumeIfNewlyPrevented(ev("a"), false, false);
+    assert.equal(g.ownsTail({ ...ev("a"), type: "keyup" }), false);
+  });
+});
+
 describe("clear() drops everything", () => {
   // Called when the window loses focus mid-key — the same "something happened
   // that I did not cause" moment the leader's blur release handles.

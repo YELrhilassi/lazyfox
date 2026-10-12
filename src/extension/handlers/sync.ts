@@ -13,6 +13,7 @@
 // rebuilt (a bfcache restore, a virtual-DOM navigation).
 import { mergeConfig } from "../../shared/config";
 import type { LeaderSignal } from "../../shared/leadersignal";
+import { createTabHoldState } from "../../shared/holdstate";
 import { getConfig, setConfig } from "../config";
 import { vConfig } from "../store";
 import type { Domain } from "./types";
@@ -20,6 +21,12 @@ import type { Domain } from "./types";
 // every domain's list and requires the result to cover BgApi exactly, so a new
 // action cannot be declared without someone deciding which domain answers it.
 type Owns = "syncTyping" | "syncLeader" | "syncContent" | "syncFind" | "syncHold" | "setConfig" | "toggleWhichKey" | "stealthOpen";
+
+const holdState = createTabHoldState({
+  getTabValue: (tabId, key) => browser.sessions.getTabValue(tabId, key),
+  setTabValue: (tabId, key, value) => browser.sessions.setTabValue(tabId, key, value),
+  removeTabValue: (tabId, key) => browser.sessions.removeTabValue(tabId, key),
+});
 
 export interface SyncDeps {
   pushLeaderStateToChrome(index: number, signal: LeaderSignal): void;
@@ -67,6 +74,25 @@ export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
       // discarding the LIVE document's answer the moment its URL changes — which
       // is what the URL alone did, on every single-page navigation.
       const tab = (sender as { tab?: { id?: number; index?: number } } | undefined)?.tab;
+      const doc = String((data as { doc?: string }).doc || "");
+      let saved = { hold: false, holdAt: 0, holdDoc: "", holdGeneration: 0 };
+      if (tab && tab.id != null && doc) {
+        try {
+          if (data.active) {
+            const snapshot = await holdState.activateDocument(tab.id, doc);
+            saved = {
+              hold: snapshot.hold,
+              holdAt: snapshot.holdAt,
+              holdDoc: snapshot.doc,
+              holdGeneration: snapshot.generation,
+            };
+          } else {
+            await holdState.deactivateDocument(tab.id, doc);
+          }
+        } catch {
+          // Session storage can reject during tab shutdown; presence still relays.
+        }
+      }
       if (tab && tab.id != null) {
         deps.pushContentStateToChrome(
           typeof tab.index === "number" ? tab.index : -1,
@@ -75,43 +101,22 @@ export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
           String((data as { doc?: string }).doc || "")
         );
       }
-      // A booting content script also learns whether the leader key is still
-      // physically down. Without this the hold is per-document and dies at
-      // every navigation and every tab close, which is where it always died.
-      //
-      // The claim travels with the time it was MADE, because the document that
-      // made it is gone by the time this reads it and only the reader can
-      // decide whether it is still believable. See shouldRestoreHold: a hold
-      // that is re-armed with no keyup left to release it is a leader that
-      // never disarms, which is a keyboard that answers every key as a binding.
-      let hold = false;
-      let holdAt = 0;
-      try {
-        const id = tab && tab.id != null ? tab.id : null;
-        if (id != null) {
-          hold = (await browser.sessions.getTabValue(id, "lfHold")) === "1";
-          holdAt = Number(await browser.sessions.getTabValue(id, "lfHoldAt")) || 0;
-        }
-      } catch (e) {
-        // A tab that closed during boot, or a store that is not ready. The
-        // safe answer is "not held": a wrongly-held leader eats keystrokes.
-        hold = false;
-        holdAt = 0;
-      }
-      return { ok: true, hold, holdAt };
+      // A booting document learns the previous document's hold only after its
+      // own presence report has established ownership. The queued read cannot
+      // race a release/tombstone from this same tab.
+      return { ok: true, ...saved };
     },
 
     syncHold: async (data, sender) => {
       const tab = (sender as { tab?: { id?: number } } | undefined)?.tab;
       if (tab && tab.id != null) {
         try {
-          await browser.sessions.setTabValue(tab.id, "lfHold", data.hold ? "1" : "0");
-          // WHEN the claim was made. Only the writer can say, and it is the one
-          // fact that lets the next document refuse a stale one — see
-          // shouldRestoreHold. Written on every change of the flag, including
-          // the release, so a `false` never leaves an old timestamp behind for
-          // a later `true` to inherit.
-          await browser.sessions.setTabValue(tab.id, "lfHoldAt", String(Date.now()));
+          const generation = Number(data.generation);
+          const doc = String(data.doc || "");
+          if (!doc || !Number.isSafeInteger(generation) || generation <= 0) {
+            return { ok: false, error: "hold generation and document are required" };
+          }
+          await holdState.publish(tab.id, doc, generation, data.hold);
         } catch (e) {
           // The tab can close between the message and this write; the hold it
           // carried died with it, which is correct.
