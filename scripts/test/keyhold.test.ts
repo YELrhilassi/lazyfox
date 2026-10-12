@@ -35,9 +35,15 @@ import assert from "node:assert/strict";
 import { createChromeKeyDown } from "../../src/chrome/keysdispatch.ts";
 import { noteContentPresent, presenceTabFor, resetContentPresence } from "../../src/chrome/keystate.ts";
 import {
+  HOLD_LIVENESS_MS,
   HOLD_RESTORE_GRACE_MS,
+  cancelHold,
+  createHoldWatchdog,
+  noteHoldAlive,
+  releaseExpiredHold,
   releaseHoldOnKeyup,
   releaseLostHold,
+  restoreHold,
   shouldRestoreHold,
   visibilityLostHold,
 } from "../../src/shared/holdrelease.ts";
@@ -53,8 +59,14 @@ import { fakeWindow, fakeLeader } from "./support.ts";
 const ABOUT = "about:preferences";
 const WEB = "https://example.com/";
 
-/** Build a dispatcher over a fresh leader, and hand both back. */
-function setup(spec = ABOUT) {
+/**
+ * Build a dispatcher over a fresh leader, and hand both back.
+ *
+ * `overrides` replaces individual deps, which is how a test can watch a
+ * collaborator the dispatcher is supposed to call (the hold release on the
+ * cancel path) instead of asserting the dispatcher's own bookkeeping.
+ */
+function setup(spec = ABOUT, overrides: Record<string, unknown> = {}) {
   resetContentPresence();
   const leader = fakeLeader();
   // The window is RETURNED because presence is a fact about a TAB, and these
@@ -71,6 +83,8 @@ function setup(spec = ABOUT) {
     switchSessionByMarker: () => {},
     handleScrollKeys: () => false,
     runWebHints: () => {},
+    cancelLeaderHold: () => {},
+    ...overrides,
   } as any) as any;
   return { leader, down, win };
 }
@@ -473,5 +487,315 @@ describe("a command-center page with no engine cannot swallow the leader key", (
     const took = down.chromeKeyDown(keydown(";"), false, false);
     assert.equal(took, false);
     assert.equal(leader.active, false);
+  });
+});
+
+/**
+ * A clock and a timer, so a 2.5-second property is pinned without waiting.
+ *
+ * The liveness rule is a deadline and a re-armed timeout, i.e. two numbers, and
+ * the only way to assert it in a fast test is to own the clock the rule reads.
+ * `advance` fires due timers in order and moves the clock past the last one, so
+ * "expired" and "kept alive" differ by what the same advance does to the same
+ * leader.
+ */
+function clock(start = 100000) {
+  let now = start;
+  const timers = new Map<number, { at: number; fn: () => void }>();
+  let next = 1;
+  return {
+    now: () => now,
+    setTimer: (fn: () => void, ms: number) => {
+      const id = next++;
+      timers.set(id, { at: now + ms, fn });
+      return id;
+    },
+    clearTimer: (handle: unknown) => {
+      timers.delete(handle as number);
+    },
+    advance(ms: number) {
+      const target = now + ms;
+      for (;;) {
+        const due = [...timers.entries()]
+          .filter(([, t]) => t.at <= target)
+          .sort((a, b) => a[1].at - b[1].at)[0];
+        if (!due) break;
+        timers.delete(due[0]);
+        now = due[1].at;
+        due[1].fn();
+      }
+      now = target;
+    },
+  };
+}
+
+describe("the end of a hold: a finished gesture, not a stuck overlay", () => {
+  test("a hold that RAN something stands the leader down when the key comes up", () => {
+    // The reported shape, in one assertion: hold `;`, press `g` a few times,
+    // let go — and what is left must be the page, not a which-key overlay still
+    // holding the keyboard and waiting for an action nobody asked for.
+    const leader = fakeLeader();
+    leader.sticky = true;
+    leader.active = true;
+    leader.ranWhileHeld = true;
+    assert.equal(releaseHoldOnKeyup(leader, ";", ";"), true, "the release is announced");
+    assert.equal(leader.sticky, false, "the hold is over");
+    assert.equal(leader.active, false, "and the overlay went with it");
+    assert.equal(leader.ranWhileHeld, false, "the flag is spent, not sticky itself");
+  });
+
+  test("a TAP is not a hold: releasing it leaves the leader armed", () => {
+    // The ordinary which-key gesture — `;` down, up, then type a chord — and the
+    // one case where disarming on release would break the feature outright.
+    const leader = fakeLeader();
+    leader.sticky = true;
+    leader.active = true;
+    assert.equal(releaseHoldOnKeyup(leader, ";", ";"), true);
+    assert.equal(leader.sticky, false);
+    assert.equal(leader.active, true, "a tap stays armed for the chord that follows");
+  });
+
+  test("another key's keyup never ends the leader's hold", () => {
+    const leader = fakeLeader();
+    leader.sticky = true;
+    leader.active = true;
+    assert.equal(releaseHoldOnKeyup(leader, ";", "g"), false);
+    assert.equal(leader.sticky, true, "the hold belongs to the leader key alone");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The hold that CROSSES a document.
+//
+// `;` held then `g` navigates: the document that observed the press is gone, and
+// the new one is told the key is still down so the sequence survives. Two things
+// about that handover are failure modes the user reported, and neither is
+// visible from inside one document:
+//
+//   * the restored hold ended like a TAP. A fresh controller has
+//     `ranWhileHeld === false`, so standing the hold down left the leader ARMED —
+//     the overlay up on a page nobody armed it on, eating the next keystroke as a
+//     `;x` binding. That is "I can do `;g` to go back but the which-key and the
+//     leader key stay active".
+//
+//   * the gesture was CANCELLED and the claim outlived it. Escape / Ctrl+G hid
+//     the overlay and left the published hold standing, so the next navigation
+//     re-armed the very state the user had backed out of.
+// ---------------------------------------------------------------------------
+
+describe("a hold restored across a document is a hold that already ran", () => {
+  test("restoring marks the hold AND the fact that it did something", () => {
+    const leader = fakeLeader();
+    assert.equal(restoreHold(leader), true);
+    assert.equal(leader.sticky, true, "the key is still down, per the claim");
+    assert.equal(
+      leader.ranWhileHeld,
+      true,
+      "the document it came from is gone, and only an action replaces one — " +
+        "without this the restored hold ends like a tap and the overlay stays up"
+    );
+  });
+
+  test("ending a restored hold stands the leader down", () => {
+    // The reported `;g` shape, as one assertion: the release has to give the
+    // page back, not leave a which-key overlay holding the keyboard.
+    const leader = fakeLeader();
+    restoreHold(leader);
+    leader.show();
+    assert.equal(releaseHoldOnKeyup(leader, ";", ";"), true);
+    assert.equal(leader.sticky, false, "the hold is over");
+    assert.equal(leader.active, false, "and the overlay went with it");
+  });
+
+  test("a restored hold that expires stands down too", () => {
+    // The lost-release direction of the same rule: no keyup arrives, the
+    // watchdog expires the claim, and the keyboard still has to come back.
+    const leader = fakeLeader();
+    restoreHold(leader, 5000);
+    leader.show();
+    assert.equal(releaseExpiredHold(leader, 5000 + HOLD_LIVENESS_MS + 1), true);
+    assert.equal(leader.active, false);
+  });
+
+  test("a restored hold is not believed forever", () => {
+    // `restoreHold` refreshes the deadline, so the only guard against a stale
+    // claim is the caller's (shouldRestoreHold) — pinned here so the two halves
+    // are read together.
+    const leader = fakeLeader();
+    restoreHold(leader, 5000);
+    assert.equal(releaseExpiredHold(leader, 5000 + HOLD_LIVENESS_MS - 1), false);
+  });
+});
+
+describe("cancel ends the gesture, not just the overlay", () => {
+  test("cancelHold reports whether a hold was outstanding", () => {
+    const leader = fakeLeader();
+    assert.equal(cancelHold(leader), false, "nothing held, nothing to publish");
+    restoreHold(leader);
+    assert.equal(cancelHold(leader), true, "a held gesture is ended");
+    assert.equal(leader.sticky, false);
+    assert.equal(leader.ranWhileHeld, false, "and the flag is spent, not sticky");
+  });
+
+  test("cancelling a hold that ran something also stands the leader down", () => {
+    const leader = fakeLeader();
+    leader.sticky = true;
+    leader.ranWhileHeld = true;
+    leader.show();
+    cancelHold(leader);
+    assert.equal(leader.active, false);
+  });
+
+  test("cancelling a TAP's hold leaves the transport decision to the caller", () => {
+    // A cancel is not a binding: the overlay is the canceller's business (it
+    // calls hide() itself), and this rule must not add a second opinion about a
+    // hold that never ran anything.
+    const leader = fakeLeader();
+    leader.sticky = true;
+    leader.show();
+    assert.equal(cancelHold(leader), true);
+    assert.equal(leader.active, true, "the hold is cleared, the view is not touched");
+  });
+});
+
+describe("the dispatcher cancels through the host, so the claim dies with the gesture", () => {
+  test("Esc / Ctrl+G on an armed leader releases the hold through the callback", () => {
+    let released = 0;
+    const { leader, down } = setup(ABOUT, {
+      cancelLeaderHold: () => {
+        released++;
+      },
+    });
+    down.chromeKeyDown(keydown(";"));
+    assert.equal(leader.active, true);
+    const took = down.chromeKeyDown(keydown("g", { ctrlKey: true }));
+    assert.equal(took, true, "the cancel is consumed");
+    assert.equal(released, 1, "and the host was told, so it can publish the release");
+  });
+});
+
+describe("Ctrl+G never reaches the browser on a page the helper owns", () => {
+  // Firefox binds Ctrl+G to FIND AGAIN, and on a chrome-owned page (about:, the
+  // command center before its engine loads) nothing else wanted the chord — so
+  // it opened the native find bar over the page. This is the reported
+  // "sometimes Ctrl+G opens the page's own search", and "sometimes" is exactly
+  // the set of pages with no content script to consume it.
+  test("the chord is consumed even with no overlay up", () => {
+    const { leader, down } = setup();
+    assert.equal(leader.active, false);
+    assert.equal(down.chromeKeyDown(keydown("g", { ctrlKey: true })), true);
+  });
+
+  test("Escape is still the page's — only the chord is ours", () => {
+    // Escape is the one key every site binds, and the helper has always let it
+    // through (it only blurs the focused element first). Consuming it here would
+    // be a different change from the one this exists for.
+    const { down } = setup();
+    assert.equal(down.chromeKeyDown(keydown("Escape")), false);
+  });
+});
+
+describe("the liveness rule: a hold has to be held", () => {
+  test("a hold nobody refreshes expires, stands down, and is published as released", () => {
+    const leader = fakeLeader();
+    leader.sticky = true;
+    leader.active = true;
+    leader.ranWhileHeld = true;
+    const clk = clock();
+    let released = 0;
+    const dog = createHoldWatchdog({
+      leader: () => leader,
+      onRelease: () => {
+        released++;
+      },
+      now: clk.now,
+      setTimer: clk.setTimer,
+      clearTimer: clk.clearTimer,
+    });
+    dog.keepAlive();
+    clk.advance(HOLD_LIVENESS_MS - 10);
+    assert.equal(leader.sticky, true, "still inside the window: the key may still be down");
+    assert.equal(released, 0);
+    clk.advance(20);
+    assert.equal(leader.sticky, false, "nothing is holding it any more");
+    assert.equal(leader.active, false, "and the keyboard comes back");
+    assert.equal(released, 1, "the background must not be able to restore it either");
+  });
+
+  test("the key's own auto-repeat keeps a real hold alive past the window", () => {
+    // A held key re-fires every ~30ms, so a hold that is genuinely being held
+    // never comes near the deadline — which is what makes the rule safe for a
+    // user who sits on the key for a while.
+    const leader = fakeLeader();
+    leader.sticky = true;
+    leader.active = true;
+    const clk = clock();
+    let released = 0;
+    const dog = createHoldWatchdog({
+      leader: () => leader,
+      onRelease: () => {
+        released++;
+      },
+      now: clk.now,
+      setTimer: clk.setTimer,
+      clearTimer: clk.clearTimer,
+    });
+    dog.keepAlive();
+    for (let i = 0; i < 20; i++) {
+      clk.advance(HOLD_LIVENESS_MS / 2);
+      dog.keepAlive(); // one auto-repeat
+    }
+    assert.equal(leader.sticky, true, "five windows of repeats: still held");
+    assert.equal(released, 0);
+    dog.stop();
+    clk.advance(HOLD_LIVENESS_MS * 4);
+    assert.equal(released, 0, "and a stopped watchdog stops claiming anything");
+  });
+
+  test("the watchdog is a no-op when no hold is outstanding", () => {
+    const leader = fakeLeader();
+    leader.active = true; // an ordinary armed leader: no hold
+    const clk = clock();
+    let released = 0;
+    const dog = createHoldWatchdog({
+      leader: () => leader,
+      onRelease: () => {
+        released++;
+      },
+      now: clk.now,
+      setTimer: clk.setTimer,
+      clearTimer: clk.clearTimer,
+    });
+    dog.keepAlive();
+    clk.advance(HOLD_LIVENESS_MS * 3);
+    assert.equal(leader.active, true, "a leader that was never held is not disturbed");
+    assert.equal(released, 0);
+  });
+
+  test("an expired hold leaves a TAP's leader armed, and ends a hold that ran", () => {
+    // The two halves of the same rule, on the same clock: expiry only disarms
+    // what a release would have disarmed.
+    const tap = fakeLeader();
+    tap.sticky = true;
+    tap.active = true;
+    assert.equal(releaseExpiredHold(tap, 1_000_000), true);
+    assert.equal(tap.sticky, false);
+    assert.equal(tap.active, true, "a tap is still a tap when the release is lost");
+
+    const ran = fakeLeader();
+    ran.sticky = true;
+    ran.active = true;
+    ran.ranWhileHeld = true;
+    assert.equal(releaseExpiredHold(ran, 1_000_000), true);
+    assert.equal(ran.active, false, "a hold that ran something is over");
+  });
+
+  test("a fresh hold cannot be expired early", () => {
+    const leader = fakeLeader();
+    leader.sticky = true;
+    noteHoldAlive(leader, 5000);
+    assert.equal(releaseExpiredHold(leader, 5100), false);
+    assert.equal(leader.sticky, true);
+    assert.equal(releaseExpiredHold(leader, 5000 + HOLD_LIVENESS_MS + 1), true);
   });
 });

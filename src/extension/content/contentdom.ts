@@ -70,16 +70,24 @@ export function installContentDom(deps: ContentDomDeps): void {
       // A page-specific exception (a hostile handler, an unexpected element)
       // must not take down key handling for the whole session: catch it, keep
       // the listener, and let the next key try again.
+      //
+      // Whether the key was ALREADY prevented before we saw it is captured
+      // first, because that is the difference between "Lazyfox took this key"
+      // and "something else did": see consumeIfNewlyPrevented. A site that
+      // preventDefaults its own shortcuts is common, and swallowing the
+      // keypress that follows one of them is a character the user typed that
+      // never appears.
+      const preventedBefore = e.defaultPrevented;
       try {
         deps.onKeyDown(e);
       } catch (err) {
         if (deps.isDev()) deps.logError("keydown handler threw", err);
       }
-      // Remember every key we consumed so its keypress/keyup tail is swallowed
-      // too (see keyguard.ts). Without this the keystroke a user types into a
-      // Lazyfox popup still reaches page scripts that listen on keypress/keyup
-      // — the input leaking to the page behind the popup.
-      if (e.defaultPrevented) keyGuard.consume(e);
+      // Remember only the keys WE consumed, so their keypress/keyup tail is
+      // swallowed too (see keyguard.ts). Without this the keystroke a user types
+      // into a Lazyfox popup still reaches page scripts that listen on
+      // keypress/keyup — the input leaking to the page behind the popup.
+      keyGuard.consumeIfNewlyPrevented(e, preventedBefore, e.defaultPrevented);
     },
     true
   );

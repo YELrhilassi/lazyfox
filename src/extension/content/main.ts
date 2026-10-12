@@ -13,13 +13,21 @@ import { LeaderController, isCancel } from "../../shared/leader";
 import { idleSignal, type LeaderSignal } from "../../shared/leadersignal";
 import { specToText } from "../../shared/keymap";
 import {
+  cancelHold,
+  createHoldWatchdog,
   releaseHoldOnKeyup,
   releaseLostHold as releaseLostHoldOnBlur,
+  restoreHold,
   shouldRestoreHold,
   visibilityLostHold,
 } from "../../shared/holdrelease";
 import { openNavPopup } from "../../shared/popups/nav";
-import { openPopup as overlayOpenPopup, toast, type PopupCtl } from "../../shared/overlay";
+import {
+  openPopup as overlayOpenPopup,
+  popupIsAlive,
+  toast,
+  type PopupCtl,
+} from "../../shared/overlay";
 import { mirror, mirrorFlag } from "../../shared/observability";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/popups";
 import { send } from "../../shared/protocol";
@@ -276,21 +284,130 @@ import type { ContentPopupShell } from "./find";
   //
   // The keyup still arrives — key events go to the FOCUSED document, which is
   // this one — so the restored hold is released normally, and blur/visibility
-  // still release a lost one.
-  const publishHold = (hold: boolean): void => {
-    void send("syncHold", { hold });
+  // still release a lost one. A fast
+  // press/release used to send `true`, then `false` independently; if the false
+  // reached the background first and the older true reached it later, the tab
+  // was left with a hold nobody was making until its timestamp expired. The
+  // generation travels on both writes and the background accepts only the
+  // newest generation. This is cheaper and more reliable than hoping the
+  // message port preserves order across page teardown.
+  let holdGeneration = 0;
+  let pendingHoldReport: boolean | null = null;
+  let holdRestoreCancelled = false;
+  let presenceReady = false;
+  let holdCommitChain: Promise<void> = Promise.resolve();
+  let lastHoldCommitAt = 0;
+  // The document id is the ownership token for both presence and hold reports.
+  // A second nonce here would make every syncHold report fail the background's
+  // owner check, silently disabling cross-document holds.
+  const holdDoc = docId;
+  const publishHoldState = (hold: boolean): void => {
+    if (!presenceReady) {
+      pendingHoldReport = hold;
+      return;
+    }
+    const generation = ++holdGeneration;
+    const commit = holdCommitChain.then(async () => {
+      const result = await send("syncHold", { hold, generation, doc: holdDoc });
+      if (result?.ok) lastHoldCommitAt = Date.now();
+    });
+    holdCommitChain = commit.catch(() => {});
   };
-  void reportPresence(true).then((r) => {
-    // BOUNDED IN TIME. The claim was written by a document that no longer
-    // exists, and only a recently-made one can still be true — the whole point
-    // of the restore is to survive the gap a navigation takes, not to arm a
-    // leader for a key nobody is holding. A stale restore is the worst failure
-    // in this file: the leader is marked held with no keyup left to release it,
-    // so it never disarms and every subsequent key runs as a `;x` binding.
-    if (!r || !shouldRestoreHold(!!r.hold, Number(r.holdAt) || 0, Date.now())) return;
-    leader.sticky = true;
-    leader.show();
+  // A HOLD HAS TO BE REPUBLISHED, or the claim expires while the key is still
+  // down. `holdAt` is what the next document judges the claim by
+  // (shouldRestoreHold), and it used to be written once, on the press — so
+  // holding `;` for longer than HOLD_RESTORE_GRACE_MS before pressing `g` made
+  // the navigation land on a document that refused to restore the hold, and the
+  // user's `;` was simply no longer held. The repeats are the evidence the key
+  // is down, so they refresh the claim the same way they refresh the watchdog.
+  //
+  // THROTTLED, because a repeat is a keydown every ~30ms and each publish is a
+  // background round trip plus two session writes. Once a second is two orders
+  // of magnitude more than the grace window needs and free in practice.
+  const HOLD_PUBLISH_INTERVAL_MS = 1000;
+  let lastHoldPublish = 0;
+  const republishHold = (): void => {
+    const now = Date.now();
+    if (now - lastHoldPublish < HOLD_PUBLISH_INTERVAL_MS) return;
+    if (now - lastHoldCommitAt < HOLD_PUBLISH_INTERVAL_MS) return;
+    lastHoldPublish = now;
+    publishHoldState(true);
+  };
+  // A HOLD MUST BE KEPT ALIVE BY THE KEY ITSELF, or it stops being a fact.
+  //
+  // A hold is cleared here on a keyup and on blur/visibility — and a release
+  // that arrives at neither (the document was replaced mid-press, the keyup went
+  // to a tab that is now gone) left `sticky` set for the life of the document.
+  // While it is set, every binding runs AND LEAVES THE LEADER ARMED, so the
+  // keyboard turns into a chain of `;x` bindings that never ends: the reported
+  // "the which-key and the leader key stay active, then nothing responds the way
+  // I expect".
+  //
+  // The evidence a hold can always get is the leader key's own auto-repeat, which
+  // this document already receives (and drops for arming purposes). So the
+  // watchdog is re-armed by every repeat, and a hold that goes quiet for
+  // HOLD_LIVENESS_MS stands down — published as released, so the background
+  // cannot restore it either.
+  const holdWatchdog = createHoldWatchdog({
+    leader: () => leader,
+    onRelease: () => publishHoldState(false),
   });
+  // HAS THIS DOCUMENT SEEN THE LEADER KEY COME UP?
+  //
+  // The restore below is decided asynchronously, and the release it is waiting
+  // for can arrive FIRST: the user lets go of `;` the moment the page appears,
+  // before the round trip that reads the claim has finished. The keyup then
+  // finds nothing held (correctly — nobody is holding it here yet) and the
+  // restore, resolving a moment later, armed a leader for a key that is already
+  // up: the overlay on a page nobody armed it on, held open until the watchdog
+  // noticed. A keyup seen HERE is proof the claim is spent, so it is recorded
+  // and the restore is refused.
+  let leaderKeyUpSeen = false;
+  let holdSnapshotInitialized = false;
+  let holdInitInFlight: Promise<void> | null = null;
+  const initializeHoldFromPresence = (): Promise<void> => {
+    if (holdInitInFlight) return holdInitInFlight;
+    holdInitInFlight = reportPresence(true)
+      .then(async (r) => {
+        // A failed startup message must not permanently disable persistence;
+        // pageshow retries the same handshake if the background was restarting.
+        if (!r) return;
+        presenceReady = true;
+        if (holdSnapshotInitialized) return;
+        holdSnapshotInitialized = true;
+        if (r.holdDoc === holdDoc) holdGeneration = Number(r.holdGeneration) || 0;
+        await holdCommitChain;
+        if (pendingHoldReport !== null) {
+          // Local input observed before the async snapshot wins over the old
+          // document's state. Never apply a stale snapshot after local input.
+          const pending = pendingHoldReport;
+          pendingHoldReport = null;
+          publishHoldState(pending);
+          return;
+        }
+        if (holdRestoreCancelled) return;
+        if (!shouldRestoreHold(!!r.hold, Number(r.holdAt) || 0, Date.now())) return;
+        if (leaderKeyUpSeen) {
+          // The release may have arrived before this snapshot. Publish a
+          // tombstone so the next document cannot resurrect the old claim.
+          publishHoldState(false);
+          return;
+        }
+        const age = Date.now() - (Number(r.holdAt) || 0);
+        lastHoldPublish = Date.now();
+        lastHoldCommitAt = Date.now() - Math.max(0, age);
+        // A restored hold already ran an action in the document it replaces.
+        restoreHold(leader);
+        holdWatchdog.keepAlive();
+        leader.show();
+      })
+      .catch(() => {})
+      .finally(() => {
+        holdInitInFlight = null;
+      });
+    return holdInitInFlight;
+  };
+  void initializeHoldFromPresence();
   // ...and report OUT, so presence cannot outlive this document. `pagehide`
   // rather than `unload`: it is the one both a real navigation and a bfcache
   // eviction fire, and `unload` is unreliable on mobile and in some unload
@@ -319,7 +436,7 @@ import type { ContentPopupShell } from "./find";
   // per page life. Re-announcing is idempotent on the helper side (same index,
   // same URL).
   try {
-    window.addEventListener("pageshow", () => void reportPresence(true), { capture: true });
+    window.addEventListener("pageshow", () => void initializeHoldFromPresence(), { capture: true });
   } catch (e) {
     // ignore — the initial report already covered the normal case
   }
@@ -379,6 +496,21 @@ import type { ContentPopupShell } from "./find";
     if (hints.active || hints.starting) hints.exit();
     if (leader.hasPending()) leader.cancelPending();
     if (leader.active) leader.hide();
+    // AND THE HOLD WITH IT. Escape / Ctrl+G end the gesture, and the gesture
+    // includes the claim this document published to the background. Hiding the
+    // overlay and leaving that claim standing is how a cancel came back: the
+    // user backed out, then navigated (a link, `;g` on the next page, a reload),
+    // and the new document restored a hold nobody was making — an armed leader
+    // and a keyboard whose every key ran as a `;x` binding.
+    //
+    // A cancel is not a tap. It is the user saying the sequence is over, so the
+    // hold ends here rather than waiting for a keyup that may be delivered
+    // anywhere (or nowhere) while the page is being replaced.
+    // A cancel also invalidates an in-flight restore, even if the local
+    // controller has not learned about the old document's hold yet.
+    holdRestoreCancelled = true;
+    publishHoldState(false);
+    if (cancelHold(leader)) holdWatchdog.stop();
     // Return the scroll keys to the automatic target (document scroller on
     // ordinary pages) so a cycled sidebar can never trap them.
     if (scroll.isCustom()) scroll.reset();
@@ -408,6 +540,17 @@ import type { ContentPopupShell } from "./find";
       trace.popup = currentPopup ? "1" : "0";
     }
     if (e.isComposing) return;
+    // A popup that is no longer ON SCREEN must not own the keyboard.
+    //
+    // `currentPopup` is cleared by every teardown the shell knows about, but the
+    // panel is a child of <html>: a page that re-renders its root takes the node
+    // away without calling close(), and the flag then routes every keystroke of
+    // the user's into a controller nothing can see — typing, hints and the
+    // leader all dead at once, with nothing drawn. Closing it here runs the
+    // popup's own teardown (its mirrors, its timers, the find state) as well as
+    // clearing the flag, because a panel the page removed is a panel that was
+    // closed as far as the product is concerned.
+    if (currentPopup && !popupIsAlive(currentPopup)) closePopup();
     if (currentPopup) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -620,6 +763,12 @@ import type { ContentPopupShell } from "./find";
     if (e.repeat && e.key === config.leader && !e.ctrlKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
       e.stopImmediatePropagation();
+      // A repeat is DROPPED as intent and KEPT as evidence: the key is provably
+      // still down, which is what lets the watchdog tell a hold from a claim
+      // nobody is holding (see shared/holdrelease.ts) — and what keeps the
+      // published claim fresh enough for the next document to restore it.
+      holdWatchdog.keepAlive();
+      if (leader.sticky) republishHold();
       return;
     }
     if (leader.hasPending()) {
@@ -674,8 +823,8 @@ import type { ContentPopupShell } from "./find";
       // Auto-repeat is the whole reason a held leader used to misbehave: the
       // OS re-fires keydown several times a second, and each one re-armed the
       // leader, so holding it to run two actions in a row tore the sequence
-      // apart between them. A repeated leader keydown carries no new intent,
-      // so it is dropped entirely.
+      // apart between them. The leader repeat was handled above as liveness
+      // evidence. Any other repeat carries no new binding intent here.
       if (e.repeat) return;
       // Held down: bindings run and the leader stays armed, so `;` then
       // back/forward (or close-tab twice) costs one keystroke per action.
@@ -684,8 +833,10 @@ import type { ContentPopupShell } from "./find";
       // transition in startHints: the two surfaces are never armed at once, so
       // a key can never mean two things. See the owner rule in onKeyDown.
       if (hints.active || hints.starting) hints.exit();
+      holdRestoreCancelled = false;
       leader.sticky = true;
-      publishHold(true);
+      publishHoldState(true);
+      holdWatchdog.keepAlive();
       leader.show();
     }
   }
@@ -704,7 +855,18 @@ import type { ContentPopupShell } from "./find";
     "keyup",
     (e) => {
       try {
-        if (releaseHoldOnKeyup(leader, config.leader, e.key)) publishHold(false);
+        // The leader key is UP in this document, whether or not a hold was
+        // outstanding here: either it released a restored hold, or it released
+        // the press that a previous document published and this one has not
+        // read yet. Both mean the claim is spent — see leaderKeyUpSeen.
+        if (e.key === config.leader) {
+          leaderKeyUpSeen = true;
+          if (!leader.sticky) publishHoldState(false);
+        }
+        if (releaseHoldOnKeyup(leader, config.leader, e.key)) {
+          publishHoldState(false);
+          holdWatchdog.stop();
+        }
       } catch (err) {
         // ignore
       }
@@ -727,7 +889,10 @@ import type { ContentPopupShell } from "./find";
   // outstanding, so it can run on every visibility change.
   const releaseLostHold = (): void => {
     try {
-      if (releaseLostHoldOnBlur(leader)) publishHold(false);
+      if (releaseLostHoldOnBlur(leader)) {
+        publishHoldState(false);
+        holdWatchdog.stop();
+      }
     } catch (err) {
       // ignore
     }

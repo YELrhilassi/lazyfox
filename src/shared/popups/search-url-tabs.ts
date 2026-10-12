@@ -1,6 +1,7 @@
 import { esc } from "../dom";
 import { core } from "../core";
 import { faviconHtml } from "../favicon";
+import { planTabJump } from "../tabjump";
 import type { PopupItem } from "../types";
 import { basePanel, makeSelector, type PopupCtx } from "./kit";
 
@@ -206,9 +207,19 @@ export function openTabsPopup(ctx: PopupCtx): void {
   // The picker shows each tab's jump number on the left, and typing digits
   // narrows by that number rather than by the text of the title. The two are
   // the same idea the leader uses, so `;t` `1` `1` lands on tab 11 exactly as
-  // `;11` does. When the digits resolve to a single tab the popup switches to
-  // it on the last digit — the same "one keystroke when it is unambiguous"
-  // rule the leader follows, and the reason a search box is not needed here.
+  // `;11` does — resolved by the SAME planner (shared/tabjump.ts), so the two
+  // can never disagree about what a number means.
+  //
+  // A DIGIT IS ANSWERED IMMEDIATELY, IN THE KEY HANDLER.
+  //
+  // It used to be answered by the search: the digit was typed into the box, the
+  // selector debounced it (40ms), the tab list was re-read through the
+  // background, and only then did a single surviving row activate the tab. One
+  // keystroke therefore cost a typed character, a timer and a round trip before
+  // anything moved, which is the reported "it writes the number down first
+  // before navigating". The number is not a query — the candidate set follows
+  // from the strip, not from the row list — so it is resolved on the keypress,
+  // synchronously, and the round trip is not on the path at all.
   ctx.open(
     basePanel(
       "Tabs",
@@ -219,6 +230,13 @@ export function openTabsPopup(ctx: PopupCtx): void {
     ),
     (root) => {
       const inputEl = root.querySelector(".lf-input") as HTMLInputElement | null;
+      // How many tabs the strip has, and therefore which numbers exist. Taken
+      // from the UNFILTERED listing — the same read the rows are rendered from,
+      // so the planner and the visible list cannot describe two different
+      // strips. Unknown (-1) until the first listing lands, which is when the
+      // popup opens; a digit pressed before then is left to the box, where the
+      // narrowed list and Enter still resolve it.
+      let count = -1;
       return makeSelector<PopupItem>(ctx, root, {
         debounceMs: 40,
         itemClass: "lf-tab",
@@ -227,7 +245,11 @@ export function openTabsPopup(ctx: PopupCtx): void {
         // arrow keys move the selection regardless (handled unconditionally
         // in the selector), but vim-style letters match the rest of the app.
         vimNav: true,
-        search: (q) => ctx.ops.listTabs(q),
+        search: (q) =>
+          ctx.ops.listTabs(q).then((rows) => {
+            if (!q.trim()) count = rows.length;
+            return rows;
+          }),
         render: (t) => {
           // t.number is the 1-based strip position, the same identity the
           // digit bindings address. Every tab gets one now: past nine, the
@@ -253,20 +275,44 @@ export function openTabsPopup(ctx: PopupCtx): void {
           ctx.close();
           if (t.id != null) ctx.ops.activateTab(t.id);
         },
-        // The digits resolve to exactly one tab: go there without waiting for
-        // an Enter. This is the tab popup's half of the shared rule — the
-        // leader's other half is the chooser, and both ask the same planner.
-        onChange: (_idx, item, count) => {
-          const q = ((inputEl && inputEl.value) || "").trim();
-          if (!/^[0-9]+$/.test(q) || count !== 1 || !item) return;
-          ctx.close();
-          if (item.id != null) ctx.ops.activateTab(item.id);
-        },
         // The strip's identity is the browser's tab id, so the highlight can
         // follow the tab across a re-read instead of snapping to row 0.
         keyOf: (t) => t.id,
         extraKeys: (e, sel) => {
           const k = e.key;
+          // A DIGIT IS A POSITION, RESOLVED NOW. `planTabJump` answers in one
+          // of three ways and each one is a different thing to do:
+          //
+          //   jump    exactly one tab carries this number -> go there, with no
+          //           UI and no timer. `11` on a twelve-tab window activates
+          //           tab 11 on the second digit.
+          //   choose  the number is a prefix of several tabs (with twelve tabs,
+          //           `1` could be 1, 10, 11 or 12) -> let the digit into the box
+          //           so the list narrows, and ask again on the next one.
+          //   none    no tab carries it -> also the box, which shows the empty
+          //           list rather than guessing at a clamp.
+          if (
+            count > 0 &&
+            /^[0-9]$/.test(k) &&
+            !e.ctrlKey &&
+            !e.altKey &&
+            !e.metaKey
+          ) {
+            // The box's own value is the prefix — there is no second copy of
+            // it to drift, and a title search (`git` then `1`) is left alone
+            // because it is not a number.
+            const typed = ((inputEl && inputEl.value) || "").trim();
+            const numeric = /^[1-9][0-9]*$/.test(typed);
+            if (numeric || k !== "0") {
+              const plan = planTabJump(count, numeric ? typed + k : k);
+              if (plan.kind === "jump") {
+                e.preventDefault();
+                ctx.close();
+                ctx.ops.tabJump(plan.n);
+                return true;
+              }
+            }
+          }
           if (!sel.empty || sel.item == null || sel.item.id == null) return false;
           // Mutating actions re-query twice: once immediately (the content
           // path's send() has already landed by the time it resolves) and once

@@ -25,6 +25,38 @@ export interface SelectorCtl {
 
 export interface PopupCtl extends SelectorCtl {
   focus?(): void;
+  /**
+   * Whether this popup's panel is still in the document.
+   *
+   * Optional, and `undefined` must be read as "still up": a host that holds a
+   * popup as "open" while its host node is gone swallows every keystroke
+   * through a controller nothing can see (see popupIsAlive). Only the shared
+   * host below, which owns the node it appends, can answer this honestly.
+   */
+  alive?(): boolean;
+}
+
+/**
+ * Is this popup still on screen, from the point of view of a host that only
+ * holds its controller?
+ *
+ * The panel is a child of <html>. A page that re-renders the root — a framework
+ * hydration swap, `documentElement.replaceChildren()`, a document.write-style
+ * shell — takes our node away without ever calling `close()`, and the host's
+ * `currentPopup` flag then says "a popup owns the keyboard" while nothing is
+ * drawn. Every subsequent key went into that controller: typing dead, hints
+ * dead, the leader dead, all at once, with the overlay nowhere on screen. This
+ * is the one predicate that can tell the difference, and it is deliberately
+ * conservative — an unreadable or unimplemented answer keeps the popup's claim
+ * rather than handing the user's keystrokes to the page behind it.
+ */
+export function popupIsAlive(ctl: { alive?(): boolean } | null | undefined): boolean {
+  if (!ctl) return false;
+  try {
+    return typeof ctl.alive === "function" ? ctl.alive() : true;
+  } catch (e) {
+    return true;
+  }
 }
 
 // Opens a popup in a closed shadow root on <html>. `build` returns the popup
@@ -121,5 +153,6 @@ export function openPopup(
       mirror("popup-title", null);
     },
     focus: inner.focus,
+    alive: () => host.isConnected,
   };
 }
