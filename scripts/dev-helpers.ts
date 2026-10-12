@@ -131,28 +131,38 @@ export function cleanDevProfiles(root: string): number {
   let ini = existsSync(iniPath) ? readFileSync(iniPath, 'utf8') : '';
   let removed = 0;
 
-  for (const entry of readdirSync(root)) {
-    const full = join(root, entry);
-    const stat = (() => { try { return statSync(full); } catch { return null; } })();
-    if (!stat || !stat.isDirectory()) continue;
-    const base = basename(full);
-    if (base === 'Crash Reports' || base === 'Pending Pings' || base === 'Profile Groups') continue;
-    if (isDevProfileDirName(base)) {
-      try {
-        rmSync(full, { recursive: true, force: true });
-        removed++;
-      } catch {
-        // ignore
+  // WHERE THE PROFILE DIRECTORIES ARE. Linux keeps them directly under the
+  // root; Windows and macOS keep them under a `Profiles/` subdirectory (the same
+  // split findProfileDirByName already handles). This loop used to scan only the
+  // root, so on those platforms `npm run dev-install:clean` reported "(none
+  // found)" on a machine with dozens of dev profiles, and the install-hash
+  // cleanup below could not see a single profile name either.
+  const containers = [root, join(root, 'Profiles')].filter((dir) => existsSync(dir));
+
+  for (const container of containers) {
+    for (const entry of readdirSync(container)) {
+      const full = join(container, entry);
+      const stat = (() => { try { return statSync(full); } catch { return null; } })();
+      if (!stat || !stat.isDirectory()) continue;
+      const base = basename(full);
+      if (base === 'Crash Reports' || base === 'Pending Pings' || base === 'Profile Groups') continue;
+      if (isDevProfileDirName(base)) {
+        try {
+          rmSync(full, { recursive: true, force: true });
+          removed++;
+        } catch {
+          // ignore
+        }
+      } else if (
+        existsSync(join(full, LAZYFOX_EXT_XPI)) &&
+        profileIsDevLed(full)
+      ) {
+        // Renamed dev-led profile (compatibility.ini LastAppDir is a dev dir):
+        // strip the artifacts so it can never inject stale code when launched.
+        // Profiles owned by stable Firefox are never matched and stay untouched.
+        removeLazyfoxFromProfile(full);
+        console.log(`  purged stale lazyfox from ${base} (dev-led profile)`);
       }
-    } else if (
-      existsSync(join(full, LAZYFOX_EXT_XPI)) &&
-      profileIsDevLed(full)
-    ) {
-      // Renamed dev-led profile (compatibility.ini LastAppDir is a dev dir):
-      // strip the artifacts so it can never inject stale code when launched.
-      // Profiles owned by stable Firefox are never matched and stay untouched.
-      removeLazyfoxFromProfile(full);
-      console.log(`  purged stale lazyfox from ${base} (dev-led profile)`);
     }
   }
 
@@ -176,7 +186,15 @@ export function cleanDevProfiles(root: string): number {
   // setDefaultDevProfile re-points that pin at the fresh profile right after
   // clean; deleting it would leave Dev Edition defaulting to an old profile
   // (or nothing) on the very next launch. Same for installs.ini.
-  const known = new Set(readdirSync(root));
+  // What still exists, AFTER the removals above — a Default= value names a
+  // profile DIRECTORY, and on Windows/macOS those live under `Profiles/`. Built
+  // from every container for the same reason the removal loop is: against the
+  // root alone, a stable profile's pin was invisible and its [Install<hash>]
+  // section got deleted on every clean.
+  const known = new Set<string>();
+  for (const dir of containers) {
+    for (const entry of readdirSync(dir)) known.add(entry);
+  }
   const devPin = (val: string): boolean => isDevProfileDirName(val);
   if (existsSync(insPath)) {
     const ins = readFileSync(insPath, 'utf8');

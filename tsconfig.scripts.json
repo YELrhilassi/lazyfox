@@ -109,7 +109,46 @@
 // which-key markup from shared/wk.ts, which reaches shared/dom.ts. All four
 // modules are DOM-typed on purpose and are typechecked by tsconfig.json, which
 // owns the browser tree; what is out of scope here is only the Node-side USE of
-// them. Note which module is deliberately not on this list:
+// them.
+//
+// scripts/hints-preview.ts joins them for the same reason in a fourth shape: it
+// renders the REAL hint-label stylesheet, imported from
+// content/hints/selectors.ts, whose interface speaks in HTMLSpanElement and
+// Element — types this DOM-less config cannot name. The stylesheet itself is
+// typechecked by tsconfig.json like every module in the browser tree; only this
+// Node-side use of it is out of scope. That import is deliberate rather than a
+// copied string, because a preview that renders a stylesheet the extension no
+// longer ships is worse than no preview at all.
+//  // scripts/test/chrome-pagehints.test.ts is the latest of these, for the same
+  // reason in a new shape: it drives the REAL chrome/pagehints.ts, which draws its
+  // labels by calling shared/overlay.ts's toast for the outcomes a user has to be
+  // told about, and overlay.ts speaks in DOM types this config cannot name. The
+  // module and the rule it uses (shared/hintlabel.ts) are both typechecked by
+  // tsconfig.json; only this Node-side use of them is out of scope here.
+  //
+  // scripts/test/hints-resolve.test.ts is the nineteenth, and its exclusion is
+  // the one that has a reason of its own rather than the same one again: it
+  // drives content/hints/hintresolve.ts, which is DOM-typed (Element, DOMRect,
+  // and a collect/select/probe neighbourhood that reaches document and window),
+  // so it cannot be named here. What it pins is a PERFORMANCE contract —
+  // resolve() may not collect the document, and nearest() may not build a pass
+  // per candidate — and the absence of the DOM lib in this config is what makes
+  // that testable: the test hands the layer no document at all, so the moment
+  // the hot path starts collecting, the test fails on the missing global rather
+  // than on a stopwatch. The module itself is typechecked by tsconfig.json.
+//
+// scripts/test/window-listeners.test.ts is the twentieth, and it is the same
+// shape as typing-signals.test.ts and keyhold.test.ts: it drives the chrome
+// window's real listener set (chrome/winlisteners.ts), whose deps are typed
+// against the DOM (KeyboardEvent) and whose collaborators — the popup host, the
+// typing channel, the leader — are Firefox chrome modules only src/chrome's
+// ambient declarations name. The module is typechecked by tsconfig.json, which
+// owns the browser tree; what is out of scope here is only the Node-side use of
+// it. It is listed rather than left out silently because it pins a rule a user
+// FEELS — whether the tail of a keystroke is withheld — and a test no config
+// compiles is exactly how such a rule quietly stops being true.
+//
+// Note which module is deliberately not on this list:
 // content/hints/frames.ts (the measurement-pass coalescer and the safety net's
 // cadence) is DOM-free by construction — its frame host is injected — so it IS
 // checked here, and its test is too. That is the half of the frames work a Node
@@ -145,8 +184,12 @@
     "scripts/test/hints-motion.test.ts",
     "scripts/test/hints-focus.test.ts",
     "scripts/test/hints-activation.test.ts",
+    "scripts/test/hints-resolve.test.ts",
     "scripts/test/typing-signals.test.ts",
-    "scripts/wk-preview.ts"
+    "scripts/wk-preview.ts",
+    "scripts/hints-preview.ts",
+    "scripts/test/chrome-pagehints.test.ts",
+    "scripts/test/window-listeners.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

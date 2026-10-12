@@ -290,7 +290,16 @@ export async function run(ctx: any): Promise<void> {
     // tab, and a selected context is not automatically alive.
     await ctx.collapseWindow();
     ctx.tabA = await createTab();
-    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    // ON A URL OF ITS OWN — `${ctx.base}/reopen`, not `${ctx.base}/`. The tab
+    // this test closes is reopened onto the same URL, and the harness addresses a
+    // web-page tab by exact URL against the strip (see pages.ts#/reopen). Using
+    // the fixture root put a SECOND tab on the URL every other content test
+    // navigates tabA to, and the sweep deliberately left it (a tab whose URL
+    // equals the handle's is never closed while the handle is unpinnable), so
+    // two tabs the harness could not tell apart survived into the hints and
+    // indicator tests, which then failed on a window that had two of the page
+    // they were asking about.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/reopen`);
     await ctx.activateTab(ctx.tabA);
     const before = await ctx.tabCount();
     await ctx.leaderPress(ctx.tabA, "x");
@@ -370,6 +379,20 @@ export async function run(ctx: any): Promise<void> {
         " leaderActive=" + JSON.stringify(st && st.leaderActive) +
         " directCall=" + String(direct) + " afterDirectCount=" + (await ctx.tabCount()) +
         " afterRelayCount=" + viaRelay + " allTabs=" + String(allTabs);
+    }
+    // THE UNDO RESTORED THE TAB IT CLOSED, not merely *a* tab. The count could
+    // not tell those apart (it is back to `before` either way), and the reopened
+    // tab is the only one on this page, so the row count on it is the difference.
+    if (reopened) {
+      const back = ((await ctx.tabsInfo().catch(() => [])) as any[]).filter((x) =>
+        (x.url || "").includes("/reopen"),
+      );
+      assert(
+        back.length === 1,
+        ";v reopened the tab on the page it closed (rows on /reopen: " +
+          back.length +
+          ")",
+      );
     }
     assert(
       reopened,

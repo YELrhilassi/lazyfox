@@ -114,13 +114,39 @@ function countingPass() {
 }
 
 describe("hints visibility: the answers", () => {
-  test("a control under a hidden ancestor is not visible", () => {
+  test("a control under a hidden or inert ancestor is not visible", () => {
     const { pass } = countingPass();
     const root = el();
-    const hiddenHost = child(root, el({ attrs: { "aria-hidden": "true" } }));
-    const control = child(hiddenHost, el({ tag: "BUTTON" }));
-    assert.equal(pass.visible(control), false, "aria-hidden on the HOST hides what is inside it");
-    assert.equal(pass.fullyVisible(control), false);
+    // These are the two attribute states that really mean "nobody can use this":
+    // `hidden` takes the box out of layout, `inert` makes the subtree neither
+    // clickable nor focusable.
+    for (const attr of ["hidden", "inert"]) {
+      const blocked = child(root, el({ attrs: { [attr]: "" } }));
+      const control = child(blocked, el({ tag: "BUTTON" }));
+      assert.equal(pass.visible(control), false, attr + " on the HOST hides what is inside it");
+      assert.equal(pass.fullyVisible(control), false);
+    }
+  });
+
+  test("aria-hidden is NOT a visibility signal (the YouTube thumbnail case)", () => {
+    // `aria-hidden` keeps a node out of the ACCESSIBILITY tree, which says
+    // nothing about the screen. Real pages put it on duplicated affordances: the
+    // thumbnail link is aria-hidden because the title link beside it is the
+    // accessible one, while the thumbnail is the largest click target on the
+    // card. Counting it as invisibility is what made those targets unhintable
+    // (docs/HINTS.md §10), so this pins the opposite direction deliberately —
+    // being hidden for assistive technology must not remove a key from a link
+    // the user can see and click.
+    const { pass } = countingPass();
+    const root = el();
+    const host = child(root, el({ attrs: { "aria-hidden": "true" } }));
+    const link = child(
+      host,
+      el({ tag: "A", attrs: { href: "#thumb", "aria-hidden": "true" } }),
+    );
+    assert.equal(pass.hiddenByAttribute(link), false, "aria-hidden hides nothing on any ancestor");
+    assert.equal(pass.visible(link), true);
+    assert.equal(pass.fullyVisible(link), true);
   });
 
   test("the composed walk crosses a shadow host (the closed-root case)", () => {

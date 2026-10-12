@@ -173,6 +173,24 @@ customElements.define("closed-field", ClosedField);
   "/target1": { body: `<!DOCTYPE html><title>TARGET ONE</title><h1>Target One</h1><a href="/">back</a>` },
   "/target2": { body: `<!DOCTYPE html><title>TARGET TWO</title><h1>Target Two</h1><a href="/">back</a>` },
   "/hello": { body: `<!DOCTYPE html><title>HELLO PAGE</title><h1>Hello</h1>` },
+  // The page the `;x` / `;v` undo pair works on.
+  //
+  // It exists so the REOPENED tab has a URL nothing else navigates to, and that
+  // is not cosmetic. The harness addresses a web-page tab by matching its exact
+  // URL against the tab strip (a page has no extension realm to ask for its own
+  // tab id), so a reopen landing on the same URL as the page the rest of the
+  // suite uses leaves the window holding two indistinguishable tabs — measured,
+  // not hypothetical: the sweep's fail-safe rule deliberately does not close a
+  // tab whose URL equals the handle's when the handle could not be pinned to an
+  // id, so the duplicate survived to the end of the group and every later test
+  // that asked that page a question failed on a window that had two of them
+  // ("contentCall(hintSnapshot): no tab id for http://…/ — its URL matched 2
+  // row(s) of the tab strip", and the status bar of the SELECTED tab, which was
+  // the other one). A dedicated URL is the fix: the undo pair is what is under
+  // test, and the page it names is incidental to it.
+  "/reopen": {
+    body: `<!DOCTYPE html><title>REOPEN ME</title><h1>Reopen me</h1><a href="/">back</a>`,
+  },
   // A per-test scratch page. Tests that assert "this tab is gone from the
   // strip" must identify THEIR OWN tab: a shared URL like /target2 is also
   // opened by the ;h and ;1/;9 tests, so "no /target2 tab remains" silently
@@ -270,12 +288,17 @@ customElements.define("closed-field", ClosedField);
   // A ChatGPT/dashboard-style shell: the document itself CANNOT scroll (it is
   // pinned to the viewport), and all content lives in an inner overflow:auto
   // pane. The scroll keys must target the pane, not the dead window scroller.
+  //
+  // Each row carries a real `data-id`'d link, which is the hint layer's version
+  // of the same question: paging (`]`, `[`, Tab) has to move THIS pane and
+  // re-hint what it brings into view, and a pane with nothing clickable in it
+  // could not tell "paging worked" apart from "paging did nothing".
   "/innerpane": {
     body: `<!DOCTYPE html><html><head><style>
 html,body{height:100%;margin:0;overflow:hidden}
 #pane{height:100%;overflow:auto;background:#fff}
 #pane div{height:120px;margin:6px;background:#eef}
-</style></head><body><div id="pane">${Array.from({ length: 30 }, (_, i) => `<div>row ${i}</div>`).join("")}</div></body></html>`,
+</style></head><body><div id="pane">${Array.from({ length: 30 }, (_, i) => `<div>row ${i} <a data-id="pane${i}" href="#pane${i}">link ${i}</a></div>`).join("")}</div></body></html>`,
   },
   // A shell with BOTH a document scroller and a fixed scrollable sidebar, so
   // `;F` has at least two real regions to cycle between.
@@ -700,6 +723,272 @@ html,body{margin:0}
 </main>
 </body></html>`,
   },
+  // THE THIRD FIELD REPORT, reproduced: a YouTube video card and the ad
+  // player's "Skip" button, in the markup the report carried.
+  //
+  // This page exists because the fixtures that came before it were the ENGINE's
+  // idea of YouTube rather than the page's: `/uitest` has a thumbnail link whose
+  // content is one image and `/playerlike` has a skip button that is a plain
+  // button. The report carried real markup, and the differences are exactly the
+  // ones that decide whether a target is offered at all — `aria-hidden="true"`,
+  // `tabindex="-1"`, `rel="null"`, content that is ONLY an image plus overlay
+  // divs, a player whose overlay layer is `pointer-events:none` with the
+  // control re-enabling it, and a Skip button that does not exist when hints are
+  // built (an ad appears mid-session).
+  //
+  // It also carries the two things the same report needed to be MEASURABLE:
+  //   * a heartbeat (window.__beats / __maxGap), because "the hints got stuck
+  //     and unresponsive, they don't do anything, even exiting" is a main-thread
+  //     claim and the only honest test of it is the page's own timer still
+  //     ticking;
+  //   * a churn switch (window.__churn), which replaces every card the way a
+  //     virtual-DOM framework does — new nodes, same controls — because that is
+  //     the situation that used to make the hint engine collect the document
+  //     per item per frame.
+  "/ytcard": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>YTCARD</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.4 system-ui,sans-serif; background:#0f0f0f; color:#f1f1f1; }
+  main { padding:14px; display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start; }
+  article { width:246px; }
+  /* THE THUMBNAIL LINK: image-only, aria-hidden, tabindex=-1, rel=null. */
+  article > a.thumb { display:block; position:relative; width:246px; height:138px;
+    border-radius:10px; overflow:hidden; text-decoration:none; color:inherit; }
+  article > a.thumb img { display:block; width:100%; height:100%; object-fit:cover; }
+  .timebadge { position:absolute; right:6px; bottom:6px; z-index:2; background:rgba(0,0,0,.8);
+    border-radius:4px; padding:1px 4px; font:500 12px/18px system-ui,sans-serif; }
+  .mouseover { position:absolute; inset:0; z-index:1; }
+  article > a.title { display:block; margin-top:8px; color:#f1f1f1; font-weight:600;
+    font-size:14px; line-height:20px; text-decoration:none; }
+  article > a.channel { display:block; margin-top:4px; color:#aaa; font-size:12px; text-decoration:none; }
+  /* THE AD PLAYER: a fixed layer so inserting the overlay never reflows the page,
+     exactly as a video player's ad layer does not. */
+  #adslot { position:fixed; left:16px; bottom:16px; width:426px; height:240px;
+    background:#000; z-index:60; overflow:hidden; }
+  #adslot .ytp-ad-player-overlay { position:absolute; inset:0; pointer-events:none; z-index:3; }
+  /* The overlay layer ignores pointer events; the control's own container puts
+     them back, which is the shape the engine has to read correctly (the
+     computed value on the CONTROL is what decides whether it can be clicked). */
+  #adslot .ytp-skip-ad { position:absolute; right:12px; bottom:102px; pointer-events:auto; z-index:4; }
+  #adslot .ytp-skip-ad-button { display:flex; align-items:center; gap:6px; padding:8px 14px;
+    border:0; border-radius:4px; background:#fff; color:#111; font:600 13px system-ui,sans-serif;
+    cursor:pointer; }
+  #adslot .ytp-skip-ad-button__icon svg { display:block; }
+</style></head>
+<body>
+<main id="cards"></main>
+<!-- Page weight: a real video page is tens of thousands of nodes, which is what
+     makes a document-wide collection expensive. Without it this fixture would
+     flatter the engine: the freeze the report describes is a collection cost
+     multiplied by a frame rate, and a 20-node page multiplies almost nothing. -->
+<div id="weight"></div>
+<div id="adslot" class="ytp-ad-player-overlay"></div>
+<script>
+  // ---- the heartbeat: is the main thread still alive? ----------------------
+  // A 50ms timer on a quiet page fires every 50ms; the worst gap it ever saw is
+  // the honest answer to "did the hints freeze the page", and unlike a harness
+  // round trip it cannot be improved by the harness being fast.
+  window.__beats = 0;
+  window.__maxGap = 0;
+  var __last = performance.now();
+  window.__resetBeats = function () {
+    window.__beats = 0;
+    window.__maxGap = 0;
+    __last = performance.now();
+  };
+  setInterval(function () {
+    var now = performance.now();
+    var gap = now - __last;
+    if (gap > window.__maxGap) window.__maxGap = gap;
+    __last = now;
+    window.__beats++;
+  }, 50);
+
+  // ---- the cards, rebuilt the way a framework rebuilds them ----------------
+  var TITLES = ["Test video one", "Test video two", "Test video three",
+                "Test video four", "Test video five", "Test video six"];
+  (function buildWeight() {
+    // Inert markup, as a video page is mostly inert markup. Created in one
+    // fragment so the fixture itself does not spend a second laying out.
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < 4000; i++) {
+      var d = document.createElement("div");
+      d.className = "weight-row";
+      d.textContent = "row " + i;
+      frag.appendChild(d);
+    }
+    document.getElementById("weight").appendChild(frag);
+  })();
+  function poster(fill) {
+    return "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='246' height='138'%3E%3Crect width='246' height='138' fill='" + fill + "'/%3E%3C/svg%3E";
+  }
+  // How many cards the SETTLED page has. Every test that reads this fixture
+  // asserts against this number (six thumbnails, and #watch2 still present), so it
+  // is a constant and the churn below is what varies.
+  var CARD_COUNT = 6;
+  // How many cards the CHURN re-hydrates to. A fed feed is not six cards: a
+  // virtual list holds tens. This matters because it sets how many hinted items
+  // the hot path has to resolve per pass while everything is washed out — the
+  // cost that used to be a document collection per item per frame, and therefore
+  // the size of the signal this fixture can produce. Six cards left that signal
+  // thin enough to be arguable; twenty makes a re-collecting build fail this
+  // page's heartbeat by a wide margin instead of a hair.
+  var CHURN_CARD_COUNT = 20;
+  function buildCards(count) {
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < count; i++) {
+      var title = TITLES[i % TITLES.length];
+      var n = i + 1;
+      var card = document.createElement("article");
+      // The thumbnail link, in the reported markup: aria-hidden, tabindex=-1,
+      // rel=null, holding a poster image and the overlay divs and nothing else.
+      var thumb = document.createElement("a");
+      thumb.className = "thumb";
+      thumb.id = "thumbnail" + n;
+      thumb.setAttribute("data-id", "thumb" + n);
+      thumb.setAttribute("aria-hidden", "true");
+      thumb.setAttribute("tabindex", "-1");
+      thumb.setAttribute("rel", "null");
+      thumb.href = "#watch" + n;
+      var img = document.createElement("img");
+      img.alt = "";
+      img.src = poster("%23223");
+      thumb.appendChild(img);
+      var badge = document.createElement("div");
+      badge.className = "timebadge";
+      badge.textContent = "9:1" + n;
+      thumb.appendChild(badge);
+      var hover = document.createElement("div");
+      hover.className = "mouseover";
+      thumb.appendChild(hover);
+      // The title link beside it: the accessible one, and the same destination.
+      var link = document.createElement("a");
+      link.className = "title";
+      link.id = "video-title" + n;
+      link.setAttribute("data-id", "title" + n);
+      link.href = "#watch" + n;
+      link.textContent = title;
+      var chan = document.createElement("a");
+      chan.className = "channel";
+      chan.id = "channel" + n;
+      chan.setAttribute("data-id", "channel" + n);
+      chan.href = "#channel" + n;
+      chan.textContent = "Channel " + n;
+      card.appendChild(thumb);
+      card.appendChild(link);
+      card.appendChild(chan);
+      frag.appendChild(card);
+    }
+    return frag;
+  }
+  function replaceCards() {
+    var host = document.getElementById("cards");
+    while (host.firstChild) host.removeChild(host.firstChild);
+    host.appendChild(buildCards(CARD_COUNT));
+  }
+  replaceCards();
+
+  // WASH OUT, and leave it that way. This is the state a lazy feed, an ad slot or
+  // a virtual list leaves behind for a few hundred milliseconds: the nodes under
+  // the labels are GONE and nothing has replaced them. It is the direct
+  // reproduction of "some of the hint got disappeared after showing up" — badges
+  // on screen, controls not — and it is also the state in which the engine's
+  // re-resolution finds NOTHING: no live node for the item, and not even a
+  // same-destination neighbour near the dead one's last position, because every
+  // card is detached.
+  window.__washOutCards = function () {
+    var host = document.getElementById("cards");
+    var before = host.childElementCount;
+    while (host.firstChild) host.removeChild(host.firstChild);
+    return before;
+  };
+  window.__restoreCards = function () {
+    var host = document.getElementById("cards");
+    if (!host.childElementCount) host.appendChild(buildCards(CARD_COUNT));
+    return host.childElementCount;
+  };
+
+  // CHURN: the re-render, WITH THE GAP a real one has.
+  //
+  // The previous version removed and rebuilt the cards in ONE task, and that is
+  // exactly why this fixture could not fail on the bug it exists to catch: by the
+  // time any measurement pass ran, the replacements were already in the pool at
+  // the same coordinates, so the engine's re-resolution matched them by
+  // destination and position and never had to do anything expensive. The claim
+  // "hints freeze a re-rendering page" was therefore untestable here — the
+  // fixture had removed the window the bug lives in.
+  //
+  // A framework list that washes out and re-hydrates on a LATER task (a virtual
+  // list's placeholder, an ad overlay rebuilding itself, a lazy route) leaves
+  // that window open for a fifth of a second at a time, over and over, which is
+  // what a live feed does to the nodes under live hint labels.
+  var __returnTimer = null;
+  window.__churn = function (on) {
+    if (on) {
+      if (!window.__churnTimer) {
+        window.__churnTimer = setInterval(function () {
+          var host = document.getElementById("cards");
+          while (host.firstChild) host.removeChild(host.firstChild);
+          clearTimeout(__returnTimer);
+          __returnTimer = setTimeout(function () {
+            var host = document.getElementById("cards");
+            if (!host.childElementCount) host.appendChild(buildCards(CHURN_CARD_COUNT));
+          }, 180);
+        }, 300);
+      }
+    } else {
+      if (window.__churnTimer) {
+        clearInterval(window.__churnTimer);
+        window.__churnTimer = null;
+      }
+      clearTimeout(__returnTimer);
+      // Leave the page settled: the rest of the test starts from a normal page.
+      window.__restoreCards();
+    }
+    return !!window.__churnTimer;
+  };
+
+  // ---- the ad's Skip button, inserted mid-session --------------------------
+  // The markup the report carried, including the colon in the ids and the
+  // half-transparent inline opacity an ad's control has while it counts down.
+  window.__showAdOverlay = function () {
+    var host = document.getElementById("adslot");
+    if (host.querySelector(".ytp-skip-ad")) return true;
+    var wrap = document.createElement("div");
+    wrap.className = "ytp-skip-ad";
+    wrap.id = "skip-ad:1";
+    var btn = document.createElement("button");
+    btn.className = "ytp-skip-ad-button";
+    btn.id = "skip-button:2";
+    btn.setAttribute("data-id", "yt-skip");
+    btn.setAttribute("style", "opacity: 0.5;");
+    var text = document.createElement("div");
+    text.className = "ytp-skip-ad-button__text";
+    text.textContent = "Skip";
+    var icon = document.createElement("span");
+    icon.className = "ytp-skip-ad-button__icon";
+    icon.innerHTML = "<svg fill='none' height='24' viewBox='0 0 24 24' width='24'><path d='M20 20C20.26 20 20.51 19.89 20.70 19.70C20.89 19.51 21 19.26 21 19V5C21 4.73 20.89 4.48 20.70 4.29C20.51 4.10 20.26 4 20 4C19.73 4 19.48 4.10 19.29 4.29C19.10 4.48 19 4.73 19 5V19C19 19.26 19.10 19.51 19.29 19.70C19.48 19.89 19.73 20 20 20ZM5.04 19.77L18 12L5.04 4.22C4.84 4.10 4.60 4.03 4.36 4.03C4.12 4.03 3.89 4.09 3.68 4.21C3.47 4.32 3.30 4.49 3.18 4.70C3.06 4.91 2.99 5.14 3 5.38V18.61C2.99 18.85 3.06 19.08 3.18 19.29C3.30 19.50 3.47 19.67 3.68 19.79C3.89 19.90 4.12 19.96 4.36 19.96C4.60 19.96 4.84 19.89 5.04 19.77Z' fill='white'/></svg>";
+    btn.appendChild(text);
+    btn.appendChild(icon);
+    // What the page SAW, so a test can tell "the button was pressed" from "a
+    // click landed somewhere near it".
+    btn.addEventListener("click", function (e) {
+      window.__skipSeen = { trusted: e.isTrusted, target: e.target && (e.target.className || e.target.tagName) };
+      document.title = e.isTrusted ? "YT-SKIP-TRUSTED" : "YT-SKIP";
+    });
+    wrap.appendChild(btn);
+    host.appendChild(wrap);
+    return true;
+  };
+  window.__hideAdOverlay = function () {
+    var host = document.getElementById("adslot");
+    while (host.firstChild) host.removeChild(host.firstChild);
+    return true;
+  };
+</script>
+</body></html>`,
+  },
   // A TEXT FIELD page, for the keys that get you OUT of one.
   //
   // Escape is contested: this page binds it to close its own dialog (with a form
@@ -845,9 +1134,13 @@ html,body{margin:0}
   <div class="row"><button id="act-btn" data-id="act-btn" onclick="document.title='ACTIVATED'">Act</button></div>
   <div class="row"><input id="scroll-input" data-id="scroll-input" placeholder="type here"></div>
   <div class="row menu"><a id="hidden-opacity-link" data-id="hidden-opacity-link" href="#op">opacity menu link</a></div>
-  <div class="row" aria-hidden="true"><lf-hidden-shadow-button id="hidden-shadow-btn"></lf-hidden-shadow-button></div>
+  <div class="row" inert><lf-hidden-shadow-button id="hidden-shadow-btn"></lf-hidden-shadow-button></div>
   <div class="row vishide"><a id="hidden-vis-link" data-id="hidden-vis-link" href="#vis">visibility hidden link</a></div>
-  <div class="row" aria-hidden="true"><a id="hidden-aria-link" data-id="hidden-aria-link" href="#aria">aria hidden link</a></div>
+  <!-- The two attribute states that really do mean "nobody can use this" are inert (not clickable, not focusable) and hidden (out of layout). aria-hidden is NOT one of them: it keeps a node out of the ACCESSIBILITY tree, and real pages put it on elements that are plainly visible and clickable — see the thumbnail below, which is the YouTube shape. No backticks in here: this comment lives inside a template literal. -->
+  <div class="row" inert><a id="inert-link" data-id="inert-link" href="#inert">inert link</a></div>
+  <div class="row" hidden><a id="hidden-link" data-id="hidden-link" href="#hidden">hidden attribute link</a></div>
+  <div class="row"><a id="thumbnail-link" data-id="thumbnail-link" aria-hidden="true" tabindex="-1" href="#thumb"><img id="thumbnail-img" alt="" style="display:block;width:120px;height:48px;background:#cde" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='48'%3E%3Crect width='120' height='48' fill='%23bcd'/%3E%3C/svg%3E"></a></div>
+  <div class="row"><a id="thumb-title" data-id="thumb-title" href="#thumb">thumbnail title for the same video</a></div>
   <div class="row"><button id="pe-none-btn" data-id="pe-none-btn" class="pe" onclick="document.title='PE'">pointer-events none</button></div>
   <div id="scrimwrap"><a id="covered-link" data-id="covered-link" href="#cov">covered link</a><div id="scrim"></div></div>
   <div class="row"><a id="nearby-link" data-id="nearby-link" href="#near">nearby link</a></div>

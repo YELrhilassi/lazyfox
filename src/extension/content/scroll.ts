@@ -34,6 +34,28 @@ export interface ScrollController {
   scrollLines(lines: number): void;
   // Move by half a screen in `dir` — `d`/`u`.
   scrollPage(dir: number): void;
+  /**
+   * Move the ACTIVE target by `factor` viewports and report its offset either
+   * side of the move.
+   *
+   * This exists for the hint layers' paging (`]`, `[`, Tab). They used to call
+   * `window.scrollBy` directly, which is the one scroll path in the product
+   * that ignores the target this controller exists to pick: on a shell page
+   * whose whole document is pinned and whose content lives in an inner
+   * `overflow:auto` pane — ChatGPT, mail, dashboards, every Electron-style web
+   * shell — the hint layer scrolled the WINDOW, which cannot move, so paging
+   * silently did nothing ("hitting Tab does nothing") or jumped the shell
+   * behind the pane the user was reading. The scroll keys already went through
+   * here; paging now goes through the same door, so "which region am I looking
+   * at" has exactly one answer.
+   *
+   * The two offsets come back together because the CALLER's question is "is
+   * there anything more that way", and only the target that actually moved can
+   * answer it — reading `window.scrollY` at an inner-pane page answers about a
+   * scroller that never moves, which is how "no more links" was reported on a
+   * page with pages of links left below.
+   */
+  pageBy(dir: number, factor: number): { before: number; after: number };
   toTop(): void;
   toBottom(): void;
   // Move the active target among the page's scroll regions (0 = no change).
@@ -496,10 +518,17 @@ export function createScrollController(): ScrollController {
   }
 
   function scrollPage(dir: number): void {
+    pageBy(dir, 0.5);
+  }
+
+  function pageBy(dir: number, factor: number): { before: number; after: number } {
     const t = current();
-    const dy = dir * Math.round(viewportHeightOf(t.el) * 0.5);
+    const before = t.el ? t.el.scrollTop : window.scrollY || 0;
+    const dy = dir * Math.round(viewportHeightOf(t.el) * factor);
     if (t.el) t.el.scrollTop += dy;
     else window.scrollBy(0, dy);
+    const after = t.el ? t.el.scrollTop : window.scrollY || 0;
+    return { before, after };
   }
 
   function toTop(): void {
@@ -639,6 +668,7 @@ export function createScrollController(): ScrollController {
   return {
     scrollLines,
     scrollPage,
+    pageBy,
     toTop,
     toBottom,
     cycle,

@@ -14,9 +14,22 @@
 
 import { collectHintables } from "./collect";
 import { selectHintables, targetKey } from "./select";
-import { basicVisible, deepHit } from "./probe";
+import { deepHit } from "./probe";
 import { createVisibilityPass, type VisibilityPass } from "./visibility";
 import { HINTABLE_SELECTOR, MAX_HINTS, PAGE_FACTOR, type HintItem } from "./selectors";
+
+/**
+ * The part of the page's scroll controller this module needs: move the region
+ * the user is looking at, and report its offset either side of the move.
+ *
+ * Structural rather than typed as `ScrollController` for the same reason
+ * `maxHints` is a parameter: the paging rule is then testable against a fake
+ * with no document at all, which is the only way to pin "paging never touches
+ * the window" as a fact instead of an intention.
+ */
+export interface HintPager {
+  pageBy(dir: number, factor: number): { before: number; after: number };
+}
 
 export interface HintResolveDeps {
   // The current hintable pool. Read, and REPLACED by resolve() when it has gone
@@ -33,6 +46,17 @@ export interface HintResolveDeps {
    * `createVisibilityPass()`.
    */
   newPass?(): VisibilityPass;
+  /**
+   * The page's scroll controller, when this host has one (content/scroll.ts).
+   *
+   * A GETTER, not the controller itself: the content script builds the hint
+   * engine before the scroll controller exists, and the answer to "which
+   * region scrolls" is only meaningful at the moment a key is pressed.
+   * Absent in hosts with no controller and in the unit tests, where paging
+   * falls back to the plain window scroller — the behaviour every hint layer
+   * had before this dependency existed.
+   */
+  scroll?(): HintPager | null;
 }
 
 export interface HintResolve {
@@ -48,12 +72,32 @@ export interface HintResolve {
    * pass a cache — there is nothing to pass.
    */
   refreshPool(): Element[];
-  /** Re-find the live element for an item, or null if it is genuinely gone. */
-  resolve(it: HintItem): Element | null;
+  /**
+   * Re-find the live element for an item, or null if it is genuinely gone.
+   *
+   * `refresh` IS OPT-IN, and that is a performance rule rather than a taste one.
+   * This function is called for every hinted item on every sweep — up to twenty
+   * times a second for as long as hints are open — so anything it does per item
+   * is multiplied by the batch and the frame rate. It used to rebuild the pool
+   * (a document-wide `querySelectorAll` plus a tree walk, plus a fresh
+   * visibility pass) whenever an item's node had been replaced and no neighbour
+   * was close enough, and a framework page replaces hinted nodes constantly:
+   * that is dozens of full-document collections a second, which is the reported
+   * "the hints got stuck and unresponsive, they don't do anything, even
+   * exiting" — nothing runs on a main thread doing that, Escape included.
+   *
+   * So the hot path answers from the batch it already has, and the debounced
+   * DOM watcher (session.watchDom → sweep → refreshPool) owns re-collection:
+   * the very mutation that replaced the node has already scheduled it. The one
+   * caller that passes `refresh: true` is a one-shot ACTIVATION, where paying
+   * for a collect once is the user's own keypress and a key that does nothing is
+   * worse than a few milliseconds.
+   */
+  resolve(it: HintItem, opts?: { refresh?: boolean }): Element | null;
   /** The element nearest an item's last screen centre. */
   nearest(it: HintItem, list: Element[]): Element | null;
-  /** Scroll the window by `dir` viewports, so a hint set stays in reach. */
-  pageScroll(dir: number): void;
+  /** Scroll the region the user is looking at by `dir` pages (see HintPager). */
+  pageScroll(dir: number): { before: number; after: number };
 }
 
 export function createHintResolve(deps: HintResolveDeps): HintResolve {
@@ -78,19 +122,34 @@ export function createHintResolve(deps: HintResolveDeps): HintResolve {
     return selectHintables(deps.pool(), deps.maxHints ?? MAX_HINTS, pass).kept;
   }
 
-  function pageScroll(dir: number): void {
+  // Paging (`]`, `[`, Tab) moves the region the user is LOOKING AT and reports
+  // the target's offset either side of the move — see HintPager for why the
+  // window scroller is the wrong answer on the shell pages this exists for.
+  function pageScroll(dir: number): { before: number; after: number } {
+    const pager = deps.scroll ? deps.scroll() : null;
+    if (pager) return pager.pageBy(dir, PAGE_FACTOR);
     const vh = window.innerHeight || document.documentElement.clientHeight || 600;
+    const before = window.scrollY || 0;
     window.scrollBy(0, dir * Math.round(vh * PAGE_FACTOR));
+    return { before: before, after: window.scrollY || 0 };
   }
 
   // The live element nearest an item's last screen centre, preferring the same
   // destination so a small reflow cannot hand the hint to a neighbour.
+  //
+  // The visibility answer comes from the POOL'S pass, so the composed ancestor
+  // chain is walked once per element rather than once per element per call. It
+  // used to call `basicVisible(el)`, whose no-pass form builds a whole
+  // visibility pass — five WeakMaps and a fresh closure — for EVERY candidate
+  // it probed, on a probe that is itself O(pool). That is the same class of
+  // mistake as the resolve loop it sits under: per-candidate setup on a hot
+  // path, hidden behind a predicate that reads as cheap.
   function nearest(it: HintItem, list: Element[]): Element | null {
     if (!it.cx && !it.cy) return null;
     let best: Element | null = null;
     let bestD = Infinity;
     for (const el of list) {
-      if (!el.isConnected || !basicVisible(el)) continue;
+      if (!el.isConnected || !pass.visible(el)) continue;
       let r: DOMRect;
       try {
         r = el.getBoundingClientRect();
@@ -114,14 +173,24 @@ export function createHintResolve(deps: HintResolveDeps): HintResolve {
   // has been replaced (a React/Vue/Polymer re-render). Returning null here is
   // what used to make a key silently "do nothing": the framework swapped the
   // node between the label appearing and the keystroke, and the old element was
-  // no longer connected. Instead of giving up we re-find the SAME control —
-  // first in the live pool, then in a fresh collection (the pool is only
-  // refreshed on a debounce, so it can lag a just-rendered control), then by a
-  // deep hit at the recorded position.
-  function resolve(it: HintItem): Element | null {
+  // no longer connected. So the re-find stays — but WHERE it happens is now
+  // decided per caller (see the `refresh` opt-in on the interface), because the
+  // three callers ask the question at wildly different rates: the overlay asks
+  // it per item per frame, an activation asks it once, and the batch rebuild
+  // asks it about everything at once.
+  //
+  // The order is unchanged: the node itself, then the nearest match in the
+  // batch (same destination preferred), then — only when a caller has asked for
+  // a fresh collection — the nearest match in the rebuilt batch, and finally a
+  // deep hit at the last recorded position.
+  function resolve(it: HintItem, opts?: { refresh?: boolean }): Element | null {
     if (it.el && it.el.isConnected) return it.el;
     let found = nearest(it, deps.pool());
-    if (!found) {
+    // Only a one-shot activation may pay for a re-collect (see the interface).
+    // The hot path answers from the batch it has: if the replacement is not
+    // there yet, the mutation that replaced it has already scheduled the
+    // debounced refresh, and the label comes back with its key on that pass.
+    if (!found && opts && opts.refresh) {
       refreshPool();
       found = nearest(it, deps.pool());
     }

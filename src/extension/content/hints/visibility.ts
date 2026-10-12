@@ -4,7 +4,7 @@
 // WHY THIS IS A MODULE OF ITS OWN, and why it is not just the two predicates it
 // replaces. The predicates are cheap for one element and expensive for a page:
 // `basicVisible` walks the composed ancestor chain looking for
-// hidden/inert/aria-hidden, and `hintVisible` walks it AGAIN looking for an
+// hidden/inert, and `hintVisible` walks it AGAIN looking for an
 // `opacity:0` container (opacity is not inherited, so a single read cannot
 // answer it) and then reads the element's own computed style up to three times.
 // On a document with a few thousand candidates — a video page, a mail list, a
@@ -39,8 +39,18 @@ export type StyleReader = (el: Element) => CSSStyleDeclaration;
 
 export interface VisibilityPass {
   /**
-   * Hidden, inert or `aria-hidden="true"` — on this element or any composed
+   * Actually hidden — `hidden` or `inert`, on this element or any composed
    * ancestor.
+   *
+   * `aria-hidden="true"` is deliberately NOT one of these. It says "keep this out
+   * of the accessibility tree", which is a statement about screen readers, not
+   * about the screen: the most common use of it on a real page is a DUPLICATE
+   * affordance — YouTube marks the thumbnail link `aria-hidden` because the
+   * title link beside it is the accessible one, while the thumbnail is the
+   * biggest click target on the page. Treating it as invisibility deleted those
+   * targets outright (see docs/HINTS.md §10). What is genuinely off-screen or
+   * covered is answered by the checks that can actually see that: the CSS
+   * visibility test, `inViewport`, and `reachable`'s hit tests.
    */
   hiddenByAttribute(el: Element): boolean;
   /** `opacity: 0` on this element or any composed ancestor. */
@@ -110,10 +120,17 @@ export function createVisibilityPass(readStyle: StyleReader = defaultStyleReader
     if (own === undefined) {
       own = false;
       try {
-        own =
-          el.hasAttribute("hidden") ||
-          el.hasAttribute("inert") ||
-          String(el.getAttribute("aria-hidden") || "").toLowerCase() === "true";
+        // `hidden` and `inert` both mean "not available to anyone": one removes
+        // the box from layout, the other makes the subtree unclickable and
+        // unfocusable. Those are the two that can be trusted from an attribute.
+        //
+        // `aria-hidden="true"` is NOT in this list (see hiddenByAttribute in the
+        // interface above and docs/HINTS.md §10): it hides a node from assistive
+        // technology, and pages put it on elements that are plainly visible and
+        // clickable — a thumbnail link duplicated by a title link, an icon inside
+        // a labelled button, a decorative overlay. Dropping every aria-hidden
+        // candidate is what made YouTube's video thumbnails unhintable.
+        own = el.hasAttribute("hidden") || el.hasAttribute("inert");
       } catch (e) {
         own = false;
       }

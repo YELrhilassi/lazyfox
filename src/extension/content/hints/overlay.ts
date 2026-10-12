@@ -9,6 +9,7 @@
 // a page that shifts under the hints (carousel slide, lazy image, layout shift)
 // must never leave badges floating where the links used to be.
 import { HINT_CSS, type HintItem, type HintLabel } from "./selectors";
+import { HINT_LABEL } from "../../../shared/hintlabel";
 import { mirrorFlag } from "../../../shared/observability";
 
 /**
@@ -33,8 +34,13 @@ export interface HintRender {
 }
 
 export interface HintSnapshot {
-  positions: Array<{ key: string; x: number; y: number }>;
-  boxes: Array<{ key: string; l: number; t: number; r: number; b: number }>;
+  /**
+   * One row per label ON SCREEN. `x`/`y` are the element's own top-left, except
+   * for a HELD row (see `held`), where there is no element to measure and the
+   * label's own box is reported instead.
+   */
+  positions: Array<{ key: string; x: number; y: number; held?: boolean }>;
+  boxes: Array<{ key: string; l: number; t: number; r: number; b: number; held?: boolean }>;
 }
 
 export interface HintOverlay {
@@ -47,6 +53,11 @@ export interface HintOverlay {
    * e2e harness. The badge lives in a CLOSED shadow root, so nothing outside
    * can see it — which is the point (a page must not be able to read or
    * restyle the overlay) but also means a test needs an honest accessor.
+   *
+   * `glyph` is the symbol the badge STANDS FOR ("⏎"), not its drawing: the
+   * drawing is a vector path (HINT_LABEL.enterIcon) chosen precisely so it
+   * cannot depend on the platform's font, and which affordance is up is the
+   * thing a caller outside the shadow root can honestly check.
    */
   enterBadge(): { shown: boolean; glyph: string };
   /**
@@ -69,6 +80,10 @@ export interface HintOverlay {
    * The keys whose labels are on screen RIGHT NOW — the one visibility
    * predicate (see HintRender). Live rather than a snapshot: a scroll with no
    * keystroke in between still changes which hints are usable.
+   *
+   * "On screen" includes a held label: one whose element was momentarily
+   * replaceable-but-not-replaced is still drawn at the pixels of a control that
+   * did not move, so it is still what the user is looking at (see reposition).
    */
   shownKeys(): Set<string>;
   /** Read current positions/label boxes only when a diagnostic explicitly asks. */
@@ -98,12 +113,29 @@ export function createHintOverlay(): HintOverlay {
   let enterAt: { box: { l: number; t: number; r: number; b: number }; vw: number; vh: number } | null =
     null;
 
-  // The ASCII return glyph. "⏎" is a real Unicode character, not a drawing of
-  // one: it renders identically at 12px in the hint font on every platform we
-  // target, and it cannot drift the way an SVG or a box-drawing sequence does.
-  // The trailing space is part of the glyph's advance width and is what keeps
-  // the arrow from touching the label box when they overlap on a narrow window.
-  const ENTER_GLYPH = "⏎ ";
+  // The symbol the badge MEANS. It is no longer what gets DRAWN: the badge
+  // carries a solid vector arrow (HINT_LABEL.enterIcon), because a text glyph is
+  // the one thing in this overlay whose shape belongs to the platform's font —
+  // the arrow came out at a different weight on every stack, and as an emoji on
+  // some. The string stays because it is the honest answer to "which affordance
+  // is this?" for the page report, and a closed shadow root gives a test no
+  // other way to see the badge at all.
+  const ENTER_GLYPH = "⏎";
+
+  // The badge's icon node. Built with createElementNS rather than innerHTML: the
+  // page must never be able to inject markup through this overlay, and a node
+  // built this way cannot become a parser's second opinion about our own
+  // constant.
+  function enterIcon(): SVGElement {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", HINT_LABEL.enterIcon);
+    svg.appendChild(path);
+    return svg;
+  }
 
   // Show or hide the badge. It is created once and toggled, not recreated per
   // keystroke, for the same reason the labels are reused: the session renders on
@@ -129,10 +161,10 @@ export function createHintOverlay(): HintOverlay {
       if (!host._enter) {
         const b = document.createElement("span");
         b.className = "hint-enter";
+        b.appendChild(enterIcon());
         host._box.appendChild(b);
         host._enter = b;
       }
-      if (host._enter.textContent !== ENTER_GLYPH) host._enter.textContent = ENTER_GLYPH;
       // Revealed only by placeEnter, and only once it has somewhere to be:
       // revealing it before positioning paints the glyph at an unset position
       // (0,0 on the first sweep) for one frame.
@@ -259,6 +291,10 @@ export function createHintOverlay(): HintOverlay {
 
     // ---- phase 1: MEASURE. Reads only; nothing is written here. ------------
     const plan: Array<{ it: HintItem; r: DOMRect; lw: number; lh: number }> = [];
+    // Items whose element cannot be found right now, and the box their label
+    // already occupies. See the `!el` branch below for why these are held
+    // rather than dropped.
+    const held: Array<{ it: HintItem; box: { l: number; t: number; r: number; b: number } }> = [];
     for (const it of items) {
       const label = it.label;
       // Items filtered out by the typed prefix have no label and stay out of
@@ -267,8 +303,37 @@ export function createHintOverlay(): HintOverlay {
       if (!label) continue;
       const el = resolve(it);
       if (!el) {
-        label.remove();
-        it.label = null;
+        // THE NODE IS GONE, THE HINT IS NOT.
+        //
+        // A framework page REPLACES the node under a live badge — a virtual-DOM
+        // re-render, YouTube's ad overlay rebuilding itself — and there is a
+        // real window, until the debounced DOM resync rebuilds the batch (well
+        // under a second; the very mutation that replaced the node scheduled
+        // it), where no element can be found for this item. Dropping the label
+        // there is the reported "some of the hint got disappeared after showing
+        // up", and tearing the node down also broke this function's own
+        // two-phase rule: `label.remove()` is a WRITE, and it ran in the middle
+        // of the measure phase, forcing a fresh layout for every label still to
+        // be measured.
+        //
+        // So the label is HELD: left exactly where it was, at the pixels of a
+        // control that did not move (its node was replaced), still on screen and
+        // still typeable. It is not a dead key, either — a one-shot activation
+        // is allowed to pay for a re-collect and a deep hit (see
+        // hintresolve.resolve), which is how a key on a just-replaced node keeps
+        // working. The hold ends with the resync: if the control is really gone,
+        // assign() drops the item and its label with it.
+        const lx = label._x;
+        if (typeof lx === "number" && label._y !== undefined && label.style.display !== "none") {
+          held.push({
+            it,
+            box: { l: lx, t: label._y, r: lx + (label._w || 16), b: label._y + (label._h || 16) },
+          });
+        } else if (label.style.display !== "none") {
+          // Never placed, so there is nothing to hold.
+          label.style.display = "none";
+          anyMoved = true;
+        }
         continue;
       }
       const r = el.getBoundingClientRect();
@@ -285,7 +350,10 @@ export function createHintOverlay(): HintOverlay {
     }
     // ---- phase 2: PLACE. Writes only, using the measurements above. --------
     const boxes: Array<{ key: string; l: number; t: number; r: number; b: number }> = [];
-    const placed: Array<{ l: number; t: number; r: number; b: number }> = [];
+    // The held labels are reserved FIRST: they are still on screen, so the
+    // collision walk has to know about their pixels or a re-placed label could
+    // be drawn on top of one.
+    const placed: Array<{ l: number; t: number; r: number; b: number }> = held.map((hd) => hd.box);
     // The label the Enter badge belongs beside. It is the FIRST row that got a
     // label, because that is literally the row Enter takes: `handleKey` commits
     // `found[0]`, the first matching on-screen item in document order. Marking
@@ -386,6 +454,20 @@ export function createHintOverlay(): HintOverlay {
     else if (host && host._enter && host._enter.style.display !== "none") {
       host._enter.style.display = "none";
     }
+    // The held labels are on screen, so they are usable — the same rule the
+    // placed ones follow (see HintRender). Their keys stay typeable while the
+    // batch catches up with the page.
+    for (const hd of held) {
+      shown.add(hd.it.key);
+      boxes.push({
+        key: hd.it.key,
+        l: Math.round(hd.box.l),
+        t: Math.round(hd.box.t),
+        r: Math.round(hd.box.r),
+        b: Math.round(hd.box.b),
+      });
+      if (!enterBox) enterBox = hd.box;
+    }
     // There is deliberately NO publication from this sweep. Serializing label
     // positions to JSON and writing two attributes on every animation update
     // made the page pay for the test harness on the same main thread as keys.
@@ -403,11 +485,14 @@ export function createHintOverlay(): HintOverlay {
   // far from it". A badge that refers to a link has to be at that link, or it is
   // decoration pretending to be an instruction.
   //
-  // Its size is a CONSTANT (the glyph is one monospace character at 12px with
-  // fixed padding) so that placing it costs no layout read — a read here would
-  // reintroduce the forced reflow that phase 2 exists to avoid.
-  const ENTER_W = 28;
-  const ENTER_H = 16;
+  // Its size is a CONSTANT so that placing it costs no layout read — a read here
+  // would reintroduce the forced reflow that phase 2 exists to avoid. It is not
+  // merely "about" the stylesheet's box: it IS the box, because HINT_CSS builds
+  // .hint-enter's width/height from the same two numbers. Those numbers live in
+  // shared/hintlabel.ts and are read here — this file used to keep its own copy
+  // of them, which is exactly the kind of pair that drifts.
+  const ENTER_W = HINT_LABEL.enterW;
+  const ENTER_H = HINT_LABEL.enterH;
   function placeEnter(
     box: { l: number; t: number; r: number; b: number } | null,
     vw: number,
@@ -439,7 +524,41 @@ export function createHintOverlay(): HintOverlay {
       const label = it.label;
       if (!label || label.style.display === "none" || !shown.has(it.key)) continue;
       const el = resolve(it);
-      if (!el) continue;
+      if (!el) {
+        // A HELD LABEL IS ON SCREEN WITH NOTHING BEHIND IT.
+        //
+        // This is the state reposition() deliberately carries through a
+        // framework re-render or a washed-out list (its node was replaced, so
+        // the control did not move and neither did its badge — see the `held`
+        // branch there). Until this row existed, that state was INVISIBLE to
+        // every observer: the labels live in a closed shadow root, so the page
+        // cannot read them, and this pull used to `continue` on an unresolvable
+        // element. The reported symptom "some of the hint got disappeared after
+        // showing up" therefore had no test that could see it either way — the
+        // pull reported the same thing (nothing) whether a held badge was drawn
+        // on screen or had been torn down.
+        //
+        // So a held row is reported, marked `held`, with the LABEL's own box: it
+        // is the honest answer (there is no element left to measure) and the
+        // flag is how a reader tells it apart from a placed row, whose position
+        // is the element's own top-left.
+        if (label._x === undefined || label._y === undefined) continue;
+        try {
+          const b = label.getBoundingClientRect();
+          positions.push({ key: it.key, x: Math.round(b.left), y: Math.round(b.top), held: true });
+          boxes.push({
+            key: it.key,
+            l: Math.round(b.left),
+            t: Math.round(b.top),
+            r: Math.round(b.right),
+            b: Math.round(b.bottom),
+            held: true,
+          });
+        } catch (e) {
+          // Torn down mid-pull: omit it rather than forge geometry.
+        }
+        continue;
+      }
       try {
         const r = el.getBoundingClientRect();
         const b = label.getBoundingClientRect();

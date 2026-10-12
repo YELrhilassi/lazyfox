@@ -81,9 +81,22 @@ import type { ContentPopupShell } from "./find";
     // ignore — live config is a convenience, not a requirement
   }
 
+  /* ===================== scroll target ==================== */
+
+  // Built BEFORE the hint engine, and not because of ordering taste: the hint
+  // layer's paging (`]`, `[`, Tab) moves the region the scroll keys move, so it
+  // needs the controller — and the controller is constructed once, at boot,
+  // either way (it installs its own observers and pointer tracking). One
+  // creation site, one answer to "which region do the keys move".
+  //
+  // The scroll TARGET: the document scroller by default, an inner pane when the
+  // document cannot scroll (ChatGPT-style shells), or whichever region the user
+  // cycled to with ;F / ;B (sidebars and secondary panes).
+  const scroll = createScrollController();
+
   /* ===================== link hints ===================== */
 
-  const hints = createLinkHints(() => config.hintChars);
+  const hints = createLinkHints(() => config.hintChars, () => scroll);
 
   /* ===================== popup shell ===================== */
 
@@ -334,10 +347,6 @@ import type { ContentPopupShell } from "./find";
 
   /* ==================== scroll keys ==================== */
 
-  // The scroll target: the document scroller by default, an inner pane when the
-  // document cannot scroll (ChatGPT-style shells), or whichever region the user
-  // cycled to with ;F / ;B (sidebars and secondary panes).
-  const scroll = createScrollController();
   const handleScrollKeys = createScrollKeys(scroll, () => config);
 
   /* ==================== key dispatch ==================== */

@@ -447,7 +447,7 @@ count what it does rather than assert what it says.
 ### 7.1 One visibility pass, not one predicate per element
 
 `probe.ts` used to answer "is this visible" with a per-element walk: the
-composed ancestor chain for hidden/inert/`aria-hidden`, the chain AGAIN for
+composed ancestor chain for hidden/inert, the chain AGAIN for
 `opacity:0` (opacity is not inherited, so a child of a faded-out menu computes
 to 1 while being invisible), and the element's own `getComputedStyle` up to
 three times. Collection ran it for every candidate, and the selection pass ran
@@ -779,3 +779,467 @@ holding. A claim with no timestamp is refused rather than trusted, and a claim
 from the future is kept, because a skewed clock must not read as "infinitely
 old". Pinned in `scripts/test/keyhold.test.ts` against the shared module both
 hosts import.
+
+---
+
+## 10. `aria-hidden` is not invisibility (2026-10-11)
+
+The third field report, and the one where the engine's own rule was the bug:
+*"it misses elements with href in them like these thumbnails"*, with the markup of
+a YouTube thumbnail — `<a id="thumbnail" aria-hidden="true" tabindex="-1"
+href="/watch?v=...">` wrapping the poster image.
+
+Collection asked `hiddenByAttribute` "is this, or any composed ancestor, hidden,
+inert or `aria-hidden`?" and dropped the candidate when the answer was yes. For
+`hidden` and `inert` that is exactly right: one removes the box from layout, the
+other makes the subtree unclickable and unfocusable, so neither leaves anything
+usable behind. `aria-hidden` is a different statement entirely — it keeps a node
+out of the ACCESSIBILITY tree — and the most common use of it on a real page is a
+DUPLICATE affordance. YouTube's thumbnail link carries it because the title link
+beside it is the accessible one; the thumbnail is still the largest click target
+on the card, and it was the one target on the page the keyboard could not reach.
+Icons inside labelled buttons, decorative overlays and mirrored mobile fields are
+the same shape.
+
+The rule now reads `hidden` or `inert`, and nothing else. Everything that
+genuinely is not on screen is still caught, by the checks that can actually see
+it: `checkVisibility` and computed style (display, visibility, opacity —
+including an `opacity:0` ANCESTOR, which opacity is not inherited), `inViewport`,
+and `reachable`'s five-point hit test, which is what drops a control under a scrim
+or one scrolled off the edge. Those were always doing the real work; `aria-hidden`
+was a heuristic sitting on top of them that cost the reported targets and bought
+nothing they did not already cover.
+
+The old behaviour was pinned by a test asserting that `hidden-aria-link` is not
+hinted. That policy was deliberate, and changing it is deliberate too: the
+fixture now carries an `inert` link and a `hidden` row that must stay unhinted, a
+YouTube-shaped thumbnail link that must be hinted, and a second test that types
+its key and requires the navigation to actually happen — a label that appears and
+does nothing is a different bug with the same symptom.
+
+**What is deliberately NOT changed:** `;i` (`focusFirstInput`) still refuses a
+field whose own `aria-hidden` is `true`. That path has no occlusion test of its
+own — it picks the largest VISIBLE field and focuses it — so it keeps the cheap
+attribute heuristic as a guard against the off-screen mirror inputs frameworks
+render for IME/AT, where a wrong pick silently moves the user's caret somewhere
+they cannot see. If that ever costs a real field, the honest fix is to give `;i`the same reachability test the hint engine has, not to delete the guard.
+
+---
+
+## 11. The labels are flat now
+
+The report was three words long — *"the hints ui is a bit ugly"* — and it is the
+only kind of report this file cannot verify, because nothing here can assert
+whether something looks good. What it explained, though, was specific: no border,
+less rounded, a better and slightly bigger/heavier font, still legible on a dark
+theme, no shadow, characters fitted properly, and the ⏎ rendered and centred
+rather than carried by a padding hack.
+
+So the label is now: 13px/700 in the monospace stack, a solid **`#7aa2f7`** fill
+with near-black text, a 2px radius, and **no border and no shadow**. The padding
+started at `3px 6px` and a later report — *"too much space between the letters and
+the edges"* — took it to **`2px 4px`**: 13px monospace already carries its own side
+bearings, so six pixels per side left a one-character key floating in the middle of
+a pill, with the air around the letter reading as page rather than as key. The
+smaller box is also what the collision sweep now has to fit into a dense batch. The fill is the PRODUCT'S OWN ACCENT, which is the one part of this that
+is not a matter of taste: `#7aa2f7` is the colour of every other key cap Lazyfox
+draws (the leader panel, the which-key overlay, the status bar), and the first cut
+of this label used a neon cyan — `#3ad4f0` — that appears nowhere else in the
+tree. A hint badge is the same object as those key caps, so it is the same colour;
+the second field report's most repeated complaint was that Lazyfox's overlays do
+not look like one product, and shipping a fresh accent per surface is how that
+happens. The contrast comes from the FILL, which is the part that has to work on
+both grounds the labels live on: legible against a dark page, legible on white,
+and it cannot be defeated by whatever the page is rendering underneath. A
+translucent chip (the direction that was tried first, and rendered in the preview
+for comparison) reads as a caption on a dark page and disappears on a busy light
+one.
+
+The old style carried a 1px dark ring plus a drop shadow per label. That is what
+made a dense batch look like debris: forty outlined pills, each with its own
+edge, over a card grid. Flat labels let the batch read as a keyboard again, and
+the size/weight increase is what keeps them from disappearing once the outline
+that used to separate them from the page is gone.
+
+The badge in that first cut was a fixed box with the Unicode **`⏎` glyph** centred
+by line-height and text-align (and the trailing-space hack removed). It works, but
+it makes the one icon in the hint UI the one thing whose shape belongs to the
+platform: the arrow comes out at a different weight and with different proportions
+on every font stack, and an emoji on some. The second report asked for a solid
+icon, so the badge now holds a **solid vector return arrow** — one fill, no stroke,
+a 24×24 path in `HINT_LABEL.enterIcon` — in a fixed 24×17 box (as tall as a label),
+centred by `inset:0;margin:auto` rather than by any font metric. A path is the same
+drawing on every platform, and a solid arrow still reads at 13px where a glyph of
+that size smudges. Because the path lives beside the badge's size and fill, the
+preview page draws the running icon instead of a lookalike.
+
+The badge's box is read from `HINT_LABEL.enterW/enterH` by BOTH the stylesheet
+that draws it and `overlay.placeEnter`, which has to know its size to place it
+without a layout read (that read is the forced reflow phase 2 exists to avoid).
+Those are the same two numbers, not two copies of them: overlay.ts used to keep its
+own `ENTER_W`/`ENTER_H` beside the sheet's, which is exactly the pair that drifts.
+
+The waiting state (the typed prefix IS the whole key, so only Enter can commit it)
+lost its 2px light-blue outline with everything else and is carried by the fill
+alone — the palette's cyan — with the ⏎ badge beside it doing the explaining.
+The badge wears that same cyan (`HINT_LABEL.enterFill`), because it exists in
+exactly one state: the typed prefix is the whole key of a row while a longer key
+shares it, which IS the waiting state. Drawing it in the idle fill would paint a
+second colour beside the waiting label and make the pair read as two objects
+instead of one instruction.
+
+**The metrics were measured on the rendered page, not assumed.**
+`npm run hints:preview` reports a one-character label at 15.7 × 17 CSS px and a
+two-character label at 23.3 × 17 (the badge is 24 × 17 with a 15 × 15 icon, exactly
+as tall as a label). Those numbers are what the collision sweep has to fit into the
+page and what decides how much of a dense cluster is readable, so they are the
+numbers the next change to this should be judged against.
+
+`npm run hints:preview` renders the shipped stylesheet (imported, not copied) over
+a dark card grid, a light page and a dense cluster, next to the stylesheet it
+replaced, so the next change to this is judged against the thing it replaces
+instead of described. Its placement is deliberately simplified — each badge sits
+at its element's first anchor rather than running the collision sweep, which needs
+a layout engine — and it says so on the page.
+
+---
+
+## 12. The fourth field report (2026-10-11): the layer that stopped answering
+
+The report was one sentence with three symptoms in it: *"while i was using the
+hint the feature got stuck and unresponsive doesn't do anything even exiting, also
+some of the hint got disappeared after showing up"*. Stuck, unresponsive, and
+Escape does not get you out — three descriptions of one experience. Two separate
+defects produce it, and a third explains the vanishing labels.
+
+### 12.1 The hot path collected the whole document (fixed)
+
+`hintresolve.resolve()` is called for EVERY hinted item on EVERY measurement
+sweep: up to twenty times a second, for as long as hints are open, so anything it
+does per item is multiplied by the batch and the frame rate. It re-finds the live
+element when the node a hint was built from has been replaced — a React/Vue/
+Polymer re-render, which is the whole reason the re-find exists — and the old
+version, on finding no neighbour close enough, called `refreshPool()`: a
+`collectHintables()` over the whole document (a `querySelectorAll` for the
+selector list plus a budgeted tree walk) AND a brand-new visibility pass (five
+WeakMaps and a fresh closure). On a page that replaces hinted nodes constantly —
+YouTube's ad overlay rebuilding itself, a live comment list — that is a
+document-wide collection per unresolved item per frame.
+
+Nothing runs on a main thread doing that. Not the key handler, not the leader,
+and not Escape: the message is *"unresponsive, doesn't do anything even
+exiting"* because the browser's input dispatch is queued behind the collects.
+The label the user is looking at does not move either, because the sweep that was
+supposed to place it never completes — so the layer LOOKS alive while answering
+nothing, which is the worst of both.
+
+The fix is ownership, not a smaller budget: re-collection happens where the
+decision to collect already lives. `resolve(it, { refresh: true })` is OPT-IN and
+exactly one caller asks for it — `activate()`, a one-shot keypress where paying
+for a collect once is the user's own action and a key that does nothing is worse
+than a few milliseconds. The per-frame path now answers from the batch it already
+has; the mutation that replaced the node has ALREADY scheduled the debounced
+re-hint (`session.watchDom` → `sweep` → `refreshPool`), so the replacement gets
+its key back on that pass, with no collect in between.
+
+`scripts/test/hints-resolve.test.ts` pins this with NO DOM AT ALL — `resolve()`'s
+hot path is forbidden to touch the document, so a fake element whose pool
+rebuild would need a real one makes the mistake a `ReferenceError` rather than a
+performance opinion. It fails against the old code (measured: revert the gate and
+the test goes red, restore it and it is green).
+
+### 12.2 The label was torn down while the node was momentarily gone (fixed)
+
+*"Some of the hint got disappeared after showing up"* was `reposition()`: when
+`resolve()` returned null for an item, the label was `label.remove()`d and set to
+null. Between a node being replaced and the debounced re-hint landing — well
+under a second, but that is a long time to look at a screen — a perfectly good
+hint vanished from under its own key, and its key stopped meaning anything.
+
+It was also the one WRITE inside the measure phase of a two-phase function that
+exists precisely to keep reads and writes apart: every `label.remove()` forced a
+fresh layout for every label still waiting to be measured, which is how the
+freeze above got worse exactly when the page was churning.
+
+A label whose element cannot be found right now is now HELD: left at its last
+placed pixels — the pixels of a control that did not move, because its node was
+replaced rather than the layout changed — still drawn, still on screen, and still
+typeable (`shownKeys` includes held labels, and a held label's key can be
+activated through the one-shot re-collect of 12.1). The collision walk reserves
+the held boxes first, so a re-placed label cannot be drawn on top of one. The
+hold ends with the resync: if the control is really gone, `assign()` drops the
+item and its label together, which is the honest moment for it to disappear.
+
+### 12.3 A key that names nothing visible was swallowed in silence (fixed)
+
+`typeChar` filtered the batch by the typed prefix and, on an empty result,
+`return`ed — silently. `handleKey` had already claimed the key (it returns true
+for every character in the hint alphabet), so the keystroke was consumed, nothing
+happened anywhere, and nothing was said. Every further attempt looked identical,
+which is indistinguishable from a freeze: *"stuck and unresponsive, doesn't do
+anything"*.
+
+There are two causes and they now SAY WHICH: a hint whose label the placement
+pass could not put on screen (it scrolled out of view, or every one of its
+anchors collided with a badge already placed) exists and is one `]` away, so the
+message says *hidden*; a prefix that names no hint at all says *no hint for "…"*.
+The wording matters — the first version of this message said "off screen" for
+both, which is a false explanation for a control the user can see right there.
+
+`handleKey` also refuses to keep the keyboard when the layer has nothing usable:
+no batch, or no label placed at all, means `exit()` and a DECLINED key, which
+hands the keystroke back to the host where the leader, Escape and the scroll keys
+still work. A layer that stays up while answering nothing cannot survive that.
+
+### 12.4 What is NOT claimed here
+
+The placement pass can still withhold a label in a dense cluster, and that is
+deliberate (see §11): six anchors are tried per label, and a seventh staggered
+position is how a dense page becomes a staircase nobody can read. What changed is
+that the withheld hint is now announced truthfully and its key is not typeable,
+so the two states the user can be in — "there is no such hint" and "there is one
+and it is not on screen" — are told apart instead of both being silence.
+
+### 12.5 The tests that hold this together
+
+* `scripts/test/hints-resolve.test.ts` — the hot path never collects (fails if
+  the opt-in is removed).
+* `link hints: a re-rendering page stays hinted and stays responsive` (e2e) — the
+  main-thread half, and the one that had to be REBUILT before it could fail at all.
+  Its fixture used to remove and rebuild every card in one task, so re-resolution
+  always matched the replacements by destination and position and never took the
+  expensive branch: the case passed on a bundle that still collected the document
+  per hinted item per frame. The churn now washes the cards out and re-hydrates
+  them on a LATER task (180ms later, every 300ms, and back at 20 cards instead of
+  6), which is what a virtual list's placeholder, an ad overlay and a lazy route
+  all do, and the test measures a FIXED 2.5s window rather than waiting for N
+  beats (a starved timer still reaches N beats, just slower — waiting for them
+  absorbed the symptom). Calibrated on this fixture, gate present vs removed:
+  51 ticks / 61ms max gap vs 37–40 ticks / 336–358ms, against a floor of 45 and
+  a 300ms bound, so the two signals are measurements rather than opinions.
+* `link hints: a badge whose control is washed out stays on screen and keeps its
+  key` (e2e) — the reported symptom itself, made observable. The fixture detaches
+  every card and leaves it detached, and the test requires the badges to still be
+  there (via the diagnostic pull's `held` rows, below), the batch not to shrink,
+  the layer to stay up, and the batch to come back with the keys the user had
+  already read. Until the `held` rows existed this state was invisible to every
+  observer: the badges are in a closed shadow root, so the page cannot read them,
+  and the pull reported the same thing — nothing — whether the badge was drawn or
+  had been torn down.
+* `link hints: a YouTube-shaped thumbnail link is hinted and its key navigates` —
+  the §10 thumbnail, activated.
+* `link hints: clickable image and video thumbnails are hinted and click` — the
+  media exemption that makes an unlabelled picture hintable.
+* `link hints: a hint key that names nothing says so instead of going quiet` —
+  12.3, and the layer stays up (the key WAS a hint key, just not one with a
+  target).
+
+### 12.6 How a held badge became observable
+
+One source change was needed to test 12.2 at all, and it is worth separating from
+the fix because it is not a behavior change: the explicit diagnostic pull
+(`overlay.snapshot`) now reports a label whose control cannot be resolved as a row
+marked `held`, with the LABEL's own box. It used to `continue` past those labels,
+which meant the reported symptom — *"some of the hint got disappeared after
+showing up"* — could not be seen by anything: the badges live in a closed shadow
+root, so a page cannot read them, and the pull answered the same way (nothing)
+whether a held badge was on screen or had been torn down.
+
+It costs nothing in the running product: the pull exists only for diagnostics and
+the e2e harness, it is never called from the reposition sweep, and the live path
+still publishes nothing per frame (§7's rule). The flag is also what keeps the
+row honest — a placed row's `x`/`y` is the ELEMENT's own top-left, a held row has
+no element left and reports the label instead, and the two must not be confused by
+a reader or a test.
+
+---
+
+## 13. The fifth field report (2026-10-11): chained actions, Tab, and paging the wrong scroller
+
+The report named three sequences and one symptom, and the sequences are the
+evidence:
+
+> *"1- if i did ;d ;o ;s to open modal -> esc 2- right after did ;f to open hints
+> -> esc or typed one letter (which works) then esc to cancel 3- after canceling
+> did ;f again right away to open hints -> gets broken and unresponsive … also if
+> i activated hints and hit tabs after it scrolls the window and breaks the whole
+> software … in text input I have to type some keys multiple times to make them
+> print."*
+
+### 13.1 Paging moved the window, not the region the user was looking at (fixed)
+
+`]`, `[` and Tab are the statement "I am reading further down, hint THAT". They
+called `window.scrollBy` — the one scroll path in the product that ignores the
+scroll target (`content/scroll.ts`), which exists precisely so the keys follow
+the region the user is working in. Two ways that reads to a user:
+
+* **On a shell page** (the ChatGPT/mail/dashboard shape: document pinned, content
+  in an inner `overflow:auto` pane) the window cannot move, so paging did nothing
+  AT ALL — and then asked `window.scrollY` whether there was anything more, which
+  never moves on such a page, so the first Tab reported *"no more links"* over a
+  pane with pages of them left. The scroll keys had a test for this shape; the
+  hint layer had none.
+* **On a page where the window CAN move** it scrolled the shell behind the pane
+the user was reading — "it scrolls the window", verbatim.
+
+Paging now goes through the controller (`HintPager.pageBy`, implemented by
+`scroll.pageBy`), and the same call returns the target's offset either side of the
+move, so "is there anything more that way" is asked of the scroller that actually
+moved. `scrollPage` (`d`/`u`) is the same function with the step the scroll keys
+have always used, so there is one scroll implementation rather than two.
+
+**Falsified, not asserted:** `link hints: paging moves the pane the user is
+looking at, never the window` (e2e, on the `/innerpane` fixture the scroll suite
+already used) fails against the old code with `] scrolled the INNER PANE (pane 0
+-> null)` — paging did not move it at all — and passes with the change. The
+fixture's rows now carry `data-id`'d links for the same reason the scroll test
+needs the pane: without something clickable in it, "paging worked" and "paging did
+nothing" produce identical observations. `scripts/test/hints-resolve.test.ts`
+pins the wiring with NO DOM (the seam is injected), so a fallback to the window
+scroller fails on the missing global rather than on a stopwatch.
+
+### 13.2 The Tab test was measuring the harness, and said so (corrected)
+
+The first version of the Tab test asked the layer to ANNOUNCE a miss ("a key the
+batch cannot commit") and polled the toast for it. It went red, and it was wrong:
+the letters were drawn from the default hint alphabet, and the only alphabet
+letter the Tab'd batch left unused was `z` — which is not a hint character at all,
+so the layer correctly DECLINED the key and no toast was due. A test that fails
+for its own reason is worse than no test, so it was rebuilt around the stronger
+question, which is also the user's: **does a key of the batch Tab produced still
+ACT?** It now asserts that the layer is still up, that a named control in the new
+batch is activated by its key, that Tab did not move the page's focus (a Tab the
+layer fails to consume runs the browser's focus walk, and a page whose next
+focusable thing is inside a frame loses the keyboard for good — "breaks the whole
+software"), and that the leader still arms after the layer stands down.
+
+### 13.3 The same tail clause the content script had removed, still live in the chrome helper
+
+§8.3 fixed the content script's tail listener: it swallowed a `keypress`/`keyup`
+merely because an overlay flag was set, and Firefox inserts text on the keypress
+default action, so a stuck flag was *literally* "the letter does not print".
+`chrome/winlisteners.ts` had the identical clause (`popup.isOpen() &&
+!popup.containsTarget(target)`) and never got the fix.
+
+Popup ownership is STATE, not an event: any moment it was set — a teardown that
+had not run, the resize host (which deliberately does not take focus), a key the
+dispatcher consumed and then declined — turned the next `keypress` into a
+prevented one while `keydown` still passed through. The user's symptom is exactly
+that, and its shape is why it reads as a flake: *"in text input I have to type
+some keys multiple times to make them print."* The rule is now the same in both
+hosts, in the same words: the `KeyGuard` record — written from the keydown that
+was actually consumed, and cleared by its own tail — is the only reason a tail may
+be withheld, and every path that consumes a keydown already preventDefaults it.
+
+Pinned by `scripts/test/window-listeners.test.ts`, which drives the real listener
+set over the fake chrome window (`env-fake.ts` now records window listeners and
+delivers events, because `addEventListener` being a no-op is why this module had
+no coverage at all). RED/GREEN measured: restore the clause and two of the four
+cases fail (`the letter has to print`, `a stale popup flag swallows nothing at
+all`); remove it and all four pass. The other two pin the direction that must NOT
+regress — a consumed keydown's keypress and keyup are both swallowed, and a lost
+keyup cannot eat the next press of the same key.
+
+### 13.4 The repeated `;f` → Esc chain: no leak found, and now covered
+
+*";f -> esc ;f -> esc repeatedly breaks the hints or the whole software."* The
+session was read line by line for state that outlives an exit — `session`,
+`starting`, `items`, `pool`, `typed`, the tick, the motion watch, the DOM watchers,
+the shadow-root observers, the overlay host and its labels, the `held` boxes — and
+every one is either reset by `exit()` or rebuilt by `runStart()`; the chain itself
+(`link hints: ;f and Esc in a row, eight times, every session draws and reads
+keys`) now runs the user's sequence eight times and asserts, per cycle, that the
+layer DREW a batch and that one character of a multi-key hint NARROWED it (which
+cannot happen unless the key reached the session), with every intermediate state
+asserted rather than assumed. The run ends on a ninth session that activates a
+control — a drawn-but-deaf layer cannot do that.
+
+That test passes on the current tree, i.e. it is coverage rather than a fix, and
+it is stated as such. The chained sequence ALSO has the popup half of the report
+as its own case (§12 predecessor): `;d`, `;o`, `;s` in a row, each closed with
+Escape, then a cancelled hint session, then a second session that must still act.
+
+### 13.5 Four failing tests, one cause, and it was not the hints engine
+
+After the fifth pass, a full `content` run failed FOUR tests — the two hint cases
+from §13.4's neighbourhood plus both status-bar indicator cases — and the two
+hint failures were the kind that must never be believed on sight:
+`contentCall(hintSnapshot): no tab id for http://127.0.0.1:…/ — its URL matched 2
+row(s) of the tab strip`.
+
+`2 row(s)` is the whole diagnosis, and getting it printed took a change to the
+harness rather than to the product. A web-page tab has no extension realm, so
+`resolveHandle` cannot ask it for its own Firefox tab id and falls back to matching
+its `location.href` against the strip; the failure text used to say "zero or
+several", which is two opposite diagnoses in one sentence (the tab is gone / there
+are two of them) and cost an hour the first time it was read. It now reports the
+count AND the strip (`probe.ts`), and that is what identified the defect:
+
+```
+strip: 2:http://127.0.0.1:56433/ (selected) | 8:moz-extension://…/commandcenter.html | 10:http://127.0.0.1:56433/
+```
+
+Two tabs on the fixture root. The one the tests drive (`tabA`) and a leftover the
+`;x` / `;v` undo pair left behind: that test navigated the tab it was about to
+close to `${base}/` — the URL every other content test also uses — and `;v`
+reopened it there. The leak sweep could not clean it up, and correctly so: its
+fail-safe rule never closes a tab whose URL equals the handle's while the handle
+cannot be pinned to an id, because that tab might BE the handle (a test that
+re-points `tabA` at a tab it just opened is moving its handle, not leaking). With
+two tabs the harness could not tell apart:
+
+* `hintSnapshot` refused to answer at all ("I could not ask" must never look like
+  "the page said no hints"), so both hint cases failed;
+* the status bar follows the SELECTED tab, which was the leftover, so the two
+  indicator cases read a bar belonging to a tab that had received no keys —
+  `statusAttr: "default|0|13/13||NORMAL|bottom|"`, `tabAActive: "unknown"`.
+
+THE FIX IS THE URL, not a smarter disambiguation: the undo pair now closes and
+reopens a tab on a page of its own (`/reopen`, added in `scripts/e2e/pages.ts`
+with this note), so the reopened tab can never collide with the page the rest of
+the suite navigates `tabA` to. The test also asserts what it always meant: exactly
+one tab is on that page after the reopen — the count was back to `before` either
+way, so `;v` could have reopened "a tab" and the count would have agreed with it.
+
+This is a HARNESS defect, not a product one, and it is worth saying plainly
+because the four failures read like product failures: nothing in the hints engine
+or the status bar was wrong in that run. What the product could not survive was a
+window with two identical pages in it — which is also the user-visible shape of
+"the software became unstable": the harness's problem became four red tests, the
+user's is an overlay that answers about the wrong tab.
+
+### 13.6 The typing half of the report, as its own case
+
+*"The brokenness happens not only while changing the actions… in text input I have
+to type some keys multiple times to make them print."* §13.3 fixed the mechanism
+for that in both hosts (a tail swallowed because an overlay FLAG was set rather
+than because the key was consumed), and that fix has unit coverage. What it did not
+have is the user's sequence: `content/field › a chain of overlays leaves the next
+sentence typed into a field intact` runs a popup (`;d`, Esc) followed by two hint
+sessions cancelled with Esc — the second with the Esc landing while the batch is
+still being built — and then types a sentence containing every key the overlays
+compete for (`d u j k g G ; / ' f`) into a field, twice, asserting the field holds
+EXACTLY that sentence both times.
+
+A dropped character is the hardest failure this product can have, because nothing
+records it: the keydown reaches the page, the keypress is prevented somewhere
+upstream, the caret does not move, and the user's only evidence is the text on
+screen. So the assertion is the user's evidence, character for character — a
+missing key and a duplicated key are both a failure, and neither can be excused as
+"roughly typed".
+
+### 13.7 What is NOT claimed here
+
+* The 13.4 test is not evidence that the chain never broke; it is evidence that
+  it does not break in eight cycles on a fixture page, with each cycle's two
+  states asserted. A page that is re-rendering under the layer is a different
+  fixture (`/ytcard`, `/busy`) and those tests are unchanged.
+* Escape is still deliberately NOT consumed on a web page (§9.1), so its first
+  press can be answered by the page and by Lazyfox at once. Nothing here changes
+  that trade.
+* §13.1 changed WHERE paging scrolls, not how far (`PAGE_FACTOR` is unchanged at
+  0.8 viewports) and not the keymap. It follows the controller's existing target
+  rule, which includes "the scrollable region under the pointer", so hovering a
+  sidebar and pressing Tab pages the sidebar — exactly as `j`/`d` already do. That
+  consistency is the point (one answer to "which region do the keys move"), and it
+  is stated here because it is a consequence a user can notice.

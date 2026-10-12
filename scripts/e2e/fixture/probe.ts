@@ -81,8 +81,10 @@ export function installProbe(
   // (`ok: false`) is reported as the error it is.
   ctx.contentCall = async function contentCall(tab, action, data: any = {}) {
     const peek = async () => {
-      const h = await ctx.resolveHandle(tab).catch(() => ({ id: null, url: null }));
-      return h as { id: number | null; url: string | null };
+      const h = await ctx
+        .resolveHandle(tab)
+        .catch(() => ({ id: null, url: null, rows: [], matches: 0 }));
+      return h as { id: number | null; url: string | null; rows: string[]; matches: number };
     };
     let handle = await peek();
     if (handle.id == null) {
@@ -94,9 +96,15 @@ export function installProbe(
     }
     const where = handle.url || (tab && tab.id) || String(tab);
     if (handle.id == null) {
+      // ONE LINE, deliberately: the runner prints only the first line of an
+      // error message, so a pretty multi-line listing arrives as "zero or
+      // several" and nothing else — which is the state this listing exists to
+      // end.
+      const strip = (handle.rows || []).join(" | ");
       throw new Error(
         `contentCall(${action}): no tab id for ${where} — no extension realm, and its URL ` +
-          `matched ${handle.url ? "zero or several" : "no"} rows of the tab strip`,
+          `matched ${handle.url ? handle.matches : 0} row(s) of the tab strip` +
+          (strip ? ` — strip: ${strip}` : ""),
       );
     }
     const reply = await evalIn(

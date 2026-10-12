@@ -67,15 +67,28 @@ export function installWinListeners(deps: WinListenersDeps): void {
 
   // keypress/keyup do NOT obey the keydown's preventDefault, so a key the
   // helper consumed would still surface as a browser shortcut behind the
-  // overlay. Swallow the tail of every consumed key, and anything aimed
-  // outside an open popup while it owns the keyboard.
+  // overlay. Swallow the tail of every CONSUMED key — and only that.
+  //
+  // There used to be a second clause here: swallow anything aimed outside an
+  // open popup while it owns the keyboard. It was removed for the same reason
+  // and in the same words as the identical clause in the content script's
+  // listener (see content/contentdom.ts): the popup's ownership is STATE, not
+  // an event, so any moment it was set — a popup whose teardown had not run, a
+  // resize host, a dispatcher that consumed the keydown and then declined the
+  // keystroke — turned every following `keypress` into a prevented one while
+  // `keydown` still passed through. Firefox inserts text on the keypress
+  // default action, so the visible result was "the letter does not print",
+  // selectively, with no error anywhere, and pressing the key again was the
+  // only way to make it appear. Text a user is typing must never be gated on
+  // an overlay's bookkeeping: the KeyGuard record, which is written from the
+  // keydown that was actually consumed, is the only honest reason to swallow a
+  // tail, and every path that consumes a keydown already preventDefaults it.
   function onKeyTail(e: KeyboardEvent): void {
     // Always reconcile the guard (never short-circuit): a key we consumed once
     // must have its record cleared by the tail that follows, or a later,
     // legitimate press of the same key while typing would be swallowed too.
-    const escapePopup = deps.popup.isOpen() && !deps.popup.containsTarget(e.target);
     const tail = deps.keyGuard.ownsTail(e);
-    if (escapePopup || tail) {
+    if (tail) {
       e.preventDefault();
       e.stopImmediatePropagation();
     }
