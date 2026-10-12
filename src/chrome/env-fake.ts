@@ -46,6 +46,46 @@ export interface FakeChromeEnv extends ChromeEnv {
   runTimers(): void;
   /** Add an element to the document under `id`. */
   mount(id: string, el: any): any;
+  /**
+   * Deliver an event to the window's own listeners, in the order they were
+   * registered — the chrome window's capture phase, as far as a Node test can
+   * have one.
+   *
+   * The window listeners are the one place the helper's rules about KEYS live
+   * (a consumed keydown's keypress/keyup tail), and until this existed that
+   * module could not be exercised at all outside Firefox: `addEventListener`
+   * was a no-op, so a test could construct the listeners and assert nothing
+   * about them. `type` picks the listeners for one event name; `ev` is the
+   * event object, and `type` is stamped on it so a listener can read it.
+   *
+   * Returns the event, so a test can assert on what a listener did to it
+   * (`defaultPrevented`, `stopped`) — which is the whole question here.
+   */
+  dispatchWindow(type: string, ev?: any): any;
+}
+
+/**
+ * The observable event shape the fake dispatches. Enough for the key rules:
+ * `preventDefault` / `stopImmediatePropagation` flip flags a test reads back,
+ * and `defaultPrevented` is what the listener itself consults.
+ */
+function mkEvent(type: string, over: any = {}): any {
+  const ev: any = {
+    type,
+    defaultPrevented: false,
+    stopped: false,
+    preventDefault() {
+      ev.defaultPrevented = true;
+    },
+    stopPropagation() {
+      ev.stopped = true;
+    },
+    stopImmediatePropagation() {
+      ev.stopped = true;
+    },
+    ...over,
+  };
+  return ev;
 }
 
 interface FakeEl {
@@ -248,13 +288,20 @@ export function createFakeChromeEnv(
 
   const win: any = {
     document,
+    /** Window listeners, in registration order, per event name. */
+    listeners: [] as Array<{ type: string; fn: (e: any) => void; capture?: boolean }>,
     focus() {
       (win as any)._focused = true;
     },
     moveBy() {},
     resizeBy() {},
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type: string, fn: (e: any) => void, opts?: any) {
+      win.listeners.push({ type, fn, capture: !!(opts && opts.capture) });
+    },
+    removeEventListener(type: string, fn: (e: any) => void) {
+      const i = win.listeners.findIndex((l: any) => l.type === type && l.fn === fn);
+      if (i !== -1) win.listeners.splice(i, 1);
+    },
     getComputedStyle: (el: any) => ({ display: el && el.attrs && el.attrs.hidden ? "none" : "block" }),
   };
   win.gBrowser = {
@@ -362,6 +409,22 @@ export function createFakeChromeEnv(
         const batch = timers.splice(0, timers.length);
         for (const fn of batch) fn();
       }
+    },
+    dispatchWindow(type: string, ev?: any) {
+      // The event is the caller's fields OVER the observable defaults, so a
+      // test can pass `{ key, code, target }` and still read
+      // `defaultPrevented` back off it — which is the only thing these
+      // listeners are judged by.
+      const e = mkEvent(type, ev || {});
+      // `stopImmediatePropagation` stops the REST of the listeners — which is
+      // exactly the rule the tail listener relies on, so the fake honours it
+      // rather than running every listener regardless.
+      for (const l of win.listeners.slice()) {
+        if (l.type !== type) continue;
+        l.fn(e);
+        if (e.stopped) break;
+      }
+      return e;
     },
     mount(id: string, el: any) {
       const node = el || mkEl("div");

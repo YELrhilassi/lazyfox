@@ -405,4 +405,66 @@ export async function run(ctx: any): Promise<void> {
     await ctx.press(ctx.tabA, "Escape");
     await ctx.waitLeaderGone();
   });
+
+  await t("a chain of overlays leaves the next sentence typed into a field intact", async () => {
+    // THE REPORT: "in text input I have to type some keys multiple times to make
+    // them print", noticed after a run of overlays — a popup, then hint sessions
+    // opened and cancelled in a row.
+    //
+    // A missed character is the hardest failure this product can have, because
+    // nothing records it: the keydown reaches the page, the keypress is prevented
+    // somewhere upstream, and the caret simply does not move. The user's only
+    // evidence is the text on screen, and their only workaround is pressing the
+    // key again — which is exactly what was reported. So the assertion has to be
+    // the user's evidence: the field's value is EXACTLY the sentence typed,
+    // every character once, in order. And the chain has to run BEFORE the typing
+    // rather than beside it, because the whole claim is that a previous overlay
+    // left something behind.
+    const sentence = "dusk judge 4; g/G 'f' skip";
+    const hintsGone = async () =>
+      waitFor(async () => ((await hintsFlag()) !== "1" ? true : null), 5000).catch(() => null);
+    const chain = async () => {
+      // 1. A popup with an input of its own, dismissed with Esc.
+      await ctx.leaderPress(ctx.tabA, "d");
+      await ctx.waitPopup(ctx.tabA, 8000);
+      await ctx.press(ctx.tabA, "Escape");
+      await ctx.waitPopupGone(ctx.tabA, 8000);
+      // 2. Hints opened and cancelled with Esc — once after the layer is up, and
+      //    once with the Esc landing while the batch is still being built
+      //    (`hints.starting`), which is the window the report is about and the
+      //    one that used to leave a layer nothing could dismiss.
+      await ctx.leaderPress(ctx.tabA, "f");
+      await hintsOn();
+      await ctx.press(ctx.tabA, "Escape");
+      await hintsGone();
+      await ctx.leaderPress(ctx.tabA, "f");
+      await ctx.press(ctx.tabA, "Escape");
+      await hintsGone();
+    };
+    const typeSentence = async (): Promise<string> => {
+      // Focus the field the way a user does, then type. Esc above blurs a field,
+      // so the caret is placed again before every attempt — the test is about the
+      // keys that arrive, not about focus surviving an overlay.
+      await evalIn(ctx.tabA, `document.activeElement && document.activeElement.blur(); true`);
+      await focusField();
+      await evalIn(ctx.tabA, `document.getElementById("field").value = ""; true`);
+      await ctx.typeIn(ctx.tabA, sentence);
+      return String(await evalIn(ctx.tabA, `document.getElementById("field").value`));
+    };
+
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/field`);
+    await settled();
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await chain();
+      const got = await typeSentence();
+      assert(
+        got === sentence,
+        `after an overlay chain the field must hold exactly what was typed ` +
+          `(attempt ${attempt}; typed ${JSON.stringify(sentence)}, got ${JSON.stringify(got)})`
+      );
+    }
+
+    await evalIn(ctx.tabA, `document.activeElement && document.activeElement.blur(); true`);
+  });
 }

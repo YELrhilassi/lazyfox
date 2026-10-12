@@ -20,6 +20,7 @@
     "build:installers": "node scripts/build-dev-installers.ts",
     "build:release-installers": "node scripts/build-release-installers.ts",
     "wk:preview": "node --experimental-strip-types --import ./scripts/test/_loader.mjs scripts/wk-preview.ts",
+    "hints:preview": "node --experimental-strip-types --import ./scripts/test/_loader.mjs scripts/hints-preview.ts",
     "ui:build": "npm --prefix installer/frontend run build",
     "ui:dev": "npm --prefix installer/frontend run dev",
     "build:release": "RELEASE=1 node build.ts",

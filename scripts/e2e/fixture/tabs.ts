@@ -358,20 +358,32 @@ export function installTabs(
    * for any page) and matches it against the strip the probe reports. A URL
    * that matches exactly one row is an answer; zero or several is not, and
    * "not" is reported as null rather than guessed at.
+   *
+   * `rows` is the strip itself, and it is carried back ONLY when the answer is
+   * "not" — because that answer is the one a reader cannot act on. "zero or
+   * several rows" cost an hour the first time it was seen: the two cases are
+   * opposites (the tab is gone / the tab is one of two) and they looked
+   * identical. With the rows attached, the failure text says which one it was.
    */
   ctx.resolveHandle = async function resolveHandle(
     tab,
-  ): Promise<{ id: number | null; url: string | null }> {
-    if (!tab) return { id: null, url: null };
+  ): Promise<{ id: number | null; url: string | null; rows: string[]; matches: number }> {
+    if (!tab) return { id: null, url: null, rows: [], matches: 0 };
     // The URL is readable for ANY page, so read it first: it is both the
     // fallback key and the guard the sweep uses when no id could be resolved.
     const url = await evalIn(tab, "location.href").catch(() => null);
     const direct = await ctx.tabIdOf(tab).catch(() => null);
-    if (direct != null) return { id: direct, url: url || null };
-    if (!url) return { id: null, url: null };
+    if (direct != null) return { id: direct, url: url || null, rows: [], matches: 1 };
+    if (!url) return { id: null, url: null, rows: [], matches: 0 };
     const ts = (await ctx.tabsInfo().catch(() => [])) as any[];
     const hits = (ts || []).filter((t) => (t.url || "") === url);
-    return { id: hits.length === 1 ? hits[0].id : null, url };
+    if (hits.length === 1) return { id: hits[0].id, url, rows: [], matches: 1 };
+    return {
+      id: null,
+      url,
+      matches: hits.length,
+      rows: (ts || []).map((t: any) => `${t.id}:${t.url || ""}${t.active ? " (selected)" : ""}`),
+    };
   };
 
   /**

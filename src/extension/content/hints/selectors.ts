@@ -6,6 +6,8 @@
 // scattered through a 1700-line file, which made the engine's actual policy
 // impossible to read off.
 
+import { HINT_LABEL } from "../../../shared/hintlabel";
+
 export interface HintLabel extends HTMLSpanElement {
   _x?: number;
   _y?: number;
@@ -30,26 +32,79 @@ export interface HintItem {
   target: string;
 }
 
+// THE LABEL. Flat, and that is the whole design: no border, no outline ring, no
+// drop shadow, a 2px radius, and legibility bought with CONTRAST instead of
+// chrome. A badge that outlines itself reads as an object sitting on the page —
+// and on a dense batch (a card grid, a comment thread) forty outlined pills is
+// what made the overlay look like debris rather than keys. The previous style had
+// a 1px dark ring plus a shadow per label, which also meant the label's edge was
+// the busiest thing on screen over a video.
+//
+// Contrast is a solid teal fill with near-black text, which is the one pairing
+// that works on both grounds the labels actually live on: legible on a dark page,
+// legible on white, and it cannot be defeated by whatever the page happens to be
+// rendering underneath (a translucent chip can, which is why that direction was
+// dropped).
+//
+// The metrics are chosen to FIT the characters: 13px/700 in the monospace stack,
+// 3px 6px of padding, and a little letter-spacing, because a hint key is one or
+// two characters and monospace sets them tight enough that "aa" otherwise reads
+// as a single glyph cluster. The font stack leads with ui-monospace (the
+// platform's own monospace) and keeps the classic fallbacks, so the digits are
+// unambiguous everywhere.
+//
+// Monospace is not decoration here: every key cap in the product uses it (see
+// shared/theme.ts), and a proportional font would make two labels of different
+// keys different WIDTHS, which the collision sweep would then place differently.
+//
+// NOTE ON MEASUREMENT: overlay.reposition measures these boxes with
+// offsetWidth/offsetHeight and caches the size per text change, so anything added
+// here is measured rather than assumed — except the enter badge's size, which is
+// a CONSTANT there (ENTER_W/ENTER_H) so that placing it costs no layout read. If
+// the badge's box changes below, those two numbers change with it.
+// The numbers themselves live in shared/hintlabel.ts, because the chrome helper
+// draws the same label on pages where no content script runs and the two drifted
+// apart once already (see that module's header).
+
 export const HINT_CSS =
-  ".hint{position:fixed;z-index:2147483646;background:#2ac3de;color:#16161e;" +
-  "font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;padding:2px 5px;border-radius:4px;" +
-  "pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4),0 0 0 1px rgba(22,22,30,.55)}" +
-  // The enter-affordance badge. It is sized off the SAME 12px/1 metric as .hint
-  // so a glance can compare it to a letter rather than having to judge two
-  // unrelated sizes: the point is to read as "a key you press", not as chrome.
+  ".hint{position:fixed;z-index:2147483646;background:" + HINT_LABEL.fill + ";color:" + HINT_LABEL.text + ";" +
+  "font:" + HINT_LABEL.font + ";padding:" + HINT_LABEL.padding + ";border-radius:" + HINT_LABEL.radius + ";" +
+  "letter-spacing:" + HINT_LABEL.letterSpacing + ";text-align:center;pointer-events:none}" +
+  // The enter-affordance badge. It is sized off the SAME metric as .hint so a
+  // glance can compare it to a letter rather than having to judge two unrelated
+  // sizes: the point is to read as "a key you press", not as chrome.
+  //
+  // It is a FIXED box (HINT_LABEL.enterW/enterH) around a solid vector icon,
+  // centred by `inset:0;margin:auto` instead of by line-height and text-align:
+  // those only centre a TEXT glyph, and the badge no longer has one (see
+  // HINT_LABEL.enterIcon). Centring a fixed-size icon cannot drift when the
+  // platform's font does — the previous version padded the glyph with a trailing
+  // space to keep it off the label, which centred nothing and made the badge
+  // wider than it looked.
   //
   // Its POSITION IS NOT SET HERE. It used to be `left:8px; bottom:8px` — a fixed
   // corner of the window — which meant the glyph answering "how do I take this
   // row?" was drawn as far from the row as the viewport allows. overlay.placeEnter
   // now puts it beside the row Enter would commit, and these defaults only exist
   // so it is never painted at an unset position for a frame.
-  ".hint-enter{position:fixed;left:0;top:0;display:none;z-index:2147483647;background:#2ac3de;color:#16161e;" +
-  "font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;padding:2px 5px;border-radius:4px;" +
-  "pointer-events:none;white-space:pre;box-shadow:0 2px 6px rgba(0,0,0,.4),0 0 0 1px rgba(22,22,30,.55)}" +
+  ".hint-enter{position:fixed;left:0;top:0;display:none;z-index:2147483647;background:" + HINT_LABEL.enterFill + ";" +
+  "width:" + HINT_LABEL.enterW + "px;height:" + HINT_LABEL.enterH + "px;" +
+  "box-sizing:border-box;padding:0;border-radius:" + HINT_LABEL.radius + ";" +
+  "pointer-events:none}" +
+  // The icon itself, styled by the SAME sheet as the box it sits in: a fill and
+  // a size written here (rather than inline on the node) is the difference
+  // between a look that lives in one place and one that is half in the overlay.
+  ".hint-enter svg{position:absolute;inset:0;margin:auto;display:block;pointer-events:none;" +
+  "width:" + HINT_LABEL.enterIconSize + "px;height:" + HINT_LABEL.enterIconSize + "px;" +
+  "fill:" + HINT_LABEL.text + "}" +
   // The row whose key the user has already typed in full, while a longer key
   // still shares that prefix. It keeps its whole key (never an empty box) and is
-  // outlined so the ⏎ beside it reads as "this one, press Enter".
-  ".hint.hint-wait{background:#7aa2f7;box-shadow:0 0 0 2px #c0caf5,0 2px 6px rgba(0,0,0,.45)}" +
+  // outlined so the enter badge beside it reads as "this one, press Enter".
+  // ...and the WAITING state is the same box in the product's blue. The ring is
+  // gone with the rest of the chrome, so the state is carried by the FILL alone:
+  // the label is still the whole key (never an empty box), and the enter badge
+  // beside it is what says what to press.
+  ".hint.hint-wait{background:" + HINT_LABEL.wait + ";color:" + HINT_LABEL.text + "}" +
   // Off-screen hint labels are hidden, not moved; see the note in overlay.ts.
   ".hint[style*='display:none'],.hint-off{display:none}";
 

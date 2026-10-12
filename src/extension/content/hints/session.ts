@@ -28,7 +28,7 @@ import {
 import { createHintOverlay } from "./overlay";
 import { createActivator } from "./activate";
 import { targetKey } from "./select";
-import { createHintResolve } from "./hintresolve";
+import { createHintResolve, type HintPager } from "./hintresolve";
 // NOTE: collection is reached through `resolve.refreshPool()` rather than by
 // calling `collectHintables` here, so the pool and the visibility pass it is
 // selected with are always built together.
@@ -66,10 +66,20 @@ export interface LinkHints {
   enterBadge(): { shown: boolean; glyph: string };
   // Explicitly requested geometry for e2e/diagnostics. The live animation sweep
   // never serializes or publishes this data.
-  snapshot(): { positions: Array<{ key: string; x: number; y: number }>; boxes: Array<{ key: string; l: number; t: number; r: number; b: number }> };
+  // `held` rows are labels whose control is momentarily gone (a wash-out, a
+  // re-render) and which are still drawn — see overlay.snapshot.
+  snapshot(): {
+    positions: Array<{ key: string; x: number; y: number; held?: boolean }>;
+    boxes: Array<{ key: string; l: number; t: number; r: number; b: number; held?: boolean }>;
+  };
 }
 
-export function createLinkHints(getHintChars: () => string): LinkHints {
+export function createLinkHints(
+  getHintChars: () => string,
+  // The page's scroll controller, when the host has one (see HintPager). Absent
+  // in the unit tests, where paging falls back to the window scroller.
+  getScroll?: () => HintPager | null
+): LinkHints {
   let active = false;
   let pool: Element[] = []; // every hintable element, in document order
   // Which live element does this label belong to, NOW? Split into
@@ -83,6 +93,7 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
     pool: () => pool,
     setPool: (next) => { pool = next; },
     maxHints: MAX_HINTS,
+    scroll: getScroll,
   });
   let items: HintItem[] = []; // currently hinted items (viewport subset)
   // A prefix-free key sequence generated once per hint session. Keys are drawn
@@ -604,16 +615,22 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
 
   // Scroll to the next / previous batch of links and re-hint it. Keeps paging
   // (bounded) when the direction lands on a link-free section.
+  //
+  // "Did it move" is asked of the REGION THE KEYS MOVE (resolve.pageScroll),
+  // not of `window.scrollY`: on a shell page whose content lives in an inner
+  // pane the window never moves, so the old check declared the bottom of the
+  // page on the first press of `]` and reported "no more links" over a
+  // document with pages of them left — and the scroll it had just performed
+  // went to the wrong scroller.
   function page(dir: number): void {
     for (let i = 0; i < PAGE_GUARD; i++) {
-      const before = window.scrollY;
-      resolve.pageScroll(dir);
+      const step = resolve.pageScroll(dir);
       const vis = resolve.viewportItems();
       if (vis.length) {
         void assign(vis);
         return;
       }
-      if (window.scrollY === before) break; // at the top/bottom of the page
+      if (step.after === step.before) break; // at the top/bottom of the region
     }
     toast("no more links");
   }
@@ -666,7 +683,38 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   async function typeChar(c: string): Promise<void> {
     const nt = typed + c;
     const matches = items.filter((i) => i.key.indexOf(nt) === 0 && overlay.shownKeys().has(i.key));
-    if (!matches.length) return; // no candidate for this prefix — ignore
+    if (!matches.length) {
+      // A KEY THAT NAMES NOTHING VISIBLE IS ANNOUNCED, NOT SWALLOWED.
+      //
+      // This returned in silence, and `handleKey` had already decided the key
+      // was ours (it returns true for every character in the hint alphabet), so
+      // the keystroke was consumed with nothing happening anywhere and nothing
+      // said. Every further attempt looked exactly the same, which is the
+      // reported "the hints got stuck and unresponsive, they don't do anything":
+      // the layer was up, the keys went into it, and it answered none of them.
+      // A nameable miss is learnable; a silent one is indistinguishable from a
+      // freeze. (Same rule the leader's own miss report follows.)
+      //
+      // The two causes are also worth telling apart, because the response
+      // differs: a hint whose LABEL the placement pass could not put on screen
+      // exists and is one ] away; a prefix that names no hint at all is just a
+      // key that is not a hint key.
+      //
+      // The wording says HIDDEN and not "off screen", because the placement pass
+      // has two reasons to withhold a label — the element scrolled out of the
+      // viewport, or every one of its anchor positions collided with a badge
+      // already placed (a dense nav row or comment actions row) — and the second
+      // is exactly the report "some of the hints disappeared after showing up".
+      // Claiming "off screen" for a control the user can see, right there, was
+      // the kind of wrong explanation that makes the next report harder.
+      const hidden = items.find((i) => i.key.indexOf(nt) === 0);
+      toast(
+        hidden
+          ? "that hint is hidden \u2014 ] for the next batch"
+          : "no hint for \u201c" + nt + "\u201d"
+      );
+      return;
+    }
     const exact = matches.find((i) => i.key === nt);
     const isPrefixOfMore = matches.some(
       (i) => i.key !== nt && i.key.indexOf(nt) === 0
@@ -746,7 +794,11 @@ export function createLinkHints(getHintChars: () => string): LinkHints {
   // the page reacted (see docs/HINTS.md for why that report exists).
   function activate(it: HintItem): void {
     exit();
-    const el = resolve.resolve(it) || it.el;
+    // THE ONE PLACE A RE-COLLECT IS ALLOWED (see hintresolve.resolve): a
+    // keypress is a one-shot, so paying for a document-wide collection once —
+    // to find the node the framework replaced under this badge — is worth it,
+    // where doing it from the per-frame sweeps is what froze the page.
+    const el = resolve.resolve(it, { refresh: true }) || it.el;
     if (!el || !el.isConnected) return;
     const t = el.tagName;
     if (t === "INPUT" || t === "TEXTAREA" || t === "SELECT") {

@@ -162,4 +162,50 @@ withRoot((root) => {
   ok("fresh profile got Default=1", /Name=lfxdev-FIRSTRUN[\s\S]*?Default=1/.test(ini), ini);
 });
 
+// Test 6: the MODERN layout (Windows and macOS) — profile directories live
+// under a `Profiles/` subdirectory of the Firefox root, with profiles.ini beside
+// it. cleanDevProfiles used to scan the root only, so on those platforms it
+// reported "(none found)" on a machine full of dev profiles, and the
+// install-hash check could not see a profile name either (so a stable profile's
+// pin was dropped on every clean).
+withRoot((root) => {
+  const profiles = join(root, "Profiles");
+  mkdirSync(profiles, { recursive: true });
+  writeProfile(profiles, "a1b2c3d4.lfxdev-123", "/opt/firefox-dev/browser", { xpi: true });
+  writeProfile(profiles, "bmkyop7f.default-default", "/usr/lib/firefox/browser", { xpi: true });
+  writeFileSync(
+    join(root, "profiles.ini"),
+    [
+      "[General]",
+      "Version=2",
+      "",
+      "[Profile0]",
+      "Name=default-default",
+      "IsRelative=1",
+      "Path=bmkyop7f.default-default",
+      "",
+      "[Profile1]",
+      "Name=lfxdev-123",
+      "IsRelative=1",
+      "Path=a1b2c3d4.lfxdev-123",
+      "",
+      "[Install4F96D1932A9F858E]",
+      "Default=bmkyop7f.default-default",
+      "Locked=1",
+      "",
+    ].join("\n")
+  );
+
+  const removed = cleanDevProfiles(root);
+  ok("modern layout: dev profile removed", removed === 1, `removed=${removed}`);
+  ok("modern layout: dev dir gone", !existsSync(join(profiles, "a1b2c3d4.lfxdev-123")));
+  ok(
+    "modern layout: stable profile keeps its xpi",
+    existsSync(join(profiles, "bmkyop7f.default-default/extensions/lazyfox@lazyfox.dev.xpi"))
+  );
+  const ini = readFileSync(join(root, "profiles.ini"), "utf8");
+  ok("modern layout: dev [ProfileN] entry dropped", !ini.includes("a1b2c3d4.lfxdev-123"), ini);
+  ok("modern layout: stable install pin kept", ini.includes("Default=bmkyop7f.default-default"), ini);
+});
+
 console.log(`\n${passed} dev-helpers checks passed`);
