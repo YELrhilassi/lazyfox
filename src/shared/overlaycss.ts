@@ -113,9 +113,14 @@ export const PANEL_CSS = `
 .dl-fill{height:100%;background:#7aa2f7;border-radius:2px;}
 .dl-fill.done{background:#9ece6a;}
 .dl-fill.fail{background:#f7768e;}
-.hint{position:fixed;z-index:2147483646;background:#2ac3de;color:#16161e;font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;
-  padding:2px 5px;border-radius:4px;pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4);}
 `;
+// A `.hint` rule used to live in this sheet. It was DEAD — nothing that draws a
+// hint label reads PANEL_CSS; the content script builds its labels into a closed
+// shadow root with its own stylesheet (content/hints/selectors.ts), and the
+// chrome helper writes inline styles (chrome/pagehints.ts). What it did do was
+// keep a third version of the label's look in the tree, differing from both, so
+// a reader looking for "how are hints styled" found three answers. The look now
+// lives in one place, shared/hintlabel.ts.
 
 // The one-line toast style (overlay.ts keeps the toast behavior).
 export const TOAST_CSS = `

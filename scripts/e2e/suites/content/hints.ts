@@ -135,6 +135,16 @@ export async function run(ctx: any): Promise<void> {
     });
   };
   const readBoxes = async () => (await hintSnapshot()).boxes || [];
+  // The RAW snapshot rows, before they are mapped back to page elements.
+  //
+  // readHints() answers "which element got which key", which is the question most
+  // of these tests ask. It cannot answer the other one — "is a badge still ON
+  // SCREEN right now" — because a HELD badge (its control's node was washed out
+  // or re-rendered; see overlay.snapshot) has no page element to map to, and the
+  // labels themselves live in a closed shadow root the page cannot read. The rows
+  // carry `held` for exactly that case, so a test can see the symptom the user
+  // reported instead of inferring it.
+  const readHintRows = async () => (await hintSnapshot()).positions || [];
   // Ask the CONTENT SCRIPT for its page report through the extension realm of
   // the probe tab. This is the diagnostics page's own data source, so these
   // tests read exactly what a user would read — including the last activation.
@@ -174,16 +184,45 @@ export async function run(ctx: any): Promise<void> {
     if (still === "1") await ctx.press(ctx.tabA, "Enter");
     if (after) await after();
   };
-  await t("link hints: hidden, inert and occluded elements are never hinted", async () => {
+  // A VISIBLE aria-hidden element IS a target. This test used to assert the
+  // opposite ("hidden-aria-link" was in the must-not list), and that policy is
+  // what made YouTube's video thumbnails unhintable: `aria-hidden` keeps a node
+  // out of the ACCESSIBILITY tree, and pages use it on duplicated affordances —
+  // the thumbnail link is aria-hidden because the TITLE link beside it is the
+  // accessible one, while the thumbnail is the largest thing on the card. The
+  // two attributes that really mean "nobody can use this" are `hidden` (out of
+  // layout) and `inert` (not clickable, not focusable), and those stay pinned
+  // here, together with the CSS and occlusion cases.
+  await t("link hints: a visible aria-hidden link is hinted; hidden, inert and occluded ones are not", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
     await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
     await scrollDone(0);
     await beginHints();
     const ids = (await readHints()).map((x) => x.id || x.dataId);
-    const must = ["visible-link", "nested-btn", "act-btn", "scroll-input", "nearby-link", "body-visible"];
+    const must = ["visible-link", "nested-btn", "act-btn", "scroll-input", "nearby-link", "body-visible", "thumbnail-link"];
     for (const id of must) assert(ids.indexOf(id) !== -1, "expected a hint for " + id + " (got: " + ids.join(",") + ")");
-    const mustNot = ["hidden-opacity-link", "hidden-vis-link", "hidden-aria-link", "hidden-shadow-inner", "pe-none-btn", "covered-link"];
+    const mustNot = ["hidden-opacity-link", "hidden-vis-link", "inert-link", "hidden-link", "hidden-shadow-inner", "pe-none-btn", "covered-link"];
     for (const id of mustNot) assert(ids.indexOf(id) === -1, "a non-actionable element was hinted: " + id);
+    await ctx.press(ctx.tabA, "Escape");
+  });
+  // The other half of the report: the hint has to ACT. On the real page the
+  // thumbnail IS the link to the video, so its key must navigate — a label that
+  // appears and then does nothing would be a different bug with the same
+  // symptom, and the whole point of the fix is that this target was reachable by
+  // key. The title link beside it (same destination, no overlap) keeps its own
+  // hint: that is the shape YouTube actually has.
+  await t("link hints: a thumbnail link's key navigates like any other link", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await scrollDone(0);
+    await beginHints();
+    const ids = (await readHints()).map((x) => x.id || x.dataId);
+    assert(
+      ids.indexOf("thumbnail-link") !== -1 && ids.indexOf("thumb-title") !== -1,
+      "the thumbnail and the title link are both targets (got: " + ids.join(", ") + ")"
+    );
+    await activateHint("thumbnail-link");
+    await ctx.waitExpr(ctx.tabA, `location.hash`, "#thumb", 8000);
     await ctx.press(ctx.tabA, "Escape");
   });
   // The video-player shape: a big clickable media container with a small named
@@ -721,13 +760,423 @@ export async function run(ctx: any): Promise<void> {
     const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
     assert(on !== "1", "hints must not be armed on a page it could not hint");
   });
-  await t("link hints: aria-hidden ancestors hide controls inside closed shadow roots", async () => {
+  // THE CHAINED-ACTION REPORT, VERBATIM.
+  //
+  // "1- if i did ;d ;o ;s to open modal -> esc  2- right after did ;f to open
+  // hints -> esc or typed one letter (which works) then esc to cancel  3- after
+  // canceling did ;f again right away to open hints -> gets broken and
+  // unresponsive". The sequence matters: popup, cancelled session, SECOND session
+  // immediately — and the second one is the one that dies. Each step is driven
+  // by a product signal, and the last step asserts the second session not only
+  // APPEARS but still READS KEYS (a batch that is drawn but deaf is exactly the
+  // reported state, and asserting only `data-lf-hints` would pass on it).
+  await t("link hints: a popup, a cancelled session and a second session in a row", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await pageSettled();
+    // 1. THREE leader popups in a row, each closed with Escape — the user's
+    //    step 1 verbatim (`;d`, `;o`, `;s`), because a single popup would not
+    //    catch state that only survives a chain of them.
+    for (const modal of ["d", "o", "s"]) {
+      await ctx.leaderPress(ctx.tabA, modal);
+      await ctx.waitPopup(ctx.tabA, 8000);
+      await ctx.press(ctx.tabA, "Escape");
+      await ctx.waitPopupGone(ctx.tabA, 8000);
+    }
+    // 2. A hint session with one letter typed (the user's "which works"),
+    //    cancelled with Escape. The letter must be one the batch cannot commit
+    //    — a miss is announced and leaves the layer up, which is the reported
+    //    "it couldn't read some keys" case, and it cannot navigate the tab.
+    await beginHints();
+    const first = await readHints();
+    assert(first.length > 0, "the first session has hints");
+    const usedFirst = new Set(first.map((h) => h.key[0]));
+    const miss = "asdfjklgh".split("").find((c) => !usedFirst.has(c)) || "z";
+    await ctx.press(ctx.tabA, miss);
+    await ctx.press(ctx.tabA, "Escape");
+    // The intermediate state is asserted, not assumed: if Escape did not clear
+    // the first session, every later step is measuring a stale layer and the
+    // test would blame the wrong one.
+    const cleared = await waitFor(
+      async () =>
+        (await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`)) === "1"
+          ? null
+          : true,
+      4000
+    );
+    assert(cleared === true, "step 2: Escape cleared the first session");
+    // 3. RIGHT AWAY, a second session. It must come up and still read keys.
+    await ctx.leaderPress(ctx.tabA, "f");
+    await hintsOn(6000);
+    const second = await readHints();
+    const ids = second.map((h) => h.id || h.dataId);
+    assert(
+      ids.indexOf("thumbnail-link") !== -1,
+      "the second session hints the page's controls (got: " +
+        JSON.stringify(ids) +
+        " keys=" +
+        JSON.stringify(second.map((h) => h.key)) +
+        "). If this is empty the batch is drawn but names nothing"
+    );
+    await activateHint("thumbnail-link", async () => {
+      await ctx.waitExpr(ctx.tabA, `location.hash`, "#thumb", 8000);
+    });
+    assert(
+      (await evalIn(ctx.tabA, `location.hash`)) === "#thumb",
+      "a key of the second session activated — the layer is drawing AND reading"
+    );
+  });
+  // THE SAME TWO SESSIONS WITHOUT THE POPUP. Isolates the popup from the
+  // session hand-off: if the chain above fails and this passes, the popup's
+  // teardown is the trigger, and the fix belongs where the popup leaves state.
+  await t("link hints: two sessions in a row, the first cancelled, both read keys", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await pageSettled();
+    await beginHints();
+    const first = await readHints();
+    assert(first.length > 0, "the first session has hints");
+    // A keystroke that cannot commit: it exercises the session (and the miss
+    // announcement) without acting on a link, so the second session starts from
+    // the same page the first one did.
+    const usedFirst = new Set(first.map((h) => h.key[0]));
+    const miss = "asdfjklgh".split("").find((c) => !usedFirst.has(c)) || "z";
+    await ctx.press(ctx.tabA, miss);
+    await ctx.press(ctx.tabA, "Escape");
+    const cleared = await waitFor(
+      async () =>
+        (await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`)) === "1"
+          ? null
+          : true,
+      4000
+    );
+    assert(cleared === true, "Escape cleared the first session");
+    await ctx.leaderPress(ctx.tabA, "f");
+    await hintsOn(6000);
+    const second = await readHints();
+    const ids = second.map((h) => h.id || h.dataId);
+    assert(
+      ids.indexOf("thumbnail-link") !== -1,
+      "the second session hints the page's controls (got: " + JSON.stringify(ids) + ")"
+    );
+    await activateHint("thumbnail-link", async () => {
+      await ctx.waitExpr(ctx.tabA, `location.hash`, "#thumb", 8000);
+    });
+    assert(
+      (await evalIn(ctx.tabA, `location.hash`)) === "#thumb",
+      "a key of the second session activated"
+    );
+  });
+  // Tab WHILE HINTS ARE UP. Tab is the layer's own "next batch" key, so it may
+  // not fall through to the page's focus walk — and whatever it does, the layer
+  // must still be up and still ACTIVATE afterwards ("hit tabs after it scrolls
+  // the window and breaks the whole software").
+  //
+  // The first version of this test asked the layer to announce a MISS instead (a
+  // letter the batch could not commit), and that assertion was wrong in a way
+  // worth recording: the letters it chose came from the default alphabet, and
+  // the only alphabet letter the Tab'd batch left unused was `z` — which is not
+  // a hint character at all, so the layer correctly DECLINED the key and the
+  // test went red for its own reason. A key that ACTIVATES is the stronger
+  // question anyway: a drawn batch that cannot act is precisely the "looks
+  // alive, answers nothing" state this suite exists for.
+  await t("link hints: Tab pages to the next batch and the layer still activates", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await scrollDone(0);
+    await pageSettled();
+    await beginHints();
+    const focusBefore = await evalIn(ctx.tabA, `document.activeElement && document.activeElement.tagName`);
+    await ctx.press(ctx.tabA, "Tab");
+    const alive = await waitFor(
+      async () =>
+        (await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`)) === "1"
+          ? true
+          : null,
+      3000
+    );
+    assert(alive === true, "the layer is still up after Tab");
+    // Tab must not have reached the page as a focus movement. Hints are
+    // top-frame-only and every key goes to the FOCUSED document, so a Tab the
+    // layer failed to consume does not merely scroll: the browser's own focus
+    // walk runs, and when the next focusable thing is inside a frame the
+    // keyboard is gone from this document for good — "it breaks the whole
+    // software", with nothing on screen to say why.
+    const focusAfter = await evalIn(ctx.tabA, `document.activeElement && document.activeElement.tagName`);
+    assert(
+      focusAfter === focusBefore,
+      "Tab did not move focus in the page (" + focusBefore + " -> " + focusAfter + ")"
+    );
+    const after = await readHints();
+    assert(
+      after.length > 0,
+      "there are still hints after Tab (got: " + JSON.stringify(after.map((h) => h.id)) + ")"
+    );
+    // THE REAL QUESTION: does a key of the batch Tab produced still act?
+    // `deep-link` sits after the fixture's 2600px spacer, so it can only be in
+    // the batch at all if paging actually moved the region and re-hinted it.
+    const named = after.filter((h) => h.id || h.dataId);
+    const target = named.find((h) => (h.id || h.dataId) === "deep-link") || named[0] || after[0];
+    assert(target && target.key, "the batch after Tab names a control to activate");
+    for (const ch of target.key) await ctx.press(ctx.tabA, ch);
+    if ((await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`)) === "1") {
+      await ctx.press(ctx.tabA, "Enter");
+    }
+    const acted = await waitFor(
+      async () => {
+        const hash = await evalIn(ctx.tabA, `location.hash`);
+        const title = await evalIn(ctx.tabA, `document.title`);
+        return (typeof hash === "string" && hash !== "") || title !== "UI Heavy" ? true : null;
+      },
+      8000
+    ).catch(() => null);
+    assert(
+      acted === true,
+      "a key of the batch after Tab activated its control (hash=" +
+        JSON.stringify(await evalIn(ctx.tabA, `location.hash`)) +
+        " title=" +
+        JSON.stringify(await evalIn(ctx.tabA, `document.title`)) +
+        " batch=" +
+        JSON.stringify(after.map((h) => (h.id || h.dataId) + ":" + h.key)) +
+        ")"
+    );
+    // ...AND THE KEYBOARD AS A WHOLE IS STILL THERE. Escape stands the layer
+    // down and the leader arms immediately after: the report is never "one key
+    // broke", it is "the software stopped responding", and this is the cheapest
+    // honest check of the difference.
+    await ctx.press(ctx.tabA, "Escape");
+    const down = await waitFor(async () =>
+      (await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`)) === "1"
+        ? null
+        : true,
+      4000
+    ).catch(() => null);
+    assert(down === true, "the layer stood down on Escape");
+    await ctx.press(ctx.tabA, ";");
+    await ctx
+      .waitExpr(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader")`, "1", 5000)
+      .catch(() => {
+        throw new Error("the leader key went dead after a Tab-paged hint batch");
+      });
+    await ctx.press(ctx.tabA, "Escape");
+    await ctx.waitLeaderGone().catch(() => {});
+  });
+  // THE REPEAT REPORT, VERBATIM: "also add to things that I noticed is doing
+  // ;f -> esc ;f -> esc repeatedly breaks the hints or the whole software".
+  //
+  // One session is not the claim; the claim is that a session LEAVES SOMETHING
+  // BEHIND. So every cycle is asked the same two questions — does the layer draw
+  // its batch, and does it still read a key — and the run ends on the one
+  // question a drawn-but-deaf layer cannot answer: does a key ACT. Every
+  // intermediate state is asserted rather than assumed, so a failure names the
+  // cycle it happened in instead of blaming the last one.
+  await t("link hints: ;f and Esc in a row, eight times, every session draws and reads keys", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await scrollDone(0);
+    await pageSettled();
+    const CYCLES = 8;
+    for (let cycle = 1; cycle <= CYCLES; cycle++) {
+      await beginHints();
+      const batch = await readHints();
+      assert(
+        batch.length > 1,
+        "cycle " + cycle + ": the layer drew a batch (got " + JSON.stringify(batch.map((h) => h.id)) + ")"
+      );
+      // A drawn batch can still be deaf. Take one character of a multi-key hint:
+      // the batch must NARROW, which cannot happen unless the key reached the
+      // session and the session answered with a placement pass. The last cycle
+      // types a whole key instead, so the run also ends on an activation.
+      if (cycle < CYCLES) {
+        const two = batch.find((h) => h.key.length > 1);
+        assert(two, "cycle " + cycle + ": the batch has a multi-character key to narrow with");
+        const ch = two.key[0];
+        assert(
+          batch.some((h) => h.key[0] !== ch),
+          "cycle " + cycle + ": narrowing by one character must remove something (batch=" +
+            JSON.stringify(batch.map((h) => h.key)) +
+            ")"
+        );
+        await ctx.press(ctx.tabA, ch);
+        const narrowed = await waitFor(async () => {
+          const now = await readHints();
+          if (!now.length || now.length >= batch.length) return null;
+          return now.every((h) => h.key[0] === ch) ? now : null;
+        }, 4000).catch(() => null);
+        assert(
+          narrowed,
+          "cycle " +
+            cycle +
+            ": typing \"" +
+            ch +
+            "\" narrowed the batch (still drawn: " +
+            JSON.stringify((await readHints()).map((h) => h.key)) +
+            ", was " +
+            JSON.stringify(batch.map((h) => h.key)) +
+            ")"
+        );
+      }
+      await ctx.press(ctx.tabA, "Escape");
+      const down = await waitFor(async () =>
+        (await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`)) === "1"
+          ? null
+          : true,
+        4000
+      ).catch(() => null);
+      assert(down === true, "cycle " + cycle + ": Escape stood the layer down");
+    }
+    // The session that follows the whole chain still ACTS — the report's "broken
+    // and unresponsive" answered directly, not by an attribute.
+    await beginHints();
+    const last = await readHints();
+    const thumb = last.find((h) => (h.id || h.dataId) === "thumbnail-link") || last[0];
+    assert(thumb && thumb.key, "the post-chain session names a control (got " + JSON.stringify(last.map((h) => h.id)) + ")");
+    for (const ch of thumb.key) await ctx.press(ctx.tabA, ch);
+    if ((await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`)) === "1") {
+      await ctx.press(ctx.tabA, "Enter");
+    }
+    const acted = await waitFor(
+      async () => ((await evalIn(ctx.tabA, `location.hash`)) === "#thumb" ? true : null),
+      8000
+    ).catch(() => null);
+    assert(
+      acted === true,
+      "the session after eight cancels still acts (hash=" +
+        JSON.stringify(await evalIn(ctx.tabA, `location.hash`)) +
+        ", wanted #thumb)"
+    );
+  });
+  // PAGING MOVES WHAT THE USER IS LOOKING AT.
+  //
+  // `]` / `[` / Tab scroll the region the scroll keys move (content/scroll.ts's
+  // target) rather than `window`. On a shell page whose document is pinned and
+  // whose content lives in an inner pane, `window.scrollBy` moves nothing at
+  // all: paging did nothing AND read `window.scrollY` — which never moves there
+  // — to decide there was nothing more, so a pane full of links reported "no
+  // more links". On the pages where the window CAN move it scrolled the shell
+  // behind the pane the user was reading. The fixture is the
+  // ChatGPT/dashboard shape the scroll keys already have a test for; this asks
+  // the same question of the hint layer, and the window must stay put.
+  await t("link hints: paging moves the pane the user is looking at, never the window", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/innerpane`);
+    await evalIn(
+      ctx.tabA,
+      `(document.getElementById("pane").scrollTop = 0, window.scrollTo(0, 0), document.activeElement && document.activeElement.blur(), true)`
+    );
+    await pageSettled();
+    await beginHints();
+    const before = (await readHints()).map((h) => h.dataId);
+    assert(before.length > 0, "the pane's links are hinted (got " + JSON.stringify(before) + ")");
+    const paneBefore = await evalIn(ctx.tabA, `document.getElementById("pane").scrollTop`);
+    await ctx.press(ctx.tabA, "]");
+    const moved = await waitFor(async () => {
+      const top = await evalIn(ctx.tabA, `document.getElementById("pane").scrollTop`);
+      return top > paneBefore + 40 ? top : null;
+    }, 5000).catch(() => null);
+    assert(moved, "] scrolled the INNER PANE (pane " + paneBefore + " -> " + moved + ")");
+    assert(
+      (await evalIn(ctx.tabA, `window.scrollY`)) === 0,
+      "the window never moved on a shell whose document cannot scroll (scrollY=" +
+        (await evalIn(ctx.tabA, `window.scrollY`)) +
+        ")"
+    );
+    const after = (await readHints()).map((h) => h.dataId);
+    assert(
+      after.length > 0 && after.join(",") !== before.join(","),
+      "paging re-hinted the pane's new batch (before=" +
+        JSON.stringify(before) +
+        " after=" +
+        JSON.stringify(after) +
+        ")"
+    );
+    await ctx.press(ctx.tabA, "Escape");
+  });
+  // THE LAYER MUST NOT OUTLIVE THE KEYBOARD.
+  //
+  // The content script is top-frame-only (`all_frames: false`), so the moment
+  // focus moves into a nested browsing context every key goes to the FRAME's
+  // document: the hint batch can no longer be typed into, and Escape cannot
+  // reach it either — the layer just stands there. That is the report "the
+  // hints got stuck and I can't get rid of them, and it couldn't read some
+  // keys", and it is the worst shape a keyboard-first tool can fail in: the
+  // keys appear dead while the page looks assembled.
+  //
+  // The test drives the frame itself (create + focus, same-origin `srcdoc`) and
+  // records the parent document's focus events into the failure message: which
+  // of them a listener can work from is the difference between "the layer can
+  // see this" and "it cannot", and it is not something to guess at.
+  await t("link hints: focus moving into a frame tears the layer down instead of trapping the keyboard", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
+    await pageSettled();
+    await beginHints();
+    const probe = await evalIn(
+      ctx.tabA,
+      `(async function () {
+         var log = [];
+         var note = function (t) {
+           return function (e) {
+             log.push(t + ":" + ((e.target && e.target.tagName) || "?"));
+           };
+         };
+         window.addEventListener("focus", note("focus"), true);
+         window.addEventListener("focusin", note("focusin"), true);
+         window.addEventListener("blur", note("blur"), true);
+         var f = document.getElementById("trap-frame");
+         if (!f) {
+           f = document.createElement("iframe");
+           f.id = "trap-frame";
+           f.style.cssText = "position:fixed;right:6px;bottom:6px;width:200px;height:80px;border:1px solid #666";
+           f.srcdoc = "<!DOCTYPE html><body style='margin:0'><input id='trap-input'></body>";
+           document.body.appendChild(f);
+           await new Promise(function (r) { f.addEventListener("load", r, { once: true }); });
+         }
+         var onBefore = document.documentElement.getAttribute("data-lf-hints");
+         f.contentDocument.getElementById("trap-input").focus();
+         await new Promise(function (r) { setTimeout(r, 150); });
+         return {
+           onBefore: onBefore,
+           log: log,
+           topActive: document.activeElement ? document.activeElement.tagName + "#" + document.activeElement.id : null,
+           frameActive: f.contentDocument.activeElement ? f.contentDocument.activeElement.id : null,
+           hasFocus: document.hasFocus(),
+         };
+       })()`
+    );
+    // THE PRECONDITION IS THE TEST. Without it this passes just as happily when
+    // the layer was never up, the batch had already died, or the fixture failed
+    // to move focus — i.e. it would prove nothing about the trap.
+    assert(
+      probe && probe.onBefore === "1",
+      "hints must be UP before the keyboard leaves the page: " + JSON.stringify(probe)
+    );
+    assert(
+      probe && probe.frameActive === "trap-input",
+      "the fixture really moved the keyboard into the frame: " + JSON.stringify(probe)
+    );
+    assert(probe && probe.log.length > 0, "the parent document saw the focus move: " + JSON.stringify(probe));
+    const down = await waitFor(async () => {
+      const on = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+      return on === "1" ? null : true;
+    }, 3000);
+    assert(
+      down === true,
+      "the hint layer must come down once no key can reach the page: " + JSON.stringify(probe)
+    );
+  });
+  // The composed walk has to cross the shadow BOUNDARY to see an ancestor's
+  // attribute: the control inside this closed root has a real box (nothing in
+  // its own tree is hidden), so the only thing that can exclude it is the walk up
+  // through getRootNode().host to the `inert` wrapper outside.
+  //
+  // This used to use an `aria-hidden` wrapper, which stopped being a reason to
+  // exclude anything (§10 of docs/HINTS.md). `inert` is the stronger fixture: it
+  // removes no geometry, so a test that passed on the RECT would fail on this
+  // one.
+  await t("link hints: an inert ancestor hides a control inside a closed shadow root", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
     await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
     await scrollDone(0);
     await beginHints();
     const ids = (await readHints()).map((x) => x.id || x.dataId);
-    assert(ids.indexOf("hidden-shadow-inner") === -1, "closed-root target under aria-hidden host is not hinted");
+    assert(ids.indexOf("hidden-shadow-inner") === -1, "closed-root target under an inert host is not hinted");
     await ctx.press(ctx.tabA, "Escape");
   });
   await t("link hints: clickable image and video thumbnails are hinted and click", async () => {
@@ -833,6 +1282,28 @@ export async function run(ctx: any): Promise<void> {
     await ctx.press(ctx.tabA, "Escape");
   });
 
+  // The reported "it gets stuck and the keys do nothing": the hint alphabet is
+  // ours, so a letter that names no VISIBLE hint was consumed with nothing
+  // happening and nothing said — every further attempt identical. It has to say
+  // which of the two things is wrong, here a prefix that names no hint at all
+  // (`/target1` has one link, so its key is the single letter `a`).
+  await t("link hints: a hint key that names nothing says so instead of going quiet", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/target1`);
+    await ctx.waitExpr(ctx.tabA, `document.readyState`, "complete", 8000);
+    // Clear any earlier toast first: the assertion has to be about THIS press.
+    await evalIn(ctx.tabA, `document.documentElement.removeAttribute("data-lf-toast"); true`);
+    await ctx.leaderPress(ctx.tabA, "f");
+    await hintsOn();
+    await ctx.press(ctx.tabA, "l"); // in the hint alphabet, names no hint here
+    const said = await waitFor(async () => {
+      const t = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-toast") || ""`);
+      return t.indexOf("no hint") !== -1 ? t : null;
+    }, 4000).catch(() => null);
+    assert(said, "a key that names no hint must say so (got: " + JSON.stringify(said) + ")");
+    const still = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+    assert(still === "1", "the layer stays up: the key was a hint key, just not one with a target");
+    await ctx.press(ctx.tabA, "Escape");
+  });
   await t("link hints: Ctrl+G cancels the batch instead of typing the letter g", async () => {
     // §4.4's promise: there is always a way back, and Ctrl+G is the one cancel
     // that works on every page (a chord no site can receive as text). The hint
@@ -877,4 +1348,289 @@ export async function run(ctx: any): Promise<void> {
     await ctx.press(ctx.tabA, "Escape");
     await ctx.waitLeaderGone();
   });
+
+  // ---- the third field report, on the page that carries its own markup ----
+  // `/ytcard` is the report's DOM (a YouTube video card and the ad player's
+  // "Skip" button) rather than the engine's idea of it, plus a heartbeat and a
+  // churn switch so the two claims it makes — "it misses these thumbnails" and
+  // "it got stuck and unresponsive" — are both measurable.
+  const gotoYtcard = async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/ytcard`);
+    await pageSettled();
+    // The cards are built by the fixture's own script; wait for them rather than
+    // for a fixed delay, so the batch is never read from a half-built page.
+    await ctx.waitExpr(ctx.tabA, `document.querySelectorAll("a.thumb").length`, 6, 8000);
+  };
+  await t(
+    "link hints: a YouTube-shaped thumbnail link is hinted and its key navigates",
+    async () => {
+      // The reported shape: `aria-hidden="true"`, `tabindex="-1"`, `rel="null"`,
+      // content that is only a poster image plus overlay divs, and a title link
+      // beside it that points at the same video. Both have to be offered — the
+      // card is two affordances for one destination, which is what the page has.
+      await gotoYtcard();
+      await beginHints();
+      const hinted = await readHints();
+      // Each fixture element carries BOTH names, as the reported markup does
+      // (`id="thumbnail"` plus the harness's own `data-id`), so a hint counts as
+      // present when either one names it.
+      const has = (id) => hinted.some((x) => x.id === id || x.dataId === id);
+      for (const id of ["thumb1", "thumb3", "thumb6", "title1", "channel1"]) {
+        assert(
+          has(id),
+          "expected a hint for " +
+            id +
+            " (got: " +
+            hinted.map((x) => x.id + "/" + x.dataId).join(",") +
+            ")"
+        );
+      }
+      await activateHint("thumb1", async () => {
+        await ctx.waitExpr(ctx.tabA, `location.hash`, "#watch1", 8000);
+      });
+      assert(
+        (await evalIn(ctx.tabA, `location.hash`)) === "#watch1",
+        "the thumbnail link's key must navigate to the video"
+      );
+    }
+  );
+  await t(
+    "link hints: the ad's Skip button appears mid-session and its key skips the ad",
+    async () => {
+      // The control the report named: an ad overlay that is inserted AFTER hints
+      // are open (so it cannot be in the `;f` snapshot), inside a
+      // `pointer-events:none` ad layer that the control's own container opts back
+      // into, with the half-transparent inline opacity an ad control has while
+      // its countdown runs — and the colon-bearing ids YouTube uses.
+      await gotoYtcard();
+      await beginHints();
+      const before = (await readHints()).map((x) => x.id || x.dataId);
+      assert(
+        before.indexOf("yt-skip") === -1,
+        "the ad control cannot be hinted before the ad exists"
+      );
+      await evalIn(ctx.tabA, `window.__showAdOverlay()`);
+      const found = await waitFor(async () => {
+        const m = await readHints();
+        const h = m.find((x) => x.id === "yt-skip" || x.dataId === "yt-skip");
+        return h && h.key ? h : null;
+      }, 8000);
+      assert(found.key, "the late-inserted Skip button must be hinted");
+      await activateHint("yt-skip", async () => {
+        await ctx.waitExpr(ctx.tabA, `document.title.indexOf("YT-SKIP") === 0`, true, 8000);
+      });
+      const seen = await evalIn(ctx.tabA, `window.__skipSeen || null`);
+      assert(
+        seen && seen.target,
+        "the page's own click handler must have run (saw: " + JSON.stringify(seen) + ")"
+      );
+      const still = await evalIn(
+        ctx.tabA,
+        `document.documentElement.getAttribute("data-lf-hints")`
+      );
+      assert(still !== "1", "activating the ad control must leave hint mode");
+    }
+  );
+  await t(
+    "link hints: a re-rendering page stays hinted and stays responsive",
+    async () => {
+      // The other half of the report — "the hints got stuck and unresponsive,
+      // they don't do anything, even exiting" — is a main-thread claim, and the
+      // fixture's own 50ms timer is the honest way to test it: a page doing
+      // document-wide collections dozens of times a second cannot keep that
+      // cadence, and neither can the key handler that would have processed
+      // Escape.
+      //
+      // THE CHURN HAS A GAP, AND THE GAP IS THE TEST.
+      //
+      // This case used to remove and rebuild every card in ONE task. It passed —
+      // on builds where the resolution path collected the whole document per item
+      // per frame — because by the time any measurement pass ran, the
+      // replacements were already in the pool at the same coordinates, so
+      // re-resolution matched each item by destination and position and never
+      // took the expensive branch. A test that cannot fail on the bug it was
+      // written for is decoration, and this one was decoration: the fixture had
+      // removed the window the bug lives in.
+      //
+      // So the fixture now washes the cards out and re-hydrates them on a LATER
+      // task (180ms later, every 300ms), which is what a virtual list's
+      // placeholder, an ad overlay and a lazy route all do. In that window every
+      // hinted node is gone and there is no same-destination neighbour in the
+      // pool to fall back on, so re-resolution has to ask the document again —
+      // once per hinted item per frame, unless that question is opt-in where it
+      // belongs. With it, this page keeps its 50ms cadence; without it, this
+      // assertion is what turns red.
+      await gotoYtcard();
+      await beginHints();
+      const before = await readHints();
+      const thumbsBefore = before.filter((h) => String(h.dataId || "").indexOf("thumb") === 0);
+      assert(
+        thumbsBefore.length === 6,
+        "the six thumbnails are hinted before the churn (" + before.length + " hints)"
+      );
+      const keysBefore = new Map(before.map((h) => [h.dataId || h.id, h.key]));
+      await evalIn(ctx.tabA, `window.__resetBeats(); true`);
+      await evalIn(ctx.tabA, `window.__churn(true)`);
+      // A FIXED WINDOW, measured on the page's own clock.
+      //
+      // Waiting for "N beats" is what this used to do, and it made the test blind
+      // in the one direction that matters: a starved timer REACHES N beats, it
+      // just takes far longer, so the wait absorbed the whole symptom and only an
+      // absolute max-gap bound was left to catch it — which a saturated main
+      // thread can stay just under. A window of wall time turns the symptom into
+      // a COUNT: over 2.5 seconds the fixture's 50ms timer has ~50 ticks to spend,
+      // and a page doing a document collection per hinted item per frame simply
+      // does not get through them. CHURN_MS/BEATS_MIN below are that pair.
+      const CHURN_MS = 2500;
+      const BEATS_EXPECTED = Math.floor(CHURN_MS / 50); // 50 ticks
+      // ...with room for a slow machine, but not room for a page that spends its
+      // time collecting. The floor is CALIBRATED, and the two numbers it sits
+      // between were measured on this fixture (20 cards washed out and re-hydrated
+      // every 300ms, 2.5s window):
+      //
+      //   resolution re-collects per item per frame   37-40 ticks, 336-358ms gap
+      //   re-collection is opt-in (shipped)           51 ticks,  61ms max gap
+      //
+      // (The broken side is a range because it was measured more than once; the
+      // floor sits above the whole range and below the shipped number.)
+      //
+      // 90% of the expected ticks is a floor the shipped build clears with room
+      // and a re-collecting build misses outright — the failing side of that pair
+      // is a measurement, not a guess, and the gap bound below is the second,
+      // independent way to see the same starvation.
+      const BEATS_MIN = Math.floor(BEATS_EXPECTED * 0.9);
+      await evalIn(ctx.tabA, `window.__churnUntil = performance.now() + ${CHURN_MS}; true`);
+      await ctx.waitExpr(
+        ctx.tabA,
+        `performance.now() > window.__churnUntil`,
+        true,
+        20000
+      );
+      await evalIn(ctx.tabA, `window.__churn(false)`);
+      const gap = await evalIn(ctx.tabA, `Math.round(window.__maxGap)`);
+      const beats = await evalIn(ctx.tabA, `window.__beats`);
+      assert(
+        beats >= BEATS_MIN,
+        "the page's own 50ms timer must keep ticking while hints are open on a " +
+          "re-rendering page: it managed " +
+          beats +
+          " ticks in " +
+          CHURN_MS +
+          "ms (expected about " +
+          BEATS_EXPECTED +
+          ", floor " +
+          BEATS_MIN +
+          ") — a document collection per hinted item per frame is what eats them"
+      );
+      assert(
+        gap < 300,
+        "the page must stay responsive with hints open on a re-rendering page: the " +
+          "fixture's 50ms timer saw a " +
+          gap +
+          "ms gap over " +
+          beats +
+          " ticks — a per-item document collection on the hot path starves this timer, " +
+          "and the keystroke handling (Escape included) queues behind it"
+      );
+      // ...and after the churn the same controls are hinted again, under the
+      // keys the user had already read: a re-render must not reshuffle them.
+      const after = await waitFor(async () => {
+        const m = await readHints();
+        const thumbs = m.filter((h) => String(h.dataId || "").indexOf("thumb") === 0);
+        if (thumbs.length !== 6) return null;
+        const same = thumbs.every((h) => keysBefore.get(String(h.dataId)) === h.key);
+        return same ? m : null;
+      }, 8000).catch(() => null);
+      assert(
+        after,
+        "the batch must come back after the page re-rendered, with the keys it had: " +
+          (await readHints()).map((h) => (h.dataId || h.id) + "=" + h.key).join(",")
+      );
+      await activateHint("thumb2", async () => {
+        await ctx.waitExpr(ctx.tabA, `location.hash`, "#watch2", 8000);
+      });
+      assert(
+        (await evalIn(ctx.tabA, `location.hash`)) === "#watch2",
+        "a thumbnail key must still navigate after the page re-rendered its cards"
+      );
+    }
+  );
+
+  await t(
+    "link hints: a badge whose control is washed out stays on screen and keeps its key",
+    async () => {
+      // THE REPORTED SYMPTOM, directly: "some of the hint got disappeared after
+      // showing up". The user is looking at badges, their controls' nodes are
+      // replaced or washed out underneath them, and the badges vanish with the
+      // nodes — so the key they had already read stops meaning anything and the
+      // thing they were about to press is gone.
+      //
+      // This is the case the snapshot's `held` rows exist for. A label whose
+      // control has gone is deliberately NOT re-anchored and NOT torn down (see
+      // overlay.reposition): it stays where it was drawn, because the control did
+      // not move — only its node was replaced — and it stays TYPEABLE, which a
+      // one-shot activation can afford to re-resolve. The page cannot verify any
+      // of that by itself: the badges live in a closed shadow root. So the
+      // diagnostic pull reports the held rows, and this test reads them.
+      await gotoYtcard();
+      await beginHints();
+      const before = await readHints();
+      const thumbsBefore = before.filter((h) => String(h.dataId || "").indexOf("thumb") === 0);
+      assert(
+        thumbsBefore.length === 6,
+        "the six thumbnails are hinted before the wash-out (" + before.length + " hints)"
+      );
+      const total = before.length;
+      const keysBefore = new Map(before.map((h) => [h.dataId || h.id, h.key]));
+
+      const removed = await evalIn(ctx.tabA, `window.__washOutCards()`);
+      assert(removed === 6, "the fixture washed out its six cards (got " + removed + ")");
+
+      // The badges are still drawn. A held row is reported with no element behind
+      // it, which is precisely the state being asserted: on screen, unanchored.
+      const held = await waitFor(async () => {
+        const rows = (await readHintRows()).filter((r) => r.held);
+        return rows.length >= 6 ? rows : null;
+      }, 4000).catch(() => null);
+      assert(
+        held,
+        "a washed-out control's badge must stay on screen: expected held rows, got " +
+          JSON.stringify((await readHintRows()).map((r) => r.key + (r.held ? "(held)" : "")))
+      );
+      // ...and every badge is still there, not merely some: the batch may not
+      // shrink because the page emptied itself.
+      const stillShown = await readHintRows();
+      assert(
+        stillShown.length >= total,
+        "the batch must not shrink while the controls are washed out (had " +
+          total +
+          ", now " +
+          stillShown.length +
+          ")"
+      );
+      // The layer is still up and still answering: a hint system that has
+      // nothing to point at yet is not the same thing as one that has exited.
+      assert(
+        (await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`)) === "1",
+        "the hint layer must stay up while its controls are washed out"
+      );
+
+      // The page puts the cards back — the nodes are new, the controls are the
+      // same — and the user's keys have to still mean what they meant.
+      const restored = await evalIn(ctx.tabA, `window.__restoreCards()`);
+      assert(restored === 6, "the fixture restored its six cards (got " + restored + ")");
+      const after = await waitFor(async () => {
+        const m = await readHints();
+        const thumbs = m.filter((h) => String(h.dataId || "").indexOf("thumb") === 0);
+        if (thumbs.length !== 6) return null;
+        return thumbs.every((h) => keysBefore.get(String(h.dataId)) === h.key) ? m : null;
+      }, 8000).catch(() => null);
+      assert(
+        after,
+        "the batch must come back with the keys it had before the wash-out: " +
+          (await readHints()).map((h) => (h.dataId || h.id) + "=" + h.key).join(",")
+      );
+      await ctx.press(ctx.tabA, "Escape");
+    }
+  );
 }

@@ -14,6 +14,7 @@
 // blind spot, so the two hosts cannot disagree about what `;f` does.
 
 import { digitExpect } from "../shared/leadersignal";
+import { hintLabelInlineStyle } from "../shared/hintlabel";
 import { toast } from "../shared/overlay";
 import type { LeaderController } from "../shared/leader";
 import type { ChromeEnv, ChromeWindow } from "./env";
@@ -144,12 +145,20 @@ export function createChromePageHints(
           const r = it.el.getBoundingClientRect();
           const label = doc.createElement("span");
           label.textContent = String(i + 1);
+          // THE SAME LABEL the content script draws. This used to be its own
+          // look — a bordered dark chip with blue text, 11px — so `;f` on an
+          // error page and `;f` on a video page read as two different features.
+          // The numbers come from shared/hintlabel.ts; only the POSITION is this
+          // host's business, because the rects here are the page's own.
+          //
+          // No min-width/line-height box: the padding and the font are the shared
+          // ones, so a label is exactly as big as its digit needs to be, the same
+          // way it is in the content script.
           label.setAttribute(
             "style",
-            "position:fixed;z-index:2147483647;background:#1e1e2e;color:#7aa2f7;" +
-              "border:1px solid #414868;border-radius:4px;min-width:16px;height:16px;" +
-              "line-height:16px;text-align:center;font:600 11px monospace;" +
-              "top:" + (r.top + 2) + "px;left:" + (r.left + 2) + "px;pointer-events:none;"
+            hintLabelInlineStyle(
+              "top:" + (r.top + 2) + "px;left:" + (r.left + 2) + "px"
+            )
           );
           host.appendChild(label);
           labels.push(label);

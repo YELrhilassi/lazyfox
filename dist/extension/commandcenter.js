@@ -107,8 +107,6 @@
 .dl-fill{height:100%;background:#7aa2f7;border-radius:2px;}
 .dl-fill.done{background:#9ece6a;}
 .dl-fill.fail{background:#f7768e;}
-.hint{position:fixed;z-index:2147483646;background:#2ac3de;color:#16161e;font:600 12px/1 ui-monospace,Menlo,Consolas,monospace;
-  padding:2px 5px;border-radius:4px;pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4);}
 `,MQ=`
 .t{position:fixed;bottom:52px;left:50%;transform:translateX(-50%);z-index:2147483647;
   background:rgba(22,22,30,.96);color:#c0caf5;font:13px ${nA};

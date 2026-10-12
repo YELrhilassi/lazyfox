@@ -200,7 +200,7 @@ owner:
 - `collect.ts` — walking the page, open AND closed shadow roots included.
 - `visibility.ts` — "would a human see this, and could they click it?", answered
   for a whole PASS: the element's own style is read once, and the ancestor
-  predicates (hidden/inert/aria-hidden, `opacity:0`) are memoised per element so
+  predicates (hidden/inert, `opacity:0`) are memoised per element so
   a candidate list sharing ancestors does not re-walk them per candidate. A pass
   never outlives the collection/selection run that made it.
 - `select.ts` — which candidates get a label, in document order up to the cap.
