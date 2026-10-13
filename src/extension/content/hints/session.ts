@@ -862,7 +862,17 @@ export function createLinkHints(
 
   return {
     enterBadge: () => overlay.enterBadge(),
-    snapshot: () => overlay.snapshot(items, resolve.resolve),
+    snapshot: () => {
+      const base = overlay.snapshot(items, resolve.resolve);
+      base.stats = {
+        items: items.length,
+        pool: pool.length,
+        typed: typed,
+        active: active,
+        doc: { w: window.innerWidth || 0, h: window.innerHeight || 0 },
+      };
+      return base;
+    },
     get active() {
       return active;
     },

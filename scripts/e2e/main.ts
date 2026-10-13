@@ -47,6 +47,7 @@ import {
   flakeReport,
   type Baseline,
 } from "./runner.ts";
+import { send } from "./bidi.ts";
 import { createCtx } from "./fixture.ts";
 import { pages } from "./pages.ts";
 import * as commandcenter from "./suites/commandcenter/index.ts";
@@ -125,8 +126,20 @@ async function main(): Promise<void> {
   await subscribe(["log.entryAdded"]);
   await sleep(1500);
 
+  // PIN THE VIEWPORT GEOMETRY. The headless window's default size is Firefox's
+  // choice, not the suite's, and it drifted: a recent Developer Edition opens
+  // at an inner height of ~529px, so /uitest's demanded rows (nearby-link at
+  // y=558, body-visible at y=591) sit below the fold and the hint tests that
+  // assume a normal desktop viewport fail on a batch that is honestly empty
+  // (the engine had measured exactly what was visible). 1070x900 makes the
+  // layout — and therefore every viewport-visible assertion — deterministic
+  // across Firefox versions and window managers.
   const tree0 = await getTree();
   const tabA = contextsOf(tree0)[0].context;
+  await send("browsingContext.setViewport", {
+    context: tabA,
+    viewport: { width: 1070, height: 900 },
+  }).catch((e) => console.log("viewport pin failed (continuing):", String(e).slice(0, 120)));
 
   const ctx = createCtx({ h: session, profile, server, port: srv.port, base, tabA });
 

@@ -193,8 +193,38 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
   ctx.sendKeys = async function sendKeys(tab, keys) {
     let idx = -1;
     if (tab) {
-      const tree = await getTree();
-      idx = tree.findIndex((c) => c.context === tab || c.id === tab);
+      // THE INDEX MUST BE THE STRIP's, not the BiDi tree's. The chrome side
+      // resolves idx = window.gBrowser.tabs[n] (see chrome/keys.ts handleKeys),
+      // while a BiDi tree walk lists TOP-LEVEL contexts only when it matches;
+      // an iframe or a privileged wrapper makes the two orders disagree and
+      // the key lands on the wrong tab — or worse, "not in tree". tabIdOf
+      // reads the REAL tab id from the product's own strip, so use it and
+      // match on ids, falling back to the old walk only when the tab cannot
+      // self-report (no extension realm).
+      let stripIdx = -1;
+      try {
+        const id = await ctx.tabIdOf(tab);
+        if (id != null) {
+          const ts = (await ctx.tabsInfo().catch(() => [])) as any[];
+          stripIdx = (ts || []).findIndex((t) => !!t && t.id === id);
+          // NOTE: the strip is NOT re-pinned here. The helper reads the
+          // payload's idx and dispatches to that tab, but its REPLY is
+          // delivered through the URL hash on whatever tab the helper
+          // considers current. Re-activating the stress tab mid-send would
+          // steal the hash slot from the probe and every send would read
+          // "no ok reply" (measured). The suite's sendKeys has always
+          // dispatched on the SELECTED tab for leader-relative actions; the
+          // callers that need a specific tab resolve it implicitly by being
+          // the one they pressed on.
+        }
+      } catch (e) {
+      }
+      if (stripIdx >= 0) {
+        idx = stripIdx;
+      } else {
+        const tree = await getTree();
+        idx = tree.findIndex((c) => c.context === tab || c.id === tab);
+      }
       if (idx < 0) throw new Error("sendKeys: tab not in tree");
     }
     const nonce = "k" + Date.now() + "-" + Math.floor(Math.random() * 1e6);

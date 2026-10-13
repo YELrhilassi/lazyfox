@@ -21,6 +21,7 @@
 import { shadowRootOf, walkElements } from "../../shared/dom";
 import { createCoalescer } from "../../shared/coalesce";
 import { toast } from "../../shared/overlay";
+import { promoteToTopLayer } from "../../shared/toplayer";
 import type { ScrollRegionInfo } from "../../shared/types";
 
 interface Target {
@@ -600,13 +601,26 @@ export function createScrollController(): ScrollController {
     try {
       outline = document.createElement("div");
       outline.id = "lazyfox-scroll-target";
+      // `all:initial` FIRST, and the position after it, because the promotion
+      // below turns this element into a POPOVER and the UA's own popover styles
+      // come with it — `background-color:canvas`, `margin:auto`,
+      // `width/height:fit-content`, `overflow:auto`. Without the reset this
+      // outline would be an opaque canvas-coloured box covering the element it
+      // is meant to point at. See shared/toplayer.ts.
       outline.setAttribute(
         "style",
-        "position:fixed;pointer-events:none;z-index:2147483645;box-sizing:border-box;" +
+        "all:initial;position:fixed;pointer-events:none;z-index:2147483645;box-sizing:border-box;" +
+          "background:transparent;margin:0;padding:0;overflow:visible;" +
           "border:2px solid #2ac3de;border-radius:4px;box-shadow:0 0 0 1px rgba(0,0,0,.35);" +
           "transition:top .08s linear,left .08s linear,width .08s linear,height .08s linear;"
       );
       document.documentElement.appendChild(outline);
+      // The outline is placed at getBoundingClientRect() coordinates — VIEWPORT
+      // coordinates — so it has to sit in a host that is measured against the
+      // viewport even when the page has made the root the containing block for
+      // fixed descendants. Without this, `;j` on such a page draws the box a
+      // scroll-height away from the element the user is about to scroll.
+      promoteToTopLayer(outline);
     } catch (e) {
       outline = null;
       return;

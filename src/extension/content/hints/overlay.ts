@@ -11,6 +11,7 @@
 import { HINT_CSS, type HintItem, type HintLabel } from "./selectors";
 import { HINT_LABEL } from "../../../shared/hintlabel";
 import { mirrorFlag } from "../../../shared/observability";
+import { promoteToTopLayer } from "../../../shared/toplayer";
 
 /**
  * What one draw of the overlay produced.
@@ -41,6 +42,14 @@ export interface HintSnapshot {
    */
   positions: Array<{ key: string; x: number; y: number; held?: boolean }>;
   boxes: Array<{ key: string; l: number; t: number; r: number; b: number; held?: boolean }>;
+  /**
+   * Dev diagnostics: what the session REMEMBERS when positions came back
+   * empty. `items`/`pool`/`typed`/`active` say whether collection still runs;
+   * `doc` is the live document's own viewport, the truth `reposition` compares
+   * every label against — a drifted stored viewport or a dead rAF sweep is
+   * exactly the kind of state that hides from both of the observables above.
+   */
+  stats?: { items: number; pool: number; typed: string; active: boolean; doc: { w: number; h: number } };
 }
 
 export interface HintOverlay {
@@ -181,6 +190,14 @@ export function createHintOverlay(): HintOverlay {
       _enter: HTMLElement;
     };
     host.id = "lazyfox-hints";
+    // A viewport-sized box with no pointer surface of its own. The labels are
+    // `position:fixed` children placed at VIEWPORT coordinates, and this host's
+    // whole job is to put them somewhere the page cannot move them: it is
+    // promoted into the top layer, which is laid out against the initial
+    // containing block (see shared/toplayer.ts). It must not eat a pointer
+    // either — the labels never do, and neither may the box around them.
+    host.style.cssText =
+      "all:initial;position:fixed;inset:0;display:block;pointer-events:none;";
     const sh = host.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
     style.textContent = HINT_CSS;
@@ -189,6 +206,16 @@ export function createHintOverlay(): HintOverlay {
     sh.appendChild(box);
     host._box = box;
     document.documentElement.appendChild(host);
+    // ABOVE THE PAGE, NOT MERELY ABOVE ITS z-index.
+    //
+    // The labels are placed at getBoundingClientRect() coordinates, which are
+    // VIEWPORT coordinates — and a page that transforms <html> (a drawer, a
+    // scroll-lock, a plain translateZ(0) GPU hint) makes the root the
+    // containing block for every fixed descendant, so the labels land a
+    // scroll-height away from the links they name. Hints on such a page looked
+    // like they had stopped working, because the badges were drawn where the
+    // links were not — or off-screen entirely.
+    promoteToTopLayer(host);
     // The one cross-world signal that hints are up: the labels live in a closed
     // shadow root, and the page main world cannot even read an isolated-world
     // event detail (Xray), so a shared attribute on <html> is the only channel.

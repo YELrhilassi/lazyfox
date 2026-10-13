@@ -7,6 +7,8 @@
 // the single implementation, and it is its own module because nothing about it
 // is popup-shaped — no input, no list, no keyboard.
 
+import { promoteToTopLayer } from "./toplayer";
+
 export class RectOverlay {
   private host: (HTMLElement & { _sh?: ShadowRoot }) | null = null;
   private clearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -35,6 +37,11 @@ export class RectOverlay {
         "all:initial;position:fixed;inset:0;pointer-events:none;z-index:" + this.zIndex + ";";
       this.host._sh = this.host.attachShadow({ mode: "closed" });
       document.documentElement.appendChild(this.host);
+      // The rects are drawn at getBoundingClientRect() coordinates — VIEWPORT
+      // coordinates — so they need a viewport-anchored host even when the page
+      // has made the root a containing block for fixed descendants. See
+      // shared/toplayer.ts.
+      promoteToTopLayer(this.host);
     }
     const sh = this.host._sh!;
     sh.textContent = "";

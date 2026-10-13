@@ -69,7 +69,7 @@ export const WK_CSS =
   // THE PANEL: a surface and a shadow to lift it off the page, and nothing else.
   // No border, because a 1px line around a dark panel is the "card" the rest of
   // this sheet is avoiding; the shadow is what separates it from the document.
-  ".wk{position:fixed;right:24px;bottom:30px;z-index:2147483646;width:360px;max-width:94vw;" +
+  ".wk{position:fixed;pointer-events:auto;right:24px;bottom:30px;z-index:2147483646;width:360px;max-width:94vw;" +
   "background:#191924;color:#c3cae3;border-radius:8px;box-shadow:0 18px 46px rgba(0,0,0,.5);" +
   "display:none;font-family:" +
   UI_FONT +

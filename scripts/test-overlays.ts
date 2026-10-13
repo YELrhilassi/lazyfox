@@ -38,6 +38,7 @@ const {
 const { isCancel } = await import("../src/shared/leader.ts");
 const { wkBodyHtml, wkCategoryHtml, wkHeadHtml, wkFootHtml, wkExpectTitle, wkPanelHtml } =
   await import("../src/shared/wk.ts");
+const { panelOnScreen } = await import("../src/shared/overlay-popup.ts");
 
 let passed = 0;
 function ok(name: string, cond: boolean): void {
@@ -894,6 +895,45 @@ eq("a missing signal mirrors nothing", leaderMirrorFragment(null), "");
 ok(
   "the armed mirror keeps the legacy prefix shape",
   leaderMirrorFragment(lsig({ armed: true, expect: "1-9" })).indexOf("|lead:") === 0
+);
+
+/* ---------- panelOnScreen: a popup has to be where a person can see it ---------- */
+
+// The rule a popup's keyboard claim rests on. It exists because a sheet sized to
+// its CONTAINING BLOCK reports a perfectly ordinary box while being nowhere near
+// the screen: with the page's root transformed, `inset:0` resolves against the
+// document, so a centred card lands at the middle of a page taller than twice
+// the viewport — below the fold, with every keystroke and every click still
+// routed into it. "Is there a box" cannot tell the difference; "would a person
+// see it" can, which is why this is asked separately from popupIsAlive.
+const rect = (l: number, t: number, w: number, h: number) => ({
+  left: l,
+  top: t,
+  right: l + w,
+  bottom: t + h,
+  width: w,
+  height: h,
+});
+
+ok("a centred panel is on screen", panelOnScreen(rect(320, 200, 640, 400), 1280, 800));
+ok("no box at all is not on screen", !panelOnScreen(null, 1280, 800));
+ok("a zero-sized box is not on screen", !panelOnScreen(rect(10, 10, 0, 400), 1280, 800));
+ok(
+  "a card below the fold is NOT on screen (the document-anchored popup)",
+  !panelOnScreen(rect(320, 1400, 640, 400), 1280, 800)
+);
+ok("a card above the fold is NOT on screen", !panelOnScreen(rect(320, -900, 640, 400), 1280, 800));
+ok(
+  "a card hanging off the right edge is on screen",
+  panelOnScreen(rect(1200, 300, 640, 400), 1280, 800)
+);
+ok(
+  "a card with a sliver at the bottom edge is on screen",
+  panelOnScreen(rect(320, 795, 640, 400), 1280, 800)
+);
+ok(
+  "a viewport that cannot be measured keeps nothing on screen",
+  !panelOnScreen(rect(0, 0, 640, 400), 0, 0)
 );
 
 console.log(`\n${passed} checks passed.`);

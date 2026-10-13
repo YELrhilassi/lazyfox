@@ -11,6 +11,7 @@
 // to show or not show it.
 
 import { WK_CSS, WK_HOST_HTML } from "./leader-css";
+import { promoteToTopLayer } from "./toplayer";
 
 export type LeaderHost = HTMLElement & { _sh: ShadowRoot };
 
@@ -23,10 +24,26 @@ export class LeaderPanel {
     if (!this.host) {
       const host = document.createElement("div") as unknown as LeaderHost;
       host.id = "lazyfox-leader";
+      // A viewport-sized box that ignores the pointer: the panel inside it is
+      // the only interactive part (see leader-css.ts), and the host exists so
+      // that the panel is measured against the VIEWPORT rather than against
+      // the page's document box — see the promotion below.
+      host.style.cssText =
+        "all:initial;position:fixed;inset:0;display:block;pointer-events:none;";
       const sh = host.attachShadow({ mode: "closed" });
       sh.innerHTML = "<style>" + WK_CSS + "</style>" + WK_HOST_HTML;
       host._sh = sh;
       document.documentElement.appendChild(host);
+      // ABOVE THE PAGE, NOT MERELY ABOVE ITS z-index.
+      //
+      // `.wk` is `position:fixed;right:24px;bottom:30px`, which is the corner of
+      // the VIEWPORT only while no ancestor is a containing block for it. A page
+      // that transforms <html> (a drawer, a scroll-lock, a GPU hint) makes the
+      // root one, so the panel resolves against the document box and is drawn
+      // below the fold on any page taller than the screen: pressing the leader
+      // key then shows nothing at all. The top layer is laid out against the
+      // initial containing block, so the corner stays the corner.
+      promoteToTopLayer(host);
       this.host = host;
       return this.host;
     }
@@ -44,6 +61,11 @@ export class LeaderPanel {
     if (!this.host.isConnected) {
       try {
         document.documentElement.appendChild(this.host);
+        // Removing an element from the document closes its popover, so a host
+        // the page detached is not merely re-attached here: it is promoted
+        // again, or it comes back as a plain child of <html> that the page can
+        // move out of the viewport.
+        promoteToTopLayer(this.host);
       } catch (e) {
         // A page that refuses the append must not break the leader; the next
         // press tries again.
