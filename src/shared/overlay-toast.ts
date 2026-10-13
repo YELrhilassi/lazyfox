@@ -8,6 +8,7 @@
 
 import { mirror } from "./observability";
 import { TOAST_CSS } from "./overlaycss";
+import { promoteToTopLayer } from "./toplayer";
 
 const HOST_CSS =
   "all:initial;position:fixed;inset:0;z-index:2147483647;display:block;";
@@ -37,6 +38,11 @@ export function toast(msg: string): void {
     sh.appendChild(style);
     sh.appendChild(box);
     document.documentElement.appendChild(host);
+    // The toast is the product's report of what a command DID, so it has to be
+    // readable on the pages that break `position:fixed` as well as on ordinary
+    // ones: a page that transforms <html> would otherwise draw its message a
+    // scroll-height below the bottom of the screen. See shared/toplayer.ts.
+    promoteToTopLayer(host);
     toastHost = { host, span, box, timer: null };
   }
   toastHost.span.textContent = msg;

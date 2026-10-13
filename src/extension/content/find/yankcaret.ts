@@ -8,6 +8,7 @@
 // rules, and they have nothing to do with each other.
 
 import type { Seg } from "./yankgeometry";
+import { promoteToTopLayer } from "../../../shared/toplayer";
 
 const CARET_CSS =
   "all:initial;position:fixed;z-index:2147483647;pointer-events:none;" +
@@ -25,6 +26,9 @@ export class YankCaret {
       this.el.style.cssText = CARET_CSS;
     }
     document.documentElement.appendChild(this.el);
+    // The caret is pinned to a character's viewport rect, so it has to be
+    // placed against the viewport — see shared/toplayer.ts.
+    promoteToTopLayer(this.el);
     return this.el;
   }
 

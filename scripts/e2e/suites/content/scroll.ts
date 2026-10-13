@@ -77,12 +77,16 @@ export async function run(ctx: any): Promise<void> {
       (await evalIn(ctx.tabA, `window.scrollY`)) === 0,
       "the window itself never moved on a shell whose document cannot scroll"
     );
-    // G -> bottom and gg -> top follow the same target.
+    // G -> bottom and gg -> top follow the same target. "Bottom" is the pane's
+    // own scrollHeight minus its clientHeight — the h*0.8 heuristic that stood
+    // here was calibrated on a shorter harness window and broke (bottom reached
+    // exactly, 2910 < 3029) the moment the inner height grew; the real bottom
+    // condition does not care about the viewport.
     await ctx.press(ctx.tabA, "G");
     await waitFor(async () => {
       const p = await evalIn(ctx.tabA, `document.getElementById("pane").scrollTop`);
-      const h = await evalIn(ctx.tabA, `document.getElementById("pane").scrollHeight`);
-      return p > h * 0.8 ? true : null;
+      const max = await evalIn(ctx.tabA, `document.getElementById("pane").scrollHeight - document.getElementById("pane").clientHeight`);
+      return max > 0 && p > max - 5 ? true : null;
     }, 5000);
     await ctx.press(ctx.tabA, "g");
     await ctx.press(ctx.tabA, "g");

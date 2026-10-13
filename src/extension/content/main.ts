@@ -142,6 +142,15 @@ import type { ContentPopupShell } from "./find";
         currentPopup = null;
       });
       currentPopup = ctl;
+      // A HOST THAT CANNOT DRAW ITS PANEL MUST NOT HOLD THE KEYBOARD.
+      //
+      // `overlayOpenPopup` returns a dead controller when the panel's own
+      // build threw — it tears the sheet down rather than leaving a
+      // keystroke-eating ghost — and this is where that answer is honoured: a
+      // controller that is not alive on arrival is dropped immediately, so
+      // the user's very next key goes where they meant it to instead of being
+      // spent closing a popup that never existed.
+      if (!popupIsAlive(currentPopup)) currentPopup = null;
       return ctl;
     },
     close: closePopup,
