@@ -18,6 +18,7 @@ import * as surfaces from "./surfaces.ts";
 import * as ownership from "./ownership.ts";
 import * as stuck from "./stuck.ts";
 import * as held from "./held.ts";
+import * as toplayer from "./toplayer.ts";
 
 export const group = "content";
 
@@ -60,4 +61,8 @@ export async function run(ctx: any): Promise<void> {
   // a context-less tab.
   await stuck.run(ctx);
   await held.run(ctx);
+  // The overlays versus a page that transforms the root: last, because it is
+  // the only file that asserts on where things are PAINTED rather than on what
+  // the state says, and it leaves the tab on its own fixture either way.
+  await toplayer.run(ctx);
 }

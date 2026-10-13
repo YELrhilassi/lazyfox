@@ -1257,4 +1257,44 @@ document.addEventListener("keydown", function (e) {
 </script>
 </body></html>`,
   },
+
+  // A page whose ROOT ELEMENT IS TRANSFORMED — the shape a drawer/off-canvas
+  // menu, a scroll-lock library, a page-transition or a plain `translateZ(0)`
+  // GPU hint all produce.
+  //
+  // Per CSS, a transform on an element makes it the CONTAINING BLOCK for every
+  // `position:fixed` descendant, and the root element is no exception. So every
+  // overlay Lazyfox draws — the hint labels, the which-key panel, the popup's
+  // backdrop sheet — is then measured against the DOCUMENT box instead of the
+  // viewport: the labels land wherever the page is not, and the popup's
+  // full-viewport sheet is drawn outside the viewport while still swallowing
+  // every click and every keystroke that reaches the page.
+  //
+  // It is a fixture because the failure is exactly the report "everything
+  // stopped working and only a reload brought it back", and the only honest
+  // way to keep it fixed is to run the overlays on a page that does it. The
+  // page is scrollable and tall on purpose: a one-screen page hides the bug,
+  // since document coordinates and viewport coordinates coincide when nothing
+  // is scrolled.
+  "/transformed": {
+    body: `<!DOCTYPE html><html style="transform:translateZ(0)"><head><title>TRANSFORMED ROOT</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:16px 16px 0}
+.far{margin-top:600px}a,button,input{display:block;margin:14px 0;font-size:16px}
+/* TALLER THAN TWICE THE VIEWPORT, on purpose: see the layout suite. A sheet
+   anchored to the document box centres its card at H/2, which for a short page
+   is inside the viewport at every reachable scroll position — so a short
+   fixture cannot tell a correctly placed popup from a document-anchored one. */
+.spacer{height:2600px}</style></head>
+<body>
+<h1>Transformed root</h1>
+<a id="t-a" data-id="t-a" href="/target1">first link</a>
+<a id="t-b" data-id="t-b" href="/target2">second link</a>
+<input id="t-in" data-id="t-in" placeholder="type here">
+<div class="far">
+<a id="t-c" data-id="t-c" href="/target1">deep link</a>
+<button id="t-btn" data-id="t-btn" onclick="document.title='ACTIVATED'">deep button</button>
+</div>
+<div class="spacer"></div>
+</body></html>`,
+  },
 };

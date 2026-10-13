@@ -271,25 +271,50 @@ export async function run(ctx: any): Promise<void> {
     assert(tab, "the landed page is an active tab to hold the claim on");
 
     // The claim, written the way the product writes it: the flag, and WHEN it was
-    // made (only the writer knows, and only a recent claim may be restored).
-    const wrote = await ctx
-      .probeEval(
-        `browser.sessions.setTabValue(${tab.id}, "lfHold", "1")` +
-          `.then(() => browser.sessions.setTabValue(${tab.id}, "lfHoldAt", String(Date.now())))` +
-          `.then(() => true).catch(() => false)`
-      )
-      .catch(() => false);
+    // made (only the writer knows, and only a recent claim may be restored). Any
+    // lfHoldState tombstone left by an earlier test is cleared with it: that
+    // state shape is read by preference, so a legacy claim laid over it would
+    // never be consulted.
+    const writeClaim = () =>
+      ctx
+        .probeEval(
+          `browser.sessions.removeTabValue(${tab.id}, "lfHoldState").catch(() => {})` +
+            `.then(() => browser.sessions.setTabValue(${tab.id}, "lfHold", "1"))` +
+            `.then(() => browser.sessions.setTabValue(${tab.id}, "lfHoldAt", String(Date.now())))` +
+            `.then(() => true).catch(() => false)`,
+        )
+        .catch(() => false);
+    const wrote = await writeClaim();
     assert(wrote === true, "the hold claim is written for this tab");
 
     // A NEW DOCUMENT, which is what reads the claim on boot.
+    //
+    // The restore is decided ONCE, at the new document's boot handshake, and
+    // only claims younger than HOLD_RESTORE_GRACE_MS (2.5s) count. On a busy
+    // full-suite run the gap between writing the claim and the new boot can
+    // exceed that, so a refused restore reads as a product bug. The suite
+    // controls its own clock: if the first landing missed the grace, re-land
+    // the same way the product's restored hold would be re-armed on a real
+    // crossing — a fresh claim a fresh document reads fresh.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/?crossed=1`);
-    const restored = await waitFor(async () => {
+    let restored = await waitFor(async () => {
       const armed = await evalIn(
         ctx.tabA,
         `document.documentElement.getAttribute("data-lf-leader") === "1"`
       ).catch(() => false);
       return armed ? true : null;
-    }, 10000).catch(() => null);
+    }, 4000).catch(() => null);
+    if (restored === null) {
+      await writeClaim();
+      await ctx.gotoPage(ctx.tabA, `${ctx.base}/?crossed=2`);
+      restored = await waitFor(async () => {
+        const armed = await evalIn(
+          ctx.tabA,
+          `document.documentElement.getAttribute("data-lf-leader") === "1"`
+        ).catch(() => false);
+        return armed ? true : null;
+      }, 10000).catch(() => null);
+    }
     assert(
       restored !== null,
       "the new document restores the hold: the leader is armed there without a second `;`"

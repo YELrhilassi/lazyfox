@@ -196,7 +196,18 @@ export function startGecko({ profile }: { profile?: string } = {}, signal?: Abor
       return;
     }
     const port = 40000 + Math.floor(Math.random() * 20000);
-    const args = ["--port", String(port), "--log", "trace", "--allow-system-access"];
+    // --websocket-port 0: Firefox's remote agent (the WebDriver BiDi listener
+    // behind webSocketUrl) binds its port BEFORE any harness code can error,
+    // and geckodriver's default for it is the FIXED port 9222. Every run that
+    // dies hard (a timed-out shell, a crashed assert) leaves a zombie firefox
+    // still holding 9222, and every subsequent run then hangs FOREVER inside
+    // the session POST with no rejection and no timeout — measured today: the
+    // stress probe sat at startGecko() for 540s twice while a leftover
+    // automation Firefox held the port, and a fresh run with the port free
+    // created the same session in 3s. `0` asks the OS for a free port per
+    // run, so runs can no longer deadlock each other.
+    // (NOT the same as --port 0, which is geckodriver's own HTTP port.)
+    const args = ["--port", String(port), "--log", "trace", "--allow-system-access", "--websocket-port", "0"];
     const gd = spawn(GECKO, args, { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
@@ -218,6 +229,15 @@ export function startGecko({ profile }: { profile?: string } = {}, signal?: Abor
               "-no-remote",
               ...(profile ? ["-profile", profile] : []),
               ...(HEADLESS ? ["-headless"] : []),
+              // The default headless window size is Firefox's choice and it
+              // DROPPED across versions (inner height ~529px in the current
+              // Developer Edition). Tests below /uitest's fold (nearby-link at
+              // y=558, body-visible at y=591) then fail on an honestly empty
+              // batch, and browsingContext.setViewport cannot exceed the
+              // window bounds to fix it. Size the FIRST window here so the
+              // suite's viewport assertions are deterministic.
+              "-width", "1070",
+              "-height", "960",
             ],
             prefs: {
               "browser.startup.page": 0,
