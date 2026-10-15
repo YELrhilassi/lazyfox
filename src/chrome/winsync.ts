@@ -109,19 +109,42 @@ export function installWinSync(deps: WinSyncDeps): void {
   // rather than a mistake (the rule declines the same way it does everywhere
   // else). It is here because "no event fires" is a real state, not a
   // theoretical one, and the cost of being wrong is one idempotent focus call.
+  const applyKeyboardNow = (): void => {
+    try {
+      deps.keyboard.giveKeyboardToSelectedPage();
+    } catch {
+      // a window torn down mid-event has no page to give the keyboard to
+    }
+  };
   try {
     const chromeDoc: any = env.document;
-    const apply = (): void => {
-      try {
-        deps.keyboard.giveKeyboardToSelectedPage();
-      } catch {
-        // a window torn down mid-boot has no page to give the keyboard to
-      }
-    };
-    if (chromeDoc && chromeDoc.readyState === "complete") env.setTimeout(apply, 0);
-    else win.addEventListener("load", apply, { once: true } as any);
+    if (chromeDoc && chromeDoc.readyState === "complete") env.setTimeout(applyKeyboardNow, 0);
+    else win.addEventListener("load", applyKeyboardNow, { once: true } as any);
   } catch {
     // a window without a readable document loads no page here
+  }
+
+  // COMING BACK TO THE WINDOW — the moment nothing used to fire the rule at all.
+  //
+  // While the window is inactive there are no keyboard events on this side, so no
+  // trigger can run and the keyboard stays exactly where the user left it. If it
+  // was in the URL bar, in the toolbar or nowhere, it is still there on return,
+  // and the first keys the user types are answered by the browser chrome instead
+  // of the page: Lazyfox looks frozen until they click on the page, which is the
+  // one repair this whole module exists to make unnecessary.
+  //
+  // `activate` is the window BECOMING the active one. `focus` is listened for as
+  // well, and deliberately only when the WINDOW ITSELF is the target: a chrome
+  // element taking focus (the user clicking the URL bar) bubbles a focus event up
+  // to the window, and acting on that would pull the caret straight back out of
+  // the field they just clicked into.
+  try {
+    win.addEventListener("activate", applyKeyboardNow);
+    win.addEventListener("focus", (e: any) => {
+      if (e && e.target === win) applyKeyboardNow();
+    });
+  } catch {
+    // a window that cannot take these listeners keeps the boot trigger
   }
 
   /* ---- tab select bookkeeping ---- */

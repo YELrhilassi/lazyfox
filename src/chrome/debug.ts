@@ -62,6 +62,16 @@ export interface DebugState {
    * Dev-only and in memory (see keysdispatch.ts); empty in a release build.
    */
   keyTrace(): Array<Record<string, unknown>>;
+  /**
+   * The live presence records, one per tab that has reported itself.
+   *
+   * `chromeOwnsKeys` answers from a record looked up ON THE SELECTED TAB, so
+   * when it answers wrongly there are exactly two possibilities — nothing was
+   * ever recorded for that tab, or the record is on a neighbour — and they have
+   * opposite fixes. This names which, with the strip index each record is on at
+   * the moment of the read (see keystate.presenceSnapshot).
+   */
+  presence(): Array<{ i: number; u: string; d: string }>;
   lastMoveDebug(): string | null;
   statusMounted(): boolean;
   statusPosition(): string;
@@ -115,6 +125,45 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
     } catch (e) {
       // ignore
     }
+  }
+
+  function handleBlur(browser: any, rest: string, setHash: (browser: any, hash: string) => void): void {
+    // Debug/verification: put the KEYBOARD in the browser's own UI — the state a
+    // user reaches by moving the mouse to the top of the window (the toolbar
+    // reveals on hover) and clicking anything up there, or by any path that
+    // leaves focus in the chrome after our own UI hid it again.
+    //
+    // It exists because that state cannot be produced from the e2e side at all:
+    // Lazyfox HIDES the URL bar, so Ctrl+L focuses nothing there, and BiDi can
+    // deliver a key to the focused document but cannot choose which chrome
+    // element that is. The whole "Lazyfox stops responding until I click the
+    // page" class lives in this state, so the harness has to be able to enter it.
+    // The toolbox is revealed first (the same attribute `lfc=reveal` toggles): a
+    // `display: none` ancestor makes an input unfocusable, so a URL bar that is
+    // hidden would refuse the focus and this hook would silently do nothing.
+    const dot = rest.indexOf(".");
+    const nonce = dot < 0 ? rest : rest.slice(0, dot);
+    const how: Record<string, unknown> = {};
+    try {
+      const tb = doc.getElementById("navigator-toolbox");
+      if (tb) tb.setAttribute("lf-debug-reveal", "1");
+      how.revealed = !!tb;
+    } catch (e) {
+      how.revealed = "err:" + String(e);
+    }
+    try {
+      const urlbar = win.gURLBar || (win.document && win.document.getElementById("urlbar"));
+      if (urlbar && typeof urlbar.focus === "function") urlbar.focus();
+      how.urlbar = !!urlbar;
+    } catch (e) {
+      how.urlbar = "err:" + String(e);
+    }
+    try {
+      how.focused = String((env.services.focus && env.services.focus.focusedElement && env.services.focus.focusedElement.tagName) || "") || null;
+    } catch (e) {
+      how.focused = "err";
+    }
+    setHash(browser, "#lfc=blur." + btoa(JSON.stringify(how)) + "." + nonce);
   }
 
   function handleConsole(browser: any, rest: string, setHash: (browser: any, hash: string) => void): void {
@@ -306,6 +355,7 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
   return {
     handle(browser, cmd, rest, setHash) {
       if (cmd === "reveal") handleReveal(browser, rest, setHash);
+      else if (cmd === "blur") handleBlur(browser, rest, setHash);
       else if (cmd === "console") handleConsole(browser, rest, setHash);
       else if (cmd === "diag") handleDiag(browser, rest, setHash);
       else if (cmd === "state") handleState(browser, rest, setHash);

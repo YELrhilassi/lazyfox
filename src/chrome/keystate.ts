@@ -471,6 +471,42 @@ export function contentScriptPresent(browser: unknown, win?: ChromeWindow): bool
   }
 }
 
+/**
+ * Every live presence record this window holds, as `{ i, u, d }`.
+ *
+ * Dev/verification only, and it exists because a WRONG answer out of this module
+ * is otherwise indistinguishable from a missing one. "The helper claimed the
+ * keys on a live page" has exactly two causes — a record that was never placed
+ * on that tab, or one that was placed on a neighbour — and no other field of the
+ * `#lfc=state` reply can tell them apart; the assertion just says the answer
+ * stayed wrong for nine seconds.
+ *
+ * `i` is the tab's strip index AT THE MOMENT OF THE READ, deliberately, so a
+ * record that is a slot (or a tab) away from where it belongs is visible as
+ * exactly that. `u` is the URL the record names and `d` its document nonce
+ * (empty only for a host that reported none).
+ */
+export function presenceSnapshot(win: ChromeWindow): Array<{ i: number; u: string; d: string }> {
+  const out: Array<{ i: number; u: string; d: string }> = [];
+  try {
+    const tabs = (win as any).gBrowser && (win as any).gBrowser.tabs;
+    if (!tabs) return out;
+    const n = Number(tabs.length) || 0;
+    for (let i = 0; i < n; i++) {
+      const t = tabs[i];
+      const rec = t ? contentPresent.get(t) : undefined;
+      if (!rec || rec.epoch !== presenceEpoch) continue;
+      out.push({ i, u: String(rec.url || ""), d: String(rec.doc || "") });
+      // Bounded like every other list in the reply: a window with more records
+      // than this has a different problem, and a status reply is not a dump.
+      if (out.length >= 12) break;
+    }
+  } catch (e) {
+    // an unreadable strip names no records
+  }
+  return out;
+}
+
 export function chromeOwnsKeys(win: ChromeWindow): boolean {
   try {
     const b = (win as any).gBrowser.selectedBrowser;

@@ -54,6 +54,7 @@ import {
   contentScriptPresent,
   isCommandCenterTab,
   noteContentPresent,
+  presenceSnapshot,
   presenceTabForReport,
 } from "./keystate";
 import { focusCommandCenterContent, focusSelectedContent } from "./commandcenterfocus";
@@ -253,6 +254,12 @@ import { createTypingChannel } from "./typing";
       // one took (dev-only, in memory — see keysdispatch.ts). A key that did
       // nothing is otherwise indistinguishable from a key that never arrived.
       keyTrace: () => dispatch.dispatchTrace(),
+      // WHERE THE "THIS PAGE ANSWERS ITS OWN KEYS" CLAIM ACTUALLY LIVES, one row
+      // per tab. Ownership is read from the record on the SELECTED tab, so a
+      // wrong answer is either "no record was ever placed" or "placed on the
+      // wrong tab" — the two have opposite fixes and every other field of this
+      // reply reports them identically.
+      presence: () => presenceSnapshot(win),
       leaderPending: () => !!(leader && leader.hasPending()),
       lastAction: () => lastAction,
       lastMoveDebug: () => (moveLog.length ? moveLog.join(" | ") : null),

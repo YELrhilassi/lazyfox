@@ -121,6 +121,68 @@ export function focusSelectedContent(win: ChromeWindow, fm?: FocusService, flags
   }
 }
 
+/**
+ * Does the SELECTED tab's content currently have the KEYBOARD?
+ *
+ * A different question from who OWNS the keys, and the one that decides whether
+ * a declined keystroke will be answered by anybody at all. A keydown is
+ * delivered to the FOCUSED document, so when focus sits in the browser's own UI
+ * — the hidden URL bar Firefox parks it in, the toolbar a hover reveals, the tab
+ * strip, a split's splitter — the page's own listener never runs, and every key
+ * the chrome helper "declined because the page owns it" is answered by the
+ * browser instead. That is the reported freeze: Lazyfox looks dead on a page
+ * that is perfectly healthy, and a click on the page is what fixes it.
+ *
+ * THREE ANSWERS, and the third is the one that has to be right:
+ *
+ *   * `focusedElement` IS the selected browser, or an element inside its
+ *     document: the page has it (a remote tab reports the <browser> itself —
+ *     with a click in the page — and an in-process document reports the element);
+ *   * `focusedElement` is some other element: the keyboard is somewhere this
+ *     window can see and the page is not it;
+ *   * NOTHING holds it, which is a real and measured state (see
+ *     focusSelectedContent: the tab is in front, the window is active, and the
+ *     focus manager reports `focusedElement: null`) — but ONLY while this window
+ *     is the active one. An inactive window reports no focused element as a
+ *     property of being inactive, and its page keeps the keyboard for the moment
+ *     the user comes back, so that case must not be read as "nobody has it".
+ *
+ * An unreadable focus manager answers YES: a repair we cannot justify is a
+ * caret yanked out of the field the user was typing in, which is worse than the
+ * freeze it is meant to fix.
+ */
+export function selectedContentHasKeyboard(win: ChromeWindow, fm?: FocusService): boolean {
+  if (!fm) return true;
+  let b: any = null;
+  try {
+    b = (win as any).gBrowser.selectedBrowser || null;
+  } catch {
+    b = null;
+  }
+  if (!b) return true;
+  let el: any = null;
+  try {
+    el = fm.focusedElement || null;
+  } catch {
+    el = null;
+  }
+  if (el === b) return true;
+  if (!el) {
+    try {
+      return fm.activeWindow !== win;
+    } catch {
+      return true;
+    }
+  }
+  try {
+    return !!b.contentDocument && el.ownerDocument === b.contentDocument;
+  } catch {
+    // A remote document is not reachable from here: the element is not the
+    // browser and cannot be proved to be inside it, so the page does not have it.
+    return false;
+  }
+}
+
 // "THE BODY IS THE ACTIVE ELEMENT" IS NOT "THE PAGE HAS THE KEYBOARD", and
 // conflating the two is a dead keyboard rather than a cosmetic slip.
 //
