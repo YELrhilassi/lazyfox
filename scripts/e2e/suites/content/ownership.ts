@@ -144,16 +144,29 @@ export async function run(ctx: any): Promise<void> {
   ): Promise<void> {
     await selectAndSettle(tabId, url);
     let last: any = "unreadable";
+    // THE TWO CAUSES, captured on every poll rather than only at the end.
+    //
+    // Ownership is decided from the presence record ON THE SELECTED TAB, so a
+    // wrong answer means either that no record was ever placed for this tab or
+    // that one was placed on a neighbour — opposite fixes, and until now the two
+    // reported identically ("it kept saying true" for nine seconds). The
+    // snapshot names the tab each live record is on, and the selected URL says
+    // whether the read was even about the tab under test.
+    let presence: any = "unreadable";
+    let seenSel: any = "unreadable";
     const settled = await waitFor(async () => {
       const st = await ctx.chromeStateHandle();
       last = st.leader().ownsKeys;
+      presence = st.presence();
+      seenSel = st.raw.selUrl;
       return last === expected ? true : null;
     }, 9000).catch(() => null);
     assert(
       settled,
       `${what}: chrome's own answer about ${url} should be ${expected} ` +
         `(down = the chrome helper handles the keys, up = the page's script does), ` +
-        `and it kept saying ${last}`
+        `and it kept saying ${last}. tab=${tabId} selected=${JSON.stringify(seenSel)} ` +
+        `presence=${JSON.stringify(presence)}`
     );
   }
 
