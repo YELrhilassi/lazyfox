@@ -31,8 +31,14 @@ export interface ChromeStateSource {
   hasPopup(): boolean;
   leaderActive(): boolean;
   chromeOwnsKeys(): boolean;
+  /** Where the keyboard is — see ChromeStateFocusV1. Never a decision input. */
+  focus(): ChromeStateFocusV1;
   leaderPending(): boolean;
   lastAction(): string | null;
+  /** The leader's table state — see ChromeStateV1.keymap. */
+  keymap(): { ready: boolean; buffered: number };
+  /** The dispatcher's key trace — see ChromeStateV1.keyTrace. */
+  keyTrace(): Array<Record<string, unknown>>;
   lastMoveDebug(): string | null;
   statusMounted(): boolean;
   statusPosition(): string;
@@ -88,6 +94,59 @@ export interface ChromeStatePopupV1 {
   inputValues: string[];
 }
 
+/**
+ * Where the browser's OWN keyboard focus is.
+ *
+ * Added to the readout because "who owns the keys" and "who has the KEYBOARD"
+ * are two different questions, and only the second one explains the report
+ * these tests exist for: the page is alive, the helper defers to it, and no key
+ * arrives — because focus is parked in the browser's own UI. The page can answer
+ * that for a content-process document (`document.hasFocus()`); an
+ * extension-process page — the command center — cannot answer it at all, so the
+ * browser's focus manager is asked, from the realm that owns the keyboard.
+ *
+ * No decision reads this. It exists so a failure can say WHY the keys went
+ * nowhere instead of reporting the absence of an effect.
+ */
+export interface ChromeStateFocusV1 {
+  /** The window is the OS-active one (`Services.focus.activeWindow === win`). */
+  activeWindow: boolean;
+  /** The element the browser says has the keyboard, as `tag#id`, or null. */
+  focused: string | null;
+  /** That element is the SELECTED tab's content (its <browser>, or inside it). */
+  inSelectedContent: boolean;
+  //
+  // THE FIELDS BELOW ANSWER "WHY IS `focused` NULL", which is the shape the
+  // reported freeze has and the shape that cannot be diagnosed from `focused`
+  // alone. A keyboard that exists nowhere is one of:
+  //   * another window has it (`focusedWindow`), so nothing here can take it;
+  //   * the page's document is out-of-process (`remote`) and cannot be reached
+  //     from here at all, so "has the keyboard" is the browser element's
+  //     question and not the page's;
+  //   * the selected tab's docshell is not the active one (`docShellActive`),
+  //     which is worth having beside the rest rather than instead of it: it was
+  //     false in BOTH measured shapes of a page that legitimately had the
+  //     keyboard (an in-process command center and a remote web page), so it is
+  //     a fact about the tab, not a verdict about the keyboard.
+  // `chromeActive` (what the chrome document itself thinks is focused) and
+  // `pageHasFocus` (the selected page's own answer, or null when it cannot be
+  // asked) are what turn the zero into a diagnosis. Measured on the command
+  // center, after a tab switch: `focused: null` with `chromeActive: "browser"`
+  // and `pageHasFocus: true` — the focus manager has no element to name while
+  // the document itself answers that it has the keyboard, so a reader that
+  // trusted `focused` alone would call a working page dead.
+  /** The selected tab's document runs in another process (`isRemoteBrowser`). */
+  remote: boolean;
+  /** The selected tab's docshell is the active one (`docShell.isActive`). */
+  docShellActive: boolean;
+  /** Whether the keyboard's window is THIS window, another one, or unknown. */
+  focusedWindow: "this" | "other" | null;
+  /** What the chrome document's own `activeElement` is, as `tag#id`, or null. */
+  chromeActive: string | null;
+  /** The selected page's own `document.hasFocus()`, or null when unaskable. */
+  pageHasFocus: boolean | null;
+}
+
 export interface ChromeStateV1 {
   /** The reply's contract version. Always present. */
   v: number;
@@ -120,6 +179,27 @@ export interface ChromeStateV1 {
   lastAction: string | null;
   lastMoveDebug: string | null;
   selUrl: string;
+  /** Where the keyboard actually is — see ChromeStateFocusV1. */
+  focus: ChromeStateFocusV1 | { error: string };
+  /**
+   * The leader's own table and what it is holding back because of it.
+   *
+   * Both halves exist because "the leader is armed and nothing ran" and "the
+   * leader is armed and its keymap never loaded" look identical from every
+   * other field — and they have different fixes (a binding bug versus a core
+   * that never booted), so the reply has to name which one it is.
+   */
+  keymap: { ready: boolean; buffered: number };
+  /**
+   * The last keystrokes the helper's dispatcher saw, newest last, each with the
+   * branch it took (`br`) and whether it was consumed (`c`).
+   *
+   * Dev-only: a release build records nothing and the list is empty. It exists
+   * because "the key did nothing" and "the key never arrived" are opposite
+   * diagnoses with opposite fixes, and no other field of this reply can tell
+   * them apart.
+   */
+  keyTrace: Array<Record<string, unknown>>;
 
   // --- tabs -------------------------------------------------------------------
   mutedCount: number;
@@ -319,10 +399,18 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
     partial.leaderPending = verdict("leaderPending", () => st.leaderPending());
     partial.lastAction = verdict("lastAction", () => st.lastAction());
     partial.lastMoveDebug = verdict("lastMoveDebug", () => st.lastMoveDebug());
+    // A field that cannot be read keeps the rest of the snapshot: it degrades
+    // rather than failing the reply, unlike the ownership verdicts above.
+    partial.keymap = step("keymap", () => st.keymap(), {
+      ready: false,
+      buffered: -1,
+    } as any);
+    partial.keyTrace = step("keyTrace", () => st.keyTrace(), [] as any);
     partial.selUrl = step("selUrl", () => {
       const u = win.gBrowser.selectedBrowser && win.gBrowser.selectedBrowser.currentURI;
       return u ? String(u.spec) : "?";
     }, "err");
+    partial.focus = step("focus", () => st.focus(), { error: "focus unavailable" } as any);
 
     // --- tabs ----------------------------------------------------------------
     partial.mutedCount = step("mutedCount", () => {

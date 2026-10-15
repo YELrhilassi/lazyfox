@@ -199,10 +199,45 @@ blind. There is no "N more" signal.
 `collectHintables()` also stops after `MAX_SCAN = 14000` nodes in document
 order, so on a very large page the sweep can end before it reaches the player.
 
-### 2.5 `all_frames: false`
+### 2.5 Frames — the KEYS are fixed; hint *collection* is still top-frame-only
 
-The content script does not run in iframes. Any control inside an ad iframe, an
-embedded widget or a third-party player is not hintable, by construction.
+There were always two consequences of `all_frames: false`, and they were
+reported as one. They need different fixes, and only one of them is done.
+
+**(a) Every Lazyfox key was dead while a frame held focus — FIXED.** A frame is
+a different document, so a key typed inside one was delivered there and the top
+document's listener never ran. The user's repair was to click the page, which
+moves the keyboard out of the frame — and that is, verbatim, the field report
+*"I get stuck or Lazyfox becomes unresponsive until I click on the page"*. It
+is now covered by `src/extension/content/framekeys.ts`: the content script runs
+in every frame (`all_frames: true`), a frame SWALLOWS the keys the top document
+claims (the leader key, the vim scroll keys, and everything while the leader is
+armed or a hint layer is up) and hands them up by `postMessage`, and the top
+document runs them through the same capture listener a real keystroke reaches
+— one key engine, one state, no second implementation. Everything else, and
+anything typed with a caret in the frame's own field, passes through untouched.
+
+Measured, both directions, in `scripts/e2e/suites/content/focus`:
+
+| | before | after |
+|---|---|---|
+| `;` with focus on a control in a frame | frame received it, top leader stayed **dark** (FAIL) | top leader **arms** (PASS) |
+| `;` with a caret in the frame's field | — | the character lands **in the field**, leader stays dark |
+| `q` (a key Lazyfox does not own) in a frame | — | the frame's own page receives it |
+
+**Scope, stated rather than implied:** the frame's target must be a *control*,
+not a text field (typing wins, as everywhere else); `about:blank` and `srcdoc`
+frames are deliberately NOT matched yet (`match_about_blank` is off, and the
+behavior of `match_origin_as_fallback` in a shipped Firefox is untested here);
+and the chrome-side `;f` on a frame-only page still says so in words.
+
+**(b) A control inside an iframe is not hinted — STILL TRUE.** The collector
+walks the document it runs in, and the labels live in the top document's
+coordinate space, so hint *collection* across frames is a real feature (a
+per-frame pool, offsets, a shared key namespace) rather than a manifest flag.
+Until it exists, `;f` on a page with a visible frame says so on every
+invocation, which is what keeps the silence from being mistaken for "nothing to
+hint here".
 
 ### 2.6 Activation is fire-and-forget, so failure is invisible (fixed)
 
@@ -308,8 +343,11 @@ change, not new test infrastructure.
   visible text of a candidate, not just its key. "I can see the button, I just
   do not know its key" is the most common real failure of hint systems, and the
   key pool cannot solve it.
-- **Frames.** Consider `all_frames: true` (with care: the leader/hint state must
-  be per-frame) so ad iframes and embedded players are hintable at all.
+- **Frames, part two.** The keys now reach the owner document from any frame
+  (§2.5a). What is left is hint COLLECTION across frames: a per-frame pool, the
+  offset between the frame's viewport and the top document's, and one shared key
+  namespace. That is its own pass, and it starts by extending the fixture the
+  key work already has (`/frame` + `/frameinner`).
 - **A visible "more" affordance** rather than a silent cap.
 
 ### P2 — If a trusted press ever comes back

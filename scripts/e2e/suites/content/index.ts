@@ -19,6 +19,7 @@ import * as ownership from "./ownership.ts";
 import * as stuck from "./stuck.ts";
 import * as held from "./held.ts";
 import * as toplayer from "./toplayer.ts";
+import * as focus from "./focus.ts";
 
 export const group = "content";
 
@@ -65,4 +66,9 @@ export async function run(ctx: any): Promise<void> {
   // the only file that asserts on where things are PAINTED rather than on what
   // the state says, and it leaves the tab on its own fixture either way.
   await toplayer.run(ctx);
+  // LAST, and deliberately so: it collapses the window and makes its own two
+  // tabs (once a close needs a survivor and once an activation needs a
+  // target), which is exactly the state earlier files must not inherit —
+  // several of them count tabs or address "whatever real tab is first".
+  await focus.run(ctx);
 }

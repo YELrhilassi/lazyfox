@@ -406,7 +406,15 @@ export function createChannel(deps: ChannelDeps): Channel {
       handleOpen(rest, browser);
       return;
     }
-    if (cmd === "reveal" || cmd === "console" || cmd === "diag" || cmd === "state") {
+    if (
+      cmd === "reveal" ||
+      cmd === "console" ||
+      cmd === "diag" ||
+      cmd === "state" ||
+      // The keyboard rule, runnable on demand — see debug.ts handleFocus and
+      // DebugState.giveKeyboard. Dev/verification only, like its neighbours.
+      cmd === "focus"
+    ) {
       deps.debug.handle(browser, cmd, rest, setHash);
       return;
     }

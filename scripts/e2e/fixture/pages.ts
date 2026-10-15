@@ -19,7 +19,6 @@ import {
   sleep,
   httpJson,
 } from "../bidi.ts";
-import { contextsOf } from "./contexts.ts";
 
 export function installPages(
   // The per-test context bag. Typed as any deliberately: the helpers are
@@ -253,10 +252,26 @@ export function installPages(
     return p;
   };
 
+  // The command-center tabs in this window, found by asking each document WHERE
+  // IT IS rather than by matching the tree's URL string.
+  //
+  // The string version had a false positive that made half of one test's runs
+  // read the wrong document: the channel's own messages ride a URL FRAGMENT, and
+  // a presence report ABOUT a home tab (`relay.html#lfr=cm.contentState.` with
+  // `%22url%22%3A%22…commandcenter.html%22` inside) contains the very substring
+  // this used to match — so the hidden relay carrier was handed back as a
+  // command-center tab. A document's own `location.href` cannot be spoofed by a
+  // message passing through the tab next door.
   ctx.ccTabs = async function ccTabs() {
-    return contextsOf(await getTree()).filter(
-      (c) => c.url && c.url.includes("commandcenter.html") && c.context !== ctx.tabA && c.context !== ctx.probe
-    );
+    const top = await getTree().catch(() => []);
+    const out: any[] = [];
+    for (const c of Array.isArray(top) ? top : []) {
+      const href = await evalIn(c.context, `location.href`).catch(() => null);
+      if (!href || !String(href).includes("commandcenter.html")) continue;
+      if (c.context === ctx.tabA || c.context === ctx.probe) continue;
+      out.push(c);
+    }
+    return out;
   };
 
   ctx.hasHost = function hasHost(tab, id) {

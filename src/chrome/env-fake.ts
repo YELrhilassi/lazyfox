@@ -42,6 +42,17 @@ export interface FakeChromeEnv extends ChromeEnv {
   readonly appended: any[];
   /** Every `btoa` input, so a wire test can decode what a handler encoded. */
   readonly encoded: string[];
+  /**
+   * The tab progress listeners `gBrowser.addTabsProgressListener` received.
+   *
+   * The keyboard's LOAD trigger lives in one of these (`onStateChange`,
+   * chrome/winsync.ts) and a listener that is registered but never driven from
+   * a test is a rule nobody checks — which is how the freeze it exists for
+   * reached a user in the first place.
+   */
+  readonly progressListeners: any[];
+  /** Deliver a TabSelect to the tab container's listeners. */
+  dispatchTabSelect(): void;
   /** Timers scheduled through `setTimeout`, runnable by `runTimers()`. */
   runTimers(): void;
   /** Add an element to the document under `id`. */
@@ -244,7 +255,14 @@ export function createFakeChromeEnv(
       currentURI: { spec: t.url },
       contentDocument: null,
       contentWindow: null,
-      focus() {},
+      // COUNTED, not ignored: focusing the browser element is how the helper
+      // gives a tab its keyboard back (see chrome/keyboardfocus.ts and
+      // commandcenterfocus.focusSelectedContent), so a test has to be able to
+      // see that it happened and to which browser.
+      focusCount: 0,
+      focus() {
+        this.focusCount++;
+      },
       fixupAndLoadURIString() {},
     };
     el._active = !!t.active;
@@ -303,9 +321,32 @@ export function createFakeChromeEnv(
       if (i !== -1) win.listeners.splice(i, 1);
     },
     getComputedStyle: (el: any) => ({ display: el && el.attrs && el.attrs.hidden ? "none" : "block" }),
+    // The window's own timers. Recorded as a no-op handle rather than run: a
+    // module that arms a poller here (winsync's relay/status tick) must be able
+    // to be constructed by a test, and a poller that fires mid-test would make
+    // assertions about what a trigger did depend on how long the test took.
+    setInterval: () => 0,
+    clearInterval: () => {},
   };
+  // The tab container's own TabSelect listeners, and the progress listeners
+  // gBrowser hands a listener object to. Both are RECORDED rather than ignored:
+  // the keyboard's tab-select / document-loaded triggers are registered here,
+  // and a fake that swallowed them could not tell a wired trigger from a
+  // missing one.
+  const tabSelectListeners: Array<(e?: any) => void> = [];
+  const progressListeners: any[] = [];
   win.gBrowser = {
     tabs,
+    tabContainer: {
+      addEventListener(type: string, fn: (e?: any) => void) {
+        if (type === "TabSelect") tabSelectListeners.push(fn);
+      },
+      removeEventListener() {},
+    },
+    addTabsProgressListener(fn: any) {
+      progressListeners.push(fn);
+    },
+    removeTabsProgressListener() {},
     get selectedTab() {
       const i = opts.selected != null ? opts.selected : tabs.findIndex((t) => t._active);
       return i >= 0 && i < tabs.length ? tabs[i] : tabs[0] || null;
@@ -317,7 +358,15 @@ export function createFakeChromeEnv(
     addTab: (url: string) => {
       const el = mkEl("tab");
       el.url = url;
-      el.linkedBrowser = { currentURI: { spec: url }, contentDocument: null, contentWindow: null };
+      el.linkedBrowser = {
+        currentURI: { spec: url },
+        contentDocument: null,
+        contentWindow: null,
+        focusCount: 0,
+        focus() {
+          this.focusCount++;
+        },
+      };
       tabs.push(el);
       return el;
     },
@@ -374,10 +423,18 @@ export function createFakeChromeEnv(
       nsIFile: 1,
       nsISubstitutingProtocolHandler: 2,
       nsINavHistoryQueryOptions: { SORT_BY_DATE_DESCENDING: 100 },
+      // The real IDL's values, so a test drives the product through the same
+      // flag arithmetic the browser does (chrome/winsync.ts reads these).
+      nsIWebProgressListener: {
+        STATE_START: 0x00000001,
+        STATE_STOP: 0x00000010,
+        STATE_IS_DOCUMENT: 0x00020000,
+        STATE_IS_WINDOW: 0x00080000,
+      },
     },
     Cc: {},
     Cu: { isDeadWrapper: (o: any) => !!(o && o.__dead) },
-    ChromeUtils: { importESModule: () => null },
+    ChromeUtils: { importESModule: () => null, generateQI: () => ({}) },
     // Real zoom levels, keyed by browser object, so a test can drive
     // `;zoom` twice and assert the level actually moved.
     ZoomManager: {
@@ -401,6 +458,10 @@ export function createFakeChromeEnv(
     atob: (s: string) => atob(s),
     getComputedStyle: win.getComputedStyle,
     console: { log() {}, error() {} },
+    progressListeners,
+    dispatchTabSelect() {
+      for (const fn of tabSelectListeners.slice()) fn({});
+    },
     runTimers() {
       // Drain in waves: a timer can schedule another, and the popup host
       // relies on exactly that (focus() runs in a 0ms timer).

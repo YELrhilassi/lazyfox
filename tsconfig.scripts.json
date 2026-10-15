@@ -148,6 +148,20 @@
 // FEELS — whether the tail of a keystroke is withheld — and a test no config
 // compiles is exactly how such a rule quietly stops being true.
 //
+// scripts/test/keyboard-focus.test.ts and scripts/test/window-sync.test.ts are
+// the latest two, and they are the same shape as window-listeners: both drive
+// chrome-side modules whose signatures are typed against the DOM and the
+// browser's own globals. The first drives commandcenterfocus.ts
+// (KeyboardEvent, Element, contentWindow) and the fake environment the chrome
+// modules are constructed over; the second drives winsync.ts, whose
+// collaborators include statusbar.ts and toplayer.ts (HTMLElement, Document).
+// Those modules are typechecked by tsconfig.json, which owns the browser tree;
+// what is out of scope here is only the Node-side USE of them. They are listed
+// rather than left out silently for the same reason window-listeners.test.ts
+// is: both pin rules a user FEELS — which page the keyboard belongs to, and
+// which events hand it over — and a test no config compiles is how such a rule
+// quietly stops being true.
+//
 // Note which module is deliberately not on this list:
 // content/hints/frames.ts (the measurement-pass coalescer and the safety net's
 // cadence) is DOM-free by construction — its frame host is injected — so it IS
@@ -189,7 +203,9 @@
     "scripts/wk-preview.ts",
     "scripts/hints-preview.ts",
     "scripts/test/chrome-pagehints.test.ts",
-    "scripts/test/window-listeners.test.ts"
+    "scripts/test/window-listeners.test.ts",
+    "scripts/test/keyboard-focus.test.ts",
+    "scripts/test/window-sync.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

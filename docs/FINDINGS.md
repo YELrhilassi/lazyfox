@@ -852,6 +852,27 @@ assertion is unchanged; only the timing assumption is gone. Measured: both
 tests failed in the full-group run before the change and pass in the focused run
 after it.
 
+### DONE — "the fresh tab never reached command mode", on half of all runs
+
+The test that opens a new home tab with `;n` and asserts it comes up in command
+mode picked that tab with `ctx.ccTabs()[0]` — "the first browsing context whose
+URL contains `commandcenter.html`, that is not tabA or the probe". It failed 3 of
+6 runs, and the facts it read on the way to failing came from **relay.html**: the
+tree's own `url` for the hidden relay carrier held a `#lfr=cm.contentState`
+report ABOUT a home tab, and that report's JSON contains the string
+`commandcenter.html` inside its percent-encoded URL field. So the substring test
+handed back the carrier, and the test spent its whole ten-second budget waiting
+for a table of contents that page does not have.
+
+A URL that carries Lazyfox's own messages cannot be matched by substring, and
+the tree's order is not the strip's — both were guesses at an identity that was
+available. The fixture now asks the WINDOW which tab `;n` opened (the new id,
+against the ids read before the press) and resolves id → browsing context
+through the product's own id space (`ctx.contextForTabId`); `ccTabs` asks each
+top-level document for its own `location.href` rather than trusting the tree's
+string. Measured after the change: 6/6 runs, and the failure message, if it comes
+back, names the tab id and the page's own state.
+
 ## OPEN
 
 ### OPEN — the react migration

@@ -510,6 +510,21 @@ export class LeaderController {
     this.panel.fill(v.head, v.body, v.foot);
   }
 
+  /**
+   * How many keystrokes this leader is holding because its table has not
+   * arrived.
+   *
+   * A non-zero answer is the difference between "the leader is armed and the
+   * key did nothing" and "the leader is armed and its keymap never loaded":
+   * with no table every chord is buffered (see handleKey), so the overlay
+   * lights, the leader stays armed, and running an action is impossible until
+   * the fetch lands. Diagnostic only — it is read by the chrome state reply so
+   * the shape is nameable from outside instead of being guessed at.
+   */
+  bufferedCount(): number {
+    return this.buffered.length;
+  }
+
   show(): void {
     this.active = true;
     this.prefix = "";

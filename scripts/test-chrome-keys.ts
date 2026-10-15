@@ -42,6 +42,7 @@ const {
   noteContentPresent,
   noteLocationChange,
   presenceTabFor,
+  presenceTabForReport,
   resetContentPresence,
 } = await import("../src/chrome/keystate.ts");
 
@@ -128,11 +129,17 @@ const commandCenterTab = (w: any): boolean => isCommandCenterTab(w);
 
 // Report presence THE WAY THE PRODUCT DOES: the sending document can name only a
 // strip index, and the helper resolves that to the tab it is about
-// (presenceTabFor) before anything is recorded. Driving the resolution rather
-// than the storage keeps these checks about the rule, and the one place the two
-// disagree is what the last group of checks here is for.
+// (presenceTabForReport, which prefers the tab already holding this document's
+// record) before anything is recorded. Driving the resolution rather than the
+// storage keeps these checks about the rule, and the one place the two disagree
+// is what the last group of checks here is for.
 function report(w: any, active: boolean, url: string, doc?: string, index = 0): void {
-  noteContentPresent(presenceTabFor(w, index, url), active, url, doc);
+  noteContentPresent(presenceTabForReport(w, index, url, doc), active, url, doc);
+}
+// The announcement-only rule, for the checks that are about PLACEMENT (which tab
+// a first report belongs to) rather than about identity across a document's life.
+function announce(w: any, url: string, doc?: string, index = 0): void {
+  noteContentPresent(presenceTabFor(w, index, url), true, url, doc);
 }
 
 // Point the fake window at another of its tabs, the way TabSelect does.
@@ -196,7 +203,7 @@ ok(
     const w = winAt(["https://a.example/", "https://b.example/"], 0);
     // The report names index 0, but index 0 is a different page: b is where
     // this document is.
-    report(w, true, "https://b.example/", undefined, 0);
+    announce(w, "https://b.example/", undefined, 0);
     select(w, 0);
     const aStillOwned = owns(w);
     select(w, 1);
@@ -210,6 +217,89 @@ ok(
     const w = one("https://a.example/");
     report(w, true, "");
     return owns(w);
+  })()
+);
+
+// --- a report that cannot name ONE tab is dropped, never guessed -----------
+//
+// Falsified by a full-suite run, not imagined: every command-center tab shares
+// one URL, the home page opens one per `;n`, and the URL repair used to take the
+// FIRST match when the report's index had gone stale. The record then described
+// a tab the reporting document was never in, and it outlived it — that tab answered
+// "a content script is here" for a page with none (a Firefox HTTP error page),
+// so the helper declined the keys and the tab answered nothing at all.
+ok(
+  "a report that matches TWO tabs by URL is dropped, not placed on the first",
+  (() => {
+    resetContentPresence();
+    const w = winAt(["https://same.example/", "https://same.example/"], 0);
+    // The report's index is stale (the strip changed under it): index 0 now
+    // holds a DIFFERENT tab showing the same URL, so the URL cannot identify
+    // the sender and nothing may be recorded.
+    announce(w, "https://same.example/", undefined, 5);
+    select(w, 0);
+    const first = owns(w);
+    select(w, 1);
+    return first && owns(w);
+  })()
+);
+ok(
+  "a report whose index and URL agree is still placed",
+  (() => {
+    resetContentPresence();
+    const w = winAt(["https://same.example/", "https://same.example/"], 1);
+    announce(w, "https://same.example/", undefined, 1);
+    select(w, 1);
+    const reporting = !owns(w);
+    select(w, 0);
+    // The neighbour is the SAME url, so it cannot be told apart by url either —
+    // but the record is on the tab, and only the reporting tab has one.
+    return reporting && owns(w);
+  })()
+);
+ok(
+  "an announcement for the page the tab IS showing is recorded",
+  (() => {
+    resetContentPresence();
+    const w = winAt(["https://here.example/"], 0);
+    announce(w, "https://here.example/");
+    return !owns(w);
+  })()
+);
+
+// --- one document, one tab, however late the report arrives ----------------
+//
+// THE FIX FOR A DEAD KEYBOARD ON A PAGE THE USER WAS JUST SENT TO. A document
+// announces itself (placed by index+URL, correctly), and its `pagehide` arrives
+// after the tab has navigated away — the moment the retraction matters most. The
+// retraction cannot be placed by URL any more (the tab no longer shows that
+// page), so under index+URL placement it went to another tab, or to none, and
+// the record it was meant to clear stayed on the tab that had reported. Nothing
+// else could clear it either: the record is keyed on the tab, and no later
+// document announces itself on that page. Measured end to end: `;` and every
+// other leader key did nothing on a Firefox HTTP error page, because the helper
+// still believed the command center that preceded it was there.
+ok(
+  "a retraction finds the tab that holds the record, after that tab navigated",
+  (() => {
+    resetContentPresence();
+    const w = winAt(["https://a.example/", "https://b.example/"], 0);
+    report(w, true, "https://a.example/", "doc-a", 0);
+    // The tab navigates (to a page that will never report, an error page or a
+    // restricted one) while the retraction is in flight. The strip index and the
+    // URL now describe neither the document nor the record: the NONCE does.
+    w.gBrowser.tabs[0].currentURI.spec = "https://c.example/";
+    w.gBrowser.selectedBrowser.currentURI.spec = "https://c.example/";
+    report(w, false, "https://a.example/", "doc-a", 0);
+    select(w, 0);
+    const cleared = owns(w);
+    // ...and the announcement path is unchanged: a document that has NOT
+    // reported yet is still placed by index+URL, which is the only coordinate
+    // its first report can have.
+    resetContentPresence();
+    const w2 = winAt(["https://d.example/"], 0);
+    announce(w2, "https://d.example/", "doc-d", 0);
+    return cleared && !owns(w2);
   })()
 );
 ok(
@@ -354,6 +444,40 @@ ok(
     // document, and the record is already on the tab it belongs to, so it is
     // the record's own document that keeps the last word.
     report(w, false, "https://a.example/", "doc-old");
+    const survivedLateOldRetraction = !owns(w);
+    // THE SAME RACE, ONE STEP EARLIER: the leaving document retracts while the
+    // arriving document has not reported yet, and the URL repair therefore
+    // cannot place the report either — so the helper is left with no record at
+    // all, which is the rescue case and must NOT be a way to delete one.
+    resetContentPresence();
+    const w2 = one("https://b.example/");
+    report(w2, true, "https://b.example/", "doc-new");
+    report(w2, false, "https://a.example/", "doc-old");
+    const stillHere = !owns(w2);
+    // ...and the rule the retraction guard exists for, with no nonce at all:
+    // an unnamed retraction for a DIFFERENT page cannot clear this one.
+    resetContentPresence();
+    const w3 = one("https://b.example/");
+    report(w3, true, "https://b.example/");
+    report(w3, false, "https://a.example/");
+    return survivedLateOldRetraction && stillHere && !owns(w3);
+  })()
+);
+ok(
+  "only the record's own document may retract it (the rule, driven directly)",
+  (() => {
+    resetContentPresence();
+    const w = one("https://b.example/");
+    const tab: any = w.gBrowser.tabs[0];
+    noteContentPresent(tab, true, "https://b.example/", "doc-new");
+    // A retraction from ANOTHER document, delivered against the tab it is
+    // about — the shape a host reaches when it has already resolved the tab
+    // itself. PLACEMENT NOW REFUSES SUCH A REPORT BEFORE IT GETS HERE (the
+    // uniqueness rule above is what makes a wrong placement impossible, and
+    // that is the stronger guarantee), so this check pins the RULE rather than
+    // a route to it: a retraction that names a different document must not
+    // clear the record, whatever road it arrives on.
+    noteContentPresent(tab, false, "https://b.example/", "doc-old");
     return !owns(w);
   })()
 );

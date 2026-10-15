@@ -170,6 +170,52 @@ customElements.define("closed-field", ClosedField);
 <div id="d" class="blk" style="top:120px;left:20px">MATCH DELTA</div>
 </body></html>`,
   },
+  // A page whose FIELD IS INSIDE AN IFRAME, which is the shape that makes
+  // Lazyfox look dead until the user clicks the page: with `all_frames: false`
+  // the top frame's content script never sees a key typed while a frame holds
+  // focus, and clicking anywhere outside the frame is what puts the keyboard
+  // back into the top document. The inner page records what IT received, so a
+  // test can tell "the key never reached the frame" (harness) from "the frame
+  // got the key and the top document never did" (the bug).
+  "/frame": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>FRAME</title>
+<style>body{margin:0;font:14px/1.5 system-ui,sans-serif}iframe{display:block;width:420px;height:220px;border:1px solid #999}#below{margin-top:12px}</style>
+</head><body>
+<p id="above">above the frame</p>
+<iframe id="f" src="/frameinner"></iframe>
+<p id="below">below the frame</p>
+<button id="topbutton">top button</button>
+</body></html>`,
+  },
+  // A page whose frames have NO CONTENT SCRIPT of their own — the shape an
+  // inline widget, an ad frame or an editor built from `srcdoc` has.
+  //
+  // `/frame` above covers the OTHER shape: a frame with an http(s) URL, which
+  // `all_frames` reaches. These two are the ones the content script cannot be
+  // injected into without `match_about_blank`, and they are the residual of the
+  // "I have to click the page before Lazyfox responds" report: the key event is
+  // delivered to the frame's document, nothing there listens for it, and the
+  // top frame's listener never runs at all.
+  //
+  // Both frames RECORD what their own document received, so a test can tell the
+  // harness failing to deliver a key at all from the product never seeing one.
+  "/framenocontent": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>FRAMENOCONTENT</title>\r\n<style>body{margin:0;font:14px/1.5 system-ui,sans-serif}iframe{display:block;width:420px;height:140px;border:1px solid #999}#below{margin-top:12px}</style>\r\n</head><body>\r\n<p id="above">above the frames</p>\r\n<iframe id="blank"></iframe>\r\n<iframe id="doc" srcdoc="<!DOCTYPE html><body><button id='docbutton'>in the srcdoc frame</button><script>window.__srckey=[];window.addEventListener('keydown',function(e){window.__srckey.push(e.key);},true);</script></body>"></iframe>\r\n<p id="below">below the frames</p>\r\n<button id="topbutton">top button</button>\r\n</body></html>`,
+  },
+  "/frameinner": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>FRAME INNER</title></head>
+<body>
+<input id="innerinput" placeholder="inside the frame">
+<button id="innerbutton">inner button</button>
+<script>
+  // What the FRAME's own document received. Read by the test to separate a key
+  // that never arrived here from a key that arrived and was never seen by the
+  // top document.
+  window.__innerKeys = [];
+  window.addEventListener("keydown", function (e) { window.__innerKeys.push(e.key); }, true);
+</script>
+</body></html>`,
+  },
   "/target1": { body: `<!DOCTYPE html><title>TARGET ONE</title><h1>Target One</h1><a href="/">back</a>` },
   "/target2": { body: `<!DOCTYPE html><title>TARGET TWO</title><h1>Target Two</h1><a href="/">back</a>` },
   "/hello": { body: `<!DOCTYPE html><title>HELLO PAGE</title><h1>Hello</h1>` },

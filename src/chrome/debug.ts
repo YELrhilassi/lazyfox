@@ -23,8 +23,45 @@ export interface DebugState {
   // otherwise invisible from outside: the symptom is a ghost overlay with
   // nothing in the state explaining why it stayed.
   chromeOwnsKeys(): boolean;
+  // Where the keyboard IS, as opposed to who owns the keys (see
+  // stateapi.ChromeStateFocusV1 for why the two are different questions).
+  // Declared structurally rather than imported, for the reason at the top of
+  // this file: the e2e project typechecks it without the DOM lib.
+  focus(): {
+    activeWindow: boolean;
+    focused: string | null;
+    inSelectedContent: boolean;
+    remote: boolean;
+    docShellActive: boolean;
+    focusedWindow: "this" | "other" | null;
+    chromeActive: string | null;
+    pageHasFocus: boolean | null;
+  };
+  /**
+   * Re-apply the keyboard rule to the selected tab NOW, and report the decision
+   * (`"content"`, `"command-center"` or `"none"`).
+   *
+   * Verification-only, and it exists because the rule is applied on EVENTS
+   * (tab selected, document replaced, document loaded) and an event cannot be
+   * replayed from a test: a case that finds the keyboard missing an instant
+   * later has no way to ask "does the repair itself work, or did it just run at
+   * the wrong moment?" — which are opposite diagnoses with opposite fixes. This
+   * answers that question by running exactly the same rule the events run.
+   */
+  giveKeyboard(): string;
   leaderPending(): boolean;
   lastAction(): string | null;
+  /**
+   * The leader's table, and the keystrokes it is holding because the table has
+   * not arrived (see ChromeStateV1.keymap). Without it, an armed leader that
+   * cannot run a binding is indistinguishable from one that ran nothing.
+   */
+  keymap(): { ready: boolean; buffered: number };
+  /**
+   * The last keystrokes the dispatcher saw, with the branch each took.
+   * Dev-only and in memory (see keysdispatch.ts); empty in a release build.
+   */
+  keyTrace(): Array<Record<string, unknown>>;
   lastMoveDebug(): string | null;
   statusMounted(): boolean;
   statusPosition(): string;
@@ -236,12 +273,43 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
     setHash(browser, "#lfc=state." + btoa(JSON.stringify(payload)) + "." + nonce);
   }
 
+  function handleFocus(browser: any, rest: string, setHash: (browser: any, hash: string) => void): void {
+    // Debug/verification: run the keyboard rule NOW and report what happened to
+    // it. See DebugState.giveKeyboard for why the rule has to be runnable on
+    // demand: "the repair does not work" and "the repair ran too early" are
+    // opposite diagnoses, and a test that can only observe the second one cannot
+    // tell them apart.
+    const dot = rest.indexOf(".");
+    const nonce = dot < 0 ? rest : rest.slice(0, dot);
+    // onLocationChange fires again for our own location.replace, and this
+    // handler's reply carries the SAME command name as its request — so without
+    // this guard it re-answers its own answer, for ever, leaving the tab's URL
+    // holding a focus reply that the `#lfc=keys` channel then trips over. The
+    // same rule (and the same two-dots test) as handleState.
+    try {
+      const cur = browser.currentURI ? browser.currentURI.spec : "";
+      const after = cur.indexOf("#lfc=focus.") !== -1 ? cur.split("#lfc=focus.")[1] : "";
+      if (after && after.split(".").length >= 2) return;
+    } catch (e) {
+      // an unreadable URL re-answers, which is the old behaviour
+    }
+    let json = "{}";
+    try {
+      const decision = deps.getState().giveKeyboard();
+      json = btoa(JSON.stringify({ decision, focus: deps.getState().focus() }));
+    } catch (e) {
+      json = btoa(JSON.stringify({ error: String(e) }));
+    }
+    setHash(browser, "#lfc=focus." + json + "." + nonce);
+  }
+
   return {
     handle(browser, cmd, rest, setHash) {
       if (cmd === "reveal") handleReveal(browser, rest, setHash);
       else if (cmd === "console") handleConsole(browser, rest, setHash);
       else if (cmd === "diag") handleDiag(browser, rest, setHash);
       else if (cmd === "state") handleState(browser, rest, setHash);
+      else if (cmd === "focus") handleFocus(browser, rest, setHash);
     },
     toast: (msg) => toast(msg),
   };
