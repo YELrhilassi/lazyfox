@@ -277,7 +277,7 @@ export function createRunner(selection: Selection, hooks: RunnerHooks = {}) {
     file: string,
     name: string,
     fn: (t: any) => Promise<void>,
-    opts: { tags?: string[] } = {},
+    opts: { tags?: string[]; timeoutMs?: number } = {},
   ): Promise<void> {
     // Suites pass their FILE ("content/multidigit"), not their group, so the
     // id is "<group>/<file> › <name>" and two tests with the same name in
@@ -314,7 +314,7 @@ export function createRunner(selection: Selection, hooks: RunnerHooks = {}) {
       return;
     }
 
-    const r = await runOne(id, name, group, fn, tags, hooks);
+    const r = await runOne(id, name, group, fn, tags, hooks, opts.timeoutMs);
     results.push(r);
     hooks.onResult?.(r);
   };
@@ -327,7 +327,13 @@ async function runOne(
   fn: (t: any) => Promise<void>,
   tags: string[],
   hooks: RunnerHooks,
+  // A test may declare its own budget. It exists for the one suite whose point is
+  // LENGTH (session: a whole working day's worth of actions in one test), where
+  // the environment-variable default would make a slow machine look like a
+  // product bug. Anything that needs a bigger budget says so where it is written.
+  timeoutMs?: number,
 ): Promise<TestResult> {
+  const budget = Number(timeoutMs) > 0 ? Number(timeoutMs) : TEST_TIMEOUT_MS;
   const started = Date.now();
   const controller = new AbortController();
   let timedOut = false;
@@ -339,7 +345,7 @@ async function runOne(
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort(new Error("test timeout"));
-  }, TEST_TIMEOUT_MS);
+  }, budget);
 
   try {
     await hooks.before?.();
@@ -347,7 +353,7 @@ async function runOne(
     r.pass = true;
   } catch (e) {
     if (timedOut) {
-      r.error = `timed out after ${TEST_TIMEOUT_MS / 1000}s`;
+      r.error = `timed out after ${budget / 1000}s`;
       r.timedOut = true;
     } else {
       r.error = (e as Error)?.message || String(e);

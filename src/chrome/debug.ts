@@ -38,6 +38,25 @@ export interface DebugState {
     pageHasFocus: boolean | null;
   };
   /**
+   * THE KEYBOARD DECISION, and the reasons a repair would be refused: the one
+   * field that answers the freeze report (see stateapi.ChromeStateKeyboardV1).
+   *
+   * Declared structurally, like `focus` above and for the same reason.
+   */
+  keyboard(): {
+    owns: boolean;
+    inPage: boolean;
+    devtools: boolean;
+    chromeField: { active: string | null; onScreen: boolean; hasUserText: boolean };
+    veto: boolean;
+  };
+  /**
+   * Dev/verification: drop the selected tab's presence record, and report what
+   * it named. See keystate.dropPresenceForSelectedTab for why the state has to be
+   * produced this way rather than by any user input.
+   */
+  forgetPresence(): { had: boolean; url: string };
+  /**
    * Re-apply the keyboard rule to the selected tab NOW, and report the decision
    * (`"content"`, `"command-center"` or `"none"`).
    *
@@ -370,6 +389,163 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
     setHash(browser, "#lfc=state." + btoa(JSON.stringify(payload)) + "." + nonce);
   }
 
+  function handleForget(browser: any, rest: string, setHash: (browser: any, hash: string) => void): void {
+    // Dev/verification: forget the SELECTED tab's presence record, so the harness
+    // can be in the state the field report describes — the helper answering a live
+    // page's keys — without waiting for the rare real-world paths into it (see
+    // keystate.dropPresenceForSelectedTab). The reply carries this command's own
+    // name, so the guard is required: see alreadyAnswered.
+    if (alreadyAnswered(browser, "forget")) return;
+    const dot = rest.indexOf(".");
+    const nonce = dot < 0 ? rest : rest.slice(0, dot);
+    let json = "{}";
+    try {
+      json = btoa(JSON.stringify(deps.getState().forgetPresence()));
+    } catch (e) {
+      json = btoa(JSON.stringify({ error: String(e) }));
+    }
+    setHash(browser, "#lfc=forget." + json + "." + nonce);
+  }
+
+  /**
+   * Debug/verification: put TEXT in the URL bar, mark it the way Firefox marks a
+   * field the user typed into, and show or hide the toolbar.
+   *
+   * THE STATE THIS PRODUCES IS THE REPORTED FREEZE, and it cannot be produced any
+   * other way. Lazyfox's chrome CSS renders the URL bar with `display:none` (it is
+   * a hover overlay); Firefox still parks the keyboard in it on a fresh tab, and a
+   * stray keystroke from a frozen page lands in it. That single character makes
+   * the URL bar report "the user is typing here" (`usertyping`,
+   * `valueIsTyped`) — and before chrome/chromefield.ts, that report vetoed EVERY
+   * rescue on every key, invisibly, for the life of the window, which is why the
+   * user's only repair was a click. `handleBlur` cannot reach this state: it
+   * reveals the toolbar first, because a `display:none` element refuses focus.
+   *
+   * The arguments are `{ text?, show?, focus?, typed? }` as base64 JSON, and
+   * they ride the request as `<args>~<nonce>`: a `#lfc=` request may carry ONE
+   * dot after the command name (a reply carries two — see alreadyAnswered), and
+   * every other command's payload is the nonce itself. A separate separator is
+   * what keeps this one's request from looking like its own answer.
+   *   * `show: true` reveals the toolbar (the product's own `lf-debug-reveal`),
+   *     `show: false` hides it again — after the focus, so the field keeps the
+   *     keyboard while being unrenderable, which is the reported state;
+   *   * `text` is written into the field (and onto the URL bar element, which is
+   *     where Firefox keeps the value it is displaying);
+   *   * `typed` sets the two signals Firefox itself sets while a user types — the
+   *     `usertyping` ATTRIBUTE (the same string the browser writes) and the URL
+   *     bar's own `_valueIsTyped` — and the reply reports WHICH of them took,
+   *     because a test that asserts behaviour in this state must first assert
+   *     that the state is real.
+   *
+   * The reply also measures the field's box, so "the toolbar is hidden" is a fact
+   * about the running window rather than a claim about the stylesheet.
+   */
+  function handleUrlText(browser: any, rest: string, setHash: (browser: any, hash: string) => void): void {
+    if (alreadyAnswered(browser, "urltext")) return;
+    const tilde = rest.indexOf("~");
+    const nonce = tilde < 0 ? rest : rest.slice(tilde + 1);
+    let want: any = {};
+    try {
+      want = JSON.parse(atob(tilde < 0 ? "" : rest.slice(0, tilde)));
+    } catch (e) {
+      want = {};
+    }
+    const how: Record<string, unknown> = {}
+    try {
+      const ub: any = win.gURLBar || null;
+      const input: any = (ub && (ub.inputField || doc.getElementById("urlbar-input"))) || null;
+      const tb: any = doc.getElementById("navigator-toolbox");
+      // 1. THE TEXT. Written to both, because the element is what Firefox keeps
+      //    its own value on and the input is what a key would land in.
+      if (typeof want.text === "string") {
+        try {
+          if (input) input.value = want.text;
+        } catch (e) {
+          how.textOnInput = "err";
+        }
+        try {
+          if (ub) ub.value = want.text;
+        } catch (e) {
+          how.textOnUrlbar = "err";
+        }
+      }
+      // 2. THE FOCUS, while the field is still renderable if it is about to be
+      //    hidden: `display:none` refuses a focus call outright, and the state
+      //    under test is a field that HOLDS the keyboard while it cannot be seen.
+      if (want.show === true || (want.show !== false && want.focus === true)) {
+        try {
+          if (tb) tb.setAttribute("lf-debug-reveal", "1");
+        } catch (e) {
+          how.reveal = "err";
+        }
+      }
+      if (want.focus === true) {
+        try {
+          if (ub && typeof ub.focus === "function") ub.focus();
+          else if (input && typeof input.focus === "function") input.focus();
+        } catch (e) {
+          how.focus = "err:" + String(e);
+        }
+      }
+      // 3. THE USER-TYPING SIGNALS, through Firefox's own carriers. `usertyping`
+      //    is the attribute the URL bar sets on itself while the user edits it;
+      //    the private flag is what `valueIsTyped` reads on builds that expose
+      //    it. Setting them is exactly what typing would do, and the reply says
+      //    whether each one is now REPORTED by the element.
+      if (want.typed === true) {
+        try {
+          if (input && typeof input.setAttribute === "function") input.setAttribute("usertyping", "true");
+        } catch (e) {
+          how.usertyping = "err";
+        }
+        try {
+          if (ub) ub._valueIsTyped = true;
+        } catch (e) {
+          how.privateFlag = "err";
+        }
+      }
+      // 4. THE HIDING, LAST — so the field keeps what it was given.
+      if (want.show === false) {
+        try {
+          if (tb) tb.removeAttribute("lf-debug-reveal");
+        } catch (e) {
+          how.hide = "err";
+        }
+      }
+      // 5. WHAT IS TRUE NOW, measured.
+      try {
+        how.text = ub ? String(ub.value || "").slice(0, 64) : null;
+        how.inputText = input ? String(input.value || "").slice(0, 64) : null;
+        how.usertypingAttr = input && typeof input.getAttribute === "function" ? input.getAttribute("usertyping") : null;
+        how.valueIsTyped = ub ? String(ub.valueIsTyped) : null;
+      } catch (e) {
+        how.readback = "err";
+      }
+      try {
+        const nav = doc.getElementById("nav-bar");
+        const r = nav && typeof nav.getBoundingClientRect === "function" ? nav.getBoundingClientRect() : null;
+        how.navDisplay = nav ? String(env.window.getComputedStyle(nav).display) : null;
+        how.navRect = r ? [Math.round(r.width), Math.round(r.height)] : null;
+        const ir = input && typeof input.getBoundingClientRect === "function" ? input.getBoundingClientRect() : null;
+        how.inputRect = ir ? [Math.round(ir.width), Math.round(ir.height)] : null;
+        how.fieldOnScreen = !!input && typeof input.checkVisibility === "function" ? input.checkVisibility() : null;
+      } catch (e) {
+        how.boxes = "err:" + String(e);
+      }
+      try {
+        how.focusedTag = String((env.services.focus && env.services.focus.focusedElement && env.services.focus.focusedElement.tagName) || "") || null;
+        how.isUrlBarFocus = !!(env.services.focus && env.services.focus.focusedElement && input && env.services.focus.focusedElement === input);
+      } catch (e) {
+        how.focused = "err";
+      }
+      how.toolbox = tb ? (tb.hasAttribute("lf-debug-reveal") ? "revealed" : "hidden") : null;
+    } catch (e) {
+      // An unreadable window reports why rather than nothing.
+      how.error = String(e);
+    }
+    setHash(browser, "#lfc=urltext." + btoa(JSON.stringify(how)) + "." + nonce);
+  }
+
   function handleFocus(browser: any, rest: string, setHash: (browser: any, hash: string) => void): void {
     // Debug/verification: run the keyboard rule NOW and report what happened to
     // it. See DebugState.giveKeyboard for why the rule has to be runnable on
@@ -398,6 +574,8 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
     handle(browser, cmd, rest, setHash) {
       if (cmd === "reveal") handleReveal(browser, rest, setHash);
       else if (cmd === "blur") handleBlur(browser, rest, setHash);
+      else if (cmd === "urltext") handleUrlText(browser, rest, setHash);
+      else if (cmd === "forget") handleForget(browser, rest, setHash);
       else if (cmd === "console") handleConsole(browser, rest, setHash);
       else if (cmd === "diag") handleDiag(browser, rest, setHash);
       else if (cmd === "state") handleState(browser, rest, setHash);

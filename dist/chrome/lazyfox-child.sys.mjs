@@ -1,5 +1,31 @@
+// src/shared/privileged.ts
+var DEVTOOLS_HOSTS = [
+  "about:devtools-toolbox",
+  "about:debugging",
+  "about:devtools",
+  "chrome://devtools",
+  "chrome://browser/content/devtools"
+];
+function isDeveloperSurface(url) {
+  const s = String(url || "").trim().toLowerCase();
+  if (!s) return false;
+  for (const host of DEVTOOLS_HOSTS) {
+    if (s === host || s.startsWith(host + ":") || s.startsWith(host + "?") || s.startsWith(host + "#") || s.startsWith(host + "/")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // src/chrome/actor-child.ts
 var SCROLL_KEYS = "jkdugG";
+function docURL(doc) {
+  try {
+    return String(doc.location ? doc.location.href : doc.URL || "");
+  } catch (e) {
+    return "";
+  }
+}
 var LEADER_WINDOW_MS = 15e3;
 function isEditable(el) {
   if (!el) return false;
@@ -72,6 +98,7 @@ var LazyfoxChild = class extends BaseChild {
     }
     const doc = this.document;
     if (!doc || !doc.documentElement) return;
+    if (isDeveloperSurface(docURL(doc))) return;
     if (doc.documentElement.getAttribute("data-lf-content")) return;
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     if (isEditable(e.target) || isEditable(doc.activeElement)) return;

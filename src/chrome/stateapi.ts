@@ -33,6 +33,8 @@ export interface ChromeStateSource {
   chromeOwnsKeys(): boolean;
   /** Where the keyboard is — see ChromeStateFocusV1. Never a decision input. */
   focus(): ChromeStateFocusV1;
+  /** The keyboard decision and its inputs — see ChromeStateKeyboardV1. */
+  keyboard(): ChromeStateKeyboardV1;
   leaderPending(): boolean;
   lastAction(): string | null;
   /** The leader's table state — see ChromeStateV1.keymap. */
@@ -149,6 +151,67 @@ export interface ChromeStateFocusV1 {
   pageHasFocus: boolean | null;
 }
 
+/**
+ * The keyboard decision, as the facts it is made from (K5; M6).
+ *
+ * This is the one field that answers the field report directly, and it exists
+ * because every OTHER field of this reply can be right while the user's keyboard
+ * is dead. "Lazyfox stopped answering and started again when I clicked" is a
+ * statement about the AGREEMENT of two facts that the reply published
+ * separately:
+ *
+ *   * `owns` — does the chrome helper answer this page's keys (`chromeOwnsKeys`,
+ *     also at the top level), and
+ *   * `inPage` — is the keyboard in the selected page's content at all.
+ *
+ * When those disagree, keys silently do nothing: every keydown is delivered to
+ * the FOCUSED document and nowhere else, so a page that owns the keys but does
+ * not have the keyboard never sees one, and a helper that owns them but cannot
+ * reach the page's document cannot run the ones that live there. The user's own
+ * split — `;` and `;r`/`;s`/`;o` working while `j`/`k`/`d`/`u`, hints and find
+ * are dead — is exactly one of those two cells, and no other field told them
+ * apart. docs/KEYBOARD-OWNERSHIP.md §1 is the table.
+ *
+ * The remaining fields are the reasons the repair is not run, which is the other
+ * half of the same report: a rescue that is vetoed every time, invisibly, for the
+ * life of the window looks identical to a rescue that was never wired up.
+ */
+export interface ChromeStateKeyboardV1 {
+  /** The chrome helper answers this page's keys (`keystate.chromeOwnsKeys`). */
+  owns: boolean;
+  /**
+   * The keyboard is in the SELECTED page's content — the strict question
+   * (`commandcenterfocus.focusIsInSelectedContent`), which is the one the
+   * repair's own gate asks, so this field and the decision can never disagree.
+   */
+  inPage: boolean;
+  /**
+   * The selected tab is a Firefox developer surface (`shared/privileged.ts`),
+   * where Lazyfox neither claims a key nor runs a repair. Named separately
+   * because "nothing happened" on devtools is CORRECT behaviour, while the same
+   * silence on a web page is the defect this whole file is about.
+   */
+  devtools: boolean;
+  /**
+   * The browser-UI field the caret is in, if any — what a veto would be FOR.
+   * `active` is the field's identity (`tag#id`), `onScreen` whether the user
+   * could see it, `hasUserText` whether it holds text the user typed (the
+   * question, not "does it hold text": see chromefield.ts for why the URL bar
+   * showing the page's own address must answer no).
+   */
+  chromeField: { active: string | null; onScreen: boolean; hasUserText: boolean };
+  /**
+   * A repair asked for by a PLAIN key would be refused right now.
+   *
+   * The leader key is never vetoed (that is the user's decision, taken after the
+   * reported reproduction — see keysdispatch.givePageKeyboardBack), so a `true`
+   * here means "the next letter key will not fix this state", not "the rescue is
+   * broken": `;` still is. A `true` with `owns !== inPage` is the reported
+   * freeze with its reason attached.
+   */
+  veto: boolean;
+}
+
 export interface ChromeStateV1 {
   /** The reply's contract version. Always present. */
   v: number;
@@ -183,6 +246,11 @@ export interface ChromeStateV1 {
   selUrl: string;
   /** Where the keyboard actually is — see ChromeStateFocusV1. */
   focus: ChromeStateFocusV1 | { error: string };
+  /**
+   * The keyboard decision (`owns` vs `inPage`) and the reasons a repair would
+   * not run — see ChromeStateKeyboardV1. The instrument the freeze report needed.
+   */
+  keyboard: ChromeStateKeyboardV1 | { error: string };
   /**
    * The leader's own table and what it is holding back because of it.
    *
@@ -439,6 +507,11 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
       return u ? String(u.spec) : "?";
     }, "err");
     partial.focus = step("focus", () => st.focus(), { error: "focus unavailable" } as any);
+    // The decision, next to the facts it is made from — see
+    // ChromeStateKeyboardV1. Degradable rather than fatal, like `focus`: it is
+    // read only by diagnostics and by a test asking why a key did nothing, and
+    // a reply worth more than any one field.
+    partial.keyboard = step("keyboard", () => st.keyboard(), { error: "keyboard unavailable" } as any);
 
     // --- tabs ----------------------------------------------------------------
     partial.mutedCount = step("mutedCount", () => {

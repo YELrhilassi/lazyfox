@@ -596,20 +596,20 @@
   "content/sequences › ;G opens the navigation-stack popup and Esc closes it": {
     "status": "pass",
     "group": "content",
-    "runs": 7,
-    "passes": 7
+    "runs": 8,
+    "passes": 8
   },
   "content/sequences › ;L opens the navigation-stack popup too (both entry keys)": {
     "status": "pass",
     "group": "content",
-    "runs": 7,
-    "passes": 7
+    "runs": 8,
+    "passes": 8
   },
   "content/sequences › ;b alone still opens bookmarks (sequences never shadow plain bindings)": {
     "status": "pass",
     "group": "content",
-    "runs": 7,
-    "passes": 7
+    "runs": 8,
+    "passes": 8
   },
   "content/tabsmodal › ;t tab rows carry a favicon image on the right": {
     "status": "pass",
@@ -1771,49 +1771,97 @@
   "content/focus › after a Lazyfox tab close, the page you land on has the keyboard": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/focus › a key typed while an iframe has focus still reaches the leader": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/focus › a tab activation leaves the keyboard in the activated page": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/focus › ;v reopens a tab and the keyboard is in the page that comes back": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/focus › ;n opens a tab and the keyboard is in it": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/focus › the tab ;o opened is in front and has the keyboard": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/focus › a key typed while a SCRIPTLESS frame has focus still reaches the leader": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/focus › a dismissed chrome popup gives the keyboard back to the page": {
     "status": "pass",
     "group": "content",
-    "runs": 4,
-    "passes": 4
+    "runs": 5,
+    "passes": 5
+  },
+  "content/focus › a page whose keyboard is in the browser's own UI gets it back on the first key": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
+  },
+  "content/focus › a page whose keys the HELPER answers gets its keyboard back too": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
+  },
+  "content/focus › a Firefox developer surface is never claimed (and about:blank still is)": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
+  },
+  "content/focus › an address being typed at the top of the window no longer blocks the rescue": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/focus › a plain key never robs an address bar that is being typed at": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/sequences › a category ACTION leaves no capture behind: ONE Escape ends the gesture": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/sequences › a category ACTION clears the mirror by itself, with NO key afterwards": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "session/real › a long real session: the feature set in order, with no reset in between": {
+    "status": "pass",
+    "group": "session",
+    "runs": 1,
+    "passes": 1
   }
 }

@@ -233,6 +233,38 @@ export function installChromestate(
   };
 
   /**
+   * Drop the SELECTED tab's presence record and report what it named.
+   *
+   * This is how the field report's state is produced in a test: the helper only
+   * claims a live page's keys when the record that says "this page has a content
+   * script" is missing, and no test input can remove it — presence is written by
+   * the page's own script, and everything that retracts it also replaces the
+   * document. See chrome/keystate.dropPresenceForSelectedTab, and
+   * docs/KEYBOARD-FREEZE.md for the state this is the entry to.
+   */
+  ctx.chromeForget = async function chromeForget(): Promise<any> {
+    await ctx.ensureProbe().catch(() => {});
+    const nonce = "g" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+    await evalIn(ctx.probe, `location.hash = ${JSON.stringify("lfc=forget." + nonce)}; true`);
+    try {
+      return await waitFor(async () => {
+        const u = await evalIn(ctx.probe, `location.href`);
+        const at = String(u || "").indexOf("#lfc=forget.");
+        if (at < 0) return null;
+        const tail = String(u).slice(at + "#lfc=forget.".length);
+        const dot = tail.indexOf(".");
+        if (dot < 0) return null;
+        if (tail.slice(dot + 1) !== nonce) return null;
+        const b64 = tail.slice(0, dot);
+        if (!b64) return null;
+        return JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+      }, 8000);
+    } finally {
+      await evalIn(ctx.probe, `history.replaceState(null, "", location.href.split("#")[0]); true`).catch(() => {});
+    }
+  };
+
+  /**
    * Put the KEYBOARD in the browser's own UI, and report what it landed on.
    *
    * The state a user reaches with the mouse — move to the top of the window and
@@ -260,6 +292,64 @@ export function installChromestate(
         const dot = tail.indexOf(".");
         if (dot < 0) return null;
         if (tail.slice(dot + 1) !== nonce) return null;
+        const b64 = tail.slice(0, dot);
+        if (!b64) return null;
+        return JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+      }, 8000);
+    } finally {
+      await evalIn(ctx.probe, `history.replaceState(null, "", location.href.split("#")[0]); true`).catch(() => {});
+      if (activeId != null) {
+        await evalIn(ctx.probe, `browser.tabs.update(${activeId}, {active: true})`).catch(() => {});
+      }
+    }
+  };
+
+  /**
+   * Put TEXT in the URL bar and mark it the way Firefox marks a field the user
+   * typed into — the state the field report describes, made reachable.
+   *
+   * `chromeBlur` enters "the keyboard is in the browser's own UI", but it has to
+   * REVEAL the toolbar to do it, because a `display:none` element refuses focus.
+   * The reported freeze is the other way round: Lazyfox hides the URL bar, the
+   * field holds the keyboard anyway, and a stray keystroke from the frozen page
+   * left it reporting "the user is typing here" — which vetoed every rescue, on
+   * every key, invisibly. `show: false` is that state, and the reply measures it
+   * (the field's box, the toolbar's display, whether the focus manager names the
+   * field) so a test can assert the premise before asserting the behaviour.
+   *
+   * See chrome/debug.ts handleUrlText for what each argument does.
+   */
+  ctx.chromeUrlBar = async function chromeUrlBar(
+    opts: { text?: string; show?: boolean; focus?: boolean; typed?: boolean } = {},
+  ): Promise<any> {
+    await ctx.ensureProbe().catch(() => {});
+    const activeId = await evalIn(
+      ctx.probe,
+      `browser.tabs.query({currentWindow:true, active:true}).then(ts => ts[0] ? ts[0].id : null)`,
+    ).catch(() => null);
+    const nonce = "u" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+    // `<args>~<nonce>`: one dot after the command name, which is what makes this
+    // a REQUEST rather than a reply (a reply has two — see debug.ts
+    // alreadyAnswered). The base64 alphabet has no dot, so the separator is
+    // unambiguous.
+    const arg = Buffer.from(JSON.stringify(opts)).toString("base64");
+    await evalIn(
+      ctx.probe,
+      // The slot is cleared first: a reply still sitting there from the previous
+      // request would otherwise be read as this one's (the same trap sendKeys
+      // documents), and `replaceState` drops the fragment without adding history.
+      `history.replaceState(null, "", location.href.split("#")[0]); location.hash = ${JSON.stringify(
+        "lfc=urltext." + arg + "~" + nonce,
+      )}; true`,
+    );
+    try {
+      return await waitFor(async () => {
+        const u = await evalIn(ctx.probe, `location.href`);
+        const at = String(u || "").indexOf("#lfc=urltext.");
+        if (at < 0) return null;
+        const tail = String(u).slice(at + "#lfc=urltext.".length);
+        const dot = tail.indexOf(".");
+        if (dot < 0) return null;
         const b64 = tail.slice(0, dot);
         if (!b64) return null;
         return JSON.parse(Buffer.from(b64, "base64").toString("utf8"));

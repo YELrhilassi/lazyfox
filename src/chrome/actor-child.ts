@@ -26,8 +26,21 @@
 // Everything here is best-effort: if any step fails the actor simply does
 // nothing, and Lazyfox keeps the behavior it had before.
 
+import { isDeveloperSurface } from "../shared/privileged";
+
 // The vim scroll keys plus the leader/Escape we forward. `g` doubles for `gg`.
 const SCROLL_KEYS = "jkdugG";
+
+/** The document's URL, or "" when it cannot be read — an unreadable URL is not
+ *  evidence of a developer surface (see shared/privileged.ts), so it answers the
+ *  predicate's "no" and the actor behaves exactly as it did before. */
+function docURL(doc: Document): string {
+  try {
+    return String(doc.location ? doc.location.href : (doc as any).URL || "");
+  } catch (e) {
+    return "";
+  }
+}
 
 // How long after the leader key we keep forwarding everything. Covers the
 // leader capture and the popups it opens (type-to-filter lists), without a
@@ -160,6 +173,21 @@ export class LazyfoxChild extends BaseChild {
     }
     const doc = this.document;
     if (!doc || !doc.documentElement) return;
+    // NEVER ON A DEVELOPER SURFACE (K4; shared/privileged.ts).
+    //
+    // This actor is registered for every window in every process with no
+    // `matches` filter, so without this check the devtools documents were inside
+    // Lazyfox's key claim: `j k d u g G ; Escape Backspace` typed into the
+    // Browser Toolbox, the console, or a debugger's source view moved the page
+    // instead — "Lazyfox does a keyboard grab on Firefox's developer tools".
+    //
+    // The check is FIRST, before the data-lf-content marker and before the
+    // modifier/editable tests, because it is the only one of the three that is
+    // about the DOCUMENT rather than about this event: on a devtools document the
+    // answer is no for every key, including the leader key, and including a key
+    // that arrives with the leader already armed (the window below would
+    // otherwise keep forwarding into a document Lazyfox does not own).
+    if (isDeveloperSurface(docURL(doc))) return;
     // The content script owns this page; Lazyfox is already fully present.
     if (doc.documentElement.getAttribute("data-lf-content")) return;
     // Never touch browser shortcuts, and never steal typing.

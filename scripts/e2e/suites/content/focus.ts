@@ -27,7 +27,7 @@
 // present and passes when it is fixed. Both are asserted, and the failure text
 // carries the whole page state so a reader never has to guess which way it
 // went.
-import { contextsOf, createTab, evalIn, getTree, waitFor } from "../../bidi.ts";
+import { contextsOf, createTab, evalIn, getTree, keyTap, sleep, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 
 export async function run(ctx: any): Promise<void> {
@@ -881,6 +881,154 @@ export async function run(ctx: any): Promise<void> {
     await ctx.press(ctx.tabA, "Escape");
   });
 
+  await t("a page whose keys the HELPER answers gets its keyboard back too", async () => {
+    // THE OTHER HALF OF THE SAME FIELD REPORT, and the half this suite could not
+    // reach before it had an entry to the state: the user's own split — `;` and
+    // the helper's chords keep working (`;r`, `;s`, `;o`, `;d`) while everything
+    // that lives in the page (j/k/d/u scrolling, hints, find) is dead until they
+    // click or reload.
+    //
+    // That split IS the ownership split: the helper is the one answering, and the
+    // page never sees a key. The state is produced the only way it can be — the
+    // presence record is dropped (ctx.chromeForget, see
+    // keystate.dropPresenceForSelectedTab) and the keyboard is parked in the
+    // browser's own UI, which is where the mouse leaves it.
+    await ctx.collapseWindow();
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/hello`);
+    await assertKeyboardInSelectedPage("harness: the page starts with the keyboard");
+
+    // The record is written by the page's own script, so the harness has to see it
+    // before it can drop it — and saying WHICH record was expected is what makes a
+    // failure here a fact about the page rather than about the drop.
+    //
+    // ONE RETRY, and the reason is measured rather than defensive: inside the
+    // whole content group this premise has been seen to fail while the same test
+    // passes on its own (twice, in the same window, at the two cases that need a
+    // FRESH page's report — this one and "a Firefox developer surface…" right
+    // after it). The documents were healthy in both: the page had the keyboard
+    // and its mirror answered, so what was missing was the REPORT, not the page.
+    // A second navigation is the cheapest honest second chance, and a third
+    // failure prints the instruments that decide between the candidates
+    // (see presenceDiagnostics): the relay the report travels over, the strips
+    // both sides see, and whether the page's own script is even in the document.
+    const presenceDiag = async (): Promise<string> => {
+      const page = await state(ctx.tabA).catch((e) => ({ unreadable: String(e) }));
+      const st = await ctx.chromeStateHandle().catch(() => null);
+      return JSON.stringify({
+        page,
+        presence: st ? st.presence() : "no chrome state",
+        relay: st ? (st.raw as any).relay : "no chrome state",
+        ownsKeys: st ? st.leader().ownsKeys : "no chrome state",
+        lastKeys: st ? st.keyTrace().slice(-4) : "no chrome state",
+      });
+    };
+    const presenceFor = async (): Promise<boolean> => {
+      const s = await ctx.chromeStateHandle().catch(() => null);
+      return !!(s && s.presence().some((r: any) => String(r.u).includes("/hello")));
+    };
+    const reported = await waitFor(
+      async () => ((await presenceFor()) ? true : null),
+      8000
+    ).catch(() => null);
+    if (!reported) {
+      // The second chance: one more navigation, which replaces the document and
+      // makes the page's script report from scratch.
+      await ctx.gotoPage(ctx.tabA, `${ctx.base}/hello`);
+      await waitFor(async () => ((await presenceFor()) ? true : null), 8000).catch(() => null);
+    }
+    // THE THIRD CHANCE IS THE PRODUCT'S OWN REPAIR, and asking for it is not a
+    // softening of the premise.
+    //
+    // A fresh document's BOOT report travels content -> background -> relay ->
+    // helper, and a group run has been measured losing it while the failure's own
+    // diagnostics showed the page perfectly healthy: `hasFocus: true`, the script
+    // marked in the document (`data-lf-content="1"`), the other tab in the window
+    // reporting normally, and the helper holding no record for this one — with
+    // `relay.urlSlot` still carrying a report for a DIFFERENT url at the same
+    // index (see docs/KEYBOARD-OWNERSHIP.md §5.6, where the missing instrument for
+    // exactly this is named). The product's answer to a missing report is L2: the
+    // document re-announces itself on a key IT RECEIVES, which is when its report
+    // is true again. So the premise asks the way a user would — press a key into
+    // the page — and the assertion is unchanged: the record must exist before it
+    // can be dropped, and what the test measures (the ownership decision and the
+    // rescue) is downstream of that.
+    if (!(await presenceFor())) {
+      // The raw page path on purpose: this key has to reach THIS document, which
+      // is the case's own premise (`assertKeyboardInSelectedPage` above).
+      await keyTap(ctx.tabA, "Escape");
+      await waitFor(async () => ((await presenceFor()) ? true : null), 5000).catch(() => null);
+    }
+    assert(
+      await presenceFor(),
+      "harness: the page's script must have reported presence — a page that never " +
+        "reports is a page the helper claims, which IS the freeze under test. " +
+        (await presenceDiag())
+    );
+    const dropped = await ctx.chromeForget();
+    assert(
+      dropped && dropped.had === true,
+      "harness: dropping the record has to find one (got " + JSON.stringify(dropped) + ")"
+    );
+    await ctx.expectChromeState(
+      "the chrome helper answers this page's keys now",
+      (s: any) => s.leader().ownsKeys === true,
+      { timeoutMs: 8000 }
+    );
+
+    await ctx.chromeBlur();
+    const lost = await waitFor(async () => {
+      const f = await keyboardFacts();
+      const chrome = f.chromeFocus;
+      return chrome && chrome.inSelectedContent === false && !f.pageHasFocus ? chrome : null;
+    }, 5000).catch(() => null);
+    assert(
+      lost,
+      "harness: the keyboard must be in the browser's own UI (state " +
+        JSON.stringify(await keyboardFacts()) +
+        ")"
+    );
+
+    // THE REPAIR, on the leader key the user already pressed — through the chrome
+    // path, because that is where a key typed into the browser's own UI is
+    // delivered (ctx.sendKeys runs the product's chrome dispatch; a page key would
+    // land in a document that has no keyboard, which is the state under test).
+    await ctx.sendKeys(ctx.tabA, [{ k: ";" }]);
+    await assertKeyboardInSelectedPage("the page after the leader key while the helper owned its keys");
+
+    // AND THE OWNERSHIP HEALS ITSELF. That is the second half of the repair and
+    // the reason a reload is no longer part of it: the page's script can only have
+    // received this key because its document HAS the keyboard, which is exactly
+    // what its presence report claims — so it re-asserts it, and the keys are the
+    // page's again. `keyTap` is the raw page path on purpose: this is the key the
+    // USER presses into the page, and it must not be routed by the harness's idea
+    // of who owns the keys, which is the fact being measured.
+    await keyTap(ctx.tabA, ";");
+    const armed = await waitFor(
+      async () => ((await leaderArmed(ctx.tabA)) ? true : null),
+      5000
+    ).catch(() => null);
+    assert(
+      armed,
+      "the page did not arm its own leader after its keyboard came back (page state " +
+        JSON.stringify(await state(ctx.tabA)) +
+        ")"
+    );
+    const owned = await ctx
+      .expectChromeState("the page owns its keys again", (s: any) => s.leader().ownsKeys === false, {
+        timeoutMs: 9000,
+      })
+      .then(() => true)
+      .catch(() => false);
+    assert(
+      owned,
+      "the page never got its keys back, so the next chord would be answered by the helper again (chrome state " +
+        JSON.stringify(await (await ctx.chromeStateHandle()).raw).slice(0, 600) +
+        ")"
+    );
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
   await t("a key typed while a SCRIPTLESS frame has focus still reaches the leader", async () => {
     // THE RESIDUAL OF THE FRAME REPORT, and the one `all_frames` alone does not
     // reach. `/frame` above is an http(s) frame, so `all_frames` injects the
@@ -997,6 +1145,320 @@ export async function run(ctx: any): Promise<void> {
       );
       await ctx.press(ctx.tabA, "Escape");
     }
+  });
+
+  /**
+   * Put the browser in the user's state, and ASSERT the premise.
+   *
+   * THE STATE: the address bar holds text, reports it as USER-TYPED (Firefox's
+   * own `usertyping`, measured on the running browser), and holds the keyboard —
+   * while the page on screen is perfectly alive. That report is what vetoes the
+   * rescue (chrome/commandcenterfocus.chromeFieldHoldsUserText), and before
+   * chrome/chromefield.ts existed the veto could not be escaped: every key the
+   * user pressed was refused, invisibly, and the only repair left was the click
+   * they complained about.
+   *
+   * THE TOOLBAR IS REVEALED, and that is a MEASUREMENT rather than a choice.
+   * Lazyfox's chrome CSS hides the URL bar outright and reveals it as a hover
+   * overlay, so the state is entered the way a user enters it: hover the top
+   * strip (the product's own `lf-debug-reveal`, the same attribute `;W e`
+   * toggles), click, type. The other order — focus the bar, then hide the
+   * toolbar — is NOT reachable in this browser, and the hook reports why: a field
+   * with no box cannot hold the keyboard, and Firefox moves focus back to the
+   * content the moment the bar stops being rendered (`inputRect: [0,0]`,
+   * `fieldOnScreen: false`, and the focus manager naming `browser` instead).
+   *
+   * THE PREMISE IS AN ASSERTION, NOT A SETUP. A case that asserts behaviour in a
+   * state it never reached is a test of the harness: if this browser will not
+   * report user-typing, or the bar is not on screen, that is said out loud here,
+   * before a single claim about the product is made.
+   */
+  const enterTypedUrlBarState = async (): Promise<any> => {
+    const bar = await ctx.chromeUrlBar({ text: "gg d", typed: true, show: true, focus: true });
+    const typedReported = bar && (bar.usertypingAttr === "true" || bar.valueIsTyped === "true");
+    assert(
+      typedReported,
+      "harness: the URL bar has to report the text as USER-TYPED for this state to be the reported one (got " +
+        foundString(bar) +
+        ")"
+    );
+    assert(
+      bar.text === "gg d" || bar.inputText === "gg d",
+      "harness: the bar must actually hold the stray text (got " + foundString(bar) + ")"
+    );
+    assert(
+      bar.toolbox === "revealed" && bar.navDisplay !== "none" && bar.fieldOnScreen === true,
+      "harness: the address bar has to be ON SCREEN and holding the caret (got " + foundString(bar) + ")"
+    );
+    return bar;
+  };
+
+  await t("an address being typed at the top of the window no longer blocks the rescue", async () => {
+    // THE USER'S STATE, from their own description: the keyboard is in the URL
+    // bar, the page is alive, and their keys do nothing — they see a page that is
+    // healthy and a keyboard that is not. The veto that protects an address being
+    // typed is what refused the repair, and it refused it on EVERY key, so the
+    // next key they pressed was refused too.
+    await ctx.collapseWindow();
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/hello`);
+    await assertKeyboardInSelectedPage("harness: the page starts with the keyboard");
+
+    const bar = await enterTypedUrlBarState();
+    const lost = await waitFor(async () => {
+      const f = await keyboardFacts();
+      const chrome = f.chromeFocus;
+      return chrome && chrome.inSelectedContent === false && !f.pageHasFocus ? chrome : null;
+    }, 5000).catch(() => null);
+    assert(
+      lost,
+      "harness: the keyboard must be in the address bar (state " +
+        foundString(await keyboardFacts()) +
+        " bar " +
+        foundString(bar) +
+        ")"
+    );
+
+    // THE KEY THAT REPAIRS IT: the leader key — the one keystroke a Lazyfox user
+    // presses to say "now", and the decision recorded in givePageKeyboardBack (the
+    // typed text is left where it is; `;o` is the product's own way to enter an
+    // address). It is delivered the way a key typed into the browser's own UI
+    // is: through the chrome path, since the page has no keyboard to receive it.
+    await ctx.sendKeys(ctx.tabA, [{ k: ";" }]);
+    await assertKeyboardInSelectedPage("the page after the leader key, while an address was being typed");
+
+    // ...and the page ANSWERS the next key, from its own engine: the page's
+    // leader mirror is set by the content script and by nothing else.
+    await ctx.press(ctx.tabA, ";");
+    const armed = await waitFor(async () => ((await leaderArmed(ctx.tabA)) ? true : null), 5000).catch(
+      () => null
+    );
+    assert(
+      armed,
+      "the page did not arm its own leader once its keyboard was given back (page state " +
+        foundString(await state(ctx.tabA)) +
+        ")"
+    );
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
+  await t("a plain key never robs an address bar that is being typed at", async () => {
+    // The other half of the same rule, and the one the veto exists for: the
+    // toolbar is revealed, the caret is in the address bar, the user is writing a
+    // URL — the first character they type must not pull focus into the page
+    // behind it. Only the leader key is excepted (the case above).
+    await ctx.collapseWindow();
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/hello`);
+    await assertKeyboardInSelectedPage("harness: the page starts with the keyboard");
+
+    const bar = await enterTypedUrlBarState();
+    const lost = await waitFor(async () => {
+      const f = await keyboardFacts();
+      const chrome = f.chromeFocus;
+      return chrome && chrome.inSelectedContent === false && !f.pageHasFocus ? chrome : null;
+    }, 5000).catch(() => null);
+    assert(
+      lost,
+      "harness: the keyboard must be in the address bar (state " +
+        foundString(await keyboardFacts()) +
+        " bar " +
+        foundString(bar) +
+        ")"
+    );
+
+    // A plain key does NOT steal the caret: the veto still holds where the user
+    // can see what they are typing into.
+    await ctx.sendKeys(ctx.tabA, [{ k: "d" }]);
+    const stillTyping = await waitFor(async () => {
+      const f = await keyboardFacts();
+      const chrome = f.chromeFocus;
+      return chrome && chrome.inSelectedContent === false && !f.pageHasFocus ? true : null;
+    }, 2500).catch(() => null);
+    assert(
+      stillTyping,
+      "a plain key must not pull the keyboard out of a revealed address bar being typed in (state " +
+        foundString(await keyboardFacts()) +
+        ")"
+    );
+
+    // AND THE LEADER KEY STILL WINS — re-asserted here so the two halves of the
+    // rule are visible in ONE state, which is where a reader will look for them.
+    await ctx.sendKeys(ctx.tabA, [{ k: ";" }]);
+    await assertKeyboardInSelectedPage("the page after the leader key while an address was being typed");
+    await ctx.press(ctx.tabA, ";");
+    const armed = await waitFor(async () => ((await leaderArmed(ctx.tabA)) ? true : null), 5000).catch(
+      () => null
+    );
+    assert(
+      armed,
+      "the page did not arm its own leader after `;` was honoured mid-address (page state " +
+        foundString(await state(ctx.tabA)) +
+        ")"
+    );
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
+  await t("a Firefox developer surface is never claimed (and about:blank still is)", async () => {
+    // THE USER'S SECOND REPORT, in their own words: "Lazyfox does a keyboard grab
+    // on Firefox's developer tools".
+    //
+    // The mechanism is structural, not a typo: the `Lazyfox` window actor is
+    // registered for EVERY window in EVERY process with no `matches` filter
+    // (src/static/chrome/loader/config.js), and its child consumes
+    // `j k d u g G ; Escape Backspace` on any document that is not marked
+    // `data-lf-content`. A devtools document carries no such marker, so the
+    // console, the style editor and a debugger's source view were inside
+    // Lazyfox's key claim. The HELPER reaches the same documents from the other
+    // side, because a devtools document is not content-ownable and was therefore
+    // claimed by the URL rule in keystate.
+    //
+    // about:debugging is the member of that class a harness can open — no live
+    // debugger connection is needed — and its document class is the same one the
+    // Browser Toolbox has. `shared/privileged.ts` names the class once for both
+    // hosts; `scripts/test/privileged.test.ts` pins the predicate on both edges;
+    // this case is the behaviour, on the real key path.
+    await ctx.collapseWindow();
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, "about:debugging");
+
+    // The premise, read from the product's OWN answer about which tab is in
+    // front, so a navigation that did not land fails as a harness problem
+    // instead of as a product one.
+    const onDebugging = await waitFor(async () => {
+      const s = await ctx.chromeStateHandle().catch(() => null);
+      const u = s ? String(s.selectedUrl() || "").replace(/#.*$/, "") : "";
+      return u === "about:debugging" ? u : null;
+    }, 8000).catch(() => null);
+    assert(
+      onDebugging !== null,
+      "harness: the selected tab has to be on about:debugging (chrome state " +
+        foundString((await ctx.chromeStateHandle().catch(() => null))?.selectedUrl()) +
+        ")"
+    );
+
+    // NOT OURS. `ownsKeys` is the helper's own verdict, and it is the field a
+    // field report is answered from: before this rule it answered TRUE here,
+    // because "not content-ownable" meant "the helper's".
+    await ctx.expectChromeState(
+      "the chrome helper does not claim a developer surface",
+      (s: any) => s.leader().ownsKeys === false,
+      { timeoutMs: 8000 }
+    );
+
+    // AND THE INSTRUMENT NAMES THE CLASS (K5/M6), so a field report does not have
+    // to be argued from a URL: `keyboard.devtools` is the field that says "the
+    // silence here is correct", and reading it here also proves the field is
+    // alive in the real product rather than only in the unit fake.
+    const kbHere = (await ctx.chromeStateHandle()).keyboard();
+    assert(
+      !!kbHere && kbHere.devtools === true,
+      "the state reply must name a developer surface as one (keyboard " +
+        foundString(kbHere) +
+        ")"
+    );
+
+    // AND NOT TOUCHED — which is a SECOND question, and the reason the refusal
+    // lives in the dispatcher and not only in the ownership latch. `ownsKeys:
+    // false` routes a key into the WEB PAGE rescue, whose job is to move the
+    // keyboard into the page and which SPENDS THE LEADER KEY doing it. On a
+    // developer surface that would hand the console the keyboard and eat the
+    // user's `;` — a different bug wearing the fix's clothes. "Not ours" has to
+    // mean "not touched", so the dispatcher refuses first and names the branch.
+    //
+    // The keys go through the chrome path (ctx.sendKeys, the parent process),
+    // which is where a key typed on a privileged about: document is delivered:
+    // it runs in-process, so the chrome window's own capture listener sees it.
+    //
+    // ARRIVAL IS MEASURED BY SEQUENCE NUMBER, not by trace LENGTH. The trace is a
+    // bounded ring (24 entries), so in a full run — where earlier tests have
+    // filled it — a new key does not change the length, and the first version of
+    // this case reported "the key never reached the dispatcher" with that key's
+    // own entry printed in the failure text. `keyTraceSeq()` is the number that
+    // does not wrap.
+    const before = (await ctx.chromeStateHandle()).keyTraceSeq();
+    await ctx.sendKeys(null, [{ k: ";" }]);
+    const arrived = await waitFor(async () => {
+      const s = await ctx.chromeStateHandle().catch(() => null);
+      return s && s.keyTraceSeq() > before ? s : null;
+    }, 5000).catch(() => null);
+    const st = arrived || (await ctx.chromeStateHandle());
+    const trace = st.keyTrace();
+    assert(
+      arrived !== null,
+      "the leader key has to have reached the helper's dispatcher for this case to measure " +
+        "anything (seq before " +
+        before +
+        ", now " +
+        st.keyTraceSeq() +
+        ", last entries " +
+        foundString(trace.slice(-3)) +
+        ")"
+    );
+    const last: any = trace[trace.length - 1];
+    assert(
+      !!last && last.br === "devtools-surface",
+      "a key on a developer surface must be refused as one, and this one took branch " +
+        foundString(last && last.br) +
+        " (last entries " +
+        foundString(trace.slice(-3)) +
+        ")"
+    );
+    assert(last.c === false, "and nothing may be consumed on it: " + foundString(last));
+
+    // Nothing armed anywhere: neither the helper's leader nor its which-key panel.
+    // Read AFTER a settle, deliberately: the trace entry proves the key was
+    // dispatched, and this proves the dispatch left nothing behind. A read at the
+    // instant the trace grew would pass before the overlay had a chance to paint,
+    // which is the weaker assertion.
+    await sleep(400);
+    const settled = await ctx.chromeStateHandle();
+    assert(
+      settled.leader().active === false,
+      "no leader may arm on a developer surface (leader " +
+        foundString(settled.leader()) +
+        ")"
+    );
+    assert(
+      (settled.popup() ? Number(settled.popup()!.wkOn) : 0) === 0,
+      "no which-key overlay may light on a developer surface (popup " +
+        foundString(settled.popup()) +
+        ")"
+    );
+
+    // THE OTHER SIDE OF THE BOUNDARY, with the same instrument: an ORDINARY
+    // about: document is still the helper's, because no content script can run
+    // there and the helper is the only key engine it has. A rule that grew to
+    // cover about:blank would be "Lazyfox is dead on privileged documents" —
+    // the exact state the actor half was written to fix, so the boundary is
+    // asserted rather than assumed.
+    await ctx.gotoPage(ctx.tabA, "about:blank");
+    await ctx.expectChromeState(
+      "an ordinary about: page is still Lazyfox's",
+      (s: any) => s.leader().ownsKeys === true,
+      { timeoutMs: 8000 }
+    );
+    // The other half of the instrument: the same field must NOT report an
+    // ordinary privileged document as a developer surface, or the fix would be
+    // "Lazyfox says nothing anywhere but web pages".
+    const kbBlank = (await ctx.chromeStateHandle()).keyboard();
+    assert(
+      !!kbBlank && kbBlank.devtools === false,
+      "about:blank is not a developer surface (keyboard " + foundString(kbBlank) + ")"
+    );
+    await ctx.sendKeys(null, [{ k: ";" }]);
+    const armedHere = await waitFor(async () => {
+      const s = await ctx.chromeStateHandle().catch(() => null);
+      return s && s.leader().active === true ? true : null;
+    }, 6000).catch(() => null);
+    assert(
+      armedHere,
+      "the leader must still arm on about:blank: the rule removes a claim from ONE class " +
+        "of document, it does not remove Lazyfox from privileged pages (leader " +
+        foundString((await ctx.chromeStateHandle().catch(() => null))?.leader()) +
+        ")"
+    );
+    await ctx.sendKeys(null, [{ k: "Escape" }]).catch(() => {});
   });
 }
 

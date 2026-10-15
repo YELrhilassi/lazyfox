@@ -13,7 +13,7 @@
 // rebuilt (a bfcache restore, a virtual-DOM navigation).
 import { mergeConfig } from "../../shared/config";
 import type { LeaderSignal } from "../../shared/leadersignal";
-import { createTabHoldState } from "../../shared/holdstate";
+import { createTabHoldState, type TabHoldState } from "../../shared/holdstate";
 import { getConfig, setConfig } from "../config";
 import { vConfig } from "../store";
 import type { Domain } from "./types";
@@ -22,11 +22,18 @@ import type { Domain } from "./types";
 // action cannot be declared without someone deciding which domain answers it.
 type Owns = "syncTyping" | "syncLeader" | "syncContent" | "syncFind" | "syncHold" | "setConfig" | "toggleWhichKey" | "stealthOpen";
 
-const holdState = createTabHoldState({
+const defaultHoldState = createTabHoldState({
   getTabValue: (tabId, key) => browser.sessions.getTabValue(tabId, key),
   setTabValue: (tabId, key, value) => browser.sessions.setTabValue(tabId, key, value),
   removeTabValue: (tabId, key) => browser.sessions.removeTabValue(tabId, key),
 });
+
+// The hold store is a parameter rather than a module singleton for the same
+// reason `createTabHoldState` takes its storage: the one thing that has to be
+// provable about `syncContent` is an ORDERING (a presence report that does not
+// wait for hold bookkeeping), and an ordering can only be driven if the thing it
+// must not wait for can be held open. See scripts/test/sync-content.test.ts.
+export type { TabHoldState as SyncHoldState };
 
 export interface SyncDeps {
   pushLeaderStateToChrome(index: number, signal: LeaderSignal): void;
@@ -36,7 +43,10 @@ export interface SyncDeps {
   pushSessionStateToChrome(): Promise<void>;
 }
 
-export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
+export function createSyncHandlers(
+  deps: SyncDeps,
+  holdState: TabHoldState = defaultHoldState
+): Domain<Owns> {
   return {
     syncTyping: async (data, sender) => {
       const tab = (sender as { tab?: { id?: number } } | undefined)?.tab;
@@ -75,6 +85,29 @@ export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
       // is what the URL alone did, on every single-page navigation.
       const tab = (sender as { tab?: { id?: number; index?: number } } | undefined)?.tab;
       const doc = String((data as { doc?: string }).doc || "");
+      // OWNERSHIP FIRST, AND ON ITS OWN PATH. The presence push is the report
+      // that decides who answers this tab's keys, and it used to be sent AFTER
+      // the hold bookkeeping below — which means it waited on session storage
+      // and on that tab's hold QUEUE (holdstate.serialized chains per tab). Any
+      // write that never settles — a tab being torn down, a session store that
+      // rejects, a queue still holding the previous document's operation — held
+      // the report back, and the chrome helper went on owning a live page's
+      // keys: the user's `;` armed the helper's leader, its chords worked, and
+      // everything that lives in the page (j/k/d/u, hints, find) was dead until
+      // they clicked or reloaded. That is exactly the freeze in
+      // docs/KEYBOARD-FREEZE.md, so the two are ordered by what they are: the
+      // presence report is not bookkeeping and must not queue behind it.
+      //
+      // The hold work still runs before the reply, because the booting document
+      // is waiting on the snapshot to pick its held leader back up.
+      if (tab && tab.id != null) {
+        deps.pushContentStateToChrome(
+          typeof tab.index === "number" ? tab.index : -1,
+          !!data.active,
+          String(data.url || ""),
+          String((data as { doc?: string }).doc || "")
+        );
+      }
       let saved = { hold: false, holdAt: 0, holdDoc: "", holdGeneration: 0 };
       if (tab && tab.id != null && doc) {
         try {
@@ -90,16 +123,9 @@ export function createSyncHandlers(deps: SyncDeps): Domain<Owns> {
             await holdState.deactivateDocument(tab.id, doc);
           }
         } catch {
-          // Session storage can reject during tab shutdown; presence still relays.
+          // Session storage can reject during tab shutdown; presence has already
+          // relayed, which is the half that decides ownership.
         }
-      }
-      if (tab && tab.id != null) {
-        deps.pushContentStateToChrome(
-          typeof tab.index === "number" ? tab.index : -1,
-          !!data.active,
-          String(data.url || ""),
-          String((data as { doc?: string }).doc || "")
-        );
       }
       // A booting document learns the previous document's hold only after its
       // own presence report has established ownership. The queued read cannot

@@ -51,6 +51,7 @@
 // runs on an event that already existed.
 
 import { isRelayTabUrl } from "../shared/transient";
+import { chromeElementOnScreen } from "./chromefield";
 import type { ChromeWindow } from "./env";
 
 /** Where a keystroke should land after the tab changed. */
@@ -155,6 +156,14 @@ function selectedUrlOf(win: ChromeWindow): string {
  * and is not this question. An unreadable element is not a reason to refuse: the
  * answer defaults to "no text", i.e. the page gets the keyboard, which is the
  * direction that cannot leave the user with a dead keyboard.
+ *
+ * ...AND THE FIELD HAS TO BE ONE THE USER CAN SEE. Text in a hidden field is not
+ * the user composing: Lazyfox's chrome CSS hides the URL bar outright, so the
+ * field Firefox parks the keyboard in on a fresh tab — and the field a stray
+ * keystroke lands in when a page is frozen — is invisible, and its text (set by
+ * that stray keystroke) used to make this rule refuse the very repair the state
+ * needs. Every trigger in this module then did nothing, on every tab switch, for
+ * the life of the window. See chrome/chromefield.ts.
  */
 function chromeFieldHasText(win: ChromeWindow): boolean {
   try {
@@ -163,6 +172,9 @@ function chromeFieldHasText(win: ChromeWindow): boolean {
     if (!el) return false;
     const tag = String(el.tagName || "").toUpperCase();
     if (tag !== "INPUT" && tag !== "TEXTAREA" && el.isContentEditable !== true) return false;
+    // A hidden field cannot hold an intent (chromefield.ts), and answering "no
+    // text" here is the direction that gives the page its keyboard.
+    if (!chromeElementOnScreen(el)) return false;
     if (el.value != null) return String(el.value).length > 0;
     const text = el.textContent;
     return text != null && String(text).length > 0;

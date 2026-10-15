@@ -28,6 +28,7 @@
 
 import type {
   ChromeStateFocusV1,
+  ChromeStateKeyboardV1,
   ChromeStatePopupV1,
   ChromeStateStripRowV1,
   ChromeStateTabV1,
@@ -37,6 +38,7 @@ import { CHROME_STATE_VERSION } from "../../src/chrome/stateapi.ts";
 
 export type {
   ChromeStateFocusV1,
+  ChromeStateKeyboardV1,
   ChromeStatePopupV1,
   ChromeStateStripRowV1,
   ChromeStateTabV1,
@@ -207,7 +209,12 @@ export class ChromeStateHandle {
    *
    * Each entry carries the branch it took (`br`), whether it was consumed (`c`),
    * and the ownership facts at entry (`cc`, `owns`, `l` = leader state as
-   * 1 active / 2 pending). This is the answer to "press `;o` on a chrome-owned
+   * 1 active / 2 pending), plus `n` — a MONOTONIC number per entry, which is what
+   * makes "did this key arrive" answerable at all: the ring is bounded at 24, so
+   * its length stops growing and a new entry is invisible to a length comparison.
+   * Compare `n` with the `n` of the previous read's last entry.
+   *
+   * This is the answer to "press `;o` on a chrome-owned
    * page and nothing happened": `leader-chord` with `c: true` and no action ran
    * is a keymap/binding problem, `pass` is the dispatcher declining it, and a
    * MISSING entry means the key never reached the helper at all.
@@ -217,6 +224,20 @@ export class ChromeStateHandle {
   keyTrace(): Array<Record<string, unknown>> {
     const t = (this.raw as any).keyTrace;
     return Array.isArray(t) ? (t as Array<Record<string, unknown>>) : [];
+  }
+
+  /**
+   * The `n` of the newest traced key, or -1 when nothing has been traced.
+   *
+   * The comparison a test needs before and after a press: `n` grows by one per
+   * dispatched key, whether or not the ring dropped the oldest entry, so "a key
+   * arrived" is `after > before` on this number and not on a length.
+   */
+  keyTraceSeq(): number {
+    const t = this.keyTrace();
+    const last: any = t.length ? t[t.length - 1] : null;
+    const n = last && Number((last as any).n);
+    return Number.isFinite(n) ? n : -1;
   }
 
   /**
@@ -248,6 +269,29 @@ export class ChromeStateHandle {
     const f = (this.raw as any).focus;
     if (!f || typeof f !== "object" || Array.isArray(f) || (f as any).error) return null;
     return f as ChromeStateFocusV1;
+  }
+
+  /**
+   * THE KEYBOARD DECISION: does the helper answer this page's keys, and is the
+   * keyboard in that page — plus the reasons a repair would be refused.
+   *
+   * The one field that answers the field report directly. `owns !== inPage` is
+   * the reported freeze: keys are delivered to the FOCUSED document and nowhere
+   * else, so a page that owns the keys without the keyboard never sees one, and
+   * a helper that owns them without being able to reach the page's document
+   * cannot run the keys that live there (the user's own split: `;`/`;r` work,
+   * `j`/`k`/`d`/`u` and hints do not). `veto` says whether a PLAIN key would
+   * clear it — the leader key is never vetoed — and `devtools` says the silence
+   * is correct by design (see shared/privileged.ts).
+   *
+   * `null` when the field could not be read: reported as an unreadable fact
+   * rather than as "the helper owns everything", which is what a defaulted
+   * answer would say.
+   */
+  keyboard(): ChromeStateKeyboardV1 | null {
+    const k = (this.raw as any).keyboard;
+    if (!k || typeof k !== "object" || Array.isArray(k) || (k as any).error) return null;
+    return k as ChromeStateKeyboardV1;
   }
 
   /** The popup state, or null when the popup could not be read. */

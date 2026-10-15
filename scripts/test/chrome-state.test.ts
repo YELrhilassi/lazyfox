@@ -59,6 +59,13 @@ function fakeSource(overrides: Partial<ChromeStateSource> = {}) {
     lastMoveDebug: track("lastMoveDebug", () => null as string | null),
     keymap: track("keymap", () => ({ ready: true, buffered: 0 })),
     keyTrace: track("keyTrace", () => [] as Array<Record<string, unknown>>),
+    keyboard: track("keyboard", () => ({
+      owns: false,
+      inPage: false,
+      devtools: false,
+      chromeField: { active: null, onScreen: false, hasUserText: false },
+      veto: false,
+    })),
     statusMounted: track("statusMounted", () => false),
     statusPosition: track("statusPosition", () => "bottom"),
     dlActive: track("dlActive", () => [] as string[]),
@@ -111,6 +118,10 @@ describe("the chrome state contract", () => {
       // whose table (or whose key) never arrived.
       "keymap",
       "keyTrace",
+      // The ONE field that answers the freeze report: does the helper answer
+      // this page's keys AND is the keyboard in that page. Two facts, three
+      // fields apart, are not a diagnosis.
+      "keyboard",
       "selUrl",
       "mutedCount",
       "realTabs",
@@ -161,6 +172,65 @@ describe("the state reader, against the fake env", () => {
     const state = createStateReader({ env, getState: () => source }).read();
     assert.equal(state.chromeOwnsKeys, false);
     assert.equal(state.leaderActive, true);
+  });
+
+  test("it publishes the keyboard decision, and the reasons a repair would be refused", () => {
+    // THE INSTRUMENT (K5/M6). The reported freeze is `owns !== inPage`, and
+    // every other field of this reply can be correct while that disagreement
+    // holds: the page is alive (so `chromeOwnsKeys` is false), the keyboard is
+    // in the browser's own UI (so the page never sees a key), and the repair is
+    // either vetoed or unreachable. A reply that carries only the two facts
+    // cannot say WHICH of those it is — which is why this field exists, and why
+    // its shape is asserted here rather than trusted to survive a refactor.
+    const env = createFakeChromeEnv();
+    // The base source, un-overridden, so the spy records the ASK: a field that
+    // is published is a field the snapshot actually consulted the product for.
+    const { source: plain, asked } = fakeSource();
+    createStateReader({ env, getState: () => plain }).read();
+    assert.ok(
+      asked.includes("keyboard"),
+      "the snapshot has to ASK the product, not invent it (asked: " + asked.join(",") + ")"
+    );
+    const { source } = fakeSource({
+      keyboard: () => ({
+        owns: true,
+        inPage: false,
+        devtools: false,
+        chromeField: { active: "html:input#urlbar-input", onScreen: true, hasUserText: true },
+        veto: true,
+      }),
+    });
+    const state = createStateReader({ env, getState: () => source }).read();
+    const kb = state.keyboard as any;
+    assert.equal(kb.owns, true, "the helper owns the keys");
+    assert.equal(kb.inPage, false, "...and the keyboard is not in the page: the freeze");
+    assert.equal(kb.veto, true, "...and a plain key would not repair it");
+    assert.equal(kb.chromeField.hasUserText, true, "the reason, named");
+    assert.equal(kb.devtools, false);
+  });
+
+  test("an unreadable keyboard accessor degrades the field, it does not fail the reply", () => {
+    // Same rule as `keymap` and `focus`: this field is read by diagnostics and by
+    // a test asking why a key did nothing, and a reply worth more than one field
+    // is worth more than a FAILED whole read. (The verdicts at the top are the
+    // opposite case on purpose — see the tests for those.)
+    const env = createFakeChromeEnv();
+    const { source } = fakeSource({
+      keyboard: () => {
+        throw new Error("no chrome window");
+      },
+    });
+    const state = createStateReader({ env, getState: () => source }).read();
+    assert.equal(state.ok, true, "the snapshot completed");
+    assert.equal((state.keyboard as any).error, "keyboard unavailable");
+    // `focus` and `presence` are degraded in this fake too (the source has no
+    // defaults for them), so this asks for the FIELD rather than for the whole
+    // list: what matters is that a field that could not be read is named.
+    assert.ok(
+      ((state as any).degraded || []).some((d: any) => d.field === "keyboard"),
+      "the degradation names the field that could not be read: " +
+        JSON.stringify((state as any).degraded)
+    );
   });
 
   test("it publishes the product's own tab numbering, 1-based", () => {
