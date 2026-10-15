@@ -249,15 +249,67 @@ export async function run(ctx: any): Promise<void> {
     // click). It only types once the user starts typing.
     await ctx.openCC(ctx.tabA);
     const before = await ctx.tabCount();
+    const idsBefore = new Set((await ctx.tabsInfo()).map((x: any) => x.id));
     await ctx.leaderPress(ctx.tabA, "n"); // opens a fresh CC tab
     await ctx.waitTabCount(before + 1, 10000);
-    const dup = (await ctx.ccTabs())[0] || ctx.tabA;
-    const dupCtx = dup.context || dup;
+    // WHICH TAB IS THE FRESH ONE, asked of the window rather than guessed from
+    // the browsing-context tree.
+    //
+    // "The first command-center context that is not tabA or the probe" is not
+    // the same question, and the difference is not academic: the tree also holds
+    // the hidden relay carrier, whose URL carries the channel's own messages —
+    // and a presence report ABOUT a home tab contains the string
+    // "commandcenter.html" inside the relay's fragment
+    // (`relay.html#lfr=cm.contentState.{…%22url%22%3A%22…commandcenter.html%22}`).
+    // So the first match was the RELAY on half of all runs, and the test read
+    // its facts out of relay.html and reported the product as "the fresh tab
+    // never reached command mode". The id of the tab `;n` opened is a fact; the
+    // order of the tree is a coincidence.
+    const fresh = await waitFor(async () => {
+      const t = (await ctx.tabsInfo()).find(
+        (x: any) => !idsBefore.has(x.id) && String(x.url).includes("commandcenter.html")
+      );
+      return t || null;
+    }, 10000).catch(() => null);
+    assert(
+      fresh,
+      "the tab ;n opened is a command-center page. " + String(ctx.tabCountWhy || "")
+    );
+    const dupCtx = await ctx.contextForTabId(fresh.id).catch(() => null);
+    assert(dupCtx, "the fresh tab's browsing context is reachable: tab id " + fresh.id);
     const freshReady = await waitFor(async () => {
       const f = await ctx.ccFacts(dupCtx);
       return f && f.results && f.results.length && f.state === "cmd" && f.inputVal === "" && !f.focused ? f : null;
-    }, 10000);
-    assert(freshReady, "fresh tab is in command mode with an empty input");
+    }, 10000).catch(() => null);
+    if (!freshReady) {
+      // Say WHAT the fresh tab was, not just that it was not what the test
+      // wanted: "the page is at the command-center URL with no engine" and "the
+      // page is in insert mode" and "the harness read the wrong tab" are three
+      // different bugs and the bare timeout cannot tell them apart.
+      const dump = await evalIn(
+        dupCtx,
+        `JSON.stringify({
+          url: location.href,
+          readyState: document.readyState,
+          engine: document.documentElement.getAttribute("data-lf-engine"),
+          leader: document.documentElement.getAttribute("data-lf-leader"),
+          results: document.querySelectorAll("#results .result").length,
+          state: (document.getElementById("state") || {}).textContent,
+          val: (document.getElementById("input") || {}).value,
+          focused: document.activeElement === document.getElementById("input"),
+          active: document.activeElement && (document.activeElement.id || document.activeElement.tagName),
+        })`
+      ).catch((e) => "unreadable: " + String(e).slice(0, 200));
+      const s = await ctx.chromeState().catch(() => null);
+      throw new Error(
+        "fresh tab " + fresh.id + " was not in command mode with results within 10s: " +
+          dump +
+          " ctx=" + String(dupCtx) +
+          " tabACtx=" + String(ctx.tabA) +
+          " probeCtx=" + String(ctx.probe) +
+          " strip=" + JSON.stringify(((s as any) && (s as any).strip) || null)
+      );
+    }
     // `;` on the empty input arms the leader — the PAGE's own, read from the
     // page's mirror (the chrome helper does not arm on a command-center tab).
     await ctx.press(dupCtx, ";");

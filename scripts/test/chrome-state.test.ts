@@ -57,6 +57,8 @@ function fakeSource(overrides: Partial<ChromeStateSource> = {}) {
     leaderPending: track("leaderPending", () => false),
     lastAction: track("lastAction", () => null as string | null),
     lastMoveDebug: track("lastMoveDebug", () => null as string | null),
+    keymap: track("keymap", () => ({ ready: true, buffered: 0 })),
+    keyTrace: track("keyTrace", () => [] as Array<Record<string, unknown>>),
     statusMounted: track("statusMounted", () => false),
     statusPosition: track("statusPosition", () => "bottom"),
     dlActive: track("dlActive", () => [] as string[]),
@@ -105,6 +107,10 @@ describe("the chrome state contract", () => {
       "leaderPending",
       "lastAction",
       "lastMoveDebug",
+      // Added for the one diagnosis no other field can make: an ARMED leader
+      // whose table (or whose key) never arrived.
+      "keymap",
+      "keyTrace",
       "selUrl",
       "mutedCount",
       "realTabs",
@@ -275,6 +281,8 @@ describe("the typed consumer", () => {
     leaderPending: false,
     lastAction: "open",
     lastMoveDebug: "x",
+    keymap: { ready: true, buffered: 0 },
+    keyTrace: [{ k: "o", br: "leader-chord", c: true }],
     selUrl: "https://example.com/",
     mutedCount: 2,
     realTabs: [
@@ -354,6 +362,25 @@ describe("the typed consumer", () => {
   test("a missing realTabs says which field failed instead of yielding undefined", () => {
     const h = chromeStateHandle({ ...goodReply(), realTabs: { error: "torn down" } as any });
     assert.throws(() => h.realTabs, /realTabs unavailable/);
+  });
+
+  test("the leader's table and the dispatcher's key trace are readable", () => {
+    // Both exist for one failure shape: the leader is armed, the overlay is
+    // lit, ownership is true, and the key did nothing. `ready: false` with a
+    // non-zero `buffered` names "the table never loaded"; a trace whose last
+    // entry for the key is `pass` names "the dispatcher declined it"; a trace
+    // with NO entry names "the key never reached the helper". Those are three
+    // different bugs, and before these fields the reply could not tell them
+    // apart.
+    const h = chromeStateHandle(goodReply());
+    assert.deepEqual(h.keymap(), { ready: true, buffered: 0 });
+    assert.deepEqual(h.keyTrace(), [{ k: "o", br: "leader-chord", c: true }]);
+
+    // A reply that carries a degraded field reads as "unreadable", never as a
+    // confident empty answer.
+    const broken = chromeStateHandle({ ...goodReply(), keymap: { error: "torn down" } as any });
+    assert.deepEqual(broken.keymap(), { ready: false, buffered: -1 });
+    assert.deepEqual(chromeStateHandle({ ...goodReply(), keyTrace: "nope" as any }).keyTrace(), []);
   });
 
   test("fieldNames is the contract, sorted, for a test that asserts the shape", () => {

@@ -12,6 +12,8 @@
 // chrome layer is absent this page does not invent a profile name — it says so,
 // and points at the installer, which lists them for real.
 
+import { isTypingTarget } from "../shared/dom";
+import { createGgArm } from "../shared/gg";
 import { send } from "../shared/protocol";
 import { readKey, vBoolean, vString } from "./store";
 
@@ -225,33 +227,37 @@ async function render(): Promise<void> {
   // out of process), so the page provides the vim scroll keys, Esc-to-blur/back
   // and a minimal `;` leader (;g back) itself.
   let leaderPending = false;
-  let gArmed = false;
+  // The shared `gg` arm (shared/gg.ts): the arming press is never consumed.
+  const gg = createGgArm();
   const pageScroll = (dy: number): void => window.scrollBy(0, dy);
+  const typingNow = (): boolean => isTypingTarget(document.activeElement);
+  // A stale `;` capture must not eat the first character typed after clicking
+  // into a field — the same rule the content script applies on focusin.
+  document.addEventListener("focusin", () => {
+    if (typingNow()) {
+      leaderPending = false;
+      gg.reset();
+    }
+  });
   window.addEventListener(
     "keydown",
     (e) => {
       if (e.isComposing) return;
       if (leaderPending) {
-        e.preventDefault();
         leaderPending = false;
+        if (typingNow()) return;
+        e.preventDefault();
         if (e.key === "g" || e.key === "G") {
           if (window.history.length > 1) window.history.back();
         }
         return;
       }
       const ae = document.activeElement as HTMLElement | null;
-      const tag = ae ? String(ae.tagName).toUpperCase() : "";
-      const inField =
-        !!ae &&
-        (tag === "INPUT" ||
-          tag === "TEXTAREA" ||
-          tag === "SELECT" ||
-          ae.isContentEditable ||
-          ae.getAttribute("contenteditable") === "true");
+      const inField = typingNow();
       if (e.key === "Escape") {
-        if (inField) {
+        if (inField && ae) {
           e.preventDefault();
-          ae!.blur();
+          ae.blur();
         } else if (window.history.length > 1) {
           e.preventDefault();
           window.history.back();
@@ -266,9 +272,10 @@ async function render(): Promise<void> {
       if (e.key === "u") { e.preventDefault(); pageScroll(-Math.max(120, window.innerHeight * 0.5)); return; }
       if (e.key === "G") { e.preventDefault(); window.scrollTo(0, document.documentElement.scrollHeight || 0); return; }
       if (e.key === "g") {
-        e.preventDefault();
-        if (gArmed) { gArmed = false; window.scrollTo(0, 0); }
-        else { gArmed = true; setTimeout(() => { gArmed = false; }, 600); }
+        if (gg.press()) {
+          e.preventDefault();
+          window.scrollTo(0, 0);
+        }
       }
     },
     true

@@ -14,9 +14,7 @@
 // would ever turn.
 
 import { chromeOwnsSurfaces } from "./keystate";
-import { isCommandCenterTab } from "./keystate";
-import { noteLocationChange } from "./keystate";
-import { focusCommandCenterContent } from "./commandcenterfocus";
+import { LOCATION_CHANGE_SAME_DOCUMENT, noteLocationChange } from "./keystate";
 import type { ChromeEnv } from "./env";
 
 export interface WinSyncDeps {
@@ -40,6 +38,11 @@ export interface WinSyncDeps {
   };
   // The chrome leader, late-bound.
   leader(): { active: boolean; hasPending(): boolean; hide(): void } | null;
+  // Give the SELECTED tab's content the keyboard. Called on a tab selection and
+  // on a new document committing in the selected tab, because those are the two
+  // moments the keyboard's target changes — see chrome/keyboardfocus.ts for the
+  // report this answers and the three states in which it declines.
+  keyboard: { giveKeyboardToSelectedPage(): unknown };
 }
 
 // How often the relay is polled and the bar recomputed. The relay poll is not
@@ -62,6 +65,65 @@ export function installWinSync(deps: WinSyncDeps): void {
   const { env, status } = deps;
   const win = env.window as any;
 
+  /**
+   * Give the keyboard to whichever browser an event is about — IF that browser
+   * is the selected one.
+   *
+   * The two progress triggers (a document committed, a document loaded) are
+   * about a browser, and a background tab's document must never take the
+   * keyboard away from the page the user is looking at. This is that guard,
+   * written once, plus the failure rule every trigger shares: a read that throws
+   * (a torn-down tab mid-teardown) must not break the event that carried it.
+   */
+  const giveKeyboardIfSelected = (browser: any): void => {
+    try {
+      if (browser === win.gBrowser.selectedBrowser) deps.keyboard.giveKeyboardToSelectedPage();
+    } catch {
+      // a torn-down tab cannot take the keyboard; the next event tries again
+    }
+  };
+
+  /* ---- the window's own boot, before any tab can be selected ---- */
+
+  // THE FIRST DOCUMENT OF A SESSION HAS NO EVENT TO ANNOUNCE IT.
+  //
+  // Every other trigger here is an EVENT — a tab selected, a document
+  // replaced, a document finished loading — and at startup there is no event:
+  // the window opens with its first tab already selected and, on a restored
+  // session, its document already loaded by the time the helper is installed.
+  // Whatever holds the keyboard in that state keeps it — Firefox hands a fresh
+  // window's keyboard to its address bar on a blank/new-tab page — and the
+  // user's first keystroke is spent discovering that nothing answers.
+  //
+  // So the rule is applied once when the window itself is done loading, which
+  // is the one moment guaranteed to be after the initial tab exists and before
+  // the user can type into it. It declines in exactly the same cases as the
+  // event triggers (a popup, a transient tab, a chrome field the user has
+  // typed into), because it is the same rule — see keyboardfocus.ts.
+  //
+  // WHAT IS AND IS NOT MEASURED HERE. The load trigger below has a failing
+  // case and a unit test behind it; this one does not, and saying so is more
+  // useful than implying otherwise. The harness launches its own window, so it
+  // cannot speak for a session's first tab, and a browser that hands the
+  // keyboard to the page itself at startup would make this trigger a no-op
+  // rather than a mistake (the rule declines the same way it does everywhere
+  // else). It is here because "no event fires" is a real state, not a
+  // theoretical one, and the cost of being wrong is one idempotent focus call.
+  try {
+    const chromeDoc: any = env.document;
+    const apply = (): void => {
+      try {
+        deps.keyboard.giveKeyboardToSelectedPage();
+      } catch {
+        // a window torn down mid-boot has no page to give the keyboard to
+      }
+    };
+    if (chromeDoc && chromeDoc.readyState === "complete") env.setTimeout(apply, 0);
+    else win.addEventListener("load", apply, { once: true } as any);
+  } catch {
+    // a window without a readable document loads no page here
+  }
+
   /* ---- tab select bookkeeping ---- */
 
   // Fetch the session name + list once at startup and after chrome-triggered
@@ -80,9 +142,15 @@ export function installWinSync(deps: WinSyncDeps): void {
       } catch {
         // ignore
       }
-      // A fresh command-center tab starts with Firefox's URL-bar focus, which
-      // would swallow every key — pull focus into the page.
-      if (isCommandCenterTab(win)) focusCommandCenterContent(win);
+      // THE KEYBOARD FOLLOWS THE TAB, whatever the tab holds. This used to be a
+      // command-center-only rule ("a fresh home tab starts with Firefox's
+      // URL-bar focus, which would swallow every key"), which left the same hole
+      // on every other kind of page — and, measured, on the command center too:
+      // the tab is selected a moment BEFORE its document exists, so the pull ran
+      // against `about:blank` and the page that finally loaded never got the
+      // keyboard. The rule and the two triggers that fire it live in
+      // chrome/keyboardfocus.ts; this is the selection half.
+      deps.keyboard.giveKeyboardToSelectedPage();
       status.update();
       status.compute();
     });
@@ -94,6 +162,41 @@ export function installWinSync(deps: WinSyncDeps): void {
 
   win.gBrowser.addTabsProgressListener({
     QueryInterface: env.ChromeUtils!.generateQI(["nsIWebProgressListener"]),
+    // THE DOCUMENT FINISHED LOADING — the third and last moment the keyboard's
+    // target changes, and the one neither earlier trigger can see.
+    //
+    // Measured, on the failing case: `;n` opens the home tab. TabSelect fires
+    // while the tab is still `about:blank`, and the location change fires while
+    // the document is being replaced — so a focus granted then is a focus
+    // granted to a document that is about to go away, and the document that
+    // arrives finds NOBODY has the keyboard at all (the browser's own focus
+    // manager reports `focusedElement: null`, not even the <browser> element)
+    // until the user clicks the page. That is the reported freeze, at the one
+    // action a keyboard-first user performs most.
+    //
+    // So the rule is applied once more when the top-level document in the
+    // SELECTED tab is done loading. Top-level only (`STATE_IS_WINDOW`), because
+    // a frame finishing is not a change of who the keyboard belongs to; and the
+    // selected tab only, because a background load must not take the keyboard
+    // away from the page the user is looking at.
+    onStateChange(browser: any, _webProgress: any, _request: any, stateFlags: any) {
+      // The IDL's own constants when the host exposes them; the literals are
+      // `nsIWebProgressListener.STATE_STOP` (0x10) and `STATE_IS_WINDOW`
+      // (0x80000). Read through the host so a platform that renumbers them
+      // cannot silently turn this trigger off.
+      let stop = 0x10;
+      let isWindow = 0x80000;
+      try {
+        const L = env.Ci && env.Ci.nsIWebProgressListener;
+        if (L && typeof L.STATE_STOP === "number") stop = L.STATE_STOP;
+        if (L && typeof L.STATE_IS_WINDOW === "number") isWindow = L.STATE_IS_WINDOW;
+      } catch {
+        // the literals are the IDL's own values
+      }
+      const flags = Number(stateFlags) || 0;
+      if (!(flags & stop) || !(flags & isWindow)) return;
+      giveKeyboardIfSelected(browser);
+    },
     onLocationChange(browser: any, _webProgress: any, _request: any, loc: any, flags: any) {
       if (!loc) return;
       // A REAL NAVIGATION MEANS THE DOCUMENT THAT ANNOUNCED ITSELF IS GONE, and
@@ -105,7 +208,21 @@ export function installWinSync(deps: WinSyncDeps): void {
       // record; see keystate.noteLocationChange for the whole argument, and the
       // e2e case that proves this build really delivers the flag for
       // `pushState` on a remote browser.
+      const crossDocument = !(Number(flags) & LOCATION_CHANGE_SAME_DOCUMENT);
       noteLocationChange(win, browser, Number(flags) || 0, env.Ci);
+      // THE OTHER MOMENT THE KEYBOARD'S TARGET CHANGES: a NEW DOCUMENT in the
+      // SELECTED tab. A tab is selected while it is still showing `about:blank`,
+      // so the selection trigger above runs against a document that is about to
+      // be replaced — and the replacement arrives with no keyboard, which is the
+      // "I open a tab and Lazyfox is dead until I click" half of the report.
+      // Measured: `;n` opened the home tab, the tab was in front, and the page
+      // answered no keys until the page was clicked.
+      //
+      // Only the SELECTED tab (a background load must not steal the keyboard) and
+      // only a CROSS-DOCUMENT change (an in-page navigation keeps the document,
+      // so there is nothing to give back — and a page that rewrites its own URL
+      // while the user is typing in it must not be touched).
+      if (crossDocument) giveKeyboardIfSelected(browser);
       // The selected tab may have crossed the web/chrome boundary (e.g. a web
       // page navigated to about:preferences): remount the chrome status bar
       // accordingly. update is cheap and idempotent, and the status module

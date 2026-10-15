@@ -55,6 +55,16 @@ export interface ContentDomDeps {
   /** Only log a thrown handler when the dev build is on. */
   isDev(): boolean;
   logError(what: string, err: unknown): void;
+  /**
+   * Called after every keydown this document handled.
+   *
+   * The frame bridge publishes the ownership state from here (see
+   * framekeys.ts). It is a post-key hook rather than a watcher because a KEY is
+   * the only thing that can change that state — arming the leader, dismissing
+   * it, opening a hint layer, closing one — so there is nothing to notice
+   * between keys and no timer to run.
+   */
+  afterKey?(): void;
 }
 
 export function installContentDom(deps: ContentDomDeps): void {
@@ -88,6 +98,17 @@ export function installContentDom(deps: ContentDomDeps): void {
       // into a Lazyfox popup still reaches page scripts that listen on
       // keypress/keyup — the input leaking to the page behind the popup.
       keyGuard.consumeIfNewlyPrevented(e, preventedBefore, e.defaultPrevented);
+      // The frames are told what this document owns now that the key has been
+      // answered (see the dep's note: a key is the only thing that can change
+      // it). Guarded like the dispatcher above, for the same reason: bookkeeping
+      // about a frame must never take out key handling for the whole session.
+      if (deps.afterKey) {
+        try {
+          deps.afterKey();
+        } catch (err) {
+          if (deps.isDev()) deps.logError("afterKey hook threw", err);
+        }
+      }
     },
     true
   );

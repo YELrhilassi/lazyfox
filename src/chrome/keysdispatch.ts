@@ -110,6 +110,17 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
   // still answering keys got nothing. See keystate.commandCenterDocumentPresent.
   const ccOwnsTab = (): boolean => isCommandCenterTab(win) || commandCenterDocumentPresent(win);
 
+  // `nsIFocusManager.FLAG_NOSCROLL`, read from the host when it is there: focus
+  // without dragging the page to the focused element.
+  const focusFlags = (): number => {
+    try {
+      const v = deps.env.Ci && deps.env.Ci.nsIFocusManager && deps.env.Ci.nsIFocusManager.FLAG_NOSCROLL;
+      return typeof v === "number" ? v : 0;
+    } catch {
+      return 0;
+    }
+  };
+
   // ;f is link-hints. Web pages run a content script that owns them; the
   // command-center home has no page links, so there it arms hint-PICK (each
   // grid tile gets a letter and the next key runs it); and on chrome-owned
@@ -153,8 +164,77 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
   // synthetic paths need it (the actor bridge and the `#lfc=keys` test
   // channel), and getting it wrong on either one leaves the leader marked as
   // PHYSICALLY HELD with nothing left to release it — see armHeldLeader.
+  // THE DISPATCH TRACE, dev-only and read on demand.
+  //
+  // "Press `;o` on a chrome-owned page and nothing happens" has exactly one
+  // honest diagnosis path: which branch consumed the key. Its other answers all
+  // look identical from outside — the leader arms, the overlay lights, the
+  // reply says the helper owns the keys, and no action ran — so a bug report
+  // about it costs an afternoon without this.
+  //
+  // It is a RING IN MEMORY, not a mirror: nothing is written per key except one
+  // array push, no attribute is painted, and the whole thing is compiled out of
+  // release builds (every call site is behind __DEV__, which esbuild folds to
+  // false so the body is tree-shaken). The e2e harness reads it from the chrome
+  // state reply (`keyTrace`), which is the same pull-not-push rule the content
+  // script's dispatch trace follows.
+  // `__DEV__` is a build-time literal (globals.d.ts) and esbuild folds it, so
+  // this constant is `false` in a release build and the trace bodies below are
+  // eliminated. It is read DEFENSIVELY because this module is also driven
+  // directly by the Node checks (scripts/test/keyhold.test.ts), where the
+  // literal does not exist and a bare reference is a ReferenceError.
+  const DEV = typeof __DEV__ !== "undefined" && __DEV__;
+  const TRACE_LIMIT = 24;
+  const trace: Array<Record<string, unknown>> = [];
+  function noteTrace(entry: Record<string, unknown>): void {
+    if (!DEV) return;
+    trace.push(entry);
+    if (trace.length > TRACE_LIMIT) trace.shift();
+  }
+
+  /** The trace, newest last. Empty in a release build (nothing is recorded). */
+  function dispatchTrace(): Array<Record<string, unknown>> {
+    return trace.slice();
+  }
+
+  // The branch the current key is in. Assigned at each decision point below and
+  // read once, after the dispatch returns — so the labels cannot change what the
+  // dispatcher does, which is the property that matters for an instrument that
+  // ships inside the key path.
+  let br = "entry";
+
   function chromeKeyDown(e: ActorKey, fromActor?: boolean, noKeyup?: boolean): boolean {
-    if (e.isComposing) return false;
+    br = "entry";
+    const consumed = chromeKeyDownInner(e, fromActor, noKeyup);
+    if (DEV) {
+      let leaderState = 0;
+      try {
+        const l = leader();
+        leaderState = l && l.hasPending() ? 2 : l && l.active ? 1 : 0;
+      } catch (err) {
+        leaderState = -1;
+      }
+      noteTrace({
+        k: e.key,
+        br: br,
+        c: consumed,
+        actor: !!fromActor,
+        // Whether the key came with no keyup (a synthetic tap) — the flag that
+        // decides tap-vs-hold, and the one that has bitten before.
+        tap: !!noKeyup,
+        cc: ccOwnsTab(),
+        owns: chromeOwnsKeys(win),
+        l: leaderState,
+      });
+    }
+    return consumed;
+  }
+
+  function chromeKeyDownInner(e: ActorKey, fromActor?: boolean, noKeyup?: boolean): boolean {
+    if (e.isComposing) {
+      br = "composing";
+      return false;
+    }
 
     // LAZYFOX'S OWN PAGE OWNS ITS OWN KEYS (see keystate.chromeOwnsKeys).
     //
@@ -196,18 +276,29 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         // on every tab, not a second opinion about the page's keys.
         if (!commandCenterPageReady(win) && isLeaderKeyPress(e)) {
           const l = leader();
-          if (l && armHeldLeader(l, e, noKeyup)) return true;
+          if (l && armHeldLeader(l, e, noKeyup)) {
+            br = "cc-rescue";
+            return true;
+          }
         }
         // The modifiers travel with it: the page's own typing guard and its
         // Ctrl/Alt pairs read them, and a forwarded Ctrl+Enter that arrived as
         // a bare Enter would run the wrong action.
         dispatchToCCPage(win, e.key, e);
+        br = "cc-forward";
         return true;
       }
-      if (!isChromeUiFocus(win, typing, e as KeyboardEvent)) return false;
-      if (isLeaderKeyPress(e)) {
-        focusCCBody(win);
+      if (!isChromeUiFocus(win, typing, e as KeyboardEvent)) {
+        br = "cc-decline";
+        return false;
       }
+      if (isLeaderKeyPress(e)) {
+        // The same escalation the tab-select rule uses: an element focus is not
+        // always enough, and the focus manager is the last word (see
+        // commandcenterfocus.focusSelectedContent).
+        focusCCBody(win, deps.env.services.focus, focusFlags());
+      }
+      br = "cc-refocus";
       return false;
     }
 
@@ -216,34 +307,57 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // window listener (some builds do), never consume them here. An
     // actor-forwarded key is the exception: the actor only speaks for pages
     // with no content script, so there is no other owner to defer to.
-    if (!fromActor && !chromeOwnsKeys(win) && !popup.isOpen()) return false;
+    if (!fromActor && !chromeOwnsKeys(win) && !popup.isOpen()) {
+      br = "web-page";
+      return false;
+    }
 
     // A chrome popup is open: Esc closes it first (before the page/window),
     // and so does Ctrl+G — the shared predicate, so the chrome popup and the
     // content-script popup can never disagree about what dismisses them.
     if (popup.isOpen()) {
       if (isCancel(e)) {
-        if (popup.resizeOnKey(e as KeyboardEvent)) return true;
+        if (popup.resizeOnKey(e as KeyboardEvent)) {
+          br = "popup-resize";
+          return true;
+        }
         // Let the popup consume Esc itself (e.g. the sessions popup cancels a
         // pending copy/move target picker) before closing it.
-        if (popup.handleKey(e as KeyboardEvent)) return true;
+        if (popup.handleKey(e as KeyboardEvent)) {
+          br = "popup-key";
+          return true;
+        }
         popup.close();
+        br = "popup-close";
         return true;
       }
-      if (popup.resizeOnKey(e as KeyboardEvent)) return true;
+      if (popup.resizeOnKey(e as KeyboardEvent)) {
+        br = "popup-resize";
+        return true;
+      }
       // Confine the keyboard to the popup. A key whose target lies in the
       // popup (its input/rows) is left to the popup's own listener; a key
       // aimed anywhere else must not reach the browser chrome behind the
       // overlay. Channel-driven keys carry no target and are dispatched
       // straight to the popup input by the caller — leave them alone.
       const target = (e as { target?: EventTarget | null }).target;
-      if (target == null) return false;
-      if (popup.containsTarget(target)) return false;
+      if (target == null) {
+        br = "popup-chan";
+        return false;
+      }
+      if (popup.containsTarget(target)) {
+        br = "popup-inner";
+        return false;
+      }
+      br = "popup-outside";
       return true;
     }
 
     const l = leader();
-    if (!l) return false;
+    if (!l) {
+      br = "no-leader";
+      return false;
+    }
 
     const typingNow = typing.focusedIsTyping(e as KeyboardEvent);
     const typingValue = typing.focusedTypingValue(e as KeyboardEvent);
@@ -278,6 +392,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       // shared predicate rather than testing for Escape alone. Ctrl+G is the
       // one that works even on pages that bind Escape themselves.
       if (isCancel(e)) {
+        br = "leader-cancel";
         l.cancelPending();
         l.hide();
         // A cancel ends the HOLD too, not just the overlay. `hide()` clears the
@@ -295,6 +410,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       // page rather than in the browser's chrome UI.
       const typingWins = typingNow && (!chromeUiFocus || typingValue !== "");
       if (typingWins && !(leaderKeyPress && emptyLazyfoxField)) {
+        br = "leader-typing";
         if (l.active) l.hide();
         if (l.hasPending()) l.cancelPending();
         deps.releaseLeaderHoldOnLostFocus();
@@ -309,13 +425,17 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         // a fresh press (re-arm, so holding `;` carries the sequence across) and
         // consume it — never hand it to an armed capture as if it were a
         // sub-key, which is what made `;` after `;W` do something arbitrary.
-        if (armHeldLeader(l, e, noKeyup)) return true;
+        if (armHeldLeader(l, e, noKeyup)) {
+          br = "leader-rearm";
+          return true;
+        }
       }
       if (l.hasPending()) {
         // The capture's answer is honoured: `false` means "this key is not part
         // of the sequence I am collecting" (`;W m` then a letter, a leading
         // zero, or anything with Ctrl/Alt/Meta held). It used to be swallowed
         // here anyway, which is the one thing the handler promises not to do.
+        br = "leader-pending";
         return l.handlePending(e);
       }
       // `handleKey` reports whether it CONSUMED the key, and that answer is
@@ -323,6 +443,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       // meant a key the leader declined — a bare modifier press, a chord with
       // no binding — was swallowed with nothing on screen saying so. The user
       // pressed it again, because the first press had visibly done nothing.
+      br = "leader-chord";
       return l.handleKey(e);
     }
 
@@ -339,6 +460,7 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // safety net gets "fixed" twice and tested once. Removed.
     if (e.key === "Escape") {
       if (!ccOwnsTab()) blurFocusedElement(win);
+      br = "escape-blur";
       return false;
     }
 
@@ -355,8 +477,12 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         (typingValue === "" || isChromeUiFocus(win, typing, e as KeyboardEvent)) &&
         (isCommandCenterTab(win) || isAboutPage(win))
       ) {
-        if (armHeldLeader(l, e, noKeyup)) return true;
+        if (armHeldLeader(l, e, noKeyup)) {
+          br = "typing-arm";
+          return true;
+        }
       }
+      br = "typing";
       return false;
     }
 
@@ -375,34 +501,54 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // somewhere in the browser's own chrome UI (the URL bar on a fresh tab) is
     // the browser's chord, and stealing it from there would break find-again on
     // the one surface where nothing of ours is on screen.
-    if (isCancel(e) && e.key !== "Escape") return true;
+    if (isCancel(e) && e.key !== "Escape") {
+      br = "cancel-chord";
+      return true;
+    }
 
     // The command center is Lazyfox's own page. In command mode (input
     // blurred) the leader key must arm here so the home-screen shortcuts
     // work; in insert mode the typing check above already let `;` through.
     const k = e.key;
     if (isLeaderKeyPress(e) && isCommandCenterTab(win)) {
-      if (armHeldLeader(l, e, noKeyup)) return true;
+      if (armHeldLeader(l, e, noKeyup)) {
+        br = "cc-arm";
+        return true;
+      }
     }
 
     // Ctrl+1-9: hot-swap to the session with that marker (tmux-style).
     if (e.ctrlKey && !e.altKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
       deps.switchSessionByMarker(Number(e.key));
+      br = "session-digit";
       return true;
     }
 
-    if (deps.handleHotkeyCombo(keyCombo(e as KeyboardEvent))) return true;
+    if (deps.handleHotkeyCombo(keyCombo(e as KeyboardEvent))) {
+      br = "hotkey";
+      return true;
+    }
 
     // Ctrl/Alt/Meta chords are never the leader key on their own.
-    if (e.ctrlKey || e.altKey || e.metaKey) return false;
+    if (e.ctrlKey || e.altKey || e.metaKey) {
+      br = "modifier";
+      return false;
+    }
 
     // Vim scroll keys on chrome-owned pages; the command center grid owns its
     // own j/k/h/l navigation, so it is excluded.
-    if (!isCommandCenterTab(win) && deps.handleScrollKeys(win, e)) return true;
+    if (!isCommandCenterTab(win) && deps.handleScrollKeys(win, e)) {
+      br = "scroll";
+      return true;
+    }
 
     if (k === deps.leaderKey()) {
-      if (armHeldLeader(l, e, noKeyup)) return true;
+      if (armHeldLeader(l, e, noKeyup)) {
+        br = "leader-arm";
+        return true;
+      }
     }
+    br = "pass";
     return false;
   }
 
@@ -467,6 +613,8 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
 
   return {
     chromeKeyDown,
+    /** The dev-only dispatch trace, pulled by the chrome state reply. */
+    dispatchTrace,
     runHintsAction,
     clearPageHints: pageHints.clear,
     setWebHints(fn: () => void) {

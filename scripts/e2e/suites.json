@@ -8,7 +8,8 @@
         "content",
         "sessions",
         "split",
-        "options"
+        "options",
+        "audit"
       ]
     },
     "quick": {

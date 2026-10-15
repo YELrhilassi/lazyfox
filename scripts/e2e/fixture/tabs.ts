@@ -79,6 +79,38 @@ export function installTabs(
     return evalIn(tab, `browser.tabs.getCurrent().then(t => t ? t.id : null)`).catch(() => null);
   };
 
+  // The browsing context of the tab with this id — the tab→context direction of
+  // `tabIdOf`, and resolved through the PRODUCT's id space rather than through
+  // the tree's ORDER or its URL strings. Both of those are traps this fixture
+  // has already been caught by:
+  //
+  //   * the tree's order is not the strip's — a hidden relay page sits in it —
+  //     so `contextsOf(getTree())[0]` is not "the tab I just opened";
+  //   * the tree's `url` is one substring test away from being actively
+  //     misleading, because the channel's own messages ride a URL FRAGMENT:
+  //     `relay.html#lfr=cm.contentState.{…"url":"…/commandcenter.html"…}` is a
+  //     PRESENCE REPORT about a home tab, and a search for "commandcenter.html"
+  //     matches the carrier. Measured: a test that picked its tab that way read
+  //     its facts out of relay.html on half of its runs, and reported the
+  //     product as "the fresh tab never reached command mode".
+  //
+  // Asking each top-level context which tab it is cannot be fooled by a message,
+  // and it is the same identity the product numbers tabs by. Only the tree's TOP
+  // LEVEL is asked: a frame answers with its parent tab's id, so a walk of every
+  // context would hand back a context INSIDE the tab rather than the tab itself.
+  ctx.contextForTabId = async function contextForTabId(id, timeoutMs = 10000) {
+    if (id == null) return null;
+    return waitFor(async () => {
+      const top = await getTree().catch(() => null);
+      if (!Array.isArray(top)) return null;
+      for (const c of top) {
+        const cid = await ctx.tabIdOf(c.context).catch(() => null);
+        if (cid === id) return c.context;
+      }
+      return null;
+    }, timeoutMs);
+  };
+
   ctx.activeTabInfo = async function activeTabInfo() {
     const ts = await ctx.tabsInfo();
     return ts.find((t) => t.active) || null;

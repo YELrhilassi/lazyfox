@@ -38,13 +38,33 @@ import { createLinkHints, focusFirstInput } from "./hints";
 import { createContentOps } from "./ops";
 import { createScrollController } from "./scroll";
 import { createScrollKeys } from "./scrollkeys";
+import {
+  installFrameChild,
+  installFrameParent,
+  type FrameKeyMessage,
+} from "./framekeys";
 import type { ContentPopupShell } from "./find";
 
 (function () {
   "use strict";
 
+  // A CHILD FRAME HANDS ITS KEYS UP, and does nothing else.
+  //
+  // A frame is a different document: a key typed while focus is inside one is
+  // delivered there, and this script's top-frame listener never runs — so
+  // every Lazyfox key used to be dead while a frame held focus, and the only
+  // repair was to click the page. The owner of the leader, the popups, the
+  // hints and the overlays is the TOP document, so a frame's whole job is to
+  // forward the keys that document claims (see framekeys.ts) and let a single
+  // key engine decide what they mean. It deliberately sets no presence beacon,
+  // reports no typing state and paints nothing: those all describe the tab's
+  // top-level document, and a frame claiming them would make the chrome helper
+  // believe the wrong URL owns this tab.
   try {
-    if (window.top !== window) return;
+    if (window.top !== window) {
+      installFrameChild({ win: window, isTypingEvent });
+      return;
+    }
   } catch (e) {
     // ignore
   }
@@ -968,6 +988,50 @@ import type { ContentPopupShell } from "./find";
 
   /* ==================== DOM wiring ==================== */
 
+  // The frame bridge, in the TOP document: take the keys a focused frame hands
+  // up, and keep the frames told what this document claims. Installed BEFORE
+  // the DOM wiring so the very first broadcast happens with the state the
+  // listeners below are about to serve.
+  const frameBridge = installFrameParent({
+    win: window,
+    own: () => ({
+      leader: config.leader,
+      // "Everything" is the leader armed, a one-shot capture pending, or a hint
+      // layer up — exactly the states in which this document consumes arbitrary
+      // keys, and so exactly the states in which a frame must hand them over
+      // rather than leave them to an embedded app.
+      all: !!leader.active || leader.hasPending() || !!hints.active || !!hints.starting,
+    }),
+    dispatch: dispatchForwardedKey,
+  });
+
+  // A key that arrived from a frame, run through the SAME path a keystroke
+  // takes: a real event dispatched on this document, so the capture listener
+  // below handles it, the keyguard records it, the diagnostics trace sees it,
+  // and nothing has a second implementation of "what does ; mean here".
+  //
+  // `bubbles: false` on purpose: the capture phase still reaches the window
+  // (capture runs on the way IN, whatever the propagation flags), while the
+  // page's own bubble-phase listeners do not see a phantom keydown the user
+  // never typed here.
+  function dispatchForwardedKey(m: FrameKeyMessage): void {
+    try {
+      const ev = new KeyboardEvent(m.type === "keyup" ? "keyup" : "keydown", {
+        key: m.key,
+        shiftKey: !!m.shift,
+        repeat: !!m.repeat,
+        bubbles: false,
+        cancelable: true,
+        composed: false,
+      });
+      const target = (document.activeElement as Element | null) || document.documentElement;
+      target.dispatchEvent(ev);
+    } catch (e) {
+      // A key that cannot be rebuilt is dropped rather than thrown: a frame's
+      // key must never be able to break the top document's dispatch.
+    }
+  }
+
   // Every listener on window/document, plus the extension message port. Split
   // into contentdom.ts because these are rules about EVENTS, not about the
   // leader, the popups or the hints — so it takes their predicates, not the
@@ -995,5 +1059,10 @@ import type { ContentPopupShell } from "./find";
     }),
     isDev: () => __DEV__,
     logError: (what, err) => dbg(what, (err && (err as Error).message) || String(err)),
+    // The frames are told what this document owns after every key it handled.
+    // A key is the only thing that can change the answer (arming the leader,
+    // dismissing it, opening or closing a hint layer), so there is nothing to
+    // notice between keys and no timer to run.
+    afterKey: () => frameBridge.broadcast(),
   });
 })();

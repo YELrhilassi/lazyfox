@@ -46,12 +46,16 @@ demand through `dispatchTrace`, never mirrored on every key.
 
 | Step | Change | Invariant restored | Status |
 |---|---|---|---|
-| 1.1 | Decide and implement frame policy. Either `all_frames: true` with the content script's top-frame assumptions removed, **or** a documented, explicit statement that hints are top-frame only — plus the feature parity that makes that acceptable (see 1.3). | "`;f` offers every control the user can click on screen." | **DECIDED, not implemented:** `all_frames` stays `false` and the user is told on every `;f` that a visible frame's contents are not included. |
+| 1.1 | Decide and implement frame policy. Either `all_frames: true` with the content script's top-frame assumptions removed, **or** a documented, explicit statement that hints are top-frame only — plus the feature parity that makes that acceptable (see 1.3). | "`;f` offers every control the user can click on screen." | **SPLIT: keys DONE, hints OPEN.** `all_frames: true` with the top-frame assumptions removed for KEYS (`framekeys.ts`: a frame hands up the keys the top document claims; measured in `content/focus`, which failed before and passes after). Hint COLLECTION across frames is still top-frame only and is still stated on every `;f` — that half needs a per-frame pool, frame offsets and one shared key namespace. |
 | 1.2 | `collect.ts:174` — walk closed roots too, using the same `openOrClosedShadowRoot` door `dom.ts` already uses for typing. Keep `SHADOW_DEPTH` as the bound. | "A control inside a closed root can be hinted if it can be typed into." | **DONE** — and the same door is used by hit-testing (`probe.deepHit`) and activation, not collection alone. |
 | 1.3 | Give the **chrome helper** a frame-aware fallback: when the top document's collector finds nothing, ask the actor bridge about same-origin frames instead of only reporting "no hints". | "`;f` fails loudly with a reason, never silently with nothing." | **DONE** — every blind spot is named, in the same words on both hosts (audit §12.5). Asking the actor bridge about frames remains open and is not needed for the invariant. |
 
-**Note on 1.1:** if `all_frames: false` stays, say so in the UI. Silently doing
-nothing on half the web is the defect, not the frame policy itself.
+**Note on 1.1:** the rule stands — silently doing nothing on half the web is the
+defect, not the frame policy itself. The key half of it turned out to be a
+*bug report*, not a coverage gap: with the script top-frame-only, every Lazyfox
+key was dead while a frame held focus and the only repair was to click the page
+(the §11 report "it stops responding until I click"). Keys are covered now; the
+`;f` toast keeps the hint half honest until collection lands.
 
 **Verify:** on a page with an iframe and a closed-root widget, `;f` either labels
 them or the toast names the reason. Record the pages as a fixed fixture list.
@@ -242,7 +246,7 @@ what is not.
 | §0a the trace is off the hot path | **DONE** | No root-attribute write per keydown: the state lives in a plain object and is pulled by the dev-only `dispatchTrace` / `hintSnapshot` handlers (`content/main.ts:349`, `content/contentdom.ts:169-176`). |
 | §0a the dev/release build split | **OPEN** | `npm run build` is still `node build.ts --dev`, so `__DEV__` is true in the artifact the dev installer embeds. The decision (separate artifact, or a runtime flag) has not been made. |
 | §0b no observation inside the live path | **DONE** | `overlay.ts` publishes nothing per sweep; `snapshot()` is an explicit pull. Verified by grep: no `data-lf-pos` / `data-lf-box` anywhere in `src/`. |
-| §1.1 frame policy | **PARTIAL (decided, not implemented)** | `all_frames` is still `false` and the content script still returns on `window.top !== window`; the policy is now *stated to the user* on each `;f` ("iframe contents aren't included in link hints"). |
+| §1.1 frame policy | **KEYS DONE, HINTS OPEN** | `all_frames: true`; a frame now installs the key bridge and hands up what the top document claims (`framekeys.ts`), so a focused frame no longer kills the keyboard — the "it stops responding until I click" report. Hint collection across frames is still top-frame only, and still stated on each `;f`. |
 | §1.2 closed shadow roots | **DONE** | Collection (`collect.ts:156-196`), hit-testing (`probe.ts:217-241`) and activation (`activate.ts`) all go through `shadowRootOf`, which is the same door the typing guard uses. |
 | §1.3 chrome-side frame fallback | **DONE** | The chrome engine now names its blind spots instead of reporting an empty page: `chrome/pagehints.ts` (audit §12.5). |
 | §2.1 incremental collection | **OPEN** | `collectHintables()` is still one synchronous pass. Bounded by `MAX_SCAN`, debounced by `DOM_RESYNC_DELAY` / `DOM_RESYNC_MAX_WAIT`, but not chunked. |
@@ -282,7 +286,13 @@ what is not.
 
 | §15 cache scopes told the truth | **DONE** | Scopes from the diagnostics panel; the global switch now follows the scope, the panel reads its value instead of its existence, and a refused apply writes nothing. Decisions split into `extension/cache-policy.ts` and pinned by `scripts/test/cache-policy.test.ts` (audit §15). |
 | §14a the design document's authority | **DONE** | `docs/MULTIKEY-DESIGN.md` declares `core/keymap.go` + `;?` authoritative and marks its §1 as a dated snapshot (audit §14a) — this is §12.6, and it closes the documentation half of §5.5. |
-| §18.1 the feature audit is runnable | **PARTIAL** | `--suite audit` is 55/55 — every shipped chord produces a visible response — and `npm run e2e:audit` is now the one command for it. It is still NOT in the `full` suite, so `npm run e2e` and the CI mirror do not run it; adding it needs a full-run sample first (it has only ever run as its own browser invocation). Audit §18.1. |
+| §18.1 the feature audit is runnable | **DONE (sixth pass)** | `--suite audit` is 55/55 — every shipped chord produces a visible response — and `npm run e2e:audit` is the one command for it. It is now part of the `full` selection (`scripts/e2e/suites.json`, last group), so `npm run e2e` and the CI mirror run the feature audit by default; the "needs a full-run sample first" caveat was resolved by running it inside a full selection rather than standalone, which is also where a group entry could hide a tab-count assumption. Audit §18.1. |
+
+| §23 a chord on a page the helper owns was never exercised anywhere | **DONE (sixth pass)** | The chrome helper's OWN bindings — `;o`, `;f`, `;?` on an about: page, an error page, any page with no content script — had no test at all: every suite that pressed a chord pressed it on a page whose own engine answered. `content/focus › a dismissed chrome popup gives the keyboard back to the page` now drives one end to end (`;o` opens the chrome URL popup, measured in the chrome state; Esc closes it; the keyboard is back in the page), and finding out why it kept failing produced the four facts below. The case is in the baseline as a pass. |
+| §23a a chord's sub-key can go down the wrong path | **HARNESS, FIXED — and the first diagnosis was WRONG, which is why it is written down** | The sub-key of `ctx.leaderPress` really did vanish on a chrome-owned page (the helper's dispatch trace recorded `;` → `leader-arm` and NO entry for the key that followed, so the leader stayed armed and the chord looked like a binding that does nothing). The first reading blamed the two-payload shape — `;` and the binding key sent as two `#lfc=keys` round trips with 300ms of pacing — and the way to check that is to put it back and measure: with the corrected page (§23b) BOTH shapes pass. So the split was never the cause. The cause is the primitive's per-press path choice: `chromeOwnsLeader(tab)` asks the PAGE whether it has a content script, so on a page whose script arrives a moment late the answer differs between the two presses, and the second key was delivered by BiDi into a document with no listener. One payload per gesture is kept because it removes that window, not because it fixed a key. §23d is the general form. |
+| §23b the fixture's "Firefox error pages" were ordinary pages | **FIXED premise, fixture noted** | `scripts/e2e/pages.ts` said of `/err/401…504`: "each one renders Firefox's own error page instead of the site's content". Measured, that is false for this build: a `{ status: 404, body: "not found" }` response served as `text/html` is RENDERED (`document.contentType` `text/html`, the body's own text, `data-lf-content="1"` — the content script runs there). Firefox substitutes its own page for an EMPTY body, so the seven `content/stuck` error-page cases pass against a page that is not the page they name. The case that needed a genuinely chrome-owned page now uses a URL that cannot resolve (`http://lazyfox-e2e.invalid/`) and ASSERTS the premise instead of assuming it — no Lazyfox content script on the document, and the product's own `ownsKeys` for the same tab. The sticky fixture claim is left in place with this row as its record, because changing seven passing cases is its own pass. |
+| §23c "the key did nothing" now has a name | **DONE** | The chrome helper could arm the leader, paint the overlay, own the keys — and give no account of a key that ran nothing. Two dev-only facts are now PULLED in the chrome state reply: `keymap: { ready, buffered }` (the leader's table, and the keystrokes it is holding because the table has not arrived — an armed leader with no table buffers every chord and reports nothing) and `keyTrace` (the last 24 keystrokes with the branch each took: `leader-arm`, `leader-chord`, `pass`, `web-page`, `cc-forward`, …). Both are memories read on demand, never mirrored per key (§0b's rule), both are compiled out of a release build, and both are pinned: two fields in the contract test, three cases in `keyhold.test.ts` including the release shape (nothing recorded). They are also what made §23a's diagnosis a measurement rather than a theory. |
+| §23d the harness chose a key path by asking the PAGE | **HARNESS, RECORDED** | `ctx.chromeOwnsLeader(tab)` decides whether a key is delivered through the synthetic channel or through BiDi, and it answers by reading the page's `data-lf-content`. That is the product's question asked from the wrong side: a page cannot describe a popup that belongs to the browser's own UI. Measured live: with the chrome URL popup open over a chrome-owned page, the heuristic answered "the page owns this", the dismissal went into a document with no listener, and the popup stayed up. The case delivers its keys through the channel and says why; a general fix — the harness asking the chrome (`chromeOwnsKeys` + `hasPopup`) before choosing a path — is left unbuilt because it costs a state read per press, and this is the only case that has needed it. |
 | §18.2 the record cannot lie | **DONE** | `summary()` reports a baseline row whose group ran but whose test did not, blocks on it, and `--update-baseline` prunes it; writing the file moved to `main.ts` so the rule is testable. Five tests in `harness-proves-itself.test.ts` (20/20) and the one real stale row (`content/multidigit › the window is left as it was found`, a `fail` row for a test that no longer exists) is gone. Audit §18.2. |
 | §18.3 a key is never forwarded to a page that cannot answer | **DONE** | The command center declares its engine (`data-lf-engine`, set where its keydown listener is installed) and the chrome helper answers the LEADER KEY itself when the page has no engine, instead of consuming it into a document that cannot act. Five cases in `keyhold.test.ts` (29/29), mutation `cc-forward-always` DETECTED, and the stuck test went from 3/5 to 4/4 across consecutive standalone runs. Audit §18.3. |
 | §18.4a routing asks the DOCUMENT, not the URL | **DONE** | `keystate.commandCenterDocumentPresent`, used with `isCommandCenterTab` by one predicate in the dispatcher (`Esc`, `;f`, key routing); six checks in `test-chrome-keys.ts` (44). Audit §18.4a. |
@@ -295,6 +305,8 @@ what is not.
 | §18.7 the committed artifacts were reproducible only until the next commit | **DONE** | Go stamps the VCS state (commit, commit time, `vcs.modified`) into every binary and derives the build ID from it, so `-trimpath` alone left the promise half-kept: a rebuild from identical sources produced different bytes the moment HEAD moved or the tree had anything unstaged, which surfaced as "dist/ does not match the source" — the one signal the payload check exists to raise. Fixed at the three call sites that lacked `-buildvcs=false` (the wasm core and platform host in `build.ts`, the cross-compiled host in `scripts/installer-build.ts`). Verified: `npm run dev-install:clean` (a full build + install) now leaves `git status` empty against the committed artifacts. Audit §18.7. |
 
 | §19 the harness addressed a web page by a URL two tabs shared | **DONE (harness, fifth pass)** | Four content tests failed in one full run — both hint cases that read geometry with `hintSnapshot` ("no tab id … its URL matched 2 row(s) of the tab strip") and both status-bar indicator cases (the bar follows the SELECTED tab, which was the duplicate). One cause: the `;x`/`;v` undo pair closed and reopened a tab on `http://…/`, the URL every other content test navigates `tabA` to, and the sweep's fail-safe rule correctly refuses to close a tab whose URL equals an unpinnable handle's — so two tabs the harness could not tell apart survived the whole group. Fixed by giving the undo pair a page of its own (`/reopen`), plus an assertion that exactly one tab is on it (the count was back to `before` either way, so `;v` could have reopened "a tab"). The failure text now reports the matching row COUNT and the strip, because "zero or several" was two opposite diagnoses in one sentence. Not a product defect: nothing in the hints engine or the status bar was wrong in that run. |
+| §21 the keyboard is given back when a DOCUMENT FINISHES LOADING, and at boot | **DONE** | The report it closes is the user's "it still freezes and I have to click the page". The rule (which page the keyboard belongs to, and the four states in which the helper declines) lives in `chrome/keyboardfocus.ts`; what it did not have was a trigger that fires LATE ENOUGH. Measured on `;n` (open the home tab — the action a keyboard-first user performs most): the tab select fires while the tab is still `about:blank` and the location change fires while the document is being replaced, so the focus granted then belongs to a document that is about to go away, and the document that arrives finds *nobody* has the keyboard (`Services.focus.focusedElement` is null, not even the `<browser>` element) until the page is clicked. A third trigger is added — `onStateChange`, top-level `STATE_STOP` only, selected tab only (`chrome/winsync.ts`) — plus a boot trigger for the first document of a session, which has no event to announce it. The same rule now also closes the last same-class hole: the chrome popup's own close path focused the browser element directly, which is the weaker half of the repair (an element focus is not always enough — the focus manager can be left naming no element at all). `popup.ts` calls `focusSelectedContent` now, so there is one implementation of "give the keyboard back" and the popup path cannot drift from it, and `content/focus › a dismissed chrome popup gives the keyboard back to the page` measures it end to end. Falsified end to end, not asserted: `content/focus › ;n opens a tab and the keyboard is in it` fails on the tree without the trigger ("the page on screen does not have the keyboard… page: hasFocus:false … focused:null") and passes with it; `scripts/test/window-sync.test.ts` (7 checks) pins the trigger rules with no browser — a subdocument's load is not one, a background tab's is not one, a start is not one, boot applies the rule once — and the mutation gate carries `focus-load-stop-ignored` and `focus-load-any-tab`, both DETECTED. |
+| §22 the focus probe says WHY, and the rule can be re-run on demand | **DONE** | "The keyboard is missing" and "the repair ran before the document existed" are opposite diagnoses with opposite fixes, and `focus: {"focused": null}` cannot tell them apart. `ChromeStateFocusV1` now reports the four facts that turn that zero into a diagnosis (`remote`, `docShellActive`, `focusedWindow`, `chromeActive`, `pageHasFocus`), and the dev-only `#lfc=focus` channel runs the same rule the triggers run (`debug.ts`), so a test can ask whether the repair itself works. That is what identified this defect: the on-demand run left `pageHasFocus: true` while every earlier trigger had run too soon. |
 | §20 the typing half of the user's report, as a case | **DONE** | §8.3's fix (a tail swallowed because an overlay FLAG was set rather than because the key was consumed) had unit coverage but not the user's SEQUENCE. `content/field › a chain of overlays leaves the next sentence typed into a field intact` now runs a popup plus two hint sessions cancelled with Esc — the second with the Esc landing while the batch is still being built — and types a sentence containing every contested key into a field twice, asserting the field holds exactly that sentence both times. A dropped character records nothing anywhere (the keydown lands, the keypress is prevented, the caret does not move), so the assertion is the user's evidence, and a missing key and a duplicated key both fail it. |
 
 ### What the ledger means for the next session
@@ -375,3 +387,77 @@ items that need a profiler run beside them (§12.4's three composed-ancestor wal
 audit` still is not in the `full` selection, so `npm run e2e` never runs the
 feature audit). The feature audit itself is the cheapest regression check to run
 beside any of them: `npm run e2e:audit`, 55/55.
+
+**Closed in the sixth pass.** §18.1 is done (the audit rides in the `full`
+selection), and the pass was otherwise about a class of test that lies: a case
+whose PREMISE was never measured. `content/focus › a dismissed chrome popup gives
+the keyboard back to the page` had never passed, and neither reason was the
+product. The page under the popup — a fixture "HTTP error page" — turned out to be
+an ordinary content-script page whose script arrived a moment later (§23b), so
+the case was asking the helper to own the keys on a page whose own engine does
+that, and the harness's per-press path choice changed under it mid-chord (§23a).
+Both are now the case's own assertions: the page must have no Lazyfox of its own,
+the helper's answer for that tab is the product's (`ownsKeys`) rather than a
+marker read from the page, and a chord is one gesture.
+
+The instruments from §23c are the part worth carrying forward. `keymap.{ready,
+buffered}` and `keyTrace` cost nothing in a release build and turn "the key did
+nothing" into one of four sentences — the table never loaded, the dispatcher
+declined it, another branch took it, or the key never reached the helper at all.
+The last one is what §23a was, and it is invisible to every other field of the
+state reply — including to the theory that was wrong about it.
+
+The performance items are unchanged and still need a profiler run beside them
+(§12.4/§2.1/§2.6, and §2.6's acceptance is a measurement in Firefox, not a green
+test). The fixture claim in §23b is left as a note rather than a change: the seven
+`content/stuck` error-page cases pass, but they pass against pages that are not
+the pages they name, and giving the fixture a genuinely empty-bodied error
+response is a pass of its own.
+
+**Closed in the seventh pass.** The one case between the tree and a full green
+run was failing half of its runs, and it was a test premise again rather than the
+product. `commandcenter › command center: a fresh tab opens in command mode so
+`;` arms the leader` found the tab `;n` had just opened with "the first browsing
+context whose URL contains `commandcenter.html`", and the URL it matched belonged
+to the hidden relay carrier: the channel's own messages ride that URL, and a
+presence report ABOUT a home tab contains `commandcenter.html` inside its
+percent-encoded payload. The test then read its facts out of `relay.html` and
+reported the product as "the fresh tab never reached command mode". Measured 3
+failures in 6 runs before the fix and 0 in 6 after; the tab is now named by ID
+(`ctx.contextForTabId`, the tab→context direction of `tabIdOf`) and `ccTabs` asks
+each document for its own `location.href` instead of trusting the tree's string.
+The same substring trap was closed in the three places `content/focus.ts` matched
+a tree URL, which is the same fix the fixture already applied to tab COUNTS
+(`ctx.isRealTab`).
+
+What is left is what was left before it, and none of it is a known defect: the
+two performance items (§12.4's three composed-ancestor walks, §2.1/§2.6's scan
+and sweep), each of which needs a profiler run on a named page beside it; §4.4's
+`Escape` decision, which needs a fixture where the page's answer and Lazyfox's
+can be told apart; and §23b's fixture page, which needs a genuinely empty-bodied
+error response to be the page its cases name.
+
+**Open after the seventh pass: three cases that only fail deep in a full run.**
+The 301-test selection (every group, audit included) reported 293 passes and
+three unexpected failures — `commandcenter/tabs › command center tab commands ;n
+;x ;v ;c` (";x close: wanted 3 tabs, saw 4"), `sessions/sessions › sessions:
+split layout is saved and restored with the session` ("split not created", in a
+nine-tab window) and `audit › category: Z o / Z r — zoom out, then reset` ("no
+visible response to `;Z r`"). All three pass in isolation, twice each, and their
+baseline rows already record intermittent history (`tabs` 5/7 passes, `sessions`
+3/5, `audit` 1/1) — so they are order- and load-dependent, not new defects, and
+the honest next step is the same one every other harness entry in FINDINGS.md
+used: measure the premise of the FIRST of them that fails (the audit case is the
+cheapest to sample: `npm run e2e:audit` is green on its own).
+
+The `;x` case has one candidate mechanism worth checking first, and it is a
+fixture tell rather than a product one: `ctx.leaderPressNoFocus` waits up to four
+seconds for the CHROME state's `leaderActive` before sending its key, and every
+one of its callers drives a command-center tab — where `;` is FORWARDED to the
+page (keysdispatch: `cc-forward`) and the page's own leader answers it, so the
+chrome leader never arms and the wait can never be satisfied. It therefore spends
+its four seconds and proceeds anyway, which is the shape of a silent fallback: it
+cannot report the arm it wanted and it hides that it never looked. Either the wait
+goes (paced like `chromeLeaderSeq`, whose callers all name their tab) or the arm
+is read from the page's own mirror — but it should be decided by a measurement on
+the case that fails, not by this note.

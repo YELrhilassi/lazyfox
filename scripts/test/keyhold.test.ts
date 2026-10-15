@@ -799,3 +799,71 @@ describe("the liveness rule: a hold has to be held", () => {
     assert.equal(releaseExpiredHold(leader, 5000 + HOLD_LIVENESS_MS + 1), true);
   });
 });
+
+// THE DISPATCH TRACE, and why it is pinned here rather than only in the
+// browser. "Press `;o` on a chrome-owned page and nothing happens" has three
+// different causes that look identical from outside — the helper declined the
+// key, the key never arrived, the leader was armed but its table had not loaded
+// — and the trace is what tells them apart (it is the reason the last one was
+// found at all: an e2e case recorded `;` as `leader-arm` and NOTHING for the
+// key that followed, which is a harness failure, not a product one).
+describe("the dispatcher names what it did with a key", () => {
+  // `__DEV__` is a build-time literal that Node does not define, so the trace is
+  // off there by default (an honest release shape: nothing is recorded). Set it
+  // for these cases BEFORE the dispatcher is built, which is when the module
+  // reads it.
+  const previous = (globalThis as any).__DEV__;
+  test("a chord is named, and a declined key is named differently", () => {
+    (globalThis as any).__DEV__ = true;
+    try {
+      const { down } = setup();
+      assert.equal(down.chromeKeyDown(keydown(";")), true);
+      down.chromeKeyDown(keydown("o"));
+      const trace = down.dispatchTrace();
+      const keys = trace.map((e: any) => e.k);
+      assert.deepEqual(keys.slice(-2), [";", "o"], "both keystrokes are recorded, in order");
+      assert.equal(trace[trace.length - 2].br, "leader-arm");
+      assert.equal(trace[trace.length - 1].br, "leader-chord");
+      // The entry carries the facts the diagnosis turns on, not just the key.
+      const last = trace[trace.length - 1];
+      assert.equal(last.actor, false, "a real key is not actor-forwarded");
+      assert.equal(last.tap, false, "a real key has a keyup coming");
+      assert.equal(last.l, 1, "the leader was armed when the chord arrived");
+      assert.equal(last.owns, true);
+    } finally {
+      (globalThis as any).__DEV__ = previous;
+    }
+  });
+
+  test("a page that owns its keys records the DECLINE", () => {
+    (globalThis as any).__DEV__ = true;
+    try {
+      const { down } = setup(WEB);
+      report(setup(WEB).win, true, WEB);
+      const { down: webDown, win } = setup(WEB);
+      report(win, true, WEB);
+      assert.equal(webDown.chromeKeyDown(keydown("j")), false);
+      const entry = webDown.dispatchTrace().slice(-1)[0];
+      assert.equal(entry.k, "j");
+      assert.equal(entry.br, "web-page");
+      assert.equal(entry.c, false);
+      assert.equal(entry.owns, false, "the page owns its keys, and the entry says so");
+      // The first dispatcher was never used; the trace is PER DISPATCHER, since
+      // a helper's ring describes that helper's window.
+      assert.deepEqual(down.dispatchTrace(), []);
+    } finally {
+      (globalThis as any).__DEV__ = previous;
+    }
+  });
+
+  test("nothing is recorded when the build is not a dev build", () => {
+    (globalThis as any).__DEV__ = false;
+    try {
+      const { down } = setup();
+      down.chromeKeyDown(keydown(";"));
+      assert.deepEqual(down.dispatchTrace(), [], "a release build records nothing");
+    } finally {
+      (globalThis as any).__DEV__ = previous;
+    }
+  });
+});

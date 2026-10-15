@@ -16,6 +16,10 @@ export async function run(ctx: any): Promise<void> {
   const t = (name: string, fn: () => Promise<void>) => ctx.runTest("content/typing", name, fn, { tags: TAGS });
 
   const tabCount = () => ctx.tabCount();
+  // The same reader, named for the two tests that compare a count across an
+  // action (a tab closing is the aftermath of `;x`, and a count is the only
+  // observable that survives the tab being gone).
+  const tabCountRaw = () => ctx.tabCount();
   const fieldValue = (tab: string, sel: string) =>
     evalIn(tab, `(() => { const e = document.querySelector(${JSON.stringify(sel)}); return e && typeof e.value === "string" ? e.value : null; })()`)
       .catch(() => null);
@@ -97,6 +101,33 @@ export async function run(ctx: any): Promise<void> {
     await sleep(600);
     assert(await tabCount() === before, "no tab was closed while typing in a plain input");
     assert(await fieldValue(ctx.tabA, "#plain") === ";x", "both characters were typed");
+  });
+
+  await t("every key the scroll layer binds types into a field", async () => {
+    // The reported symptom, verbatim: "I have to type keys like g twice for it
+    // to register once, even on the text input". `g j k d u G` are the scroll
+    // keys, and `g` is also the arm of a two-press gesture — so every one of
+    // them, first press included, must arrive in the field as itself and must
+    // run nothing on the way. The page's own scroll position is asserted too:
+    // a key that typed AND scrolled would still be a key the product took.
+    ctx.tabA = await createTab();
+    await navigate(ctx.tabA, `${ctx.base}/`, "complete");
+    await ctx.activateTab(ctx.tabA);
+    await evalIn(
+      ctx.tabA,
+      `(() => { const i = document.createElement("input"); i.id = "keys1";
+         i.style.cssText = "position:fixed;left:20px;top:200px;width:240px;height:24px;z-index:9";
+         document.body.appendChild(i); i.focus(); return document.activeElement === i; })()`,
+    );
+    const tabCount = await tabCountRaw();
+    for (const ch of "gjkduG") await ctx.press(ctx.tabA, ch);
+    const v = await fieldValue(ctx.tabA, "#keys1");
+    assert(v === "gjkduG", "every scroll key reached the field as itself, got " + JSON.stringify(v));
+    assert((await tabCountRaw()) === tabCount, "no scroll key ran a Lazyfox action while typing");
+    assert(
+      (await evalIn(ctx.tabA, `window.scrollY`)) === 0,
+      "the page did not scroll while the user was typing in it",
+    );
   });
 
   await t("the leader is disarmed when focus moves into a field", async () => {

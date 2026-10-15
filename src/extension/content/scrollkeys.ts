@@ -3,13 +3,17 @@
 // document scroller by default, an inner pane when the document cannot
 // scroll, or the region the user cycled to with ;F / ;B).
 
+import { createGgArm } from "../../shared/gg";
 import type { ScrollController } from "./scroll";
 
 export function createScrollKeys(
   scroll: ScrollController,
   getCfg: () => { scrollKeys?: boolean }
 ) {
-  let lastG = false;
+  // The `gg` gesture, in the shared arm (see shared/gg.ts): the ARM press is
+  // not consumed — a `g` that did nothing must not be a keystroke taken from
+  // the page — and the window is generous enough for a human double tap.
+  const gg = createGgArm();
 
   return function handleScrollKeys(e: KeyboardEvent): boolean {
     if (getCfg().scrollKeys === false) return false;
@@ -20,16 +24,13 @@ export function createScrollKeys(
     if (k === "u") { scroll.scrollPage(-1); return true; }
     if (k === "G") { scroll.toBottom(); return true; }
     if (k === "g") {
-      if (lastG) {
+      if (gg.press()) {
         scroll.toTop();
-        lastG = false;
-      } else {
-        lastG = true;
-        setTimeout(() => {
-          lastG = false;
-        }, 600);
+        return true;
       }
-      return true;
+      // Not consumed while armed: the key continues to the page, so the first
+      // press of the gesture can never be a silent no-op.
+      return false;
     }
     return false;
   };

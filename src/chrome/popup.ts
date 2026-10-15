@@ -10,6 +10,7 @@ import { backdropWheel } from "../shared/keyguard";
 import { windowStep } from "../shared/resize";
 import { PANEL_CSS, type PopupCtl } from "../shared/overlay";
 import { UI_FONT } from "../shared/theme";
+import { focusSelectedContent } from "./commandcenterfocus";
 import type { ChromeEnv, ChromeDocument } from "./env";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
@@ -72,10 +73,22 @@ export function createPopupHost(env: ChromeEnv): PopupHost {
     // by a normal one (or removed some other way), a stale resizeHost must
     // never keep arrow keys resizing the window.
     resizeHost = null;
+    // THE KEYBOARD GOES BACK THROUGH THE PRODUCT'S OWN RULE, not a second
+    // implementation of it. A popup's input is a field in the BROWSER's UI, so
+    // closing the popup removes the element that had the keyboard — and an
+    // element focus is not always enough to give it to the page (measured: the
+    // browser's focus manager can be left naming NO element at all, which is
+    // the state the user repairs by clicking the page). `focusSelectedContent`
+    // is the escalating repair the tab-switch rule uses; it returns immediately
+    // when the keyboard is already in the selected content, so this is the same
+    // call the raw `selectedBrowser.focus()` was, only complete.
     try {
-      win.gBrowser.selectedBrowser.focus();
+      const fm = env.services.focus;
+      const flags =
+        (env.Ci && env.Ci.nsIFocusManager && env.Ci.nsIFocusManager.FLAG_NOSCROLL) || 0;
+      focusSelectedContent(win, fm, flags);
     } catch (e) {
-      // ignore
+      // a torn-down tab cannot take the keyboard; the next tab switch tries again
     }
   }
 

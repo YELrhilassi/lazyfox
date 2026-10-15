@@ -21,7 +21,7 @@
 import {
   startGecko, stopGecko, makeProfile, removeProfile, httpJson, subscribe,
   setLogs, sleep, startTestServer, createTab, navigate, getTree, contextsOf,
-  closeContext, focusPage, evalIn,
+  focusPage, evalIn,
 } from "./bidi.ts";
 import { createCtx } from "./fixture.ts";
 import { pages } from "./pages.ts";

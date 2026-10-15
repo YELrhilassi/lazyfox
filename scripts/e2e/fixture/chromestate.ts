@@ -14,7 +14,6 @@ import {
   waitFor,
   waitForValue,
   until,
-  sleep,
 } from "../bidi.ts";
 import { ChromeStateHandle, chromeStateHandle as asChromeStateHandle, decodeStateReply } from "../chrome-state.ts";
 
@@ -127,9 +126,33 @@ export function installChromestate(
         { timeoutMs, intervalMs, what, signal: ctx.signal },
       );
     } catch (e) {
-      const seen = last
-        ? `last reply: v${last.version}, fields ${JSON.stringify(last.fieldNames())}`
-        : `no reply decoded${lastError ? ` (${lastError})` : ""}`;
+      // THE LAST REPLY, AS ANSWERS RATHER THAN FIELD NAMES. It used to print
+      // `fields [...]`, which says what COULD be read and nothing about what was
+      // there — so "the popup never came up" arrived with no way to tell "the
+      // key never armed the leader" from "the leader armed and the binding did
+      // not run" from "the popup opened and closed again". The four accessors
+      // below are exactly those three questions plus the selection they are
+      // about, and they cannot throw on a healthy snapshot (the handle already
+      // refused an unhealthy one).
+      let seen: string;
+      if (last) {
+        const safe = (f: () => unknown) => {
+          try {
+            return JSON.stringify(f());
+          } catch (err) {
+            return JSON.stringify({ unreadable: String((err as Error).message || err) });
+          }
+        };
+        seen =
+          `last reply: v${last.version}` +
+          ` leader=${safe(() => last!.leader())}` +
+          ` popup=${safe(() => last!.popup())}` +
+          ` split=${safe(() => last!.split())}` +
+          ` selUrl=${safe(() => last!.selectedUrl())}` +
+          ` fields=${JSON.stringify(last.fieldNames())}`;
+      } else {
+        seen = `no reply decoded${lastError ? ` (${lastError})` : ""}`;
+      }
       throw new Error(
         `expected ${what}, but the chrome state never satisfied it after ${timeoutMs}ms. ${seen}`,
       );
@@ -167,6 +190,45 @@ export function installChromestate(
       }, 8000);
     } finally {
       await evalIn(ctx.probe, `history.replaceState(null, "", location.href.split("#")[0]); true`).catch(() => {});
+    }
+  };
+
+  /**
+   * Run the PRODUCT's keyboard rule now, and report what it did.
+   *
+   * `#lfc=focus` re-applies the same rule the tab-select, location and
+   * load-complete triggers apply, and answers with the decision plus the focus
+   * probe. It exists for the opposite diagnosis problem: a case that finds the
+   * keyboard missing cannot tell "the repair does not work" from "the repair
+   * ran before the document it was aimed at existed" — and the two have
+   * opposite fixes. This runs the repair again and shows whether it lands.
+   */
+  ctx.chromeFocus = async function chromeFocus(): Promise<any> {
+    await ctx.ensureProbe().catch(() => {});
+    const activeId = await evalIn(
+      ctx.probe,
+      `browser.tabs.query({currentWindow:true, active:true}).then(ts => ts[0] ? ts[0].id : null)`,
+    ).catch(() => null);
+    const nonce = "f" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+    await evalIn(ctx.probe, `location.hash = ${JSON.stringify("lfc=focus." + nonce)}; true`);
+    try {
+      return await waitFor(async () => {
+        const u = await evalIn(ctx.probe, `location.href`);
+        const at = String(u || "").indexOf("#lfc=focus.");
+        if (at < 0) return null;
+        const tail = String(u).slice(at + "#lfc=focus.".length);
+        const dot = tail.indexOf(".");
+        if (dot < 0) return null;
+        if (tail.slice(dot + 1) !== nonce) return null;
+        const b64 = tail.slice(0, dot);
+        if (!b64) return null;
+        return JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+      }, 8000);
+    } finally {
+      await evalIn(ctx.probe, `history.replaceState(null, "", location.href.split("#")[0]); true`).catch(() => {});
+      if (activeId != null) {
+        await evalIn(ctx.probe, `browser.tabs.update(${activeId}, {active: true})`).catch(() => {});
+      }
     }
   };
 
@@ -214,15 +276,25 @@ export function installChromestate(
     // the resulting silence looks exactly like a product bug.
     await ctx.chordReady(tab);
     await evalIn(tab, `document.activeElement && document.activeElement.blur ? (document.activeElement.blur(), true) : true`).catch(() => {});
-    await ctx.press(tab, ";");
-    // The chrome helper captures the leader key synchronously in the chrome
-    // document (its arm state is NOT observable from the page realm — the
-    // modeTag flip is the page's own handler), so there is no page-realm arm
-    // signal to wait on here. A short bounded pacing between `;` and the
-    // binding key is the correct primitive; anything longer races the leader's
-    // own arm timeout and the binding key lands as a plain keystroke.
-    await sleep(300);
-    await ctx.press(tab, key, opts);
+    // ONE PAYLOAD FOR THE WHOLE CHORD. A user presses a chord in one gesture,
+    // and the product's dispatch is the same either way (`;` arms synchronously,
+    // the sub-key is read 20ms later by the handler a real keystroke reaches).
+    //
+    // The old shape was two `#lfc=keys` round trips with 300ms of pacing between
+    // them, which opens a window the harness cannot afford: whether a key goes
+    // through this channel at all is decided per press by `chromeOwnsLeader`,
+    // and on a page whose content script arrives a moment late that answer
+    // CHANGES between the two presses — measured on the fixture's old "error
+    // page", where the sub-key was delivered by BiDi into a document with no
+    // listener, the helper's own dispatch trace recorded `;` → `leader-arm` and
+    // no entry for the key that followed, and the chord looked exactly like a
+    // binding that does nothing. (Measured afterwards on a genuinely chrome-owned
+    // page: both shapes pass, so the split was not the cause of that failure — a
+    // false premise about the page was. One gesture removes the window anyway.)
+    await ctx.sendKeys(tab, [
+      { k: ";" },
+      { k: key, shift: opts?.shift, ctrl: opts?.ctrl, alt: opts?.alt, meta: opts?.meta },
+    ]);
   };
 
   // Put whichKey into a KNOWN state, and confirm it landed.

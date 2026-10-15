@@ -27,6 +27,7 @@
 // anything today.
 
 import type {
+  ChromeStateFocusV1,
   ChromeStatePopupV1,
   ChromeStateStripRowV1,
   ChromeStateTabV1,
@@ -34,7 +35,13 @@ import type {
 } from "../../src/chrome/stateapi.ts";
 import { CHROME_STATE_VERSION } from "../../src/chrome/stateapi.ts";
 
-export type { ChromeStatePopupV1, ChromeStateStripRowV1, ChromeStateTabV1, ChromeStateV1 };
+export type {
+  ChromeStateFocusV1,
+  ChromeStatePopupV1,
+  ChromeStateStripRowV1,
+  ChromeStateTabV1,
+  ChromeStateV1,
+};
 export { CHROME_STATE_VERSION };
 
 /** A `#lfc=state` reply that this harness does not understand. */
@@ -176,6 +183,55 @@ export class ChromeStateHandle {
       ownsKeys: !!this.raw.chromeOwnsKeys,
       lastAction: this.raw.lastAction ?? null,
     };
+  }
+
+  /**
+   * The leader's own table, and what it is holding back because of it.
+   *
+   * `ready === false` with a non-zero `buffered` is a NAMED state rather than a
+   * mystery: an armed leader with no table buffers every chord (its overlay
+   * still lights, so the screen looks right), and no binding can run until the
+   * fetch lands. Every other field of the reply looks identical to "the binding
+   * did nothing", which is why this one exists.
+   */
+  keymap(): { ready: boolean; buffered: number } {
+    const k = (this.raw as any).keymap;
+    if (!k || typeof k !== "object" || Array.isArray(k) || (k as any).error) {
+      return { ready: false, buffered: -1 };
+    }
+    return { ready: !!(k as any).ready, buffered: Number((k as any).buffered) || 0 };
+  }
+
+  /**
+   * The last keystrokes the helper's dispatcher saw, newest last.
+   *
+   * Each entry carries the branch it took (`br`), whether it was consumed (`c`),
+   * and the ownership facts at entry (`cc`, `owns`, `l` = leader state as
+   * 1 active / 2 pending). This is the answer to "press `;o` on a chrome-owned
+   * page and nothing happened": `leader-chord` with `c: true` and no action ran
+   * is a keymap/binding problem, `pass` is the dispatcher declining it, and a
+   * MISSING entry means the key never reached the helper at all.
+   *
+   * Dev-only: a release build records nothing.
+   */
+  keyTrace(): Array<Record<string, unknown>> {
+    const t = (this.raw as any).keyTrace;
+    return Array.isArray(t) ? (t as Array<Record<string, unknown>>) : [];
+  }
+
+  /**
+   * WHERE THE KEYBOARD IS, per the browser's own focus manager.
+   *
+   * A different question from `leader().ownsKeys` (which asks who OWNS the
+   * keys), and the one that explains the class of failure these suites exist
+   * for: the page is alive, the helper defers to it, and no key arrives because
+   * focus is parked in the browser's own UI. `null` when the field could not be
+   * read — reported as an unreadable fact rather than as "no focus anywhere".
+   */
+  focus(): ChromeStateFocusV1 | null {
+    const f = (this.raw as any).focus;
+    if (!f || typeof f !== "object" || Array.isArray(f) || (f as any).error) return null;
+    return f as ChromeStateFocusV1;
   }
 
   /** The popup state, or null when the popup could not be read. */

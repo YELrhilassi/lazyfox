@@ -116,6 +116,7 @@ function urlOfTab(tab: any): string {
   }
 }
 
+
 /** The selected tab element, or null when it cannot be read (mid-collapse). */
 function selectedTabOf(win: ChromeWindow): object | null {
   try {
@@ -140,11 +141,24 @@ function selectedTabOf(win: ChromeWindow): object | null {
  * tab it is about is not used. That is the safe direction: an unplaceable report
  * leaves the helper owning the keys, and the leader key answers from there.
  *
- * The residual ambiguity is named rather than assumed away: two tabs showing the
- * SAME URL cannot be told apart by URL, and the repair then picks the first. It
- * is reachable only when the strip changes between the write and the delivery,
- * it costs a wrongly-placed record on a tab that is showing the very same page,
- * and it is one more reason the report carries the document nonce it does.
+ * AND THE REPAIR MUST BE UNIQUE, which is not a refinement — it is the fix for a
+ * wrong placement that a full-suite run produced. Two tabs showing the SAME URL
+ * cannot be told apart by URL, and the repair used to pick the FIRST match. That
+ * is not an edge case in this product: every command center tab is the same URL
+ * (`commandcenter.html`), and the command center opens one per `;n` — so a strip
+ * with four home tabs gives four identical candidates, and a report whose index
+ * had gone stale was recorded on whichever of them came first. The record then
+ * outlived the document that made it: that tab answered "a content script is
+ * here" for a document that was never in it, so when it later navigated to a
+ * page with no content script of its own (a Firefox HTTP error page) the helper
+ * declined the keys and the tab answered nothing — `;` included, which is the
+ * report this whole model exists to prevent.
+ *
+ * So the URL repair is taken ONLY when it names exactly one tab, and when it
+ * cannot, the index is trusted only if it agrees with the reported URL. A report
+ * that can name no single tab is dropped rather than guessed at: dropping it
+ * leaves the helper owning the keys, which answers the leader key, while a wrong
+ * placement leaves a tab silently dead.
  */
 export function presenceTabFor(win: ChromeWindow, index: number, url: string): object | null {
   try {
@@ -156,16 +170,75 @@ export function presenceTabFor(win: ChromeWindow, index: number, url: string): o
     const wanted = String(url || "");
     const hit = at(index);
     if (hit && (!wanted || urlOfTab(hit) === wanted)) return hit;
-    if (wanted) {
-      for (let i = 0; i < n; i++) {
-        const t = tabs[i];
-        if (t && urlOfTab(t) === wanted) return t;
-      }
+    if (!wanted) return hit || null;
+    let found: object | null = null;
+    for (let i = 0; i < n; i++) {
+      const t = tabs[i];
+      if (!t || urlOfTab(t) !== wanted) continue;
+      // A SECOND match makes the URL worthless as an identity: the two tabs are
+      // indistinguishable from here, and recording the fact on the wrong one is
+      // worse than not recording it at all.
+      if (found) return null;
+      found = t;
     }
-    return hit || null;
+    return found;
   } catch (e) {
     return null;
   }
+}
+
+/**
+ * The tab element holding a record for `doc`, or null when none does.
+ *
+ * A document's nonce identifies the document itself, so this is the one lookup
+ * that stays true while the strip, the URL and even the tab's own page change
+ * under a report in flight.
+ */
+export function tabHoldingDoc(win: ChromeWindow, doc: string): object | null {
+  const id = String(doc || "");
+  if (!id) return null;
+  try {
+    const tabs = (win as any).gBrowser && (win as any).gBrowser.tabs;
+    if (!tabs) return null;
+    const n = Number(tabs.length) || 0;
+    for (let i = 0; i < n; i++) {
+      const t = tabs[i];
+      const rec = t ? contentPresent.get(t) : undefined;
+      if (rec && rec.epoch === presenceEpoch && rec.doc === id) return t;
+    }
+  } catch (e) {
+    // an unreadable strip names no tab
+  }
+  return null;
+}
+
+/**
+ * Which tab a presence REPORT is about, announcements and retractions alike.
+ *
+ * THE SAME DOCUMENT MUST ALWAYS RESOLVE TO THE SAME TAB, and placement by
+ * index+URL alone could not promise that: the two halves of one document's life
+ * are reported at different moments, and between them the tab navigates. So a
+ * `pagehide` arriving after the tab had moved on was placed on whatever tab was
+ * showing the reported URL — usually none, or the command-center probe — while
+ * the record it was supposed to retract stayed on the tab that had actually
+ * reported. That is a record NOTHING can retract, and its consequence is the
+ * dead keyboard this module exists to prevent, on the page the user had just
+ * been sent to with a dead link: measured, `;o` (and every other leader key) did
+ * nothing on a Firefox HTTP error page, because the helper believed the command
+ * center that had preceded it was still there.
+ *
+ * A report carrying a document nonce therefore goes to the tab that already
+ * holds that document's record, and only falls back to index+URL placement when
+ * no record exists yet (the announcement) — which is exactly when there is
+ * nothing to find and the URL repair is the right rule.
+ */
+export function presenceTabForReport(
+  win: ChromeWindow,
+  index: number,
+  url: string,
+  doc?: string
+): object | null {
+  return tabHoldingDoc(win, String(doc || "")) || presenceTabFor(win, index, url);
 }
 
 export function noteContentPresent(
