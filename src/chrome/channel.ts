@@ -413,7 +413,10 @@ export function createChannel(deps: ChannelDeps): Channel {
       cmd === "state" ||
       // The keyboard rule, runnable on demand — see debug.ts handleFocus and
       // DebugState.giveKeyboard. Dev/verification only, like its neighbours.
-      cmd === "focus"
+      cmd === "focus" ||
+      // Put the keyboard in the browser's own UI — the state a user reaches with
+      // the mouse, and the one no e2e input can produce (see debug.ts handleBlur).
+      cmd === "blur"
     ) {
       deps.debug.handle(browser, cmd, rest, setHash);
       return;

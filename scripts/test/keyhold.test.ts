@@ -285,7 +285,96 @@ describe("ownership and keyup are separate facts", () => {
     down.chromeKeyDown(keydown(";"), true, true);
     assert.equal(leader.sticky, false);
   });
-});describe("the hold must not outlive the window's attention", () => {
+});
+
+describe("a page that cannot see the keyboard gets it back", () => {
+  // THE FIELD REPORT in its own words: "it stops responding until I move the
+  // mouse over the window and click on a spot on the page". The page is alive
+  // and its content script owns its keys — and the KEYBOARD is somewhere else,
+  // so the page's listener never runs and the key the helper declines because
+  // "the page owns it" is answered by the browser's own UI instead. The click is
+  // the repair the user discovers, and it is the one repair a keyboard-first
+  // browser cannot ask for.
+  //
+  // Asserted HERE rather than end-to-end because the condition is a fact about
+  // the FOCUS MANAGER, which the e2e layer can only reach through the states a
+  // real window happens to be in; here it can be stated directly. The e2e case
+  // (content/focus, "a page whose keyboard is in the browser's own UI") covers
+  // the same repair through Ctrl+L and a real key.
+  function lostKeyboard(page = WEB) {
+    const fm: any = { activeWindow: null, focusedElement: null };
+    const { leader, down, win } = setup(page, { env: { services: { focus: fm }, Ci: {} } });
+    // The window IS active (otherwise the keys would not be arriving at all) and
+    // the keyboard is on a chrome element: the URL bar after Ctrl+L, or the
+    // toolbar after a hover.
+    fm.activeWindow = win;
+    fm.focusedElement = { tagName: "input", ownerDocument: win.document };
+    const browser = win.gBrowser.selectedBrowser;
+    const focused: string[] = [];
+    browser.focus = () => focused.push("browser");
+    // The page's content script has arrived: `chromeOwnsKeys` is false, which is
+    // the gate this branch sits behind.
+    report(win, true, page);
+    return { leader, down, win, fm, browser, focused };
+  }
+
+  test("the leader key is consumed and the page is handed the keyboard", () => {
+    const { leader, down, focused } = lostKeyboard();
+    assert.equal(down.chromeKeyDown(keydown(";")), true, "the leader key must not be spent in the URL bar");
+    // At least once, not exactly once: the escalation in focusSelectedContent is
+    // entitled to try again when the focus manager has not taken the request yet
+    // (and its own test pins that). What THIS branch must do is ask.
+    assert.ok(focused.length >= 1, "the selected browser was given the keyboard back");
+    // And the HELPER must not arm here: on a web page the leader belongs to the
+    // content script, and a helper-owned leader would answer the sub-key while
+    // the page's own engine stayed dark — the double-owner bug, in reverse.
+    assert.equal(leader.active, false, "the page's leader is still the page's");
+  });
+
+  test("a page that already has the keyboard is left alone", () => {
+    const { down, focused, fm, browser } = lostKeyboard();
+    fm.focusedElement = browser; // the browser element IS what a remote page reports
+    assert.equal(down.chromeKeyDown(keydown(";")), false, "the page owns the key, as it always did");
+    assert.deepEqual(focused, [], "and nothing was refocused");
+  });
+
+  test("a chrome field the user is writing in is theirs", () => {
+    // The veto: a URL bar (or the find bar) holding TEXT is the user's caret, and
+    // pulling focus out from under it is worse than the freeze this repair is
+    // for. The typing channel is what says so, per keystroke — the event's own
+    // target, not a latch.
+    const fm: any = { activeWindow: null, focusedElement: null };
+    const { down, win } = setup(WEB, {
+      env: { services: { focus: fm }, Ci: {} },
+      typing: {
+        focusedIsTyping: () => true,
+        focusedTypingValue: () => "https://example.com/",
+        focusedTypingTarget: () => ({ tagName: "input", ownerDocument: win.document }),
+      },
+    });
+    const b = win.gBrowser.selectedBrowser;
+    const calls: string[] = [];
+    b.focus = () => calls.push("browser");
+    fm.activeWindow = win;
+    fm.focusedElement = { tagName: "input", ownerDocument: win.document };
+    report(win, true, WEB);
+    assert.equal(down.chromeKeyDown(keydown(";")), false, "the URL bar's text wins");
+    assert.deepEqual(calls, [], "and the caret was not taken from it");
+  });
+
+  test("an inactive window's page keeps the keyboard", () => {
+    // `focusedElement: null` means "nobody has it" ONLY while this window is the
+    // active one. An inactive window reports the same null as a property of being
+    // inactive, and its page has the keyboard for the moment the user comes back.
+    const { down, focused, fm } = lostKeyboard();
+    fm.activeWindow = null;
+    fm.focusedElement = null;
+    assert.equal(down.chromeKeyDown(keydown(";")), false);
+    assert.deepEqual(focused, [], "an inactive window is not ours to refocus");
+  });
+});
+
+describe("the hold must not outlive the window's attention", () => {
   // A lost keyup is indistinguishable from a held key from inside the window:
   // both look like "the leader key is down and nothing is coming". The hosts
   // therefore drop the hold when the window or page stops being the thing the

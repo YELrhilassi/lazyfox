@@ -39,6 +39,8 @@ export interface ChromeStateSource {
   keymap(): { ready: boolean; buffered: number };
   /** The dispatcher's key trace — see ChromeStateV1.keyTrace. */
   keyTrace(): Array<Record<string, unknown>>;
+  /** The live presence records — see ChromeStateV1.presence. */
+  presence(): Array<{ i: number; u: string; d: string }>;
   lastMoveDebug(): string | null;
   statusMounted(): boolean;
   statusPosition(): string;
@@ -200,6 +202,20 @@ export interface ChromeStateV1 {
    * them apart.
    */
   keyTrace: Array<Record<string, unknown>>;
+  /**
+   * The documents that have TOLD this helper they are alive, one row per tab.
+   *
+   * `i` is the tab's strip index at the moment of the read, `u` the URL the
+   * record names (`ext:`-shortened, like `strip`) and `d` its document nonce.
+   *
+   * It answers the one question `chromeOwnsKeys` cannot explain about itself:
+   * ownership is decided by looking for a record ON THE SELECTED TAB, so a wrong
+   * answer means either that no record was ever placed for that tab or that one
+   * was placed on a neighbour — and from outside, "the helper claimed the keys
+   * on a live page" looks identical either way. Two causes, opposite fixes
+   * (placement versus reporting), and this is the field that separates them.
+   */
+  presence: Array<{ i: number; u: string; d: string }>;
 
   // --- tabs -------------------------------------------------------------------
   mutedCount: number;
@@ -406,6 +422,18 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
       buffered: -1,
     } as any);
     partial.keyTrace = step("keyTrace", () => st.keyTrace(), [] as any);
+    // Shortened the way `strip` is, so a reader can compare a presence row with
+    // a strip row without knowing the extension's UUID.
+    partial.presence = step(
+      "presence",
+      () =>
+        (st.presence() || []).map((r) => ({
+          i: r.i,
+          u: (String(r.u || "").split("?")[0] || "").replace(/^moz-extension:\/\/[^/]+\//, "ext:").slice(-40),
+          d: String(r.d || ""),
+        })),
+      [] as any,
+    );
     partial.selUrl = step("selUrl", () => {
       const u = win.gBrowser.selectedBrowser && win.gBrowser.selectedBrowser.currentURI;
       return u ? String(u.spec) : "?";

@@ -232,6 +232,46 @@ export function installChromestate(
     }
   };
 
+  /**
+   * Put the KEYBOARD in the browser's own UI, and report what it landed on.
+   *
+   * The state a user reaches with the mouse — move to the top of the window and
+   * click anything once the toolbar has revealed itself — and the one no e2e
+   * input can produce: Lazyfox hides the URL bar, so Ctrl+L focuses nothing
+   * there, and BiDi delivers a key to the focused document but cannot choose
+   * which chrome element that is. Every "Lazyfox stops responding until I click
+   * the page" case starts in this state, so the harness has to be able to enter
+   * it (see chrome/debug.ts handleBlur).
+   */
+  ctx.chromeBlur = async function chromeBlur(): Promise<any> {
+    await ctx.ensureProbe().catch(() => {});
+    const activeId = await evalIn(
+      ctx.probe,
+      `browser.tabs.query({currentWindow:true, active:true}).then(ts => ts[0] ? ts[0].id : null)`,
+    ).catch(() => null);
+    const nonce = "b" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+    await evalIn(ctx.probe, `location.hash = ${JSON.stringify("lfc=blur." + nonce)}; true`);
+    try {
+      return await waitFor(async () => {
+        const u = await evalIn(ctx.probe, `location.href`);
+        const at = String(u || "").indexOf("#lfc=blur.");
+        if (at < 0) return null;
+        const tail = String(u).slice(at + "#lfc=blur.".length);
+        const dot = tail.indexOf(".");
+        if (dot < 0) return null;
+        if (tail.slice(dot + 1) !== nonce) return null;
+        const b64 = tail.slice(0, dot);
+        if (!b64) return null;
+        return JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+      }, 8000);
+    } finally {
+      await evalIn(ctx.probe, `history.replaceState(null, "", location.href.split("#")[0]); true`).catch(() => {});
+      if (activeId != null) {
+        await evalIn(ctx.probe, `browser.tabs.update(${activeId}, {active: true})`).catch(() => {});
+      }
+    }
+  };
+
   // Is the chrome helper the owner of leader keys in this context? Extension
   // pages run in-process under automation, so the chrome window's capture
   // listener sees their keys; remote web content does not reach it.

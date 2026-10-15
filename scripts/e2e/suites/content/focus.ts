@@ -813,6 +813,64 @@ export async function run(ctx: any): Promise<void> {
     await ctx.sendKeys(page, [{ k: "Escape" }]).catch(() => {});
   });
 
+  await t("a page whose keyboard is in the browser's own UI gets it back on the first key", async () => {
+    // THE FIELD REPORT IN ITS OWN WORDS: "it stops responding until I move the
+    // mouse over the window and click on a spot on the page". The page is alive
+    // and its content script owns the keys; the KEYBOARD is in the browser's own
+    // UI, so the page's listener never runs — and the key the helper declines on
+    // the grounds that "the page owns it" is answered by the browser chrome
+    // instead. The click is the repair the user discovers; a keyboard-first
+    // browser cannot ask for one.
+    //
+    // The keyboard is put in the browser's own UI the way this harness can
+    // (ctx.chromeBlur): the state a user leaves behind by moving to the top of the
+    // window and clicking there once the toolbar has revealed itself. Ctrl+L is
+    // NOT available and that is a product fact rather than a harness one — Lazyfox
+    // hides the URL bar, so the browser's own chord focuses nothing there
+    // (measured: the key landed in the page and the toolbar stayed hidden).
+    await ctx.collapseWindow();
+    ctx.tabA = await createTab();
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/hello`);
+    await assertKeyboardInSelectedPage("harness: the page starts with the keyboard");
+
+    await ctx.chromeBlur();
+    const lost = await waitFor(async () => {
+      const f = await keyboardFacts();
+      const chrome = f.chromeFocus;
+      return chrome && chrome.inSelectedContent === false && !f.pageHasFocus ? chrome : null;
+    }, 5000).catch(() => null);
+    assert(
+      lost,
+      "harness: the keyboard must be in the browser's own UI (state " +
+        JSON.stringify(await keyboardFacts()) +
+        ")"
+    );
+
+    // THE REPAIR happens at the key the user already pressed: the leader key is
+    // consumed with the refocus, so it is never spent as a character in the URL
+    // bar, and the keyboard goes back to the page.
+    await ctx.press(ctx.tabA, ";");
+    await assertKeyboardInSelectedPage(
+      "the page after one key was pressed while the keyboard sat in the browser's own UI"
+    );
+
+    // ...and the gesture completes on the NEXT press: the page's OWN leader,
+    // read from the page's own mirror (`data-lf-leader`), which only the content
+    // script's engine sets — the helper never paints it on a web page.
+    await ctx.press(ctx.tabA, ";");
+    const armed = await waitFor(
+      async () => ((await leaderArmed(ctx.tabA)) ? true : null),
+      5000
+    ).catch(() => null);
+    assert(
+      armed,
+      "the page did not arm its own leader once its keyboard was given back (state " +
+        JSON.stringify(await state(ctx.tabA)) +
+        ")"
+    );
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
   await t("a key typed while a SCRIPTLESS frame has focus still reaches the leader", async () => {
     // THE RESIDUAL OF THE FRAME REPORT, and the one `all_frames` alone does not
     // reach. `/frame` above is an http(s) frame, so `all_frames` injects the

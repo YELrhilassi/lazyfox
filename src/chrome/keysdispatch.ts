@@ -23,6 +23,8 @@ import {
   commandCenterPageReady,
   dispatchToCCPage,
   focusCCBody,
+  focusSelectedContent,
+  selectedContentHasKeyboard,
   signalCommandCenterFind
 } from "./commandcenterfocus";
 import {
@@ -307,7 +309,53 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // window listener (some builds do), never consume them here. An
     // actor-forwarded key is the exception: the actor only speaks for pages
     // with no content script, so there is no other owner to defer to.
+    //
+    // THE PAGE OWNS THE KEYS ONLY WHILE IT CAN SEE THEM, and this branch used to
+    // assume that it could. A keydown is delivered to the FOCUSED document, so
+    // when focus sits in the browser's own UI — the hidden URL bar Firefox parks
+    // it in, the toolbar a hover reveals, the tab strip, a splitter, or nothing
+    // at all after the window has been away — the page's listener never runs,
+    // and the key declined here is answered by the browser chrome instead: `;`
+    // is typed into the URL bar and Lazyfox looks frozen on a page that is
+    // perfectly healthy, until the user clicks on the page. That click is the
+    // repair, and it is the one repair a keyboard-first browser cannot ask for.
+    //
+    // So the keyboard is GIVEN BACK to the page at the key the user already
+    // pressed, and the LEADER KEY is consumed as part of that repair: it must
+    // never be spent as a character in the URL bar, and the user's next press
+    // lands in the page and arms the page's own leader there. Every other key is
+    // still declined — the same answer this branch has always given, since the
+    // page may well want it once focus is back.
+    //
+    // The one thing that vetoes the repair is the user COMPOSING in a chrome
+    // field: a URL bar holding text is theirs (the same exception the keyboard
+    // rule makes — see keyboardfocus.readKeyboardFacts), and pulling focus out
+    // from under a caret that has text behind it would be worse than the freeze.
     if (!fromActor && !chromeOwnsKeys(win) && !popup.isOpen()) {
+      let composingInChrome = false;
+      try {
+        composingInChrome =
+          typing.focusedIsTyping(e as KeyboardEvent) &&
+          isChromeUiFocus(win, typing, e as KeyboardEvent) &&
+          typing.focusedTypingValue(e as KeyboardEvent) !== "";
+      } catch {
+        composingInChrome = false;
+      }
+      let fm: any = null;
+      try {
+        fm = deps.env && deps.env.services ? deps.env.services.focus : null;
+      } catch {
+        fm = null;
+      }
+      if (!composingInChrome && !selectedContentHasKeyboard(win, fm)) {
+        focusSelectedContent(win, fm, focusFlags());
+        if (isLeaderKeyPress(e)) {
+          br = "web-page-leader-rescue";
+          return true;
+        }
+        br = "web-page-refocus";
+        return false;
+      }
       br = "web-page";
       return false;
     }

@@ -220,6 +220,22 @@ export class ChromeStateHandle {
   }
 
   /**
+   * The documents that have told the helper they are alive, one row per tab:
+   * `{ i: strip index at read time, u: url the record names, d: document nonce }`.
+   *
+   * `leader().ownsKeys` is decided from the record ON THE SELECTED TAB, so when
+   * it answers wrongly there are exactly two causes — nothing was ever recorded
+   * for that tab, or the record is on a neighbour — with opposite fixes. This is
+   * the field that says which, and it is the difference between "the page never
+   * reported" and "the report landed one tab over". Empty when the snapshot
+   * predates the field (the accessor never throws on it).
+   */
+  presence(): Array<{ i: number; u: string; d: string }> {
+    const p = (this.raw as any).presence;
+    return Array.isArray(p) ? (p as Array<{ i: number; u: string; d: string }>) : [];
+  }
+
+  /**
    * WHERE THE KEYBOARD IS, per the browser's own focus manager.
    *
    * A different question from `leader().ownsKeys` (which asks who OWNS the
