@@ -136,10 +136,12 @@ premise failed again (166/168, `relay.urlSlot` holding `{index: 2, url: ".../"}`
 while tab 2 showed `/hello`), and an ownership premise failed the same way in the
 same run. So the gate was real and is gone, and a boot report is *still*
 occasionally lost between the document and the helper — the relay hop. Where is
-UNPROVEN and is §5.6's new top item; the two premises that need a fresh document's
-BOOT report now ask twice (the boot report, then the product's own re-announce on a
-key the page receives), which accepts no mis-filed record and is written up in
-KEYBOARD-FREEZE.md §5b.
+UNPROVEN and is §5.6's new top item; the premise that needs a fresh document's BOOT
+report now asks twice (the boot report, then the product's own re-announce on a key
+the page receives), which accepts no mis-filed record and is written up in
+KEYBOARD-FREEZE.md §5b. The other case with that premise shape —
+`content/ownership`'s insertion — was nudged the same way and did NOT come back, so
+it stays strict and open (§5.7).
 
 ## 3. The invariants
 
@@ -361,8 +363,9 @@ the thing it must not wait for can be held open (the mutation-shaped test in
       is a number instead of a mystery — and the first `lastGap` names which hop
       lost it (a gap with the command present in the relay tab's own URL is the
       CHROME side's poll; a gap with the URL never showing it is the background's
-      write). Until this exists, the two premises asking twice (above) are the
-      honest workaround, not a fix.
+      write). Until this exists, the premise asking twice (above) is the honest
+      workaround, not a fix — and the case it could not rescue is the open failure in
+      §5.7.
       It also has a second use, and the measurement that asks for it: the re-assert
       is THROTTLED (`PRESENCE_REASSERT_MS = 3000`, `shared/throttle.ts`) and the
       limiter cannot tell a report that arrived from one that was lost — so after a

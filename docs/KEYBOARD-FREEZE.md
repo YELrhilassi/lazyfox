@@ -241,12 +241,16 @@ and named as the next thing to build in
 background's pushes and a gap count in the state reply, which turns "a report never
 arrived" into a number.
 
-What follows from it, and all that follows: the two premises that require a FRESH
-document's **boot** report now ask twice — the boot report, then the product's own
-repair (a key the page receives makes it re-announce, L2) — so the suite asserts
-the thing it is about (the ownership decision and the rescue) instead of a race it
-cannot control. Neither premise accepts a record filed against the wrong tab
-therefore: the nudge fires only when NO record names that url.
+What follows from it, and all that follows: the premise that requires a FRESH
+document's **boot** report (the helper-owned rescue case) now asks twice — the boot
+report, then the product's own repair (a key the page receives makes it re-announce,
+L2) — so the suite asserts the thing it is about (the ownership decision and the
+rescue) instead of a race it cannot control. It never accepts a record filed against
+the wrong tab: the nudge fires only when NO record names that url. The OTHER premise
+in this shape — `content/ownership`'s insertion case, whose premise is two freshly
+reported web tabs — could not be hardened the same way (the nudge was built, run and
+did not help there), so it was left STRICT and is reported as the pass's one open
+failure rather than absorbed.
 
 ## 6. Todos — the state of this pass
 
@@ -281,7 +285,7 @@ two.
       chrome state reply — `owns !== inPage` is this file's §2 table, published.
 - [x] §5b's fifth mechanism: the presence report no longer queues behind hold
       bookkeeping (`handlers/sync.ts`, pinned by `scripts/test/sync-content.test.ts`),
-      and the two premises that needed a fresh document's boot report now ask for it
+      and the premise that needed a fresh document's boot report now asks for it
       the way the product repairs it (a key the page receives).
 - [ ] OPEN, and the top of the instrument list: a LOST-REPORT counter (a monotonic
       id on the background's pushes, a gap count in the state reply). §5b measured
