@@ -846,10 +846,20 @@ export async function run(ctx: any): Promise<void> {
         ")"
     );
 
-    // THE REPAIR happens at the key the user already pressed: the leader key is
-    // consumed with the refocus, so it is never spent as a character in the URL
-    // bar, and the keyboard goes back to the page.
-    await ctx.press(ctx.tabA, ";");
+    // THE KEY IS SENT WHERE THE CHROME HELPER CAN SEE IT, and that is not
+    // `ctx.press`. On a web page that helper chooses BiDi input, which lands in
+    // the PAGE's own process — so a key "typed while the keyboard sat in the URL
+    // bar" would be delivered to a document that never had the keyboard, the
+    // helper's capture listener would never run, and this case would measure its
+    // own harness. A key typed into the browser's own UI is delivered in the
+    // PARENT process; `ctx.sendKeys` is the harness's parent-process path (it
+    // runs the product's own chrome dispatch, the same function the window's
+    // capture listener calls), which is what the user's key actually is.
+    //
+    // THE REPAIR happens at that key: the leader key is consumed with the
+    // refocus, so it is never spent as a character in the URL bar, and the
+    // keyboard goes back to the page.
+    await ctx.sendKeys(ctx.tabA, [{ k: ";" }]);
     await assertKeyboardInSelectedPage(
       "the page after one key was pressed while the keyboard sat in the browser's own UI"
     );

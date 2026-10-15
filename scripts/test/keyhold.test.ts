@@ -339,16 +339,15 @@ describe("a page that cannot see the keyboard gets it back", () => {
   });
 
   test("a chrome field the user is writing in is theirs", () => {
-    // The veto: a URL bar (or the find bar) holding TEXT is the user's caret, and
-    // pulling focus out from under it is worse than the freeze this repair is
-    // for. The typing channel is what says so, per keystroke — the event's own
-    // target, not a latch.
+    // The veto for every browser-UI field EXCEPT the URL bar: its value is text
+    // the user wrote (the find bar's box holds only what was typed into it), so
+    // text means the caret is theirs and no repair may take it.
     const fm: any = { activeWindow: null, focusedElement: null };
     const { down, win } = setup(WEB, {
       env: { services: { focus: fm }, Ci: {} },
       typing: {
         focusedIsTyping: () => true,
-        focusedTypingValue: () => "https://example.com/",
+        focusedTypingValue: () => "text the user is writing",
         focusedTypingTarget: () => ({ tagName: "input", ownerDocument: win.document }),
       },
     });
@@ -358,8 +357,75 @@ describe("a page that cannot see the keyboard gets it back", () => {
     fm.activeWindow = win;
     fm.focusedElement = { tagName: "input", ownerDocument: win.document };
     report(win, true, WEB);
-    assert.equal(down.chromeKeyDown(keydown(";")), false, "the URL bar's text wins");
+    assert.equal(down.chromeKeyDown(keydown(";")), false, "the field's own text wins");
     assert.deepEqual(calls, [], "and the caret was not taken from it");
+  });
+
+  /**
+   * A page whose keyboard sits in the URL BAR, with the URL bar's own flags.
+   *
+   * The state is described by the flags Firefox sets, not by the text in the
+   * field, because that is the distinction the product has to make — and this
+   * helper exists so a test can state the two states that differ ONLY in them.
+   */
+  function urlbar(opts: { valueIsTyped?: boolean; usertyping?: string | null } = {}) {
+    const fm: any = { activeWindow: null, focusedElement: null };
+    let input: any = null;
+    const { leader, down, win } = setup(WEB, {
+      env: { services: { focus: fm }, Ci: {} },
+      typing: {
+        focusedIsTyping: () => true,
+        // The measured value on the state this repair is for: the PAGE's address,
+        // put there by navigation — non-empty, and not typed by anybody.
+        focusedTypingValue: () => "http://127.0.0.1:50636/hello",
+        focusedTypingTarget: () => input,
+      },
+    });
+    const ub: any = {
+      valueIsTyped: !!opts.valueIsTyped,
+      getAttribute: (n: string) => (n === "usertyping" ? opts.usertyping ?? null : null),
+    };
+    input = { tagName: "input", ownerDocument: win.document, getAttribute: () => null };
+    ub.inputField = input;
+    win.gURLBar = ub;
+    const focused: string[] = [];
+    const b = win.gBrowser.selectedBrowser;
+    b.focus = () => focused.push("browser");
+    fm.activeWindow = win;
+    fm.focusedElement = input;
+    return { leader, down, win, fm, focused };
+  }
+
+  test("an address the URL bar is merely SHOWING does not veto the rescue", () => {
+    // MEASURED end to end, and the bug this test is the floor under: the first
+    // version of the veto asked whether the chrome field held text, and the URL
+    // bar holds the page's own address in exactly the state the rescue exists
+    // for — so the rescue declined every time and the keyboard never left the
+    // URL bar. The flags below are the ones the running browser reported there:
+    // `valueIsTyped: false`, no `usertyping` attribute.
+    const { down, win, focused } = urlbar({ valueIsTyped: false, usertyping: null });
+    report(win, true, WEB);
+    assert.equal(down.chromeKeyDown(keydown(";")), true, "the leader key is consumed with the repair");
+    assert.ok(focused.length >= 1, "and the page was given the keyboard back");
+  });
+
+  test("a URL the user is typing is theirs", () => {
+    // The other side of the same measurement: once Firefox says the user edited
+    // the value, the field is a composition and the caret wins over the freeze.
+    const { down, win, focused } = urlbar({ valueIsTyped: true });
+    report(win, true, WEB);
+    assert.equal(down.chromeKeyDown(keydown(";")), false, "the URL bar keeps the key it was typed into");
+    assert.deepEqual(focused, [], "and the caret was not taken from it");
+  });
+
+  test("the URL bar's own usertyping attribute vetoes too", () => {
+    // Firefox sets `usertyping` while the user types and clears it on blur; a
+    // build that reports the flag only there must still veto, or the veto would
+    // depend on which of the two signals a platform happens to expose.
+    const { down, win, focused } = urlbar({ valueIsTyped: false, usertyping: "true" });
+    report(win, true, WEB);
+    assert.equal(down.chromeKeyDown(keydown(";")), false);
+    assert.deepEqual(focused, []);
   });
 
   test("an inactive window's page keeps the keyboard", () => {

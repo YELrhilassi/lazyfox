@@ -183,6 +183,78 @@ export function selectedContentHasKeyboard(win: ChromeWindow, fm?: FocusService)
   }
 }
 
+/**
+ * Is a browser-UI field holding a caret the USER is composing in?
+ *
+ * The veto on every repair that pulls the keyboard out of the browser's own UI:
+ * a field the user has typed into belongs to them, and taking it back is worse
+ * than the freeze the repair is for. It is a question about COMPOSITION, not
+ * about text — and the difference is the whole reason this function exists.
+ *
+ * The URL bar is the case that forced it, and the value alone cannot answer it:
+ * Firefox parks the keyboard in the address bar on a fresh document and shows
+ * the PAGE'S OWN ADDRESS there, so `value !== ""` is true on exactly the state
+ * the repair has to rescue, and the first version of this veto therefore
+ * declined every rescue it was written for (measured end to end: the keyboard
+ * never left the URL bar). An address nobody typed is not a composition.
+ *
+ * So the URL bar is asked the question it can actually answer, using Firefox's
+ * own flags rather than a guess about its contents:
+ *
+ *   * `valueIsTyped` — the URL bar's own "the user has edited this value",
+ *     measured FALSE while it held `http://127.0.0.1:.../hello` (an address put
+ *     there by navigation) and true once the user types;
+ *   * `usertyping` — the attribute the URL bar sets while the user is typing,
+ *     measured ABSENT in the same state.
+ *
+ * Every OTHER chrome field keeps the simple rule (`value !== ""` is the user's
+ * text), because for those the value really is user-written: the find bar's box
+ * holds only what was typed into it. An unreadable URL bar answers "no": this
+ * veto can only be justified by evidence, and the freeze is what the default
+ * costs when there is none.
+ */
+export function chromeFieldHoldsUserText(win: ChromeWindow, el: unknown, value: string): boolean {
+  if (!el) return false;
+  const doc: any = (win as any).document;
+  let owner: any = null;
+  try {
+    owner = (el as any).ownerDocument || null;
+  } catch {
+    owner = null;
+  }
+  // A field in a PAGE is not the browser's UI at all; the page's own typing
+  // guard owns that case.
+  if (!doc || owner !== doc) return false;
+  let ub: any = null;
+  let input: any = null;
+  try {
+    ub = (win as any).gURLBar || null;
+    input = (ub && (ub.inputField || doc.getElementById("urlbar-input"))) || null;
+  } catch {
+    ub = null;
+    input = null;
+  }
+  if (ub && (el === input || el === ub || el === ub.textbox)) {
+    try {
+      if (ub.valueIsTyped === true) return true;
+    } catch {
+      // an unreadable flag is not evidence of typing
+    }
+    try {
+      if (ub.getAttribute && ub.getAttribute("usertyping")) return true;
+    } catch {
+      // same
+    }
+    try {
+      if (input && input.getAttribute && input.getAttribute("usertyping")) return true;
+    } catch {
+      // same
+    }
+    return false;
+  }
+  return value !== "";
+}
+
 // "THE BODY IS THE ACTIVE ELEMENT" IS NOT "THE PAGE HAS THE KEYBOARD", and
 // conflating the two is a dead keyboard rather than a cosmetic slip.
 //

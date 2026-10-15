@@ -127,7 +127,40 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
     }
   }
 
+  /**
+   * Has `cmd` ALREADY been answered in this tab's URL?
+   *
+   * A command whose reply hash carries the SAME command name as its request is
+   * re-entered by its own reply: the reply is a `#lfc=` hash on a moz-extension
+   * URL, so onLocationChange routes it straight back to this handler. Each
+   * handler therefore has to recognise its own answer ("a reply has two dots, a
+   * request has one") or it answers for ever.
+   *
+   * It is a named function because THREE handlers now need it (`state`,
+   * `focus`, `blur`) and the trap is silent: a handler without the guard still
+   * looks like it works — it writes a correct-looking reply hash — while the
+   * loop it starts overwrites that reply with a new one on every tick, so the
+   * reader it was written for never sees the nonce it is waiting on. Measured
+   * this way: `#lfc=blur` never answered at all, and the browser was rewritten
+   * dozens of times per second under a harness that had given up.
+   */
+  function alreadyAnswered(browser: any, cmd: string): boolean {
+    try {
+      const cur = browser.currentURI ? browser.currentURI.spec : "";
+      const marker = "#lfc=" + cmd + ".";
+      const at = cur.indexOf(marker);
+      if (at < 0) return false;
+      return cur.slice(at + marker.length).split(".").length >= 2;
+    } catch (e) {
+      // An unreadable URL re-answers, which is the old behaviour.
+      return false;
+    }
+  }
+
   function handleBlur(browser: any, rest: string, setHash: (browser: any, hash: string) => void): void {
+    // The reply carries this command's own name, so the reply re-enters here —
+    // see alreadyAnswered.
+    if (alreadyAnswered(browser, "blur")) return;
     // Debug/verification: put the KEYBOARD in the browser's own UI — the state a
     // user reaches by moving the mouse to the top of the window (the toolbar
     // reveals on hover) and clicking anything up there, or by any path that
@@ -162,6 +195,27 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
       how.focused = String((env.services.focus && env.services.focus.focusedElement && env.services.focus.focusedElement.tagName) || "") || null;
     } catch (e) {
       how.focused = "err";
+    }
+    // WHAT THE URL BAR ITSELF SAYS about the text it is holding.
+    //
+    // The repair this state exists to test has to distinguish "a chrome field the
+    // user is composing in" (the caret is theirs) from "the URL bar showing the
+    // page's own address" (which is not a composition, and must not veto
+    // anything) — and the field's VALUE cannot tell those apart, because the page
+    // address is text too. Reported here so the distinction is measured rather
+    // than assumed: `usertyping` is Firefox's own "the user typed this" flag, and
+    // the selection says whether the address is still the selected-all default.
+    try {
+      const ub: any = win.gURLBar || null;
+      const input: any = (ub && (ub.inputField || doc.getElementById("urlbar-input"))) || null;
+      how.urlbarValue = input ? String(input.value || "").slice(0, 48) : null;
+      how.urlbarSel = input && typeof input.selectionStart === "number" ? [input.selectionStart, input.selectionEnd] : null;
+      how.usertyping = ub && typeof ub.getAttribute === "function" ? ub.getAttribute("usertyping") : null;
+      how.inputUsertyping = input && typeof input.getAttribute === "function" ? input.getAttribute("usertyping") : null;
+      how.userTypedValue = ub ? String(ub.userTypedValue === null || ub.userTypedValue === undefined ? "<none>" : ub.userTypedValue) : null;
+      how.valueIsTyped = ub ? String(ub.valueIsTyped) : null;
+    } catch (e) {
+      how.urlbarState = "err:" + String(e);
     }
     setHash(browser, "#lfc=blur." + btoa(JSON.stringify(how)) + "." + nonce);
   }
@@ -300,13 +354,7 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
     // onLocationChange fires again for our own location.replace: dont
     // re-answer an already-answered query. The reply is
     // state.<base64>.<nonce> (two dots); the request state.<nonce> (one).
-    try {
-      const cur = browser.currentURI ? browser.currentURI.spec : "";
-      const after = cur.indexOf("#lfc=state.") !== -1 ? cur.split("#lfc=state.")[1] : "";
-      if (after && after.split(".").length >= 2) return;
-    } catch (e) {
-      // ignore
-    }
+    if (alreadyAnswered(browser, "state")) return;
     // The snapshot itself lives in stateapi.ts; this function is transport.
     // That split is what lets the contract be asserted in Node, with no wire.
     let payload: any;
@@ -335,13 +383,7 @@ export function createDebug(deps: DebugDeps): DebugHandlers {
     // this guard it re-answers its own answer, for ever, leaving the tab's URL
     // holding a focus reply that the `#lfc=keys` channel then trips over. The
     // same rule (and the same two-dots test) as handleState.
-    try {
-      const cur = browser.currentURI ? browser.currentURI.spec : "";
-      const after = cur.indexOf("#lfc=focus.") !== -1 ? cur.split("#lfc=focus.")[1] : "";
-      if (after && after.split(".").length >= 2) return;
-    } catch (e) {
-      // an unreadable URL re-answers, which is the old behaviour
-    }
+    if (alreadyAnswered(browser, "focus")) return;
     let json = "{}";
     try {
       const decision = deps.getState().giveKeyboard();

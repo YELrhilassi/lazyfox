@@ -20,6 +20,7 @@ import { LeaderController, isCancel } from "../shared/leader";
 import { noteHoldAlive } from "../shared/holdrelease";
 import {
   blurFocusedElement,
+  chromeFieldHoldsUserText,
   commandCenterPageReady,
   dispatchToCCPage,
   focusCCBody,
@@ -328,16 +329,22 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // page may well want it once focus is back.
     //
     // The one thing that vetoes the repair is the user COMPOSING in a chrome
-    // field: a URL bar holding text is theirs (the same exception the keyboard
-    // rule makes — see keyboardfocus.readKeyboardFacts), and pulling focus out
-    // from under a caret that has text behind it would be worse than the freeze.
+    // field: pulling focus out from under a caret the user is writing at would be
+    // worse than the freeze. It is deliberately not "the field has text": the URL
+    // bar shows the PAGE'S OWN ADDRESS on the very state this rescue exists for,
+    // so a text test vetoed every rescue it was written for (measured). Firefox's
+    // own "the user edited this value" flag is what answers it — the whole
+    // argument, with the measurements, is in chromeFieldHoldsUserText.
     if (!fromActor && !chromeOwnsKeys(win) && !popup.isOpen()) {
       let composingInChrome = false;
       try {
         composingInChrome =
           typing.focusedIsTyping(e as KeyboardEvent) &&
-          isChromeUiFocus(win, typing, e as KeyboardEvent) &&
-          typing.focusedTypingValue(e as KeyboardEvent) !== "";
+          chromeFieldHoldsUserText(
+            win,
+            typing.focusedTypingTarget(e as KeyboardEvent),
+            typing.focusedTypingValue(e as KeyboardEvent),
+          );
       } catch {
         composingInChrome = false;
       }
