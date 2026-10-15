@@ -4,10 +4,13 @@
 // reachable from chrome (in-process); cross-process pages fall through
 // unconsumed (nothing else can scroll them).
 
+import { createGgArm } from "../shared/gg";
 import type { ChromeWindow } from "./env";
 
 export function createScrollKeys(getCfg: () => { scrollKeys?: boolean }) {
-  let lastG = false;
+  // The shared `gg` arm: the arm press is never consumed, and the window is
+  // wide enough for a human double tap (see shared/gg.ts).
+  const gg = createGgArm();
 
   function scroll(win: ChromeWindow, fn: (w: any) => void): boolean {
     try {
@@ -33,15 +36,9 @@ export function createScrollKeys(getCfg: () => { scrollKeys?: boolean }) {
       );
     }
     if (k === "g") {
-      if (lastG) {
-        lastG = false;
-        return scroll(win, (w) => w.scrollTo(0, 0));
-      }
-      lastG = true;
-      setTimeout(() => {
-        lastG = false;
-      }, 600);
-      return true;
+      if (gg.press()) return scroll(win, (w) => w.scrollTo(0, 0));
+      // Armed, not done: leave the key to the document.
+      return false;
     }
     return false;
   };

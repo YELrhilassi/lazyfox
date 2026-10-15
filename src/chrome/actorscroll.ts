@@ -11,6 +11,8 @@
 // it was the one place in the composition root where a unit test could not
 // reach. Everything else in the bridge is plumbing.
 
+import { GG_WINDOW_MS } from "../shared/gg";
+
 export interface ActorScrollInput {
   key: string;
   // Viewport height the child measured, used to scale a page-sized scroll.
@@ -23,9 +25,11 @@ export interface ActorScrollInput {
   scrollKeys: boolean | undefined;
 }
 
-// How long the first `g` stays armed for the second, in ms.
-export const GG_WINDOW_MS = 600;
-
+// The `gg` window is the SHARED one (shared/gg.ts), not a second opinion: a
+// gesture that behaves differently depending on which process answered the key
+// is a gesture the user cannot learn. (The arm press is already not swallowed
+// here — `intent: null` lets the child leave the key to the page — so only the
+// window has to travel.)
 export interface ActorScrollResult {
   // What the content process should do. `null` means "nothing" — the bridge
   // returns null and the child scrolls by its own default.
@@ -50,7 +54,15 @@ export function actorScroll(input: ActorScrollInput): ActorScrollResult {
     case "G":
       return { intent: { goto: "bottom" }, lastG: input.lastG };
     case "g": {
-      if (input.now - input.lastG < GG_WINDOW_MS) {
+      // "NOT ARMED" IS A STATE, NOT A DIFFERENCE. `lastG` of 0 means the first
+      // `g` has not happened yet, and treating it as a timestamp made the arm
+      // depend on how large the clock happens to be: with a window wider than
+      // the current time, `now - 0` reads as "within the window" and a single
+      // `g` jumps to the top. (The unit test drove exactly that, with a
+      // synthetic clock at 1000ms — a real clock is ~1.7e12, so the bug was
+      // unreachable in production and reachable in every test of it.)
+      const armedAt = Number(input.lastG) || 0;
+      if (armedAt > 0 && input.now - armedAt < GG_WINDOW_MS) {
         return { intent: { goto: "top" }, lastG: 0 };
       }
       return { intent: null, lastG: input.now };

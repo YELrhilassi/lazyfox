@@ -12,6 +12,8 @@
 // leader whose bindings the page supplies. A page that wants nothing more than
 // the scroll keys just calls installPageKeys().
 
+import { createGgArm } from "./gg";
+
 export interface PageKeysOptions {
   // Extra `;`-bindings for this page, by key. `g` (back) is always available.
   leader?: Record<string, () => void>;
@@ -19,12 +21,11 @@ export interface PageKeysOptions {
   step?: number;
 }
 
-const GG_WINDOW_MS = 600;
-
 export function installPageKeys(opts: PageKeysOptions = {}): void {
   const step = opts.step && opts.step > 0 ? opts.step : 60;
   let leaderPending = false;
-  let gArmed = false;
+  // The shared `gg` arm (see shared/gg.ts).
+  const gg = createGgArm();
 
   const isField = (el: Element | null): boolean => {
     if (!el) return false;
@@ -102,15 +103,12 @@ export function installPageKeys(opts: PageKeysOptions = {}): void {
         return;
       }
       if (e.key === "g") {
-        e.preventDefault();
-        if (gArmed) {
-          gArmed = false;
+        // Only the press that COMPLETES the gesture is consumed; the arming
+        // press is left to the document, so a lone `g` is never a key that
+        // vanished (see shared/gg.ts).
+        if (gg.press()) {
+          e.preventDefault();
           window.scrollTo(0, 0);
-        } else {
-          gArmed = true;
-          setTimeout(() => {
-            gArmed = false;
-          }, GG_WINDOW_MS);
         }
       }
     },

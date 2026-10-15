@@ -50,10 +50,15 @@ import { createChromeKeyDown } from "./keysdispatch";
 import {
   chromeOwnsKeys,
   chromeOwnsSurfaces,
+  commandCenterDocumentPresent,
   contentScriptPresent,
+  isCommandCenterTab,
   noteContentPresent,
-  presenceTabFor,
+  presenceTabForReport,
 } from "./keystate";
+import { focusCommandCenterContent, focusSelectedContent } from "./commandcenterfocus";
+import { createKeyboardFocus } from "./keyboardfocus";
+import { keymapReady } from "../shared/keymap";
 import { createChromeOps } from "./ops";
 import { createPrimitives } from "./ops/primitives";
 import { createPopupHost } from "./popup";
@@ -147,6 +152,107 @@ import { createTypingChannel } from "./typing";
       hasPopup: () => popup.isOpen(),
       leaderActive: () => !!(leader && leader.active),
       chromeOwnsKeys: () => chromeOwnsKeys(win),
+      // WHERE THE KEYBOARD IS, not who owns the keys — see
+      // ChromeStateFocusV1. Read from the browser's focus manager, which is the
+      // only party that can answer it for an extension-process page.
+      focus: () => {
+        const f = env.services.focus;
+        let activeWindow = false;
+        try {
+          activeWindow = !!f && f.activeWindow === win;
+        } catch {
+          activeWindow = false;
+        }
+        let el: any = null;
+        try {
+          el = f && f.focusedElement ? f.focusedElement : null;
+        } catch {
+          el = null;
+        }
+        let b: any = null;
+        try {
+          b = (win.gBrowser && win.gBrowser.selectedBrowser) || null;
+        } catch {
+          b = null;
+        }
+        let inSelectedContent = false;
+        try {
+          const doc = el && el.ownerDocument;
+          inSelectedContent = !!el && !!b && (el === b || (!!doc && doc === (b.contentDocument || null)));
+        } catch {
+          inSelectedContent = false;
+        }
+        const tagId = (node: any): string | null => {
+          try {
+            if (!node) return null;
+            return String(node.tagName || "").toLowerCase() + (node.id ? "#" + node.id : "");
+          } catch {
+            return null;
+          }
+        };
+        // The four facts that turn "focused: null" into a diagnosis — see
+        // ChromeStateFocusV1. Each is read in its own try so one unreadable
+        // field cannot blank the others.
+        let remote = false;
+        try {
+          remote = !!(b && b.isRemoteBrowser);
+        } catch {
+          remote = false;
+        }
+        let docShellActive = false;
+        try {
+          docShellActive = !!(b && b.docShell && b.docShell.isActive);
+        } catch {
+          docShellActive = false;
+        }
+        let focusedWindow: "this" | "other" | null = null;
+        try {
+          const fw = f && f.focusedWindow;
+          if (fw) focusedWindow = fw === win ? "this" : "other";
+        } catch {
+          focusedWindow = null;
+        }
+        let chromeActive: string | null = null;
+        try {
+          chromeActive = tagId(env.document.activeElement);
+        } catch {
+          chromeActive = null;
+        }
+        let pageHasFocus: boolean | null = null;
+        try {
+          const cw = b && b.contentWindow;
+          pageHasFocus = cw && cw.document ? !!cw.document.hasFocus() : null;
+        } catch {
+          pageHasFocus = null;
+        }
+        return {
+          activeWindow,
+          focused: tagId(el),
+          inSelectedContent,
+          remote,
+          docShellActive,
+          focusedWindow,
+          chromeActive,
+          pageHasFocus
+        };
+      },
+      // The keyboard rule, callable on demand (the #lfc=focus channel). Wired to
+      // the SAME controller the tab-select / location / load triggers use, so a
+      // test can never measure a second implementation of the rule.
+      giveKeyboard: () => keyboard.giveKeyboardToSelectedPage() as string,
+      // IS THE LEADER'S TABLE THERE? An armed leader with no table buffers every
+      // chord (shared/leader.ts handleKey) — the overlay lights, the leader
+      // stays armed, and no binding can run until the fetch lands. From outside
+      // that is indistinguishable from "the binding did nothing", which is the
+      // most expensive shape to diagnose; the two facts are named instead.
+      keymap: () => ({
+        ready: keymapReady(),
+        buffered: leader ? leader.bufferedCount() : -1,
+      }),
+      // The last keystrokes this helper's dispatcher saw and the branch each
+      // one took (dev-only, in memory — see keysdispatch.ts). A key that did
+      // nothing is otherwise indistinguishable from a key that never arrived.
+      keyTrace: () => dispatch.dispatchTrace(),
       leaderPending: () => !!(leader && leader.hasPending()),
       lastAction: () => lastAction,
       lastMoveDebug: () => (moveLog.length ? moveLog.join(" | ") : null),
@@ -484,7 +590,7 @@ split,
     // whatever tab slid into its slot (keystate.presenceTabFor, and the
     // §18.5 failure it closes).
     setContentPresent: (index, active, url, doc) =>
-      noteContentPresent(presenceTabFor(win, index, url), active, url, doc),
+      noteContentPresent(presenceTabForReport(win, index, url, doc), active, url, doc),
     dismissDownloads: () => void chromeOps.dismissDownload(),
     cfg,
     debug,
@@ -561,6 +667,35 @@ split,
     now: () => Date.now(),
   });
 
+  // THE KEYBOARD FOLLOWS THE TAB. Built here because the two things it asks
+  // about — whether Lazyfox's own popup owns the keyboard, and whether the
+  // selected tab is one of Lazyfox's own carriers — exist here; the rule itself
+  // and the two events that fire it live in chrome/keyboardfocus.ts and
+  // chrome/winsync.ts.
+  // `nsIFocusManager.FLAG_NOSCROLL`, read from the host when it is there: focus
+  // without dragging the page to the element that took it.
+  const focusFlags = (): number => {
+    try {
+      const v =
+        env.Ci && env.Ci.nsIFocusManager && env.Ci.nsIFocusManager.FLAG_NOSCROLL;
+      return typeof v === "number" ? v : 0;
+    } catch {
+      return 0;
+    }
+  };
+  const keyboard = createKeyboardFocus({
+    win,
+    popupOpen: () => popup.isOpen(),
+    isRelayTab: (t) => !!channel && channel.isKnownRelayTab(t),
+    // THE DOCUMENT as well as the URL: during a provisional navigation the URL is
+    // already the target while the page on screen is still the home page — the
+    // same pair keysdispatch.ts uses, for the same reason.
+    commandCenter: () => isCommandCenterTab(win) || commandCenterDocumentPresent(win),
+    focusCommandCenter: () =>
+      focusCommandCenterContent(win, env.services.focus, focusFlags()),
+    focusContent: () => focusSelectedContent(win, env.services.focus, focusFlags()),
+  });
+
   // The pollers, the #lfc= progress route and the per-tab-select bookkeeping.
   installWinSync({
     env,
@@ -569,5 +704,6 @@ split,
     split,
     status,
     leader: () => leader,
+    keyboard,
   });
 })();

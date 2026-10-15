@@ -12,6 +12,8 @@
 // pages have no content script), which the UI states plainly instead of
 // pretending the page is broken.
 
+import { isTypingTarget } from "../shared/dom";
+import { createGgArm } from "../shared/gg";
 import { send } from "../shared/protocol";
 import type { CacheMode, CacheScope, CacheState, PageReport } from "../shared/types";
 
@@ -337,29 +339,41 @@ function schedule(): void {
   // The chrome helper cannot see keys typed into this page (extension pages run
   // out of process), so the page provides vim scrolling + `;g` back itself.
   let leaderPending = false;
-  let gArmed = false;
+  // The shared `gg` arm (shared/gg.ts): the arming press is never consumed.
+  const gg = createGgArm();
   const pageScroll = (dy: number): void => window.scrollBy(0, dy);
+  const typingNow = (): boolean => isTypingTarget(document.activeElement);
+  // A STALE CAPTURE MUST NOT EAT WHAT THE USER TYPES. `;` armed and then a
+  // click into a field left the pending capture standing, so the first
+  // character typed after the click was swallowed by a sequence the user had
+  // already abandoned — the same rule the content script applies on focusin.
+  document.addEventListener("focusin", () => {
+    if (typingNow()) {
+      leaderPending = false;
+      gg.reset();
+    }
+  });
   window.addEventListener(
     "keydown",
     (e) => {
       if (e.isComposing) return;
       if (leaderPending) {
-        e.preventDefault();
         leaderPending = false;
+        // Typing wins over a capture that is no longer wanted: the key is left
+        // to the field instead of being consumed by a chord nobody finished.
+        if (typingNow()) return;
+        e.preventDefault();
         if (e.key === "g" || e.key === "G") {
           if (window.history.length > 1) window.history.back();
         }
         return;
       }
       const ae = document.activeElement as HTMLElement | null;
-      const tag = ae ? String(ae.tagName).toUpperCase() : "";
-      const inField =
-        !!ae &&
-        (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || ae.isContentEditable);
+      const inField = typingNow();
       if (e.key === "Escape") {
-        if (inField) {
+        if (inField && ae) {
           e.preventDefault();
-          ae!.blur();
+          ae.blur();
         }
         return;
       }
@@ -375,9 +389,12 @@ function schedule(): void {
       if (e.key === "u") { e.preventDefault(); pageScroll(-Math.max(120, window.innerHeight * 0.5)); return; }
       if (e.key === "G") { e.preventDefault(); window.scrollTo(0, document.documentElement.scrollHeight); return; }
       if (e.key === "g") {
-        e.preventDefault();
-        if (gArmed) { gArmed = false; window.scrollTo(0, 0); }
-        else { gArmed = true; setTimeout(() => { gArmed = false; }, 600); }
+        // Only the completing press is consumed; the arming press continues to
+        // the document (see shared/gg.ts).
+        if (gg.press()) {
+          e.preventDefault();
+          window.scrollTo(0, 0);
+        }
       }
     },
     true

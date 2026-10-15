@@ -12,7 +12,10 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { actorScroll, GG_WINDOW_MS } from "../../src/chrome/actorscroll.ts";
+import { actorScroll } from "../../src/chrome/actorscroll.ts";
+// The window is the shared one, so the test pins the rule the SHIPPED hosts
+// use rather than a copy that only the actor path knows about (shared/gg.ts).
+import { GG_WINDOW_MS } from "../../src/shared/gg.ts";
 import {
   pillColorFor,
   readableOn,

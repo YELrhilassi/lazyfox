@@ -77,6 +77,19 @@
 //                      That is the pinned main thread that made Escape stop
 //                      working, at a lower number.
 //
+//   focus-load-stop-ignored  the keyboard rule's load-complete trigger removed
+//                      The reported freeze: `;n` opens the home tab, and both
+//                      earlier triggers (tab selected, document replaced) fire
+//                      while the tab is still `about:blank` — so the document
+//                      that finally arrives has NO keyboard at all and the user
+//                      repairs it by clicking the page.
+//
+//   focus-load-any-tab  the selected-tab check on that trigger removed
+//                      The same rule applied to a BACKGROUND load: a page the
+//                      user is not looking at finishing its load would move the
+//                      keyboard out of the page on screen (out of a field they
+//                      are typing in, among others).
+//
 // Run: npm run test:mutation
 //
 // It is a SEPARATE command from `npm test` on purpose. It rewrites source
@@ -173,8 +186,15 @@ const MUTATIONS: Mutation[] = [
     file: "src/chrome/keysdispatch.ts",
     // Ctrl+G allowed to fall through to the browser again, where it is Find
     // Again.
-    find: '    if (isCancel(e) && e.key !== "Escape") return true;',
-    replace: '    if (false) return true; // mutated: Ctrl+G falls through to Find Again',
+    //
+    // The branch is a BLOCK rather than a one-line `return true` because the
+    // dispatcher's dev-only trace labels each decision point (`br =
+    // "cancel-chord"`); the mutation matches the guard, which is the part the
+    // behaviour hangs on, so a reformat of the body does not silently make this
+    // mutation inapplicable — the check would report SKIPPED rather than PASS,
+    // and a skipped mutation is not a detected one.
+    find: '    if (isCancel(e) && e.key !== "Escape") {',
+    replace: '    if (false) { // mutated: Ctrl+G falls through to Find Again',
     tests: ["scripts/test/keyhold.test.ts"],
     because:
       "the universal cancel opens Firefox's native find bar on every page the helper owns (about:, the command center before its engine loads), which is the reported 'Ctrl+G sometimes opens the page's own search'",
@@ -289,6 +309,13 @@ const MUTATIONS: Mutation[] = [
     find: "    if (hit.doc && id && hit.doc !== id) return;",
     replace: "    if (false) return; // mutated: any document may retract any record",
     tests: ["scripts/test-chrome-keys.ts"],
+    // The route this rule closes is no longer reachable through the door the
+    // product uses — placement refuses a report that cannot name ONE tab, which
+    // is the stronger guarantee and has its own mutation (presence-first-url-
+    // match) — so the check that detects this one drives the rule directly
+    // (`only the record's own document may retract it`). Kept as a mutation
+    // because the rule is still the last line of defence for a host that
+    // resolves the tab itself.
     because:
       "the replaced page's late pagehide deletes the entry belonging to the page that already took its place, and nothing re-announces: the helper claims the keys on a live web page and paints a second which-key overlay over the page's own, intermittently (audit §6)",
   },
@@ -300,6 +327,77 @@ const MUTATIONS: Mutation[] = [
     tests: ["scripts/test/cache-policy.test.ts"],
     because:
       "the browser-wide cache switch stops following the scope, so 'this tab only' leaves the cache off for every tab while the panel describes a per-tab policy (audit §15)",
+  },
+  {
+    name: "focus-load-stop-ignored",
+    file: "src/chrome/winsync.ts",
+    // The load-complete trigger, removed — which is the state the reported
+    // freeze shipped in: `;n` opens the home tab, the tab select and the
+    // location change both fire while the tab is still `about:blank`, and the
+    // document that finally arrives is never given the keyboard. The user's
+    // repair is a click. Anchored on the two lines that are the whole trigger
+    // (the flags test and the hand-off), because the hand-off line itself is
+    // shared with the location-change trigger above it.
+    find: [
+      "      if (!(flags & stop) || !(flags & isWindow)) return;",
+      "      giveKeyboardIfSelected(browser);",
+    ].join("\n"),
+    replace: "      if (!(flags & stop) || !(flags & isWindow)) return; // mutated: the load stop is ignored",
+    tests: ["scripts/test/window-sync.test.ts"],
+    because:
+      "the keyboard rule stops running when a document finishes loading, so a tab opened by `;n` is left with no keyboard at all until the page is clicked",
+  },
+  {
+    name: "focus-load-any-tab",
+    file: "src/chrome/winsync.ts",
+    // The selected-tab guard, removed AT THE LOAD TRIGGER only (the location
+    // trigger keeps it), so what goes red is the background-tab rule itself.
+    find: [
+      "      if (!(flags & stop) || !(flags & isWindow)) return;",
+      "      giveKeyboardIfSelected(browser);",
+    ].join("\n"),
+    replace: [
+      "      if (!(flags & stop) || !(flags & isWindow)) return;",
+      "      try {",
+      "        if (browser) deps.keyboard.giveKeyboardToSelectedPage(); // mutated",
+      "      } catch {}",
+    ].join("\n"),
+    tests: ["scripts/test/window-sync.test.ts"],
+    because:
+      "a background tab finishing its load moves the keyboard out of the page the user is looking at",
+  },
+  {
+    name: "presence-retraction-by-url",
+    file: "src/chrome/keystate.ts",
+    // Identity by nonce, removed: every report is placed by index+URL, which is
+    // the rule that could not find the record a `pagehide` was about once the
+    // tab had navigated.
+    find: "  return tabHoldingDoc(win, String(doc || \"\")) || presenceTabFor(win, index, url);",
+    replace: "  return presenceTabFor(win, index, url); // mutated: a retraction is placed by URL",
+    tests: ["scripts/test-chrome-keys.ts"],
+    because:
+      "a retraction that arrives after the tab navigated is filed against another tab (or none), so the record it was meant to clear stays with nothing able to retract it — the helper goes on deferring to a document that is gone and every leader key is dead on the page the user was sent to",
+  },
+  {
+    name: "presence-first-url-match",
+    file: "src/chrome/keystate.ts",
+    // The uniqueness requirement on the URL repair, removed — the behaviour a
+    // full-suite run caught: the repair took the FIRST tab showing the reported
+    // URL. Every command-center tab shares one URL and the home page opens one
+    // per `;n`, so a stale index recorded a live document's answer on a tab the
+    // document was never in, and that tab then answered "a content script is
+    // here" for a page with none.
+    find: [
+      "      // A SECOND match makes the URL worthless as an identity: the two tabs are",
+      "      // indistinguishable from here, and recording the fact on the wrong one is",
+      "      // worse than not recording it at all.",
+      "      if (found) return null;",
+      "      found = t;",
+    ].join("\n"),
+    replace: "      return t; // mutated: the first URL match wins",
+    tests: ["scripts/test-chrome-keys.ts"],
+    because:
+      "a presence report whose index went stale is filed against whichever tab happens to show that URL first, so a page with no content script (a Firefox HTTP error page) inherits a record, the helper declines its keys and the tab answers nothing at all",
   },
   {
     name: "presence-by-position",

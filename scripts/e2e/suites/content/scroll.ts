@@ -1,6 +1,6 @@
 // scroll tests (content). Split verbatim from the original
 // content.ts monolith — behavior unchanged, timing fixed separately.
-import { evalIn, waitFor } from "../../bidi.ts";
+import { evalIn, waitFor, sleep } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 export async function run(ctx: any): Promise<void> {
   // The test id is "<group>/<file> › <name>", so two tests with the same
@@ -44,8 +44,32 @@ export async function run(ctx: any): Promise<void> {
     const s2 = await evalIn(ctx.tabA, `window.scrollY`);
     await ctx.press(ctx.tabA, "d");
     await scrollState("d", (y) => y > s2 + 100);
-    // gg -> top
+    // ONE PRESS OF `g` MUST NOT VANISH — the reported "I have to type keys like
+    // `g` twice for it to register once". The arming press of the gesture used
+    // to be consumed and then do nothing at all: no scroll, no message, no
+    // character. It is now left to the page, so the user's key always has an
+    // owner — and the page is asked directly whether it received it.
+    const s3 = await evalIn(ctx.tabA, `window.scrollY`);
+    await evalIn(
+      ctx.tabA,
+      `(() => {
+         window.__lfSeenKeys = [];
+         window.addEventListener("keydown", (e) => window.__lfSeenKeys.push(e.key), true);
+         return true;
+       })()`
+    );
     await ctx.press(ctx.tabA, "g");
+    await sleep(200);
+    const seen = await evalIn(ctx.tabA, `JSON.stringify(window.__lfSeenKeys || [])`);
+    assert(
+      JSON.parse(String(seen)).indexOf("g") !== -1,
+      "a lone `g` reached the page instead of being swallowed (the page saw " + seen + ")"
+    );
+    assert(
+      (await evalIn(ctx.tabA, `window.scrollY`)) === s3,
+      "a lone `g` moves nothing — `gg` is the gesture, and it has not completed yet"
+    );
+    // ...and the press that COMPLETES it still works, inside the window.
     await ctx.press(ctx.tabA, "g");
     await scrollState("gg", (y) => y <= 1);
     // G -> bottom

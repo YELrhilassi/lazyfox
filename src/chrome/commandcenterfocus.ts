@@ -18,11 +18,152 @@ import { buildKeyEvent, maybeInsertText } from "./keys";
 // Focus the command-center page's body (tabindex=-1) so keyboard focus sits in
 // the page, in command mode, away from Firefox's URL bar and the page's own
 // search input.
-export function focusCCBody(win: ChromeWindow): void {
+/**
+ * The slice of `Services.focus` (nsIFocusManager) this file uses.
+ *
+ * Passed in rather than reached for, because every module here is constructible
+ * in Node with no browser (see src/chrome/env.ts) — and because the ONE thing
+ * worth doing with it is the thing a fake can record.
+ */
+export interface FocusService {
+  /** The OS-active window. */
+  activeWindow?: any;
+  /** The element that has the keyboard, as the browser tracks it. */
+  focusedElement?: any;
+  /** `nsIFocusManager.setFocus`. */
+  setFocus?(el: any, flags: number): void;
+}
+
+/**
+ * Give the SELECTED tab's content the keyboard, whatever document it holds.
+ *
+ * The browser element is the only handle the parent process has on a tab's
+ * keyboard: a page cannot be asked to focus itself when it has no keyboard to
+ * take (its own `body.focus()` is then a no-op), and an out-of-process document
+ * cannot be reached at all. Focusing the element restores the keyboard to the
+ * document's own active element — the body in command mode, the caret in a
+ * field if that is where the user left it — which is exactly the behaviour a
+ * click on the page produces.
+ *
+ * AND IT ESCALATES, because that one call is not always enough — measured, not
+ * assumed. `;n` opens the home tab: the tab is selected and in front, the
+ * window is the OS-active one, the page reports `hasFocus: false` with the body
+ * as its active element, and the browser's own focus manager reports
+ * `focusedElement: null` — NOTHING has the keyboard, and neither the page's own
+ * `body.focus()` nor `selectedBrowser.focus()` changes it. The user's repair is
+ * a click, which is what this function has to do without one. So the state is
+ * CHECKED between attempts and each next measure is only taken when the
+ * keyboard is still nowhere: re-focus the chrome window (the element focus is
+ * a request the window has to be able to grant), then the element again, then
+ * the focus manager's own `setFocus` — the API the browser itself uses to move
+ * the keyboard.
+ *
+ * The escalation never fires when the content ALREADY has the keyboard — in a
+ * healthy state `focusedElement` is the `<browser>` element (or an element in
+ * the selected document) — and it never touches the OS focus of another window:
+ * a window that is not the active one is not ours to take.
+ */
+export function focusSelectedContent(win: ChromeWindow, fm?: FocusService, flags = 0): void {
+  let b: any = null;
+  try {
+    b = (win as any).gBrowser.selectedBrowser || null;
+  } catch {
+    b = null;
+  }
+  if (!b) return;
+  const focused = (): any => {
+    try {
+      return fm ? fm.focusedElement : null;
+    } catch {
+      return null;
+    }
+  };
+  // "The content has it": the browser element itself, or an element inside the
+  // selected document (which is what an in-process page reports).
+  const held = (el: any): boolean => {
+    if (!el) return false;
+    if (el === b) return true;
+    try {
+      return !!b.contentDocument && el.ownerDocument === b.contentDocument;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    if (typeof b.focus === "function") b.focus();
+  } catch {
+    // a torn-down tab has no keyboard to take
+  }
+  if (!fm) return;
+  if (held(focused())) return;
+  let active = false;
+  try {
+    active = !!fm.activeWindow && fm.activeWindow === win;
+  } catch {
+    active = false;
+  }
+  if (!active) return;
+  try {
+    win.focus();
+  } catch {
+    // a window that cannot be focused is a window whose page keeps no keyboard
+  }
+  try {
+    if (typeof b.focus === "function") b.focus();
+  } catch {
+    // ignore
+  }
+  if (held(focused())) return;
+  try {
+    if (typeof fm.setFocus === "function") fm.setFocus(b, flags);
+  } catch {
+    // the focus manager refused: nothing else in this realm can ask for it
+  }
+}
+
+// "THE BODY IS THE ACTIVE ELEMENT" IS NOT "THE PAGE HAS THE KEYBOARD", and
+// conflating the two is a dead keyboard rather than a cosmetic slip.
+//
+// A document with no focused element reports `activeElement === body` — that is
+// the DEFAULT, not a claim that focus is inside it — so the guard below used to
+// skip the focus call in exactly the state it exists to repair: the tab is
+// selected and in front, the body is nominally active, and every key the user
+// presses goes to the browser's own UI instead of the page. Measured end to end
+// (`;n` opens the home tab, then `;`): the new command center reported
+// `hasFocus: false` with `activeElement: BODY`, and the leader key did nothing
+// until the page was clicked. The page had done its part — its `load` handler
+// focuses the body — and the call did nothing, because a document whose window
+// has no keyboard cannot take one.
+//
+// So the page's own answer to "is the keyboard here" (`document.hasFocus()`) is
+// asked FIRST, and when it is false the tab is given the keyboard rather than
+// asked to take it. Only then is the body focused, and only if the caret is
+// somewhere else — which is the case the original function was written for
+// (a search box the page had focused, a stale caret).
+export function focusCCBody(win: ChromeWindow, fm?: FocusService, flags = 0): void {
+  let doc: any = null;
   try {
     const cw = (win as any).gBrowser.selectedBrowser.contentWindow;
-    const doc = cw && cw.document;
-    const body = doc && doc.body;
+    doc = (cw && cw.document) || null;
+  } catch {
+    // cross-process (or a torn-down tab): no document to reach
+    doc = null;
+  }
+  const body = doc && doc.body;
+  let hasKeyboard = false;
+  try {
+    hasKeyboard = !!(doc && typeof doc.hasFocus === "function" && doc.hasFocus());
+  } catch {
+    hasKeyboard = false;
+  }
+  // The tab has no keyboard: give it one. Nothing reached from the page can do
+  // this (see the note above), and the caret lands on the document's active
+  // element, which for the home page in command mode is the body.
+  if (!hasKeyboard) {
+    focusSelectedContent(win, fm, flags);
+    return;
+  }
+  try {
     if (body && doc.activeElement !== body && typeof body.focus === "function") {
       // A <body> is not focusable until something makes it so, and the page
       // only does that in its own `load` handler. Between the tab opening and
@@ -36,7 +177,7 @@ export function focusCCBody(win: ChromeWindow): void {
       body.focus();
     }
   } catch {
-    // page not loaded / cross-process — nothing to focus yet
+    // the document went away mid-focus — the next key tries again
   }
 }
 
@@ -74,7 +215,7 @@ export function commandCenterPageReady(win: ChromeWindow): boolean {
 // Move keyboard focus into the command-center tab's content document (out of
 // the hidden URL bar / chrome UI), leaving it in command mode. Focuses the
 // page body, never the <browser> element (which grabs the search input).
-export function focusCommandCenterContent(win: ChromeWindow): void {
+export function focusCommandCenterContent(win: ChromeWindow, fm?: FocusService, flags = 0): void {
   try {
     const cw = (win as any).gBrowser.selectedBrowser.contentWindow;
     const doc = cw && cw.document;
@@ -85,7 +226,7 @@ export function focusCommandCenterContent(win: ChromeWindow): void {
   } catch {
     // ignore
   }
-  focusCCBody(win);
+  focusCCBody(win, fm, flags);
 }
 
 // Forward a single key into the command-center page's document (the page's
