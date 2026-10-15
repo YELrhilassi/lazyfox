@@ -65,6 +65,9 @@ export class LeaderCapture {
   private timerMs = 0;
   private generation = 0;
   private readonly onChange: (() => void) | undefined;
+  // What the last notification described. BOTH facts the hosts publish, because
+  // this object's armed state is part of theirs — see publish().
+  private published: { expect: string; armed: boolean } = { expect: "", armed: false };
 
   // Explicit field rather than a constructor parameter property: the unit tests
   // load modules through Node's strip-only TypeScript loader, which cannot
@@ -92,7 +95,7 @@ export class LeaderCapture {
     const generation = ++this.generation;
     this.fn = fn;
     this.timeoutFn = (opts && opts.onTimeout) || null;
-    this.setExpect((opts && opts.expect) || "");
+    this.expect = (opts && opts.expect) || "";
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.timerMs = 0;
@@ -111,6 +114,7 @@ export class LeaderCapture {
     const ms = opts && opts.timeoutMs !== undefined ? opts.timeoutMs : 3000;
     this.timerMs = ms;
     if (ms > 0) this.startTimer(generation);
+    this.publish();
     return generation;
   }
 
@@ -130,14 +134,16 @@ export class LeaderCapture {
       // Cleared before onTimeout runs: a timeout handler that arms a fresh
       // capture must not have its own hint wiped by the timer that expired
       // the previous one.
-      this.setExpect("");
+      this.expect = "";
+      this.publish();
       if (to) to();
     }, this.timerMs);
   }
 
   /** Replaces the "what comes next" hint on a capture that is already armed. */
   setExpectation(v: string): void {
-    this.setExpect(v);
+    this.expect = v;
+    this.publish();
   }
 
   /**
@@ -170,8 +176,12 @@ export class LeaderCapture {
     if (res === KEEP_ARMED) {
       // Still collecting: keep the handler and restart the window so the next
       // key of the sequence is not fighting the clock that was set for the
-      // previous one.
+      // previous one. The handler may have retargeted the hint as it went (a
+      // tab position that stops accepting a leading zero), and that is a
+      // publication of its own — setExpectation already made it, so this is a
+      // no-op unless something else about the published state moved.
       if (this.timerMs > 0) this.startTimer(generation);
+      this.publish();
       return true;
     }
     this.cancel(generation);
@@ -193,7 +203,8 @@ export class LeaderCapture {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    this.setExpect("");
+    this.expect = "";
+    this.publish();
   }
 
   /** The generation returned by arm(), for lease-scoped async follow-up work. */
@@ -201,12 +212,32 @@ export class LeaderCapture {
     return this.generation;
   }
 
-  // Changing the hint repaints the bar. Guarded so an unchanged arm (the common
-  // case — most captures take any key) costs nothing, and so the repaint happens
-  // exactly when the readout actually changes.
-  private setExpect(v: string): void {
-    if (this.expect === v) return;
-    this.expect = v;
+  /**
+   * Tell the host the published state changed — and only then.
+   *
+   * THE ARMED FLAG IS PART OF THIS, and leaving it out is the bug this method
+   * replaces. Every host publishes `signal().armed`, which the controller
+   * computes as `active || capture.armed()` — so the value the status-bar
+   * indicator, the chrome helper's per-tab cache and the page's own
+   * `data-lf-leader` mirror carry changes the moment a capture arms or disarms.
+   * Reporting only on a HINT change (the old body of setExpect) missed exactly
+   * one transition, and it was the load-bearing one: a category sub-key that
+   * runs an ACTION hides the leader while the capture carrying the sub-key is
+   * STILL ARMED — the handler runs before the capture disarms, by design — so
+   * the last published state was "armed: true", and the capture's own disarm
+   * changed no hint and therefore said nothing. The indicator stayed lit and
+   * every mirror stayed at "1" until some later key happened to publish again,
+   * which made the very next keystroke look like a chord to the user and to
+   * anything reading the mirror. Measured by the long session suite: `;Z i` …
+   * `;Z r` left `data-lf-leader="1"` on a page whose leader was long gone.
+   *
+   * Guarded so an unchanged arm (the common case — most captures take any key)
+   * costs nothing, and so the repaint happens exactly when the readout moves.
+   */
+  private publish(): void {
+    const next = { expect: this.expect, armed: this.fn !== null };
+    if (next.expect === this.published.expect && next.armed === this.published.armed) return;
+    this.published = next;
     if (this.onChange) this.onChange();
   }
 }

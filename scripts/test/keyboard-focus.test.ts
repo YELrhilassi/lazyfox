@@ -45,6 +45,23 @@ const noFacts: KeyboardFacts = {
   chromeFieldHasText: false,
 };
 
+/**
+ * A field in the browser's own UI, on screen or not.
+ *
+ * The size is part of the fact and not decoration: `chromeFieldHasText` now asks
+ * whether the field is RENDERED before it vetoes the pull (see
+ * chrome/chromefield.ts), because Lazyfox renders the URL bar with
+ * `display:none` and a field nobody can see must not be able to hold the repair
+ * off for ever. A zero box is what the hidden toolbar measures.
+ */
+function chromeField(opts: { tag?: string; value?: string; w?: number; h?: number } = {}): any {
+  return {
+    tagName: String(opts.tag || "INPUT").toUpperCase(),
+    value: opts.value ?? "",
+    getBoundingClientRect: () => ({ width: opts.w ?? 0, height: opts.h ?? 0 }),
+  };
+}
+
 /** The fake window with one selected tab, plus the rule wired to it. */
 function harness(
   url: string,
@@ -154,10 +171,28 @@ describe("giveKeyboardToSelectedPage — what actually happens", () => {
     assert.equal(h.browser.focusCount, 0);
   });
 
-  test("nothing happens while the user's own text is in a chrome field", () => {
-    const h = harness(PAGE, { activeElement: { tagName: "INPUT", value: "https://half typed" } });
+  test("nothing happens while the user's own text is in a VISIBLE chrome field", () => {
+    // The toolbar revealed by hovering the top strip, the address bar clicked,
+    // an address half typed: that is a user composing, and the first character
+    // of their URL must not yank focus into the page.
+    const h = harness(PAGE, {
+      activeElement: chromeField({ value: "https://half typed", w: 320, h: 28 }),
+    });
     assert.equal(h.keyboard.giveKeyboardToSelectedPage(), "none");
     assert.equal(h.browser.focusCount, 0);
+  });
+
+  test("a HIDDEN chrome field holding stray text does not stop the pull — the reported freeze", () => {
+    // THE REPORT, as a state: Lazyfox hides the URL bar outright, Firefox still
+    // parks the keyboard in it on a fresh tab, and one stray keystroke sets its
+    // `valueIsTyped` flag. Before this rule, that made every trigger in this
+    // module refuse to move the keyboard — invisibly, for the life of the
+    // window — and the only repair left was the click the user complained about.
+    const h = harness(PAGE, {
+      activeElement: chromeField({ value: "gg d", w: 0, h: 0 }),
+    });
+    assert.equal(h.keyboard.giveKeyboardToSelectedPage(), "content");
+    assert.equal(h.browser.focusCount, 1, "the page got its keyboard back");
   });
 
   test("an EMPTY chrome field is not the user's — the hidden URL bar is taken from it", () => {
@@ -166,13 +201,13 @@ describe("giveKeyboardToSelectedPage — what actually happens", () => {
     // keyboard there is the dead keyboard the user has to click out of. The
     // dispatcher's own rule is the same one (keysdispatch.ts: a field that holds
     // TEXT always wins; an empty one is where a sequence continues).
-    const h = harness(PAGE, { activeElement: { tagName: "INPUT", value: "" } });
+    const h = harness(PAGE, { activeElement: chromeField({ value: "", w: 320, h: 28 }) });
     assert.equal(h.keyboard.giveKeyboardToSelectedPage(), "content");
     assert.equal(h.browser.focusCount, 1);
   });
 
   test("a chrome field that is not a text field at all does not stop the pull", () => {
-    const h = harness(PAGE, { activeElement: { tagName: "TOOLBARBUTTON" } });
+    const h = harness(PAGE, { activeElement: chromeField({ tag: "TOOLBARBUTTON", w: 24, h: 24 }) });
     assert.equal(h.keyboard.giveKeyboardToSelectedPage(), "content");
     assert.equal(h.browser.focusCount, 1);
   });

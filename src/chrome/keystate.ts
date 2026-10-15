@@ -11,6 +11,7 @@
 //   - isChromeUiFocus: focus is in the browser's OWN chrome UI (the URL bar,
 //     the find bar) rather than in page content — the only way an element that
 //     is a genuine typing target has the chrome document as its ownerDocument.
+import { isDeveloperSurface } from "../shared/privileged";
 import type { TypingChannel } from "./typing";
 import type { ChromeWindow } from "./env";
 
@@ -362,6 +363,39 @@ export function forgetContentOfBrowser(win: ChromeWindow, browser: unknown): voi
 }
 
 /**
+ * Dev/verification only: drop the SELECTED tab's presence record, and report what
+ * it was.
+ *
+ * The state the field report describes — the helper answering a live page's keys
+ * because its record went missing (docs/KEYBOARD-FREEZE.md) — cannot be produced
+ * from outside the product: presence is written by the page's own script, and no
+ * test input can retract it without replacing the document, which would make the
+ * test about a different page than the one it was testing. Dropping the record is
+ * exactly the state, and doing it from a debug hook is honest about which layer
+ * is under test: the OWNERSHIP DECISION, not the reporting that feeds it.
+ *
+ * The URL comes back with the answer because "there was no record" and "there was
+ * one and it named another page" are different failures of the same assertion.
+ */
+export function dropPresenceForSelectedTab(win: ChromeWindow): { had: boolean; url: string } {
+  let had = false;
+  let url = "";
+  try {
+    const tab = selectedTabOf(win);
+    const rec = tab ? contentPresent.get(tab) : undefined;
+    if (rec && rec.epoch === presenceEpoch) {
+      had = true;
+      url = String(rec.url || "");
+    }
+    const b = (win as any).gBrowser.selectedBrowser;
+    forgetContentOfBrowser(win, b);
+  } catch (e) {
+    // an unreadable strip has nothing to drop
+  }
+  return { had, url };
+}
+
+/**
  * React to a location change: keep the record for an in-page navigation, drop it
  * for a real one.
  *
@@ -539,9 +573,95 @@ export function chromeOwnsKeys(win: ChromeWindow): boolean {
     // out-of-process tab's keys never reach the chrome window at all. So the
     // same keystroke was either handled twice or not at all, depending on which
     // process the tab happened to land in.
-    if (isCommandCenterUrl(s)) return !contentScriptPresent(b, win);
-    if (/^https?:/i.test(s) || /^file:/i.test(s)) return !contentScriptPresent(b, win);
+    // A DEVELOPER SURFACE IS NOBODY OF OURS, and that answer has to come before
+    // the URL classes below rather than out of them: devtools documents answer
+    // "not content-ownable", so the old rule claimed them. Their keys are the
+    // developer's (K4, and the user's own report — "Lazyfox does a keyboard grab
+    // on Firefox's developer tools"), so the helper says no. See
+    // shared/privileged.ts for the class and why it is a module.
+    if (isDeveloperSurface(s)) return false;
+    if (!contentOwnableUrl(s)) return true;
+    return !contentScriptPresent(b, win);
+  } catch {
     return true;
+  }
+}
+
+/**
+ * Is the tab in front a Firefox developer surface?
+ *
+ * The same question as `isDeveloperSurface`, asked of this window. It is asked by
+ * the key dispatcher and not only by the ownership latch, because the latch alone
+ * is not enough to keep hands off: `chromeOwnsKeys` answering false routes a key
+ * into the WEB PAGE rescue, which would move the keyboard into devtools and spend
+ * the leader key doing it. "Not ours" has to mean "not touched", so the
+ * dispatcher refuses first and this is the predicate it refuses with.
+ *
+ * An unreadable or empty URL answers NO (see the note on the predicate), so a
+ * window whose strip cannot be read keeps the behaviour it had before devtools
+ * surfaces were named.
+ */
+export function isDeveloperSurfaceTab(win: ChromeWindow): boolean {
+  try {
+    const b = (win as any).gBrowser.selectedBrowser;
+    const u = b && b.currentURI;
+    return isDeveloperSurface(u && u.spec);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Can the document at this URL be owned by ITS OWN script?
+ *
+ * The three classes Lazyfox's content script is actually injected into (see the
+ * manifest's `matches`), plus the command center, which runs the same key engine
+ * and reports presence the same way. Everything else — `about:` in all its
+ * forms (`about:blank`, `about:devtools-toolbox`, `about:debugging`, Firefox's
+ * own error pages), `moz-extension://` (the diagnostics page, options, the
+ * relay), a `view-source:` wrapper — is answered by the chrome helper AND
+ * CANNOT BE ANSWERED BY ANYONE ELSE: no content script runs there, so there is
+ * no page-side leader for a key to belong to.
+ *
+ * That is a different question from "who owns the keys right now", and it is the
+ * one the leader-key rescue has to ask before it spends the key. See
+ * contentOwnablePage for the measurement that forced it.
+ */
+export function contentOwnableUrl(spec: string): boolean {
+  const s = String(spec || "");
+  if (!s) return false;
+  if (isCommandCenterUrl(s)) return true;
+  return /^https?:/i.test(s) || /^file:/i.test(s);
+}
+
+/**
+ * The same question, asked of the tab in front.
+ *
+ * EXPORTED FOR THE RESCUE, and the measurement is a session: on
+ * `moz-extension://…/diagnostics.html` — a document with no content script and
+ * therefore helper-owned keys — pressing `;` made the helper run the WEB PAGE
+ * rescue, which moved the keyboard into the page and CONSUMED the leader key.
+ * The chord after it (`;x`) then did nothing at all: `x` is not a binding on its
+ * own, and the leader it was meant to follow had been spent on a repair for a
+ * page that has no leader to hand the keys to. Every leader chord on every
+ * chrome-owned page (`about:`, the diagnostics page, options) was dead the first
+ * time it was pressed, and only the first time — which is exactly the shape of
+ * "it works if I press it again".
+ *
+ * An unreadable or empty URL answers YES, deliberately: this predicate exists to
+ * REMOVE a repair, so it may only do so for a document class positively known to
+ * be one no content script can own. An unknown URL keeps the behaviour that
+ * existed before this predicate did, which is the only answer that cannot turn a
+ * guessed classification into the freeze the repair was written for.
+ */
+export function contentOwnablePage(win: ChromeWindow): boolean {
+  try {
+    const b = (win as any).gBrowser.selectedBrowser;
+    const u = b && b.currentURI;
+    if (!u) return true;
+    const s = String(u.spec || "");
+    if (!s) return true;
+    return contentOwnableUrl(s);
   } catch {
     return true;
   }

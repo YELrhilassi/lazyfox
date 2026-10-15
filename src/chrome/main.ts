@@ -52,12 +52,21 @@ import {
   chromeOwnsSurfaces,
   commandCenterDocumentPresent,
   contentScriptPresent,
+  dropPresenceForSelectedTab,
   isCommandCenterTab,
+  isDeveloperSurfaceTab,
   noteContentPresent,
   presenceSnapshot,
   presenceTabForReport,
 } from "./keystate";
-import { focusCommandCenterContent, focusSelectedContent } from "./commandcenterfocus";
+import {
+  chromeFieldHoldsUserText,
+  focusCommandCenterContent,
+  focusIsInSelectedContent,
+  focusSelectedContent,
+  selectedContentHasKeyboard,
+} from "./commandcenterfocus";
+import { chromeElementOnScreen } from "./chromefield";
 import { createKeyboardFocus } from "./keyboardfocus";
 import { keymapReady } from "../shared/keymap";
 import { createChromeOps } from "./ops";
@@ -237,6 +246,54 @@ import { createTypingChannel } from "./typing";
           pageHasFocus
         };
       },
+      // THE KEYBOARD DECISION, AND THE REASONS IT WOULD NOT BE RUN (K5/M6).
+      //
+      // Everything above reports facts about the helper. This reports the one
+      // agreement the user's keyboard depends on — does the helper answer this
+      // page's keys AND is the keyboard in that page — plus the reasons the
+      // repair for a disagreement would be refused. "Lazyfox froze until I
+      // clicked" is that disagreement, and until this field existed it could
+      // only be inferred from two facts three fields apart, in a report nobody
+      // could collect from a user.
+      //
+      // Every read is defensive and each falls back to the answer that cannot
+      // invent a reason: an unreadable chrome field is NOT the user composing
+      // (see chromefield.ts for the direction of that unknown).
+      keyboard: () => {
+        const chDoc: any = doc;
+        let chromeActive = "";
+        let fieldValue = "";
+        let onScreen = false;
+        let hasUserText = false;
+        try {
+          const el: any = chDoc && chDoc.activeElement;
+          if (el) {
+            chromeActive = String(el.tagName || "").toLowerCase() + (el.id ? "#" + el.id : "");
+            // The field's text, read the way the veto's own callers read it:
+            // `value` for the browser's own inputs, `textContent` for an
+            // editable, empty for anything else.
+            if (el.value != null) fieldValue = String(el.value);
+            else if (el.isContentEditable === true) fieldValue = String(el.textContent || "");
+            onScreen = chromeElementOnScreen(el);
+            hasUserText = chromeFieldHoldsUserText(win, el, fieldValue);
+          }
+        } catch {
+          // Leave the defaults: no field, no text, no veto.
+        }
+        return {
+          owns: chromeOwnsKeys(win),
+          // Asked with the SAME function the repair's gate asks (and, like it,
+          // with no event: a repair runs at a key, this is a read at rest).
+          inPage: focusIsInSelectedContent(win, env.services.focus),
+          devtools: isDeveloperSurfaceTab(win),
+          chromeField: { active: chromeActive || null, onScreen, hasUserText },
+          // The veto a PLAIN key would meet right now. The leader key is never
+          // vetoed, which is why this is reported beside `owns`/`inPage` rather
+          // than folded into them: `true` here means "the next letter key will
+          // not clear this", not "the rescue is unreachable" — `;` is.
+          veto: hasUserText,
+        };
+      },
       // The keyboard rule, callable on demand (the #lfc=focus channel). Wired to
       // the SAME controller the tab-select / location / load triggers use, so a
       // test can never measure a second implementation of the rule.
@@ -260,6 +317,10 @@ import { createTypingChannel } from "./typing";
       // wrong tab" — the two have opposite fixes and every other field of this
       // reply reports them identically.
       presence: () => presenceSnapshot(win),
+      // Dev/verification: drop the selected tab's presence record — the way a
+      // test is put in the state the field report describes (see
+      // keystate.dropPresenceForSelectedTab).
+      forgetPresence: () => dropPresenceForSelectedTab(win),
       leaderPending: () => !!(leader && leader.hasPending()),
       lastAction: () => lastAction,
       lastMoveDebug: () => (moveLog.length ? moveLog.join(" | ") : null),
@@ -631,10 +692,24 @@ split,
         // about that tab — the dispatcher never reaches it — so it is reported
         // as content-owned, which is the conservative answer (declining is
         // always safe; claiming ownership twice is not).
+        //
+        // TWO FACTS DECIDE WHERE THE KEY CAME FROM, and they used to be one.
+        // "No content script" says who the OWNER is; it does not say the key was
+        // delivered to the page. The actor runs in the CONTENT process, so it
+        // sees exactly the keys that arrived there — which requires the page to
+        // have the KEYBOARD. When the keyboard sits in the browser's own UI the
+        // key is delivered in the PARENT process instead, and the product's real
+        // path for it is the window listener (winlisteners → chromeKeyDown with
+        // no actor flag). Declaring such a key an actor key made the dispatcher
+        // treat it as coming from a page that cannot see keys at all, and —
+        // measured — skipped the very repair that gives the page its keyboard
+        // back: the harness sent `;` "as the user typed it into the URL bar" and
+        // the prompt was answered as if it had come from the page.
         const sel = win.gBrowser && win.gBrowser.selectedTab;
-        const fromActor = !sel || !target || target === sel
-          ? !contentScriptPresent(sel, win)
-          : false;
+        const fromActor =
+          !sel || !target || target === sel
+            ? !contentScriptPresent(sel, win) && selectedContentHasKeyboard(win, env.services.focus)
+            : false;
         return chromeKeyDown(e, fromActor, true);
       },
       release: releaseLeaderHold,

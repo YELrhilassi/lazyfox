@@ -14,6 +14,7 @@ import type { ChromeWindow } from "./env";
 // (src/chrome/keys.ts). Reusing them is what makes a forwarded key and a
 // synthetic one behave identically, which is the whole point of forwarding.
 import { buildKeyEvent, maybeInsertText } from "./keys";
+import { chromeElementOnScreen } from "./chromefield";
 
 // Focus the command-center page's body (tabindex=-1) so keyboard focus sits in
 // the page, in command mode, away from Firefox's URL bar and the page's own
@@ -151,6 +152,62 @@ export function focusSelectedContent(win: ChromeWindow, fm?: FocusService, flags
  * caret yanked out of the field the user was typing in, which is worse than the
  * freeze it is meant to fix.
  */
+/**
+ * Does the selected tab's content have the keyboard — POSITIVELY?
+ *
+ * The strict twin of `selectedContentHasKeyboard`, and the difference is exactly
+ * the exception that the lenient version makes on purpose: "an inactive window
+ * reports no focused element as a property of being inactive, and its page keeps
+ * the keyboard for the moment the user comes back".
+ *
+ * That exception is right for the TRIGGERS (a tab select, a load finishing: an
+ * event that can fire in a window the user is not in, where pulling focus would
+ * be an intrusion) and it is WRONG for a key. `givePageKeyboardBack` only runs
+ * because a keydown was delivered to THIS window's own listener — which cannot
+ * happen while the user's keyboard is in another window — so the focus manager's
+ * "some other window is active" (a stale answer, and a null one, are both
+ * measured Firefox states) is not a reason to believe the page has the keyboard.
+ * Believing it is the reported freeze in its purest form: the helper declines the
+ * key because "the page owns it", the page never sees a key because its document
+ * is not focused, and nothing answers until the user CLICKS — which is also the
+ * thing that finally makes the focus manager say the window is active.
+ *
+ * So this asks only the two questions that place the keyboard inside the selected
+ * content, and answers "no" for everything else — including "nothing holds it"
+ * and "an unreadable focus manager". Acting on "no" is safe in a way that the
+ * other direction is not: the repair focuses the browser element (and, when this
+ * window is not the active one, deliberately stops there — see
+ * focusSelectedContent), so it cannot take the keyboard from another window.
+ */
+export function focusIsInSelectedContent(win: ChromeWindow, fm?: FocusService): boolean {
+  // NO MANAGER, NO ANSWER — and the answer that acts least is "assume the page
+  // has it". This is the one place the strict rule keeps the lenient default, and
+  // the reason is that the repair has to be able to COMPLETE: with no focus
+  // manager there is no `setFocus` to escalate to, so a repair that claims the
+  // keyboard was moved would be a lie told to the keystroke that paid for it.
+  if (!fm) return true;
+  let b: any = null;
+  try {
+    b = (win as any).gBrowser.selectedBrowser || null;
+  } catch {
+    b = null;
+  }
+  if (!b) return false;
+  let el: any = null;
+  try {
+    el = fm.focusedElement || null;
+  } catch {
+    el = null;
+  }
+  if (el === b) return true;
+  if (!el) return false;
+  try {
+    return !!b.contentDocument && el.ownerDocument === b.contentDocument;
+  } catch {
+    return false;
+  }
+}
+
 export function selectedContentHasKeyboard(win: ChromeWindow, fm?: FocusService): boolean {
   if (!fm) return true;
   let b: any = null;
@@ -225,6 +282,16 @@ export function chromeFieldHoldsUserText(win: ChromeWindow, el: unknown, value: 
   // A field in a PAGE is not the browser's UI at all; the page's own typing
   // guard owns that case.
   if (!doc || owner !== doc) return false;
+  // ...AND IT HAS TO BE A FIELD THE USER CAN SEE. `chromeFieldHoldsUserText` is
+  // the only thing that can veto the rescue, and the rescue exists for a state
+  // the veto used to make permanent: Lazyfox renders the URL bar with
+  // `display:none`, so the field that holds the keyboard on a fresh tab (and the
+  // field a stray keystroke lands in while the page is frozen) is invisible —
+  // and `valueIsTyped`, once set by that one stray character, vetoed every
+  // rescue on every key, for the life of the window, with nothing on screen to
+  // explain it. The user's reproduction is exactly this state. See
+  // chrome/chromefield.ts for the rule and for the direction of the unknown.
+  if (!chromeElementOnScreen(el)) return false;
   let ub: any = null;
   let input: any = null;
   try {

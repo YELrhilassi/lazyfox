@@ -1,6 +1,7 @@
 // sequences tests (content). Split verbatim from the original
 // content.ts monolith — behavior unchanged, timing fixed separately.
-import { waitFor } from "../../bidi.ts";
+import { evalIn, waitFor } from "../../bidi.ts";
+import { assert } from "../../runner.ts";
 export async function run(ctx: any): Promise<void> {
   // The test id is "<group>/<file> › <name>", so two tests with the same
   // name in different files of one group cannot collide.
@@ -46,5 +47,110 @@ export async function run(ctx: any): Promise<void> {
     await waitFor(async () => (await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
     await ctx.press(ctx.tabA, "Escape");
     await waitFor(async () => !(await ctx.hasHost(ctx.tabA, "lazyfox-popup")) ? true : null, 5000);
+  });
+
+  await t("a category ACTION leaves no capture behind: ONE Escape ends the gesture", async () => {
+    // FOUND BY THE LONG SESSION SUITE, which is the only test shape that can see
+    // it: `scripts/e2e/suites/session` runs most of Lazyfox in one browser with
+    // nothing reset in between, and its tenth step (`;Z i` … `;Z r`) left the
+    // page's leader ARMED after a single Escape — `data-lf-leader` was still
+    // "1" when the next step started, so the next keystroke would have been
+    // answered by the menu rather than by the page.
+    //
+    // The category is the interesting shape and the reason this needs its own
+    // case: a head (`;Z`) arms a CAPTURE on top of an ARMED LEADER, and the
+    // sub-key runs an ACTION. Whether one Escape ends that — rather than
+    // spending the capture and leaving the leader up — is exactly the class of
+    // leftover that makes a chord feel like it needs two presses.
+    //
+    // The audit suite has the menu half (`;Z`, then Escape in its `post` hook)
+    // and the actions (`;Z i`, `;Z r`) with NO post at all, so the action's
+    // aftermath was never asserted anywhere.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const armed = async (): Promise<boolean> =>
+      (await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader") === "1"`).catch(
+        () => false
+      )) === true;
+    const expectDisarmed = async (what: string, ms: number): Promise<void> => {
+      const gone = await waitFor(async () => ((await armed()) ? null : true), ms).catch(() => null);
+      assert(
+        gone === true,
+        what +
+          ": the page's leader is still armed (data-lf-leader=" +
+          (await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader")`).catch(() => "?")) +
+          ") — the next keystroke would be answered by the menu instead of the page"
+      );
+    };
+
+    // The half the audit already covers, as the control: a head with no action
+    // stands down on one Escape.
+    await ctx.leaderSeq(ctx.tabA, ["Z"]);
+    await ctx.press(ctx.tabA, "Escape");
+    await expectDisarmed("a category MENU after one Escape", 4000);
+
+    // ...and the half it does not: the head plus an ACTION.
+    await ctx.leaderSeq(ctx.tabA, ["Z", "i"]);
+    await ctx.press(ctx.tabA, "Escape");
+    await expectDisarmed("a category ACTION after one Escape", 6000);
+
+    // Zoom is restored through the same path, so the fixture is left as it was
+    // found and this case can run beside the audit's zoom case in one browser.
+    await ctx.leaderSeq(ctx.tabA, ["Z", "r"]);
+    await ctx.press(ctx.tabA, "Escape");
+    await expectDisarmed("a second category ACTION after one Escape", 6000);
+  });
+
+  await t("a category ACTION clears the mirror by itself, with NO key afterwards", async () => {
+    // THE OTHER SIDE OF THE CASE ABOVE, and the reason that one passed while the
+    // product was still wrong. An Escape is a key: it runs the cancel path,
+    // which republishes the leader's state, so a mirror left stale by the ACTION
+    // is cleaned up by the next press — and the next press is exactly what the
+    // user has to make. The obligation here is stronger and it is the one the
+    // user's symptom is made of: after the action has run, with nothing else
+    // pressed, the published state must already be the truth.
+    //
+    // Found by the long session suite (`scripts/e2e/suites/session`), which
+    // reads the mirror as a LEFTOVER between steps and had no Escape in between:
+    // it caught `data-lf-leader="1"` on a page whose leader was provably disarmed
+    // (the dispatch ring in the page said `armed 0→0` for the Escape that
+    // followed, i.e. the state was already clear and only the ATTRIBUTE was
+    // wrong). The cause was a publication gap, not a state gap: a capture's
+    // handler runs before the capture disarms, so the action's own hide()
+    // published `armed: true`, and the capture's disarm said nothing because the
+    // only thing it announced was a hint change — and a category's hint is
+    // already empty. See src/shared/leadercapture.ts (publish).
+    //
+    // The user-visible form of the same value is the status-bar leader indicator
+    // and the chrome helper's per-tab cache, both of which are fed the same
+    // signal — so this attribute is not a test artefact, it is the readout.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const mirror = async (): Promise<string> =>
+      String(
+        (await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-leader")`).catch(() => "?")) ?? "",
+      );
+    const dpr = async (): Promise<number> =>
+      Number(await evalIn(ctx.tabA, `window.devicePixelRatio`).catch(() => 1)) || 1;
+
+    const ranCleanly = async (label: string, chord: [string, string]): Promise<void> => {
+      const was = await dpr();
+      await ctx.leaderSeq(ctx.tabA, chord);
+      // The action has to have LANDED before its aftermath is judged, or the
+      // assertion races the action and measures the harness, not the product.
+      await waitFor(async () => ((await dpr()) !== was ? true : null), 6000).catch(() => {});
+      const cleared = await waitFor(async () => ((await mirror()) !== "1" ? true : null), 4000).catch(() => null);
+      assert(
+        cleared === true,
+        label +
+          " ran but the page still publishes data-lf-leader=" +
+          (await mirror()) +
+          " with nothing pressed afterwards: the leader indicator stays lit and the " +
+          "next keystroke is read as a chord on a page where no leader is armed",
+      );
+    };
+
+    await ranCleanly("`;Z i` (zoom in)", ["Z", "i"]);
+    // ...and the reset, which is the pair the session suite run left stale, so
+    // the fixture is left at its original zoom as well.
+    await ranCleanly("`;Z r` (zoom reset)", ["Z", "r"]);
   });
 }
