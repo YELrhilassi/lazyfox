@@ -24,15 +24,16 @@ import {
   commandCenterPageReady,
   dispatchToCCPage,
   focusCCBody,
+  focusIsInSelectedContent,
   focusSelectedContent,
-  selectedContentHasKeyboard,
   signalCommandCenterFind
 } from "./commandcenterfocus";
 import {
   chromeOwnsKeys,
   commandCenterDocumentPresent,
-  isAboutPage,
+  contentOwnablePage,
   isChromeUiFocus,
+  isDeveloperSurfaceTab,
   isCommandCenterTab,
 } from "./keystate";
 import type { ChromeEnv, ChromeWindow } from "./env";
@@ -189,8 +190,23 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
   const DEV = typeof __DEV__ !== "undefined" && __DEV__;
   const TRACE_LIMIT = 24;
   const trace: Array<Record<string, unknown>> = [];
+  // A MONOTONIC NUMBER PER ENTRY, because the ring is BOUNDED.
+  //
+  // The ring answers "did this key arrive, and which branch took it" only if a
+  // reader can tell a new entry from an old one — and once the ring is full its
+  // LENGTH stops growing, so `after.length > before.length` is false for a key
+  // that arrived and was recorded. That is not hypothetical: the first version of
+  // the developer-surface e2e (content/focus) passed alone and failed inside the
+  // content group for exactly this reason, reporting "the key never reached the
+  // dispatcher" with the key's own entry visible in the failure text.
+  //
+  // The counter is also what makes two reads orderable: "the last entry before"
+  // and "the last entry after" can be compared as numbers instead of guessed at
+  // from content.
+  let traceSeq = 0;
   function noteTrace(entry: Record<string, unknown>): void {
     if (!DEV) return;
+    entry.n = ++traceSeq;
     trace.push(entry);
     if (trace.length > TRACE_LIMIT) trace.shift();
   }
@@ -205,6 +221,77 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
   // dispatcher does, which is the property that matters for an instrument that
   // ships inside the key path.
   let br = "entry";
+
+  /**
+   * Give the SELECTED tab's page its keyboard back — the repair the user performs
+   * with a click — and report what became of the key that asked for it.
+   *
+   * `"consumed"` — the key was the leader key and the repair rode on it: it must
+   * never be spent as a character in a chrome field, and the user's next press
+   * lands in the page and arms the leader there. `"declined"` — the keyboard went
+   * back but this key is not ours (the page may want it now). `"not-needed"` —
+   * the page can already see keys, or the veto applies and nothing was touched.
+   *
+   * THREE ANSWERS RATHER THAN A BOOLEAN, because both callers have to distinguish
+   * "repaired and this key was spent on it" from "repaired, pass the key on" from
+   * "nothing to do" — and the boolean version of this shipped with the first and
+   * third outcomes conflated, which silently swallowed a letter key on the way to
+   * a page that never asked for it.
+   *
+   * The veto is the user COMPOSING in a chrome field (see
+   * chromeFieldHoldsUserText for the measurement that forced the question to be
+   * "did the user type here" rather than "does the field hold text").
+   */
+  function givePageKeyboardBack(e: ActorKey): "consumed" | "declined" | "not-needed" {
+    let composingInChrome = false;
+    try {
+      composingInChrome =
+        typing.focusedIsTyping(e as KeyboardEvent) &&
+        chromeFieldHoldsUserText(
+          win,
+          typing.focusedTypingTarget(e as KeyboardEvent),
+          typing.focusedTypingValue(e as KeyboardEvent),
+        );
+    } catch {
+      composingInChrome = false;
+    }
+    // THE LEADER KEY IS NEVER VETOED — the user's decision, taken after the
+    // reproduction that made the veto's shape matter: with the toolbar hidden
+    // (Lazyfox's own CSS) a stray character typed into the invisible URL bar set
+    // `valueIsTyped`, and from then on EVERY rescue was vetoed, on every key,
+    // with nothing on screen to explain it. The veto's job is to protect an
+    // address the user is deliberately writing, and `;` is not the keystroke
+    // anybody writes an address with: it is the one key a Lazyfox user presses to
+    // say "Lazyfox, now", so it wins. The typed text is not destroyed — it stays
+    // in the field — and `;o` is the product's own way to enter an address.
+    //
+    // Every OTHER key keeps the veto, and that half is load-bearing: the toolbar
+    // is a hover overlay, a user who reveals it and clicks the address bar must
+    // be able to type a URL without the first character yanking focus into the
+    // page.
+    if (composingInChrome && !isLeaderKeyPress(e)) return "not-needed";
+    let fm: any = null;
+    try {
+      fm = deps.env && deps.env.services ? deps.env.services.focus : null;
+    } catch {
+      fm = null;
+    }
+    // ASKED THE STRICT QUESTION, because this function only ever runs at a KEY.
+    //
+    // `selectedContentHasKeyboard` answers YES for a window the focus manager
+    // does not name as the active one — a deliberate safeguard for the TRIGGERS,
+    // which can fire in a window the user is not in. At a key it is the wrong
+    // answer, and it is the freeze in its purest form: a keydown was just
+    // delivered to THIS window's listener (so the user's keyboard is here, and
+    // the manager's "another window is active" — or its null — is stale), the
+    // helper declines the key because "the page owns it", and the page never sees
+    // anything because its document is not focused. Nothing answers until the
+    // user clicks, which is what finally makes the manager agree. See
+    // focusIsInSelectedContent for the two states this asks about instead.
+    if (focusIsInSelectedContent(win, fm)) return "not-needed";
+    focusSelectedContent(win, fm, focusFlags());
+    return isLeaderKeyPress(e) ? "consumed" : "declined";
+  }
 
   function chromeKeyDown(e: ActorKey, fromActor?: boolean, noKeyup?: boolean): boolean {
     br = "entry";
@@ -236,6 +323,21 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
   function chromeKeyDownInner(e: ActorKey, fromActor?: boolean, noKeyup?: boolean): boolean {
     if (e.isComposing) {
       br = "composing";
+      return false;
+    }
+
+    // A DEVELOPER SURFACE IS NOT CLAIMED — not the key, not the repair, not the
+    // leader (K4; shared/privileged.ts).
+    //
+    // The order matters and it is the whole of the fix: `chromeOwnsKeys` says
+    // false for a devtools document (what it is), which would send the key down
+    // the WEB PAGE rescue — a repair that moves the keyboard into the developer's
+    // console and spends the leader key doing it. Refusing here means "not ours"
+    // and "not touched" are the same answer on the same class of page, whatever
+    // the key was and wherever it came from. It costs one string compare on a
+    // URL, and it is the difference between a rule and a different bug.
+    if (isDeveloperSurfaceTab(win)) {
+      br = "devtools-surface";
       return false;
     }
 
@@ -336,35 +438,63 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // own "the user edited this value" flag is what answers it — the whole
     // argument, with the measurements, is in chromeFieldHoldsUserText.
     if (!fromActor && !chromeOwnsKeys(win) && !popup.isOpen()) {
-      let composingInChrome = false;
-      try {
-        composingInChrome =
-          typing.focusedIsTyping(e as KeyboardEvent) &&
-          chromeFieldHoldsUserText(
-            win,
-            typing.focusedTypingTarget(e as KeyboardEvent),
-            typing.focusedTypingValue(e as KeyboardEvent),
-          );
-      } catch {
-        composingInChrome = false;
+      const r = givePageKeyboardBack(e);
+      if (r === "consumed") {
+        br = "web-page-leader-rescue";
+        return true;
       }
-      let fm: any = null;
-      try {
-        fm = deps.env && deps.env.services ? deps.env.services.focus : null;
-      } catch {
-        fm = null;
-      }
-      if (!composingInChrome && !selectedContentHasKeyboard(win, fm)) {
-        focusSelectedContent(win, fm, focusFlags());
-        if (isLeaderKeyPress(e)) {
-          br = "web-page-leader-rescue";
-          return true;
-        }
+      if (r === "declined") {
         br = "web-page-refocus";
         return false;
       }
       br = "web-page";
       return false;
+    }
+
+    // THE SAME REPAIR IS OWED WHEN THE HELPER IS THE ONE ANSWERING, and missing
+    // that half is what makes this state look like two different browsers.
+    //
+    // Measured from the field report: `;` "keeps showing" and `;r`, `;s`, `;o`
+    // and `;d` still answer, while `j`/`k`/`d`/`u` — and hints and find with
+    // them — are dead until the page is clicked or reloaded. Those are exactly
+    // the two halves of the ownership split: the helper's own bindings run (it
+    // has the keys) and everything that lives in the page does not, because the
+    // KEYBOARD is not in the page: no key reaches its content script, and the
+    // chrome-side scroll keys cannot move a remote document either (see
+    // scrollkeys.ts). The helper claiming the keys is not the problem — it is
+    // what it does while claiming them without the page able to see a key.
+    //
+    // So the repair runs here too, and the LEADER KEY is the only key allowed to
+    // trigger it. Every other key is legitimate chrome-UI business — the address
+    // the user is typing into, a toolbar control — and the veto below cannot tell
+    // a URL bar holding its own page address from one holding a half-typed URL,
+    // while `usertyping` only appears once they have typed something. The leader
+    // key has no such ambiguity: a user pressing it wants Lazyfox, and the honest
+    // answer when the page cannot see it is to give the page its keyboard back
+    // and let the next press land there.
+    //
+    // ...AND ONLY ON A DOCUMENT THAT CAN OWN THE KEYS AT ALL. That qualifier was
+    // missing, and it cost the first press of every leader chord on every
+    // chrome-owned page: on `moz-extension://…/diagnostics.html` (or any
+    // `about:` document) no content script runs and none ever will, so "giving
+    // the page its keyboard back" hands it to a document with no key engine of
+    // its own — while the LEADER KEY, spent on that repair, never reaches the
+    // leader-arm branch below. `;T` opened the diagnostics page and `;x` then did
+    // nothing: `x` alone is not a binding, and the `;` it needed had already been
+    // consumed by a repair for a page that could not answer a key. Measured by
+    // the long session suite (step 23), which is the only shape that presses a
+    // chord a second time on a freshly opened page.
+    if (
+      !fromActor &&
+      chromeOwnsKeys(win) &&
+      isLeaderKeyPress(e) &&
+      !popup.isOpen() &&
+      contentOwnablePage(win)
+    ) {
+      if (givePageKeyboardBack(e) === "consumed") {
+        br = "web-page-leader-rescue-split";
+        return true;
+      }
     }
 
     // A chrome popup is open: Esc closes it first (before the page/window),
@@ -459,8 +589,12 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       }
       const chromeUiFocus = isChromeUiFocus(win, typing, e as KeyboardEvent);
       const leaderKeyPress = isLeaderKeyPress(e);
+      // The same page class as the typing guard below: the command center, and
+      // every document no content script can own. Wherever Lazyfox's helper is
+      // the only key engine on the page, an empty field cannot be the reason to
+      // spend the leader key as text.
       const emptyLazyfoxField =
-        typingValue === "" && (isCommandCenterTab(win) || isAboutPage(win));
+        typingValue === "" && (isCommandCenterTab(win) || !contentOwnablePage(win));
       // "The user is writing something." A field with text, or a field in the
       // page rather than in the browser's chrome UI.
       const typingWins = typingNow && (!chromeUiFocus || typingValue !== "");
@@ -522,15 +656,24 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // Typing in an editable: never intercept — the leader key types like any
     // other. The exceptions are an EMPTY focused field on a Lazyfox-owned
     // page (so `;` arms the leader without a click or Esc first), and the
-    // browser's own URL bar sitting on an about:/error page (after a failed
-    // navigation Firefox hands focus to the URL bar with typed text, and the
-    // typing rule would otherwise swallow the leader key on the very page it
-    // is supposed to rescue). Only the leader key is excepted there.
+    // browser's own URL bar sitting on a page only Lazyfox can answer (after a
+    // failed navigation Firefox hands focus to the URL bar with the page's own
+    // address in it, and the typing rule would otherwise swallow the leader key
+    // on the very page it is supposed to rescue). Only the leader key is
+    // excepted there.
+    //
+    // "ONLY LAZYFOX CAN ANSWER" USED TO BE SPELLED `isAboutPage` and that is a
+    // SUBSET of it: the diagnostics page, the options page, the relay — every
+    // `moz-extension://` document — is chrome-owned for exactly the same reason
+    // (no content script runs there, so the helper is the only key engine) and
+    // was not covered. On the diagnostics tab the typing rule therefore spent
+    // `;` as a character in the URL bar and the chord never armed, which is the
+    // other half of the session suite's step 23 (see contentOwnablePage).
     if (typingNow) {
       if (
         isLeaderKeyPress(e) &&
         (typingValue === "" || isChromeUiFocus(win, typing, e as KeyboardEvent)) &&
-        (isCommandCenterTab(win) || isAboutPage(win))
+        (isCommandCenterTab(win) || !contentOwnablePage(win))
       ) {
         if (armHeldLeader(l, e, noKeyup)) {
           br = "typing-arm";

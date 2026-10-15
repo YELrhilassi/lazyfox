@@ -12,6 +12,7 @@ import { installContentDom } from "./contentdom";
 import { LeaderController, isCancel } from "../../shared/leader";
 import { idleSignal, type LeaderSignal } from "../../shared/leadersignal";
 import { specToText } from "../../shared/keymap";
+import { createThrottle } from "../../shared/throttle";
 import {
   cancelHold,
   createHoldWatchdog,
@@ -309,6 +310,37 @@ import type { ContentPopupShell } from "./find";
     }
     return send("syncContent", { active, url: href, doc: docId });
   };
+  // THE REPORT IS RE-ASSERTED, NOT ONLY SENT ONCE. See docs/KEYBOARD-FREEZE.md.
+  //
+  // The chrome helper decides who answers a key from the LAST report it holds for
+  // this tab, and a report can be missing while this document is alive and
+  // answering: the helper dropped it for a navigation within the same tab, a
+  // background restart ate the push that carried it, or the previous document's
+  // `pagehide` arrived after this one's boot report. Whenever that happened, the
+  // helper claimed this page's keys — and the user saw the field report: `;`
+  // armed the chrome's leader, `;r`/`;s`/`;o` worked, and everything that lives
+  // in the page (j/k/d/u, hints, find) was dead until they clicked or reloaded.
+  //
+  // A KEY IS THE PROOF, and it is the cheapest possible one: this document only
+  // receives a keydown while the KEYBOARD IS IN IT, which is exactly when its
+  // presence report is true again. The same report goes out on `focus`, because
+  // clicking into the page is the repair the user already performs by hand — the
+  // product may as well take the hint.
+  //
+  // THROTTLED: the report is a background round trip plus two session writes, and
+  // a key sequence is many keys. The limiter's first call always passes, so the
+  // boot report and the first key after it cannot be swallowed.
+  const PRESENCE_REASSERT_MS = 3000;
+  const presenceThrottle = createThrottle(PRESENCE_REASSERT_MS);
+  const reassertPresence = (): void => {
+    if (!presenceThrottle.allow()) return;
+    try {
+      void Promise.resolve(reportPresence(true)).catch(() => {});
+    } catch (e) {
+      // A report that cannot be sent leaves the state exactly as it was; the
+      // next key tries again.
+    }
+  };
   // THE HELD LEADER, ACROSS DOCUMENTS.
   //
   // `leader.sticky` is a claim about a key's lifecycle, but it lived in the
@@ -524,7 +556,85 @@ import type { ContentPopupShell } from "./find";
   // and `dispatchTrace()` hands them over when something asks — the dev-only
   // message handler in contentdom.ts. Same information, zero DOM cost, and
   // nothing on the page can observe the user's typing through it.
+  //
+  // IT IS A RING NOW, not a last-value readout, and that is the difference
+  // between an instrument that can explain a stuck overlay and one that cannot:
+  // the state is always read AFTER the fact, so by the time anything asks, the
+  // key that produced it has been overwritten by the next key — or by the very
+  // Escape that was supposed to clear it. One entry per keydown, carrying the
+  // branch that answered it (`br`, the same field name the chrome helper's ring
+  // uses, so the two hosts' rings read as one vocabulary) and the ARMED state on
+  // BOTH sides of the key. "The leader is still armed" then arrives with the key
+  // that armed it and with the key that failed to disarm it, which are different
+  // bugs in different hosts and were previously indistinguishable.
   const trace = { key: "", active: "?", popup: "0", dispatched: "" };
+  interface KeyRecord {
+    /** The key. */
+    k: string;
+    /** The branch that answered it (see the labels in onKeyDown). */
+    br: string;
+    /** 1 when Lazyfox consumed it — i.e. the preventDefault was ours. */
+    c: number;
+    /** 1 on an auto-repeat, i.e. a held key restating one press. */
+    rep: number;
+    /** 1 when a text field had the caret. */
+    ty: number;
+    /** 1 when a popup was up. */
+    pop: number;
+    /** 1 when a hint layer was up. */
+    hnt: number;
+    /** 1 when a one-shot capture was armed on the way IN. */
+    pg: number;
+    /** ARMED on the way in — exactly what data-lf-leader publishes. */
+    ar: number;
+    /** ...and the same two facts once the key had been answered. */
+    pg2: number;
+    ar2: number;
+    /** Milliseconds since this document booted. */
+    at: number;
+    /** The handler's throw, when there was one — never a silent key. */
+    err?: string;
+  }
+  // Two full gestures plus their aftermath: enough to hold the sequence that
+  // armed something together with the keys that should have disarmed it.
+  const RING_LIMIT = 24;
+  const ring: KeyRecord[] = [];
+  const bootAt = Date.now();
+  // The state captured when the key ARRIVED. Held in one slot rather than read
+  // back afterwards, because by then the state it has to be compared against is
+  // already gone.
+  let keyEntry: KeyRecord | null = null;
+  // The branch the key in flight is in. Assigned at each decision point in
+  // onKeyDown and read once, by noteKey — so the labels cannot change what the
+  // dispatcher does, which is the property that matters for an instrument that
+  // ships inside the key path.
+  let br = "entry";
+  /** Armed, in the sense data-lf-leader publishes: the leader OR a capture. */
+  const armedNow = (): number => (leader.active || leader.hasPending() ? 1 : 0);
+
+  /**
+   * Record one answered key.
+   *
+   * Called from the DOM wiring's afterKey, i.e. exactly once per keydown,
+   * whatever branch took it and whether or not it threw — the key path has no
+   * other exit, which is what makes the ring complete rather than a sample of
+   * it.
+   */
+  function noteKey(outcome: { key: string; consumed: boolean; error?: unknown }): void {
+    const e = keyEntry;
+    keyEntry = null;
+    if (!e) return;
+    e.c = outcome.consumed ? 1 : 0;
+    e.br = br;
+    e.pg2 = leader.hasPending() ? 1 : 0;
+    e.ar2 = armedNow();
+    if (outcome.error) {
+      e.err = String((outcome.error as Error)?.message || outcome.error).slice(0, 160);
+    }
+    ring.push(e);
+    if (ring.length > RING_LIMIT) ring.shift();
+    br = "entry";
+  }
 
   // Clear every Lazyfox overlay state and give the focus back to the page.
   //
@@ -580,8 +690,27 @@ import type { ContentPopupShell } from "./find";
       trace.key = e.key;
       trace.active = leader ? (leader.active ? "1" : "0") : "?";
       trace.popup = currentPopup ? "1" : "0";
+      keyEntry = {
+        k: e.key,
+        br: "entry",
+        c: 0,
+        rep: e.repeat ? 1 : 0,
+        ty: isTypingEvent(e) ? 1 : 0,
+        pop: currentPopup ? 1 : 0,
+        hnt: hints.active || hints.starting ? 1 : 0,
+        pg: leader.hasPending() ? 1 : 0,
+        ar: armedNow(),
+        // Overwritten by noteKey, which always runs for this keydown.
+        pg2: 0,
+        ar2: 0,
+        at: Date.now() - bootAt,
+      };
+      br = "entry";
     }
-    if (e.isComposing) return;
+    if (e.isComposing) {
+      br = "composing";
+      return;
+    }
     // A popup that is no longer ON SCREEN must not own the keyboard.
     //
     // `currentPopup` is cleared by every teardown the shell knows about, but the
@@ -594,6 +723,7 @@ import type { ContentPopupShell } from "./find";
     // closed as far as the product is concerned.
     if (currentPopup && !popupIsAlive(currentPopup)) closePopup();
     if (currentPopup) {
+      br = "popup";
       e.preventDefault();
       e.stopImmediatePropagation();
       // The popup's own onKey gets first refusal. This is NOT optional: the
@@ -630,7 +760,10 @@ import type { ContentPopupShell } from "./find";
       // can receive it as text, and it sits far from anything a site binds.
       // It also works with the leader still held, which is how you back out of
       // a sequence without giving up the key.
-      if (isCancel(e)) closePopup();
+      if (isCancel(e)) {
+        br = "popup-cancel";
+        closePopup();
+      }
       return;
     }
     if (hints.active || hints.starting) {
@@ -687,6 +820,7 @@ import type { ContentPopupShell } from "./find";
         // a hint character — vanished into a layer that had no use for it, and
         // the leader could never be armed from a hinted page.
         if (hints.handleKey(e)) {
+          br = "hints";
           e.preventDefault();
           e.stopImmediatePropagation();
           return;
@@ -734,6 +868,7 @@ import type { ContentPopupShell } from "./find";
       // protecting an edit nobody asked to protect: the caret is one click away
       // again, and the page's own Escape semantics are not Lazyfox's to deny.
       if (isCancel(e)) {
+        br = e.key === "Escape" ? "cancel-field" : "cancel-field-chord";
         // ESCAPE IS THE MASTER CANCEL HERE TOO, and it used to not be: while the
         // caret was in a field, Escape was passed straight through with the
         // overlays left standing, so the one key every user reaches for both
@@ -754,6 +889,7 @@ import type { ContentPopupShell } from "./find";
         }
         return;
       }
+      br = "typing";
       if (leader.active) leader.hide();
       if (leader.hasPending()) leader.cancelPending();
       return;
@@ -773,6 +909,7 @@ import type { ContentPopupShell } from "./find";
       // call ran the capture with the string "Escape", i.e. it pressed a key
       // on the user's behalf to say they wanted to press none.
       const cancelChord = e.key !== "Escape";
+      br = cancelChord ? "cancel-chord" : "cancel";
       cancelOverlays();
       // Esc is deliberately NOT consumed: the page must also receive it so it
       // can close its own popups, info bars, cookie banners and fullscreen
@@ -803,6 +940,7 @@ import type { ContentPopupShell } from "./find";
     // for its digit must not be handed to that capture as if it were an answer
     // to it.
     if (e.repeat && e.key === config.leader && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      br = "leader-repeat";
       e.preventDefault();
       e.stopImmediatePropagation();
       // A repeat is DROPPED as intent and KEPT as evidence: the key is provably
@@ -831,12 +969,17 @@ import type { ContentPopupShell } from "./find";
       // leader, `j` scrolls, Ctrl+1 switches session, a modified key returns to
       // the page. Only the taken case consumes anything.
       if (leader.handlePending(e)) {
+        br = "capture";
         e.preventDefault();
         e.stopImmediatePropagation();
         return;
       }
+      // A capture that DECLINED the key is not the branch that answered it:
+      // the key continues down the dispatcher and whoever takes it next labels
+      // the record (the fall-through is deliberate, see the note above).
     }
     if (leader.active) {
+      br = "leader";
       e.preventDefault();
       e.stopImmediatePropagation();
       leader.handleKey(e);
@@ -847,19 +990,25 @@ import type { ContentPopupShell } from "./find";
     // text fields so Ctrl+1 inside an input is untouched.
     if (e.ctrlKey && !e.altKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
       if (!isTypingEvent(e)) {
+        br = "session-marker";
         e.preventDefault();
         e.stopImmediatePropagation();
         contentOps.switchSessionByMarker(Number(e.key));
       }
       return;
     }
-    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    if (e.ctrlKey || e.altKey || e.metaKey) {
+      br = "modified";
+      return;
+    }
     if (handleScrollKeys(e)) {
+      br = "scroll";
       e.preventDefault();
       e.stopImmediatePropagation();
       return;
     }
     if (e.key === config.leader) {
+      br = "leader-key";
       e.preventDefault();
       e.stopImmediatePropagation();
       // Auto-repeat is the whole reason a held leader used to misbehave: the
@@ -880,7 +1029,12 @@ import type { ContentPopupShell } from "./find";
       publishHoldState(true);
       holdWatchdog.keepAlive();
       leader.show();
+      return;
     }
+    // Nothing claimed it: the page gets the key. Named like every other exit, so
+    // the ring can never report an unlabelled key — an unlabelled one would be
+    // indistinguishable from "the instrument has a hole in it".
+    br = "page";
   }
 
   // Releasing the leader clears the HOLD, not the leader itself.
@@ -1056,6 +1210,9 @@ import type { ContentPopupShell } from "./find";
       active: trace.active,
       popup: trace.popup,
       dispatched: trace.dispatched,
+      // Newest last, like the chrome helper's ring (`keyTrace` in its state
+      // reply) — the two are read side by side in a failure report.
+      ring: ring.slice(),
     }),
     isDev: () => __DEV__,
     logError: (what, err) => dbg(what, (err && (err as Error).message) || String(err)),
@@ -1063,6 +1220,14 @@ import type { ContentPopupShell } from "./find";
     // A key is the only thing that can change the answer (arming the leader,
     // dismissing it, opening or closing a hint layer), so there is nothing to
     // notice between keys and no timer to run.
-    afterKey: () => frameBridge.broadcast(),
+    afterKey: (info) => {
+      // FIRST, and before anything else this hook does: the ring is a record of
+      // what the key did, and the broadcast below is not part of the answer.
+      noteKey(info);
+      frameBridge.broadcast();
+      // ...and the helper is told THIS document is still the one holding the
+      // keyboard, because it just received a key. See reassertPresence.
+      reassertPresence();
+    },
   });
 })();

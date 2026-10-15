@@ -64,7 +64,23 @@ export interface ContentDomDeps {
    * it, opening a hint layer, closing one — so there is nothing to notice
    * between keys and no timer to run.
    */
-  afterKey?(): void;
+  afterKey?(info: KeyOutcome): void;
+}
+
+/**
+ * What became of one keydown, for the host's dispatch ring.
+ *
+ * The three facts are the three a stuck overlay needs and none of them can be
+ * derived later: WHICH key it was (the ring's own state read is taken after the
+ * next key has already arrived otherwise), whether WE consumed it, and whether
+ * the handler threw on the way (a throw is the one case where "the key arrived
+ * and nothing happened" is a lie, and it used to be indistinguishable from it).
+ */
+export interface KeyOutcome {
+  key: string;
+  /** True when Lazyfox is the one that preventDefaulted it — see the caller. */
+  consumed: boolean;
+  error?: unknown;
 }
 
 export function installContentDom(deps: ContentDomDeps): void {
@@ -88,9 +104,11 @@ export function installContentDom(deps: ContentDomDeps): void {
       // keypress that follows one of them is a character the user typed that
       // never appears.
       const preventedBefore = e.defaultPrevented;
+      let threw: unknown;
       try {
         deps.onKeyDown(e);
       } catch (err) {
+        threw = err;
         if (deps.isDev()) deps.logError("keydown handler threw", err);
       }
       // Remember only the keys WE consumed, so their keypress/keyup tail is
@@ -104,7 +122,16 @@ export function installContentDom(deps: ContentDomDeps): void {
       // about a frame must never take out key handling for the whole session.
       if (deps.afterKey) {
         try {
-          deps.afterKey();
+          deps.afterKey({
+            key: e.key,
+            // "WE took this key", which a key the page had already
+            // preventDefaulted before we ran is not: counting that one as ours
+            // would make the ring blame Lazyfox for a keystroke the page
+            // deliberately swallowed, and the ring exists to apportion blame
+            // correctly.
+            consumed: !preventedBefore && e.defaultPrevented,
+            error: threw,
+          });
         } catch (err) {
           if (deps.isDev()) deps.logError("afterKey hook threw", err);
         }

@@ -56,6 +56,9 @@ import * as sessions from "./suites/sessions/index.ts";
 import * as split from "./suites/split/index.ts";
 import * as options from "./suites/options/index.ts";
 import * as audit from "./suites/audit/index.ts";
+// Imported under a longer name because this file already has a `session`: the
+// geckodriver session the whole run rides on.
+import * as sessionSuite from "./suites/session/index.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const EXT_DIR = resolve(ROOT, "dist/extension");
@@ -67,6 +70,7 @@ const SUITE_MODULES: Record<string, { run: (ctx: any) => Promise<void> }> = {
   split,
   options,
   audit,
+  session: sessionSuite,
 };
 
 /**

@@ -55,6 +55,12 @@
       "groups": [
         "audit"
       ]
+    },
+    "session": {
+      "description": "One long session: the feature set in order, no reset in between.",
+      "groups": [
+        "session"
+      ]
     }
   },
   "groups": {
@@ -75,6 +81,9 @@
     },
     "audit": {
       "description": "One test per shipped leader chord: did it produce a visible response, and how fast."
+    },
+    "session": {
+      "description": "A real session, in order, with nothing reset: state accumulates as it does for a user."
     }
   }
 }

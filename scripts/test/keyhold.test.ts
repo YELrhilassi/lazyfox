@@ -48,6 +48,7 @@ import {
   visibilityLostHold,
 } from "../../src/shared/holdrelease.ts";
 import { fakeWindow, fakeLeader } from "./support.ts";
+import { createFakeChromeEnv } from "../../src/chrome/env-fake.ts";
 
 // The default page for these tests is a CHROME-OWNED one (an about: page), not
 // the command center. The command center now runs its own leader and reports
@@ -301,6 +302,16 @@ describe("a page that cannot see the keyboard gets it back", () => {
   // real window happens to be in; here it can be stated directly. The e2e case
   // (content/focus, "a page whose keyboard is in the browser's own UI") covers
   // the same repair through Ctrl+L and a real key.
+  /** A chrome field on screen: the toolbar revealed, its box measurable. */
+  function visibleChromeField(win: any, value = ""): any {
+    return {
+      tagName: "input",
+      value,
+      ownerDocument: win.document,
+      getBoundingClientRect: () => ({ width: 320, height: 28 }),
+    };
+  }
+
   function lostKeyboard(page = WEB) {
     const fm: any = { activeWindow: null, focusedElement: null };
     const { leader, down, win } = setup(page, { env: { services: { focus: fm }, Ci: {} } });
@@ -308,7 +319,13 @@ describe("a page that cannot see the keyboard gets it back", () => {
     // the keyboard is on a chrome element: the URL bar after Ctrl+L, or the
     // toolbar after a hover.
     fm.activeWindow = win;
-    fm.focusedElement = { tagName: "input", ownerDocument: win.document };
+    // A field the user can SEE, because the veto is about a caret the user is
+    // writing at: `Ctrl+L` REVEALS the toolbar (Lazyfox renders it as a hover
+    // overlay, src/static/chrome/userChrome.css), and only then can a human
+    // deliberately type into it. The hidden twin of this state is what the
+    // reported freeze was, and chrome/chromefield.ts is where the difference is
+    // decided — a zero-box field cannot veto.
+    fm.focusedElement = visibleChromeField(win);
     const browser = win.gBrowser.selectedBrowser;
     const focused: string[] = [];
     browser.focus = () => focused.push("browser");
@@ -342,22 +359,28 @@ describe("a page that cannot see the keyboard gets it back", () => {
     // The veto for every browser-UI field EXCEPT the URL bar: its value is text
     // the user wrote (the find bar's box holds only what was typed into it), so
     // text means the caret is theirs and no repair may take it.
+    //
+    // Asserted with a PLAIN key, which is what the veto protects: the LEADER KEY
+    // is deliberately outside it (a `;` from a user who wants Lazyfox moves the
+    // keyboard back — the decision recorded in keysdispatch.givePageKeyboardBack
+    // and pinned in "the rescue, when the browser's own address bar holds the
+    // keyboard" below).
     const fm: any = { activeWindow: null, focusedElement: null };
     const { down, win } = setup(WEB, {
       env: { services: { focus: fm }, Ci: {} },
       typing: {
         focusedIsTyping: () => true,
         focusedTypingValue: () => "text the user is writing",
-        focusedTypingTarget: () => ({ tagName: "input", ownerDocument: win.document }),
+        focusedTypingTarget: () => visibleChromeField(win, "text the user is writing"),
       },
     });
     const b = win.gBrowser.selectedBrowser;
     const calls: string[] = [];
     b.focus = () => calls.push("browser");
     fm.activeWindow = win;
-    fm.focusedElement = { tagName: "input", ownerDocument: win.document };
+    fm.focusedElement = visibleChromeField(win, "text the user is writing");
     report(win, true, WEB);
-    assert.equal(down.chromeKeyDown(keydown(";")), false, "the field's own text wins");
+    assert.equal(down.chromeKeyDown(keydown("d")), false, "the field's own text wins");
     assert.deepEqual(calls, [], "and the caret was not taken from it");
   });
 
@@ -368,7 +391,9 @@ describe("a page that cannot see the keyboard gets it back", () => {
    * field, because that is the distinction the product has to make — and this
    * helper exists so a test can state the two states that differ ONLY in them.
    */
-  function urlbar(opts: { valueIsTyped?: boolean; usertyping?: string | null } = {}) {
+  function urlbar(
+    opts: { valueIsTyped?: boolean; usertyping?: string | null; visible?: boolean } = {}
+  ) {
     const fm: any = { activeWindow: null, focusedElement: null };
     let input: any = null;
     const { leader, down, win } = setup(WEB, {
@@ -385,7 +410,16 @@ describe("a page that cannot see the keyboard gets it back", () => {
       valueIsTyped: !!opts.valueIsTyped,
       getAttribute: (n: string) => (n === "usertyping" ? opts.usertyping ?? null : null),
     };
-    input = { tagName: "input", ownerDocument: win.document, getAttribute: () => null };
+    // `visible` defaults to TRUE: an address being typed is typed into a toolbar
+    // the user revealed (a hover at the top strip, or Ctrl+L). The hidden state
+    // is the reported freeze and is stated explicitly by the cases below.
+    input = {
+      tagName: "input",
+      ownerDocument: win.document,
+      getAttribute: () => null,
+      getBoundingClientRect: () =>
+        opts.visible === false ? { width: 0, height: 0 } : { width: 320, height: 28 },
+    };
     ub.inputField = input;
     win.gURLBar = ub;
     const focused: string[] = [];
@@ -412,9 +446,10 @@ describe("a page that cannot see the keyboard gets it back", () => {
   test("a URL the user is typing is theirs", () => {
     // The other side of the same measurement: once Firefox says the user edited
     // the value, the field is a composition and the caret wins over the freeze.
+    // A plain key is what the veto protects (`;` is the deliberate exception).
     const { down, win, focused } = urlbar({ valueIsTyped: true });
     report(win, true, WEB);
-    assert.equal(down.chromeKeyDown(keydown(";")), false, "the URL bar keeps the key it was typed into");
+    assert.equal(down.chromeKeyDown(keydown("d")), false, "the URL bar keeps the key it was typed into");
     assert.deepEqual(focused, [], "and the caret was not taken from it");
   });
 
@@ -424,19 +459,152 @@ describe("a page that cannot see the keyboard gets it back", () => {
     // depend on which of the two signals a platform happens to expose.
     const { down, win, focused } = urlbar({ valueIsTyped: false, usertyping: "true" });
     report(win, true, WEB);
-    assert.equal(down.chromeKeyDown(keydown(";")), false);
+    assert.equal(down.chromeKeyDown(keydown("d")), false);
     assert.deepEqual(focused, []);
   });
 
-  test("an inactive window's page keeps the keyboard", () => {
-    // `focusedElement: null` means "nobody has it" ONLY while this window is the
-    // active one. An inactive window reports the same null as a property of being
-    // inactive, and its page has the keyboard for the moment the user comes back.
+  test("the SAME flags on a HIDDEN bar do not veto — this is the reported freeze", () => {
+    // The user's state, exactly: Lazyfox hides the URL bar, Firefox parks the
+    // keyboard in it, and a stray keystroke from a frozen page set the flags the
+    // two cases above are about. Before chrome/chromefield.ts, that one stray
+    // character vetoed EVERY rescue for the life of the window, invisibly, and
+    // the only repair left was the click the user complained about.
+    const { down, win, focused } = urlbar({ valueIsTyped: true, visible: false });
+    report(win, true, WEB);
+    assert.equal(down.chromeKeyDown(keydown(";")), true, "the leader key is honoured anyway");
+    assert.ok(focused.length >= 1, "and the page is given the keyboard back");
+  });
+
+  /**
+   * The state the field report describes in its own words: the HELPER answers
+   * this page's keys (`;` arms, `;r`/`;s`/`;o`/`;d` run) while the KEYBOARD sits
+   * in the browser's own UI, so the page's content script never sees a key and
+   * everything that lives in the page — j/k/d/u, hints, find — is dead until the
+   * page is clicked or reloaded.
+   *
+   * No presence is reported for this page, which is what makes the helper the
+   * owner (see keystate.chromeOwnsKeys).
+   */
+  function helperOwnsPage(spec = WEB, opts: { typing?: boolean } = {}) {
+    const fm: any = { activeWindow: null, focusedElement: null };
+    let input: any = null;
+    const { leader, down, win } = setup(spec, {
+      env: { services: { focus: fm }, Ci: {} },
+      typing: {
+        // Where the caret is, and it changes the branch a key takes (the typing
+        // guard runs first): in the URL bar by default, or nowhere — the two
+        // states `;` has to survive on a page only the helper can answer.
+        focusedIsTyping: () => opts.typing !== false,
+        focusedTypingValue: () => "http://127.0.0.1:50636/hello",
+        focusedTypingTarget: () => input,
+      },
+    });
+    const b = win.gBrowser.selectedBrowser;
+    const focused: string[] = [];
+    b.focus = () => focused.push("browser");
+    input = { tagName: "input", ownerDocument: win.document, getAttribute: () => null };
+    fm.activeWindow = win;
+    fm.focusedElement = input;
+    win.gURLBar = { inputField: input, valueIsTyped: false, getAttribute: () => null };
+    return { leader, down, win, fm, focused };
+  }
+
+  test("a page the HELPER answers still gets its keyboard back", () => {
+    // The half that was missing. Without it, `;` here is answered by the typing
+    // guard (the URL bar is a typing target holding the page's address) and the
+    // user gets the field report: the leader key does something, the page does
+    // nothing, and only a click or a reload repairs it.
+    const { leader, down, focused } = helperOwnsPage();
+    assert.equal(down.chromeKeyDown(keydown(";")), true, "the leader key is spent on the repair");
+    assert.ok(focused.length >= 1, "and the page was given the keyboard back");
+    assert.equal(leader.active, false, "no helper leader was armed over a page that cannot see it");
+  });
+
+  test("but NOT on a document no content script can own: the leader key arms Lazyfox", () => {
+    // THE SAME STATE, ON A DOCUMENT WITH NO PAGE ENGINE BEHIND IT — and the
+    // difference is the whole bug. `moz-extension://…/diagnostics.html` (and every
+    // `about:` document) has no content script and never will, so "give the page
+    // its keyboard back" moves the keyboard into a document that cannot answer a
+    // key, while the LEADER KEY — spent on that repair — never reaches the
+    // leader-arm branch. The chord is dead on its first press; the second press of
+    // `;` works, which is what makes it read as "it works if I try again".
+    //
+    // Measured by the long session suite, step 23: `;T` opened the diagnostics
+    // page, `;x` did nothing (`x` is not a binding on its own), and the helper's
+    // own ring recorded `;` as `web-page-leader-rescue-split` on a tab where
+    // `chromeOwnsKeys` was true and no content script existed.
+    const { leader, down, focused } = helperOwnsPage("moz-extension://abc/diagnostics.html");
+    assert.equal(
+      down.chromeKeyDown(keydown(";")),
+      true,
+      "the leader key is consumed — as the leader key, not as a repair",
+    );
+    assert.equal(leader.active, true, "the helper's own leader armed");
+    assert.equal(focused.length, 0, "and nothing was sent looking for a page engine that does not exist");
+  });
+
+  test("`about:` is the same class: the leader arms rather than repairing", () => {
+    // The class, not the one URL: an about: page is chrome-owned for exactly the
+    // same reason, and it is the case the helper sees most often (`about:blank`
+    // on a fresh tab, `about:newtab`, the error pages).
+    const { leader, down, focused } = helperOwnsPage("about:blank");
+    assert.equal(down.chromeKeyDown(keydown(";")), true);
+    assert.equal(leader.active, true);
+    assert.equal(focused.length, 0);
+  });
+
+  test("and the branch it took is named, so a field report can be answered", () => {
+    // TWO BRANCHES, ONE OUTCOME, and both are pinned because the field report
+    // is read from this ring: `typing-arm` when Firefox parked the caret in the
+    // URL bar (the typing guard's page-class exception is what arms it — before
+    // that exception named this page class, this state spent `;` as a character),
+    // and `leader-arm` when the caret is nowhere at all. Neither is a repair.
+    const previous = (globalThis as any).__DEV__;
+    (globalThis as any).__DEV__ = true;
+    try {
+      const inUrlBar = helperOwnsPage("moz-extension://abc/diagnostics.html");
+      inUrlBar.down.chromeKeyDown(keydown(";"));
+      assert.equal(inUrlBar.down.dispatchTrace().slice(-1)[0].br, "typing-arm");
+      assert.equal(inUrlBar.leader.active, true, "a URL bar holding text cannot spend the leader key here");
+
+      const nowhere = helperOwnsPage("moz-extension://abc/diagnostics.html", { typing: false });
+      nowhere.down.chromeKeyDown(keydown(";"));
+      assert.equal(nowhere.down.dispatchTrace().slice(-1)[0].br, "leader-arm");
+      assert.equal(nowhere.leader.active, true);
+    } finally {
+      (globalThis as any).__DEV__ = previous;
+    }
+  });
+
+  test("...but a letter key is never taken from the browser's own UI", () => {
+    // The reason the repair is leader-key-only on this side: the URL bar is where
+    // a user types an address, and `valueIsTyped` cannot tell a half-typed URL
+    // from the page's own address until they have actually typed.
+    const { down, focused } = helperOwnsPage();
+    assert.equal(down.chromeKeyDown(keydown("x")), false, "the URL bar keeps the letter");
+    assert.deepEqual(focused, [], "and the caret was not taken from it");
+  });
+
+  test("a STALE 'another window is active' does not refuse the repair — a key is proof", () => {
+    // This case used to assert the opposite, and the change is the point of the
+    // strict rule (see focusIsInSelectedContent): the focus manager's "this window
+    // is not the active one" is believed by the TRIGGERS, because a tab select or
+    // a load can genuinely happen in a window the user is not in — and it is WRONG
+    // at a key, because this dispatcher is only running at all if a keydown was
+    // delivered to THIS window's listener, which cannot happen while the user's
+    // keyboard is in another window. Believing it is the reported freeze in its
+    // purest form: the helper declines the key because "the page owns it" and the
+    // page sees nothing, because its document is not focused.
+    //
+    // The repair cannot do harm in this state either: `focusSelectedContent`
+    // escalates through the focus manager ONLY when the manager names this window
+    // as the active one (its own test pins that), so a genuinely inactive window
+    // gets its browser element focused and the OS keeps the other window.
     const { down, focused, fm } = lostKeyboard();
     fm.activeWindow = null;
     fm.focusedElement = null;
-    assert.equal(down.chromeKeyDown(keydown(";")), false);
-    assert.deepEqual(focused, [], "an inactive window is not ours to refocus");
+    assert.equal(down.chromeKeyDown(keydown(";")), true, "the leader key is spent on the repair");
+    assert.ok(focused.length >= 1, "the page was given the keyboard rather than left to a click");
   });
 });
 
@@ -1020,5 +1188,227 @@ describe("the dispatcher names what it did with a key", () => {
     } finally {
       (globalThis as any).__DEV__ = previous;
     }
+  });
+});
+
+// THE VETO, AND THE LEADER KEY THAT BEATS IT.
+//
+// The rescue that gives a page its keyboard back is vetoed while the user is
+// composing in a chrome field — correct in principle, and the trap the user
+// reported in practice: Lazyfox renders the URL bar with `display:none`, Firefox
+// parks the keyboard in it, and one stray character typed into the invisible
+// field sets `valueIsTyped`. From that moment every rescue was vetoed, on every
+// key, for the life of the window (docs/KEYBOARD-FREEZE.md §5a).
+//
+// Two rules close it, and they are asserted here at the level the product
+// decides them — the real dispatcher, over a real presence record:
+//
+//   * a field the user cannot SEE cannot veto (chrome/chromefield.ts), and
+//   * the LEADER KEY is never vetoed at all: it is the key a Lazyfox user
+//     presses to say "Lazyfox, now", and it costs nothing to honour it — the
+//     typed text stays in the field, and `;o` is the product's way to enter an
+//     address.
+describe("the rescue, when the browser's own address bar holds the keyboard", () => {
+  /**
+   * The reported state: a live web page whose keys the page owns, the keyboard
+   * parked in the browser's URL bar, and that bar either hidden (Lazyfox's
+   * normal chrome) or revealed by hovering the top strip.
+   */
+  function setupAddressBar(opts: { visible: boolean; text?: string }) {
+    resetContentPresence();
+    const env = createFakeChromeEnv({ tabs: [{ url: WEB, active: true }] });
+    const win = env.window as any;
+    const browser: any = win.gBrowser.selectedBrowser;
+    const input: any = {
+      tagName: "INPUT",
+      value: opts.text ?? "",
+      ownerDocument: win.document,
+      getBoundingClientRect: () => ({ width: opts.visible ? 320 : 0, height: opts.visible ? 28 : 0 }),
+    };
+    // `valueIsTyped` is the URL bar's own "the user edited this" flag: true in
+    // every case here, because that single flag is what used to make the state
+    // permanent.
+    win.gURLBar = { inputField: input, ownerDocument: win.document, valueIsTyped: true };
+    // The page's script reported in, so the keys are ITS business.
+    report(win, true, WEB);
+    const fm: any = {
+      activeWindow: win,
+      focusedElement: input,
+      setFocus(el: any) {
+        fm.focusedElement = el;
+      },
+    };
+    const leader = fakeLeader();
+    const down = createChromeKeyDown({
+      win,
+      env: { services: { focus: fm } },
+      leader: () => leader,
+      popup: { isOpen: () => false, handleKey: () => false, close() {}, resizeOnKey: () => false },
+      typing: {
+        focusedIsTyping: () => true,
+        focusedTypingValue: () => String(input.value),
+        focusedTypingTarget: () => input,
+        reset() {},
+      },
+      keyGuard: { shouldIgnore: () => false },
+      leaderKey: () => ";",
+      handleHotkeyCombo: () => false,
+      switchSessionByMarker: () => {},
+      handleScrollKeys: () => false,
+      runWebHints: () => {},
+      cancelLeaderHold: () => {},
+    } as any) as any;
+    return { down, win, browser, input };
+  }
+
+  test("`;` gives the page its keyboard back even with typed text in the HIDDEN address bar", () => {
+    const { down, browser } = setupAddressBar({ visible: false, text: "gg d" });
+    assert.equal(
+      down.chromeKeyDown(keydown(";")),
+      true,
+      "the leader key is consumed as part of the repair — it must never be spent as a character in a field the user cannot see",
+    );
+    // `>= 1`: focusSelectedContent focuses the browser element and then
+    // escalates through the focus manager, which touches it again (see its
+    // note on why one element focus is not always enough).
+    assert.ok(browser.focusCount >= 1, "the page got its keyboard back");
+  });
+
+  test("the branch that did it is named, so a field report can be answered", () => {
+    const previous = (globalThis as any).__DEV__;
+    (globalThis as any).__DEV__ = true;
+    try {
+      const { down } = setupAddressBar({ visible: false, text: "gg d" });
+      down.chromeKeyDown(keydown(";"));
+      assert.equal(down.dispatchTrace().slice(-1)[0].br, "web-page-leader-rescue");
+    } finally {
+      (globalThis as any).__DEV__ = previous;
+    }
+  });
+
+  test("a VISIBLE address bar being typed in is never robbed by a plain key", () => {
+    const { down, browser } = setupAddressBar({ visible: true, text: "exam" });
+    assert.equal(down.chromeKeyDown(keydown("d")), false, "the key is not ours");
+    assert.equal(browser.focusCount, 0, "the caret stays in the field the user is typing into");
+  });
+
+  test("but the LEADER KEY still wins — that is the user's decision, not a side effect", () => {
+    const { down, browser } = setupAddressBar({ visible: true, text: "exam" });
+    assert.equal(down.chromeKeyDown(keydown(";")), true);
+    assert.ok(browser.focusCount >= 1, "the leader key is honoured even mid-address");
+  });
+
+  test("a plain key REPAIRS when the address bar is hidden — the state that had no way out", () => {
+    const { down, browser } = setupAddressBar({ visible: false, text: "gg d" });
+    assert.equal(down.chromeKeyDown(keydown("d")), false, "the key itself is declined; it is the repair");
+    assert.ok(browser.focusCount >= 1, "and the page has the keyboard for the next one");
+  });
+});
+
+// A KEY IS PROOF THE KEYBOARD IS IN THIS WINDOW.
+//
+// `selectedContentHasKeyboard` answers YES for a window the focus manager does
+// not name as the active one, and that safeguard is right for the TRIGGERS — a
+// tab select or a load finishing can happen in a window the user is not in, and
+// pulling focus there would be an intrusion. At a KEY it is the freeze in its
+// purest form (docs/KEYBOARD-OWNERSHIP.md K2): the keydown was delivered to THIS
+// window's listener, so the user's keyboard is here and the manager's answer is
+// stale — while believing it means the helper declines the key because "the page
+// owns it" and the page sees nothing, because its document is not focused. The
+// user's only repair is a click, which is also what makes the manager agree.
+//
+// The unit case is the only honest way to pin it: a stale focus manager is not a
+// state the e2e harness can produce (it cannot make Firefox's focus manager name
+// another window and still deliver a key to this one), so the rule is asserted
+// where it is decided and the e2e covers the states it can reach.
+describe("a stale focus manager does not refuse the repair at a key", () => {
+  test("nothing is focused and another window is named active: the page gets the keyboard", () => {
+    resetContentPresence();
+    const env = createFakeChromeEnv({ tabs: [{ url: WEB, active: true }] });
+    const win = env.window as any;
+    const browser: any = win.gBrowser.selectedBrowser;
+    const otherWindow = { not: "this window" };
+    const fm: any = { activeWindow: otherWindow, focusedElement: null, setFocus() {} };
+    report(win, true, WEB);
+    const leader = fakeLeader();
+    const down = createChromeKeyDown({
+      win,
+      env: { services: { focus: fm } },
+      leader: () => leader,
+      popup: { isOpen: () => false, handleKey: () => false, close() {}, resizeOnKey: () => false },
+      typing: { focusedIsTyping: () => false, focusedTypingValue: () => "", focusedTypingTarget: () => null },
+      keyGuard: { shouldIgnore: () => false },
+      leaderKey: () => ";",
+      handleHotkeyCombo: () => false,
+      switchSessionByMarker: () => {},
+      handleScrollKeys: () => false,
+      runWebHints: () => {},
+      cancelLeaderHold: () => {},
+    } as any) as any;
+
+    assert.equal(down.chromeKeyDown(keydown(";")), true, "the leader key is consumed as part of the repair");
+    assert.ok(browser.focusCount >= 1, "the page was given the keyboard rather than left to a click");
+
+    // AND THE OTHER DIRECTION IS UNTOUCHED: when the page really does hold the
+    // keyboard (a remote tab reports the browser element itself), nothing moves.
+    fm.focusedElement = browser;
+    const focusedBefore = browser.focusCount;
+    assert.equal(down.chromeKeyDown(keydown(";")), false, "the page owns the key, as it always did");
+    assert.equal(browser.focusCount, focusedBefore, "and nothing was refocused");
+  });
+});
+
+describe("a developer surface is never claimed (K4)", () => {
+  const TOOLBOX = "about:devtools-toolbox?type=tab&id=3";
+
+  test("not the key, and not the repair either", () => {
+    // THE ORDER IS THE FIX, and this test is about the order rather than about
+    // the URL class (scripts/test/privileged.test.ts pins the class). A devtools
+    // document is not content-ownable, so the OLD rule called it chrome-owned and
+    // the helper answered `j` and `;` there; the ownership latch alone is not
+    // enough either, because `chromeOwnsKeys === false` routes the key into the
+    // WEB PAGE rescue — which would move the keyboard into the developer's
+    // console and spend the leader key doing it. So the dispatcher refuses first:
+    // "not ours" and "not touched" have to be the same answer.
+    const fm: any = { activeWindow: null, focusedElement: null };
+    const { leader, down, win } = setup(TOOLBOX, {
+      env: { services: { focus: fm }, Ci: {} },
+    });
+    const browser = win.gBrowser.selectedBrowser;
+    const focused: string[] = [];
+    browser.focus = () => focused.push("browser");
+    assert.equal(down.chromeKeyDown(keydown("j")), false, "the scroll key stays with devtools");
+    assert.equal(down.chromeKeyDown(keydown("d")), false, "and so does a half-page scroll");
+    assert.equal(down.chromeKeyDown(keydown(";")), false, "and so does the leader key");
+    assert.equal(leader.active, false, "no Lazyfox leader was armed over a developer surface");
+    assert.deepEqual(focused, [], "and nothing tried to move the keyboard");
+  });
+
+  test("the refusal is named, so the field report can be answered", () => {
+    const previous = (globalThis as any).__DEV__;
+    (globalThis as any).__DEV__ = true;
+    try {
+      const { down } = setup(TOOLBOX, { env: { services: { focus: {} }, Ci: {} } });
+      down.chromeKeyDown(keydown(";"));
+      assert.equal(down.dispatchTrace().slice(-1)[0].br, "devtools-surface");
+    } finally {
+      (globalThis as any).__DEV__ = previous;
+    }
+  });
+
+  test("about:debugging is the same class, and about:blank is not", () => {
+    // The class travels (the harness can open about:debugging without a debugger
+    // connection), and the OTHER edge is pinned in the same test because it is the
+    // one a wider rule would break: `about:blank` and its family are exactly the
+    // pages whose keys Lazyfox exists to answer.
+    const debugging = setup("about:debugging#/runtime/this-firefox", {
+      env: { services: { focus: {} }, Ci: {} },
+    });
+    assert.equal(debugging.down.chromeKeyDown(keydown(";")), false);
+    assert.equal(debugging.leader.active, false);
+
+    const blank = setup("about:blank", { env: { services: { focus: {} }, Ci: {} } });
+    assert.equal(blank.down.chromeKeyDown(keydown(";")), true, "about:blank is Lazyfox's page");
+    assert.equal(blank.leader.active, true);
   });
 });

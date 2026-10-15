@@ -51,6 +51,10 @@ const BORROWED_CHANNELS = [
   "reveal", // toolbar reveal (test hook)
   "console", // internal-console dump (test hook)
   "diag", // diagnostics (test hook)
+  "focus", // run the keyboard rule now (test hook)
+  "blur", // put the keyboard in the browser's own UI (test hook)
+  "forget", // drop this tab's presence record (test hook)
+  "urltext", // put typed-looking text in the URL bar (test hook)
 ];
 
 /**

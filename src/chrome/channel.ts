@@ -416,7 +416,14 @@ export function createChannel(deps: ChannelDeps): Channel {
       cmd === "focus" ||
       // Put the keyboard in the browser's own UI — the state a user reaches with
       // the mouse, and the one no e2e input can produce (see debug.ts handleBlur).
-      cmd === "blur"
+      cmd === "blur" ||
+      // Drop the selected tab's presence record, so the "the helper answers a live
+      // page's keys" state is reachable in a test (see debug.ts handleForget).
+      cmd === "forget" ||
+      // Put TEXT in the URL bar and mark it the way Firefox marks a field the
+      // user typed into — the reported freeze, whose whole point is that the
+      // field is one nobody can see (see debug.ts handleUrlText).
+      cmd === "urltext"
     ) {
       deps.debug.handle(browser, cmd, rest, setHash);
       return;

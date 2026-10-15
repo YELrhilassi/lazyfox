@@ -44,6 +44,7 @@
     "e2e": "node scripts/e2e/main.ts",
     "e2e:hints": "node scripts/e2e/main.ts --suite content --only \"link hints:\"",
     "e2e:audit": "node scripts/e2e/main.ts --suite audit",
+    "e2e:session": "node scripts/e2e/main.ts --suite session",
     "e2e:baseline": "node scripts/e2e/main.ts --update-baseline",
     "test:mutation": "node scripts/mutation-check.ts"
   },

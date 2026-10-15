@@ -161,8 +161,29 @@
 // is: both pin rules a user FEELS — which page the keyboard belongs to, and
 // which events hand it over — and a test no config compiles is how such a rule
 // quietly stops being true.
-//
-// Note which module is deliberately not on this list:
+//  // scripts/test/chrome-field.test.ts joins them, and it is the same shape as
+  // keyboard-focus.test.ts: it drives chrome/commandcenterfocus.ts's veto
+  // (`chromeFieldHoldsUserText`) and chrome/chromefield.ts's rendering rule with
+  // synthetic chrome-document elements, and commandcenterfocus.ts is typed
+  // against the DOM (Element, contentWindow, the focus service). Both modules are
+  // typechecked by tsconfig.json, which owns the browser tree; what is out of
+  // scope here is only the Node-side USE of them. It is listed rather than left
+  // out silently because it pins the rule behind the user's freeze report — a
+  // field nobody can see must not veto the rescue — and a test no config
+  // compiles is exactly how such a rule quietly stops being true.
+  //
+//  // scripts/test/sync-content.test.ts joins them for the same reason, with a
+//  // sharper edge: it holds a REJECTING and a NEVER-SETTLING hold store open and
+//  // asserts that the presence report is relayed anyway, which is an ORDERING
+//  // between two things only the real background handler has (handlers/sync.ts
+//  // awaits session storage behind a per-tab queue before it touches presence).
+//  // That module is typed against the WebExtension `browser` global this config
+//  // does not include, so the Node-side driver is out of scope here while the
+//  // module itself is checked by tsconfig.json. Listed rather than left out
+//  // silently because the rule it pins is the one behind the freeze report: a
+//  // report that waits for bookkeeping is a live page the helper claims.
+  //
+  // Note which module is deliberately not on this list:
 // content/hints/frames.ts (the measurement-pass coalescer and the safety net's
 // cadence) is DOM-free by construction — its frame host is injected — so it IS
 // checked here, and its test is too. That is the half of the frames work a Node
@@ -205,7 +226,9 @@
     "scripts/test/chrome-pagehints.test.ts",
     "scripts/test/window-listeners.test.ts",
     "scripts/test/keyboard-focus.test.ts",
-    "scripts/test/window-sync.test.ts"
+    "scripts/test/window-sync.test.ts",
+    "scripts/test/chrome-field.test.ts",
+    "scripts/test/sync-content.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

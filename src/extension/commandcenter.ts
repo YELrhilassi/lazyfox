@@ -9,6 +9,7 @@ import { core, ensureCore } from "../shared/core";
 import { LeaderController, isCancel } from "../shared/leader";
 import { specToText } from "../shared/keymap";
 import { mirror, mirrorFlag } from "../shared/observability";
+import { createThrottle } from "../shared/throttle";
 import {
   openPopup as overlayOpenPopup,
   popupIsAlive,
@@ -355,8 +356,25 @@ import type { ContentPopupShell } from "./content/find";
   // durable answer. If that entry is lost the helper claims this page's keys
   // and paints its own overlay over the home grid's — the double-handled
   // keystroke the presence report exists to prevent.
+  //
+  // `pageshow` is not enough on its own, and the gap is the one the field report
+  // describes (docs/KEYBOARD-FREEZE.md): a report can go missing while this
+  // document is alive, and a page that only speaks at boot cannot correct the
+  // helper. A KEY is the proof this document is the one holding the keyboard,
+  // and a click into the page is the repair the user performs by hand — so both
+  // re-assert it, throttled because a key sequence is many keys.
+  const presenceThrottle = createThrottle(3000);
+  const reassertPresence = (): void => {
+    if (!presenceThrottle.allow()) return;
+    try {
+      void Promise.resolve(reportPresence(true)).catch(() => {});
+    } catch (e) {
+      // an undeliverable report leaves the state as it was; the next key retries
+    }
+  };
   try {
     window.addEventListener("pageshow", () => void reportPresence(true), { capture: true });
+    window.addEventListener("focus", reassertPresence, true);
   } catch (e) {
     // ignore
   }
@@ -413,7 +431,16 @@ import type { ContentPopupShell } from "./content/find";
     }
   }
 
-  window.addEventListener("keydown", keyHandler.onKeyDown, true);
+  window.addEventListener(
+    "keydown",
+    (e: KeyboardEvent) => {
+      keyHandler.onKeyDown(e);
+      // The helper is reminded that THIS document is the one holding the
+      // keyboard, because it just received a key (see reassertPresence).
+      reassertPresence();
+    },
+    true,
+  );
 
   // THIS DOCUMENT ANSWERS KEYS — and says so in the same statement that makes it
   // true, so the two can never disagree.

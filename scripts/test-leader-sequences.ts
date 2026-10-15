@@ -265,6 +265,49 @@ function arm(leader: any): any {
   eq("so the next action costs one keystroke", runs.join(","), "zoomIn,back");
 }
 
+/* ---------- a category ACTION publishes its own disarm ---------- */
+
+// FOUND BY THE LONG SESSION SUITE (`scripts/e2e/suites/session`), which is the
+// only test shape that can see it: after `;Z i` and `;Z r` the page's own mirror
+// still said `data-lf-leader="1"`, and the chrome helper's cached signal still
+// said `armed: true`, while the leader was demonstrably disarmed (the dispatch
+// ring showed `armed 0→0` for the Escape that followed).
+//
+// The cause is an ORDERING the design deliberately has: a capture's handler runs
+// BEFORE the capture disarms. A category sub-key that runs an action therefore
+// hides the leader while its capture is still armed, so that hide publishes
+// `armed: true` (the controller's signal is `active || capture.armed()`) — and
+// the capture's own disarm used to say nothing at all, because the only thing it
+// reported was a HINT change and a category's hint was already empty.
+//
+// So the assertion has to be about what was PUBLISHED, not about the state:
+// `leader.signal()` computes the truth on demand and was always right, which is
+// exactly why this shipped. Every host reads the last thing heard.
+{
+  const signals: boolean[] = [];
+  const runs: string[] = [];
+  const leader = new LeaderController(
+    (action: string) => runs.push(action),
+    () => true,
+    () => signals.push(leader.signal().armed),
+    () => {}
+  );
+  // Armed the way a host does it, without the DOM overlay (there is no document
+  // in this process — see `arm` above).
+  arm(leader);
+  leader.handleKey(key("Z", { shift: true }));
+  ok("the menu is open and published as armed", leader.signal().armed === true);
+  leader.handlePending(key("i"));
+  eq("the sub-key action ran", runs.join(","), "zoomIn");
+  ok("the leader itself is disarmed", leader.active === false);
+  ok("and nothing is armed any more", leader.signal().armed === false);
+  eq(
+    "the last thing PUBLISHED is the honest one (no Escape, no later key)",
+    signals[signals.length - 1],
+    false
+  );
+}
+
 /* ---------- hide resets the readout ---------- */
 
 {
