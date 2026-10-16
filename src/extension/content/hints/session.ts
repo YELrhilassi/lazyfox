@@ -150,6 +150,8 @@ export function createLinkHints(
   let domSyncFirst = 0;
   let domObserver: MutationObserver | null = null;
   let shadowObservers: MutationObserver[] = [];
+  /** The once-per-`;f` "the page finished loading" re-hint (see watchDom). */
+  let loadHook: (() => void) | null = null;
   let observeRoots: ((root: ParentNode, depth: number) => void) | null = null;
   let observedHintRoots = new WeakSet<ShadowRoot>();
   // How often the full-document walk that FINDS shadow roots may run. Half a
@@ -457,6 +459,33 @@ export function createLinkHints(
         rootDiscovery.request();
       });
       domObserver.observe(document.documentElement, { childList: true, subtree: true });
+      // A PAGE THAT FINISHES LOADING GETS ONE MORE PASS, and it is not the same
+      // event as a mutation.
+      //
+      // The report: hints opened on a page that is still loading, labels drawn,
+      // and then "some of them disappear after they load so I can't use hints on
+      // those items — although some similar elements to those seem to show".
+      // The items that lose their label are the ones the collection rejected
+      // when it ran: a card whose box was still zero-height because its image
+      // had not loaded, a widget a script reveals at `load`, a block the page's
+      // own font was still about to size. A mutation normally schedules the
+      // re-collect that fixes them, and that is why most of them come back —
+      // but a page settling often mutates BEFORE the state that made the element
+      // hintable, so the last re-collect can leave the layer permanently short
+      // of labels on exactly the elements the user is looking at.
+      //
+      // `load` is the page's own statement that it is finished, so it earns one
+      // more pass, coalesced like every other re-hint on this path (one extra
+      // collect per `;f`, not one per image). A page that was ALREADY complete
+      // when hints opened arms nothing at all.
+      if (document.readyState !== "complete" && !loadHook) {
+        loadHook = () => {
+          loadHook = null;
+          scheduleResync();
+          rootDiscovery.request();
+        };
+        window.addEventListener("load", loadHook, { once: true, capture: true });
+      }
       // MutationObserver does not cross shadow-root boundaries. Watch every
       // extension-visible root in the same bounded tree walk so late controls
       // and framework replacements inside open/closed components also refresh.
@@ -491,6 +520,14 @@ export function createLinkHints(
 
   function unwatchDom(): void {
     rootDiscovery.dispose();
+    if (loadHook) {
+      try {
+        window.removeEventListener("load", loadHook, { capture: true });
+      } catch (e) {
+        // ignore
+      }
+      loadHook = null;
+    }
     if (domObserver) {
       try {
         domObserver.disconnect();

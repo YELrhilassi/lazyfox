@@ -249,6 +249,15 @@ export function noteContentPresent(
   doc?: string
 ): void {
   if (!tab) return;
+  // A DOCUMENT ANSWERED, SO THE TAB IS NO LONGER "WAITING FOR ONE".
+  //
+  // This is the common end of the expectation window below: the page reports in
+  // one message round trip after `document_start`, so the window is normally
+  // open for a few tens of milliseconds rather than for its whole length. A
+  // RETRACTION does not end it (a `pagehide` says a document is leaving, not
+  // that the tab is answering) — the navigation notification that follows is
+  // what re-arms it.
+  if (active) contentExpected.delete(tab);
   const id = String(doc || "");
   if (!active) {
     // ONLY THE DOCUMENT THAT OWNS THE RECORDED ANSWER MAY RETRACT IT.
@@ -416,6 +425,116 @@ export function noteLocationChange(
       : LOCATION_CHANGE_SAME_DOCUMENT;
   if (Number(flags) & bit) return;
   forgetContentOfBrowser(win, browser);
+  // ...and the tab is now EXPECTED to answer for itself shortly. Dropping the
+  // record alone is what made the helper claim the keys for the first second of
+  // every page: see contentScriptExpected.
+  expectContentIn(win, browser);
+}
+
+/**
+ * How long a freshly navigated tab is given to say it has a content script.
+ *
+ * The window is a BOUND, not a delay: it normally closes the moment the page's
+ * own report lands (one message round trip after `document_start`), and a page
+ * that never reports at all — a PDF viewer, an error page, an origin the user
+ * restricted — is back to today's answer (the helper claims the keys) when this
+ * much time has passed. 1500ms is chosen to be longer than an ordinary report
+ * AND shorter than the patience of a user pressing a key on a page that just
+ * appeared; it is a starting point measured against a real session, not a
+ * constant with a proof.
+ */
+export const CONTENT_EXPECT_MS = 1500;
+
+/**
+ * The tabs a content script is expected in, and since when — `tab -> Date.now()`.
+ *
+ * Keyed by the TAB, like the presence record itself and for the same reason: a
+ * record of which tab the expectation belongs to cannot be confused by a strip
+ * that reorders, and it dies with the tab.
+ */
+const contentExpected = new WeakMap<object, number>();
+
+/**
+ * Record that a freshly navigated tab is about to answer for its own keys.
+ *
+ * WHY THIS EXISTS. Presence is PUSHED by the page (see the module header), so
+ * there is always a gap after a navigation in which the helper has no record for
+ * the new document: the tab has the URL, the markup and a live content script,
+ * and the helper can see none of it. In that gap `chromeOwnsKeys` answered
+ * "mine", and the user paid for it with the first keystroke of every page —
+ * `;` armed the CHROME leader, the page's own overlay never appeared ("the
+ * leader gets cleared out"), the follow-up binding was answered by a realm that
+ * has no page to act on ("the action gets absorbed"), and the second press
+ * worked only because the first one had a side effect: a key that reaches the
+ * page re-asserts its presence. The field report is "I have to press it twice,
+ * or wait a second until Lazyfox is warm on that page".
+ *
+ * WHAT IS ARMED, AND WHAT IS NOT. Only the class of document the manifest
+ * actually injects into (`contentOwnableUrl`: http(s)/file) and NOT the command
+ * center, which runs its own engine, reports its own presence and already has a
+ * key rescue of its own (see keysdispatch's `cc-rescue`). `about:` and
+ * `moz-extension://` documents are untouched: no content script can ever arrive
+ * there, so "expected" would be a lie and the helper would spend the window
+ * declining keys on the pages where it is the only key engine — the dead
+ * keyboard this whole module exists to prevent.
+ *
+ * It is armed only by a cross-document navigation. A tab that simply has no
+ * record (a background restart that ate the push, a window this helper has just
+ * attached to) keeps today's answer, because turning "no record" into "nobody
+ * owns this tab" is the freeze, not the fix.
+ */
+export function expectContentIn(
+  win: ChromeWindow,
+  browser: unknown,
+  now?: number
+): void {
+  try {
+    const gb = (win as any).gBrowser;
+    const tab =
+      gb && typeof gb.getTabForBrowser === "function" ? gb.getTabForBrowser(browser) : null;
+    if (!tab) return;
+    const b = browser as { currentURI?: { spec?: string } };
+    let spec = b && b.currentURI ? String(b.currentURI.spec || "") : "";
+    // The browser first, because that is what the notification names — then the
+    // tab it belongs to, for a host whose browser cannot report its own URI (a
+    // torn-down element, and the one-tab fixtures the checks build). This is the
+    // same order `urlOfTab` already reads a tab in.
+    if (!spec) spec = urlOfTab(tab);
+    if (isCommandCenterUrl(spec) || !contentOwnableUrl(spec)) {
+      // A document nobody can own the keys of. Any expectation left from an
+      // earlier navigation in this tab is dropped rather than left to expire: it
+      // would be an answer about a document that is gone.
+      contentExpected.delete(tab);
+      return;
+    }
+    contentExpected.set(tab, typeof now === "number" ? now : Date.now());
+  } catch (e) {
+    // A strip that cannot name the tab arms nothing, which is the behaviour
+    // that existed before this function did.
+  }
+}
+
+/**
+ * Is the SELECTED tab's document one a content script is expected in, and has it
+ * not arrived yet?
+ *
+ * Read by `chromeOwnsKeys`, which answers FALSE while this is true — i.e. the
+ * helper declines the key and the page's own listener answers it, which is the
+ * whole point: the page IS there (its script runs at `document_start`), it has
+ * simply not said so yet.
+ *
+ * `now` is a parameter so the window and its expiry can be driven without
+ * waiting in the checks; production callers omit it.
+ */
+export function contentScriptExpected(win: ChromeWindow, now?: number): boolean {
+  try {
+    const tab = selectedTabOf(win);
+    const at = tab ? contentExpected.get(tab) : undefined;
+    if (typeof at !== "number") return false;
+    return (typeof now === "number" ? now : Date.now()) - at < CONTENT_EXPECT_MS;
+  } catch (e) {
+    return false;
+  }
 }
 
 // Is this URL the command center page? The one LAZYFOX-OWNED document that runs
@@ -581,7 +700,12 @@ export function chromeOwnsKeys(win: ChromeWindow): boolean {
     // shared/privileged.ts for the class and why it is a module.
     if (isDeveloperSurface(s)) return false;
     if (!contentOwnableUrl(s)) return true;
-    return !contentScriptPresent(b, win);
+    if (contentScriptPresent(b, win)) return false;
+    // ...AND A DOCUMENT IS EXPECTED HERE THAT HAS NOT SAID SO YET. Same answer,
+    // opposite reason: the page exists and owns these keys, it just has not
+    // reported in. Claiming them for the length of that gap is what cost the
+    // first keystroke of every navigation (see contentScriptExpected).
+    return !contentScriptExpected(win);
   } catch {
     return true;
   }

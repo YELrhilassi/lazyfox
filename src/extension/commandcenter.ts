@@ -204,6 +204,15 @@ import type { ContentPopupShell } from "./content/find";
     manualText: true,
   };
   const leaderActions = makeLeaderActions(ctx);
+  // The page-surface family, on the home page — which IS a page but is not a WEB
+  // page: there is no article to read and no site theme to apply. Answering with
+  // a note is the same contract the chrome helper keeps, and it is what stops a
+  // key pressed here from looking broken rather than inapplicable.
+  leaderActions["readerMode"] = () => toast("reader mode: web pages only");
+  leaderActions["darkToggleSite"] = () => toast("dark mode: web pages only");
+  leaderActions["darkCycleGlobal"] = () => toast("dark mode defaults: change them in settings");
+  leaderActions["darkEngineToggle"] = () => toast("dark engine: web pages only");
+  leaderActions["darkResetSite"] = () => toast("dark mode: web pages only");
   // The home page is a PAGE: it runs the same key engine a web page does, from
   // the same keymap and the same action table. There is no second keymap here
   // to keep in step, which is what "the home page uses its own shortcuts" used
