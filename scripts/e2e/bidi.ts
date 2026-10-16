@@ -30,7 +30,7 @@
 //      helper so every wait names the suite line that asked for it.
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -753,8 +753,80 @@ export async function makeProfile(): Promise<string> {
   return dir;
 }
 
+/**
+ * How long a leftover profile must have been quiet before a later run sweeps it.
+ *
+ * The margin is the safety: a LIVE run's profile is written to constantly (lock
+ * files, sqlite journals and WALs come and go, and every entry added or removed
+ * moves the directory's own mtime), so anything that has not been touched for
+ * half an hour belongs to a run that is over — crashed, killed, or exited from
+ * the grace timer below without reaching its cleanup.
+ */
+const PROFILE_STALE_MS = 30 * 60 * 1000;
+
 export async function removeProfile(dir: string): Promise<void> {
-  try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  // RETRIED, BECAUSE ON WINDOWS THE FIRST ATTEMPT USUALLY FAILS.
+  //
+  // Firefox holds its profile open (lock files, sqlite WALs) for a moment after
+  // the browser is gone, and rmSync throws on the FIRST locked file — so the old
+  // single attempt here, with its swallowed error, quietly left a whole profile
+  // in the temp dir. Measured after one day of runs: 28 leftover `lazyfox-e2e-*`
+  // directories, 1.4GB, one of them still holding a complete
+  // `MarionetteActivePort`, `WebDriverBiDiServer.json` and a 119MB cache. The
+  // retries give the OS the moment it needs; the sweep below is what catches the
+  // ones where it never lets go.
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      if (!existsSync(dir)) return;
+    } catch {
+      // locked, or already gone: wait a beat and look again
+    }
+    await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+  }
+}
+
+/**
+ * Remove profiles left behind by earlier runs, so a suite that is killed cannot
+ * make the next one start among their remains.
+ *
+ * WHY THIS IS IN THE HARNESS and not just a bigger retry: a run that is killed
+ * (Ctrl-C, a timeout, a CI cancel, the grace-timer exit at the bottom of
+ * main.ts) never reaches ANY cleanup code, and there is no way to run code in a
+ * process that is being SIGKILLed. The only reliable place to clean up after
+ * such a run is the next one, before it starts.
+ *
+ * `keep` is belt and braces — the current run's profile is created after this
+ * call, and the age margin already excludes anything live — but a caller that
+ * passes one is guaranteed not to lose it.
+ *
+ * Returns the names it removed, so a run can say what it reclaimed instead of
+ * tidying the world in silence.
+ */
+export function sweepStaleProfiles(keep: string[] = []): string[] {
+  const removed: string[] = [];
+  try {
+    const base = tmpdir();
+    for (const name of readdirSync(base)) {
+      if (!name.startsWith("lazyfox-e2e-")) continue;
+      const dir = join(base, name);
+      if (keep.indexOf(dir) !== -1) continue;
+      try {
+        const st = statSync(dir);
+        if (!st.isDirectory()) continue;
+        if (Date.now() - st.mtimeMs < PROFILE_STALE_MS) continue;
+        rmSync(dir, { recursive: true, force: true });
+        removed.push(name);
+      } catch {
+        // A locked or unreadable leftover stays for the run after this one: the
+        // sweep is best effort by construction, and failing a suite over a temp
+        // directory would be the tail wagging the dog.
+      }
+    }
+  } catch {
+    // an unreadable temp dir is not a reason for the suite to fail
+  }
+  return removed;
 }
 
 // --- local page server -----------------------------------------------------
