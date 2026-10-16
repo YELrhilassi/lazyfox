@@ -5,9 +5,27 @@
 // docs/MESSAGING.md. So every helper <-> background message is written into the
 // tab's hash:
 //
-//   #lfr=rq.<id>.<action>.<jsonArg>   helper -> page -> background   (request)
-//   #lfr=rp.<id>.<jsonResult>        background -> page -> helper   (reply)
-//   #lfr=cm.<action>.<jsonArg>       background -> page -> helper   (command)
+//   #lfr=rq.<id>.<action>.<jsonArg>          helper -> page -> background   (request)
+//   #lfr=rp.<id>.<jsonResult>               background -> page -> helper   (reply)
+//   #lfr=cm.<seq>.<lost>.<action>.<jsonArg> background -> page -> helper   (command)
+//
+// THE COMMAND'S TWO LEADING NUMBERS ARE THE LOSS COUNTER (a command is the
+// only message that has one, because it is the only one whose loss is silent):
+//
+//   seq   the background's per-window sequence number. It is minted when the
+//         background DECIDES to send a command, not when one is successfully
+//         posted, so a command the background could not post still consumes a
+//         number — which is what makes its absence visible at the far end.
+//   lost  how many commands the RELAY PAGE had already discarded when it wrote
+//         this one (its outbound buffer's TTL, its cap, a write that failed).
+//         It travels on the next command, so the helper can tell a command the
+//         relay threw away from one the background never handed over.
+//
+// Both are read side by side by chrome/relayseq.ts, which turns "the helper
+// never saw command N" into "the helper never saw command N, and here is which
+// hop ate it". Without them a dropped command is indistinguishable from one
+// that was never sent, and the presence report that never arrived (whose whole
+// symptom is a key nobody answers) has no explanation at all.
 //
 // This module exists because the format used to be written out TWICE, once per
 // side: channel.ts encoded rq and decoded rp/cm, relay.ts encoded rp/cm and
@@ -88,8 +106,25 @@ function encodeAction(action: string): string {
   return encodeURIComponent(action).replace(/\./g, "%2E");
 }
 
-export function encodeCommand(action: string, arg: unknown): string {
-  return CMD + encodeAction(action) + "." + encodeJson(arg === undefined ? {} : arg);
+// A command's counters are non-negative integers. They are coerced rather than
+// trusted: a caller that passes NaN/undefined/negative is making a bookkeeping
+// mistake, and a wire field that can carry "NaN" would poison the decoder at
+// the far end (where the value is compared with arithmetic, not with ===).
+function encodeCounter(n: number): number {
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+export function encodeCommand(seq: number, lost: number, action: string, arg: unknown): string {
+  return (
+    CMD +
+    encodeCounter(seq) +
+    "." +
+    encodeCounter(lost) +
+    "." +
+    encodeAction(action) +
+    "." +
+    encodeJson(arg === undefined ? {} : arg)
+  );
 }
 
 // A request/reply id is a plain non-negative integer. Number("") is 0, so an
@@ -138,15 +173,36 @@ export function decodeReply(frag: string): DecodedReply | null {
 }
 
 export interface DecodedCommand {
+  /** The background's per-window sequence number for this command. */
+  seq: number;
+  /** How many commands the relay page had discarded when it wrote this one. */
+  lost: number;
   action: string;
   arg: unknown;
 }
 
+// The two counters use the SAME digit-only rule as a request id, for the same
+// reason: `Number("")` is 0, so an empty field would otherwise decode to a real
+// value and a corrupt hash would be counted as a delivered command.
+function decodeCounter(head: string): number | null {
+  if (!/^\d+$/.test(head)) return null;
+  return Number(head);
+}
+
 export function decodeCommand(frag: string): DecodedCommand | null {
   if (frag.indexOf(CMD) !== 0) return null;
-  const { head, tail } = splitOnce(frag.slice(CMD.length));
-  if (!head) return null;
-  return { action: decodeURIComponent(head), arg: decodeJson(tail) };
+  // seq -> lost -> action -> arg, each split at its FIRST dot so the action may
+  // still contain dots (it is escaped, but the rule should not depend on that)
+  // and the JSON tail may contain anything at all.
+  const a = splitOnce(frag.slice(CMD.length));
+  const seq = decodeCounter(a.head);
+  if (seq === null) return null;
+  const b = splitOnce(a.tail ?? "");
+  const lost = decodeCounter(b.head);
+  if (lost === null) return null;
+  const c = splitOnce(b.tail ?? "");
+  if (!c.head) return null;
+  return { seq, lost, action: decodeURIComponent(c.head), arg: decodeJson(c.tail) };
 }
 
 // True while the URL holds a relay message of any kind. The slot is a single
