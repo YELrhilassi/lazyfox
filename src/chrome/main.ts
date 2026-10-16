@@ -51,6 +51,7 @@ import {
   chromeOwnsKeys,
   chromeOwnsSurfaces,
   commandCenterDocumentPresent,
+  contentExpectation,
   contentScriptPresent,
   dropPresenceForSelectedTab,
   isCommandCenterTab,
@@ -317,6 +318,12 @@ import { createTypingChannel } from "./typing";
       // wrong tab" — the two have opposite fixes and every other field of this
       // reply reports them identically.
       presence: () => presenceSnapshot(win),
+      // THE WINDOW, WHICH IS THE ONE OWNERSHIP FACT THAT IS A TIMER rather than
+      // a record or a URL class. A key declined by it looks exactly like a key
+      // nobody answered, so a failure report has to be able to name it — and its
+      // `gapMs` is the number CONTENT_EXPECT_MS should be set from (see
+      // keystate.contentExpectation).
+      expectation: () => contentExpectation(win),
       // Dev/verification: drop the selected tab's presence record — the way a
       // test is put in the state the field report describes (see
       // keystate.dropPresenceForSelectedTab).

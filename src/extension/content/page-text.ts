@@ -23,6 +23,12 @@
 // and a disagreement in that area stays invisible until a yank lands one
 // character off.
 
+import { shadowRootOf } from "../../shared/dom";
+import { READER_HOST_ID } from "./reader/render";
+
+// The prefix every host this extension appends to <html> names itself with.
+const OUR_HOST_PREFIX = "lazyfox-";
+
 export const FIND_SKIP = new Set([
   "SCRIPT", "STYLE", "TEXTAREA", "NOSCRIPT", "SELECT", "IFRAME", "TITLE",
   "TEMPLATE", "OBJECT", "EMBED",
@@ -158,7 +164,18 @@ export interface WalkHooks {
  * concerned.
  */
 export function walkPageText(hooks: WalkHooks): void {
-  const root = document.body || document.documentElement;
+  // THE ROOT IS WHAT IS VISIBLE, WHICH IS NOT ALWAYS <body>.
+  //
+  // Every Lazyfox overlay is a host appended to <html>, so starting at <body> was
+  // a cheap and correct way to keep our own chrome out of the page's text. It
+  // stops being correct for the one overlay whose CONTENT IS THE PAGE: reader
+  // mode hides `body` and renders the article from its own host, so a walk rooted
+  // at <body> found a hidden page and none of the article — measured in the e2e
+  // theme suite, where `;R` left find reporting zero matches for a word that is
+  // on screen (and where the reader's own doc claimed find works). The root is the
+  // document, and OUR HOSTS ARE EXCLUDED BY ID below with the reader host as the
+  // single exception.
+  const root = document.documentElement || document.body;
   interface St {
     n: Node | null;
     chrome: boolean;
@@ -203,6 +220,15 @@ export function walkPageText(hooks: WalkHooks): void {
       const el = n as HTMLElement;
       const tag = el.tagName;
       if (FIND_SKIP.has(tag)) continue;
+      // OUR OWN CHROME IS NOT PAGE TEXT. The prefix is how every host this
+      // extension appends to <html> names itself (see OUR_ID_PREFIX in
+      // content/dark/apply.ts and the hint/leader/popup hosts); the reader host is
+      // the ONE exception, because the article inside it is the page's own text
+      // rendered rather than machinery. Skipping rather than hiding matters: the
+      // which-key panel and the toasts are on screen while the user searches, and
+      // a query must not match the tool the user is typing it into.
+      const ownId = el.id || "";
+      if (ownId.indexOf(OUR_HOST_PREFIX) === 0 && ownId !== READER_HOST_ID) continue;
       let chrome = st.chrome;
       if (!chrome && hooks.excludeChrome) chrome = isChromeNode(el);
       if (chrome) continue; // the whole subtree is chrome
@@ -215,9 +241,16 @@ export function walkPageText(hooks: WalkHooks): void {
       if (block) hooks.onEdge();
       // Shadow DOM replaces the light children visually, so walk the shadow
       // tree instead: the flat text then matches what is actually rendered.
+      //
+      // `shadowRootOf`, NOT `el.shadowRoot`: the latter is null for a CLOSED root,
+      // and the old `sr.mode === "open"` test therefore skipped every closed one —
+      // including the reader overlay's own article (its root is closed on purpose)
+      // and the rendered text of every site that closes its web components. An
+      // extension CAN reach a closed root in Firefox (see shared/dom.ts, which
+      // hints and the scroll controller already use for exactly this reason).
       let kids: NodeList;
-      const sr = el.shadowRoot;
-      if (sr && sr.mode === "open") {
+      const sr = shadowRootOf(el);
+      if (sr) {
         if (hooks.onShadowRoot) hooks.onShadowRoot(sr);
         kids = sr.childNodes;
       } else {

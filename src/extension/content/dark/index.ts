@@ -170,6 +170,23 @@ export function createDarkMode(deps: DarkDeps): DarkController {
   async function apply(config: Config): Promise<void> {
     const url = deps.url();
     state.site = siteFor();
+    // THE PENDING PAINT IS NOT PART OF THE MEASUREMENT, and this is the line that
+    // decides whether the feature works at all on a machine whose OS is dark.
+    //
+    // `early()` paints the OS's guess at document_start so there is no white
+    // flash, and the fallback sheet paints `html,body` — which is exactly where
+    // the sampler reads the CANVAS from. Measuring with it installed therefore
+    // reads our own paint back as the page's: a white page measures as dark, the
+    // decision comes out "the page is already dark", and the feature stands down
+    // on every light page for a user with a dark OS. (Measured in the e2e theme
+    // suite: `data-lf-dark-reason` read "the page is already dark" on a white
+    // fixture whose `prefers-color-scheme` was dark.)
+    //
+    // So the placeholder is removed first and reinstated only if the decision is
+    // to paint. The cost is the very flash the placeholder exists to prevent, for
+    // as long as one measurement takes — and only on that dark-OS machine, where
+    // the alternative is a feature that does nothing.
+    if (earlySheet) applier.clear();
     const samples: PageSample[] = await applier.sample();
     const analysis = analyze(samples);
     const decision = decide(config, analysis);

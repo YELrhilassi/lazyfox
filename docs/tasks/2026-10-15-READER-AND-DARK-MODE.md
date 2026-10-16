@@ -27,7 +27,7 @@ command; where it is a judgement it says so.
 | 7 | Config: `dark` / `reader` schema, defaults, per-site rules | **built** (`shared/types.ts`, `shared/config.ts`, `extension/store.ts`) |
 | 8 | Options page: editable theme + rule list, import/export, per-site editor | **built** (`options.html`, `options.ts`, `options.css`) |
 | 9 | Unit tests for every pure part | **built** — 116 cases, all green |
-| 10 | e2e: fixture pages + a `theme` suite | **not started** — the largest gap in this slice |
+| 10 | e2e: fixture pages + a `theme` suite | **built** — `scripts/e2e/suites/content/theme.ts`, 9 cases, and it found four real defects (see §6) |
 | 11 | Docs: `DARK-MODE.md`, `READER.md`, third-party notice | **built** (`docs/DARK-MODE.md`, `docs/READER.md`, `docs/THIRD-PARTY.md`) |
 | 12 | Verify: typecheck, `npm test` (977/977 unit), `check-dist`, dev-install | **built** — see §5. The installer payload is rebuilt by `npm run sync` in the same pass, because it is keyed to the sources |
 | 13 | The three manual-test findings of the previous slice | **two of three FIXED** — see [MANUAL-TEST-REPORTS.md](2026-10-15-MANUAL-TEST-REPORTS.md) |
@@ -38,11 +38,12 @@ The slice is BUILT, and green on everything that can run without a browser:
 typecheck for every tree (`npm run typecheck`, four configs), `go test ./core/`,
 `npm run test:unit` (**977/977**, including the 116 new ones), the wire/seam
 suites, every legacy script, and `scripts/check-dist.ts` ("dist/ complete and
-self-contained"). What is NOT done is the e2e half — a `theme` fixture page and
-suite for the dark adapter and the reader overlay — so the DOM-touching code
-(`dark/apply.ts`, `reader/render.ts`) rests on a manual test in a real Firefox.
-That gap is stated in both feature docs rather than implied away, and it is item
-10 above.
+self-contained"). The e2e half is built too (item 10): a `theme` suite with its
+own `/light`, `/dark` and `/article` fixture pages, **9/9 green in a real
+Firefox** — and it earned its keep by finding four defects the unit tests could
+not have (a reader scroller inside a closed shadow root, the early paint measured
+back as the page, the keyboard leaving the document when the article went up, and
+find's walk being rooted at a hidden `<body>`). Those are §6.
 
 The manual test asks are in
 [MANUAL-TEST-REPORTS.md](2026-10-15-MANUAL-TEST-REPORTS.md): three findings from
@@ -182,6 +183,71 @@ that are *about* the theme rather than about the page.
 - **No `about:reader`** delegation and no `tabs.toggleReaderMode` call, for the
   reasons in §1.
 
+## 6. What the e2e suite found, and what changed because of it
+
+All six of these are defects the unit tests could not have reached — every one of
+them is about what a real browser does with a real page — and each was found by
+running the suite, not by reading the code. They are listed with the measurement
+that exposed them.
+
+1. **The reader's scroller was invisible to the scroll controller.** The pane
+   (`position:fixed;inset:0;overflow:auto`) was the wrapper INSIDE the host's
+   CLOSED shadow root, and the region scan walks `document.querySelectorAll("*")`
+   — which stops at a closed root's host. Measured: entering reader mode left
+   `j`/`k`/`d`/`u` moving nothing at all (the document cannot scroll either, `html`
+   is locked while the article is up), so the article was mouse-only. Fixed by
+   making the HOST the scroller (`all:initial` first, because promoting it to the
+   top layer brings the UA's popover styles with it).
+2. **The early paint was measured back as the page.** On a dark-OS profile the
+   pre-config placeholder paints `html,body`; the sampler reads the canvas from
+   exactly there, so a white fixture measured as dark and the decision came out
+   `"the page is already dark"` — the feature standing down on every light page
+   for a user whose OS is dark. Fixed by removing the placeholder before the first
+   measurement, and by recording the page's own colours per selector so a RESAMPLE
+   can never read our own sheet back (`originals` in `dark/apply.ts`).
+3. **The keyboard left the document when the article went up.** `body{display:none}`
+   removes the element that held the caret, and the browser then delivers keys to
+   the browser WINDOW: `j`, Escape and even the leader key were all dead with a
+   live article on screen. Fixed by giving the host `tabindex="-1"` and focusing it
+   on open, and handing the caret back to whatever had it on close.
+4. **Find could not see the article it claims to search.** The shared walk was
+   rooted at `<body>` (hidden by the reader) and descended into OPEN shadow roots
+   only (`el.shadowRoot` + `mode === "open"`, and the reader's root is closed on
+   purpose). Fixed in `content/page-text.ts`: the walk starts at the document and
+   skips our hosts by id prefix with the reader host excepted, and shadow descent
+   uses `shadowRootOf` (the extension-aware closed-root access hints and the scroll
+   controller already used).
+5. **Escape did not leave the article at all.** There was no wiring: `;R` was the
+   only way out, while the doc and the keymap both said Escape. It is now in
+   `cancelOverlays()` — the one-press cancel that already closes hints, the leader
+   and a pending capture — which is where every other Lazyfox surface is closed.
+6. **`;R` followed immediately by `j` did nothing.** The scroll controller's
+   region list is invalidated on DOM changes but REFRESHED under a 500ms rate
+   limit, so the freshly inserted article was not in the list yet and the keys
+   addressed the (now unscrollable) window. `reset()` — which the reader calls on
+   entry, and which cancel calls too — now drops the cached list as well: one
+   document scan on the next scroll key, paid on a deliberate action.
+
+7. **And a seventh, on the ownership side, which is the field report's other half:**
+   the content script sent its presence report near the START of `main.ts` while the
+   keydown listener is installed at the END of it, so on any page slow enough to
+   matter the helper deferred to a document that had nothing listening yet, and the
+   key was answered by nobody. Fixed by moving the report after `installContentDom`;
+   the stuck suite's stall case failed as a regression on the old order and passes on
+   the new one. Full account: [MANUAL-TEST-REPORTS.md](2026-10-15-MANUAL-TEST-REPORTS.md).
+
+The e2e suite is 9 cases: five for dark mode (a light page is darkened and the
+page's own colours go through the theme; a page that already ships a dark theme is
+left alone with no sheet and no scheme marker; `;Y d` off and back on with ONE
+stored rule per host; `;Y e` really inverts the root; `;Y x` clears the rules and
+the global default takes over) and four for the reader (the article is the scroll
+target with the document staying put; Escape removes every mirror and gives the
+page back; the pane is the viewport even with a transform on `<html>` and a
+non-zero scroll; find counts matches inside the article). Every dark assertion is
+on a MEASURED colour or on the product's own mirror, and the per-site rules are
+read back out of storage — a toast is emitted before the write lands, so a toast
+is not evidence.
+
 ## 5. Verification, as run
 
 Every line is a command that ran, with its result, so the next reader does not
@@ -191,11 +257,13 @@ have to re-derive what was measured and what was only intended. Branch
 | check | command | result |
 | --- | --- | --- |
 | typecheck, four configs | `npm run typecheck` | clean — 0 errors |
-| core + every test tier | `npm test` | unit **977/977**, wire **17/17**, seam **17/17**, legacy scripts **61 + 170 + 27 + 115 + 20 + 22 + 51 + 26 + 29** checks, `check-dist` "dist/ complete and self-contained" |
+| core + every test tier | `npm test` | exit **0**: `go test ./core/` ok, unit **977/977**, wire **17/17**, seam **17/17**, legacy scripts **62 + 170 + 27 + 115 + 20 + 22 + 51 + 26 + 29** checks, `check-dist` "dist/ complete and self-contained", **29** installer-payload checks (every committed binary fresh) |
 | the dark/reader units specifically | `npm run test:unit` (the four new files) | `dark-color`, `dark-theme`, `dark-rules`, `reader-extract` — 116 cases, green |
 | the ownership window | `node --test … scripts/test/keyhold.test.ts` | **82/82**, four of them the new window cases |
-| the ownership layer | `node … scripts/test-chrome-keys.ts` | **61 checks passed**, two of them new |
-| end-to-end, the content group | `npm run e2e --suite content` | started; result recorded in the pass's log and §0 of [MANUAL-TEST-REPORTS.md](2026-10-15-MANUAL-TEST-REPORTS.md) |
+| the ownership layer | `node … scripts/test-chrome-keys.ts` | **62 checks passed**, three of them new (the window arms; a FAILED LOAD does not arm it; the readout names the document the decision came from) |
+| the theme suite, in a real Firefox | `npm run e2e -- --suite content --only "content/theme"` | **9/9** — five dark cases and four reader cases, after §6's four fixes; before them, 0/9 |
+| the report window, measured | the ownership suite’s `the report window opens…` case | green, and it prints the sample: **210ms / 3043ms / 3277ms** after the arm, against a 1500ms window (see [MANUAL-TEST-REPORTS.md](2026-10-15-MANUAL-TEST-REPORTS.md) on what that means) |
+| end-to-end, the content group | `npm run e2e -- --suite content` | **177/178**, no regressions, one pre-existing recorded failure; the three runs that got there (and the two flaky rows that named the lost-report class) are in [TESTING.md](../TESTING.md) and [MANUAL-TEST-REPORTS.md](2026-10-15-MANUAL-TEST-REPORTS.md) |
 | the payload the user runs | `npm run sync` (build + every installer) then `npm run dev-install` | see the dev-install note below |
 
 The e2e suite is the ONE thing this slice deliberately does not have of its own

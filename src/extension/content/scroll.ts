@@ -591,6 +591,20 @@ export function createScrollController(): ScrollController {
   function reset(): void {
     active = null;
     autoEl = null;
+    // AND THE LIST ITSELF, which is the part that used to be missing. `reset`
+    // means "the target changed for a reason the observers cannot see" — it is
+    // what `;F`/`;B` cancellation and READER MODE call — and the mutation
+    // observer's invalidation is RATE LIMITED (`STRUCTURAL_RESCAN_MS`, 500ms),
+    // so the cached list is still served inside that window and the next `j`
+    // moves a scroll target that no longer exists. Measured in the e2e theme
+    // suite: `;R` then `j` immediately after did nothing at all, because the
+    // list still said "no inner scroller, use the window" while the article was
+    // on screen and the window could no longer scroll. Dropping the cache costs
+    // ONE document scan on the next scroll key — after which the TTL and the
+    // rate limits take over again — and it is paid on a deliberate user action
+    // rather than on a keystroke.
+    scanCache = null;
+    scanStale = false;
     clearOutline();
   }
 

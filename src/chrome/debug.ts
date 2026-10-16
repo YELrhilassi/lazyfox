@@ -99,6 +99,10 @@ export interface DebugState {
   activeSplitView(): any;
   // The real (user) tab list, in the order the product numbers them.
   realTabs(): any[];
+  // The navigation-scoped expectation window and how long the last one lasted —
+  // the one ownership fact that is a TIMER, and so the one a failure report
+  // cannot infer from presence records or URLs (see stateapi's ChromeStateV1).
+  expectation(): { open: boolean; ageMs: number; leftMs: number; gapMs: number; gapSamples: number; doc: string };
   cfg(): ChromeCfg;
   // The persistent relay's helper-side state (relayDebug from channel.ts).
   relay(): any;
