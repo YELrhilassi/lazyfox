@@ -226,6 +226,31 @@ var Keymap = []KeymapRow{
 	{Spec: "shift+n", Key: "N", Action: "stealthOpen", Label: "Stealth tab (isolated, wiped on close)", Group: "Tools"},
 	{Spec: "shift+i", Key: "I", Action: "openSetup", Label: "Install & setup", Group: "Tools"},
 
+	// ---- Reading & theme ----
+	//
+	// TWO KEYS AND A CATEGORY, and the split is about frequency. `;R` is a mode
+	// you enter and leave, the way `;Z z` is a window state, so it is a single
+	// key. Everything about dark mode is a setting you change once and then
+	// forget — except the per-site toggle, which you reach for when a site reads
+	// wrong — so the family lives in a category, filed with the three operations
+	// that are ABOUT the theme rather than about the page.
+	//
+	// `;y` is deliberately NOT a second spelling of the toggle. The sessions
+	// cleanup in this tree exists because one action with two chords is how a
+	// keymap grows a second opinion, and the coverage test in
+	// scripts/test/keymap.test.ts enforces one routing per action.
+	{Spec: "shift+r", Key: "R", Action: "readerMode", Label: "Reader mode", Group: "Reading"},
+	{
+		Spec: "shift+y", Key: "Y", Action: "category", Label: "Theme", Group: "Theme",
+		Cat: "Theme", CatLabel: "Theme",
+		CatKeys: []CatKey{
+			{Spec: "d", Key: "d", Action: "darkToggleSite", Label: "Dark mode for this site: on/off"},
+			{Spec: "g", Key: "g", Action: "darkCycleGlobal", Label: "Dark mode default: auto → dark → light → off"},
+			{Spec: "e", Key: "e", Action: "darkEngineToggle", Label: "Dark engine for this site: auto → dynamic → filter"},
+			{Spec: "x", Key: "x", Action: "darkResetSite", Label: "Clear this site's rules"},
+		},
+	},
+
 	// ---- Window & layout ----
 	//
 	// A category head is not an action: it opens a menu of sub-keys that all do
