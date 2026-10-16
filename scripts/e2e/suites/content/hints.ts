@@ -134,6 +134,31 @@ export async function run(ctx: any): Promise<void> {
       return { key: p.key, id: el ? el.id : null, dataId: el ? el.dataId : null, x: p.x, y: p.y };
     });
   };
+  // WHERE THE LABELS ARE WHEN A "THE PAGE SCROLLED BUT THE LABELS DID NOT
+  // FOLLOW" WAIT GIVES UP. The three shapes it distinguishes have opposite
+  // fixes: no labels at all (the session stood down), labels that are all up at
+  // the top (a re-hint that never ran — the session's own debounce), or a label
+  // next to the deep link that readHints() could not name (the harness's 2px
+  // coordinate match). Read at the moment of failure, because nothing about that
+  // state survives the next keystroke.
+  const hintDiag = async () => {
+    const ids = (await readHints().catch(() => [])).map((x) => (x.id || x.dataId || "?") + "@y" + x.y);
+    const page = await evalIn(
+      ctx.tabA,
+      `JSON.stringify({
+        y: Math.round(window.scrollY),
+        maxY: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
+        hints: document.documentElement.getAttribute("data-lf-hints"),
+        deep: (function(){
+          var el = document.getElementById("deep-link");
+          if (!el) return null;
+          var r = el.getBoundingClientRect();
+          return { top: Math.round(r.top), h: window.innerHeight };
+        })()
+      })`
+    ).catch((e) => JSON.stringify({ evalError: String((e && e.message) || e) }));
+    return "scroll=" + page + " hinted=[" + ids.join(", ") + "]";
+  };
   const readBoxes = async () => (await hintSnapshot()).boxes || [];
   // The RAW snapshot rows, before they are mapped back to page elements.
   //
@@ -685,7 +710,9 @@ export async function run(ctx: any): Promise<void> {
     const bottom = await waitFor(async () => {
       const ids = (await readHints()).map((x) => x.id || x.dataId);
       return ids.indexOf("deep-link") !== -1 ? ids : null;
-    }, 6000);
+    }, 6000).catch(async (e) => {
+      throw new Error(String((e && (e as Error).message) || e) + " — " + (await hintDiag()));
+    });
     assert(bottom.indexOf("visible-link") === -1, "the stale top-section hint is gone after scrolling");
     await ctx.press(ctx.tabA, "Escape");
   });

@@ -16,6 +16,12 @@ comes out of report 1 — the double-owner it describes — with one question st
 open for the user. §"What this pass actually changed" at the end is the list and
 the evidence.
 
+The window was then made MEASURABLE (third pass, same day): the chrome state
+channel publishes what it is doing (`expect`, see §"The window, as a number"
+below), the ownership e2e suite asserts the report that spends it, and the e2e
+work for reader/dark mode turned up a new OPEN question about Firefox's own error
+pages (§"Open question: an error page, our content script, and a key").
+
 The reports, in the user's words:
 
 1. "when the page navigate or load there is a 1s or so delay that I can't run an
@@ -221,6 +227,95 @@ Two readings, and they want opposite work:
 
 Which one it is decides the change, so it is being asked rather than guessed.
 
+## The boot report was sent before the document could answer (found while building
+## the reader/dark e2e suite)
+
+The e2e case "a page that sends headers then stalls still answers the leader key"
+started failing as a REGRESSION while the theme suite was being written, and the
+failure text named the mechanism:
+
+```
+page={"url":"…/stall","ready":"loading","content":"1","leader":null,"hasFocus":true,
+      "active":"BODY"} trace={"key":"",…}
+chrome={"leaderActive":false,…,"expect":{"open":false,"ageMs":8247,…}}
+```
+
+The document runs our content script (`content: 1`), the helper is not waiting for
+anything (`expect.open: false`), and the key is in neither realm. The cause was in
+the content script's boot order: `reportPresence(true)` was sent near the START of
+`main.ts` — a claim that "this document answers for its own keys" — while
+`installContentDom` (the keydown listener) is the LAST statement in that file. So
+the helper stopped answering and deferred to a document that had nothing listening
+yet, and the keystroke was answered by nobody. The difference between this page and
+a fast one is only how long the module takes to reach its last line, which is
+precisely the field report: *"the leader gets cleared out or the action gets
+absorbed, so I have to do it twice or wait a sec until Lazyfox is warm"*.
+
+**The fix is an order, not a mechanism:** the boot report is now sent AFTER
+`installContentDom`, so the claim can only be made by a document that can honour it.
+Reporting late is safe in this direction — until the report lands the helper owns
+the keys (or declines them for the bounded navigation window), and a lost report is
+still repaired by `reassertPresence` on the first key and by `pageshow`. Where the
+report sits relative to the hold restore is unchanged: `publishHoldState` already
+queues until `presenceReady` (see that function's own note).
+
+Evidence: the stall case passes again with the reorder in place
+(`npm run e2e -- --suite content --only "still answers the leader key"`), and the
+whole content group was re-run with the change in it (see the tracker's §5).
+
+## The same case failed twice more, and the failure was the transport
+
+Two more full runs of the content group on 2026-10-16, and the interesting part
+is that they do not agree with each other. The stall case above went **pass,
+fail**; the hints case "scrolling to a new section re-hints its links" went
+**fail, pass**; and the new ownership case "the report window opens on a real
+navigation and is spent by the page's own report" went **pass, fail**. The first
+two moved with no code change in between, which is what a flake looks like — and
+the third one's failure text is the one that says what the flake IS:
+
+```
+expect: {"open":false,"ageMs":8242,"leftMs":0,"gapMs":439,"gapSamples":77,
+         "doc":"http://127.0.0.1:65123/hello"}
+```
+
+A real navigation armed the window, and then **no report spent it for eight
+seconds**, in a session whose last sample had landed in 439ms and whose count of
+spent windows was 77. That is not latency — it is §5.6's lost boot report, seen
+from the outside, on a document that was fully loaded and answering. The stall
+case's failure text in the same run is the same shape from the other end: the
+`/stall` document runs our script (`content: "1"`), its own dispatch ring is
+empty, the helper is not armed, and the press had gone in WHILE the window was
+open, where the helper's job is to decline. So in that run the behaviour under
+test was arguably correct and the transport was not — and a gate that reads
+"regression" for both is a gate that cannot tell the two apart.
+
+Three consequences, all of them in the tree:
+
+* **The ownership case asks twice.** A lost report kills the first document's
+  window, so the case navigates a second document and records the miss as a
+  `repaired` note — the count of lost boot reports is now printed by every run
+  instead of being derived from one failure text. Two documents in a row losing
+  their reports still FAILS, because that is a transport that is not working.
+* **The stall case presses twice**, with the same repair note, mirroring the
+  `#lfc=keys` channel's documented drop during a pending navigation (the "never
+  responds" case has done this since it was written). What is deliberately not
+  retried is a key the document SAW: a capture-phase recorder is installed before
+  the press, and the failure text now says whether the document received the key
+  and declined it (a product bug) or no realm saw it (the channel).
+* **The measurement is published, and it is not flattering.** The same case's
+  green run printed `last report 3427ms after its arm, of a 1500ms window` — the
+  fourth sample of this transport, after 210ms, 3043ms and 3277ms, and the window
+  it landed in had already expired. The residual Report 1 named is therefore not
+  theoretical: for a second and a half after every navigation the helper believes
+  it owns the keyboard, and the report that settles the question can arrive after
+  it does.
+
+The lost-report counter in [KEYBOARD-OWNERSHIP.md](../KEYBOARD-OWNERSHIP.md) §5.6
+is the fix, and it stays the top open item: with it, "the report never arrived"
+would be a number in the state reply and the retries above could be removed.
+Until then they are the honest workaround, and the two cases state in their own
+comments that they are not the fix.
+
 ## What this pass actually changed
 
 * `src/chrome/keystate.ts` — `CONTENT_EXPECT_MS` (1500), `expectContentIn`,
@@ -248,11 +343,84 @@ Evidence, as run: `node --test … scripts/test/keyhold.test.ts` → 82/82 (four
 was STALE at that point by construction (sources changed, `dist/` not rebuilt) and
 is rebuilt by `npm run sync` in the same pass.
 
+## The window, as a number (third pass)
+
+Report 1's fix shipped with its own blind spot named: "the window's length is a
+judgement (1500ms), not a measurement". The state reply now publishes the
+measurement, so the judgement can be checked against the transport:
+
+```
+expect: { open, ageMs, leftMs, gapMs, gapSamples, doc }
+```
+
+* `open`/`ageMs`/`leftMs` — is a window open for the selected tab right now, how
+  old is it, how much of it is left. This is what makes "nothing armed" decidable:
+  a key declined by the window and a key nobody saw produce the same failure text
+  otherwise.
+* `gapMs`/`gapSamples` — the latency of the last boot report that LANDED (arming
+  is the navigation notification, closing is the page's own report) and how many
+  such samples this session has. That is §5.6's "the transport's latency is an
+  assumption" turned into a number.
+* `doc` — the document Firefox reported IN the tab when the last arming question
+  was asked. It is here because the URL and the document are not the same fact on
+  exactly the pages that matter (an error page keeps the requested address).
+
+Asserted by the ownership suite: "the report window opens on a real navigation and
+is spent by the page's own report" — the window must be observable as OPEN right
+after a real navigation (`browser.tabs.update`, which does not wait for a document:
+waiting for a load would race it), and it must then be SPENT rather than expired,
+which the readout distinguishes (`ageMs` is `-1` for a window a report deleted, and
+an age past 1500 for one that merely ran out). The suite prints the sample it
+measured, so a run records it instead of leaving it to be re-derived.
+
+**What the numbers say, and they are not flattering.** Four samples on this
+machine: **210ms**, **3043ms**, **3277ms**, **3427ms** — three of them on a
+session's first pages, and the caveat the instrument has is that a report from the
+document that is *leaving* can be the one that spends the window, so a sample is an
+upper bound rather than a precise boot latency. Either way the consequence is the residual
+Report 1 already named, now measured: a report that lands after 1500ms still spends
+the window (which is why `ageMs` ends at `-1` either way), and until it does, the
+helper has claimed the keys — so the double owner is back for every key pressed in
+that gap, on exactly the cold pages where the user reported "wait a second until
+Lazyfox is warm". The constant is therefore still a judgement, and it is now an
+OPEN ITEM with numbers behind it: raising it covers the slow report and costs the
+pages that never report at all (a PDF viewer, a restricted origin) the same number
+of milliseconds of declined keys.
+
+## Open question: an error page, our content script, and a key
+
+Found while building the reader/dark e2e suite, and recorded here because it is a
+keyboard-ownership question on the pages a dead link lands a user on.
+
+The stuck suite's seven cases "an HTTP NNN error page still answers the leader key"
+were written on the premise "Firefox renders its own document, no content script
+can ever be injected, so the chrome helper must answer". Measured on this build, in
+that suite's own failure text:
+
+* the error page has `data-lf-content=1` — **our content script is running in it**;
+* the helper reports `ownsKeys: true` anyway (no presence record had landed), so
+  *neither* realm answered the press: the page's dispatch trace stays empty and the
+  chrome leader never arms;
+* a WebDriver key press moves neither, while the same press on an ordinary
+  injectable page works — so this is either a real freeze on error pages or a limit
+  of driving one from WebDriver, and nothing in the repository can currently tell
+  those apart.
+
+The seven cases were flaky before this pass too (the baseline row carried
+`runs: 7, passes: 5`), and they are QUARANTINED in
+[e2e/baseline.json](../../scripts/e2e/baseline.json) with that reason instead of
+being quietly weakened — the failure text now carries the page's `content` marker
+and the window's readout, so the next run of them says which of the two it is.
+**What the user can settle in one minute:** open a page that fails to load (any
+dead host), press `;`, then `j`. If the leader panel appears and the page scrolls,
+the page's own engine is answering and this is a harness limit; if the keyboard is
+dead there, it is a real freeze on exactly the pages the rescue used to cover.
+
 ## What is still open in this file
 
 * Report 3's two weaker readings (the panel not painted; the discoverability
   question) — one question to the user, in the reply that carries this pass.
-* The window's length is a judgement (1500ms), not a measurement: it must be
-  longer than an ordinary presence report and shorter than a user's patience on a
-  page that never reports. §Report 1's residual says what to do if the manual test
-  says otherwise.
+* `CONTENT_EXPECT_MS`'s measured value: the readout publishes it per run; the
+  constant should be re-set from a real session's `gapMs` rather than from the
+  1500ms judgement, once a run has recorded enough samples to trust.
+* The error-page question above.

@@ -15,6 +15,7 @@ import * as sequences from "./sequences.ts";
 import * as tabsmodal from "./tabsmodal.ts";
 import * as multidigit from "./multidigit.ts";
 import * as surfaces from "./surfaces.ts";
+import * as theme from "./theme.ts";
 import * as ownership from "./ownership.ts";
 import * as stuck from "./stuck.ts";
 import * as held from "./held.ts";
@@ -46,6 +47,12 @@ export async function run(ctx: any): Promise<void> {
   // Before the popups: it arms the leader on about: pages, and a leftover
   // armed leader would make every later keypress ambiguous.
   await surfaces.run(ctx);
+  // Dark mode is on by default on a light page and the reader overlay replaces the
+  // page's own scroller, so these run with a real page in front of them and before
+  // the tests that need a context-less tab. Both fixtures are the suite's own, the
+  // per-test reset puts back any site rule a key wrote, and every reader test closes
+  // its overlay on the way out.
+  await theme.run(ctx);
   // Reorders the strip around a live web page. It states the shape of the
   // window it needs itself (each case collapses the window first), so it does
   // not inherit whatever ran before it — and it leaves the window collapsed,
