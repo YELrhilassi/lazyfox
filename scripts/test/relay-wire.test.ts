@@ -82,15 +82,36 @@ describe("reply round trip", () => {
 });
 
 describe("command round trip", () => {
-  test("the action and argument survive", () => {
-    const d = decodeCommand(encodeCommand("switchPane", { dir: -1 }));
+  test("the counters, action and argument survive", () => {
+    const d = decodeCommand(encodeCommand(41, 2, "switchPane", { dir: -1 }));
+    assert.equal(d!.seq, 41, "the background's sequence number is what the gap counter reads");
+    assert.equal(d!.lost, 2, "and the relay page's own discard count rides with it");
     assert.equal(d!.action, "switchPane");
     assert.deepEqual(d!.arg, { dir: -1 });
   });
 
-  test("an action name with a dot survives", () => {
-    const d = decodeCommand(encodeCommand("a.b c/d", {}));
+  test("an action name with a dot survives, after two numeric fields", () => {
+    const d = decodeCommand(encodeCommand(3, 0, "a.b c/d", {}));
     assert.equal(d!.action, "a.b c/d");
+    assert.equal(d!.seq, 3);
+  });
+
+  test("a JSON argument containing dots is not mistaken for a field", () => {
+    // The argument is the LAST field and may hold anything, including a URL with
+    // several dots and a dotted action name.
+    const d = decodeCommand(encodeCommand(7, 1, "openPage", { url: "https://a.b/c.d", n: 1.5 }));
+    assert.deepEqual(d!.arg, { url: "https://a.b/c.d", n: 1.5 });
+    assert.equal(d!.lost, 1);
+  });
+
+  test("a nonsensical counter is coerced rather than written raw", () => {
+    // These are bookkeeping mistakes at the call site, and a wire field holding
+    // "NaN" would poison the arithmetic at the far end.
+    for (const bad of [NaN, -1, undefined as any, Infinity]) {
+      const d = decodeCommand(encodeCommand(bad, bad, "quit", {}));
+      assert.equal(d!.seq, 0);
+      assert.equal(d!.lost, 0);
+    }
   });
 });
 
@@ -102,7 +123,15 @@ describe("a decoder never throws on a truncated or corrupt hash", () => {
     ["a request with no action", () => decodeRequest("rq.5..{}")],
     ["a reply with no id", () => decodeReply("rp.")],
     ["a reply with a non-numeric id", () => decodeReply("rp.x.{}")],
-    ["a command with no action", () => decodeCommand("cm.")],
+    ["a command with nothing at all", () => decodeCommand("cm.")],
+    // A command's two counters are read with the same digit-only rule as a
+    // request id, so a corrupt hash cannot be counted as a DELIVERED command
+    // (which would hide the very loss the counter exists to find).
+    ["a command with no sequence number", () => decodeCommand("cm..0.quit.{}")],
+    ["a command with a non-numeric sequence number", () => decodeCommand("cm.x.0.quit.{}")],
+    ["a command with no loss count", () => decodeCommand("cm.1.quit.{}")],
+    ["a command with no action after its counters", () => decodeCommand("cm.1.0..{}")],
+    ["a command with only a sequence number", () => decodeCommand("cm.1")],
   ];
   for (const [name, fn] of REJECTED) {
     test(name + " is rejected", () => assert.equal(fn(), null));
@@ -125,7 +154,7 @@ describe("the three shapes do not shadow each other", () => {
     assert.equal(decodeRequest(encodeReply(1, {})), null);
   });
   test("a command is not read as a request", () => {
-    assert.equal(decodeRequest(encodeCommand("quit", {})), null);
+    assert.equal(decodeRequest(encodeCommand(1, 0, "quit", {})), null);
   });
   test("a request is not read as a reply", () => {
     assert.equal(decodeReply(encodeRequest(1, "quit", {})), null);
@@ -134,7 +163,7 @@ describe("the three shapes do not shadow each other", () => {
     assert.equal(decodeCommand(encodeRequest(1, "quit", {})), null);
   });
   test("a command is not read as a reply", () => {
-    assert.equal(decodeReply(encodeCommand("quit", {})), null);
+    assert.equal(decodeReply(encodeCommand(1, 0, "quit", {})), null);
   });
 });
 

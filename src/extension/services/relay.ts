@@ -11,10 +11,35 @@
 
 // windowId -> live Port (the relay page reconnects if it drops).
 const relayPorts = new Map<number, any>();
+
+// THE COMMAND SEQUENCE NUMBER — the background's half of the lost-command
+// counter (see chrome/relayseq.ts and shared/relay-wire.ts).
+//
+// It is PER WINDOW, because each window has its own relay tab and its own chrome
+// helper, and the helper is the one counting gaps: a single global counter would
+// interleave two windows' commands (window A sees 1, 3, 5 and reports two losses
+// per command) on a machine that merely has two windows open. It is minted when
+// the background DECIDES to send rather than when a post succeeds, so a command
+// that is dropped still consumes its number — which is the only way its absence
+// can be seen at all.
+//
+// It is deliberately NOT persisted: a background restart resets it, and a
+// restart also drops every command in flight, so a reset would read as a jump
+// BACKWARD at the helper (counted as out-of-order, never as a loss).
+const relayCmdSeq = new Map<number, number>();
+
+function nextCmdSeq(winId: number): number {
+  const n = (relayCmdSeq.get(winId) || 0) + 1;
+  relayCmdSeq.set(winId, n);
+  return n;
+}
 // Commands queued while no port was connected yet (the relay tab may still be
 // coming up); flushed on connect, dropped after the TTL so a stale command can
 // never fire late.
-const relayCmdQueues = new Map<number, Array<{ action: string; arg?: any }>>();
+// Each queued entry keeps the sequence number it was MINTED with (see
+// nextCmdSeq): the queue delays a command, and re-stamping it at delivery time
+// would hide the delay from the counter that exists to measure it.
+const relayCmdQueues = new Map<number, Array<{ action: string; arg?: any; seq: number }>>();
 import { isRelayUrl } from "../../shared/relay-wire";
 
 const RELAY_QUEUE_TTL = 6000;
@@ -63,7 +88,16 @@ export function acceptRelayPort(
   relayCmdQueues.delete(winId);
   for (const c of q) {
     try {
-      port.postMessage({ type: "cmd", action: c.action, arg: c.arg !== undefined ? c.arg : "" });
+      port.postMessage({
+        type: "cmd",
+        action: c.action,
+        arg: c.arg !== undefined ? c.arg : "",
+        // The number the command was minted with, so the drain delivers the
+        // stamp the command would have carried if the port had been up. Its own
+        // seq, not a fresh one: the counter measures the COMMAND's journey, and
+        // re-stamping it here would hide exactly the delay this queue causes.
+        seq: c.seq,
+      });
     } catch {
       // ignore
     }
@@ -141,13 +175,22 @@ export function requestChrome<K extends string>(action: K, arg?: any): void {
       const active = ts && ts[0] ? ts[0].windowId : null;
       const winId = active != null ? active : firstPortedWindow();
       if (winId == null) return;
-      const entry = { action, arg };
+      // Minted here, ONCE per request: the retry loop below may post this entry
+      // much later, and the point of the number is that it belongs to the
+      // DECISION to send — an entry that is never delivered must still leave a
+      // hole where the helper can see it.
+      const entry = { action, arg, seq: nextCmdSeq(winId) };
       const tryPost = (): boolean => {
         const port = relayPorts.get(winId);
         if (!port) return false;
         try {
           // Always an object, never "": the chrome side reads named fields.
-          port.postMessage({ type: "cmd", action, arg: arg === undefined ? {} : arg });
+          port.postMessage({
+            type: "cmd",
+            action,
+            arg: arg === undefined ? {} : arg,
+            seq: entry.seq,
+          });
           return true;
         } catch {
           // Dead port (its relay tab was removed); drop it so the next

@@ -373,8 +373,8 @@ which the readout distinguishes (`ageMs` is `-1` for a window a report deleted, 
 an age past 1500 for one that merely ran out). The suite prints the sample it
 measured, so a run records it instead of leaving it to be re-derived.
 
-**What the numbers say, and they are not flattering.** Four samples on this
-machine: **210ms**, **3043ms**, **3277ms**, **3427ms** — three of them on a
+**What the numbers say, and they are not flattering.** Five samples on this
+machine: **210ms**, **3043ms**, **3255ms**, **3277ms**, **3427ms** — three of them on a
 session's first pages, and the caveat the instrument has is that a report from the
 document that is *leaving* can be the one that spends the window, so a sample is an
 upper bound rather than a precise boot latency. Either way the consequence is the residual
@@ -386,6 +386,26 @@ Lazyfox is warm". The constant is therefore still a judgement, and it is now an
 OPEN ITEM with numbers behind it: raising it covers the slow report and costs the
 pages that never report at all (a PDF viewer, a restricted origin) the same number
 of milliseconds of declined keys.
+
+**And the other half of the same question — whether the report arrived AT ALL —
+is now a number.** Since 2026-10-16 every command the background pushes carries a
+per-window sequence number and the relay page's own discard count, and the helper
+counts both (`chrome/relayseq.ts`, published as `relay` in the `#lfc=state`
+reply); docs/KEYBOARD-OWNERSHIP.md 5.6 has the design and the falsifier. Measured on
+the same case that produced the sample above, in the same run:
+
+```
+report window: last report 3255ms after its arm, of a 1500ms window;
+13 spent this session; document "http://127.0.0.1:50683/hello";
+relay: 68 commands received, 0 lost under this case
+```
+
+68 commands put through the whole chain (content → background → relay page → URL →
+poll) with nothing lost while a page booted under a window it then spent. So the
+window narrative above is now decidable rather than inferred: a report that does
+not spend its window either shows up as a GAP (with the hop that ate it named) or
+was lost before the background decided to send one — a class the counter cannot
+see, which the case's own repair note now says out loud.
 
 ## Open question: an error page, our content script, and a key
 
@@ -422,5 +442,13 @@ dead there, it is a real freeze on exactly the pages the rescue used to cover.
   question) — one question to the user, in the reply that carries this pass.
 * `CONTENT_EXPECT_MS`'s measured value: the readout publishes it per run; the
   constant should be re-set from a real session's `gapMs` rather than from the
-  1500ms judgement, once a run has recorded enough samples to trust.
+  1500ms judgement, once a run has recorded enough samples to trust. Five samples
+  so far (210 / 3043 / 3255 / 3277 / 3427ms) say the judgement is doing less work
+  than its comment claims, and the counter above has ruled out the neighbouring
+  explanation: the commands are not being lost, the window is simply shorter than
+  a cold page's report.
 * The error-page question above.
+* The lost-report counter (5.6) LANDED — kept here only because the two things it
+  is expected to decide are still open: the `;T` diagnostics row that would show
+  the helper's verdict in the product, and whether a fast session still shows a
+  gap at all now that the numbering exists.

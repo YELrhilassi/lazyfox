@@ -187,6 +187,75 @@ describe("push delivery", () => {
   });
 });
 
+describe("the command sequence number", () => {
+  // The background's half of the lost-command counter (chrome/relayseq.ts). It is
+  // minted when the background DECIDES to send — not when a post succeeds — so a
+  // command that never arrives still leaves the hole the helper counts. These two
+  // cases pin exactly that: the stamp exists, it rises, and the queue path does
+  // not re-stamp the command it delivers late.
+  test("every push carries a rising per-window sequence number", async () => {
+    const relay = await freshRelay();
+    stubBrowser([{ id: 1, windowId: 7 }]);
+    const p = fakePort("lazyfox-relay:7", { id: 3, windowId: 7 });
+    relay.acceptRelayPort(p, async () => null, new Set<number>());
+    relay.requestChrome("sessionState", { name: "work" });
+    relay.requestChrome("findState", { count: 1, cur: 1 });
+    await tick();
+    await tick();
+    const seqs = p.posted.map((m: any) => m.seq);
+    assert.deepEqual(seqs, [1, 2], `expected a rising stamp, got ${JSON.stringify(p.posted)}`);
+  });
+
+  test("a queued command is stamped once, with the number it was minted with", async () => {
+    // The queue delays delivery; it must not restamp. A fresh number at delivery
+    // time would hide the very delay the counter exists to measure, and a
+    // dropped entry would leave no hole at all.
+    const relay = await freshRelay();
+    stubBrowser([{ id: 1, windowId: 7 }]);
+    relay.requestChrome("sessionState", { name: "work" });
+    await tick();
+    await tick();
+    const p = fakePort("lazyfox-relay:7", { id: 3, windowId: 7 });
+    relay.acceptRelayPort(p, async () => null, new Set<number>());
+    await tick();
+    const cmd = p.posted.find((m: any) => m.action === "sessionState");
+    assert.ok(cmd, "the queued push arrived");
+    assert.equal(cmd.seq, 1, "the command carries the number it was minted with");
+  });
+});
+
+describe("the sequence number when a command is lost", () => {
+  test("a command the queue gives up on still consumes its sequence number", async () => {
+    // THE FALSIFIER FOR THE COUNTER'S WHOLE CLAIM, and the reason the number is
+    // minted at the DECISION rather than at the post: a command that is never
+    // delivered must leave a hole the helper can see, or "a report went missing"
+    // stays invisible exactly when it happens most (the relay tab is not up yet,
+    // so the queue is holding the message). Here the queue really does give up —
+    // its TTL is waited out with no port ever connecting — and the next command
+    // to arrive must carry the number AFTER the dropped one, not a fresh count.
+    //
+    // The wait is real time and deliberate: the TTL is the behaviour under test,
+    // and a test that stubbed the clock would not be testing this path at all.
+    const relay = await freshRelay();
+    stubBrowser([{ id: 1, windowId: 7 }]);
+    // No port yet: minted 1, queued, and given up on when the TTL passes.
+    relay.requestChrome("sessionState", { name: "work" });
+    await tick();
+    await new Promise((r) => setTimeout(r, 7000));
+    const p = fakePort("lazyfox-relay:7", { id: 3, windowId: 7 });
+    relay.acceptRelayPort(p, async () => null, new Set<number>());
+    relay.requestChrome("findState", { count: 1, cur: 1 });
+    await tick();
+    await tick();
+    const seqs = p.posted.map((m: any) => m.seq);
+    assert.deepEqual(
+      seqs,
+      [2],
+      `the given-up command kept its number, so its absence is visible at the far end (got ${JSON.stringify(p.posted)})`,
+    );
+  });
+});
+
 describe("relay tab identity", () => {
   test("recognises its own relay URL and nothing else", () => {
     assert.equal(isRelayUrl("moz-extension://abc/relay.html"), true);

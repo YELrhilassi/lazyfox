@@ -379,13 +379,35 @@ import type { ContentPopupShell } from "./find";
   // boot report and the first key after it cannot be swallowed.
   const PRESENCE_REASSERT_MS = 3000;
   const presenceThrottle = createThrottle(PRESENCE_REASSERT_MS);
+  // A REFUSED REPORT GIVES THE LIMITER A REASON TO BYPASS ITSELF.
+  //
+  // The window is there because a re-assert is a background round trip plus two
+  // session writes, and a key sequence is many keys. But it cannot tell a report
+  // that ARRIVED from one that was dropped, and the two are indistinguishable
+  // from here — so spending the window on a report that never landed left the
+  // product silent for up to three seconds, which is exactly the interval the
+  // field report describes ("wait a second until Lazyfox is warm").
+  //
+  // `syncContent` is answered by the background, so a REFUSAL is the one loss
+  // this side can prove: the report did not even reach the background, the
+  // window bought nothing, and the next key must be allowed to try again rather
+  // than wait it out. The hop after that (background -> relay -> helper) is not
+  // observable from a content script at all; it is now a NUMBER instead, counted
+  // and published by the helper itself (chrome/relayseq.ts, `relay.gaps` in the
+  // `#lfc=state` reply). A key pressed while that window stands is answered by
+  // this page anyway, which is the point of the helper deferring.
   const reassertPresence = (): void => {
     if (!presenceThrottle.allow()) return;
     try {
-      void Promise.resolve(reportPresence(true)).catch(() => {});
+      void Promise.resolve(reportPresence(true))
+        .then((res: { ok?: boolean } | null | undefined) => {
+          if (!res || res.ok === false) presenceThrottle.reset();
+        })
+        .catch(() => presenceThrottle.reset());
     } catch (e) {
       // A report that cannot be sent leaves the state exactly as it was; the
       // next key tries again.
+      presenceThrottle.reset();
     }
   };
   // THE HELD LEADER, ACROSS DOCUMENTS.

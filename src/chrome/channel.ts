@@ -38,6 +38,7 @@ import type { RelayAction, RelayReq, RelayRes } from "../shared/protocol";
 import { HASH_PREFIX, decodeCommand, decodeReply, encodeRequest } from "../shared/relay-wire";
 import { applyHoverRevealPref, type ChromeCfg } from "./config";
 import { handleKeys } from "./keys";
+import { createRelaySeq, noteCmdSeq, relaySeqReadout } from "./relayseq";
 import { createTabGuard } from "./tabguard";
 import { resolveCcBaseUrl } from "./extbaseurl";
 import { createRelayTabCtl } from "./relaytab";
@@ -154,6 +155,15 @@ export function createChannel(deps: ChannelDeps): Channel {
   // a structured value from RelayApi, not a string: the wire JSON-encodes it
   // exactly as it already did replies and commands.
   let pendingReqs: Array<{ id: number; action: RelayAction; arg: unknown }> = [];
+  // THE LOST-COMMAND COUNTER (docs/KEYBOARD-OWNERSHIP.md 5.6): the background's
+  // per-window sequence numbers, the gaps between them, and which hop ate each
+  // one. Every command that reaches this side is noted here, and the whole thing
+  // is published in the state reply as `relay`, so "a report never arrived" is a
+  // number a premise can assert on instead of a mystery. See relayseq.ts.
+  //
+  // Named for the COMMAND numbering, not `relaySeq` — that name belongs to the
+  // request-id counter above, which numbers this side's own requests.
+  const commandSeq = createRelaySeq();
   let relaySeq = 0;
   // Reply waiters keyed by request id, resolved when the relay page writes the
   // `#lfr=rp.<id>.<json>` hash back into the tab URL.
@@ -216,6 +226,10 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
     const cmd = decodeCommand(frag);
     if (cmd) {
+      // Counted BEFORE the push runs, and whatever the push does with it: this
+      // counter measures whether the MESSAGE got here, and a command whose
+      // handler throws was still delivered.
+      noteCmdSeq(commandSeq, { seq: cmd.seq, lost: cmd.lost, slot: frag });
       handlePush(cmd.action, cmd.arg);
       relayTab.clearHash();
       sendNextRelay();
@@ -461,7 +475,11 @@ export function createChannel(deps: ChannelDeps): Channel {
   }
 
   function relayDebug(): any {
-    const out: any = { ready: relayReady };
+    // The counter first, and OUTSIDE the try: the relay-tab details below are
+    // best-effort (a tab can be torn down mid-enumeration), but the counter is
+    // arithmetic on integers this side has already been handed, and a failure to
+    // enumerate the strip must not be the reason a lost report cannot be read.
+    const out: any = { ready: relayReady, ...relaySeqReadout(commandSeq) };
     try {
       const tabs = Array.from(window.gBrowser.tabs).map((t: any) => {
         let spec = "";
