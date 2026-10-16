@@ -236,11 +236,11 @@ func TestSessionBindings(t *testing.T) {
 	}
 }
 
-// TestCategoryBindings pins the two category heads. A category head is not a
-// binding on its own — it arms a capture for a sub-key — so what matters is
-// that the label NAMES the sub-keys: the overlay is where the layout is
-// learned, and a row reading only "Window & layout" would advertise a key and
-// explain nothing.
+// TestCategoryBindings pins the category heads (`;W`, `;Z`, `;K`, `;Y`). A
+// category head is not a binding on its own — it arms a capture for a sub-key —
+// so what matters is that the label NAMES the sub-keys: the overlay is where the
+// layout is learned, and a row reading only "Window & layout" would advertise a
+// key and explain nothing.
 func TestCategoryBindings(t *testing.T) {
 	// The sub-keys are STRUCTURED now, not crammed into the row's label
 	// string. That is the difference between a menu that is generated from the
@@ -251,6 +251,10 @@ func TestCategoryBindings(t *testing.T) {
 		"W": {"|", "[", "]", "{", "}", ",", ".", "u", "m", "w", "z", "e"},
 		"Z": {"i", "o", "r"},
 		"K": {"c", "e"},
+		// Reading & theme. `d` is the per-site toggle (the frequent one), `g` the
+		// global default, `e` the engine escape hatch and `x` the undo — see the
+		// comment on the row for why the family is a category and not four keys.
+		"Y": {"d", "g", "e", "x"},
 	}
 	found := map[string][]string{}
 	for _, r := range Keymap {

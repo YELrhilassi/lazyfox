@@ -79,6 +79,36 @@ input[type="text"]:focus, select:focus { border-color: var(--accent); }
   flex: none; background: transparent; border: none; color: var(--muted); font-size: 16px; cursor: pointer; padding: 4px;
 }
 .app-row .rm:hover { color: var(--red); }
+
+/* Dark mode + reader mode cards: raw text fields and the per-site rule rows.
+   A rule corpus is pasted text, so the textarea is the one input on this page
+   that is monospace by meaning rather than for a key cap. */
+textarea {
+  width: 100%; padding: 9px 12px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border2);
+  border-radius: 8px; font: 12px/1.55 ui-monospace, Menlo, Consolas, monospace; resize: vertical;
+}
+textarea:focus { border-color: var(--accent); outline: none; }
+.swatch-row, .num-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+.swatch-row label, .num-row label { font-size: 12px; color: var(--sub); display: flex; align-items: center; gap: 7px; }
+.swatch-row input[type="color"] {
+  width: 42px; height: 26px; padding: 0; border: 1px solid var(--border2); background: var(--bg2); border-radius: 6px;
+}
+.num-row input[type="number"] {
+  width: 78px; padding: 6px 8px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border2);
+  border-radius: 6px;
+}
+.num-row input[type="number"]:focus { border-color: var(--accent); outline: none; }
+.site-row {
+  display: flex; gap: 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: 8px; margin-bottom: 8px; background: var(--bg2);
+}
+.site-row input[type="text"] { flex: 1.4; min-width: 0; }
+.site-row select { flex: 1; min-width: 0; }
+.site-row .rm {
+  flex: none; background: transparent; border: none; color: var(--muted); font-size: 16px; cursor: pointer; padding: 4px;
+}
+.site-row .rm:hover { color: var(--red); }
+.btn-row { display: flex; gap: 8px; margin-top: 8px; }
 .add-app {
   margin-top: 10px; background: var(--bg2); color: var(--sub); border: 1px dashed var(--border2);
   border-radius: 8px; padding: 9px; width: 100%; font-family: inherit; font-size: 13px; cursor: pointer;

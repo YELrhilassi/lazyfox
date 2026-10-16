@@ -65,6 +65,16 @@ export function createChromeLeader(deps: LeaderSetupDeps): ChromeLeader {
   leaderActions["forwardStack"] = () => openNavPopup(ctx);
   leaderActions["scrollRegionNext"] = () => toast("scroll regions: web pages only");
   leaderActions["scrollRegionPrev"] = () => toast("scroll regions: web pages only");
+  // The page-surface features. A chrome document (about:*, an error page) has no
+  // article to read and no site theme to apply, so these say so — the same
+  // contract the two above keep, and the reason the keymap's coverage test
+  // treats a named host action as implemented: a key that explains itself is not
+  // a key that does nothing.
+  leaderActions["readerMode"] = () => toast("reader mode: web pages only");
+  leaderActions["darkToggleSite"] = () => toast("dark mode: web pages only");
+  leaderActions["darkCycleGlobal"] = () => toast("dark mode defaults: see settings");
+  leaderActions["darkEngineToggle"] = () => toast("dark engine: web pages only");
+  leaderActions["darkResetSite"] = () => toast("dark mode: web pages only");
 
   const leader = new LeaderController(
     (action) => {

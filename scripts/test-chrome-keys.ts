@@ -34,8 +34,11 @@ register("./ts-resolve-hook.mjs", import.meta.url);
 
 const { SPECIAL_KEYS, shiftedKey } = await import("../src/chrome/keys.ts");
 const {
+  CONTENT_EXPECT_MS,
   chromeOwnsKeys,
   commandCenterDocumentPresent,
+  contentScriptExpected,
+  expectContentIn,
   isCommandCenterTab,
   chromeOwnsSurfaces,
   LOCATION_CHANGE_SAME_DOCUMENT,
@@ -690,7 +693,7 @@ const SAME_DOC = {
 
 resetContentPresence();
 ok(
-  "a real navigation drops the record — and only that tab's",
+  "a real navigation drops the record, and the tab is EXPECTED to answer for a moment",
   (() => {
     resetContentPresence();
     const a = makeTab("https://a.example/");
@@ -703,9 +706,55 @@ ok(
     // A real navigation in tab a: no SAME_DOCUMENT flag.
     noteLocationChange(w, browserOf(a), 0, SAME_DOC);
     select(w, 0);
-    const aHandedBack = owns(w);
+    // THE WINDOW, which is the whole of the fix: the record is gone and nobody
+    // has reported yet, and the helper must STILL decline — the new document's
+    // content script is running by now (it is injected at document_start) and
+    // has simply not pushed its report. Claiming the keys here is what cost the
+    // first keystroke of every navigation: the CHROME leader armed, the page's
+    // own overlay never appeared, and the follow-up binding was answered by a
+    // realm with no page to act on.
+    const duringWindow = !owns(w);
+    // ...AND IT IS A BOUND, NOT A TRANSFER. Re-arm the expectation as if it had
+    // been opened longer ago than the window allows (a page that never reports:
+    // a PDF viewer, an error page, a restricted origin) and the helper is the
+    // owner again, exactly as it was before this rule existed.
+    expectContentIn(w, browserOf(a), Date.now() - (CONTENT_EXPECT_MS + 1));
+    const afterWindow = owns(w);
     select(w, 1);
-    return before && aHandedBack && !owns(w);
+    return before && duringWindow && afterWindow && !owns(w);
+  })()
+);
+ok(
+  "the page saying it is here ends the window",
+  (() => {
+    resetContentPresence();
+    const a = makeTab("https://a.example/");
+    const w = winOf([a]);
+    noteLocationChange(w, browserOf(a), 0, SAME_DOC);
+    const duringWindow = !owns(w);
+    report(w, true, "https://a.example/", "doc-1");
+    // The record is authoritative again, and the expectation is spent rather
+    // than left to expire — the common case, one message round trip after
+    // document_start.
+    return duringWindow && !contentScriptExpected(w) && !owns(w);
+  })()
+);
+ok(
+  "no window is opened on a document a content script can never arrive in",
+  // The freeze guard: `about:`, the extension pages and the command center are
+  // the pages where the helper is the ONLY key engine, so "a page is expected
+  // here" would make it decline keys nothing else can answer.
+  (() => {
+    resetContentPresence();
+    const about = makeTab("about:neterror?e=dnsNotFound");
+    const wa = winOf([about]);
+    noteLocationChange(wa, browserOf(about), 0, SAME_DOC);
+    const aboutOwned = owns(wa) && !contentScriptExpected(wa);
+    const cc = makeTab("moz-extension://abc/commandcenter.html");
+    const wc = winOf([cc]);
+    noteLocationChange(wc, browserOf(cc), 0, SAME_DOC);
+    const ccOwned = owns(wc) && !contentScriptExpected(wc);
+    return aboutOwned && ccOwned;
   })()
 );
 ok(
@@ -716,9 +765,10 @@ ok(
     const w = winOf([a]);
     report(w, true, "https://spa.example/list", "doc-1");
     // pushState: the URL moves, the document does not. Without the flag this
-    // would drop a LIVE record, which is the SPA dead keyboard all over again.
+    // would drop a LIVE record, which is the SPA dead keyboard all over again —
+    // and it must not open an expectation either: nothing new is arriving.
     noteLocationChange(w, browserOf(a), LOCATION_CHANGE_SAME_DOCUMENT, SAME_DOC);
-    return !owns(w);
+    return !owns(w) && !contentScriptExpected(w);
   })()
 );
 ok(

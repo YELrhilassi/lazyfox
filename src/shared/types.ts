@@ -15,6 +15,91 @@ export interface Config {
   // is one tile (site favicon + name); togglable and editable in the options
   // page. `enabled=false` hides the tile without deleting its definition.
   apps: QuickApp[];
+  // Dark mode: one theme, four policy modes, and a per-site rule list. See
+  // docs/DARK-MODE.md for why the corpus is a text field rather than a table.
+  dark: DarkConfig;
+  // Reader mode: the article overlay's own typography.
+  reader: ReaderConfig;
+}
+
+/**
+ * How the dark engine should treat pages, globally.
+ *
+ * `auto` is the interesting one and the default: darken a page UNLESS it is
+ * already dark. The three others are the user overruling that judgement.
+ */
+export type DarkMode = "auto" | "dark" | "light" | "off";
+
+/**
+ * Which engine to run. `auto` chooses per page from a measurement — see
+ * `chooseEngine` in content/dark/detect.ts — and is the default because the two
+ * engines fail in opposite directions.
+ *
+ *   dynamic  remaps the page's own palette. Best on text-and-panels pages;
+ *            cannot see a colour that reaches the screen through an image, a
+ *            canvas, or a stylesheet it never sampled.
+ *   filter   one root `invert() hue-rotate(180deg)` plus counter-inverted media.
+ *            Uniform, but photographs have to be protected from it and a
+ *            counter-inversion is a per-element guess.
+ */
+export type DarkEngine = "auto" | "dynamic" | "filter";
+
+export interface DarkConfig {
+  mode: DarkMode;
+  engine: DarkEngine;
+  /** The colour the page's canvas becomes (the "black" pole). */
+  background: string;
+  /** The colour its text becomes (the "white" pole). */
+  foreground: string;
+  /** The colour an unstyled link becomes. */
+  accent: string;
+  brightness: number;
+  contrast: number;
+  sepia: number;
+  grayscale: number;
+  /**
+   * The per-site fix corpus, in Dark Reader's plain-text format, as EDITABLE
+   * TEXT. It ships populated (shared/dark-fixes.ts) and a user may paste in a
+   * list written for that project, because the parser reads its format.
+   */
+  fixes: string;
+  /** Extra CSS for every page, applied last: the user's last word. */
+  userCss: string;
+  /** Per-site overrides, most specific rule winning. */
+  sites: SiteRule[];
+}
+
+/**
+ * One site's override.
+ *
+ * Every field is optional and an entry with no fields is removed rather than
+ * stored: an empty rule reads like a setting and behaves like nothing. That is
+ * why the toggle writes `mode` and the engine switch writes `engine` onto the
+ * entry the other one may have created.
+ */
+export interface SiteRule {
+  /** Host pattern: `example.com`, `*.example.com`, `example.*`, `example.com/x`. */
+  match: string;
+  mode?: DarkMode;
+  engine?: DarkEngine;
+  /** Reserved for a future per-site CSS block; parsed today, appended last. */
+  css?: string;
+}
+
+export type ReaderTheme = "dark" | "light" | "sepia";
+
+export interface ReaderConfig {
+  /** Column width in `ch` units — the reading measure, not a pixel width. */
+  width: number;
+  /** Base font size in px. */
+  fontSize: number;
+  lineHeight: number;
+  /** `auto` follows the dark-mode decision for this page (`data-lf-scheme`). */
+  theme: ReaderTheme | "auto";
+  /** Keep the article's own images. Off is for a distraction-free read. */
+  images: boolean;
+  /** Override the article font; empty means the UI font stack. */
+  font: string;
 }
 
 // One quick-launch web app tile on the command-center home grid.

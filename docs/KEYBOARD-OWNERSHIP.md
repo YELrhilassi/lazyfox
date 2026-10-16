@@ -27,7 +27,7 @@ does what the user means when both agree. Four cells:
 | | keyboard in the PAGE | keyboard in the CHROME |
 | --- | --- | --- |
 | **page owns keys** | normal | `4` — the reported freeze: the page's script never sees the key, the helper declines it. ANY key repairs it now (LANDED — `givePageKeyboardBack` returns `declined` for a plain key, so the repair runs and the next press reaches the page) |
-| **helper owns keys** | helper chords work, page keys are the actor's job | `2` — the reported freeze: `;`, `;r`, `;s`, `;o`, `;d` answer (the helper's own bindings) and `j`/`k`/`d`/`u`, hints and find are dead. `;` repairs it (LANDED, and it is the only key that may: a plain key here is chrome-UI business) |
+| **helper owns keys** | helper chords work, page keys are the actor's job — **except in the navigation window (§2f), where the page answers and the helper stays out** | `2` — the reported freeze: `;`, `;r`, `;s`, `;o`, `;d` answer (the helper's own bindings) and `j`/`k`/`d`/`u`, hints and find are dead. `;` repairs it (LANDED, and it is the only key that may: a plain key here is chrome-UI business) |
 
 The user's report is the union of cells `2` and `4` seen from the outside, which
 is why "there is a disconnect of what breaks and what keeps working".
@@ -142,6 +142,52 @@ the page receives), which accepts no mis-filed record and is written up in
 KEYBOARD-FREEZE.md §5b. The other case with that premise shape —
 `content/ownership`'s insertion — was nudged the same way and did NOT come back, so
 it stays strict and open (§5.7).
+
+**f. The helper claims a page that has not reported yet (LANDED — the navigation
+window).**
+Presence is PUSHED by the page, so after every cross-document navigation there is a
+gap in which the old record is gone and the new document exists: injected at
+`document_start`, answering keys, and invisible to the helper. In that gap
+`chromeOwnsKeys` answered "mine", and BOTH realms answered the same keystroke — the
+helper's leader armed and painted its own which-key over the page's, the sub-key ran
+a chrome-side binding on a page the chrome side cannot act on, and when the report
+finally landed the helper stood its overlay down. The field report, verbatim:
+"when the page navigate or load there is a 1s or so delay that I can't run an
+action cause the leader gets cleared out or the action gets absorbed so I have to do
+it twice or wait a sec until lazyfox is warm on that page".
+FIXED: a cross-document location change arms an EXPECTATION on that tab
+(`keystate.expectContentIn`; `CONTENT_EXPECT_MS = 1500`), and while it is open with
+no record `chromeOwnsKeys` answers FALSE — and so does `chromeOwnsSurfaces`, so the
+helper paints nothing and there is no ghost overlay left to be cleared. A record
+spends the window immediately (the common case: one message round trip after
+`document_start`). Nothing is armed for `about:`/`moz-extension://` documents or the
+command center, and an in-page navigation (`LOCATION_CHANGE_SAME_DOCUMENT`) arms
+nothing.
+This is the same trade §2b and ISSUES-FIX-PLAN §9.2 record — "with no record at all
+the helper owns the keys ... a chrome-side leader during a load beats dead keys" —
+narrowed to where it belongs: DURING A LOAD the page answers, and the helper's
+answer is kept as a BOUND for a page that never reports (a PDF viewer, an error
+page, a restricted origin), after which it is exactly what it was.
+Evidence: four cases in `keyhold.test.ts` (the leader key declined with no chrome
+leader armed; an ordinary key not eaten either; the window expiring back to the
+helper; the page's report ending it) and two checks in `test-chrome-keys.ts` (not
+armed for a document a content script can never arrive in; not armed by
+`pushState`).
+RESIDUAL, named: if the page's report takes longer than the window — the transport
+crosses content → background → relay tab → helper, and §5.6's gap counter is the
+missing instrument that would time it — the helper claims for the remainder of that
+gap and the double owner comes back for those keys. The window bounds the damage;
+it does not prove the transport.
+SECOND RESIDUAL, in the harness rather than the product: the `#lfc=keys` channel
+decides `fromActor` from presence alone (`chrome/main.ts` `keys.dispatch` =
+`!contentScriptPresent(...) && selectedContentHasKeyboard(...)`), so a key it sends
+inside the window on a page whose report has not landed is labelled "nobody else
+can own this key" while the page is in fact answering. One line — add
+`&& !contentScriptExpected(win)` — and it is deliberately NOT in this pass: the
+channel is a dev surface, the outcome for the key is what it already was before the
+window existed (the helper's own leader), and changing it would invalidate the
+e2e run that was started against this build. Named here so the next reader finds it
+rather than re-deriving it.
 
 ## 3. The invariants
 
@@ -445,6 +491,7 @@ not have to re-derive what was measured and what was only intended.
 | layer | state | evidence |
 | --- | --- | --- |
 | the repair exists for both owners | LANDED | `givePageKeyboardBack` three outcomes; `scripts/test/keyhold.test.ts` |
+| a page that has not reported yet keeps its own keys (§2f) | LANDED | `keystate.expectContentIn` / `contentScriptExpected`; four `keyhold.test.ts` cases; two `test-chrome-keys.ts` checks |
 | the channel reports the delivery path honestly | LANDED | `chrome/main.ts` `keys.dispatch` — `fromActor` requires the content to have the keyboard |
 | presence heals when the page answers a key | LANDED | `content/main.ts` `reassertPresence` (throttled, `shared/throttle.ts` + `scripts/test/throttle.test.ts`) |
 | the helper-owned cell has an e2e | LANDED | `content/focus`, including `#lfc=forget` + `#lfc=blur` |

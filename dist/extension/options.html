@@ -49,6 +49,88 @@
     </div>
 
     <div class="card">
+      <h2>Dark mode</h2>
+      <div class="desc">Applies to web pages. <span class="kbd">;Y d</span> toggles the site you are on,
+      <span class="kbd">;Y g</span> cycles the default, <span class="kbd">;Y e</span> switches the engine for one site,
+      <span class="kbd">;Y x</span> clears that site's rules. The engine measures each page before painting it:
+      a page that is already dark is left alone, and a page whose colours it cannot read is inverted rather than
+      half-mapped. Details in <span class="kbd">docs/DARK-MODE.md</span>.</div>
+      <div class="field"><label class="lbl" for="darkMode">Default</label>
+        <select id="darkMode">
+          <option value="auto">Auto — darken only the pages that are light</option>
+          <option value="dark">Always dark</option>
+          <option value="light">Always light (for pages that are dark)</option>
+          <option value="off">Off</option>
+        </select></div>
+      <div class="field"><label class="lbl" for="darkEngine">Engine</label>
+        <select id="darkEngine">
+          <option value="auto">Auto — remap the page's palette, invert when it cannot be read</option>
+          <option value="dynamic">Dynamic — remap the page's own colours</option>
+          <option value="filter">Filter — invert the page, counter-invert media</option>
+        </select></div>
+      <div class="field"><label class="lbl">Colours</label>
+        <div class="swatch-row">
+          <label>Canvas <input type="color" id="darkBackground"></label>
+          <label>Text <input type="color" id="darkForeground"></label>
+          <label>Links <input type="color" id="darkAccent"></label>
+        </div></div>
+      <div class="field"><label class="lbl">Filter engine adjustments (percent)</label>
+        <div class="num-row">
+          <label>Brightness <input type="number" id="darkBrightness" min="30" max="220" step="5"></label>
+          <label>Contrast <input type="number" id="darkContrast" min="30" max="220" step="5"></label>
+          <label>Sepia <input type="number" id="darkSepia" min="0" max="100" step="5"></label>
+          <label>Grayscale <input type="number" id="darkGrayscale" min="0" max="100" step="5"></label>
+        </div></div>
+      <div class="field"><label class="lbl">Sites</label>
+        <div class="desc">One rule per site. A pattern is a host (<span class="kbd">example.com</span>, which also
+        covers its subdomains), a wildcard (<span class="kbd">*.example.com</span>, <span class="kbd">example.*</span>),
+        or a host with a path (<span class="kbd">example.com/docs</span>). "Inherit" leaves that part to the default
+        above. The more specific rule wins, whichever order they are in.</div>
+        <div id="darkSites"></div>
+        <button class="add-app" id="darkAddSite">+ Add site rule</button></div>
+      <div class="field"><label class="lbl" for="darkFixes">Per-site fixes (Dark Reader format)</label>
+        <div class="desc">Plain text, one block per site, blocks separated by a line of <span class="kbd">====</span>.
+        Directives: <span class="kbd">INVERT</span>, <span class="kbd">NO INVERT</span>, <span class="kbd">REMOVE BG</span>,
+        <span class="kbd">CSS</span>, <span class="kbd">IGNORE INLINE STYLE</span>,
+        <span class="kbd">IGNORE IMAGE ANALYSIS</span>, <span class="kbd">IGNORE CSS URL</span>. A list written for
+        Dark Reader can be pasted in as it is; in this theme <span class="kbd">${white}</span> means the text colour
+        and <span class="kbd">${black}</span> the canvas, exactly as there.</div>
+        <textarea id="darkFixes" rows="14" spellcheck="false"></textarea>
+        <div class="hint" id="darkFixesStatus"></div></div>
+      <div class="field"><label class="lbl" for="darkUserCss">Extra CSS for every page (applied last)</label>
+        <textarea id="darkUserCss" rows="5" spellcheck="false" placeholder=".panel { background: #101018 !important; }"></textarea></div>
+      <div class="field"><label class="lbl" for="darkExchange">Import / export</label>
+        <div class="desc">Export copies this card and the reader card into the box as JSON; paste JSON into it and
+        press apply to load it back into the form (nothing is saved until you press Save).</div>
+        <textarea id="darkExchange" rows="4" spellcheck="false" placeholder='{"mode":"auto","sites":[]}'></textarea>
+        <div class="btn-row"><button class="add-app" id="darkExport">Export to box</button><button class="add-app" id="darkImport">Apply from box</button></div>
+        <div class="hint" id="darkExchangeStatus"></div></div>
+    </div>
+
+    <div class="card">
+      <h2>Reader mode</h2>
+      <div class="desc"><span class="kbd">;R</span> extracts the article on the page you are on and shows it in place
+      of everything else. Links, find, the yank modes and the scroll keys all keep working inside it, and
+      <span class="kbd">Esc</span> leaves.</div>
+      <div class="field"><label class="lbl" for="readerTheme">Theme</label>
+        <select id="readerTheme">
+          <option value="auto">Auto — follow the dark-mode decision for the page</option>
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+          <option value="sepia">Sepia</option>
+        </select></div>
+      <div class="field"><label class="lbl">Type</label>
+        <div class="num-row">
+          <label>Column (characters) <input type="number" id="readerWidth" min="30" max="120" step="2"></label>
+          <label>Font size (px) <input type="number" id="readerFontSize" min="12" max="32" step="1"></label>
+          <label>Line height <input type="number" id="readerLineHeight" min="1" max="2.4" step="0.02"></label>
+        </div></div>
+      <div class="field"><label class="lbl" for="readerFont">Font family (empty = the UI stack)</label>
+        <input type="text" id="readerFont" placeholder="Georgia, serif"></div>
+      <div class="field"><label class="r"><input type="checkbox" id="readerImages"> Keep the article's images</label></div>
+    </div>
+
+    <div class="card">
       <h2>Firefox chrome</h2>
       <div class="desc">Handled by <span class="kbd">chrome/userChrome.uc.js</span> (installed by the Lazyfox
       installer). These hotkeys open Firefox's built-in pages and work even on <span class="kbd">about:</span> /

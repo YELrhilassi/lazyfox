@@ -33,7 +33,14 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { createChromeKeyDown } from "../../src/chrome/keysdispatch.ts";
-import { noteContentPresent, presenceTabFor, resetContentPresence } from "../../src/chrome/keystate.ts";
+import {
+  CONTENT_EXPECT_MS,
+  expectContentIn,
+  noteContentPresent,
+  noteLocationChange,
+  presenceTabFor,
+  resetContentPresence,
+} from "../../src/chrome/keystate.ts";
 import {
   HOLD_LIVENESS_MS,
   HOLD_RESTORE_GRACE_MS,
@@ -285,6 +292,76 @@ describe("ownership and keyup are separate facts", () => {
     report(win, true, WEB);
     down.chromeKeyDown(keydown(";"), true, true);
     assert.equal(leader.sticky, false);
+  });
+});
+
+describe("a freshly navigated page is expected to answer for itself", () => {
+  // THE FIELD REPORT, in the user's words: "when the page navigate or load
+  // there is a 1s or so delay that I can't run an action cause the leader gets
+  // cleared out or the action gets absorbed so I have to do it twice or wait a
+  // sec until lazyfox is warm on that page".
+  //
+  // Presence is PUSHED by the page's own script, so between a navigation and
+  // that report landing, the helper holds NO record for the new document — and
+  // it used to claim the keys. Both realms then answered the same keystroke:
+  // `;` armed the CHROME leader (painting the helper's own which-key over the
+  // page), the page's own leader armed too, the sub-key ran a chrome-side
+  // binding that had no page to act on — "the action gets absorbed" — and when
+  // the page's report finally arrived the helper stood its overlay down, which
+  // is "the leader gets cleared out".
+  //
+  // The rule now: a tab whose DOCUMENT was just replaced is expected to answer
+  // for itself, so the helper declines until either the page says it is there
+  // (the ordinary case, one message round trip after document_start) or the
+  // window closes (a page that never reports: a PDF viewer, an error page).
+  //
+  // Asserted HERE and not end-to-end because the window is a decision about
+  // ownership plus a clock, and both are readable directly.
+  /** A web tab mid-navigation, with the keyboard where a link leaves it. */
+  function navigated(page = WEB) {
+    const fm: any = { activeWindow: null, focusedElement: null };
+    const { leader, down, win } = setup(page, { env: { services: { focus: fm }, Ci: {} } });
+    fm.activeWindow = win;
+    // The keyboard is IN THE PAGE — the state a click on a link leaves behind,
+    // and the state in which the page's own listener is the one answering.
+    fm.focusedElement = win.gBrowser.selectedBrowser;
+    // A real navigation: no SAME_DOCUMENT flag.
+    noteLocationChange(win, win.gBrowser.selectedBrowser, 0);
+    return { leader, down, win, fm };
+  }
+
+  test("the leader key is declined, not claimed, and no chrome leader arms", () => {
+    const { leader, down } = navigated();
+    assert.equal(
+      down.chromeKeyDown(keydown(";")),
+      false,
+      "the page's own listener is the one that must answer its leader key",
+    );
+    assert.equal(leader.active, false, "and a chrome-realm leader must not be armed on a web page");
+  });
+
+  test("an ordinary key is not eaten either", () => {
+    // The window is about the WHOLE keyboard, not only the leader key: every
+    // key pressed in it belongs to the page that is loading.
+    const { down } = navigated();
+    assert.equal(down.chromeKeyDown(keydown("j")), false);
+    assert.equal(down.chromeKeyDown(keydown("d")), false);
+  });
+
+  test("the window is BOUNDED: a page that never reports is the helper's again", () => {
+    const { leader, down, win } = navigated();
+    // Re-arm the expectation as if it had been opened longer ago than the
+    // window allows — which is every page with no content script to arrive.
+    expectContentIn(win, win.gBrowser.selectedBrowser, Date.now() - (CONTENT_EXPECT_MS + 1));
+    assert.equal(down.chromeKeyDown(keydown(";")), true, "the helper answers the leader key again");
+    assert.equal(leader.active, true);
+  });
+
+  test("the page reporting in ends the window, leaving the ordinary answer", () => {
+    const { leader, down, win } = navigated();
+    report(win, true, WEB);
+    assert.equal(down.chromeKeyDown(keydown(";")), false);
+    assert.equal(leader.active, false, "the site's own leader is still the site's");
   });
 });
 

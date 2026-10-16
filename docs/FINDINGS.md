@@ -873,6 +873,43 @@ top-level document for its own `location.href` rather than trusting the tree's
 string. Measured after the change: 6/6 runs, and the failure message, if it comes
 back, names the tab id and the page's own state.
 
+### DONE — the first keystroke of every navigation was answered by the wrong realm
+
+The field report, from the user's own session on 0.5.8: "when the page navigate
+or load there is a 1s or so delay that i can't run an action cause the leader
+gets cleared out or the action gets absorbed so i have to do it twice or wait a
+sec until lazyfox is warm on that page".
+
+Presence is PUSHED by the page's own script (see `chrome/keystate.ts`), so after
+every cross-document navigation there is a window in which the helper holds no
+record for the document that is now in the tab — a document whose content script
+was injected at `document_start` and is already answering keys. `chromeOwnsKeys`
+answered "mine" in that window, and BOTH realms then answered the same keystroke:
+the helper's leader armed (and painted its own which-key over the page's), the
+sub-key ran a chrome-side binding on a page the chrome side cannot act on, and
+when the page's report finally landed the helper stood its overlay down. All three
+of the user's symptoms fall out of that one state, in order: the leader is
+cleared out, the action is absorbed, and the second press works.
+
+A URL is not an identity and a record must not outlive its document — both rules
+this module already carried — and neither of them says anything about the gap
+BEFORE a document reports. The fix is a navigation-scoped expectation: a
+cross-document location change arms `expectContentIn` on that tab, and while it is
+open with no record `chromeOwnsKeys` (and therefore `chromeOwnsSurfaces`) answers
+FALSE, so the page's own listener takes the key and the helper paints nothing. The
+record spends the window immediately; `CONTENT_EXPECT_MS = 1500` is a BOUND for a
+page that never reports (a PDF viewer, an error page), after which the answer is
+exactly what it was. Nothing is armed for `about:` / `moz-extension://` documents
+or the command center, and an in-page navigation arms nothing — the freeze the
+whole ownership model exists to prevent is a page that declines keys with nobody
+else answering, and that is the direction every one of those exclusions protects.
+
+Found while testing the reader/dark-mode slice, which is why it is recorded here
+rather than in that slice's tracker; the full write-up (including the residual:
+a report slower than the window restores the old behaviour for the rest of the
+gap) is in `docs/tasks/2026-10-15-MANUAL-TEST-REPORTS.md`, and the mechanism is
+§2f of `docs/KEYBOARD-OWNERSHIP.md`.
+
 ## OPEN
 
 ### OPEN — the react migration

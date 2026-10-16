@@ -39,6 +39,8 @@ import { createLinkHints, focusFirstInput } from "./hints";
 import { createContentOps } from "./ops";
 import { createScrollController } from "./scroll";
 import { createScrollKeys } from "./scrollkeys";
+import { createDarkMode } from "./dark";
+import { createReader } from "./reader";
 import {
   installFrameChild,
   installFrameParent,
@@ -82,10 +84,34 @@ import type { ContentPopupShell } from "./find";
 
   let config: Config = mergeConfig(undefined);
 
+  /* ===================== dark mode ===================== */
+
+  // Built before the config arrives, and `early()` called before anything else
+  // can throw, because the first thing a dark theme has to get right is the
+  // first frame: see the note in dark/index.ts on the white flash. The
+  // controller reads the config lazily through the closure, so the copy this
+  // sees at boot is only ever the not-yet-loaded default.
+  const darkMode = createDarkMode({
+    doc: document,
+    win: window,
+    url: () => location.href,
+    getConfig: () => config,
+    setConfig: (next) => {
+      // Optimistic locally, then through the background: the background caches
+      // the config, and writing storage behind its back is how the two copies
+      // start disagreeing (see docs/FINDINGS.md on setConfig).
+      config = next;
+      void send("setConfig", { config: next });
+    },
+    toast,
+  });
+  darkMode.early();
+
   function loadConfig() {
     try {
       void readKey("config", vConfig, {}).then((c) => {
         config = mergeConfig(c);
+        darkMode.update(config);
       });
     } catch (e) {
       // A storage hiccup must never take the keyboard handling down with it.
@@ -103,6 +129,10 @@ import type { ContentPopupShell } from "./find";
       (changes: { config?: { newValue?: Partial<Config> } }, area: string) => {
         if (area === "local" && changes.config) {
           config = mergeConfig(changes.config.newValue || {});
+          // The theme follows the config, the same way the hint characters and
+          // the scroll keys do. A settings page that changed the palette must
+          // not need a reload to show it.
+          darkMode.update(config);
         }
       }
     );
@@ -122,6 +152,23 @@ import type { ContentPopupShell } from "./find";
   // document cannot scroll (ChatGPT-style shells), or whichever region the user
   // cycled to with ;F / ;B (sidebars and secondary panes).
   const scroll = createScrollController();
+
+  /* ===================== reader mode ===================== */
+
+  // Built after the scroll controller because entering reader mode RESETS the
+  // scroll target: the article becomes the page's only scroller, and a target
+  // the user had cycled to with `;F` would otherwise still be the one `j`/`k`
+  // move. That is the whole integration between the two features, which is the
+  // point of rendering the article as ordinary document text in a container the
+  // existing controller already understands.
+  const reader = createReader({
+    doc: document,
+    win: window,
+    getConfig: () => config,
+    toast,
+    resetScroll: () => scroll.reset(),
+    accent: () => config.dark.accent,
+  });
 
   /* ===================== link hints ===================== */
 
@@ -535,6 +582,17 @@ import type { ContentPopupShell } from "./find";
   // page scroll regions to cycle.
   leaderActions["scrollRegionNext"] = () => scroll.cycle(1);
   leaderActions["scrollRegionPrev"] = () => scroll.cycle(-1);
+  // ;R = reader mode. The article replaces the page in the same document, so the
+  // leader, the hints, find, the yank modes and the scroll controller all keep
+  // working inside it — which is the reason this host owns reader mode rather
+  // than delegating to Firefox's `tabs.toggleReaderMode` (see the tracker doc).
+  leaderActions["readerMode"] = () => reader.toggle();
+  // ;Y d / g / e / x = the theme family. Each writes through setConfig, so the
+  // bar, the command center and every other tab see the same answer.
+  leaderActions["darkToggleSite"] = () => darkMode.toggleSite();
+  leaderActions["darkCycleGlobal"] = () => darkMode.cycleGlobal();
+  leaderActions["darkEngineToggle"] = () => darkMode.toggleEngine();
+  leaderActions["darkResetSite"] = () => darkMode.resetSite();
 
   /* ==================== scroll keys ==================== */
 

@@ -347,4 +347,19 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
  * second is a key that silently does nothing, which is the bug this table was
  * rebuilt to make impossible.
  */
-export const HOST_ACTIONS = ["backStack", "forwardStack", "scrollRegionNext", "scrollRegionPrev"];;
+export const HOST_ACTIONS = [
+  "backStack",
+  "forwardStack",
+  "scrollRegionNext",
+  "scrollRegionPrev",
+  // Page-surface features. Like the scroll regions above, these need an object
+  // only a host has — the page's own DOM — so a host that has no page (the
+  // chrome helper, the home page) implements them as a note to the user rather
+  // than as a silent no-op. The keymap does not care which host answers; the
+  // coverage test only needs to know that SOMEONE does.
+  "readerMode",
+  "darkToggleSite",
+  "darkCycleGlobal",
+  "darkEngineToggle",
+  "darkResetSite",
+];

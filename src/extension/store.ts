@@ -30,7 +30,20 @@
 // get, exactly as before; what changed is that the call sites are typed and
 // the failure handling is stated in one place instead of copied.
 
-import type { CacheMode, CacheScope, Config, QuickApp, Session, SessionTab } from "../shared/types";
+import type {
+  CacheMode,
+  CacheScope,
+  Config,
+  DarkConfig,
+  DarkEngine,
+  DarkMode,
+  QuickApp,
+  ReaderConfig,
+  ReaderTheme,
+  Session,
+  SessionTab,
+  SiteRule,
+} from "../shared/types";
 
 /** Declares the schema. Every entry is (key, validator, fallback). */
 export interface StoreSpec {
@@ -222,12 +235,92 @@ function vQuickApp(raw: unknown): QuickApp | undefined {
 const vStatusBarPosition: Validator<"top" | "bottom"> = (raw) =>
   raw === "top" || raw === "bottom" ? raw : undefined;
 
+const vNumber = (raw: unknown): number | undefined =>
+  typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
+
+const vDarkMode = (raw: unknown): DarkMode | undefined =>
+  raw === "auto" || raw === "dark" || raw === "light" || raw === "off" ? raw : undefined;
+
+const vDarkEngine = (raw: unknown): DarkEngine | undefined =>
+  raw === "auto" || raw === "dynamic" || raw === "filter" ? raw : undefined;
+
+const vReaderTheme = (raw: unknown): ReaderTheme | "auto" | undefined =>
+  raw === "auto" || raw === "dark" || raw === "light" || raw === "sepia" ? raw : undefined;
+
+/**
+ * One site rule. Validated field by field, and an entry that names no host is
+ * rejected outright: a rule with no pattern matches nothing, so keeping it
+ * would put a line in the settings UI that does nothing when edited.
+ */
+function vSiteRule(raw: unknown): SiteRule | undefined {
+  if (!isObject(raw)) return undefined;
+  if (typeof raw.match !== "string" || raw.match.trim() === "") return undefined;
+  const rule: SiteRule = { match: raw.match.trim() };
+  const mode = vDarkMode(raw.mode);
+  if (mode) rule.mode = mode;
+  const engine = vDarkEngine(raw.engine);
+  if (engine) rule.engine = engine;
+  if (typeof raw.css === "string") rule.css = raw.css;
+  return rule;
+}
+
+/**
+ * The dark config, validated field by field like `config` itself, and for the
+ * same reason: it is stored PARTIAL, so a field that fails its check is dropped
+ * (the default wins for that one field) while every valid field survives.
+ *
+ * The corpus is the field that makes this matter. It is a text field a user
+ * pastes into, so a corrupt value is not hypothetical — and dropping the whole
+ * dark config because the pasted text was the wrong type would take the
+ * palette, the mode and every site rule with it.
+ */
+function vDarkConfig(raw: unknown): DarkConfig | undefined {
+  if (!isObject(raw)) return undefined;
+  const out: Record<string, unknown> = {};
+  const mode = vDarkMode(raw.mode);
+  if (mode) out.mode = mode;
+  const engine = vDarkEngine(raw.engine);
+  if (engine) out.engine = engine;
+  for (const field of ["background", "foreground", "accent", "fixes", "userCss"]) {
+    const v = vString(raw[field]);
+    if (v !== undefined) out[field] = v;
+  }
+  for (const field of ["brightness", "contrast", "sepia", "grayscale"]) {
+    const v = vNumber(raw[field]);
+    if (v !== undefined) out[field] = v;
+  }
+  if ("sites" in raw) {
+    const v = vArray(vSiteRule)(raw.sites);
+    if (v !== undefined) out.sites = v;
+  }
+  return out as unknown as DarkConfig;
+}
+
+function vReaderConfig(raw: unknown): ReaderConfig | undefined {
+  if (!isObject(raw)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const field of ["width", "fontSize", "lineHeight"]) {
+    const v = vNumber(raw[field]);
+    if (v !== undefined) out[field] = v;
+  }
+  if ("theme" in raw) {
+    const v = vReaderTheme(raw.theme);
+    if (v !== undefined) out.theme = v;
+  }
+  const images = vBoolean(raw.images);
+  if (images !== undefined) out.images = images;
+  const font = vString(raw.font);
+  if (font !== undefined) out.font = font;
+  return out as unknown as ReaderConfig;
+}
+
 /**
  * The per-field table for `config`, which is the one key where a WRONG field is
  * worse than a missing one, so the table earns its keep.
  *
- * `mergeConfig` is a shallow `Object.assign` over the defaults: it copies
- * whatever is stored on top of the default without looking at it. So a corrupt
+ * `mergeConfig` copies whatever is stored on top of the defaults without looking
+ * at it (a per-field merge for the two nested objects, a shallow one for the
+ * scalars). So a corrupt
  * `apps` was not a fallback, it was a live crash — `appItems` calls
  * `apps.filter(...)`, and a profile where `apps` had been hand-edited into a
  * string took the whole home grid down with "apps.filter is not a function".
@@ -250,6 +343,8 @@ const CONFIG_FIELDS: Record<string, (raw: unknown) => unknown> = {
   statusBarPosition: vStatusBarPosition,
   autoRestore: vBoolean,
   apps: vArray(vQuickApp),
+  dark: (raw) => vDarkConfig(raw),
+  reader: (raw) => vReaderConfig(raw),
 };
 
 export const vConfig: Validator<Partial<Config>> = (raw) => {

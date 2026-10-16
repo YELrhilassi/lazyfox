@@ -157,11 +157,24 @@ export function keyEvent(
   };
 }
 
-/** A window whose gBrowser holds `spec` as the selected tab. */
+/**
+ * A window whose gBrowser holds `spec` as the selected tab.
+ *
+ * The tab IS the browser here, which is the convention keystate's fixtures
+ * already follow (`urlOfTab` falls back to reading the tab itself) — and it is
+ * what `getTabForBrowser` answers with, because the two questions keystate asks
+ * about a <browser> ("which tab is this?" and "what is this tab showing?") have
+ * the same answer in a one-tab fake.
+ */
 export function fakeWindow(spec = "moz-extension://abc/commandcenter.html"): any {
   const browser = { currentURI: { spec } };
   return {
-    gBrowser: { tabs: [browser], selectedBrowser: browser, selectedTab: browser },
+    gBrowser: {
+      tabs: [browser],
+      selectedBrowser: browser,
+      selectedTab: browser,
+      getTabForBrowser: (b: any) => b || null,
+    },
     document: { visibilityState: "visible", addEventListener() {}, documentElement: null },
   };
 }
