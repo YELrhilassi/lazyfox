@@ -430,6 +430,30 @@ export async function run(ctx: any): Promise<void> {
     assert(aId != null, "the web tab is in the strip");
     await selectAndSettle(aId as number, HOME);
 
+    // THE BASELINE FOR THE LOSS COUNTER (§5.6). Every command the background
+    // pushes carries a per-window sequence number, and the helper publishes what
+    // it received and where the gaps were (`relay` in the state reply, from
+    // chrome/relayseq.ts). Read BEFORE the navigation so this case can say what
+    // THIS boot did rather than what the session has done.
+    const readRelay = () =>
+      ctx.chromeStateHandle().then((st: any) => (st.raw && st.raw.relay) || null).catch(() => null);
+    // "Which hop ate it" in words, for a failure report: the relay page's own
+    // discard counter moving is the relay's buffer, and NOT moving is the
+    // background never having handed the command over at all.
+    const describeGap = (r: any): string => {
+      const g = r && r.lastGap;
+      if (!g) return "no gap recorded";
+      const hop =
+        Number(g.relayLost) > 0
+          ? `${Number(g.relayLost)} discarded by the relay page's own outbound buffer`
+          : `${Number(g.neverReachedRelay)} never handed to the relay page by the background`;
+      return (
+        `commands ${Number(g.from) + 1}..${Number(g.to) - 1} never reached the helper ` +
+        `(${hop})`
+      );
+    };
+    const relayBefore = await readRelay();
+
     // ARM IT DIRECTLY, and this is the whole reason the case is written this way:
     // `tabs.update` STARTS a real navigation and does not wait for a document, so
     // the read taken next lands while the window is still open. Waiting for a load
@@ -479,17 +503,35 @@ export async function run(ctx: any): Promise<void> {
       }, 8000).catch(() => null);
       if (spent) break;
       const missed = await readExpect();
+      // ...AND THE COUNTER SAYS WHETHER IT WAS EVEN A LOST MESSAGE, which is the
+      // whole point of the instrument: a report can also be dropped BEFORE the
+      // helper's counter exists (content -> background), and that is a different
+      // class with a different fix.
+      const missRelay = await readRelay();
+      const missAttribution =
+        missRelay && Number(missRelay.gaps) > Number(relayBefore && relayBefore.gaps)
+          ? describeGap(missRelay)
+          : "no command was counted missing, so the report was lost before the " +
+            "background decided to send one (content -> background) — a class the " +
+            "relay counter cannot see";
       if (round === 2) {
         assert(
           false,
           "neither of two documents spent the report window it was navigated under " +
             "(the transport dropped both boot reports): " +
-            JSON.stringify(missed)
+            JSON.stringify(missed) +
+            "; counter: " +
+            JSON.stringify(missRelay) +
+            " -> " +
+            missAttribution
         );
       }
       ctx.repaired.push(
         "the window was opened and then expired without the page's report spending it " +
-          "(" + JSON.stringify(missed) + ") — §5.6's lost-boot-report class; asked a second document"
+          "(" + JSON.stringify(missed) + ") — §5.6's lost-boot-report class; asked a second " +
+          "document; counter before/after: " +
+          JSON.stringify(relayBefore) + " / " + JSON.stringify(missRelay) +
+          " -> " + missAttribution
       );
       // A second navigation, to the other fixture route: a real cross-document load,
       // which is what arms the window in the first place.
@@ -522,9 +564,39 @@ export async function run(ctx: any): Promise<void> {
     const gap = Number(spent.gapMs);
     assert(Number.isFinite(gap) && gap >= 0, "the readout names the gap it measured: " + JSON.stringify(spent));
     assert(Number(spent.gapSamples) >= 1, "and the sample is counted: " + JSON.stringify(spent));
+
+    // AND THE COUNTER IS LIVE AND THIS BOOT COST NOTHING, which is what makes the
+    // window's whole story decidable: the helper received commands (so the
+    // instrument is wired end to end, not a field that is always zero), and no
+    // command went missing on the way here while a page booted under a window it
+    // then spent. A gap here is the lost-boot-report class WITH ITS HOP NAMED,
+    // and it is reported as a repair rather than hidden — the product still
+    // answered (the window was spent), and the case is about the instrument
+    // rather than about the loss.
+    const relayAfter = await readRelay();
+    assert(
+      relayAfter && relayAfter.live === true,
+      "the relay counter is wired end to end (a command with a sequence number reached " +
+        "the helper): " +
+        JSON.stringify(relayAfter)
+    );
+    assert(
+      Number(relayAfter.recv) > Number(relayBefore && relayBefore.recv),
+      "and this case's own boot put commands through it: " +
+        JSON.stringify({ before: relayBefore && relayBefore.recv, after: relayAfter.recv })
+    );
+    const gapsNow = Number(relayAfter.gaps) - Number(relayBefore && relayBefore.gaps);
+    if (gapsNow > 0) {
+      ctx.repaired.push(
+        `${gapsNow} gap(s) in the command sequence opened while this case ran — ` +
+          describeGap(relayAfter) +
+          "; counter " + JSON.stringify(relayBefore) + " -> " + JSON.stringify(relayAfter)
+      );
+    }
     console.log(
       `       (report window: last report ${gap}ms after its arm, of a ${1500}ms window; ` +
-        `${Number(spent.gapSamples)} spent this session; document ${JSON.stringify(spent.doc)})`
+        `${Number(spent.gapSamples)} spent this session; document ${JSON.stringify(spent.doc)}; ` +
+        `relay: ${Number(relayAfter.recv)} commands received, ${gapsNow} lost under this case)`
     );
     await ctx.gotoPage(a, HELLO);
   });

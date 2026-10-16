@@ -14,7 +14,7 @@ manual.
 
 ```
   ms    TIER 1  unit      scripts/test/*.test.ts        node:test
-         pure logic, fakes, no I/O. 501 cases.
+         pure logic, fakes, no I/O. 999 cases.
   ms    TIER 2  seam      src/chrome/dependency-audit.ts
          may a chrome module read a browser global outside its `env`?
   ms    TIER 2  wire      scripts/test/wire-replay.test.ts
@@ -136,9 +136,23 @@ Two lessons, both now written at the call site so they are not re-attempted:
   queue and the URL slot are the same channel; adding a producer to one silently
   changes the other's latency.
 
-`scripts/test/relay-queue.test.ts` (8 checks) pins the queue's delivery
+`scripts/test/relay-queue.test.ts` (11 checks) pins the queue's delivery
 guarantees, and 2 of them were confirmed to go **red** against the pre-fix code
 before being believed — a test never seen failing is not evidence.
+
+One of those eleven is now about the opposite direction, and it is the reason
+the tier table above can say "999 cases" rather than "999 except one long one":
+**a command the queue gives up on still consumes its sequence number.** The
+queue's TTL is waited out for real (7s, deliberately — a stubbed clock would not
+test the path), the port then connects, and the assertion is that the next
+command arrives as **2**, not as a fresh 1. That hole is the whole point: since
+2026-10-16 every command the background pushes carries a per-window sequence
+number, and the helper counts what arrives and what is missing
+(`src/chrome/relayseq.ts`, published as `relay` in the `#lfc=state` reply, with
+its own 15-case file `scripts/test/relay-seq.test.ts` for the arithmetic). A
+report that never arrived — the freeze in KEYBOARD-FREEZE.md, whose symptom is a
+key nobody answers — is therefore a number in every state read, and
+`relay.gaps` growing during a case is the failure text naming which hop ate it.
 
 ---
 

@@ -20,9 +20,16 @@
 //       page  -> helper: the page rewrites its own URL (history.replaceState,
 //                        no reload) to
 //                        #lfr=rp.<id>.<jsonResult>  (reply to a request)
-//                        #lfr=cm.<action>.<jsonArg>  (background -> chrome cmd)
+//                        #lfr=cm.<seq>.<lost>.<action>.<jsonArg>
+//                                                    (background -> chrome cmd)
 //                        and the helper (which polls the tab URL every 500ms)
 //                        picks them up and clears the slot.
+//
+// The command carries the background's own sequence number (seq) AND this
+// page's count of commands it has had to throw away (lost). A command is the
+// one message whose loss is SILENT — a dropped reply times its caller out — and
+// those two numbers are how the helper sees a loss at all, and which side of
+// this page it happened on. See chrome/relayseq.ts.
 //
 // The encoding and decoding of those three shapes live in
 // shared/relay-wire.ts, NOT here. The format used to be hand-parsed on each
@@ -51,9 +58,19 @@ import { HASH_PREFIX, decodeRequest, encodeCommand, encodeReply, isRelayHash, re
     }
   })();
   // Outbound messages (rp/cm) buffered while a request hash occupies the slot.
+  //
+  // `seq` rides along for a command (see encodeOutbound): it is the background's
+  // number, and it must survive the buffer, because a command that waits here
+  // and is then dropped is exactly the loss the counter exists to name.
   const pendingOut: Array<{ hash: string }> = [];
   const OUT_TTL = 6000;
   const PENDING_KEY = "lfRelayPending";
+  // HOW MANY OUTBOUND COMMANDS THIS PAGE HAS THROWN AWAY. It is stamped on every
+  // command this page writes (encodeCommand's `lost`), so the helper can tell a
+  // command this buffer discarded from one the background never handed over.
+  // Persisted with the buffer, so a reload does not reset it to zero and make
+  // the two commands either side of it incomparable.
+  let relayLost = 0;
 
   // The helper writes its rq hashes by NAVIGATING this tab, and a fragment
   // navigation from the chrome side can be a FULL RELOAD rather than a
@@ -65,7 +82,7 @@ import { HASH_PREFIX, decodeRequest, encodeCommand, encodeReply, isRelayHash, re
     try {
       sessionStorage.setItem(
         PENDING_KEY,
-        JSON.stringify(pendingOut.map((p) => p.hash))
+        JSON.stringify({ pending: pendingOut.map((p) => p.hash), lost: relayLost })
       );
     } catch (e) {
       // ignore
@@ -76,11 +93,18 @@ import { HASH_PREFIX, decodeRequest, encodeCommand, encodeReply, isRelayHash, re
     try {
       const raw = sessionStorage.getItem(PENDING_KEY);
       if (!raw) return;
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr)) {
-        for (const h of arr) {
+      const saved = JSON.parse(raw);
+      // A bare array is a buffer written by a build that kept only the hashes;
+      // reading it costs one `typeof` and avoids losing the buffer of whatever
+      // page was on screen during an upgrade.
+      const hashes = Array.isArray(saved) ? saved : saved && saved.pending;
+      if (Array.isArray(hashes)) {
+        for (const h of hashes) {
           if (typeof h === "string" && h) pendingOut.push({ hash: h });
         }
+      }
+      if (saved && !Array.isArray(saved) && typeof saved.lost === "number" && saved.lost > 0) {
+        relayLost = Math.floor(saved.lost);
       }
       sessionStorage.removeItem(PENDING_KEY);
     } catch (e) {
@@ -99,18 +123,28 @@ import { HASH_PREFIX, decodeRequest, encodeCommand, encodeReply, isRelayHash, re
   }
 
   // Write an outbound rp/cm hash into the URL (same-document, no reload).
-  function writeHash(hash: string): void {
+  // Answers whether the slot really took it: a write that threw means the
+  // message is GONE, and a command that is gone is a number the helper counts.
+  function writeHash(hash: string): boolean {
     try {
       history.replaceState(null, "", base + HASH_PREFIX + hash);
+      return true;
     } catch (e) {
-      // ignore
+      return false;
     }
+  }
+
+  // A command this page could not deliver. Counted, not silently forgotten —
+  // see relayLost.
+  function noteLostCommand(hash: string): void {
+    if (hash.indexOf("cm.") !== 0) return;
+    relayLost++;
   }
 
   function flushPendingOut(): void {
     while (pendingOut.length && !slotBusy()) {
       const m = pendingOut.shift()!;
-      writeHash(m.hash);
+      if (!writeHash(m.hash)) noteLostCommand(m.hash);
     }
     persistPending();
   }
@@ -185,15 +219,28 @@ import { HASH_PREFIX, decodeRequest, encodeCommand, encodeReply, isRelayHash, re
         pendingOut.push({ hash: hash });
         persistPending();
         setTimeout(() => {
-          const i = pendingOut.indexOf({ hash: hash });
-          if (i >= 0) pendingOut.splice(i, 1);
-          persistPending();
+          // BY HASH, not by object identity. This used to be
+          // `pendingOut.indexOf({ hash: hash })`, which never matches anything —
+          // so the TTL below had never removed a single entry in its life, and a
+          // command could sit in this buffer long past the point where it was
+          // worth delivering. TTL expiry is a LOSS and is counted as one.
+          const i = pendingOut.findIndex((p) => p.hash === hash);
+          if (i >= 0) {
+            pendingOut.splice(i, 1);
+            noteLostCommand(hash);
+            persistPending();
+          }
         }, OUT_TTL);
-        if (pendingOut.length > 64) pendingOut.splice(0, pendingOut.length - 64);
+        if (pendingOut.length > 64) {
+          // The cap drops the OLDEST first; each one it drops is a lost command.
+          for (const dropped of pendingOut.splice(0, pendingOut.length - 64)) {
+            noteLostCommand(dropped.hash);
+          }
+        }
         persistPending();
         return;
       }
-      writeHash(hash);
+      if (!writeHash(hash)) noteLostCommand(hash);
       persistPending();
     });
     port.onDisconnect.addListener(() => {
@@ -208,7 +255,12 @@ import { HASH_PREFIX, decodeRequest, encodeCommand, encodeReply, isRelayHash, re
   function encodeOutbound(msg: any): string | null {
     try {
       if (msg.type === "resp") return encodeReply(msg.id, msg.result);
-      if (msg.type === "cmd") return encodeCommand(String(msg.action || ""), msg.arg);
+      if (msg.type === "cmd") {
+        // `msg.seq` is the background's per-window number and `relayLost` this
+        // page's own discard count, at the moment of writing. Both are read by
+        // the helper's counter (chrome/relayseq.ts).
+        return encodeCommand(msg.seq, relayLost, String(msg.action || ""), msg.arg);
+      }
     } catch (e) {
       // ignore
     }

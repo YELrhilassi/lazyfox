@@ -27,6 +27,56 @@ import type { ChromeEnv } from "./env";
  * only be readable from the browser. The shapes are structural, so
  * `DebugState` satisfies this without either side importing the other.
  */
+/**
+ * The relay tab and the LOST-COMMAND COUNTER — what the background sent, what
+ * arrived, and which hop ate the difference (docs/KEYBOARD-OWNERSHIP.md 5.6).
+ *
+ * The counter exists because a presence report travels four fire-and-forget
+ * hops (content -> background -> relay page -> helper) and its loss is SILENT:
+ * the helper simply keeps owning a live page's keys, so the user's first
+ * keystroke is answered by nobody. `recv`/`gaps` make that a number a premise
+ * can assert on — `relay.gaps === 0` after a page boots — and `lastGap` names
+ * the hop:
+ *
+ *   `relayLost` > 0         the relay PAGE discarded those commands (its own
+ *                           outbound buffer, on its TTL or its 64-command cap)
+ *   `neverReachedRelay` > 0 the background never handed them over at all
+ *
+ * `relayResetSeen` is the honesty flag: a NEW relay tab starts its discard
+ * counter at zero, and the attribution of the first gap after that restart is
+ * the weaker one.
+ *
+ * The rest (`ready`, `relayTabs`, `allTabs`, `windowLive`, `urlSlot`, `pending`,
+ * `awaiting`) is the relay's own liveness readout, older than the counter and
+ * unchanged by it.
+ */
+export interface ChromeStateRelayV1 {
+  ready: boolean;
+  /** Commands dispatched with a stamp. */
+  recv: number;
+  /** Jumps forward in the background's sequence: lost commands. */
+  gaps: number;
+  /** Commands that arrived at or below the highest sequence seen. */
+  outOfOrder: number;
+  /** The most recent gap, or null. */
+  lastGap: {
+    at: number;
+    from: number;
+    to: number;
+    missing: number;
+    relayLost: number;
+    neverReachedRelay: number;
+    slot: string;
+  } | null;
+  lostInRelay: number;
+  lostBeforeRelay: number;
+  relayResetSeen: boolean;
+  urlSlot: string | null;
+  pending: number;
+  awaiting: number;
+  [k: string]: unknown;
+}
+
 export interface ChromeStateSource {
   hasPopup(): boolean;
   leaderActive(): boolean;
@@ -52,7 +102,8 @@ export interface ChromeStateSource {
   isFullscreen(): boolean;
   activeSplitView(): any;
   realTabs(): any[];
-  relay(): any;
+  /** The relay's liveness AND the lost-command counter — see ChromeStateRelayV1. */
+  relay(): ChromeStateRelayV1;
 }
 
 /** The version of the reply this build speaks. Bump on any breaking change. */
@@ -228,7 +279,8 @@ export interface ChromeStateV1 {
   // --- identity / environment -------------------------------------------------
   profileLeaf: string;
   restrictedDomains: string;
-  relay: any;
+  /** The relay tab, plus the lost-command counter — see ChromeStateRelayV1. */
+  relay: ChromeStateRelayV1 | { error: string } | null;
 
   // --- chrome UI --------------------------------------------------------------
   popup: ChromeStatePopupV1 | { error: string };

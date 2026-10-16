@@ -80,10 +80,22 @@ actions are now reply-bearing and the failure is toasted.
 The three message shapes are packed into a URL fragment:
 
 ```
-#lfr=rq.<id>.<action>.<jsonArg>   helper -> page -> background   (request)
-#lfr=rp.<id>.<jsonResult>        background -> page -> helper   (reply)
-#lfr=cm.<action>.<jsonArg>       background -> page -> helper   (command)
+#lfr=rq.<id>.<action>.<jsonArg>            helper -> page -> background   (request)
+#lfr=rp.<id>.<jsonResult>                 background -> page -> helper   (reply)
+#lfr=cm.<seq>.<lost>.<action>.<jsonArg>   background -> page -> helper   (command)
 ```
+
+The command's two leading numbers are added 2026-10-16, and they exist for the
+one message whose loss is SILENT: a dropped request or reply times its sender
+out, while a dropped command simply never happens — which is how a presence
+report goes missing and a live page's keys end up answered by nobody
+(docs/KEYBOARD-FREEZE.md). `seq` is the background's per-window sequence number,
+minted when it DECIDES to send (so a command it cannot post still consumes a
+number, and a real drop leaves a visible hole); `lost` is the relay page's own
+count of commands it had to discard, carried so the helper can tell a command
+its buffer ate from one the background never handed over. The helper counts both
+in `src/chrome/relayseq.ts` and publishes the result as `relay` in the
+`#lfc=state` reply (`recv`, `gaps`, `lastGap`, `lostInRelay`, `lostBeforeRelay`).
 
 That format used to be hand-encoded and hand-parsed **independently on each
 side**: `channel.ts` wrote `rq` and read `rp`/`cm`, `relay.ts` wrote `rp`/`cm`
@@ -95,7 +107,8 @@ reply direction carried JSON, which is what the U+0001 packing existed to
 work around.
 
 `shared/relay-wire.ts` is now the only implementation, used by both sides, with
-35 tests (`node scripts/test-relay-wire.ts`). The round trips are the point — anything one side
+its round trips and its robustness cases asserted in
+`scripts/test/relay-wire.test.ts` (part of tier 1, so `npm run test:unit`). The round trips are the point — anything one side
 encodes, the other must decode — but the robustness cases matter almost as much,
 because the message passes through a URL a browser may truncate, and a decoder
 that throws there takes down whatever was polling.

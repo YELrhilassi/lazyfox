@@ -424,9 +424,70 @@ the thing it must not wait for can be held open (the mutation-shaped test in
       `keyTrace` rows. This is what turned "the premise failed" into "the report is
       GONE, and here is the report that is in the slot instead" — the two group runs
       in KEYBOARD-FREEZE.md §5b are read entirely from it.
-- [ ] OPEN, and now the top of this list: **a lost-report counter.** The measurement
-      above says a fresh document's boot report can go missing between the document
-      and the helper, and nothing in the system notices.
+- [x] **The lost-report counter — LANDED (2026-10-16).** A fresh document's boot
+      report can go missing between the document and the helper, and it is now a
+      NUMBER instead of a mystery. The command wire gained two counters
+      (`shared/relay-wire.ts`): `seq`, minted by the BACKGROUND per window when it
+      DECIDES to send a command (so a command it never manages to post still
+      consumes a number), and `lost`, the relay page's own count of commands it
+      had to discard when it wrote this one. The helper counts what arrives and
+      what is missing (`chrome/relayseq.ts`, published as `relay` in the `#lfc=state`
+      reply): `recv`, `gaps`, `outOfOrder`, `lostInRelay`, `lostBeforeRelay`,
+      `relayResetSeen`, and `lastGap = { at, from, to, missing, relayLost,
+      neverReachedRelay, slot }`.
+      **Measured, in a real Firefox, on the ownership case that had recorded the
+      loss by hand:** `relay: 68 commands received, 0 lost under this case` — the
+      stamp survives content → background → relay page → URL → poll, and a boot
+      that took 3255ms did not lose a single command.
+      **The full content group (178 cases) then said something the single case
+      could not, and it is not flattering:** `recv: 1112, gaps: 130, lostInRelay: 99,
+      lostBeforeRelay: 163` over one session — so roughly a fifth of the commands
+      the background decided to send never reached the helper, and the case's own
+      second reading finally NAMED one of them instead of guessing:
+      `commands 1365..1366 never reached the helper (2 never handed to the relay
+      page by the background)`, both of them `contentState` pushes — presence
+      reports. That is the transport being a single 500ms URL slot with a
+      last-wins payload while a suite presses keys as fast as it can; the state
+      pushes survive it (each one supersedes the last), and the presence report is
+      the one that does not, which is exactly why this instrument was asked for.
+      The per-gap split is best effort — the relay's raw discard count was 253 for
+      the session, of which 99 fell inside an observable window (see
+      `RelayGap.relayLost`); the TOTAL, which is the number a premise needs, is
+      exact. The loss direction is
+      falsified rather than assumed: `scripts/test/relay-queue.test.ts` waits out
+      the background queue's TTL for real and asserts the command the queue GAVE UP
+      ON kept its number (the next one arrives as 2, not 1), so a real drop leaves
+      a visible hole; and `scripts/test/relay-seq.test.ts` (15 cases) pins the
+      arithmetic — the first command is a baseline and not 40 lost commands, an
+      out-of-order delivery is NOT a gap, and a relay page that restarted cannot
+      have losses credited to it.
+      **Where this parts company with the design sketched below, and why.** The
+      sketch expected the CHROME side's poll to be distinguishable from the
+      background's write by whether the missing command was "present in the relay
+      tab's own URL". It is not distinguishable, and the code that would produce
+      that case cannot: the poll clears the slot as it dispatches, and the relay
+      page never writes over a busy slot, so a command hash is read exactly once.
+      What IS decisive is the relay page's own discard count, which is why it rides
+      the wire: a gap whose missing commands the relay's counter accounts for was
+      eaten by the relay's outbound buffer (its TTL, its 64-command cap, or a failed
+      write), and a gap it cannot account for is the background never handing the
+      command over. `lastGap.slot` is still recorded, so if a future poll ever can
+      lose a command it will say so.
+      The other named use is closed too, one rung lower than designed: the
+      re-assert's limiter (`PRESENCE_REASSERT_MS = 3000`) cannot see the helper's
+      gap count without a round trip through the background, and a KEY must never
+      wait on one — so the limiter is instead given the one loss this side can
+      PROVE (`syncContent` refused or threw means the report never reached the
+      background, so the window it just spent bought nothing and the next key may
+      try again). That is in `content/main.ts`; the hop after it is the counter's
+      job, and a key pressed while the helper's window stands is answered by the
+      page anyway, which is the point of the helper deferring.
+      **Still open, and now readable in every run:** the ownership case records a
+      gap it sees as a repair note with the hop named, and the case still asks a
+      second document when the window is not spent (the note now says whether a
+      command was counted missing at all, or whether the report was lost before the
+      background decided to send one — a class the counter cannot see). The
+      original observation, kept for the record:
       **Observed again, in a group run of 2026-10-16**, and this time the losing
       side is pinned down by two independent cases rather than by one failure text:
       the ownership case navigated a real tab (`browser.tabs.update`, no wait for a
@@ -447,25 +508,12 @@ the thing it must not wait for can be held open (the mutation-shaped test in
       navigation). Two case-level consequences are in the tree and are NOT the
       fix: the ownership case asks a second document and records the miss as a
       repair note (so the count of lost reports is visible in every run), and the
-      stall case presses twice with the same repair note. Design: the background
-      stamps every `cm.` command it pushes with a monotonic id; the chrome side
-      records the highest id it has seen and how many gaps it has counted, and
-      publishes `relay: { …, recv, gaps, lastGap }` in the state reply. Then a
-      premise asserts `gaps === 0` after a page boots, and "a report never arrived"
-      is a number instead of a mystery — and the first `lastGap` names which hop
-      lost it (a gap with the command present in the relay tab's own URL is the
-      CHROME side's poll; a gap with the URL never showing it is the background's
-      write). Until this exists, the premise asking twice (above) is the honest
-      workaround, not a fix — and the case it could not rescue is the open failure in
-      §5.7.
-      It also has a second use, and the measurement that asks for it: the re-assert
-      is THROTTLED (`PRESENCE_REASSERT_MS = 3000`, `shared/throttle.ts`) and the
-      limiter cannot tell a report that arrived from one that was lost — so after a
-      lost boot report the product is silent for up to three seconds, and the first
-      key the user presses in that window is a no-op repair. Measured while fixing
-      the premise above: the nudge had to wait the window out before it did
-      anything at all. With a gap count the limiter could be given a reason to
-      bypass itself (a known-missing report is not a keystroke).
+      stall case presses twice with the same repair note. Until the counter landed,
+      that asking-twice was the honest workaround, not a fix — and the case it could
+      not rescue is the open failure in §5.7. The sketch above also proposed that
+      the re-assert's limiter be given a reason to bypass itself from the gap count;
+      the landed shape and why it is the local loss instead is recorded in the
+      LANDED row at the top of this list.
 - [ ] OPEN: the diagnostics-page row (`;T`) — it needs the helper's verdict pushed
       into extension storage (a new relay action plus a write policy), not one line.
       The state reply is the same instrument and is already where a report is read.
@@ -506,6 +554,36 @@ not have to re-derive what was measured and what was only intended.
       nothing in it touches the presence path, but it is listed as outstanding
       rather than implied green.
 - [x] `npm run dev-install` for the user, with the retest procedure below.
+
+**The list above is that pass's.** The numbers below are the counter's pass
+(2026-10-16), recorded the same way — a command that ran, with its result:
+
+- [x] `npm run typecheck` — **clean**, 0 errors over all four configs.
+- [x] `npm test` — **exit 0**: `go test ./core/`, **999/999** unit cases (was 977:
+      +15 `scripts/test/relay-seq.test.ts`, +5 wire cases for the two new fields,
+      +2 in `scripts/test/relay-queue.test.ts`), wire **17/17**, seam **17/17**, the
+      legacy scripts, `check-dist` ("dist/ complete and self-contained") and **29**
+      installer-payload checks.
+- [x] the new tests were seen FAILING before they were believed: with the minting
+      mutated to reuse one number, both sequence cases go red with the offending
+      message (`expected a rising stamp, got […seq:1},{…seq:1}]`, and the give-up
+      case naming the command that kept its number). The mutation was reverted and
+      the file re-run green — a test never seen failing is not evidence.
+- [x] `npm run sync` — the payload and every installer rebuilt from these sources
+      (29 payload checks, all six binaries fresh, `Everything above is green`).
+- [x] `npm run e2e -- --suite content --only "content/ownership"` — **6/6**, and the
+      case that had recorded the lost boot report by hand now reads the counter:
+      `relay: 68 commands received, 0 lost under this case`, with the window sample
+      beside it (3255ms).
+- [x] `npm run e2e -- --suite content` (the whole group) — **177/178, exit 0**,
+      "All remaining failures are already recorded in the baseline": the same
+      result as the run before the wire change, so every suite that rides the
+      relay still passes. The run also REPRODUCED the lost-boot-report class in the
+      ownership case (`the window was opened and then expired without the page's
+      report spending it`, `ageMs: 8174`) and, for the first time, named the hop —
+      a `contentState` push two numbers wide that the background never handed to
+      the relay page. The case records that as a repair note, so the count of
+      lost reports is visible in every run.
 
 ### 5.8 The user's retest procedure (what to try, and what it should look like)
 1. Open a page, click into the toolbar once so the address bar holds the keyboard,
