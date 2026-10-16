@@ -604,11 +604,20 @@ not have to re-derive what was measured and what was only intended.
    are looking at with no row of its own is the freeze's own signature (the helper
    is claiming it), and it is the newest thing this pass learned to read: send both
    fields with the report.
-6. One state worth knowing while reading that field: after a report goes missing,
-   the page's own re-announcement is THROTTLED — 3 s from its last report, whether
-   or not that report arrived — so a key pressed immediately after the freeze may
-   appear to do nothing but re-arms ownership for the next one. If a report ever
-   comes back with that fingerprint, §5.6's missing instrument is the fix.
+   Since 2026-10-16 the same reply also carries `relay: { recv, gaps, lastGap, … }`
+   — the lost-command counter. `gaps` above zero means commands the background
+   sent never reached the helper, and `lastGap` names the hop (`relayLost` = the
+   relay page's own buffer ate them; `neverReachedRelay` = the background never
+   handed them over). A presence report that goes missing leaves a gap here, which
+   is the difference between "the keyboard is stuck" and "a message is missing".
+6. One state worth knowing while reading `relay`: the page's own re-announcement
+   is THROTTLED — 3 s from its last report, whether or not that report arrived —
+   so a key pressed immediately after a freeze may appear to do nothing but re-arm
+   ownership for the next one. What is no longer true is the old caveat that the
+   limiter could not tell a lost report from a delivered one: a report the
+   BACKGROUND refuses (or that throws) now clears the window, so the next key
+   re-announces instead of waiting it out. The hop after that one is what `relay`
+   counts.
 
 ## 6. What is already proven (do not re-litigate)
 
