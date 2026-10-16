@@ -528,7 +528,27 @@ import type { ContentPopupShell } from "./find";
       });
     return holdInitInFlight;
   };
-  void initializeHoldFromPresence();
+  // THE BOOT REPORT IS SENT AT THE END OF THIS MODULE, NOT HERE, and the reason is
+  // the whole point of reporting at all.
+  //
+  // The report is a claim that THIS document answers for its own keys, and the
+  // helper believes it the moment it lands: it stops answering and defers to the
+  // page. Sending it before the key listener exists (installContentDom, at the end
+  // of this file) is therefore a claim the document cannot honour — the helper
+  // declines a key, the page has nothing listening yet, and the keystroke is
+  // answered by NOBODY. Measured, in a real browser: the e2e case "a page that
+  // sends headers then stalls still answers the leader key" failed exactly here
+  // (`data-lf-content=1`, the page's own dispatch trace empty, the helper
+  // deferring), and it is the mechanism behind the field report "the leader gets
+  // cleared out or the action gets absorbed, so I have to do it twice" — the
+  // difference between that page and a fast one is only how long this module takes
+  // to reach its last line.
+  //
+  // Late is safe in this direction: until the report lands the helper owns the
+  // keys (or declines them for the navigation-scoped window, which is bounded), and
+  // the document's own engine is installed by the time a user can press anything
+  // meaningful. A LOST report is repaired by `reassertPresence` on the first key
+  // and by `pageshow`, both of which are unchanged.
   // ...and report OUT, so presence cannot outlive this document. `pagehide`
   // rather than `unload`: it is the one both a real navigation and a bfcache
   // eviction fire, and `unload` is unreliable on mobile and in some unload
@@ -703,6 +723,14 @@ import type { ContentPopupShell } from "./find";
   // scroll target back to automatic, and no field left focused that the user did
   // not ask to keep.
   function cancelOverlays(): void {
+    // READER MODE GOES WITH EVERYTHING ELSE, and it is listed FIRST because it is
+    // the biggest thing on screen: the article REPLACES the page, so a cancel
+    // that left it standing would leave the user looking at a document they
+    // cannot get out of with the key they just pressed (`;R` was the only way
+    // out, which is not a key anybody guesses under a page that has vanished).
+    // Escape is this product's master cancel on every other surface, and the
+    // reader is a Lazyfox surface like the hint layer and the which-key panel.
+    if (reader.active()) reader.close();
     if (hints.active || hints.starting) hints.exit();
     if (leader.hasPending()) leader.cancelPending();
     if (leader.active) leader.hide();
@@ -1288,4 +1316,11 @@ import type { ContentPopupShell } from "./find";
       reassertPresence();
     },
   });
+  // THE LAST LINE, DELIBERATELY: the document is now answering keys, so this is
+  // the first moment at which "a content script owns this page" is true in the
+  // sense the helper spends it on. Everything the report touches — the hold
+  // snapshot it restores, `publishHoldState`'s queue — is designed to be reported
+  // late (see the note on initializeHoldFromPresence above); what is NOT safe is
+  // reporting EARLY, which the e2e stall case measures.
+  void initializeHoldFromPresence();
 })();

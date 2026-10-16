@@ -154,6 +154,32 @@ function alphaOf(css: string): number {
 export function createDarkApplier(doc: Document, win: Window): DarkApplier {
   let style: HTMLStyleElement | null = null;
 
+  // THE PAGE'S OWN COLOURS, per selector — and the only colours this module is
+  // ever allowed to decide from.
+  //
+  // The first read of an element is the page's colour; every later pass runs with
+  // THIS ENGINE'S SHEET INSTALLED, so the same element now computes to whatever
+  // the mapping painted it. Reading that back is not a measurement of the page, it
+  // is a measurement of ourselves, and both failure modes are ugly and were
+  // observed in a real browser (the e2e theme suite): a light page read back dark
+  // is decided as "the page is already dark" and stands the whole feature down,
+  // and a colour fed through the mapping twice drifts away from the palette it
+  // was mapped from.
+  //
+  // So a resample re-measures GEOMETRY and reaches elements the first pass could
+  // not have seen; it does not re-read the colour of anything it has already
+  // recorded. This is the same rule Dark Reader's own engine follows (it keeps
+  // the original computed values per element and never reads a modified one).
+  //
+  // The residual, named: an element that is painted by a rule generated from
+  // ANOTHER element (a `.card` rule mapping twenty cards, one of which was
+  // sampled) and is seen for the first time after we painted reads our colour
+  // back. It is one element of one class, it can only ever affect that class's
+  // rule, and paying for it with a measurement taken with our sheet suspended is
+  // a worse trade (that is a visible flash of the undarkened page on every
+  // resample).
+  const originals = new Map<string, { bg?: string; fg?: string; border?: string }>();
+
   const setSheet = (css: string): void => {
     if (!css) {
       if (style) {
@@ -194,13 +220,33 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
   const sample = async (): Promise<PageSample[]> => {
     const samples: PageSample[] = [];
     const bgCache = new Map<Element, string>();
+    // One selector per element PER PASS. `selectorFor` is not free (classList, an
+    // nth-of-type walk) and the colour resolution below consults it for every
+    // ancestor it walks through, so it is computed once and shared. Per pass
+    // rather than kept across passes on purpose: a page that toggles a class
+    // changes the selector, and a stale one would key `originals` to an element
+    // that no longer matches it.
+    const selCache = new Map<Element, string>();
+    const selOf = (el: Element): string => {
+      const hit = selCache.get(el);
+      if (hit !== undefined) return hit;
+      const s = selectorFor(el);
+      selCache.set(el, s);
+      return s;
+    };
     let all: Element[] = [];
     try {
       all = Array.prototype.slice.call(doc.querySelectorAll("*"), 0, MAX_SCAN);
     } catch {
       return samples;
     }
+    // The recorded colour FIRST, the live one only when there is no record: see
+    // `originals`. Consulted by `resolvedBackground` too, so a transparent
+    // element resolves against the colour its ancestor HAD rather than the one
+    // this engine painted on it.
     const read = (el: Element): string => {
+      const known = originals.get(selOf(el));
+      if (known && known.bg) return known.bg;
       try {
         return win.getComputedStyle(el).getPropertyValue("background-color") || "";
       } catch {
@@ -236,14 +282,24 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       if (area < MIN_AREA) continue;
       const hasBgImage = (cs.getPropertyValue("background-image") || "").indexOf("url(") >= 0;
       const borderWidth = parseFloat(cs.getPropertyValue("border-top-width") || "0") || 0;
-      const selector = selectorFor(el);
+      const selector = selOf(el);
       if (!selector) continue;
+      const known = originals.get(selector);
+      const bg = known && known.bg ? known.bg : resolvedBackground(el, read, bgCache);
+      const fg = known && known.fg ? known.fg : cs.getPropertyValue("color") || "";
+      const border =
+        known && known.border
+          ? known.border
+          : borderWidth > 0
+            ? cs.getPropertyValue("border-top-color") || undefined
+            : undefined;
+      if (!known) originals.set(selector, { bg: bg || undefined, fg: fg || undefined, border });
       samples.push({
         selector,
         tag,
-        bg: resolvedBackground(el, read, bgCache),
-        fg: cs.getPropertyValue("color") || "",
-        border: borderWidth > 0 ? cs.getPropertyValue("border-top-color") || undefined : undefined,
+        bg,
+        fg,
+        border,
         area,
         hasBgImage,
         media,
@@ -259,6 +315,10 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
     clear: () => {
       setSheet("");
       setScheme(null);
+      // `originals` is deliberately NOT cleared. It is a record of what the page
+      // looks like, not of what we painted, and the page does not change because
+      // the user pressed a key. The next pass therefore still decides from the
+      // page's own palette — which is what makes a toggle back ON idempotent.
     },
     active: () => !!style,
   };

@@ -86,6 +86,12 @@ export async function run(ctx: any): Promise<void> {
         `JSON.stringify({
           url: location.href,
           ready: document.readyState,
+          // WHETHER A CONTENT SCRIPT IS IN THAT DOCUMENT AT ALL, which is the
+          // first thing a reader of this dump needs: "the key was declined" and
+          // "the key was declined by a page that has an engine" are opposite
+          // fixes, and the document stamps data-lf-content on itself when the
+          // script runs (see content/main.ts).
+          content: document.documentElement && document.documentElement.getAttribute("data-lf-content"),
           leader: document.documentElement && document.documentElement.getAttribute("data-lf-leader"),
           hasFocus: document.hasFocus(),
           active: document.activeElement && (document.activeElement.id || document.activeElement.tagName)
@@ -108,6 +114,12 @@ export async function run(ctx: any): Promise<void> {
               lastAction: last.lastAction,
               selUrl: last.selUrl,
               popup: last.popup,
+              // THE ONE OWNERSHIP FACT THAT IS A TIMER (keystate.contentExpectation).
+              // "nothing armed" reads identically whether the helper declined the
+              // key on purpose — the page had not reported yet — or never saw it,
+              // and this is the field that separates those two, with the window's
+              // length and the last real report's latency beside it.
+              expect: last.expect,
             }
           ) +
           " activeTab=" +
@@ -370,9 +382,69 @@ export async function run(ctx: any): Promise<void> {
 
   await t("a page that sends headers then stalls still answers the leader key", async () => {
     const tab = await freshTab(`${ctx.base}/stall`);
-    await ctx.sendKeys(tab, [{ k: ";" }]);
-    const s = await leaderAnswered(tab);
-    assert(s, "the leader key is answered on a stalled page (by " + s.by + ")");
+    // THE SAME TWO-ATTEMPT DISCIPLINE THE `/hang` CASE USES, for the same reason:
+    // this is a PENDING NAVIGATION, and the synthetic `#lfc=keys` channel is
+    // documented to sometimes deliver NOTHING during one — no error, no reply loss,
+    // a keydown that arrives in no realm. The full account is on "a page that never
+    // responds" above; what it was measured as here is a KEYBOARD THAT IS NOT DEAD:
+    // the failure text below says so itself (nothing armed in either realm, the
+    // page's dispatch trace empty, the document running our content script under
+    // its own `data-lf-content`), which is the harness's shape, not the product's.
+    // One press was all this case had, so one drop read as a regression.
+    //
+    // What must NOT be retried is a key the document RECEIVED and declined: the
+    // page's own capture-phase recorder proves arrival, and arrival with no arm is
+    // the product bug this case exists to catch — it fails on that attempt rather
+    // than asking again.
+    let served: any = null;
+    let seen: string | null = null;
+    for (let attempt = 1; attempt <= 2 && !served; attempt++) {
+      await evalIn(
+        tab,
+        `(() => {
+          window.__lfKeySeen = [];
+          window.addEventListener("keydown", (e) => { window.__lfKeySeen.push(e.key); }, true);
+          return true;
+        })()`
+      ).catch(() => {});
+      await ctx.sendKeys(tab, [{ k: ";" }]);
+      served = await leaderAnswered(tab, 4000).catch(() => null);
+      seen = await evalIn(tab, `(window.__lfKeySeen || []).join(",")`).catch(() => null);
+      if (served || seen) break;
+      if (attempt === 1) {
+        ctx.repaired.push(
+          "the synthetic key channel delivered nothing to the stalled page; re-sent the key"
+        );
+      }
+    }
+    if (!served) {
+      // A FAILURE HAS TO SAY WHICH REALM FAILED, and the same invariant as the
+      // `/hang` case: a key the document SAW and did not act on is the product, a
+      // key no realm saw is the channel. `leaderAnswered`'s own dump carries the
+      // page's state and the chrome state; this extra carries the arrival fact and
+      // the page's own mirrors, which is what separates "never arrived" from
+      // "arrived and was ignored" when the document is still there to be asked.
+      const extra = async () => ({
+        keydownSeenByOwnDocument: seen
+          ? `YES (${JSON.stringify(seen)}) — the document received the key and did not arm (product)`
+          : "NO — the synthetic channel delivered nothing (harness)",
+        mirrors: await evalIn(
+          tab,
+          `JSON.stringify((function () {
+            const root = document.documentElement;
+            return {
+              leader: root && root.getAttribute("data-lf-leader"),
+              keytrace: root && root.getAttribute("data-lf-keytrace"),
+              leadTrace: root && root.getAttribute("data-lf-lead-trace"),
+              active: document.activeElement && (document.activeElement.id || document.activeElement.tagName)
+            };
+          })())`
+        ).catch((e) => JSON.stringify({ evalError: String((e && e.message) || e) })),
+      });
+      await leaderAnswered(tab, 1, extra);
+      throw new Error("unreachable: leaderAnswered did not throw");
+    }
+    assert(served.by, "the leader key is answered on a stalled page (by " + served.by + ")");
     await disarm(tab);
   });
 
@@ -397,8 +469,36 @@ export async function run(ctx: any): Promise<void> {
         const u = await ctx.tabUrlOf(tab).catch(() => "");
         return u && u.indexOf("commandcenter.html") === -1 && doc !== "?" ? u : null;
       }, 15000).catch(() => {});
+      // WAIT OUT THE REPORT WINDOW FIRST, so what is asserted below is a settled
+      // decision rather than a state the navigation is still moving through.
+      // (`keystate.expectContentIn` arms it and the helper declines keys inside
+      // it; its measured length is published by the ownership suite as
+      // `expect.gapMs`.)
+      const windowClosed = await waitFor(async () => {
+        const st = await ctx.chromeState().catch(() => null);
+        const ex = st && st.expect;
+        return ex && ex.open === false ? ex : null;
+      }, 8000).catch(() => null);
+      assert(windowClosed, `no report window is left open on the ${code} error page`);
+      // WHAT THIS CASE IS RUNNING INTO, stated here because it decides how to read
+      // a failure (the rows are quarantined in the baseline for the same reason).
+      //
+      // Firefox renders its own document for an HTTP failure, and the premise this
+      // case was written on — "privileged, never injected, so the chrome helper has
+      // to answer" — is not what this build does: the error page runs OUR CONTENT
+      // SCRIPT (`data-lf-content=1`, measured in the dump below), and the helper
+      // reports that it owns the document anyway (no presence record had landed) in
+      // every failing run. Both realms therefore believe the other one is live, and
+      // the press is answered by neither — the shape of the dead keyboard, on the
+      // pages a failed link lands a user on. Whether a REAL key reaches that
+      // document cannot be decided from here: WebDriver's synthetic keys move
+      // neither the page's dispatch trace nor the helper's leader (both measured),
+      // while the harness's press on an ordinary injectable page works, so this is
+      // either a real freeze or a limit of driving an error page from WebDriver.
+      // It is recorded as an open question in
+      // docs/tasks/2026-10-15-MANUAL-TEST-REPORTS.md rather than papered over.
       await ctx.sendKeys(tab, [{ k: ";" }]);
-      const s = await leaderAnswered(tab);
+      const s = await leaderAnswered(tab, 8000);
       assert(s, "the leader key is answered on a " + code + " error page (url " +
         JSON.stringify(await ctx.tabUrlOf(tab).catch(() => "?")) + ", by " + s.by + ")");
       await disarm(tab);

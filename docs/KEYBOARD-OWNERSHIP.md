@@ -174,10 +174,20 @@ helper; the page's report ending it) and two checks in `test-chrome-keys.ts` (no
 armed for a document a content script can never arrive in; not armed by
 `pushState`).
 RESIDUAL, named: if the page's report takes longer than the window — the transport
-crosses content → background → relay tab → helper, and §5.6's gap counter is the
-missing instrument that would time it — the helper claims for the remainder of that
-gap and the double owner comes back for those keys. The window bounds the damage;
-it does not prove the transport.
+crosses content → background → relay tab → helper — the helper claims for the
+remainder of that gap and the double owner comes back for those keys. The window
+bounds the damage; it does not prove the transport. What it DOES do now is time
+it: the state reply carries `expect: { open, ageMs, leftMs, gapMs, gapSamples, doc }`
+(`keystate.contentExpectation`), where `gapMs` is the latency of the last boot
+report that actually landed and `gapSamples` says how much to trust it — so
+`CONTENT_EXPECT_MS` is a number that can be checked against the transport rather
+than a guess propped up by a comment (see §5.6's first row).
+A SECOND RESIDUAL, measured this pass and NOT explained: on a Firefox HTTP error
+page the page runs our content script (`data-lf-content=1`) while the helper still
+reports that it owns the document, and a WebDriver key moves neither realm. Those
+seven e2e cases are quarantined in the baseline for it, and the question they leave
+open — does a real keyboard reach an error page's content script? — is recorded in
+[tasks/2026-10-15-MANUAL-TEST-REPORTS.md](tasks/2026-10-15-MANUAL-TEST-REPORTS.md).
 SECOND RESIDUAL, in the harness rather than the product: the `#lfc=keys` channel
 decides `fromActor` from presence alone (`chrome/main.ts` `keys.dispatch` =
 `!contentScriptPresent(...) && selectedContentHasKeyboard(...)`), so a key it sends
@@ -392,6 +402,21 @@ the thing it must not wait for can be held open (the mutation-shaped test in
       reply, with a typed accessor (`ChromeStateHandle.keyboard()`) and two contract
       tests (published with the right values; an unreadable one degrades the field
       instead of failing the reply).
+- [x] **The expectation window's own readout** — `expect: { open, ageMs, leftMs,
+      gapMs, gapSamples, doc }` in the same reply (`keystate.contentExpectation`).
+      It is the one piece of ownership state that is a TIMER rather than a record or
+      a URL class, so it is the one that looked like a dead keyboard from outside:
+      a key declined by it and a key nobody saw produce the same failure text. The
+      row is checked because the instrument exists and is published; what it is FOR
+      is the first row below — `gapMs` is the transport latency the residual above
+      used to call unmeasurable. Evidence: the ownership suite's case "the report
+      window opens on a real navigation and is spent by the page's own report"
+      (`scripts/e2e/suites/content/ownership.ts`, green; it prints the sample it
+      measured — **3427ms** on the 2026-10-16 run, against a 1500ms window), three
+      unit checks in
+      `scripts/test-chrome-keys.ts` (the window arms, a failed load does not, the
+      readout names the document the decision was made from), and the `expect` field
+      in the stuck suite's failure text.
 - [x] The failure text of a presence premise carries the report's own coordinates:
       `content/focus`'s `presenceDiag` prints the page's state (`hasFocus`,
       `data-lf-content`, its leader), the helper's `presence[]`, the relay's
@@ -401,7 +426,28 @@ the thing it must not wait for can be held open (the mutation-shaped test in
       in KEYBOARD-FREEZE.md §5b are read entirely from it.
 - [ ] OPEN, and now the top of this list: **a lost-report counter.** The measurement
       above says a fresh document's boot report can go missing between the document
-      and the helper, and nothing in the system notices. Design: the background
+      and the helper, and nothing in the system notices.
+      **Observed again, in a group run of 2026-10-16**, and this time the losing
+      side is pinned down by two independent cases rather than by one failure text:
+      the ownership case navigated a real tab (`browser.tabs.update`, no wait for a
+      document) and read the window as `{"open":false,"ageMs":8242,"leftMs":0,
+      "gapMs":439,"gapSamples":77}` — armed, and then EXPIRED with nothing spending
+      it for eight seconds, in a session whose last 77 lands averaged a few hundred
+      milliseconds. The same run's `content/stuck` stall case found the other
+      half on a `/stall` document: `content: "1"` (our script IS in it), the
+      page's own dispatch ring empty, the chrome helper not armed — the key
+      answered by nobody, and that press went in while the window was still open,
+      so the helper's decline is exactly what its own rule says to do. The
+      ownership reading is the one that names a lost REPORT (a thing the sender
+      cannot see go missing); the stall case's reading is not yet that precise,
+      and its next failure is `delivered` rather than another guess: a
+      capture-phase recorder now runs in that document before the press, and the
+      failure text says whether the document SAW the key (product) or no realm did
+      (the synthetic `#lfc=keys` channel, documented to drop a key during a pending
+      navigation). Two case-level consequences are in the tree and are NOT the
+      fix: the ownership case asks a second document and records the miss as a
+      repair note (so the count of lost reports is visible in every run), and the
+      stall case presses twice with the same repair note. Design: the background
       stamps every `cm.` command it pushes with a monotonic id; the chrome side
       records the highest id it has seen and how many gaps it has counted, and
       publishes `relay: { …, recv, gaps, lastGap }` in the state reply. Then a

@@ -37,8 +37,10 @@ const {
   CONTENT_EXPECT_MS,
   chromeOwnsKeys,
   commandCenterDocumentPresent,
+  contentExpectation,
   contentScriptExpected,
   expectContentIn,
+  firefoxErrorDocument,
   isCommandCenterTab,
   chromeOwnsSurfaces,
   LOCATION_CHANGE_SAME_DOCUMENT,
@@ -755,6 +757,46 @@ ok(
     noteLocationChange(wc, browserOf(cc), 0, SAME_DOC);
     const ccOwned = owns(wc) && !contentScriptExpected(wc);
     return aboutOwned && ccOwned;
+  })()
+);
+ok(
+  "a FAILED LOAD arms nothing: the URL is the one the user asked for, the document is Firefox's own error page",
+  // The case the URL test cannot see, and the one a real browser made visible:
+  // an error page keeps the requested http(s) address in the tab's URI, so
+  // `contentOwnableUrl` says "injectable" and the window is armed on the one page
+  // where nothing will ever report — the helper then declines the first 1500ms of
+  // keys on the very pages where it is the only key engine. Measured: the e2e
+  // stuck suite (nine error pages, one press each) failed on 502 and 504 with
+  // "the leader key was never consumed".
+  (() => {
+    resetContentPresence();
+    const a = makeTab("https://gone.example/");
+    const w = winOf([a]);
+    // The chrome-side fact the rule reads: what Firefox put IN the tab. ONE
+    // object, held in a binding, because `browserOf` builds a fresh one per call.
+    const ba: any = browserOf(a);
+    ba.documentURI = { spec: "about:neterror?e=dnsNotFound&u=https%3A%2F%2Fgone.example%2F" };
+    noteLocationChange(w, ba, 0, SAME_DOC);
+    const helperOwns = owns(w) && !contentScriptExpected(w);
+    // The readout names the document the decision was made from, so a failure
+    // report can tell this case from "nothing armed at all".
+    const named = String(contentExpectation(w).doc).indexOf("about:neterror") === 0;
+    // THE CONTROL, or this check would pass on a rule that never arms anything:
+    // the same navigation to a browser that reports a real document DOES arm it.
+    const b = makeTab("https://fine.example/");
+    const wb = winOf([b]);
+    const bb: any = browserOf(b);
+    bb.documentURI = { spec: "https://fine.example/" };
+    noteLocationChange(wb, bb, 0, SAME_DOC);
+    const armed = !owns(wb) && contentScriptExpected(wb);
+    // And the predicate itself, on the shapes Firefox actually writes.
+    const preds =
+      firefoxErrorDocument("about:neterror?e=timeout") &&
+      firefoxErrorDocument("about:certerror?e=nssBadCert") &&
+      firefoxErrorDocument("about:blocked?e=malwareBlocked") &&
+      !firefoxErrorDocument("https://fine.example/") &&
+      !firefoxErrorDocument("about:blank");
+    return helperOwns && named && armed && preds;
   })()
 );
 ok(

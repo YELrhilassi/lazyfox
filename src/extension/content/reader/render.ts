@@ -28,6 +28,7 @@
 // a reader is to stop the page's design from making the decision.
 
 import { esc } from "../../../shared/dom";
+import { promoteToTopLayer } from "../../../shared/toplayer";
 import type { ReaderConfig, ReaderTheme } from "../../../shared/types";
 import type { Article, Block } from "./extract";
 
@@ -70,22 +71,24 @@ function pageCss(): string {
   );
 }
 
+/**
+ * The article's font stack: the user's own family when they set one.
+ *
+ * Shared by the host's box (which carries the font so the SHADOW's text inherits
+ * it) and by nothing else — the shadow stylesheet no longer declares it, because
+ * the scroller is the host now.
+ */
+function fontStack(cfg: ReaderConfig): string {
+  return cfg.font && cfg.font.trim() ? cfg.font : "ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif";
+}
+
 function viewCss(cfg: ReaderConfig, p: Palette): string {
-  const font = cfg.font && cfg.font.trim() ? cfg.font : "ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif";
   const mono = "ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace";
   return (
     ":host{all:initial}" +
-    ".wrap{position:fixed;inset:0;overflow:auto;background:" +
-    p.bg +
-    ";color:" +
-    p.fg +
-    ";font:" +
-    cfg.fontSize +
-    "px/" +
-    cfg.lineHeight +
-    " " +
-    font +
-    ";}" +
+    // NOT the scroller, and not the box: both live on the host element (see
+    // renderReader). The wrap is only the content block inside it.
+    ".wrap{min-height:100%}" +
     ".col{max-width:" +
     cfg.width +
     "ch;margin:0 auto;padding:56px 24px 30vh;}" +
@@ -198,6 +201,39 @@ export function renderReader(deps: {
 
   const host = doc.createElement("div");
   host.id = READER_HOST_ID;
+  // THE HOST IS THE SCROLLER, AND THAT IS THE WHOLE KEYBOARD INTEGRATION.
+  //
+  // It used to be the wrapper INSIDE this host that carried
+  // `position:fixed;inset:0;overflow:auto` — and the shadow root is CLOSED, so
+  // the scroll controller could never find it: `scanRegions` walks
+  // `document.querySelectorAll("*")`, which stops at a closed root's host, and
+  // the host itself had no overflow. Measured consequence: entering reader mode
+  // left `j`/`k`/`d`/`u` moving NOTHING (the document cannot scroll either, since
+  // `html` is locked while the reader is up), so the article was readable only
+  // with the mouse wheel. The pane has to be an element the page's own DOM can
+  // see, and the only such element is the host.
+  //
+  // `all:initial` FIRST, and the box after it: the host is promoted to the top
+  // layer (popover attribute), and the UA's popover styles are
+  // `position:fixed;inset:0;margin:auto;width:fit-content;height:fit-content;
+  // border:solid;padding:.25em;background:canvas;color:canvastext`. Without the
+  // reset the reader would be a centred canvas-coloured box the size of its own
+  // content instead of a full-viewport pane — the same trap the scroll-target
+  // outline documents in content/scroll.ts.
+  host.setAttribute(
+    "style",
+    "all:initial;position:fixed;inset:0;display:block;overflow:auto;overscroll-behavior:contain;" +
+      "background:" +
+      palette.bg +
+      ";color:" +
+      palette.fg +
+      ";font:" +
+      config.fontSize +
+      "px/" +
+      config.lineHeight +
+      " " +
+      fontStack(config)
+  );
   const shadow = host.attachShadow({ mode: "closed" });
   const style = doc.createElement("style");
   style.textContent = viewCss(config, palette);
@@ -234,7 +270,42 @@ export function renderReader(deps: {
   wrap.appendChild(hint);
   shadow.appendChild(wrap);
 
+  // WHICH ELEMENT HAD THE CARET, so leaving the article can hand it back (see
+  // close()). Read before the overlay exists, because after it the answer is the
+  // overlay itself.
+  let prevFocus: HTMLElement | null = null;
+  try {
+    prevFocus = (doc.activeElement as HTMLElement) || null;
+  } catch (e) {
+    prevFocus = null;
+  }
+
   (doc.documentElement || doc.body).appendChild(host);
+  // After the append, never before: showPopover() throws on a detached element,
+  // and a page that transforms `<html>` would otherwise position the article
+  // against the document box instead of the viewport. The fallback is the plain
+  // child-of-<html> host, which is what a browser without the top layer gets.
+  promoteToTopLayer(host);
+  // THE HOST TAKES THE CARET. This is not polish; it is what keeps the keyboard in
+  // the page at all.
+  //
+  // `body { display: none }` (pageCss, above) takes away every element the user
+  // could have been focused on, and the browser then moves the focus out of the
+  // DOCUMENT. Measured in the e2e theme suite: with the article up, every key —
+  // `j`, Escape, even the leader key — was delivered to the browser window
+  // instead of the page. The article could not be scrolled, could not be left
+  // with Escape, and the leader could not open over it: a live article with a
+  // dead keyboard, which is the one thing a keyboard-first reader cannot be.
+  //
+  // `tabindex="-1"` is the right shape for a pane the user is reading: focusable,
+  // so it can hold the caret, and never in the page's tab order.
+  try {
+    host.setAttribute("tabindex", "-1");
+    host.focus({ preventScroll: true });
+  } catch (e) {
+    // A browser that refuses the focus still renders the article; the keys are
+    // then whatever they were before, which is the behaviour this fix replaces.
+  }
   if (doc.documentElement) doc.documentElement.appendChild(pageStyle);
   doc.documentElement?.setAttribute("data-lf-reader", "1");
   doc.documentElement?.setAttribute("data-lf-reader-blocks", String(article.blocks.length));
@@ -255,6 +326,16 @@ export function renderReader(deps: {
     closed = true;
     doc.removeEventListener("keydown", onKey, true);
     try {
+      // THE CARET GOES BACK WHERE IT WAS, for the same reason it was taken: an
+      // element that is removed while focused leaves the document without one,
+      // and the page behind the article would then be deaf to its own keys. Best
+      // effort — a page that removed its own focused element, or one that was
+      // never focused to begin with, has nothing to hand back.
+      if (prevFocus && prevFocus.isConnected && typeof prevFocus.focus === "function") {
+        prevFocus.focus({ preventScroll: true });
+      } else {
+        host.blur();
+      }
       host.remove();
       pageStyle.remove();
       const root = doc.documentElement;
@@ -268,5 +349,5 @@ export function renderReader(deps: {
     deps.onClose();
   }
 
-  return { host, scrollEl: wrap, close };
+  return { host, scrollEl: host, close };
 }

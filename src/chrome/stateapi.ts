@@ -43,6 +43,8 @@ export interface ChromeStateSource {
   keyTrace(): Array<Record<string, unknown>>;
   /** The live presence records — see ChromeStateV1.presence. */
   presence(): Array<{ i: number; u: string; d: string }>;
+  /** The expectation window for the selected tab — see ChromeStateV1.expect. */
+  expectation(): { open: boolean; ageMs: number; leftMs: number; gapMs: number; gapSamples: number; doc: string };
   lastMoveDebug(): string | null;
   statusMounted(): boolean;
   statusPosition(): string;
@@ -270,6 +272,32 @@ export interface ChromeStateV1 {
    * them apart.
    */
   keyTrace: Array<Record<string, unknown>>;
+  /**
+   * The NAVIGATION-SCOPED EXPECTATION WINDOW, and how long the last one lasted.
+   *
+   * A key declined by this window is indistinguishable from a key nobody
+   * answered — the same sentence as a dead keyboard — so a failure report has to
+   * be able to name it. `open` with an `ageMs` that fits inside the window means
+   * "the helper handed that key to a document that had not reported yet"; `open`
+   * false means the window is not the explanation and the reader should look
+   * elsewhere.
+   *
+   * `gapMs` is the measurement the window's LENGTH should be set from: the arming
+   * is a navigation notification and the close is the page's own boot report, so
+   * the difference is that report's latency through content → background → relay
+   * → helper. -1 means no window has closed early in this session; `gapSamples`
+   * says how many did.
+   *
+   * `doc` is the document Firefox reported IN the tab when the last arming
+   * question was asked — which is not the same as the tab's URL on the pages where
+   * the distinction matters: a failed load keeps the requested `http(s)` address
+   * while the document is `about:neterror`, and that document can never report, so
+   * the window must not be armed for it (`firefoxErrorDocument`). Naming it here
+   * is what makes "nothing armed" decidable from a failure report alone.
+   */
+  expect:
+    | { open: boolean; ageMs: number; leftMs: number; gapMs: number; gapSamples: number; doc: string }
+    | { error: string };
   /**
    * The documents that have TOLD this helper they are alive, one row per tab.
    *
@@ -502,6 +530,9 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
         })),
       [] as any,
     );
+    // The timer, next to the two facts it is decided from (`presence`, and the
+    // URL class `selUrl` names): see ChromeStateV1.expect.
+    partial.expect = step("expect", () => st.expectation(), { error: "expectation unavailable" } as any);
     partial.selUrl = step("selUrl", () => {
       const u = win.gBrowser.selectedBrowser && win.gBrowser.selectedBrowser.currentURI;
       return u ? String(u.spec) : "?";

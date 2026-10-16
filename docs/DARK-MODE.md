@@ -165,6 +165,36 @@ every page. A user with a dark OS who turned the feature OFF sees that paint for
 a few milliseconds before the real decision removes it. That is the trade, and it
 is stated in `dark/index.ts` rather than hidden.
 
+**The placeholder is REMOVED before the first measurement**, and that order is not
+optional. The placeholder paints `html,body` — which is exactly where the sampler
+reads the page's canvas from — so measuring with it installed reads the engine's
+own paint back as the page's: a white page measures as dark, the decision comes
+out "the page is already dark", and the whole feature stands down on every light
+page for a user whose OS is dark. This was not a hypothesis: the e2e `theme` suite
+ran on an OS-dark profile and every dark case failed with
+`data-lf-dark-reason="the page is already dark"` on a white fixture. The cost of
+removing it is the flash the placeholder exists to prevent, for the length of one
+measurement, on that machine only.
+
+## The sampler reads the page once
+
+The same rule generalises: **an element's colour is read the first time it is
+seen, and a later pass never reads it again** (`originals` in `dark/apply.ts`).
+Every pass after the first runs with this engine's sheet installed, so the same
+element now computes to whatever the mapping painted it — reading that back is a
+measurement of ourselves, not of the page, and it has two failure modes that both
+showed up in a browser: the already-dark verdict flipping the feature off on a
+light page, and a colour fed through the mapping twice drifting away from the
+palette it was mapped from. So a resample re-measures geometry and reaches new
+elements; it does not re-decide the page. This is Dark Reader's own rule (its
+engine keeps the original computed values and never reads a modified element).
+
+One residual, named: an element that is painted by a rule generated from
+*another* element (a `.card` rule mapping twenty cards, one of which was sampled)
+and is first seen after we painted reads our colour back. It can only affect that
+class's rule, and the alternative — measuring with our sheet suspended — is a
+visible flash of the undarkened page on every resample.
+
 ## What it does not do
 
 * **No image analysis.** Upstream samples images on a canvas to decide whether a
@@ -205,7 +235,11 @@ is stated in `dark/index.ts` rather than hidden.
 
 Tests: `scripts/test/dark-color.test.ts`, `scripts/test/dark-rules.test.ts`,
 `scripts/test/dark-theme.test.ts` — 116 cases over the arithmetic, the parser and
-the sheet text. The DOM half (sampling a real page, injecting a real sheet) is
-**not covered yet**: the e2e `theme` suite is still on the plan in
-[tasks/2026-10-15-READER-AND-DARK-MODE.md](tasks/2026-10-15-READER-AND-DARK-MODE.md),
-so today the only evidence for the adapter is a manual test in a real Firefox.
+the sheet text — and `scripts/e2e/suites/content/theme.ts` for the DOM half, in a
+real Firefox against its own `/light` and `/dark` fixtures. The e2e cases assert
+what the page actually renders, not what it was told: the mirror
+(`data-lf-dark`, `data-lf-scheme`, `data-lf-dark-engine`, `data-lf-dark-reason`),
+the injected sheet, `getComputedStyle(document.body).backgroundColor` equal to the
+configured `#16161e`, the filter engine's real `invert` on the root, and the
+per-site rule the four `;Y` keys write (read back out of storage, because the
+toast is emitted before the write lands).

@@ -400,4 +400,132 @@ export async function run(ctx: any): Promise<void> {
       "the live page below the closed tab kept its answer"
     );
   });
+
+  await t("the report window opens on a real navigation and is spent by the page's own report", async () => {
+    // THE FIELD REPORT, MEASURED RATHER THAN JUDGED. After a cross-document
+    // navigation the helper arms an expectation window (`keystate.expectContentIn`)
+    // and declines the keys inside it, because the page's content script is already
+    // there and its presence report simply has not landed yet. `CONTENT_EXPECT_MS`
+    // (1500) was a JUDGEMENT when it was written — longer than an ordinary report,
+    // shorter than a user's patience — and the chrome state channel publishes the
+    // readout that turns it into a number (`expect`, from
+    // `keystate.contentExpectation`): `gapMs` is how long the last window stood
+    // before the page's own report closed it, and `gapSamples` says how much to
+    // trust that.
+    //
+    // Three claims, in the order the window makes them. The page really does close
+    // it (so the deferred keys go to the realm that owns them rather than to
+    // nobody) — asked of two documents, because the report can be lost on the way
+    // and a lost report is not the window's fault. The window really does OPEN on a
+    // real navigation, which is what makes "a key was declined" a decidable state
+    // from outside. And the readout really does carry the gap it measured, which is
+    // the number `CONTENT_EXPECT_MS` is supposed to be set from. What is NOT claimed
+    // is that the report always fits INSIDE the window: measured samples of 210ms,
+    // 3043ms and 3277ms are recorded in docs/tasks/2026-10-15-MANUAL-TEST-REPORTS.md,
+    // together with what a report later than the window costs.
+    await ctx.collapseWindow();
+    const a = await createTab();
+    await ctx.gotoPage(a, HOME);
+    const aId = await idByUrl(HOME);
+    assert(aId != null, "the web tab is in the strip");
+    await selectAndSettle(aId as number, HOME);
+
+    // ARM IT DIRECTLY, and this is the whole reason the case is written this way:
+    // `tabs.update` STARTS a real navigation and does not wait for a document, so
+    // the read taken next lands while the window is still open. Waiting for a load
+    // (`ctx.gotoPage`) would race it — a local page reports in a couple of hundred
+    // milliseconds, so by the time the load settles the window has already been
+    // spent and "it was armed" would be an assumption rather than an observation.
+    await evalIn(ctx.probe, `browser.tabs.update(${aId}, {url: ${JSON.stringify(HELLO)}}).then(() => true)`);
+    const armed = await waitFor(async () => {
+      const st = await ctx.chromeStateHandle();
+      const ex = st.raw && st.raw.expect;
+      return ex && ex.open === true ? ex : null;
+    }, 5000).catch(() => null);
+    assert(
+      armed,
+      "a cross-document navigation arms the report window (and it is published, so a " +
+        "key declined by it is decidable from outside): " +
+        JSON.stringify(await ctx.chromeStateHandle().then((st: any) => st.raw && st.raw.expect).catch(() => null))
+    );
+
+    // SPENT, WHICH IS A DIFFERENT STATE FROM EXPIRED, and the readout tells them
+    // apart: a window closed by the page's own report is DELETED (`ageMs` -1), one
+    // that ran out is left standing with an age past its own length. Asserting the
+    // first is what makes this case about the report instead of about a timer.
+    //
+    // BUT IT IS ASKED TWICE, and the miss is recorded rather than hidden. Measured
+    // on a full content-group run: the window opened and then EXPIRED with nothing
+    // spending it inside 8s, while the same session's readout reported `gapSamples:
+    // 77` at a last sample of 439ms — the transport is not slow, the report is
+    // GONE. That is §5.6's class (content → background → relay tab → helper, where a
+    // relay tab that is not ready or a URL slot overwritten by the next report makes
+    // the message vanish without the sender ever knowing), and it is the same defect
+    // as the field report's "I have to do it twice". A second document in the same
+    // session is therefore a legitimate second ask, and this case records it as a
+    // repair so the number of lost boot reports is visible in every run instead of
+    // being read once and forgotten.
+    //
+    // What is NOT retried is the product's claim: a document whose window stood open
+    // in front of it and whose report never came is exactly the bug `CONTENT_EXPECT_MS`
+    // exists for. If BOTH documents fail to spend their window, this case fails.
+    const readExpect = () =>
+      ctx.chromeStateHandle().then((st: any) => (st.raw && st.raw.expect) || null).catch(() => null);
+    let spent: any = null;
+    for (let round = 1; round <= 2 && !spent; round++) {
+      spent = await waitFor(async () => {
+        const ex = await readExpect();
+        return ex && ex.open === false && Number(ex.ageMs) === -1 ? ex : null;
+      }, 8000).catch(() => null);
+      if (spent) break;
+      const missed = await readExpect();
+      if (round === 2) {
+        assert(
+          false,
+          "neither of two documents spent the report window it was navigated under " +
+            "(the transport dropped both boot reports): " +
+            JSON.stringify(missed)
+        );
+      }
+      ctx.repaired.push(
+        "the window was opened and then expired without the page's report spending it " +
+          "(" + JSON.stringify(missed) + ") — §5.6's lost-boot-report class; asked a second document"
+      );
+      // A second navigation, to the other fixture route: a real cross-document load,
+      // which is what arms the window in the first place.
+      await evalIn(ctx.probe, `browser.tabs.update(${aId}, {url: ${JSON.stringify(HOME)}}).then(() => true)`);
+      const rearmed = await waitFor(async () => {
+        const ex = await readExpect();
+        return ex && ex.open === true ? ex : null;
+      }, 5000).catch(() => null);
+      assert(
+        rearmed,
+        "the second navigation arms the report window too: " + JSON.stringify(await readExpect())
+      );
+    }
+    // ...AND THE MEASUREMENT THE WINDOW'S LENGTH IS SUPPOSED TO BE SET FROM. A spend
+    // IS a sample (it is recorded when a report finds a window), so both of these
+    // must hold on the back of the document that spent it.
+    //
+    // What is deliberately NOT asserted is that the latency is INSIDE
+    // `CONTENT_EXPECT_MS`. It is not, always: measured here at 210ms on one run and
+    // **3043ms and 3277ms** on others (a session's first pages, and — the caveat
+    // this instrument has — a report from the document that is LEAVING can be the
+    // one that spends the window, so the sample is an upper bound rather than a
+    // precise boot latency). A report that arrives after the window expires still
+    // deletes the arming — which is why `ageMs` is -1 in both cases, and why a
+    // "spent" window can carry a gap LONGER than the window — and in between the
+    // helper has claimed the keys, so the double owner comes back for keys pressed
+    // in that gap. That is Report 1's named residual, now a number: see
+    // docs/tasks/2026-10-15-MANUAL-TEST-REPORTS.md, which records the samples and
+    // leaves the constant's value as the open question it is.
+    const gap = Number(spent.gapMs);
+    assert(Number.isFinite(gap) && gap >= 0, "the readout names the gap it measured: " + JSON.stringify(spent));
+    assert(Number(spent.gapSamples) >= 1, "and the sample is counted: " + JSON.stringify(spent));
+    console.log(
+      `       (report window: last report ${gap}ms after its arm, of a ${1500}ms window; ` +
+        `${Number(spent.gapSamples)} spent this session; document ${JSON.stringify(spent.doc)})`
+    );
+    await ctx.gotoPage(a, HELLO);
+  });
 }

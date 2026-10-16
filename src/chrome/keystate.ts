@@ -257,7 +257,21 @@ export function noteContentPresent(
   // RETRACTION does not end it (a `pagehide` says a document is leaving, not
   // that the tab is answering) — the navigation notification that follows is
   // what re-arms it.
-  if (active) contentExpected.delete(tab);
+  if (active) {
+    // HOW LONG THE WINDOW ACTUALLY LASTED, which is the number the window's own
+    // length is supposed to be set from. `CONTENT_EXPECT_MS` is a judgement
+    // (1500ms) until it is read against a real session, and this is the read: the
+    // arming is a navigation notification and the end is the page's own report,
+    // so the difference is the transport's latency for a boot report — the thing
+    // §5.6 of docs/KEYBOARD-OWNERSHIP.md says is an assumption. Published through
+    // `contentExpectation` (the chrome state channel).
+    const at = contentExpected.get(tab);
+    if (typeof at === "number") {
+      lastGapMs = Math.max(0, Date.now() - at);
+      gapSamples++;
+    }
+    contentExpected.delete(tab);
+  }
   const id = String(doc || "");
   if (!active) {
     // ONLY THE DOCUMENT THAT OWNS THE RECORDED ANSWER MAY RETRACT IT.
@@ -454,6 +468,63 @@ export const CONTENT_EXPECT_MS = 1500;
  */
 const contentExpected = new WeakMap<object, number>();
 
+// The document Firefox says is IN the tab, for the tab the last arming question
+// was asked about — published by `contentExpectation` as `expect.doc`.
+//
+// It is a readout, not state: `firefoxErrorDocument` is what the decision reads,
+// and this only records what it read so a failure report can name it. The two
+// differ on exactly the pages that matter — an error page's URL is the address
+// the user asked for, while the DOCUMENT is Firefox's own substitute — which is
+// why the readout had to exist to make that visible at all.
+let lastExpectDoc = "";
+
+/**
+ * The URI of the document that is ALREADY IN the browser, when the browser will
+ * say. Empty when it will not (a fixture, a torn-down element, an older host).
+ */
+function documentUriOf(browser: unknown): string {
+  const b = browser as any;
+  try {
+    const u = b && b.documentURI;
+    if (u) return String(u.spec || u);
+  } catch (e) {
+    // fall through to the contentDocument read below
+  }
+  try {
+    const d = b && b.contentDocument;
+    if (d && d.documentURI) return String(d.documentURI);
+  } catch (e) {
+    // A browser that cannot report its document answers "" — see the caller.
+  }
+  return "";
+}
+
+/**
+ * Is this URI one of FIREFOX'S OWN SUBSTITUTE DOCUMENTS for a page that failed
+ * to load — the document that is already here, and that no content script can
+ * ever be injected into?
+ *
+ * WHY THIS IS NOT JUST `contentOwnableUrl`. On a failed load the tab's URL stays
+ * the address the user asked for (`http://host/path`), so the URL test says
+ * "injectable" and arms the window — while the document actually loaded is
+ * `about:neterror`, which no content script can run in. The user is then on a
+ * page whose only key engine is the helper, and the helper spends the first
+ * 1500ms declining keys: the dead keyboard this module exists to prevent, on the
+ * pages that need the rescue most. Measured in a real browser: the e2e stuck
+ * suite (nine error pages, one press each) failed on 502 and 504 with "the
+ * leader key was never consumed", and passed on the pages whose load was slow
+ * enough for the press to land after the window.
+ */
+export function firefoxErrorDocument(uri: string): boolean {
+  return /^about:(neterror|certerror|blocked|tabcrashed|netinterrupt|nssfailure)/i.test(uri || "");
+}
+
+// The last window that closed because the page reported, and how many have -
+// the sample behind the number `contentExpectation` publishes. Written only by
+// `noteContentPresent`, which is the only thing that closes a window early.
+let lastGapMs = -1;
+let gapSamples = 0;
+
 /**
  * Record that a freshly navigated tab is about to answer for its own keys.
  *
@@ -507,11 +578,63 @@ export function expectContentIn(
       contentExpected.delete(tab);
       return;
     }
+    // AND THE DOCUMENT THAT IS ALREADY THERE DECIDES TOO, when it can be read:
+    // Firefox's own error page keeps the requested http URL in `currentURI`
+    // while the document in the tab is `about:neterror`, so the URL test above
+    // arms a window on a page where nothing will ever report. See
+    // `firefoxErrorDocument` — that is the case the e2e error pages measure.
+    const doc = documentUriOf(browser);
+    lastExpectDoc = doc;
+    if (doc && firefoxErrorDocument(doc)) {
+      contentExpected.delete(tab);
+      return;
+    }
     contentExpected.set(tab, typeof now === "number" ? now : Date.now());
   } catch (e) {
     // A strip that cannot name the tab arms nothing, which is the behaviour
     // that existed before this function did.
   }
+}
+
+/**
+ * What the expectation window is doing for the SELECTED tab — the readout that
+ * turns the window from an invisible judgement into a number.
+ *
+ * WHY IT IS PUBLISHED AT ALL. The window is the one piece of ownership state
+ * that is neither a record (someone said so) nor a URL class (decidable from the
+ * strip): it is a TIMER, and a timer that quietly declines a keystroke looks
+ * exactly like a dead keyboard from outside. Two of the e2e suite's cases are
+ * decided by it — "a page the extension cannot run on is the helper's" and the
+ * seven HTTP error pages — and when one of them fails, "nothing armed" is the
+ * same sentence whether the window swallowed the key or the dispatch never
+ * happened. `open`/`ageMs`/`leftMs` name the first, and `gapMs` names how long an
+ * ordinary report takes, which is what the length of the window should be set
+ * from rather than guessed at.
+ *
+ * `gapMs` is -1 until a report has closed a window in this session, and
+ * `gapSamples` says how much to trust it.
+ */
+export function contentExpectation(
+  win: ChromeWindow,
+  now?: number
+): { open: boolean; ageMs: number; leftMs: number; gapMs: number; gapSamples: number; doc: string } {
+  const t = typeof now === "number" ? now : Date.now();
+  let open = false;
+  let ageMs = -1;
+  let leftMs = -1;
+  try {
+    const tab = selectedTabOf(win);
+    const at = tab ? contentExpected.get(tab) : undefined;
+    if (typeof at === "number") {
+      ageMs = Math.max(0, t - at);
+      leftMs = Math.max(0, CONTENT_EXPECT_MS - ageMs);
+      open = ageMs < CONTENT_EXPECT_MS;
+    }
+  } catch (e) {
+    // An unreadable strip answers "no window", which is what the latch itself
+    // answers in the same state.
+  }
+  return { open, ageMs, leftMs, gapMs: lastGapMs, gapSamples, doc: lastExpectDoc };
 }
 
 /**

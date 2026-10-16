@@ -1343,4 +1343,135 @@ document.addEventListener("keydown", function (e) {
 <div class="spacer"></div>
 </body></html>`,
   },
+
+  /* ---- the theme fixtures: dark mode's two verdicts, and a reader article ----
+   * The dark engine decides from the page's OWN RENDERED COLOURS — the largest
+   * opaque surface is the canvas, and a canvas whose relative luminance is below
+   * `DARK_CANVAS_L` (0.4) means the page already ships a dark theme and is left
+   * alone. That is a statement about what the page paints, so it takes a page
+   * that really paints it: `html` AND `body` both carry the colour, because a
+   * transparent `html` resolves to white during sampling and would be the largest
+   * surface on the page.
+   *
+   * Both pages are deliberately PANEL-HEAVY (400px+ surfaces well past MIN_AREA)
+   * because a colour is only sampled where the element has area, and the coverage
+   * figure the engine reports — and the engine it therefore chooses, dynamic vs
+   * filter — is the share of that area the canvas holds.
+   * ------------------------------------------------------------------------ */
+
+  // A light page: white canvas, dark text, two toned panels.
+  "/light": {
+    body: `<!DOCTYPE html><html><head><title>LIGHT PAGE</title>
+<style>
+html,body{margin:0}
+body{background:#ffffff;color:#111111;font:16px/1.55 system-ui,sans-serif}
+#panel{background:#f2f4f8;color:#202124;padding:24px;min-height:360px}
+#panel p{max-width:60ch}
+#aside{background:#e8eaed;color:#3c4043;padding:18px;min-height:220px}
+</style></head>
+<body>
+<div id="panel">
+<h1>Light page</h1>
+<p>This page ships a white canvas on purpose: it is the fixture for the dark
+engine's "light page, darken it" verdict. The assertion is a MEASURED colour —
+the canvas the engine sampled is the canvas it remaps — so the page has to
+really paint it, not merely declare a scheme.</p>
+</div>
+<div id="aside">
+<p>A second surface, so the coverage figure is not a single element's area.</p>
+</div>
+</body></html>`,
+  },
+
+  // An already-dark page: the smart-dark case, and the one a blanket inversion
+  // gets wrong. The colours are the engine's own defaults in a darker register
+  // (Tokyo Night's #16161e family), which is what "the page is already dark" is
+  // supposed to look like. Both html and body paint, so the largest opaque
+  // surface really is the dark canvas.
+  "/dark": {
+    body: `<!DOCTYPE html><html><head><title>DARK PAGE</title>
+<style>
+html,body{background:#0f1115;color:#e6e6e6;margin:0}
+body{font:16px/1.55 system-ui,sans-serif}
+#panel{background:#141821;color:#e6e6e6;padding:24px;min-height:400px}
+#panel p{max-width:60ch}
+#aside{background:#171c26;color:#c8cede;padding:18px;min-height:220px}
+</style></head>
+<body>
+<div id="panel">
+<h1>Already dark</h1>
+<p>This page has already made the decision. The engine's job is to notice that
+from the rendered colours and leave it alone — a user who opens a site that
+ships its own dark theme should see the site's, not ours.</p>
+</div>
+<div id="aside"><p>The second dark surface.</p></div>
+</body></html>`,
+  },
+
+  // The reader's article: real prose, site chrome around it, and enough length to
+  // be scrollable once the overlay is up (the scroll keys have nothing to move on
+  // an article that fits on one screen). The chrome is what makes extraction a
+  // decision rather than a formality — the nav, the sidebar and the comments are
+  // all things the scorer has to lose.
+  "/article": {
+    body: `<!DOCTYPE html><html><head><title>READER FIXTURE</title>
+<style>
+html,body{margin:0}
+body{background:#ffffff;color:#111111;font:16px/1.55 system-ui,sans-serif}
+nav,footer,.comments,aside{background:#eeeeee;padding:14px 18px}
+.para{max-width:72ch}
+</style></head>
+<body>
+<nav id="nav">NAV_CHROME <a href="/target1">one</a> <a href="/target2">two</a></nav>
+<main>
+<article id="story">
+<h1>The fixture article</h1>
+<p class="para">The first thing to say about this page is that it is a page of
+prose, arranged the way prose is arranged on the web: a headline, a run of
+paragraphs, a quotation that somebody said, a list, and a second section under a
+subheading. Everything here exists so the extractor has to choose — the chrome
+above, below and beside it is deliberately kept, because a scorer that cannot
+tell prose from furniture is a scorer that would happily hand the reader a
+navigation menu.</p>
+<p class="para">The second paragraph exists for length as much as for meaning.
+The overlay makes the article the only scrollable thing in the document, and a
+thing that cannot scroll has no reason to be scrolled — so the article has to be
+taller than a viewport before the scroll keys can be said to move it. A fixture
+that fits on one screen would pass a test written about scrolling while proving
+nothing at all, which is the failure mode this whole suite exists to avoid.</p>
+<blockquote>An extractor is a scorer with an opinion about what a paragraph is.</blockquote>
+<p class="para">Third: the article keeps its own links. Hint labels are drawn by
+the hint layer over whatever the document contains, and the article's text is
+real document text — not a canvas, not an iframe, not a shadow-rendered column —
+so the leader, the hint keys, find and the yank modes all keep working inside it.
+That is the reason this product extracts in the page instead of delegating to
+the browser's own reader, and it is worth stating in the fixture that the
+paragraph is real.</p>
+<h2>A second section</h2>
+<p class="para">A second section under a heading, so the block collector has
+something other than paragraphs to walk past. Headings are collected as blocks
+in their own right, and a collector that only ever saw paragraphs would never
+notice when the level of a heading was read wrongly.</p>
+<ul><li>a list item, because lists are blocks too</li><li>a second list item</li></ul>
+<p class="para">And a paragraph with <a id="story-link" href="/target1">a link
+inside it</a>, so a test can tell that the article's own anchors survive the
+render as ordinary anchors.</p>
+<pre>code blocks are collected as preformatted text</pre>
+<p class="para">The last paragraph is the one at the bottom of a long article: the
+one a reader reaches by pressing the scroll key rather than by dragging a
+scrollbar. If the overlay ever stops being the scroll target, this is the text
+that becomes unreachable, and that is exactly the failure the scroll assertions
+in the theme suite are watching for.</p>
+</article>
+</main>
+<aside id="aside">SIDEBAR_CHROME</aside>
+<section class="comments">
+<h2>Comments</h2>
+<p class="para">COMMENT_ONE is furniture: a comment section is one of the shapes
+the scorer is built to drop, which is why it is here in the fixture rather than
+left out of it.</p>
+</section>
+<footer>FOOTER_CHROME</footer>
+</body></html>`,
+  },
 };
