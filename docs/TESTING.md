@@ -441,6 +441,31 @@ row on that URL is treated as protected AND the abandoned-handle close is
 skipped. Closing one tab too few leaves a leak the next sweep sees; closing one
 too many costs the tab the rest of the group runs in.
 
+### The other leak: the profile on disk
+
+Every run makes a throwaway Firefox profile in the temp dir (`makeProfile`) and
+removes it in its own `finally`. On Windows that removal **usually failed** —
+Firefox holds lock files and sqlite WALs open for a moment after the browser is
+gone, `rmSync` throws on the first locked file, and a single attempt whose error
+was swallowed left the whole profile behind. Measured after one day of runs:
+**28 leftover `lazyfox-e2e-*` directories, 1.4GB**, one of them still holding a
+complete `MarionetteActivePort` and a 119MB cache.
+
+Two changes, and both were needed. The removal is RETRIED (six attempts, backing
+off), which fixes the ordinary case. And every run SWEEPS what earlier runs left
+(`sweepStaleProfiles` from `main.ts`, before it makes its own), which is the only
+thing that can help after a run that was killed — Ctrl-C, a CI cancel, the
+grace-timer exit at the bottom of `main.ts` — because there is no code you can
+run in a process that is being killed.
+
+The sweep takes only profiles that have been quiet for half an hour. A live
+run's profile is written to constantly (lock files, journals, WALs), so anything
+untouched for that long belongs to a run that is over; the margin is what makes
+it safe to run two e2e runs in two windows. Verified both ways in one run: a
+backdated `lazyfox-e2e-STALEPROBE` in the temp dir was swept
+(`harness: swept 1 stale e2e profile(s)`) while the run's own profile was not,
+6/6 tests passed, and nothing was left in the temp dir afterwards.
+
 ### The config comparison used a value the product never promised to keep
 
 `restoreConfig` diffs the stored config against a pristine snapshot and writes
