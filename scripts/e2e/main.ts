@@ -25,6 +25,7 @@ import {
   stopGecko,
   makeProfile,
   removeProfile,
+  sweepStaleProfiles,
   httpJson,
   subscribe,
   getTree,
@@ -114,6 +115,19 @@ async function main(): Promise<void> {
   const updateBaseline = process.argv.includes("--update-baseline");
 
   const baseline: Baseline = loadBaseline();
+
+  // WHAT EARLIER RUNS LEFT BEHIND, before this one adds to it.
+  //
+  // A run that is killed — Ctrl-C, a CI cancel, the grace-timer exit at the
+  // bottom of this file — never reaches its own cleanup, so the leftovers of
+  // those runs can only be cleared by a later one. Measured on this machine: 28
+  // profiles and 1.4GB in the temp dir from a day of runs. The sweep only takes
+  // profiles that have been quiet for half an hour, so a run in another window
+  // cannot lose its profile to this one.
+  const swept = sweepStaleProfiles(profile ? [profile] : []);
+  if (swept.length) {
+    console.log(`harness: swept ${swept.length} stale e2e profile(s) from earlier runs`);
+  }
 
   profile = await makeProfile();
   session = await startGecko({ profile });
