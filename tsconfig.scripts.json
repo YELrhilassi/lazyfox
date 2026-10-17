@@ -217,6 +217,17 @@
   // tree is typechecked by tsconfig.json; what is out of scope here is only the
   // Node-side USE of them.
   //
+  // scripts/test/startup-resume.test.ts is the latest, and it is the same shape
+  // as relay-queue.test.ts: it drives the real resumeOnStartup, whose
+  // collaborators (sessions/storage.ts, sessions/restore.ts, tabs.ts,
+  // stealth.ts, store.ts) all reach the WebExtension `browser` global this
+  // config does not include. It is the only test of the LAUNCH path — the
+  // browser harness never relaunches Firefox, so nothing else in any tier calls
+  // it — which is why it exists at all and why it is listed here rather than
+  // left out silently. Those modules are typechecked by tsconfig.json, which
+  // owns the browser tree; what is out of scope here is only the Node-side USE
+  // of them, over a faked browser.
+  //
   // The Node-side tests themselves now live in scripts/test/*.test.ts and run
   // under node:test. They are INCLUDED here (see the include list below), so a
   // change to a test file cannot silently break the build — scripts/test/ is
@@ -251,7 +262,8 @@
     "scripts/test/chrome-field.test.ts",
     "scripts/test/sync-content.test.ts",
     "scripts/test/split-unsplit.test.ts",
-    "scripts/test/dark-theme.test.ts"
+    "scripts/test/dark-theme.test.ts",
+    "scripts/test/startup-resume.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

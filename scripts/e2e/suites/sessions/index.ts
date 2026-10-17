@@ -6,6 +6,7 @@ import * as sessions from "./sessions.ts";
 import * as restore from "./restore.ts";
 import * as downloads from "./downloads.ts";
 import * as stealth from "./stealth.ts";
+import * as windows from "./windows.ts";
 
 export const group = "sessions";
 
@@ -16,4 +17,5 @@ export async function run(ctx: any): Promise<void> {
   await restore.run(ctx);
   await downloads.run(ctx);
   await stealth.run(ctx);
+  await windows.run(ctx);
 }

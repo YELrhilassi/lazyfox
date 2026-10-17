@@ -42,6 +42,7 @@ import type {
   ReaderTheme,
   Session,
   SessionTab,
+  SessionWindow,
   SiteRule,
 } from "../shared/types";
 
@@ -384,6 +385,24 @@ function vSessionTab(raw: unknown): SessionTab | undefined {
 }
 
 /**
+ * One window of a session. Same rule as the session's own flat fields, applied
+ * to a window: the TAB LIST decides, and a missing active index or window state
+ * is cosmetic. A window with no valid tabs is dropped by its caller — a window
+ * that cannot be rebuilt is not a window this feature should claim to remember.
+ */
+function vSessionWindow(raw: unknown): SessionWindow | undefined {
+  if (!isObject(raw)) return undefined;
+  const tabs = vArray(vSessionTab)(raw.tabs);
+  if (tabs === undefined) return undefined;
+  return {
+    tabs,
+    active: typeof raw.active === "number" ? raw.active : 0,
+    windowState: typeof raw.windowState === "string" ? raw.windowState : "normal",
+    splits: typeof raw.splits === "string" ? raw.splits : "",
+  };
+}
+
+/**
  * A session validates on its tabs alone: a session with a corrupt tab list is
  * unusable, but one with a missing marker or a stale `updatedAt` is still
  * perfectly restorable, and dropping it would lose the user's tabs over a
@@ -401,7 +420,7 @@ export const vSession: Validator<Session> = (raw) => {
   if (!isObject(raw)) return undefined;
   const tabs = vArray(vSessionTab)(raw.tabs);
   if (tabs === undefined) return undefined;
-  return {
+  const session: Session = {
     name: typeof raw.name === "string" ? raw.name : "",
     marker: typeof raw.marker === "number" ? raw.marker : 0,
     tabs,
@@ -410,6 +429,18 @@ export const vSession: Validator<Session> = (raw) => {
     updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : 0,
     splits: typeof raw.splits === "string" ? raw.splits : "",
   };
+  // THE WINDOW SET DEGRADES, IT DOES NOT TAKE THE SESSION WITH IT.
+  //
+  // A session with a corrupt `windows` field is still perfectly restorable from
+  // its flat fields — that is exactly what those fields mean — so a bad window
+  // list is dropped back to the single-window view rather than rejecting the
+  // whole session and losing the user's tabs. An empty list is dropped for the
+  // same reason: "no windows" is not a session, and the flat fields describe one.
+  const windows = Array.isArray(raw.windows)
+    ? (raw.windows.map((w: unknown) => vSessionWindow(w)).filter((w) => !!w) as SessionWindow[])
+    : [];
+  if (windows.length) session.windows = windows;
+  return session;
 };
 
 export const vSessions: Validator<Record<string, Session>> = vRecordOf(vSession);
