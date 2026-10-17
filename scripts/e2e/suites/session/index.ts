@@ -535,7 +535,7 @@ export async function run(ctx: any): Promise<void> {
           .then(() => true)
           .catch(() => false);
         assert(split, "`;W |` did not open a split" + (await report()));
-        await ctx.leaderSeq(ctx.tabA, ["W", "["]);
+        await ctx.leaderSeq(ctx.tabA, ["W", "h"]);
         await ctx.leaderSeq(ctx.tabA, ["W", "u"]);
         await ctx
           .expectChromeState("the split is closed", (s: any) => s.split().active === false, { timeoutMs: 8000 })

@@ -8,7 +8,7 @@
 // blocks overlapping restores.
 
 import { core } from "../../shared/core";
-import { splitPairsInRange } from "../../shared/splits";
+import { splitPairsInRange, splitTabsOf } from "../../shared/splits";
 import type { Session, SessionTab } from "../../shared/types";
 import type { ChromeAction, ChromeReq } from "../../shared/protocol";
 import { realTabsInWindow } from "../tabs";
@@ -59,8 +59,10 @@ export function serializeRestore<T>(fn: () => Promise<T>): Promise<T> {
 // order, which restore reproduces exactly).
 function splitGroupsOf(tabs: SessionTab[]): number[][] {
   const byId = new Map<number, number[]>();
-  (tabs || []).forEach((t, i) => {
-    if (t && typeof t.splitViewId === "number" && t.splitViewId >= 0) {
+  // Numbered over the tabs a split can address (pinned ones excluded), which is
+  // exactly how the chrome resolves the returned positions.
+  splitTabsOf(tabs).forEach((t, i) => {
+    if (typeof t.splitViewId === "number" && t.splitViewId >= 0) {
       const arr = byId.get(t.splitViewId) || [];
       arr.push(i + 1);
       byId.set(t.splitViewId, arr);
@@ -83,7 +85,7 @@ function splitGroupsOf(tabs: SessionTab[]): number[][] {
 // per-tab grouping is derived from the same list and is therefore always
 // self-consistent.
 export async function splitGroupsOfSession(s: Session): Promise<number[][]> {
-  const n = Array.isArray(s.tabs) ? s.tabs.length : 0;
+  const n = splitTabsOf(Array.isArray(s.tabs) ? s.tabs : []).length;
   if (s.splits) {
     try {
       const pairs = await core.decodeSplits(s.splits);
@@ -130,10 +132,13 @@ async function needsSplitRestore(cur: any[], saved: Session): Promise<boolean> {
   } catch {
     return false;
   }
-  if (!splitPairsInRange(pairs, cur.length)) return false;
+  // Saved positions count the tabs a split can address, so a pinned tab left in
+  // front must not shift the lookup — that would test the wrong pair.
+  const real = splitTabsOf(cur);
+  if (!splitPairsInRange(pairs, real.length)) return false;
   for (const [a, b] of pairs) {
-    const ta = cur[a] as any;
-    const tb = cur[b] as any;
+    const ta = real[a] as any;
+    const tb = real[b] as any;
     const ia = ta && typeof ta.splitViewId === "number" ? ta.splitViewId : -1;
     const ib = tb && typeof tb.splitViewId === "number" ? tb.splitViewId : -1;
     if (ia < 0 || ia !== ib) return true;
@@ -154,7 +159,13 @@ export async function applySessionToWindow(s: Session): Promise<number[]> {
     // chrome side must wait for the strip to hold exactly that many before
     // pairing, or it pairs positions against the tabs being torn down and the
     // session comes back flat.
-    requestChrome("restoreSplits", { groups, expect: ids.length });
+    // `expect` counts the tabs a split can ADDRESS, not every restored tab:
+    // pinned tabs come back too but never take part in a split, and the chrome
+    // compares this against its own unpinned count. Passing the full count made
+    // that comparison impossible to satisfy, so a restore with any pinned tab
+    // waited out the whole retry budget before pairing.
+    const expect = splitTabsOf((s.tabs || []).filter((t) => t && t.url)).length;
+    requestChrome("restoreSplits", { groups, expect });
   }
   const active = Math.min(Math.max(0, s.active || 0), ids.length - 1);
   if (ids[active] != null) {

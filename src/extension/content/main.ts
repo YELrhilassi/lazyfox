@@ -104,6 +104,20 @@ import type { ContentPopupShell } from "./find";
       void send("setConfig", { config: next });
     },
     toast,
+    // TELL THE BAR WHAT THIS PAGE IS. The content script is the only party that
+    // can see the page's colours, and the window bar is the chrome helper's,
+    // so the verdict is relayed exactly like the find count: content ->
+    // background -> helper. "Already dark" pages report `native` even though we
+    // paint nothing — "nothing to do, the site did it" is the most useful thing
+    // the segment can say, and hiding it would look like the feature had failed.
+    report: (s) => {
+      const native = s.engine === "native" || /already dark/i.test(s.reason);
+      void send("syncDark", {
+        on: s.on,
+        mode: s.mode,
+        engine: native ? "native" : s.engine,
+      });
+    },
   });
   darkMode.early();
 

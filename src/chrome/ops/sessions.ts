@@ -101,7 +101,9 @@ export function createSplitOps(
     unsplit(): boolean;
     switchPane(dir: number): boolean;
     swapPane(dir: number): boolean;
-    addTabToSplitByIndex(n: number): boolean;
+    addTabToSplitByIndex(n: number, split?: number): boolean;
+    pullFromSplit(): boolean;
+    splitTargets(): { split: number; active: boolean; panes: { title: string; url: string; active: boolean }[] }[];
   }
 ) {
   const win = env.window as any;
@@ -121,8 +123,14 @@ export function createSplitOps(
     swapSplitPane: (dir: number) => {
       if (!split.swapPane(dir)) toast("not in a split view");
     },
-    splitAddTabByIndex: (n: number) => {
-      if (!split.addTabToSplitByIndex(n)) toast("no split view to move into");
+    splitAddTabByIndex: (n: number, at?: number) => {
+      if (!split.addTabToSplitByIndex(n, at)) toast("no split view to move into");
+    },
+    // The chrome window can read the groups straight off the strip, so the
+    // chooser is fed from the same place the operation acts on.
+    splitTargets: () => split.splitTargets(),
+    pullFromSplit: () => {
+      if (!split.pullFromSplit()) toast("not in a split view");
     },
   };
 }

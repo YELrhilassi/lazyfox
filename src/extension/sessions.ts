@@ -31,6 +31,7 @@ import {
   autosaveCurrentSession,
   flushOnQuit as flushOnQuitImpl,
   scheduleAutosave as scheduleAutosaveImpl,
+  scheduleLayoutSnapshot as scheduleLayoutSnapshotImpl,
   scheduleSnapshot as scheduleSnapshotImpl,
   setLastWindowSnapshot
 } from "./sessions/autosave";
@@ -68,6 +69,13 @@ export function scheduleAutosave(): void {
 
 export function scheduleSnapshot(): void {
   scheduleSnapshotImpl(isRestoring);
+}
+
+// A LAYOUT change (a split appearing, dissolving or being rearranged). Separate
+// from scheduleSnapshot because the first measurement of a fresh split is a
+// half-formed one; see scheduleLayoutSnapshot.
+export function scheduleLayoutSnapshot(): void {
+  scheduleLayoutSnapshotImpl(isRestoring);
 }
 
 export async function flushOnQuit(): Promise<void> {

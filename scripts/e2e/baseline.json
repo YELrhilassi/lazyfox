@@ -1417,32 +1417,32 @@
   "audit › category: W — window & layout menu": {
     "status": "pass",
     "group": "audit",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "audit › category: W w — resize popup": {
     "status": "pass",
     "group": "audit",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "audit › category: W z — zen mode toggles and says so": {
     "status": "pass",
     "group": "audit",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "audit › category: W e — toolbar reveal toggles and says so": {
     "status": "pass",
     "group": "audit",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "audit › category: W , / W . — move the active tab": {
     "status": "pass",
     "group": "audit",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "audit › category: W | / ] / { / u — split, switch, swap, unsplit": {
     "status": "pass",
@@ -1453,14 +1453,14 @@
   "audit › category: W m — move tab into split (digit capture)": {
     "status": "pass",
     "group": "audit",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "audit › category: W [ — previous pane": {
     "status": "pass",
     "group": "audit",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "audit › category: Z — zoom menu": {
     "status": "pass",
@@ -1867,56 +1867,56 @@
   "content/theme › a light page is darkened on load, and the page's colours go through the configured theme": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/theme › a page that already ships a dark theme is left alone": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/theme › ;Y d turns the theme off for this site and back on, and writes the per-site rule": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/theme › ;Y e switches to the filter engine on this site, and the root really carries the inversion": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/theme › ;Y x clears this site's rules and hands the page back to the global default": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/theme › ;R opens the article, and the article is what the scroll keys move": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/theme › Escape leaves the article and gives the page back": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/theme › reader mode on a page that transforms the root still fills the viewport": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/theme › the article is real document text, so find works inside the reader": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/ownership › the report window opens on a real navigation and is spent by the page's own report": {
     "status": "pass",
@@ -1939,6 +1939,30 @@
   "content/sequences › the which-key drives itself: Tab and the arrows steer it instead of reporting 'no binding'": {
     "status": "pass",
     "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/theme › a page that ships its own dark theme is asked for it, not recoloured": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/theme › a page that switches state keeps its theme, and the new view is themed too": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "sessions/sessions › sessions: ;W h split-pane switch is a no-op without a split": {
+    "status": "pass",
+    "group": "sessions",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › category: W | / h / l / s / u — split, focus, swap, unsplit": {
+    "status": "pass",
+    "group": "audit",
     "runs": 1,
     "passes": 1
   }

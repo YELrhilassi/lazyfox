@@ -30,7 +30,15 @@ import {
 } from "../../../shared/dark-rules";
 import type { Config, SiteRule } from "../../../shared/types";
 import { createDarkApplier, createResampleGate } from "./apply";
-import { analyze, chooseEngine, shouldApply, type Analysis, type PageSample } from "./detect";
+import {
+  analyze,
+  chooseEngine,
+  declaresDarkSupport,
+  nativeDarkVerdict,
+  shouldApply,
+  type Analysis,
+  type PageSample,
+} from "./detect";
 import { buildTheme, composeSheet, entriesFor, fallbackSheet, siteRulesFor, type Theme } from "./theme";
 
 export interface DarkState {
@@ -72,7 +80,17 @@ export interface DarkDeps {
   getConfig(): Config;
   setConfig(next: Config): void;
   toast(msg: string): void;
+  /**
+   * Publish the verdict wherever else it is shown — currently the window status
+   * bar, through the background. Called on every `mirror()`, i.e. exactly when
+   * the page-level attributes change, so the bar can never describe a state the
+   * page has already left.
+   */
+  report?(state: DarkState): void;
 }
+
+/** How long after a refused mutation the tail pass waits for the page to settle. */
+const RESAMPLE_TAIL_MS = 400;
 
 type Mode = "auto" | "dark" | "light" | "off";
 type EnginePref = "auto" | "dynamic" | "filter";
@@ -100,6 +118,15 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     corpusErrors: 0,
   };
   let earlySheet = false;
+  // The URL the last decision was made for. A same-document navigation is a new
+  // page state for every purpose that matters here (a different palette, a
+  // different site rule) and it must not inherit the previous state's spent
+  // resample burst — see the gate's reset in apply().
+  let lastUrl = "";
+  // Whether we already asked THIS page for its own dark theme. The ask is a
+  // one-shot per state: setting `color-scheme: dark` is cheap but not free, and a
+  // page that answers "no" must not be asked again on every mutation.
+  let askedNative = false;
 
   function rules(): DarkRule[] {
     const text = deps.getConfig().dark?.fixes ?? "";
@@ -118,6 +145,69 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     const last = hits.length ? hits[hits.length - 1]! : null;
     state.host = host;
     return last;
+  }
+
+  /**
+   * The page's own answer to "do you have a dark theme?".
+   *
+   * `color-scheme` is read from the root because that is where the declaration
+   * lives and because it is the one signal a content script can act on: setting
+   * the same property to `dark` makes every `light-dark()` value and every
+   * scheme-aware UA style flip to the site's dark palette, with no sheet of ours
+   * involved. A `<meta name="color-scheme">` is read as well, since a page may
+   * declare it there instead of in CSS.
+   */
+  function colorSchemeNow(): string {
+    try {
+      const root = deps.doc.documentElement;
+      const declared = root ? deps.win.getComputedStyle(root).colorScheme : "";
+      let meta: string | null = null;
+      try {
+        meta = deps.doc.querySelector('meta[name="color-scheme"]')?.getAttribute("content") || null;
+      } catch {
+        meta = null;
+      }
+      return String(declared || "") + " " + String(meta || "");
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * Whether the current mode wants a dark page at all. `light` and `off` are the
+   * two answers that make asking pointless — a user who asked for a LIGHT page
+   * must not have the site flipped dark behind the remap.
+   */
+  function wantsDarkScheme(config: Config): boolean {
+    const mode = (state.site?.mode ?? config.dark.mode) as Mode;
+    return mode !== "off" && mode !== "light";
+  }
+
+  // What the root's INLINE color-scheme was before we asked, so a page that
+  // answers "no" gets its own declaration back rather than an edited one.
+  let inlineSchemeBefore: string | null = null;
+
+  function askForNativeDark(): boolean {
+    try {
+      const root = deps.doc.documentElement;
+      if (!root) return false;
+      inlineSchemeBefore = root.style.getPropertyValue("color-scheme") || "";
+      root.style.setProperty("color-scheme", "dark");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function unaskForNativeDark(): void {
+    try {
+      const root = deps.doc.documentElement;
+      if (!root) return;
+      if (inlineSchemeBefore) root.style.setProperty("color-scheme", inlineSchemeBefore);
+      else root.style.removeProperty("color-scheme");
+    } catch {
+      /* ignore */
+    }
   }
 
   /** The live theme, or null when the page should be left alone. */
@@ -147,14 +237,87 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     } catch {
       /* the document may be going away */
     }
+    // The bar is a second surface for the same verdict; mirror() is called
+    // everywhere state changes, which is the only place that has to know.
+    try {
+      if (deps.report) deps.report({ ...state });
+    } catch {
+      /* reporting must never break the theme */
+    }
+  }
+
+  /**
+   * ONE PASS AT A TIME.
+   *
+   * `apply` is async (the sampling walk yields), so two overlapping runs used to
+   * interleave their sheets and mirrors: the later pass measured a page the
+   * earlier one had already half-painted and wrote a verdict computed from it.
+   * Requests are therefore serialised — a request that arrives mid-pass is
+   * remembered and run once, after it, against the config of the moment.
+   */
+  let running: Promise<void> | null = null;
+  let queued = false;
+  let tailTimer: number | null = null;
+
+  function requestApply(config: Config): void {
+    if (running) {
+      queued = true;
+      return;
+    }
+    running = apply(config)
+      .catch(() => undefined)
+      .then(() => {
+        running = null;
+        if (queued) {
+          queued = false;
+          requestApply(deps.getConfig());
+        }
+      });
+  }
+
+  /**
+   * THE TAIL OF A MUTATION BURST.
+   *
+   * A rate-limited gate drops the mutations that arrive too soon after a pass —
+   * and a state switch is exactly a burst whose LAST mutation is the one that
+   * matters: the view is torn down, and 250ms later the new one is mounted. The
+   * pass the teardown earned measured a nearly empty document, the mount was
+   * refused for being too close to it, and nothing else ever happened — so the
+   * new view kept its light colours while the sheet described the old one. That
+   * is the reported "blank overlay, dark elements not rendered properly".
+   *
+   * So a refused mutation arms a short timer instead of vanishing: when the page
+   * settles, exactly one more pass measures what it settled INTO. The timer is
+   * absorbed by the same gate, so a page that mutates forever still gets at most
+   * one pass per interval.
+   */
+  function scheduleTail(): void {
+    if (tailTimer !== null) return;
+    try {
+      tailTimer = deps.win.setTimeout(() => {
+        tailTimer = null;
+        if (!state.on) return;
+        if (!gate()) {
+          scheduleTail();
+          return;
+        }
+        requestApply(deps.getConfig());
+      }, RESAMPLE_TAIL_MS);
+    } catch {
+      tailTimer = null;
+    }
   }
 
   function ensureObserver(): void {
     if (observer) return;
     try {
       observer = new MutationObserver(() => {
-        if (!gate()) return;
-        if (state.on) void apply(deps.getConfig());
+        if (!state.on) return;
+        if (gate()) {
+          requestApply(deps.getConfig());
+          return;
+        }
+        scheduleTail();
       });
       observer.observe(deps.doc.documentElement, {
         childList: true,
@@ -165,6 +328,22 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     } catch {
       observer = null;
     }
+  }
+
+  /**
+   * The placeholder paint is over: it was never a decision, and both the marker
+   * and the flag must go the moment a real verdict exists — including on the two
+   * paths that decide to paint NOTHING, because a marker left behind on <html>
+   * reads from outside as "dark mode is still starting" forever.
+   */
+  function finishEarlySheet(): void {
+    if (!earlySheet) return;
+    try {
+      deps.doc.documentElement?.removeAttribute("data-lf-dark-pending");
+    } catch {
+      /* ignore */
+    }
+    earlySheet = false;
   }
 
   async function apply(config: Config): Promise<void> {
@@ -186,9 +365,110 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     // to paint. The cost is the very flash the placeholder exists to prevent, for
     // as long as one measurement takes — and only on that dark-OS machine, where
     // the alternative is a feature that does nothing.
+    if (url !== lastUrl) {
+      // A new page state in the same document (an SPA route change, a hash
+      // navigation): it starts with a fresh budget, because its palette is a
+      // different palette and the old one's burst allowance has nothing to say
+      // about it.
+      lastUrl = url;
+      gate.reset();
+      askedNative = false;
+      // The native verdict belongs to the page state that produced it.
+      if (state.engine === "native") state.engine = "auto";
+    }
     if (earlySheet) applier.clear();
-    const samples: PageSample[] = await applier.sample();
-    const analysis = analyze(samples);
+
+    // ASK FOR THE SITE'S OWN THEME FIRST — BEFORE the measurement, and this
+    // ordering is the whole fix rather than a detail.
+    //
+    // A page that ships both schemes resolves `light-dark()` (and every
+    // `@media (prefers-color-scheme)` block) from the scheme it is being rendered
+    // in. Asking it for dark AFTER measuring therefore changes the page UNDER a
+    // mapping that was computed from the light colours — the page's own panels
+    // turn dark, our sheet paints them as if they were light, and the result is
+    // exactly the report: "it doesn't render dark elements properly". Asking
+    // first means the mapping is built from the colours the page will actually
+    // have while our sheet is installed.
+    //
+    // It also means the answer is free when the page HAS a dark theme: there is
+    // nothing left for us to paint, so we stand down and leave the site's own
+    // design on screen.
+    if (!askedNative && wantsDarkScheme(config)) {
+      // OUR SHEET COMES OFF FIRST, before the declaration is even read. It sets
+      // `:root { color-scheme: dark !important }` — so asking "does this page
+      // declare dark support?" with our own paint installed answers YES on every
+      // page we have ever painted, including the ones that declared nothing. The
+      // sheet and the record of originals both go here; both are rebuilt below
+      // from what the page really is. Clearing also makes this path reachable at
+      // all: the sheet of a previous pass is what put the scheme on the root, so
+      // a guard on "no sheet installed" could never ask a page we had painted.
+      if (applier.active()) applier.clear();
+      if (declaresDarkSupport(colorSchemeNow())) {
+        askedNative = true;
+        applier.forget();
+        if (askForNativeDark()) {
+          const asked = analyze(await applier.sample());
+          const verdict = nativeDarkVerdict(true, true, asked);
+          if (verdict.native) {
+            finishEarlySheet();
+            applier.clear();
+            state.on = false;
+            state.engine = "native";
+            state.reason = verdict.reason;
+            state.coverage = asked.coverage;
+            state.pageDark = true;
+            mirror();
+            ensureObserver();
+            return;
+          }
+          // It declared a dark theme and did not honour the ask (a declaration
+          // the page ignores): put the root back exactly as it was, because
+          // everything below measures and paints the page as it really is.
+          unaskForNativeDark();
+          applier.forget();
+        }
+      }
+    }
+
+    let samples: PageSample[] = await applier.sample();
+    let analysis = analyze(samples);
+
+    // ONCE THE SITE'S THEME IS THE ANSWER, IT STAYS THE ANSWER.
+    //
+    // The ask above leaves `color-scheme: dark` on the root, which is what makes
+    // the page render its own dark design. Every later pass would then measure a
+    // dark page, decide "the page is already dark" and relabel a native theme as
+    // a stand-down — a new reason, a different engine, and on a `light` page the
+    // sheet would come back. The verdict is therefore sticky while the page it
+    // was made for is still dark.
+    if (state.engine === "native" && analysis.pageDark && analysis.sampled) {
+      finishEarlySheet();
+      applier.clear();
+      state.on = false;
+      state.reason = "the site's own dark theme";
+      state.coverage = analysis.coverage;
+      state.pageDark = true;
+      mirror();
+      ensureObserver();
+      return;
+    }
+
+    // A TRANSIENT EMPTY PAGE IS NOT A VERDICT.
+    //
+    // State switches unmount before they mount: for a few frames the document is
+    // empty, so the sampler finds no surface at all. That measurement used to
+    // travel the whole path — no samples → filter engine → a page-wide inversion
+    // of a blank document — and the user sees it as the reported "blank dark
+    // overlay" while the site is still building its next view. When a theme is
+    // already live on this page, the honest answer is to keep it and let the next
+    // gated mutation re-measure.
+    if (!analysis.sampled && state.on) {
+      finishEarlySheet();
+      state.reason = "page mid-transition; keeping the theme";
+      mirror();
+      return;
+    }
+
     const decision = decide(config, analysis);
     const rulesForPage = matchRules(rules(), url);
     state.coverage = analysis.coverage;
@@ -198,16 +478,9 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     state.mode = decision.mode;
     state.engine = decision.theme ? decision.theme.engine : decision.engine;
     state.reason = decision.reason;
-    if (earlySheet) {
-      // The real decision has landed; the placeholder paint is no longer needed
-      // and must never outlive the sheet that replaces it.
-      try {
-        deps.doc.documentElement?.removeAttribute("data-lf-dark-pending");
-      } catch {
-        /* ignore */
-      }
-      earlySheet = false;
-    }
+    // The real decision has landed; the placeholder paint is no longer needed
+    // and must never outlive the sheet that replaces it.
+    finishEarlySheet();
     if (!decision.theme) {
       applier.clear();
       state.on = false;
@@ -227,7 +500,7 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     deps.setConfig(next);
     // Apply the local copy immediately so the toast and the sheet agree with
     // what the user just pressed; the storage broadcast will confirm it.
-    void apply(next);
+    requestApply(next);
   }
 
   function upsertSite(host: string, patch: Partial<SiteRule>): Config {
@@ -287,7 +560,7 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     },
 
     update(config: Config): void {
-      void apply(config);
+      requestApply(config);
     },
 
     toggleSite(): void {
