@@ -7,7 +7,7 @@ export async function run(ctx: any): Promise<void> {
   // Tags: `--tags split` selects these. "destructive" marks tests
   // that dissolve and rebuild splits, so a quick subset can skip them.
   const TAGS: string[] = ["split","destructive"];
-  const { t, nativeSplit, waitNoSplit, waitPlusPopup } = makeSplitHelpers(ctx, "split/lifecycle", TAGS);
+  const { t, nativeSplit, waitNoSplit, waitNoSplitStable, waitPlusPopup } = makeSplitHelpers(ctx, "split/lifecycle", TAGS);
 
   await t("split: ;W | splits side-by-side via the native split view", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
@@ -457,5 +457,249 @@ export async function run(ctx: any): Promise<void> {
     // Clean up.
     await ctx.leaderSeq(ctx.tabA, ["W", "u"]); // ;W u
     await waitNoSplit();
+  });
+
+  await t("split: ;W then the Shift that `|` needs is not eaten by the menu", async () => {
+    // THE REPORTED BUG, typed the way a hand types it: "if I hit ;W then let go
+    // to hit the next key like | i get error shift not exist. I can only access
+    // | key by shift key and I can't do it after ;W in steps".
+    //
+    // `;W |` is a THREE-key sequence on a real keyboard — `;`, `W`, Shift, `|` —
+    // because Shift is a keydown of its own before the character it modifies. The
+    // category capture consumed that keydown as though it were the answer,
+    // reported "no binding for ;Shift" and closed the menu, so the `|` that
+    // followed belonged to no menu and `|`, `{`, `}` — every Shifted sub-key -
+    // were unreachable. The unit tier pins the state machine
+    // (scripts/test-leader-sequences.ts); this is the same sequence through a real
+    // browser, real key events and the real split.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.leaderSeq(ctx.tabA, [
+      "W",
+      { k: "Shift" }, // the bare modifier press, exactly as the keyboard sends it
+      { k: "|", shift: true },
+    ]);
+    const pair = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 ? sv : null;
+    }, 10000).catch(async () => {
+      const ts = await ctx.tabsInfo().catch(() => "ERR");
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error(
+        "`;W` then a bare Shift then `|` did not split; tabs=" +
+          JSON.stringify(ts) +
+          " lastMoveDebug=" +
+          JSON.stringify(st && st.lastMoveDebug)
+      );
+    });
+    assert(
+      new Set(pair.map((t) => t.splitViewId)).size === 1,
+      "the two panes share one splitViewId: " + JSON.stringify(pair)
+    );
+    // Clean up the same way every other test in this file does.
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]);
+    await waitNoSplit();
+  });
+
+  await t("split: after ;W u the window is USABLE again (`;N` moves, `;t` opens)", async () => {
+    // The manual report this exists for, verbatim: "the unsplit is completely
+    // broken and breaks the whole software ... after unsplit I can't use navigate
+    // to any other places (doing ;Number does nothing, doing ;t show empty list
+    // of tabs — the status bar show 3/4 tabs but I can do anything to see them or
+    // use them), history is not working, basically the whole software useless").
+    //
+    // Every assertion below is about the window AFTER the unsplit, which is the
+    // half no earlier test looked at: the existing unsplit case checks that the
+    // split is gone and our panel pane was closed, and stops there. A window with
+    // no split and nothing selected passes that test and is still unusable.
+    await nativeSplit();
+    const before = await ctx.tabsInfo();
+    const panelIds = before
+      .filter((t) => (t.url || "").includes("splitpanel.html"))
+      .map((t) => t.id);
+    const realBefore = before.filter((t) => ctx.isRealTab(t) && !panelIds.includes(t.id));
+    assert(
+      realBefore.length >= 2,
+      "the fixture has real tabs to come back to: " + JSON.stringify(before.map((t) => t.url))
+    );
+
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]);
+    await waitNoSplit();
+
+    // 1. THE IDS AND THE LOCATIONS AGREE. Every real tab is still in the strip
+    // and still reported by the tabs API — the same question the reported
+    // "disconnect between the tab ids and their locations" is asking.
+    const after = await ctx.tabsInfo();
+    for (const t of realBefore) {
+      assert(
+        after.some((x) => x.id === t.id),
+        "tab " + t.id + " did not survive the unsplit: " +
+          JSON.stringify(after.map((x) => x.id + ":" + String(x.url || "").slice(-24)))
+      );
+    }
+    assert(
+      after.every((t) => !(typeof t.splitViewId === "number" && t.splitViewId >= 0)),
+      "no tab is in a split after the unsplit: " + JSON.stringify(after)
+    );
+
+    // 2. SOMETHING IS SELECTED. With no selected tab, every action that resolves
+    // "the current tab" — `;N`, the switcher's active row, the history — has
+    // nothing to resolve against, which is what "then nothing works" is made of.
+    const active = await ctx.activeTabInfo();
+    assert(
+      !!active,
+      "a tab is selected after the unsplit: " + JSON.stringify(after.map((t) => t.id + ":" + (t.active ? "ACTIVE" : "")))
+    );
+
+    // 3. `;N` STILL ADDRESSES A TAB. The product's own numbering decides the
+    // number (never a count of what the test can see).
+    const realAfter = after.filter((t) => ctx.isRealTab(t));
+    const target = realAfter.find((t) => !t.active && !t.pinned);
+    if (target) {
+      const n = await ctx.productNumberOf(target, realAfter);
+      assert(n >= 1, "the product's numbering knows the target tab: " + n);
+      await ctx.leaderSeq(ctx.tabA, String(n).split(""));
+      const moved = await waitFor(async () => {
+        const a = await ctx.activeTabInfo();
+        return a && a.id === target.id ? a : null;
+      }, 8000).catch(() => null);
+      const now = await ctx.activeTabInfo().catch(() => null);
+      assert(
+        moved,
+        "`;" + n + " did not switch to tab " + target.id + " after the unsplit (active=" +
+          JSON.stringify(now && now.id) + ")"
+      );
+    }
+
+    // 4. THE TAB SWITCHER LISTS THE WINDOW, rather than showing nothing — "`;t`
+    // shows an empty list of tabs (the status bar show 3/4 tabs)".
+    //
+    // It is asked on a WEB page, which is the realm the user's report describes
+    // and the only one where the popup is the page's own: on a chrome-owned page
+    // the helper draws it in the chrome document, where the page-side read this
+    // harness uses cannot see it at all. The window is the same window either
+    // way, and the rows are the question.
+    const web = await createTab();
+    try {
+      await ctx.gotoPage(web, `${ctx.base}/`);
+      // The rows live in a closed shadow root, so the harness listens for the
+      // popup's own composed "lazyfox:list" event (the same pattern as the
+      // content suite's ;t tests).
+      await evalIn(
+        web,
+        `window.__lfList = null; document.addEventListener("lazyfox:list", (e) => { window.__lfList = e.detail; }, true); true`
+      );
+      await ctx.leaderPress(web, "t");
+      await waitFor(async () => ((await ctx.hasHost(web, "lazyfox-popup")) ? true : null), 8000).catch(
+        async () => {
+          throw new Error(
+            "`;t` did not open the tab switcher after the unsplit; tabs=" +
+              JSON.stringify(await ctx.tabsInfo().catch(() => "ERR"))
+          );
+        }
+      );
+      const detail = await waitFor(async () => {
+        const d = await evalIn(web, `window.__lfList`).catch(() => null);
+        return d && d.count > 0 ? d : null;
+      }, 8000).catch(() => null);
+      assert(
+        detail && detail.count >= 2,
+        "the tab switcher lists the window after the unsplit: " + JSON.stringify(detail) +
+          " tabs=" +
+          JSON.stringify(await ctx.tabsInfo().catch(() => "ERR"))
+      );
+      await evalIn(web, `window.__lfList = null; true`);
+      await ctx.press(web, "Escape");
+      await waitFor(async () => (!(await ctx.hasHost(web, "lazyfox-popup")) ? true : null), 5000).catch(
+        () => null
+      );
+    } finally {
+      // Leave the window as this file's other tests expect to find it: the
+      // scratch tab gone and tabA a command center.
+      const id = await ctx.tabIdOf(web).catch(() => null);
+      if (id != null) await evalIn(ctx.probe, `browser.tabs.remove(${id})`).catch(() => {});
+      await waitFor(async () => {
+        const ts = await ctx.tabsInfo();
+        return id == null || ts.every((t) => t.id !== id) ? true : null;
+      }, 5000).catch(() => {});
+      ctx.tabA = await createTab();
+      await ctx.openCC(ctx.tabA);
+    }
+  });
+
+  // THE THREE OPS, TIMED. The report was "splitting and the switching and any
+  // action related to window manipulation is super slow that it makes thing not
+  // usable" — a claim about LATENCY, which no assertion in this folder measured:
+  // every other test waits for an outcome and passes whatever it cost.
+  //
+  // The measurement starts at the LAST key of the chord and ends at the first
+  // cheap read that can see the outcome (`tabsInfo`, one `browser.tabs.query` in
+  // the probe — never `chromeState`, which is a page NAVIGATION per read and was
+  // measured at ~700ms, i.e. more than the thing being measured). So the number
+  // printed here is the user-visible lag of one op, plus the key dispatch.
+  //
+  // The ceilings are deliberately loose. This is a regression guard against the
+  // two ways these ops can become unusable — a per-op relay wait that grows with
+  // the strip, or an op that stopped answering at all — not a micro-benchmark
+  // with a budget that would fail on a loaded machine.
+  await t("split: the three ops answer inside a keystroke's patience (measured)", async () => {
+    const pair = await nativeSplit();
+    assert(pair.length === 2, "native split paired two tabs: " + JSON.stringify(pair));
+
+    const activeId = async (): Promise<number | null> => {
+      const ts = await ctx.tabsInfo().catch(() => [] as any[]);
+      const a = ts.find((x: any) => x.active);
+      return a ? a.id : null;
+    };
+    const timed = async (what: string, key: string, done: () => Promise<boolean>): Promise<number> => {
+      // The head of the chord first, so the clock starts at the one key that is
+      // supposed to cause the change.
+      await ctx.leaderSeq(ctx.tabA, ["W"]);
+      const t0 = Date.now();
+      await ctx.press(ctx.tabA, key);
+      const ok = await done();
+      const ms = Date.now() - t0;
+      assert(ok, what + " did not take effect within the 8s the wait allows");
+      console.log(`     ${what}: ${ms}ms from the key to the change`);
+      assert(ms < 2500, what + " took " + ms + "ms from the keypress to the visible change (budget 2500ms)");
+      return ms;
+    };
+
+    const before = await activeId();
+    await timed("switch pane", "[", async () => {
+      const id = await waitFor(async () => {
+        const now = await activeId();
+        return now != null && now !== before ? now : null;
+      }, 8000).catch(() => null);
+      return id != null;
+    });
+
+    const splitPair = await ctx.tabsInfo();
+    const panes = splitPair.filter((x: any) => typeof x.splitViewId === "number" && x.splitViewId >= 0);
+    assert(panes.length === 2, "the split is still there after the switch: " + JSON.stringify(panes));
+
+    await timed("unsplit", "u", async () => {
+      await waitNoSplit().catch(() => {});
+      const ts = await ctx.tabsInfo().catch(() => [] as any[]);
+      return ts.every((x: any) => !(typeof x.splitViewId === "number" && x.splitViewId >= 0));
+    });
+
+    // And back, so the split op is measured on a strip that just changed.
+    await waitNoSplitStable();
+    await ctx.leaderSeq(ctx.tabA, ["W"]);
+    const t0 = Date.now();
+    await ctx.press(ctx.tabA, "|");
+    const again = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      return ts.filter((x: any) => typeof x.splitViewId === "number" && x.splitViewId >= 0).length === 2 ? ts : null;
+    }, 8000).catch(() => null);
+    const splitMs = Date.now() - t0;
+    assert(again, "the second split did not form within 8s");
+    console.log(`     split: ${splitMs}ms from the key to the pair`);
+    assert(splitMs < 2500, "split took " + splitMs + "ms from the keypress to the pair (budget 2500ms)");
+
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]);
+    await waitNoSplit().catch(() => {});
+    await waitNoSplitStable();
   });
 }

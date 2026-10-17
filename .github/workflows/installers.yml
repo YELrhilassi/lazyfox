@@ -11,6 +11,12 @@ name: Installers - native builds
 #
 # It uploads workflow artifacts only. Releases are still created by exactly one
 # place (`npm run ship`); this job never pushes, tags or publishes.
+#
+# Each artifact contains the platform's dev installer AND the payload-state.json
+# the build wrote beside it. The state file is the record that lets `npm run
+# check` prove, in a fresh clone and without rebuilding, which payload a
+# committed binary carries — so a maintainer who wants to commit a CI-built
+# binary has the record that goes with it instead of having to hand-write one.
 
 on:
   workflow_dispatch:
@@ -51,6 +57,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # From the window's own lockfile, rather than letting the build's
+      # ensureFrontend() run `npm install` and resolve a fresh (and therefore
+      # different) dependency tree on every run.
+      - name: Install the installer window's dependencies
+        run: npm run ui:deps
+
       # Wails' Linux backend links WebKitGTK through CGO.
       - name: Install webview build dependencies (Linux)
         if: matrix.name == 'linux'
@@ -58,15 +70,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
 
-      - name: Build dist and the installers
+      # One command: dist/, the unsigned add-on, and every committed installer
+      # (this platform's with its graphical window, the others as terminal
+      # installers, plus the release set when a signed add-on is present).
+      - name: Build dist, the add-on and the installers
         run: npm run build
 
-      - name: Build the dev installers
-        run: npm run build:installers
+      # The upload is not the verification. This is: the binaries just built are
+      # re-checked by content (payload hash, source fingerprint, staged payload,
+      # and this machine's binary actually running with a usable embedded
+      # payload) before they are offered to anyone.
+      - name: Verify the binaries that were just built
+        run: node scripts/check-installer-payload.ts
 
       - name: Upload this platform's installer
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: installer/bin/${{ matrix.artifact }}
+          path: |
+            installer/bin/${{ matrix.artifact }}
+            installer/bin/payload-state.json
           if-no-files-found: error
