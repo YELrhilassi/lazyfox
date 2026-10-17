@@ -320,6 +320,32 @@ describe("the mapping entries", () => {
     assert.ok(entries[1]!.bg);
   });
 
+  test("an empty box keeps its backdrop, because the image is the design", () => {
+    // The cell above CARRIES CONTENT (its label), so its surface is painted. An
+    // element with nothing inside it is a transparent logo drawn on a backdrop
+    // the site chose: painting that dark would erase a dark mark, which is the
+    // opposite of an improvement.
+    const [logo] = entriesFor(
+      [sample({ selector: ".logo", hasBgImage: true, hasContent: false, bg: "rgb(255, 255, 255)", area: 3000 })],
+      theme
+    );
+    assert.equal(logo!.bg, undefined);
+  });
+
+  test("a placeholder under a COVERED photo is a surface like any other", () => {
+    // Measured on merriam-webster.com: `div.lazyload-container` is `#d7d5d5` plus
+    // an `image-set()` photo at `background-size: cover` — a light grey box on a
+    // dark page while the image loads, and a box the image hides completely once it
+    // arrives. An uncovered `url()` of the same colour keeps its backdrop (the
+    // empty-box case above), because there the colour is what the user sees.
+    const [box] = entriesFor(
+      [sample({ selector: ".lazyload-container", hasBgImage: true, hasContent: false, bgCovers: true, bg: "rgb(215, 213, 213)", area: 64_000 })],
+      theme
+    );
+    assert.ok(box!.bg, "the placeholder is painted");
+    assert.ok(relativeLuminance(parseColor(box!.bg!)!) < 0.2, `and it is dark, got ${box!.bg}`);
+  });
+
   test("a transparent background is not a colour", () => {
     // Painting one would put a dark rectangle under content the page left
     // see-through on purpose.
@@ -611,6 +637,83 @@ describe("the sheet", () => {
     );
     const css = composeSheet({ theme, entries, rules: [], userCss: "" });
     assert.match(css, /\.hero\{background-color:[^}]*background-image:linear-gradient\(rgb\(/);
+  });
+
+  test("a light surface UNDER a background image is still a surface", () => {
+    // MEASURED on en.wikipedia.org/wiki/Firefox: a sortable table header is
+    // `background: #eaecf0 url(<sort arrow>)`. Skipping the colour because the
+    // value contains a `url(` left the cell light while its text was mapped to
+    // near-white — ten unreadable header cells, and the report "issues with
+    // content". The image paints above the colour, so the colour is ours.
+    const entries = entriesFor(
+      [
+        sample({
+          selector: "th.headerSort",
+          bg: "rgb(234, 236, 240)",
+          ownBg: "rgb(234, 236, 240)",
+          fg: "rgb(32, 33, 34)",
+          hasBgImage: true,
+          hasContent: true,
+          area: 4900,
+        }),
+      ],
+      theme
+    );
+    const css = composeSheet({ theme, entries, rules: [], userCss: "" });
+    const rule = /th\.headerSort\{([^}]*)\}/.exec(css);
+    assert.ok(rule, "the header cell has a rule: " + css);
+    assert.match(rule[1]!, /background-color:rgb\(\d+, \d+, \d+\)/);
+    const bg = /background-color:(rgb\([^)]*\))/.exec(rule[1]!)![1]!;
+    assert.ok(relativeLuminance(parseColor(bg)!) < 0.2, `the cell was left light: ${bg}`);
+    // …and its text still reads on the colour it will actually sit on.
+    const fgText = /(?:^|;)color:(rgb\([^)]*\))/.exec(rule[1]!)![1]!;
+    assert.ok(contrastRatio(parseColor(fgText)!, parseColor(bg)!) >= 4.5, `text ${fgText} on ${bg}`);
+  });
+
+  test("a pseudo-element layer is painted as a surface, and never as text", () => {
+    // `::before{content:"";inset:0;background:rgba(255,255,255,.7)}` is how a site
+    // draws a veil, and a veil is not an element: it was never sampled, so it
+    // stayed white over the mapped surface — "some gray overlay on some elements".
+    const entries = entriesFor(
+      [
+        sample({
+          selector: ".card::before",
+          solo: "#a > div:nth-of-type(2)::before",
+          tag: "DIV::before",
+          bg: "rgba(255, 255, 255, 0.7)",
+          ownBg: "rgba(255, 255, 255, 0.7)",
+          fg: "",
+          area: 40_000,
+          pseudo: "::before",
+        }),
+      ],
+      theme
+    );
+    const css = composeSheet({ theme, entries, rules: [], userCss: "" });
+    const rule = /\.card::before\{([^}]*)\}/.exec(css);
+    assert.ok(rule, "the layer has a rule: " + css);
+    assert.match(rule[1]!, /background-color:rgba\(22, 22, 30, 0\.7\)/);
+    assert.ok(!/(?:^|;)color:/.test(rule[1]!), "a layer has no text of its own: " + rule[1]);
+    assert.ok(rule[1]!.indexOf("border") < 0, "and no border of its own: " + rule[1]);
+  });
+
+  test("a layer does not vote on the page's canvas", () => {
+    // The veil covers its element, so its area is the element's — a full-page
+    // `::before` would otherwise outvote the page's own colour and hand the
+    // canvas to a translucent sheet.
+    const a = analyze([
+      sample({ selector: "body", area: 500_000, bg: "rgb(255, 255, 255)" }),
+      sample({
+        selector: "body::before",
+        area: 500_000,
+        bg: "rgb(0, 0, 0)",
+        ownBg: "rgba(0, 0, 0, 0.6)",
+        pseudo: "::before",
+        fg: "",
+      }),
+    ]);
+    assert.equal(a.pageDark, false, "the white page is still the page");
+    assert.equal(a.coverage, 1);
   });
 
   test("a scheme is written only when the caller says the page has none of its own", () => {
