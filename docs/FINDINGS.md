@@ -409,6 +409,23 @@ opens the popup, and every member of the family — `1-9` to switch by marker,
 key inside it, next to the markers it acts on. `;p` and `;'` are gone: a second
 spelling of the same action is the thing the menu was full of.
 
+**Panes are ADDRESSED, not cycled.** `;W`'s split family used to spread over
+four keys — `[` / `]` to step between two panes and `{` / `}` to swap in a
+direction — which is the least ergonomic way to choose one of a pair, and two of
+the four needed Shift. `h` / `l` name the pane (vim's left/right) and `s` swaps
+the pair, because a swap has no direction to pick. The report was "I don't need
+that many actions for key bindings and it feels convoluted": four cyclic keys
+for a two-pane layout became three direct ones, and every remaining sub-key in
+`;W` is a single keystroke with no Shift.
+
+Two operations that were MISSING got keys rather than a menu row apiece: `;W m`
+now asks WHICH split when the window holds more than one (`sessionSplitTargets`
+lists the groups in strip order and the chooser numbers them), and `;W o` takes
+the current tab out of its split while leaving the other panes in it — the
+report's "move a tab from a split pane while keeping the split panes, not just
+`;W u`". `;W u` still takes the whole split apart; the two are different
+intentions, so they are different keys.
+
 **`;?` is the flat index, so it lists the leaves too.** The overlay shows `;W`
 as one row (that is its job); the searchable reference has the opposite job, and
 without the leaf rows searching "split", "unsplit" or "zoom reset" returned

@@ -206,6 +206,63 @@ export function shouldApply(
  * inversion gets every pixel but turns photographs into negatives), so the
  * choice belongs to the page rather than to a guess about the site.
  */
+/**
+ * Does the page SAY it can render dark, even though it is showing light right
+ * now?
+ *
+ * This is the half of "use the site's own theme" that the pixel measurement
+ * cannot see. A page whose canvas is white because the OS is light may still
+ * ship a complete dark theme behind `color-scheme: light dark` (`light-dark()`,
+ * `@media (prefers-color-scheme: dark)`, `:root[data-theme]`). Asking the site
+ * for THAT theme is strictly better than recolouring its light one: the site's
+ * dark theme is what its authors designed, down to every accent and border.
+ *
+ * The signals are the ones that are FACTS about the page rather than guesses:
+ * the computed `color-scheme` (the declaration that makes UA widgets and
+ * `light-dark()` follow the scheme) and a `<meta name="color-scheme">` that names
+ * dark. `prefers-color-scheme` is deliberately NOT consulted — that is a fact
+ * about the user's OS, not about the site, and treating the two as the same thing
+ * is how a dark-mode extension darkens pages that were already fine.
+ */
+export function declaresDarkSupport(colorScheme: string | null | undefined, metaColorScheme?: string | null): boolean {
+  const value = String(colorScheme || "").toLowerCase();
+  if (/\bdark\b/.test(value)) {
+    // `only dark` is dark support with no light variant: the page is dark already
+    // or will be once it paints, and remapping it would fight the site.
+    return true;
+  }
+  const meta = String(metaColorScheme || "").toLowerCase();
+  return /\bdark\b/.test(meta);
+}
+
+/**
+ * The verdict on a page that MIGHT have its own dark theme.
+ *
+ * `awaiting` is the only non-obvious state: the page declared support, the
+ * caller asked it for dark, and the re-measure has not happened yet. The caller
+ * sets `color-scheme: dark`, re-samples, and asks again with the new analysis —
+ * so this function is called twice and the second answer is the real one.
+ */
+export interface NativeDarkDecision {
+  /** Take the page's own theme: no sheet, no remap, nothing to undo. */
+  native: boolean;
+  reason: string;
+}
+
+export function nativeDarkVerdict(
+  declared: boolean,
+  asked: boolean,
+  analysis: Analysis
+): NativeDarkDecision {
+  if (!declared) return { native: false, reason: "the page declares no dark theme" };
+  if (asked) {
+    return analysis.pageDark
+      ? { native: true, reason: "the site's own dark theme (color-scheme)" }
+      : { native: false, reason: "the page declares dark but still renders light" };
+  }
+  return { native: false, reason: "the page declares a dark theme; asking for it" };
+}
+
 export function chooseEngine(engine: "auto" | "dynamic" | "filter", analysis: Analysis): "dynamic" | "filter" {
   if (engine !== "auto") return engine;
   // A page with no usable samples cannot be remapped at all.

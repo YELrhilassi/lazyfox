@@ -472,6 +472,11 @@ export interface StatusBarData {
   // segment; null (or count 0) hides it. Pushed by the content script and
   // relayed from the background for the chrome helper's window-level bar.
   find?: { cur: number; count: number } | null;
+  // The content script's dark-mode verdict for the selected tab: whether we
+  // painted it, the mode that decided it and the engine that rendered it. Absent
+  // when the feature is not touching this page, which is what keeps the bar from
+  // showing a moon on every tab forever.
+  dark?: { on: boolean; mode: string; engine: string } | null;
   // Real tab ids + stealth flags in strip order, from the Go store's session
   // snapshot — read by the tab switcher (badges + true Firefox ids).
   tabIds?: number[];

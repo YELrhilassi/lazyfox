@@ -6,6 +6,7 @@
 // restore path the primitives to turn a snapshot back into tabs.
 
 import { core } from "../../shared/core";
+import { splitIdsOf } from "../../shared/splits";
 import type { Session, SessionTab } from "../../shared/types";
 import { CC_URL, isUITab } from "../tabs";
 import { reconcileStealth, stealthContainers, stealthCreateTab } from "../stealth";
@@ -51,10 +52,9 @@ export async function snapshotWindow(): Promise<WindowSnapshot> {
   if (active < 0) active = 0;
   // The split layout is computed once, in the Go core, from the read-only
   // splitViewId each tab carries, and stored as a compact "a:b,c:d" string.
-  const svIds = content.map((t: any) =>
-    typeof t.splitViewId === "number" && t.splitViewId >= 0 ? t.splitViewId : -1
-  );
-  const splits = await core.encodeSplits(await core.splitPairsOf(svIds));
+  // Positions count the tabs a split can address, so pinned tabs (never part of
+  // a split) are excluded — the restore resolves them against that same list.
+  const splits = await core.encodeSplits(await core.splitPairsOf(splitIdsOf(content)));
   return {
     tabs: content.map((t: any) => {
       const svId = typeof t.splitViewId === "number" && t.splitViewId >= 0 ? t.splitViewId : undefined;
@@ -70,6 +70,40 @@ export async function snapshotWindow(): Promise<WindowSnapshot> {
     windowState: win && win.state ? win.state : "normal",
     splits
   };
+}
+
+/**
+ * Whether the window's split layout is fully described yet.
+ *
+ * Firefox assigns `splitViewId` to each pane a beat AFTER the split forms, so a
+ * read taken too early sees exactly one pane of a fresh pair carrying an id.
+ * `splitPairsOf` drops a lone id — "one pane of two" and "no split at all"
+ * encode to the SAME empty layout, and since a split fires no `tabs.*` event
+ * nothing would ever come back to correct it. That is how a pair that was on
+ * screen at quit came back flat on the next launch.
+ *
+ * This is the question that separates the two, and it is answered by the
+ * platform rather than by a delay we guessed: an id carried by fewer than two
+ * tabs is a measurement still in flight. No ids at all is settled — there is
+ * simply nothing split.
+ */
+export async function layoutSettled(): Promise<boolean> {
+  try {
+    const tabs = await browser.tabs.query({ currentWindow: true });
+    const ids = splitIdsOf((tabs || []).filter((t: any) => !isUITab(t)));
+    const members = new Map<number, number>();
+    for (const id of ids) {
+      if (id >= 0) members.set(id, (members.get(id) || 0) + 1);
+    }
+    for (const n of members.values()) {
+      if (n < 2) return false;
+    }
+    return true;
+  } catch {
+    // A read that failed cannot keep being retried: report the layout as settled
+    // so the caller writes down what it has instead of looping forever.
+    return true;
+  }
 }
 
 // Rebuild a saved tab list in the current window, replacing what is there.
@@ -187,10 +221,8 @@ export async function openTabsInCurrentWindow(tabs: SessionTab[]): Promise<numbe
 // reference a tab that left the session.
 export async function refreshSplits(tabs: SessionTab[]): Promise<string> {
   try {
-    const svIds = (tabs || []).map((t) =>
-      typeof t.splitViewId === "number" && t.splitViewId >= 0 ? t.splitViewId : -1
-    );
-    return await core.encodeSplits(await core.splitPairsOf(svIds));
+    // Same coordinate space as snapshotWindow: pinned tabs do not count.
+    return await core.encodeSplits(await core.splitPairsOf(splitIdsOf(tabs)));
   } catch {
     return "";
   }

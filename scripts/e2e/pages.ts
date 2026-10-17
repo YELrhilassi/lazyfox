@@ -1408,6 +1408,101 @@ ships its own dark theme should see the site's, not ours.</p>
 </body></html>`,
   },
 
+  // A page that HAS a dark theme and is rendering light, because the operating
+  // system is light. This is the "use the website's native dark mode" case: the
+  // engine must ask for the site's own theme rather than recolour its light one.
+  //
+  // `color-scheme: light dark` plus `light-dark()` is what makes the ask real —
+  // every value in the page is chosen by the scheme the page is being rendered
+  // in, so setting `color-scheme: dark` on the root flips the whole page with no
+  // stylesheet of ours. A page written any other way cannot be asked at all, and
+  // that is the point: the signal and the behaviour are the same declaration.
+  "/nativetheme": {
+    body: `<!DOCTYPE html><html><head><title>NATIVE THEME PAGE</title>
+<style>
+:root{color-scheme:light dark}
+html,body{margin:0}
+body{background:light-dark(#ffffff,#0f1115);color:light-dark(#111111,#e6e6e6);font:16px/1.55 system-ui,sans-serif}
+#panel{background:light-dark(#f2f4f8,#141821);color:light-dark(#202124,#e6e6e6);padding:24px;min-height:380px}
+#panel p{max-width:60ch}
+#aside{background:light-dark(#e8eaed,#171c26);color:light-dark(#3c4043,#c8cede);padding:18px;min-height:220px}
+</style></head>
+<body>
+<div id="panel">
+<h1>Native theme page</h1>
+<p>This page ships both schemes. It renders light because the system is light,
+and it can be asked for dark with one declaration — so the dark engine must take
+this page's own theme instead of remapping its light one.</p>
+</div>
+<div id="aside"><p>A second surface, in both schemes.</p></div>
+</body></html>`,
+  },
+
+  // The same site, but FORCED light right now: `color-scheme: light` on the root
+  // wins over the OS, while the `<meta name="color-scheme">` still declares that
+  // the site ships both schemes. This is the half of the native-theme story that
+  // depends on the user's OS being light in /nativetheme, made deterministic: the
+  // page renders light on any machine, and the engine can still ask it for dark
+  // with the one write it is allowed to make.
+  "/nativetheme-light": {
+    body: `<!DOCTYPE html><html><head><title>NATIVE THEME, FORCED LIGHT</title>
+<meta name="color-scheme" content="light dark">
+<style>
+:root{color-scheme:light}
+html,body{margin:0}
+body{background:light-dark(#ffffff,#0f1115);color:light-dark(#111111,#e6e6e6);font:16px/1.55 system-ui,sans-serif}
+#panel{background:light-dark(#f2f4f8,#141821);color:light-dark(#202124,#e6e6e6);padding:24px;min-height:380px}
+#panel p{max-width:60ch}
+#aside{background:light-dark(#e8eaed,#171c26);color:light-dark(#3c4043,#c8cede);padding:18px;min-height:220px}
+</style></head>
+<body>
+<div id="panel">
+<h1>Native theme, forced light</h1>
+<p>Every colour here is a <code>light-dark()</code> pair, so the page's own dark
+theme is one scheme write away. The engine must take it rather than remap the
+light palette it can see.</p>
+</div>
+<div id="aside"><p>A second surface, in both schemes.</p></div>
+</body></html>`,
+  },
+
+  // A STATE SWITCH in one document: the page paints its first view, then throws
+  // it away and renders a different one — the shape of every single-page app
+  // route change, and the reported "breaks when I switch state and shows blank
+  // dark overlay".
+  //
+  // Second state has NO surface at all for a moment (the teardown), and then new
+  // palettes that were not on the page when the engine measured it. Both halves
+  // are the bug: the empty moment must not become a verdict, and the new colours
+  // must still be themed.
+  "/spa": {
+    body: `<!DOCTYPE html><html><head><title>SPA STATE SWITCH</title>
+<style>
+html,body{margin:0}
+body{background:#ffffff;color:#111111;font:16px/1.55 system-ui,sans-serif}
+#panel{background:#f2f4f8;color:#202124;padding:24px;min-height:320px}
+#late{background:#dde3ec;color:#1f2937;padding:24px;min-height:260px}
+</style></head>
+<body>
+<div id="panel"><h1>First view</h1><p>The engine measures this view.</p></div>
+<script>
+// The state switch, on a timer so a test can watch it happen: tear the document
+// down to nothing, then render a view with a palette that was never sampled.
+setTimeout(function () {
+  var host = document.getElementById('panel');
+  host.parentNode.removeChild(host);
+  setTimeout(function () {
+    var late = document.createElement('div');
+    late.id = 'late';
+    late.innerHTML = '<h1>Second view</h1><p>Rendered after the teardown.</p>';
+    document.body.appendChild(late);
+    document.documentElement.setAttribute('data-fixture-switched', '1');
+  }, 250);
+}, 1200);
+</script>
+</body></html>`,
+  },
+
   // The reader's article: real prose, site chrome around it, and enough length to
   // be scrollable once the overlay is up (the scroll keys have nothing to move on
   // an article that fits on one screen). The chrome is what makes extraction a

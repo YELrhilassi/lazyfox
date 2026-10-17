@@ -3,6 +3,7 @@
 // one job well: type a search/URL to navigate the pane, or hit a digit (or
 // click) to move that tab into the current split view.
 
+import { esc } from "../shared/dom";
 import { send } from "../shared/protocol";
 
 interface SplitTab {
@@ -12,6 +13,26 @@ interface SplitTab {
   title: string;
   active: boolean;
   inSplit: boolean;
+  favIconUrl?: string;
+}
+
+/**
+ * `example.com/docs` — the part of a URL that identifies a page to a human.
+ *
+ * The panel used to print `id 123 \u00B7 https://\u2026`, and the id was the whole
+ * problem: it is an implementation number the user has never seen anywhere else,
+ * printed beside a URL that was long enough to be cut off. What identifies a tab
+ * is its title and its site, which is what the tab strip shows and what the
+ * list shows now.
+ */
+function shortUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const path = u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "");
+    return (u.host + path).slice(0, 120);
+  } catch {
+    return url;
+  }
 }
 
 (function () {
@@ -31,35 +52,52 @@ interface SplitTab {
     return /^[a-z][a-z0-9+.-]*:/i.test(s) ? s : "https://" + s;
   }
 
+  /**
+   * The list of tabs you can put in this pane.
+   *
+   * MINIMAL, and that is a design decision rather than a lack of one: a tab's
+   * title, its site, its number, its icon. No ids, no full URLs, no "already in
+   * split" rows interleaved with the ones you can actually pick — the tabs that
+   * are already here are simply not choices, and listing them as disabled rows
+   * made the list longer to say the same thing. What remains is exactly what the
+   * user needs to recognise the tab they meant, which is the whole reason this
+   * pane exists: nobody should have to remember a number to move a tab.
+   */
   function render(): void {
-    if (!tabs.length) {
-      list.innerHTML = "<li class='empty'>No other tabs to move into this split.</li>";
+    const movable = tabs.filter((t) => !t.inSplit);
+    if (!movable.length) {
+      list.innerHTML =
+        "<li class='empty'>No other tabs to move into this split.</li>";
       return;
     }
-    // Show every real tab (the background already skips splitpanel / #lfc=
-    // UI tabs), so the list is never empty when the window has tabs. Tabs
-    // already in this split are dimmed and disabled; the rest are movable
-    // targets whose number matches ;+N.
-    list.innerHTML = tabs
-      .map(
-        (t) =>
+    list.innerHTML = movable
+      .map((t) => {
+        const title = esc(t.title || t.url || "(untitled)");
+        const sub = esc(shortUrl(t.url || ""));
+        const fav = t.favIconUrl
+          ? "<img class='fav' src='" + esc(t.favIconUrl) + "' alt=''>"
+          : "<span class='fav none'></span>";
+        return (
           "<li data-index='" +
           t.index +
-          "' class='" +
-          (t.inSplit ? "insplit" : "") +
-          "'><span class='kbd'>" +
+          "' title='" +
+          esc(t.url || "") +
+          "'>" +
+          "<span class='kbd'>" +
           t.index +
-          "</span><span class='txt'><span class='t'></span><span class='s'></span></span><span class='st'></span></li>"
-      )
+          "</span>" +
+          fav +
+          "<span class='txt'><span class='t'>" +
+          title +
+          "</span><span class='s'>" +
+          sub +
+          "</span></span>" +
+          (t.active ? "<span class='dot'></span>" : "") +
+          "<span class='go'>\u21B5</span>" +
+          "</li>"
+        );
+      })
       .join("");
-    for (const t of tabs) {
-      const li = list.querySelector<HTMLElement>("[data-index='" + t.index + "']");
-      if (!li) continue;
-      (li.querySelector(".t") as HTMLElement).textContent = t.title || t.url || "(untitled)";
-      (li.querySelector(".s") as HTMLElement).textContent = "id " + t.id + " \u00B7 " + (t.url || "");
-      const st = li.querySelector(".st") as HTMLElement;
-      st.textContent = t.inSplit ? "\u00B7 in split" : "";
-    }
   }
 
   async function refresh(): Promise<void> {

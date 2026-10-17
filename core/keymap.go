@@ -272,14 +272,29 @@ var Keymap = []KeymapRow{
 			{Spec: "z", Key: "z", Action: "zen", Label: "Zen mode"},
 			{Spec: "e", Key: "e", Action: "toggleReveal", Label: "Toggle toolbar reveal"},
 			{Spec: "shift+\\", Key: "|", Action: "splitTab", Label: "Split side-by-side"},
-			{Spec: "[", Key: "[", Action: "splitPanePrev", Label: "Previous pane"},
-			{Spec: "]", Key: "]", Action: "splitPaneNext", Label: "Next pane"},
-			{Spec: "shift+[", Key: "{", Action: "swapPaneLeft", Label: "Swap pane left"},
-			{Spec: "shift+]", Key: "}", Action: "swapPaneRight", Label: "Swap pane right"},
+			// PANES ARE TWO, SO THEY ARE ADDRESSED, NOT CYCLED.
+			//
+			// This family used to be four keys — `[` / `]` to cycle and `{` /
+			// `}` to swap a direction — for a layout that only ever holds two
+			// panes. Cycling between two things is the least ergonomic
+			// possible way to choose one of them, and two of the four needed
+			// Shift on keyboards where the brackets do. `h` / `l` name the pane
+			// the way every vim-shaped UI does (left, right), and `s` swaps the
+			// pair, which has no direction to pick.
+			{Spec: "h", Key: "h", Action: "splitPanePrev", Label: "Focus left pane"},
+			{Spec: "l", Key: "l", Action: "splitPaneNext", Label: "Focus right pane"},
+			{Spec: "s", Key: "s", Action: "swapPanes", Label: "Swap panes"},
 			{Spec: ",", Key: ",", Action: "moveTabLeft", Label: "Move tab left"},
 			{Spec: ".", Key: ".", Action: "moveTabRight", Label: "Move tab right"},
+			// TWO DIFFERENT INTENTIONS, TWO KEYS. `o` takes THIS tab out of the
+			// split and leaves the rest of the group alone; `u` takes the whole
+			// split apart. The report asked for exactly that distinction ("move a
+			// tab from a split pane while keeping the split panes, not just
+			// `;W u`"), and spelling it as one key would make one of the two
+			// impossible to ask for.
+			{Spec: "o", Key: "o", Action: "pullFromSplit", Label: "Move this tab out of the split"},
 			{Spec: "u", Key: "u", Action: "unsplit", Label: "Unsplit"},
-			{Spec: "m", Key: "m", Action: "moveTabIntoSplit", Label: "Move tab into split…"},
+			{Spec: "m", Key: "m", Action: "moveTabIntoSplit", Label: "Move a tab into a split…"},
 		},
 	},
 	{Spec: "shift+f", Key: "F", Action: "scrollRegionNext", Label: "Scroll target: next region", Group: "Window & layout"},

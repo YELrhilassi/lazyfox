@@ -207,6 +207,16 @@
   // platform has finished taking one apart — and a test no config compiles is
   // exactly how such a rule quietly stops being true.
   //
+  // scripts/test/dark-theme.test.ts is the latest, and it is the same shape as
+  // keyhold.test.ts: it drives the dark engine's DOM shell
+  // (content/dark/apply.ts), whose signatures are typed against Element,
+  // Document and Window, and whose sampler reads computed styles and bounding
+  // rectangles — none of which a config without the DOM lib can name. The
+  // decisions it tests (detect.ts's verdicts, apply.ts's resample gate) are
+  // still checked wherever they are DOM-free, and every module in the browser
+  // tree is typechecked by tsconfig.json; what is out of scope here is only the
+  // Node-side USE of them.
+  //
   // The Node-side tests themselves now live in scripts/test/*.test.ts and run
   // under node:test. They are INCLUDED here (see the include list below), so a
   // change to a test file cannot silently break the build — scripts/test/ is
@@ -240,7 +250,8 @@
     "scripts/test/window-sync.test.ts",
     "scripts/test/chrome-field.test.ts",
     "scripts/test/sync-content.test.ts",
-    "scripts/test/split-unsplit.test.ts"
+    "scripts/test/split-unsplit.test.ts",
+    "scripts/test/dark-theme.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

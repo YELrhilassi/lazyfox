@@ -71,6 +71,9 @@ export interface StatusBarCtl {
   // Content-script find-in-page state by tab-strip index (pushed by the
   // background on every count change). Same resolution as the leader chevron.
   setContentFind(index: number, count: number, cur: number): void;
+  // The content script's dark verdict for a tab. Per index like find, so the
+  // bar describes the page on screen rather than whichever tab reported last.
+  setContentDark(index: number, on: boolean, mode: string, engine: string): void;
   mounted(): boolean;
   dlActive(): string[];
   getInfo(): {
@@ -414,6 +417,9 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     },
     setContentFind: (index, count, cur) => {
       pushAndPaint([{ kind: "find", index, cur, count }]);
+    },
+    setContentDark: (index, on, mode, engine) => {
+      pushAndPaint([{ kind: "dark", index, on, mode, engine }]);
     },
     mounted: () => chromeStatusBar.mounted,
     dlActive: () =>

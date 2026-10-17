@@ -20,7 +20,7 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { splitPairsInRange } from "../../src/shared/splits.ts";
+import { splitIdsOf, splitPairsInRange, splitTabsOf } from "../../src/shared/splits.ts";
 
 // Every pair shape with both positions in [0, 6). Including duplicates,
 // negatives-as-typed-is-not-possible-here (positions are typed) and, via the
@@ -141,5 +141,47 @@ describe("splitPairsInRange — the shapes that must be believed", () => {
   });
   test("a pair at the very end of a long list", () => {
     assert.equal(splitPairsInRange([[98, 99]], 100), true);
+  });
+});
+// The coordinate space a saved layout is expressed in.
+//
+// A snapshot numbers split positions over the tabs a split can address; a
+// restore resolves those numbers against the same list. When the two disagreed
+// — the save counted pinned tabs, the restore skipped them — a session with
+// pinned tabs at the front restored a DIFFERENT pair (the pair's neighbours) or
+// nothing at all, identical in appearance to a layout that was never saved.
+describe("splitTabsOf — pinned tabs are not part of the coordinate space", () => {
+  test("pinned tabs are dropped and the rest keep strip order", () => {
+    const tabs = [
+      { pinned: true, splitViewId: -1 },
+      { pinned: false, splitViewId: -1 },
+      { splitViewId: 3 },
+      { pinned: false, splitViewId: 3 },
+    ];
+    assert.deepEqual(
+      splitTabsOf(tabs).map((t) => t.splitViewId ?? -1),
+      [-1, 3, 3],
+    );
+  });
+  test("all-pinned and empty lists address nothing", () => {
+    assert.deepEqual(splitTabsOf([{ pinned: true }]), []);
+    assert.deepEqual(splitTabsOf([]), []);
+    assert.deepEqual(splitTabsOf(null), []);
+  });
+});
+
+describe("splitIdsOf — the exact list the Go core pairs", () => {
+  test("a missing splitViewId is -1, never NaN", () => {
+    assert.deepEqual(splitIdsOf([{}, { splitViewId: 2 }]), [-1, 2]);
+  });
+  test("a pinned tab in front does not shift the positions of the pair", () => {
+    const withPinned = [
+      { pinned: true, splitViewId: -1 },
+      { pinned: false, splitViewId: 7 },
+      { pinned: false, splitViewId: 7 },
+    ];
+    // The pair is [0, 1] in the space the restore reads, which is what a saved
+    // "0:1" must mean.
+    assert.deepEqual(splitIdsOf(withPinned), [7, 7]);
   });
 });

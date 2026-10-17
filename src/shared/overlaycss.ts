@@ -32,7 +32,10 @@ export const PANEL_CSS = `
 .lf-item.lf-tab{padding:4px 14px;}
 /* Row title line: a flex row so the favicon lands on the row's right edge
    while the title itself ellipsizes (.txt carries the min-width:0). */
-.lf-item .t{display:flex;align-items:center;gap:7px;min-width:0;font-size:13px;color:#c0caf5;}
+/* overflow:hidden is the belt to .txt's braces: a row that forgets to wrap its
+   title in a .txt span (a bare text node is an anonymous flex item, which cannot
+   ellipsize) is clipped here instead of widening the panel. */
+.lf-item .t{display:flex;align-items:center;gap:7px;min-width:0;overflow:hidden;font-size:13px;color:#c0caf5;}
 .lf-item .t .txt{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .lf-item .s{font-size:11px;color:#565f89;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 /* Row favicon: a bare 16px image on the far right — no background, padding or

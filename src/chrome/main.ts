@@ -145,7 +145,37 @@ import { createTypingChannel } from "./typing";
   split = createSplitView({
     env,
     ccBaseUrl: () => channel.ccBaseUrl(),
-    onSplitChange: () => status.update(),
+    onSplitChange: () => {
+      // The status bar tracks whether the split changed (layout, or the tab the
+      // user is looking at); the LAYOUT report is a separate callback, because
+      // only the layout module can tell a pane switch from a layout move.
+      status.update();
+    },
+    // TELL THE BACKGROUND THE LAYOUT MOVED.
+    //
+    // The session snapshot (and the crash-recovery copy that a restart reads)
+    // is captured from `tabs` on tab events. A split is not a tab event — the
+    // same tabs are still there, they are just paired — so splitting a pair and
+    // quitting never wrote the pairing down, and the next launch restored the
+    // tabs flat. `layoutChanged` is that missing event; the background
+    // re-measures the layout itself, so nothing here has to describe it.
+    //
+    // Fired at most once per distinct layout (and possibly a beat after the op,
+    // while the platform finishes describing the new panes), so a TabSelect that
+    // only moves the selection between panes of one split costs nothing: the
+    // relay's single URL slot is shared with the key commands themselves, and a
+    // report per pane switch would starve the very command that caused it.
+    //
+    // Late-bound and best-effort: `channel` does not exist while the first split
+    // state is being established, and a layout report is never worth a throw on
+    // a keypress path.
+    onLayoutChanged: () => {
+      try {
+        if (channel) channel.requestBg("layoutChanged", {});
+      } catch (e) {
+        /* no relay yet: nothing to report to */
+      }
+    },
     // Resolved at call time: `channel` is built after `split` (it needs the
     // popup context that wraps ops), and the relay's identity is only known
     // once it exists — which is exactly when the numbering needs to ask.
