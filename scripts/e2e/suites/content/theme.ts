@@ -168,6 +168,28 @@ export async function run(ctx: any): Promise<void> {
     assert(String(scheme).indexOf("dark") >= 0, "the page was asked for dark, got " + scheme);
   });
 
+  // THE LATE DECLARATION. The question "does this site have its own dark theme?"
+  // has to be asked AFTER the head is parsed, because that is when a real site's
+  // `color-scheme` exists — at `document_start` the answer is always "nothing
+  // declared". The fixture makes that deterministic: its declaration lands in its
+  // own DOMContentLoaded handler, after the engine's.
+  await t("a theme declared after the first paint is still found, and used", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/lateTheme`);
+    const engine = await waitAttr("data-lf-dark-engine", "native", 12000);
+    assert(
+      engine !== null,
+      "the site's own theme was never found: " +
+        JSON.stringify(await attr("data-lf-dark-engine")) +
+        " (" +
+        (await attr("data-lf-dark-reason")) +
+        ")"
+    );
+    const bg = await bodyBg();
+    assert(bg === "rgb(15, 17, 21)", "the page renders its OWN dark canvas, got " + bg);
+    const sheet = await evalIn(ctx.tabA, `!!document.getElementById("lazyfox-dark")`);
+    assert(!sheet, "no stylesheet of ours is left on a native page");
+  });
+
   // THE STATE SWITCH. A single-page app throws its view away and renders a new
   // one; for a few frames there is no surface at all, and the new view's colours
   // were never sampled. The report: "it breaks when I switch state and shows
@@ -205,6 +227,385 @@ export async function run(ctx: any): Promise<void> {
       (await attr("data-lf-dark-engine")) === firstEngine,
       "the engine did not flip to a different one mid-switch: " + firstEngine + " → " + (await attr("data-lf-dark-engine"))
     );
+  });
+
+  // THE ARTIFACTS, MEASURED. "Artifacts in rendering" is not a feeling: on a dark
+  // page it is text that no longer reads against the surface it sits on, or a
+  // surface that stayed paper-white while everything around it went dark. Both are
+  // counted here on a page built out of the shapes real sites are made of (a dark
+  // header with white text, a frosted sticky bar, a badge, a table, form controls,
+  // an inline SVG and a photograph), and the themed page is held to the page's OWN
+  // readability as the site ships it.
+  const readability = (): Promise<{ total: number; unreadable: number; white: number }> =>
+    evalIn(
+      ctx.tabA,
+      `(() => {
+         const parse = (s) => {
+           const m = /rgba?\\(([^)]+)\\)/.exec(s || "");
+           if (!m) return null;
+           const p = m[1].split(/[,\\s\\/]+/).filter(Boolean).map(Number);
+           return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+         };
+         const lum = (c) => {
+           const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+           return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+         };
+         const ratio = (a, b) => {
+           const l1 = lum(a), l2 = lum(b), hi = Math.max(l1, l2), lo = Math.min(l1, l2);
+           return (hi + 0.05) / (lo + 0.05);
+         };
+         const surfaceOf = (el) => {
+           let n = el;
+           while (n && n.nodeType === 1) {
+             const c = parse(getComputedStyle(n).backgroundColor);
+             if (c && c.a >= 0.5 && !/^(IMG|SVG|CANVAS|VIDEO)$/.test(n.tagName)) return c;
+             n = n.parentElement;
+           }
+           return { r: 255, g: 255, b: 255, a: 1 };
+         };
+         let total = 0, unreadable = 0, white = 0;
+         const isMedia = (el) => !!el.closest("svg,figure,picture") || /^(IMG|SVG|CANVAS|VIDEO)$/.test(el.tagName);
+         for (const el of document.querySelectorAll("body *")) {
+           const cs = getComputedStyle(el);
+           if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) < 0.5) continue;
+           const r = el.getBoundingClientRect();
+           const bg = parse(cs.backgroundColor);
+           // A large surface that is still paper-white on a dark page.
+           if (bg && bg.a >= 0.5 && r.width * r.height > 40000 && lum(bg) > 0.85 && !isMedia(el)) white++;
+           const own = Array.from(el.childNodes).some((n) => n.nodeType === 3 && n.textContent.trim());
+           if (!own) continue;
+           const fg = parse(cs.color);
+           if (!fg || fg.a < 0.5) continue;
+           total++;
+           if (ratio(fg, surfaceOf(el)) < 2) unreadable++;
+         }
+         return JSON.stringify({ total, unreadable, white });
+       })()`
+    )
+      .then((v) => JSON.parse(String(v)))
+      .catch(() => ({ total: -1, unreadable: -1, white: -1 }));
+
+  await t("a site-shaped page stays readable, and no surface is left paper-white", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/sitelike`);
+    assert((await waitAttr("data-lf-dark", "on")) !== null, "the site-shaped page is darkened");
+    await new Promise((r) => setTimeout(r, 1200));
+
+    // The page as the SITE ships it: turn the site off, measure, turn it back on.
+    await ctx.leaderSeq(ctx.tabA, ["Y", "d"]);
+    assert((await waitAttr("data-lf-dark", "off")) !== null, "the site is off for the baseline");
+    const plain = await readability();
+    assert(plain.total > 5, "the sweep found the page's text, got " + JSON.stringify(plain));
+    // Sanity: the metric can see the light surfaces it is meant to count, or the
+    // assertion below would pass on a page where nothing was measured at all.
+    assert(plain.white > 0, "the page's own surfaces are light before theming: " + JSON.stringify(plain));
+
+    await ctx.leaderSeq(ctx.tabA, ["Y", "d"]);
+    assert((await waitAttr("data-lf-dark", "on")) !== null, "the site is darkened again");
+    await new Promise((r) => setTimeout(r, 1200));
+    const dark = await readability();
+    console.log(`       (busy page: ${JSON.stringify(plain)} → ${JSON.stringify(dark)})`);
+    assert(
+      dark.total === plain.total,
+      "the same text is on the page after the theme: " + JSON.stringify(dark)
+    );
+    assert(
+      dark.unreadable <= plain.unreadable,
+      `theming made ${dark.unreadable - plain.unreadable} more text/surface pair(s) unreadable (${JSON.stringify(plain)} → ${JSON.stringify(dark)})`
+    );
+    assert(
+      dark.white === 0,
+      "a large surface was left paper-white on a dark page: " + JSON.stringify(dark)
+    );
+    // Leave the host clean for the tests below, which assume the global default.
+    await ctx.leaderSeq(ctx.tabA, ["Y", "x"]);
+  });
+
+  // THE COLOURS, MEASURED. "The colour that it picks is awful to look at" is the
+  // report this answers, and the assertions are properties of the mapping rather
+  // than of one palette:
+  //
+  //   * a DARK surface on a light page (a navy header with white text) must not
+  //     come back pale — a dark mode that turns every dark element light is a
+  //     dark mode that looks inverted;
+  //   * a gradient is a surface, so its stops must be mapped too, or a pale hero
+  //     stays a pale rectangle in the middle of a dark page;
+  //   * the UA's own furniture (scrollbars, form controls) has to be dark, which
+  //     only `color-scheme` can do.
+  await t("dark surfaces stay dark, gradients are mapped, and the UA scheme follows", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/sitelike`);
+    assert((await waitAttr("data-lf-dark", "on")) !== null, "the page is darkened");
+    // `color-scheme` is written on the pass after the native question is closed
+    // (a page that declares nothing is answered at `load`), so wait for it.
+    const scheme = await waitFor(async () => {
+      const v = await evalIn(ctx.tabA, `String(getComputedStyle(document.documentElement).colorScheme)`).catch(() => "");
+      return /dark/.test(String(v)) ? String(v) : null;
+    }, 8000).catch(() => null);
+    assert(scheme !== null, "the root declares a dark scheme, got " + scheme);
+
+    const probe = `(() => {
+      const parse = (s) => {
+        const m = /rgba?\\(([^)]+)\\)/.exec(s || "");
+        if (!m) return null;
+        const p = m[1].split(/[,\\s\\/]+/).filter(Boolean).map(Number);
+        return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+      };
+      const lum = (c) => {
+        const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+        return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+      };
+      const ratio = (a, b) => {
+        const l1 = lum(a), l2 = lum(b), hi = Math.max(l1, l2), lo = Math.min(l1, l2);
+        return (hi + 0.05) / (lo + 0.05);
+      };
+      const head = document.querySelector("header");
+      const grad = document.querySelector(".grad");
+      const stops = (getComputedStyle(grad).backgroundImage.match(/rgba?\\([^)]*\\)/g) || []).map(parse);
+      return JSON.stringify({
+        headerBg: getComputedStyle(head).backgroundColor,
+        headerFg: getComputedStyle(head).color,
+        headerBgLum: lum(parse(getComputedStyle(head).backgroundColor)),
+        headerRatio: ratio(parse(getComputedStyle(head).color), parse(getComputedStyle(head).backgroundColor)),
+        gradImage: getComputedStyle(grad).backgroundImage,
+        gradStops: stops.map((c) => (c ? Math.round(lum(c) * 100) / 100 : null)),
+        body: getComputedStyle(document.body).backgroundColor,
+      });
+    })()`;
+    const seen = JSON.parse(String(await evalIn(ctx.tabA, probe)));
+    assert(seen.body === "rgb(22, 22, 30)", "the page still uses the theme canvas, got " + seen.body);
+    assert(
+      seen.headerBgLum < 0.25,
+      `the navy header stayed a dark surface (${seen.headerBg}, luminance ${seen.headerBgLum}) instead of turning pale`
+    );
+    assert(
+      seen.headerRatio >= 4.5,
+      `the header's white text still reads on it (ratio ${seen.headerRatio}, ${seen.headerFg} on ${seen.headerBg})`
+    );
+    assert(seen.gradStops.length === 2, "the gradient kept both stops: " + seen.gradImage);
+    for (const l of seen.gradStops) {
+      assert(
+        typeof l === "number" && l < 0.2,
+        `a gradient stop was left light (${JSON.stringify(seen.gradStops)} in ${seen.gradImage})`
+      );
+    }
+    console.log(`       (dark header ${seen.headerBg}, text ratio ${seen.headerRatio.toFixed(1)}; gradient stops ${JSON.stringify(seen.gradStops)})`);
+  });
+
+  // THE OVERLAY. "The grid is completely hidden by some sort of gray overlay" is
+  // the shape a puzzle/canvas board has: the board paints itself, and a
+  // transparent, absolutely-positioned layer above it takes the pointer events.
+  // The layer paints NOTHING, and after theming it must still paint nothing —
+  // the engine used to resolve its transparent colour against the canvas and
+  // paint that back on top of the very board it was letting show through.
+  await t("a transparent layer over a grid stays transparent, and the numbers stay readable", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/grid`);
+    assert((await waitAttr("data-lf-dark", "on")) !== null, "the grid page is darkened");
+    await new Promise((r) => setTimeout(r, 800));
+    const probe = `(() => {
+      const parse = (s) => {
+        const m = /rgba?\\(([^)]+)\\)/.exec(s || "");
+        if (!m) return null;
+        const p = m[1].split(/[,\\s\\/]+/).filter(Boolean).map(Number);
+        return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+      };
+      const lum = (c) => {
+        const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+        return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+      };
+      const ratio = (a, b) => {
+        const l1 = lum(a), l2 = lum(b), hi = Math.max(l1, l2), lo = Math.min(l1, l2);
+        return (hi + 0.05) / (lo + 0.05);
+      };
+      const layer = document.getElementById("grid-layer");
+      const cell = document.querySelector(".cell");
+      const num = document.querySelector(".num");
+      const given = document.querySelector(".num.given");
+      const cellBg = parse(getComputedStyle(cell).backgroundColor);
+      // A text element and the surface it is actually on, walked up the tree.
+      const surfaceOf = (el) => {
+        let n = el;
+        while (n && n.nodeType === 1) {
+          const c = parse(getComputedStyle(n).backgroundColor);
+          if (c && c.a >= 0.5) return c;
+          n = n.parentElement;
+        }
+        return parse(getComputedStyle(document.body).backgroundColor);
+      };
+      return JSON.stringify({
+        layerAlpha: parse(getComputedStyle(layer).backgroundColor).a,
+        layerZ: getComputedStyle(layer).zIndex,
+        cellBg: getComputedStyle(cell).backgroundColor,
+        numContrast: ratio(parse(getComputedStyle(num).color), surfaceOf(num)),
+        givenContrast: ratio(parse(getComputedStyle(given).color), surfaceOf(given)),
+        bodyBg: getComputedStyle(document.body).backgroundColor,
+        cellLum: lum(cellBg),
+      });
+    })()`;
+    const seen = JSON.parse(String(await evalIn(ctx.tabA, probe)));
+    assert(seen.bodyBg === "rgb(22, 22, 30)", "the page is themed, got " + seen.bodyBg);
+    assert(
+      seen.layerAlpha === 0,
+      `the interaction layer is still transparent (alpha ${seen.layerAlpha}, background ${seen.cellBg})`
+    );
+    assert(seen.cellLum < 0.2, "the grid's cells are dark, got " + seen.cellBg);
+    assert(seen.numContrast >= 4.5, `the numbers read on their cell (ratio ${seen.numContrast})`);
+    assert(seen.givenContrast >= 4.5, `the given numbers read too (ratio ${seen.givenContrast})`);
+    console.log(
+      `       (grid: layer alpha ${seen.layerAlpha}, cells ${seen.cellBg}, numbers ${seen.numContrast.toFixed(1)}:1 / ${seen.givenContrast.toFixed(1)}:1)`
+    );
+  });
+
+  // THE SHARED-CLASS ARTIFACT. Real pages give many elements the same classes
+  // and different colours; a rule keyed on a selector that matches several of
+  // them paints them all with one element's colours. Every selector the engine
+  // emits must therefore reach exactly the element it was measured on — and a
+  // selector that cannot is not emitted at all.
+  await t("every rule the engine emits paints exactly one element", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/sitelike`);
+    assert((await waitAttr("data-lf-dark", "on")) !== null, "the page is darkened");
+    await new Promise((r) => setTimeout(r, 800));
+    const bad = await evalIn(
+      ctx.tabA,
+      `(() => {
+         const sheet = document.getElementById("lazyfox-dark");
+         if (!sheet) return ["no-sheet"];
+         const out = [];
+         const lines = String(sheet.textContent || "").split("\\n");
+         for (const line of lines) {
+           const m = /^(.+?)\\{([^}]*)\\}$/.exec(line.trim());
+           if (!m) continue;
+           const sel = m[1].trim();
+           const decls = m[2];
+           if (!/background-color:|(^|;|\\s)color:/.test(decls)) continue;
+           // The engine's own boilerplate blocks are not per-element rules.
+           if (sel.indexOf(",") >= 0 || sel.startsWith("html") || sel.startsWith(":root") || sel === "body" || sel.startsWith("a:link")) continue;
+           let n = -1;
+           try { n = document.querySelectorAll(sel).length; } catch (e) { n = -2; }
+           if (n !== 1) out.push(sel + " -> " + n);
+         }
+         return out.slice(0, 12);
+       })()`
+    ).catch(() => ["probe-failed"]);
+    assert(Array.isArray(bad) && bad.length === 0, "selectors that do not reach exactly one element: " + JSON.stringify(bad));
+  });
+
+  // THE FLICKER. The engine re-measures on mutations, and its own sheet write is a
+  // mutation in the subtree it watches: every pass used to buy the next one, so a
+  // settled page was repainted about every 400ms for the life of the tab. That is
+  // what "it flashes dark and light" looked like. Counted from the PAGE side, by a
+  // mutation observer on the engine's own <style>, because that is the only place
+  // the write is visible — a mirror would say the same thing no matter how often
+  // the sheet was rewritten with identical bytes.
+  await t("a settled page stops being repainted (no self-triggered resample loop)", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/light`);
+    assert((await waitAttr("data-lf-dark", "on")) !== null, "the page is darkened first");
+    // Give the opening burst time to finish before counting.
+    await new Promise((r) => setTimeout(r, 1200));
+    const armed = await evalIn(
+      ctx.tabA,
+      `(() => {
+         const el = document.getElementById("lazyfox-dark");
+         if (!el) return "no-sheet";
+         window.__lfSheetWrites = 0;
+         new MutationObserver((rs) => { window.__lfSheetWrites += rs.length; }).observe(el, {
+           childList: true, characterData: true, subtree: true,
+         });
+         return "armed";
+       })()`
+    );
+    assert(armed === "armed", "the engine's sheet is in the page, got " + armed);
+    await new Promise((r) => setTimeout(r, 2000));
+    const writes = await evalIn(ctx.tabA, `window.__lfSheetWrites`);
+    assert(writes === 0, `the sheet was rewritten ${writes} time(s) on a quiet page`);
+    // And the decision itself did not move either.
+    assert((await attr("data-lf-dark")) === "on", "the page is still darkened");
+  });
+
+  // THE FLIP-FLOP. A page that keeps mutating earns another measurement every
+  // RESAMPLE_MIN_MS, and each measurement used to rebuild the whole palette from
+  // a page that was now partly painted by us: the canvas reading drifted, the
+  // theme followed it, and the page moved between two dark shades (or, when the
+  // drift crossed the already-dark threshold, between dark and light). The
+  // palette is now built from the measurement the LIVE theme was built from, so a
+  // resample can only add entries — never move the canvas everyone is looking at.
+  await t("a page that keeps changing keeps ONE theme", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/light`);
+    assert((await waitAttr("data-lf-dark", "on")) !== null, "the page is darkened first");
+    await new Promise((r) => setTimeout(r, 800));
+    const settled = await bodyBg();
+    assert(settled !== "", "the canvas is readable first");
+
+    // A live page: new panels with new colours, every 120ms, for the whole test.
+    const armed = await evalIn(
+      ctx.tabA,
+      `(() => {
+         window.__lfNoise = setInterval(() => {
+           const host = document.body;
+           const d = document.createElement("div");
+           d.className = "lf-noise";
+           d.style.cssText = "width:300px;height:40px;background:#fdfdfd;color:#222;display:block";
+           d.textContent = "noise " + Math.random();
+           host.appendChild(d);
+           if (host.querySelectorAll(".lf-noise").length > 8) host.querySelector(".lf-noise").remove();
+         }, 120);
+         return "armed";
+       })()`
+    );
+    assert(armed === "armed", "the page can be made to mutate, got " + armed);
+
+    const seen = new Set<string>();
+    const mirrors = new Set<string>();
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      seen.add(await bodyBg());
+      mirrors.add(String(await attr("data-lf-dark")));
+    }
+    await evalIn(ctx.tabA, `clearInterval(window.__lfNoise); window.__lfNoise = null`).catch(() => null);
+
+    assert(
+      seen.size === 1 && seen.has(settled),
+      "the canvas never moved while the page churned, saw " + JSON.stringify([...seen])
+    );
+    assert(
+      mirrors.size === 1 && mirrors.has("on"),
+      "the verdict never flipped while the page churned, saw " + JSON.stringify([...mirrors])
+    );
+  });
+
+  await t("a site with its own theme really goes light when the site is turned off", async () => {
+    // The ask writes `color-scheme: dark` on the root and leaves it there, which is
+    // what keeps the site's theme on screen. Turning the site off has to take that
+    // write back — otherwise the key reports "off" while the page stays dark,
+    // because the site keeps rendering the theme we asked it for.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/nativetheme-light`);
+    assert((await waitAttr("data-lf-dark-engine", "native")) !== null, "the site's own theme is in use");
+    const before = await bodyBg();
+    assert(before === "rgb(15, 17, 21)", "the page starts in its own dark theme, got " + before);
+
+    await ctx.leaderSeq(ctx.tabA, ["Y", "d"]);
+    const light = await waitFor(async () => {
+      const bg = await bodyBg();
+      return bg === "rgb(255, 255, 255)" ? bg : null;
+    }, 8000).catch(() => null);
+    assert(light !== null, "the page went back to its light palette, got " + (await bodyBg()));
+    assert((await attr("data-lf-dark")) === "off", "the mirror says off");
+    const inline = await evalIn(
+      ctx.tabA,
+      `document.documentElement.style.getPropertyValue("color-scheme")`
+    ).catch(() => "?");
+    assert(!inline, "the ask was taken back off the root, got " + JSON.stringify(inline));
+
+    // And pressing it again gives the site's theme back, rather than recolouring a
+    // page that already has a dark palette of its own.
+    await ctx.leaderSeq(ctx.tabA, ["Y", "d"]);
+    const native = await waitAttr("data-lf-dark-engine", "native");
+    assert(native !== null, "the site's theme is in use again, got " + JSON.stringify(await attr("data-lf-dark-engine")));
+    const dark = await waitFor(async () => {
+      const bg = await bodyBg();
+      return bg === "rgb(15, 17, 21)" ? bg : null;
+    }, 8000).catch(() => null);
+    assert(dark !== null, "the page is dark in its OWN colours, got " + (await bodyBg()));
+    // Leave the host clean for the tests below, which assume the global default.
+    await ctx.leaderSeq(ctx.tabA, ["Y", "x"]);
   });
 
   await t(";Y d turns the theme off for this site and back on, and writes the per-site rule", async () => {
@@ -250,6 +651,16 @@ export async function run(ctx: any): Promise<void> {
       typeof filter === "string" && /invert/.test(filter),
       "the root element really renders inverted in filter mode, got " + JSON.stringify(filter)
     );
+    // THE ARTIFACT, seen from the page. `filter` applies to the filtered root's
+    // own background too, so declaring the theme's canvas inside it rendered the
+    // page LIGHT — the engine painted its own background upside down. The declared
+    // value is the channel complement of #16161e, and the inversion lands exactly
+    // on #16161e (hue-rotate is the identity on a neutral colour).
+    const canvas = await bodyBg();
+    assert(
+      canvas === "rgb(233, 233, 225)",
+      "the filtered canvas is declared as the pre-image of the theme background, got " + canvas
+    );
     const rule = await waitRule(h, (r) => r.engine === "filter");
     assert(rule !== null, `the engine choice was stored for ${h}, rules: ` + JSON.stringify(await siteRules()));
   });
@@ -278,6 +689,157 @@ export async function run(ctx: any): Promise<void> {
       "and the reason no longer mentions a stored rule"
     );
   });
+
+  // WHAT THE ENGINE DOES TO REAL SITES — opt-in, because it loads the public
+  // internet from a test run.
+  //
+  // This is the half of the dark engine that no fixture can hold: the shapes a
+  // real page is built from (a collapsed mobile menu with white text inside it,
+  // a translucent modal overlay across a game board, a mid-grey backdrop under a
+  // grid) are exactly the ones a fixture never has, and every defect in §11 of
+  // the stability report was found here rather than reasoned out. It is off by
+  // default so the suite stays hermetic and CI stays green:
+  //
+  //   LF_LIVE_SITES=1 npm run e2e -- --group content --only live:https
+  const LIVE = process.env.LF_LIVE_SITES
+    ? [
+        "https://www.merriam-webster.com/",
+        "https://www.nytimes.com/puzzles/sudoku/easy",
+        "https://www.google.com/search?q=test",
+      ]
+    : [];
+  const SWEEP = `(() => {
+    const C = (s) => {
+      const i = String(s).indexOf("("), j = String(s).lastIndexOf(")");
+      if (i < 0 || j < 0) return null;
+      const p = String(s).slice(i + 1, j).split(",").map((x) => parseFloat(x));
+      if (p.length < 3 || p.some((n) => !isFinite(n))) return null;
+      return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+    };
+    const L = (c) => {
+      const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+      return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+    };
+    const ratio = (a, b) => {
+      const x = L(a), y = L(b), hi = Math.max(x, y), lo = Math.min(x, y);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const surfaceOf = (el) => {
+      let n = el;
+      while (n && n.nodeType === 1) {
+        const c = C(getComputedStyle(n).backgroundColor);
+        if (c && c.a >= 0.5) return c;
+        n = n.parentElement;
+      }
+      return C(getComputedStyle(document.body).backgroundColor) || { r: 255, g: 255, b: 255, a: 1 };
+    };
+    const desc = (n) => n.tagName.toLowerCase() + (n.id ? "#" + n.id : "") + (n.className && typeof n.className === "string" ? "." + String(n.className).split(/\\s+/).slice(0, 4).join(".") : "");
+    const chain = (el) => {
+      const out = [];
+      let n = el;
+      while (n && n.nodeType === 1 && out.length < 6) {
+        const cs = getComputedStyle(n);
+        const c = C(cs.backgroundColor);
+        const r = n.getBoundingClientRect();
+        out.push(desc(n) + " bg=" + (c ? "rgba(" + [c.r, c.g, c.b, c.a].join(",") + ")" : cs.backgroundColor) + " a=" + Math.round(r.width) + "x" + Math.round(r.height) + " img=" + (cs.backgroundImage === "none" ? "-" : cs.backgroundImage.slice(0, 24)));
+        n = n.parentElement;
+      }
+      return out;
+    };
+    let total = 0, unreadable = 0, light = 0, invisible = 0, darkText = 0;
+    // Grouped by the PAIR, not by the element: one shape repeated five hundred
+    // times is one problem, and a list of the first three is not a diagnosis.
+    const byPair = new Map();
+    for (const el of document.querySelectorAll("body *")) {
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") continue;
+      const r = el.getBoundingClientRect();
+      const bg = C(cs.backgroundColor);
+      if (bg && bg.a >= 0.5 && L(bg) > 0.7 && r.width * r.height > 2000) light++;
+      const own = Array.from(el.childNodes).some((n) => n.nodeType === 3 && n.textContent.trim());
+      if (!own) continue;
+      const fg = C(cs.color);
+      if (!fg || fg.a < 0.5) continue;
+      // INVISIBLE TEXT IS NOT A REPORT. A collapsed dropdown (max-height:0) has
+      // text with computed colours that will never be looked at; counting it
+      // measures the page's markup rather than the page.
+      if (r.width * r.height < 24) { invisible++; continue; }
+      total++;
+      const surf = surfaceOf(el);
+      const rr = Math.round(ratio(fg, surf) * 100) / 100;
+      if (rr < 2.5) {
+        unreadable++;
+        if (L(fg) > 0.5) darkText++;
+        const key = cs.color + " on rgb(" + Math.round(surf.r) + "," + Math.round(surf.g) + "," + Math.round(surf.b) + ")";
+        const hit = byPair.get(key);
+        if (hit) { hit.n++; continue; }
+        if (byPair.size < 6) byPair.set(key, { n: 1, k: rr, s: desc(el), chain: chain(el) });
+      }
+    }
+    const worst = Array.from(byPair.entries()).map(([k, v]) => ({ pair: k, n: v.n, ratio: v.k, s: v.s, chain: v.chain }));
+    // THE BIGGEST THINGS ON SCREEN, with their colours as rendered. A grid that
+    // is hidden by an overlay, or a panel that stayed white, is one of these.
+    const big = [];
+    for (const el of document.querySelectorAll("body *")) {
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") continue;
+      const r = el.getBoundingClientRect();
+      const a = r.width * r.height;
+      if (a < 20000) continue;
+      const c = C(cs.backgroundColor);
+      big.push({ a: Math.round(a), s: desc(el), bg: cs.backgroundColor, fg: cs.color, bd: cs.borderTopWidth !== "0px" ? cs.borderTopColor : "-", op: cs.opacity, pos: cs.position, z: cs.zIndex, im: cs.backgroundImage === "none" ? "-" : cs.backgroundImage.slice(0, 20) });
+    }
+    big.sort((x, y) => y.a - x.a);
+    // The game board itself, when there is one: a grid is small elements with
+    // borders, and this is the only way to see what we did to it.
+    const board = [];
+    const boardRoot = document.querySelector("#pz-game-root") || document.querySelector(".gameContainer");
+    if (boardRoot) {
+      for (const el of boardRoot.querySelectorAll("*")) {
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden") continue;
+        const r = el.getBoundingClientRect();
+        const a = r.width * r.height;
+        if (a < 400) continue;
+        board.push({ a: Math.round(a), s: desc(el), bg: cs.backgroundColor, fg: cs.color, ow: cs.borderTopWidth, bd: cs.borderTopColor, op: cs.opacity, sh: cs.boxShadow === "none" ? "-" : cs.boxShadow.slice(0, 18), im: cs.backgroundImage === "none" ? "-" : cs.backgroundImage.slice(0, 18) });
+      }
+      board.sort((x, y) => y.a - x.a);
+    }
+    const sheet = document.getElementById("lazyfox-dark");
+    const text = sheet ? String(sheet.textContent || "") : "";
+    const root = document.documentElement;
+    return JSON.stringify({
+      reason: root.getAttribute("data-lf-dark-reason"),
+      engine: root.getAttribute("data-lf-dark-engine"),
+      on: root.getAttribute("data-lf-dark"),
+      els: document.querySelectorAll("*").length,
+      bytes: text.length,
+      rules: text.split("}").length - 1,
+      total, unreadable, light, invisible, darkText,
+      bodyBg: getComputedStyle(document.body).backgroundColor,
+      bodyFg: getComputedStyle(document.body).color,
+      filter: getComputedStyle(root).filter,
+      worst,
+      big: big.slice(0, 14),
+      board: board.slice(0, 26),
+    });
+  })()`;
+  for (const site of LIVE) {
+    await t("live:" + site, async () => {
+      await ctx.gotoPage(ctx.tabA, site);
+      await new Promise((r) => setTimeout(r, 3000));
+      const plain = JSON.parse(String(await evalIn(ctx.tabA, SWEEP)));
+      await ctx.leaderSeq(ctx.tabA, ["Y", "d"]);
+      await new Promise((r) => setTimeout(r, 2500));
+      const dark = JSON.parse(String(await evalIn(ctx.tabA, SWEEP)));
+      await ctx.leaderSeq(ctx.tabA, ["Y", "d"]);
+      await new Promise((r) => setTimeout(r, 1500));
+      const back = JSON.parse(String(await evalIn(ctx.tabA, SWEEP)));
+      console.log(`       (${site} PLAIN ${JSON.stringify(plain)})`);
+      console.log(`       (${site} DARK  ${JSON.stringify(dark)})`);
+      console.log(`       (${site} OFF   ${JSON.stringify(back)})`);
+    }, { tags: ["theme", "live"] });
+  }
 
   // --- reader mode -------------------------------------------------------
 

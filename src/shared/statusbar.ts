@@ -111,17 +111,24 @@ export class StatusBar {
       "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
       "<span class='seg tabs linked'><span class='ic'>▤</span><span class='st'>🕶</span><b></b><span class='cnt'></span></span>" +
       "<span class='seg find' style='display:none'><span class='ic'>🔍</span><b class='cur'></b><span class='cnt'></span></span>" +
+      "<span class='seg chips'></span>" +
+      "<span class='seg dl' style='display:none'><span class='ic'>⭳</span><span class='items'></span></span>" +
+      // THE RIGHT HAND SIDE, in the order the user asked for:
+      //
+      //   ────────── leader  dark mode │
+      //
+      // The spacer takes every spare pixel, so this pair is flush right; the
+      // leader indicator comes first because it is a transient (a chord in
+      // progress) and the dark-mode verdict is the last thing on the bar, where
+      // a steady status belongs. The leader glyph alone is shown while waiting
+      // for a first key and `<glyph> <committed key>` once a chord is in
+      // progress, painted synchronously at key time (see setLeaderSignal).
+      "<span class='spacer'></span>" +
+      "<span class='seg leader' style='display:none'></span>" +
       // Dark mode, as the CONTENT SCRIPT sees this page: a moon for our remap,
       // a moon in a different tone for the site's own theme, a sun for `light`.
       // Hidden when the feature is not touching the page — see darkSegment.
       "<span class='seg dark' style='display:none'><span class='ic'></span><span class='lbl'></span></span>" +
-      "<span class='seg chips'></span>" +
-      "<span class='seg dl' style='display:none'><span class='ic'>⭳</span><span class='items'></span></span>" +
-      // Far-right leader indicator: the leader glyph alone while waiting for a
-      // first key, and `<glyph> <committed key>` once a chord is in progress.
-      // Painted synchronously at key time via setLeaderSignal so it tracks the
-      // leader press exactly.
-      "<span class='seg leader' style='display:none'></span>" +
       "</div>";
     host._sh = sh;
     this.doc.documentElement.appendChild(host);
