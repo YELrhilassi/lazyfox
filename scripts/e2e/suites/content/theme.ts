@@ -360,7 +360,18 @@ export async function run(ctx: any): Promise<void> {
       const head = document.querySelector("header");
       const grad = document.querySelector(".grad");
       const stops = (getComputedStyle(grad).backgroundImage.match(/rgba?\\([^)]*\\)/g) || []).map(parse);
+      // A LAYER, and a light surface under a small image: the two shapes that
+      // used to be invisible to the sampler (see pages.ts).
+      const veil = document.querySelector(".veil");
+      const veilLayer = getComputedStyle(veil, "::before");
+      const sortth = document.querySelector("th.sortth");
       return JSON.stringify({
+        veilBg: veilLayer.backgroundColor,
+        veilBgLum: lum(parse(veilLayer.backgroundColor)),
+        veilImage: veilLayer.backgroundImage,
+        sortBg: getComputedStyle(sortth).backgroundColor,
+        sortBgLum: lum(parse(getComputedStyle(sortth).backgroundColor)),
+        sortRatio: ratio(parse(getComputedStyle(sortth).color), parse(getComputedStyle(sortth).backgroundColor)),
         headerBg: getComputedStyle(head).backgroundColor,
         headerFg: getComputedStyle(head).color,
         headerBgLum: lum(parse(getComputedStyle(head).backgroundColor)),
@@ -387,7 +398,29 @@ export async function run(ctx: any): Promise<void> {
         `a gradient stop was left light (${JSON.stringify(seen.gradStops)} in ${seen.gradImage})`
       );
     }
-    console.log(`       (dark header ${seen.headerBg}, text ratio ${seen.headerRatio.toFixed(1)}; gradient stops ${JSON.stringify(seen.gradStops)})`);
+    // A `::before` VEIL IS A SURFACE TOO. Left alone it stays a white wash over a
+    // mapped panel — the report "some gray overlay on some elements", measured.
+    assert(
+      seen.veilBgLum < 0.5,
+      `the card's ::before veil stayed light (${seen.veilBg}) instead of becoming a dark wash`
+    );
+    assert(
+      seen.veilBg !== seen.veilImage,
+      "the layer is a colour, not an image: " + seen.veilImage
+    );
+    // AND SO IS THE COLOUR UNDER A BACKGROUND IMAGE. A sortable header's surface is
+    // `#eef1f6 url(<arrow>)`; skipping the colour leaves light ink on a light cell.
+    assert(
+      seen.sortBgLum < 0.3,
+      `the sortable header kept a light surface (${seen.sortBg}) under its icon`
+    );
+    assert(
+      seen.sortRatio >= 4.5,
+      `and its label still reads on it (ratio ${seen.sortRatio}, ${seen.sortBg})`
+    );
+    console.log(
+      `       (dark header ${seen.headerBg}, text ratio ${seen.headerRatio.toFixed(1)}; gradient stops ${JSON.stringify(seen.gradStops)}; veil ${seen.veilBg}, sortable cell ${seen.sortBg})`
+    );
   });
 
   // THE OVERLAY. "The grid is completely hidden by some sort of gray overlay" is
@@ -478,8 +511,14 @@ export async function run(ctx: any): Promise<void> {
            if (!/background-color:|(^|;|\\s)color:/.test(decls)) continue;
            // The engine's own boilerplate blocks are not per-element rules.
            if (sel.indexOf(",") >= 0 || sel.startsWith("html") || sel.startsWith(":root") || sel === "body" || sel.startsWith("a:link")) continue;
+           // A LAYER RULE is checked on the ELEMENT that owns it: a
+           // pseudo-element is not an element, and querySelectorAll with a ::before
+           // suffix is 0 by definition rather than a selector that reaches nothing.
+           // What has to hold is that the element the layer belongs to is reached
+           // exactly once, which is the same property every other rule has.
+           const base = sel.replace(/::(?:before|after)$/, "");
            let n = -1;
-           try { n = document.querySelectorAll(sel).length; } catch (e) { n = -2; }
+           try { n = document.querySelectorAll(base).length; } catch (e) { n = -2; }
            if (n !== 1) out.push(sel + " -> " + n);
          }
          return out.slice(0, 12);
@@ -701,12 +740,25 @@ export async function run(ctx: any): Promise<void> {
   // default so the suite stays hermetic and CI stays green:
   //
   //   LF_LIVE_SITES=1 npm run e2e -- --group content --only live:https
+  const KNOWN = [
+    "https://www.merriam-webster.com/",
+    "https://www.nytimes.com/puzzles/sudoku/easy",
+    "https://www.google.com/search?q=test",
+  ];
+  // The DIAGNOSTIC set: pages built from shapes the three above do not have — a
+  // utility-framework app, a wiki with a skin, a component library, a plain HTML
+  // forum — because "some gray overlay on some elements" is a report about the
+  // shapes a few sites happen to have.
+  const WIDE = [
+    "https://en.wikipedia.org/wiki/Firefox",
+    "https://github.com/",
+    "https://tailwindcss.com/",
+    "https://news.ycombinator.com/",
+  ];
   const LIVE = process.env.LF_LIVE_SITES
-    ? [
-        "https://www.merriam-webster.com/",
-        "https://www.nytimes.com/puzzles/sudoku/easy",
-        "https://www.google.com/search?q=test",
-      ]
+    ? process.env.LF_LIVE_SITES === "wide"
+      ? WIDE
+      : KNOWN
     : [];
   const SWEEP = `(() => {
     const C = (s) => {
@@ -790,6 +842,90 @@ export async function run(ctx: any): Promise<void> {
       big.push({ a: Math.round(a), s: desc(el), bg: cs.backgroundColor, fg: cs.color, bd: cs.borderTopWidth !== "0px" ? cs.borderTopColor : "-", op: cs.opacity, pos: cs.position, z: cs.zIndex, im: cs.backgroundImage === "none" ? "-" : cs.backgroundImage.slice(0, 20) });
     }
     big.sort((x, y) => y.a - x.a);
+    // THE FOUR QUESTIONS a report like "some gray overlay on some elements, and
+    // issues with content" asks, each one a shape the engine cannot currently
+    // see: a colour SYNTAX it does not parse, a PSEUDO-ELEMENT (never sampled),
+    // a light surface still on screen (never painted), and a dark INLINE SVG fill
+    // (an icon that vanishes on a dark page).
+    // GROUND TRUTH for the colour parser: what Firefox hands back for each modern
+    // syntax in a computed style, and what it RENDERS for it (a 1x1 canvas). The
+    // two are different questions — the parser has to agree with the second one —
+    // and a local script compares them against parseColor (see the task doc).
+    const CASES = [
+      "oklch(1 0 0)", "oklch(0 0 0)", "oklch(0.5 0.1 200)", "oklch(0.628 0.2577 29.234)",
+      "oklab(1 0 0)", "oklab(0.5 0 0)", "oklab(1 0 5.96e-8 / 0.1)",
+      "lab(100% 0 0)", "lab(0% 0 0)", "lab(50% 0 0)", "lab(50 0 0)",
+      "lab(1.90334 0.278696 -5.48866)", "lab(27.1134 -0.956401 -12.3224)",
+      "lch(50% 0 0)", "lch(29.2345% 44.2 27)",
+      "hwb(120 20% 30%)", "color(srgb 1 0 0)", "color(srgb 0.5 0.5 0.5)",
+      "color(display-p3 1 0 0)", "color-mix(in srgb, white 50%, black)",
+      "color-mix(in srgb, #ffffff 25%, #000000)", "light-dark(white, black)",
+    ];
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;left:-9999px;top:0;width:8px;height:8px";
+    document.body.appendChild(probe);
+    let pcv = null;
+    try { pcv = document.createElement("canvas").getContext("2d", { willReadFrequently: true }); } catch (e) { pcv = null; }
+    if (pcv) { pcv.canvas.width = 1; pcv.canvas.height = 1; }
+    const pixelOf = (css) => {
+      if (!pcv) return "NO CANVAS";
+      try {
+        pcv.fillStyle = "#010203";
+        pcv.fillStyle = css;
+        pcv.fillRect(0, 0, 1, 1);
+        const d = pcv.getImageData(0, 0, 1, 1).data;
+        return "rgba(" + d[0] + ", " + d[1] + ", " + d[2] + ", " + Math.round((d[3] / 255) * 1000) / 1000 + ")";
+      } catch (e) { return "ERR"; }
+    };
+    const probeRows = [];
+    for (const css of CASES) {
+      probe.style.backgroundColor = "";
+      probe.style.backgroundColor = css;
+      probeRows.push({ css, computed: getComputedStyle(probe).backgroundColor, pixel: pixelOf(css) });
+    }
+    probe.remove();
+    const modern = new Map(), pseudo = new Map(), stillLight = new Map(), darkSvg = new Map();
+    const bump = (m, key, where) => {
+      const hit = m.get(key);
+      if (hit) { hit.n++; return; }
+      if (m.size < 6) m.set(key, { n: 1, where });
+    };
+    const list = (m) => Array.from(m.entries()).map(([k, v]) => ({ what: k, n: v.n, where: v.where }));
+    for (const el of document.querySelectorAll("body *")) {
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") continue;
+      const r = el.getBoundingClientRect();
+      const a = r.width * r.height;
+      const raw = cs.backgroundColor;
+      if (raw && !/^(rgba?\\(|hsla?\\(|transparent$|currentcolor$)/i.test(raw)) bump(modern, raw.slice(0, 48), desc(el) + " " + raw.slice(0, 48));
+      if (a < 1000) continue;
+      const c = C(raw);
+      if (c && c.a >= 0.5 && L(c) > 0.6) {
+        // WHY it survived matters as much as that it did: an element whose surface
+        // is a url() with nothing inside it is the one shape the engine
+        // deliberately leaves alone (see hasContent/bgCovers in detect.ts), so
+        // the image, the child count and the size belong in the report.
+        bump(
+          stillLight,
+          "rgb(" + Math.round(c.r) + "," + Math.round(c.g) + "," + Math.round(c.b) + ") @" + Math.round(a),
+          desc(el) + " " + Math.round(a) + "px2 img=" + (cs.backgroundImage === "none" ? "-" : "yes") + " kids=" + el.children.length + " size=" + cs.backgroundSize
+        );
+      }
+      if (a > 30000) {
+        for (const which of ["::before", "::after"]) {
+          const ps = getComputedStyle(el, which);
+          if (!ps || ps.content === "none" || ps.content === "normal") continue;
+          const pc = C(ps.backgroundColor);
+          if (pc && pc.a >= 0.3 && L(pc) > 0.55) {
+            bump(pseudo, which + " " + ps.backgroundColor + " pos=" + ps.position + " inset=" + [ps.top, ps.right, ps.bottom, ps.left].join("/"), desc(el) + " " + which + " " + ps.backgroundColor + " pos=" + ps.position);
+          }
+        }
+      }
+      if (a > 400 && /^(svg|path|circle|rect|polygon|ellipse|g|use)$/i.test(el.tagName)) {
+        const f = C(cs.fill);
+        if (f && f.a > 0.5 && L(f) < 0.2) bump(darkSvg, cs.fill + " @" + Math.round(a), desc(el) + " fill=" + cs.fill + " color=" + cs.color + " " + Math.round(a) + "px2");
+      }
+    }
     // The game board itself, when there is one: a grid is small elements with
     // borders, and this is the only way to see what we did to it.
     const board = [];
@@ -822,12 +958,70 @@ export async function run(ctx: any): Promise<void> {
       worst,
       big: big.slice(0, 14),
       board: board.slice(0, 26),
+      probe: probeRows,
+      modern: Array.from(modern.entries()).length ? { kinds: modern.size, rows: list(modern) } : null,
+      pseudo: Array.from(pseudo.entries()).length ? { kinds: pseudo.size, rows: list(pseudo) } : null,
+      stillLight: Array.from(stillLight.entries()).length ? { kinds: stillLight.size, rows: list(stillLight) } : null,
+      darkSvg: Array.from(darkSvg.entries()).length ? { kinds: darkSvg.size, rows: list(darkSvg) } : null,
     });
   })()`;
   for (const site of LIVE) {
     await t("live:" + site, async () => {
       await ctx.gotoPage(ctx.tabA, site);
       await new Promise((r) => setTimeout(r, 3000));
+      // THE PREVIOUS TEST'S STATE IS NOT THIS TEST'S BASELINE.
+      //
+      // Dark mode is a toggle, and the tests above leave it where they left it —
+      // so the first live run measured a "PLAIN" page that was already dark, and
+      // the three columns came back shifted by one (the row labelled DARK was the
+      // page with the theme turned OFF). Whatever the last test did is undone
+      // here, explicitly, before anything is measured.
+      // AND A BOT WALL IS NOT A PAGE. Measured: nytimes.com/puzzles served its
+      // challenge page to this headless browser and the leader had nothing to arm
+      // on, so the test failed on the site's judgement of the client rather than on
+      // anything the engine did. A wall is reported as a skip, with the reason, so a
+      // red run means the engine and never the network.
+      const shape = JSON.parse(
+        String(
+          await evalIn(
+            ctx.tabA,
+            `(() => JSON.stringify({ els: document.querySelectorAll("*").length, title: String(document.title || "").slice(0, 48), wall: !!document.querySelector("#captcha-form,#challenge-form") }))()`
+          ).catch(() => `{"els":0,"title":"","wall":true}`)
+        )
+      );
+      // The captcha markers are the WALL's own, not an ad slot's: a `.g-recaptcha`
+      // or a recaptcha iframe is embedded by ads and consent frames on pages that
+      // are perfectly real (measured: nytimes.com carries both).
+      if (shape.wall || Number(shape.els) < 120) {
+        console.log(`       (${site} SKIPPED: bot wall or empty page — ${shape.els} elements, "${shape.title}")`);
+        return;
+      }
+      // AND THE ANSWER ARRIVES LATE. `data-lf-dark` is written once the engine has
+      // decided, which on a heavy page is a few seconds after load — a single read
+      // here returned null and the normalization never fired, which is how the first
+      // three reported runs came back with a PLAIN column that was already dark.
+      const themeState = async (): Promise<string | null> => {
+        for (let i = 0; i < 16; i++) {
+          const v = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-dark")`).catch(() => null);
+          if (v === "on" || v === "off") return v;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        return null;
+      };
+      for (let i = 0; i < 3; i++) {
+        const cur = await themeState();
+        if (cur !== "on") break;
+        // A PAGE THAT WILL NOT TAKE A KEY CANNOT BE MEASURED, and saying so is
+        // not the same as passing: the harness could not drive this page (a
+        // consent wall over the document, a challenge the browser never solves),
+        // so its numbers would be about the interstitial.
+        const armed = await ctx.leaderSeq(ctx.tabA, ["Y", "d"]).then(() => true, () => false);
+        if (!armed) {
+          console.log(`       (${site} SKIPPED: the leader never armed on this page — ${shape.els} elements, "${shape.title}")`);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 1800));
+      }
       const plain = JSON.parse(String(await evalIn(ctx.tabA, SWEEP)));
       await ctx.leaderSeq(ctx.tabA, ["Y", "d"]);
       await new Promise((r) => setTimeout(r, 2500));

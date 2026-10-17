@@ -84,6 +84,258 @@ function alpha(raw: string | undefined): number {
   return Number.isFinite(n) ? clamp01(n) : 1;
 }
 
+/* ------------------------------------------------------------------------
+ * THE MODERN COLOUR SYNTAXES
+ *
+ * A computed colour is not always `rgb()`. Chrome and Firefox both hand back the
+ * function the page wrote for everything outside the legacy set — `oklch()`
+ * (Tailwind v4, Radix, and most design systems since 2024), `oklab()`, `hwb()`,
+ * `color(srgb …)`, `color-mix()`, `light-dark()` — and an unparsed colour is not
+ * a colour this engine can MOVE: `paints()` sees nothing to paint, the surface
+ * keeps its light value while everything around it goes dark, and the page ends
+ * up with the reported "gray overlay on some elements".
+ *
+ * These are conversions, not approximations: OKLab/OKLCH is Björn Ottosson's
+ * space and the matrices below are his, `color(srgb …)` is already the working
+ * space, and `hwb()` is the standard formula. `color-mix()` is resolved in
+ * premultiplied sRGB — exact for a mix declared `in srgb`, and a faithful
+ * approximation for the others, which is enough for a colour that is about to be
+ * re-mapped by luminance anyway.
+ *
+ * WHAT IS DELIBERATELY NOT HERE: `lab()`/`lch()`, which need a D50→D65
+ * chromatic adaptation, and `color(display-p3 …)` is converted through the P3
+ * matrix anyway because a page that uses it usually uses it for an image rather
+ * than a surface. An unparsed colour still leaves its element alone, which is
+ * the same behaviour as before — the difference is how few colours reach it.
+ * ---------------------------------------------------------------------- */
+
+/** Split on separators that are not inside a nested function call. */
+function splitTop(body: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]!;
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "," && depth === 0) {
+      out.push(body.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(body.slice(start));
+  return out.map((p) => p.trim());
+}
+
+/** The channel numbers of `a b c / alpha`, the modern space-separated form. */
+function channels(body: string): { nums: string[]; alphaRaw: string | undefined } {
+  const slash = body.indexOf("/");
+  const head = slash >= 0 ? body.slice(0, slash) : body;
+  return {
+    nums: head.trim().split(/[\s,]+/).filter(Boolean),
+    alphaRaw: slash >= 0 ? body.slice(slash + 1).trim() : undefined,
+  };
+}
+
+/** A number that may be written as a percentage. `none` is zero, per CSS. */
+function num(raw: string | undefined, scale = 1): number {
+  const v = String(raw ?? "").trim();
+  if (!v || v === "none") return 0;
+  if (v.endsWith("%")) return (parseFloat(v) / 100) * scale;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** A fraction that may be written as a percentage: `0.5` and `50%` are one value. */
+function fraction(raw: string | undefined, scale = 1): number {
+  const v = String(raw ?? "").trim();
+  if (!v || v === "none") return 0;
+  if (v.endsWith("%")) return clamp01(parseFloat(v) / 100);
+  return clamp01(num(v, scale));
+}
+
+/** Linear-light sRGB → the 8-bit sRGB a page is written in. */
+function encodeSrgb(v: number): number {
+  const c = clamp01(v);
+  return 255 * (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
+}
+
+/** Ottosson's OKLab → linear sRGB. */
+function oklabToLinear(L: number, A: number, B: number): { r: number; g: number; b: number } {
+  const l_ = L + 0.3963377774 * A + 0.2158037573 * B;
+  const m_ = L - 0.1055613458 * A - 0.0638541728 * B;
+  const s_ = L - 0.0894841775 * A - 1.291485548 * B;
+  const l = l_ * l_ * l_;
+  const m = m_ * m_ * m_;
+  const s = s_ * s_ * s_;
+  return {
+    r: 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    g: -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    b: -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  };
+}
+
+/**
+ * CIE Lab (D50) → linear sRGB: XYZ, then the Bradford adaptation to D65.
+ *
+ * The constants are the CSS Color 4 sample code's, and the white point matters:
+ * `lab()` is defined against D50 while sRGB is D65, so skipping the adaptation
+ * shifts every colour by a few percent — invisible on a mapped page, but it is
+ * the difference between a colour this engine can move and one it cannot.
+ */
+function labToLinear(L: number, a: number, b: number): { r: number; g: number; b: number } {
+  const eps = 216 / 24389;
+  const kappa = 24389 / 27;
+  const fy = (L + 16) / 116;
+  const fx = fy + a / 500;
+  const fz = fy - b / 200;
+  const xr = fx * fx * fx > eps ? fx * fx * fx : (116 * fx - 16) / kappa;
+  const yr = L > kappa * eps ? fy * fy * fy : L / kappa;
+  const zr = fz * fz * fz > eps ? fz * fz * fz : (116 * fz - 16) / kappa;
+  const x50 = (xr * 0.3457) / 0.3585;
+  const y50 = yr;
+  const z50 = (zr * (1 - 0.3457 - 0.3585)) / 0.3585;
+  const X = 0.9554734 * x50 - 0.0230985 * y50 + 0.0632593 * z50;
+  const Y = -0.0283697 * x50 + 1.0099955 * y50 + 0.0210414 * z50;
+  const Z = 0.012314 * x50 - 0.0205077 * y50 + 1.3303659 * z50;
+  return {
+    r: 3.2409699419045226 * X - 1.537383177570094 * Y - 0.4986107602930034 * Z,
+    g: -0.9692436362808796 * X + 1.8759675015077202 * Y + 0.04155505740717559 * Z,
+    b: 0.05563007969699366 * X - 0.20397695888897652 * Y + 1.0569715142428786 * Z,
+  };
+}
+
+/** `srgb-linear`/P3 components are linear-light: 8-bit sRGB needs the transfer. */
+function linearToRgb(c: { r: number; g: number; b: number }, a: number): Rgba {
+  return { r: encodeSrgb(c.r), g: encodeSrgb(c.g), b: encodeSrgb(c.b), a };
+}
+
+/** Everything outside the legacy rgb/hsl functions. Null when not understood. */
+function parseAdvanced(kind: string, body: string): Rgba | null {
+  if (kind === "oklab" || kind === "oklch") {
+    const { nums, alphaRaw } = channels(body);
+    if (nums.length < 3) return null;
+    const L = fraction(nums[0], 1);
+    let A: number;
+    let B: number;
+    if (kind === "oklab") {
+      A = num(nums[1], 0.4);
+      B = num(nums[2], 0.4);
+    } else {
+      const C = num(nums[1], 0.4);
+      const H = (num(nums[2]) * Math.PI) / 180;
+      A = C * Math.cos(H);
+      B = C * Math.sin(H);
+    }
+    return linearToRgb(oklabToLinear(L, A, B), alpha(alphaRaw));
+  }
+  if (kind === "lab" || kind === "lch") {
+    const { nums, alphaRaw } = channels(body);
+    if (nums.length < 3) return null;
+    // L is 0–100 (or a percentage of it); a and b are ±125, chroma ±150, and a
+    // percentage means that full range, per CSS Color 4.
+    const L = num(nums[0], 100);
+    let A: number;
+    let B: number;
+    if (kind === "lab") {
+      A = num(nums[1], 125);
+      B = num(nums[2], 125);
+    } else {
+      const C = num(nums[1], 150);
+      const H = (num(nums[2]) * Math.PI) / 180;
+      A = C * Math.cos(H);
+      B = C * Math.sin(H);
+    }
+    return linearToRgb(labToLinear(L, A, B), alpha(alphaRaw));
+  }
+  if (kind === "hwb") {
+    const { nums, alphaRaw } = channels(body);
+    if (nums.length < 3) return null;
+    const h = ((num(nums[0]) % 360) + 360) % 360;
+    let w = fraction(nums[1]);
+    let b = fraction(nums[2]);
+    const a = alpha(alphaRaw);
+    if (w + b >= 1) {
+      const g = (w / (w + b)) * 255;
+      return { r: g, g, b: g, a };
+    }
+    const pure = hslToRgb({ h, s: 1, l: 0.5 });
+    const mix = (v: number) => (v / 255) * (1 - w - b) * 255 + w * 255;
+    return { r: mix(pure.r), g: mix(pure.g), b: mix(pure.b), a };
+  }
+  if (kind === "color") {
+    const { nums, alphaRaw } = channels(body);
+    if (nums.length < 4) return null;
+    const space = nums[0]!.toLowerCase();
+    const a = alpha(alphaRaw);
+    const c1 = num(nums[1], 1);
+    const c2 = num(nums[2], 1);
+    const c3 = num(nums[3], 1);
+    if (space === "srgb") return { r: clamp01(c1) * 255, g: clamp01(c2) * 255, b: clamp01(c3) * 255, a };
+    if (space === "srgb-linear") return linearToRgb({ r: c1, g: c2, b: c3 }, a);
+    if (space === "display-p3") {
+      // Display P3 → sRGB, both linear-light. The matrix is the standard one; a
+      // colour outside sRGB is clipped by `encodeSrgb`, which is what a browser
+      // without a wider output device does with it too.
+      const lr = 1.2249401 * c1 - 0.2249404 * c2;
+      const lg = -0.0420569 * c1 + 1.0420571 * c2;
+      const lb = -0.0196376 * c1 - 0.0786361 * c2 + 1.0982735 * c3;
+      return linearToRgb({ r: lr, g: lg, b: lb }, a);
+    }
+    return null;
+  }
+  if (kind === "color-mix") {
+    const parts = splitTop(body);
+    if (parts.length < 3) return null;
+    const left = mixOperand(parts[1]!);
+    const right = mixOperand(parts[2]!);
+    if (!left.color && !right.color) return null;
+    // One percentage given means "this much of this one", and the rest to the
+    // other; neither given means an even mix.
+    let w1 = left.weight;
+    let w2 = right.weight;
+    if (w1 === undefined && w2 === undefined) {
+      w1 = 50;
+      w2 = 50;
+    } else if (w1 === undefined) {
+      w1 = 100 - (w2 ?? 50);
+    } else if (w2 === undefined) {
+      w2 = 100 - w1;
+    }
+    const share1 = w1 ?? 50;
+    const share2 = w2 ?? 50;
+    // The weights are normalised, so 30% + 40% is a 3:4 mix rather than a
+    // three-quarter-opaque one.
+    const weight = Math.max(1e-6, (share1 + share2) / 100);
+    const a1 = (share1 / 100) * (left.color ? left.color.a : 0);
+    const a2 = (share2 / 100) * (right.color ? right.color.a : 0);
+    const total = a1 + a2;
+    if (total <= 0) return { r: 0, g: 0, b: 0, a: 0 };
+    const c1 = left.color || { r: 0, g: 0, b: 0, a: 0 };
+    const c2 = right.color || { r: 0, g: 0, b: 0, a: 0 };
+    return {
+      r: (c1.r * a1 + c2.r * a2) / total,
+      g: (c1.g * a1 + c2.g * a2) / total,
+      b: (c1.b * a1 + c2.b * a2) / total,
+      a: clamp01(total / weight),
+    };
+  }
+  if (kind === "light-dark") {
+    // The page is READ in its light scheme (see the scheme notes in theme.ts),
+    // so the light alternative is the colour on screen.
+    const parts = splitTop(body);
+    return parts.length ? parseColor(parts[0]!) : null;
+  }
+  return null;
+}
+
+/** One side of a `color-mix()`: a colour and the share that goes with it. */
+function mixOperand(raw: string): { color: Rgba | null; weight: number | undefined } {
+  const m = /^(.*?)\s+([\d.]+)%$/.exec(raw.trim());
+  if (!m) return { color: parseColor(raw.trim()), weight: undefined };
+  return { color: parseColor(m[1]!.trim()), weight: clamp(parseFloat(m[2]!), 0, 100) };
+}
+
 /**
  * Parse a CSS colour. Returns null for anything not understood — and note that
  * "not understood" is a supported outcome: a caller that cannot parse a value
@@ -116,10 +368,13 @@ export function parseColor(input: string): Rgba | null {
     return null;
   }
 
-  const fn = /^(rgba?|hsla?)\(([^)]*)\)$/.exec(s);
+  const fn = /^([a-z-]+)\(([\s\S]*)\)$/.exec(s);
   if (!fn) return null;
   const kind = fn[1]!;
   const body = fn[2]!;
+  if (kind !== "rgb" && kind !== "rgba" && kind !== "hsl" && kind !== "hsla") {
+    return parseAdvanced(kind, body);
+  }
   // Comma form and the modern space form (`rgb(1 2 3 / 50%)`) both occur.
   const parts = body.indexOf(",") >= 0 ? body.split(",") : body.split(/[\s/]+/).filter(Boolean);
   // Three channels and at most one alpha. A longer list is not a colour, and
@@ -135,7 +390,8 @@ export function parseColor(input: string): Rgba | null {
     };
   }
   if (parts.length < 3 || parts.length > 4) return null;
-  const h = ((parseFloat(parts[0]!) % 360) + 360) % 360;
+  const h = ((parseFloat(parts[0]!) % 360) + 360) % 360; // hsl
+
   const sat = parts[1]!.endsWith("%") ? clamp01(parseFloat(parts[1]!) / 100) : clamp01(parseFloat(parts[1]!));
   const light = parts[2]!.endsWith("%") ? clamp01(parseFloat(parts[2]!) / 100) : clamp01(parseFloat(parts[2]!));
   const rgb = hslToRgb({ h, s: sat, l: light });
