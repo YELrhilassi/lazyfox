@@ -87,6 +87,28 @@ export interface PageSample {
   /** The element paints a background image, so its background is not ours to move. */
   hasBgImage: boolean;
   /**
+   * Whether anything other than the image lives inside this element — text or
+   * child elements. Recorded only for elements that paint a background image,
+   * because that is the one question it answers: a `url()` is a photograph and
+   * its surface is the page's business — EXCEPT when the element carries
+   * content. See `entryFor` in theme.ts: a sortable table header is
+   * `background: #eaecf0 url(<sort arrow>)` with a label in it, and a lazy-load
+   * container is a placeholder colour with the photo and its overlay inside.
+   */
+  hasContent?: boolean;
+  /**
+   * Whether the background image is sized to COVER the element.
+   *
+   * The third answer to the same question (see `hasContent`), and it is the one
+   * that settles the two shapes content cannot: a lazy-load placeholder
+   * (`#d7d5d5` under an `image-set()` photo at `background-size: cover`) is a
+   * light box that the photo hides completely, so painting under it is free; a
+   * transparent logo (`background: #fff url(mark.png) no-repeat`, size `auto`) is
+   * artwork drawn ON its backdrop, and darkening under it erases the mark. Only
+   * `cover` and `100% 100%` count — anything else can leave the colour showing.
+   */
+  bgCovers?: boolean;
+  /**
    * The computed `background-image` when it is a GRADIENT rather than a picture.
    *
    * A gradient is a surface: its colour stops are mapped like any other
@@ -97,6 +119,18 @@ export interface PageSample {
   bgImage?: string;
   /** img/video/canvas/iframe/object/embed/picture/svg — never recoloured. */
   media: boolean;
+  /**
+   * Set when this sample is a PSEUDO-ELEMENT LAYER (`::before` / `::after`) of
+   * the element its selectors reach, rather than the element itself.
+   *
+   * A layer is a surface and nothing else: it has no text of its own (its
+   * `color` is inherited and already decided by the element), so only its
+   * background is ours to move. This is the shape behind the report "some gray
+   * overlay on some elements" — a card that paints `::before{content:"";
+   * inset:0; background:rgba(255,255,255,.7)}` as a veil keeps that veil light on
+   * a dark page, and it is invisible to a sampler that only reads elements.
+   */
+  pseudo?: "::before" | "::after";
 }
 
 export interface Analysis {
@@ -141,7 +175,10 @@ function opaque(c: Rgba | null): c is Rgba {
  * majority of pages are) rather than left undecided.
  */
 export function analyze(samples: PageSample[]): Analysis {
-  const usable = samples.filter((s) => s.area > 0 && !s.media);
+  // A PSEUDO LAYER IS NOT A SURFACE THE USER READS TEXT ON, so it must not vote
+  // on the page's canvas: its area is its element's, and a full-page veil would
+  // otherwise hand the canvas to whatever colour the veil happens to be.
+  const usable = samples.filter((s) => s.area > 0 && !s.media && !s.pseudo);
   const surfaces = new Map<string, { color: Rgba; area: number }>();
   let totalArea = 0;
   for (const s of usable) {

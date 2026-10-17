@@ -354,6 +354,78 @@ large opaque surface is no longer mistaken for a painted one.
 | dist | `npm run build` | exit 0 |
 | live sweep, real Firefox | `npm run e2e -- --group content --only live:https` | Merriam-Webster: dark on = 1–2 unreadable / 0 light surfaces; NYT sudoku: 0 unreadable, overlay and board darkened as above; google.com/search loads a reCAPTCHA page in a fresh profile, so its numbers say nothing about the results page |
 
+## 12. Round 4: the two shapes nothing was sampling
+
+The report that opened this round was the same sentence as round 3 — "issues with
+content, and some gray overlay on some elements" — so the work started from
+measurement rather than from another guess: a live sweep (real Firefox, real
+pages, `LF_LIVE_SITES=wide`) whose numbers are compared between the page as the
+site ships it and the page with the theme on. Two defects came out of it, and both
+were shapes the sampler could not see at all.
+
+### 12a. A `url()` made the colour under it invisible to the engine
+
+MEASURED on en.wikipedia.org/wiki/Firefox: **15 unreadable text elements**, all of
+them light ink on a light panel — `th.headerSort`, and the reference links inside
+it. The rule was "an element with a background image is a photograph, so leave its
+colour alone", and a sortable table header is
+`background: #eaecf0 url(<sort arrow>)`: a LIGHT SURFACE with a 16px icon on it.
+The colour was skipped (there is a `url(` in the value) while the text on it was
+mapped, so ten header cells came back as near-white text on a light grey cell.
+
+The same shape is a lazy-load container, measured on merriam-webster.com:
+`#d7d5d5` plus an `image-set()` photo, i.e. a light grey placeholder box on a dark
+page.
+
+The rule now: the image paints ABOVE the colour, so a light surface under one is
+painted whenever the element CARRIES CONTENT — text or child elements. An element
+with nothing in it is a transparent logo drawn on a backdrop the site chose, and
+darkening under that would erase a dark mark, which is the opposite of an
+improvement. `hasContent` is recorded for image-bearing elements only, since that
+is the only case the answer changes a decision.
+
+### 12b. `::before` was never sampled, so a veil stayed white
+
+A site's veils are pseudo-elements: `content:""; position:absolute; inset:0;
+background:rgba(255,255,255,.7)` is what a frosted card, a photo wash and a
+modal scrim look like, and none of them is an element. They were not merely
+unmapped — they were invisible to the walk, so a light translucent layer stayed
+light over a mapped surface. That is the report "some gray overlay on some
+elements", verbatim.
+
+Layers are now measured (`::before`/`::after`, for elements of at least 2500px²,
+two computed-style reads each), sampled as their own `PageSample` with the
+pseudo appended to both the shared and the solo selector, and painted as SURFACES
+ONLY: a layer has no text of its own, so `color` and `border` are never emitted
+from a layer's sample — that would repaint the element's text from a layer's
+colour. A layer also does not vote on the page's canvas, or a full-page veil would
+hand the canvas to a translucent sheet.
+
+### Verification, round 4
+
+| check | command | result |
+| --- | --- | --- |
+| typecheck | `npx tsc --noEmit -p tsconfig.json` and `-p tsconfig.e2e.json` | exit 0 |
+| unit tier, dark files | `npx tsx --test scripts/test/dark-theme.test.ts scripts/test/dark-color.test.ts` | **108/108**, including the layer, the surface-under-an-image and the empty-box cases |
+| busy fixture, real browser | `npm run e2e -- --group content --only "site-shaped,dark surfaces stay dark"` | 2/2; veil `rgba(22, 22, 30, 0.75)`, sortable cell `rgb(42, 57, 80)` with its label at ratio ≥4.5, 26/26 text readable, 0 paper-white surfaces |
+| live sweep | `LF_LIVE_SITES=wide npm run e2e -- --group content --only live:` | **wikipedia.org/wiki/Firefox: 15 unreadable → 0**, light surfaces 21 → 10 (the ten are `img`/`video`, which are not ours); merriam-webster: 0 unreadable, 0 light; news.ycombinator.com: 0 and 0; tailwindcss and github keep their own dark themes |
+
+Two harness faults were fixed with them, because a measurement that is believed
+and wrong is worse than no measurement:
+
+- **The live sweep inherited the previous test's toggle.** Dark mode is a toggle
+  and the tests above leave it wherever they left it, so the first live run
+  measured a "PLAIN" page that was already dark and returned three columns
+  shifted by one. The state is now normalized to off before the baseline is
+  measured, and the numbers above are from a run where PLAIN really is the
+  site's own page.
+- **A bot wall is not a page.** nytimes.com/puzzles served its challenge page to
+  the headless browser (`solveSimpleChallenge is not defined`, 50 elements) and
+  the test failed on the site's judgement of the client rather than on anything
+  the engine did. A page under 120 elements or carrying a captcha form is
+  reported as a skip, with its element count and title, so a red run means the
+  engine and never the network.
+
 ## Deliberately traded
 
 - Detecting a theme declared LATE costs one transient: to verify the ask the

@@ -230,8 +230,17 @@ function dstPoles(theme: Theme) {
   return { canvas: theme.poles.bg, ink: theme.poles.fg };
 }
 
-/** The sheet's budget, in rules. */
-const MAX_ENTRIES = 4000;
+/**
+ * The sheet's budget, in rules.
+ *
+ * Raised from 4000 when the walk stopped being capped at the same number: a
+ * Wikipedia article has 14 051 elements and 2 338 rules only ever described the
+ * first 4 000 of them (see MAX_SCAN in apply.ts). The cap is still a cap — a
+ * spreadsheet or a long feed can have a hundred thousand elements, and a
+ * megabyte of CSS is not a theme — but it now sits above the documents a person
+ * actually reads rather than below them.
+ */
+const MAX_ENTRIES = 9000;
 
 /**
  * The mapping for every sampled element that needs one.
@@ -332,7 +341,26 @@ function entryFor(s: PageSample, theme: Theme): StyleEntry | null {
   const dst = dstPoles(theme);
   const entry: StyleEntry = { selector: "" };
   const own = parseColor(s.ownBg === undefined ? s.bg : s.ownBg);
-  if (own && !s.hasBgImage && paints(own, theme)) {
+  // A LIGHT SURFACE UNDER A BACKGROUND IMAGE, WHEN THE ELEMENT CARRIES CONTENT.
+  //
+  // The rule used to be "an element with a background image is a photograph, so
+  // leave it alone", and it was wrong in the way that is hardest to see: measured
+  // on en.wikipedia.org/wiki/Firefox, a sortable table header is
+  // `background: #eaecf0 url(<sort arrow>)` — a LIGHT SURFACE with a 16px icon on
+  // it. The colour was skipped (there is a `url(` in the value) while the text on
+  // it WAS mapped, so ten header cells came back as light ink on a light panel.
+  // The same shape is a lazy-load container (measured on merriam-webster.com):
+  // `#d7d5d5` plus an `image-set()` photo, i.e. a light grey placeholder box in a
+  // dark page. The image paints ABOVE the colour, so what we paint under a
+  // covering photo is invisible — and the case where it is not invisible is a box
+  // with nothing in it at all, where the `url()` IS the design and darkening
+  // under it could erase a transparent logo's backdrop.
+  //
+  // `bgCovers` is the third and cheapest answer: `background-size: cover` means
+  // the image hides the colour completely, so painting under it costs nothing and
+  // is invisible — which is the lazy-load placeholder, a light grey box waiting
+  // for a photo that will cover it.
+  if (own && paints(own, theme) && (!s.hasBgImage || s.hasContent || s.bgCovers)) {
     entry.bg = formatColor(mapSurface(own, theme.src, dst, s.share ?? 0));
   }
   // A GRADIENT IS PAINTED BY THE ELEMENT ITSELF, not by its background-colour:
@@ -344,6 +372,14 @@ function entryFor(s: PageSample, theme: Theme): StyleEntry | null {
     const mapped = mapGradient(s.bgImage, theme);
     if (mapped) entry.image = mapped;
   }
+  // A LAYER IS A SURFACE AND NOTHING ELSE.
+  //
+  // `::before`/`::after` paints a veil over content it does not own: its `color`
+  // is the element's (already decided by the element's own rule) and it has no
+  // border of its own worth a rule. Emitting `color` here would repaint the
+  // element's text from a layer's sample — the same class of artifact as a
+  // selector that reaches the wrong element.
+  if (s.pseudo) return entry.bg || entry.image ? entry : null;
   // THE SURFACE THE TEXT ACTUALLY SITS ON — see `surfaceFor`.
   const surface = surfaceFor(s, entry, own, theme);
   const fg = parseColor(s.fg);

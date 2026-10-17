@@ -318,6 +318,71 @@ describe("guaranteeing contrast", () => {
   });
 });
 
+// THE MODERN SYNTAXES. A computed colour is not always `rgb()`: Firefox hands
+// back whatever the page wrote, and since 2024 that is usually `oklch()`,
+// `oklab()` or `lab()`. Each of these was measured in the browser (the pixels
+// are Firefox's own, via a 1x1 canvas) rather than copied from a spec table —
+// the anchors below are the values a real rendering produced.
+describe("the modern colour syntaxes", () => {
+  const near = (a: number, b: number, tol = 2) => Math.abs(a - b) <= tol;
+  const rgb = (s: string) => {
+    const c = parseColor(s);
+    assert.ok(c, `parsed nothing from ${s}`);
+    return c!;
+  };
+  const same = (s: string, r: number, g: number, b: number, tol = 2) => {
+    const c = rgb(s);
+    assert.ok(
+      near(c.r, r, tol) && near(c.g, g, tol) && near(c.b, b, tol),
+      `${s} → ${formatColor(c)}, expected rgb(${r}, ${g}, ${b})`
+    );
+  };
+
+  test("oklch and oklab land in sRGB", () => {
+    same("oklch(1 0 0)", 255, 255, 255);
+    same("oklch(0 0 0)", 0, 0, 0);
+    same("oklab(0.5 0 0)", 99, 99, 99);
+    const mid = rgb("oklch(0.5 0.1 200)");
+    assert.ok(!near(mid.r, mid.b, 1), "a chromatic colour is not a grey: " + formatColor(mid));
+  });
+
+  test("lab and lch land in sRGB, D50 adaptation included", () => {
+    // `lab(50% 0 0)` is the canonical mid grey, and it is the one value that
+    // catches a missing D50→D65 adaptation (which lands at 124 instead of 119).
+    same("lab(100% 0 0)", 255, 255, 255);
+    same("lab(0% 0 0)", 0, 0, 0);
+    same("lab(50% 0 0)", 119, 119, 119, 4);
+    same("lab(50 0 0)", 119, 119, 119, 4);
+    same("lch(50% 0 0)", 119, 119, 119, 4);
+    const red = rgb("lch(29.2345% 44.2 27)");
+    assert.ok(red.r > red.g && red.r > red.b, "the hue survived: " + formatColor(red));
+  });
+
+  test("the rest of the Color 4 syntaxes are read, not skipped", () => {
+    same("hwb(0 0% 0%)", 255, 0, 0);
+    same("color(srgb 1 0 0)", 255, 0, 0);
+    same("color(srgb 0.5 0.5 0.5)", 128, 128, 128, 2);
+    const p3 = rgb("color(display-p3 1 0 0)");
+    assert.ok(p3.r > 250 && p3.g < 40 && p3.b < 40, "P3 red fits in sRGB: " + formatColor(p3));
+    same("color-mix(in srgb, #ffffff 50%, #000000)", 128, 128, 128, 2);
+    same("color-mix(in srgb, #ffffff 25%, #000000)", 64, 64, 64, 2);
+    same("light-dark(white, black)", 255, 255, 255);
+  });
+
+  test("an alpha survives in every syntax", () => {
+    assert.ok(near(rgb("oklab(1 0 0 / 0.1)").a, 0.1, 0.01));
+    assert.ok(near(rgb("lab(50% 0 0 / 50%)").a, 0.5, 0.01));
+    assert.ok(near(rgb("color-mix(in srgb, rgb(255 0 0 / 0.5) 100%, transparent)").a, 0.5, 0.02));
+  });
+
+  test("a syntax that is not a colour is still refused", () => {
+    assert.equal(parseColor("lab(50% 0)"), null);
+    assert.equal(parseColor("nonsense(1 2 3)"), null);
+    assert.equal(parseColor("color(nonsense 1 0 0)"), null);
+    assert.equal(parseColor("color(display-p3 1 0)"), null);
+  });
+});
+
 describe("colour bucketing", () => {
   test("near-identical colours share a key, distant ones do not", () => {
     assert.equal(colorKey(parseColor("#ffffff")!), colorKey(parseColor("#fefefe")!));

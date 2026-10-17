@@ -28,7 +28,103 @@
 // by selector survives a re-render that keeps the element's identity, which is
 // what a re-render usually does.
 
+import { parseColor } from "./color";
 import type { PageSample } from "./detect";
+
+export interface ColorResolver {
+  /** The colour `css` renders as, in the engine's own syntax, or null. */
+  (css: string): string | null;
+}
+
+/**
+ * THE BROWSER'S OWN ANSWER, for a colour this module cannot read itself.
+ *
+ * A computed colour is whatever the page wrote, and since 2024 that is often
+ * `oklch()`, `lab()` or `color-mix()` — Tailwind v4, Radix, and most design
+ * systems. `parseColor` understands the common ones (see the syntax block in
+ * color.ts), and this is the net under it: one 1x1 canvas, the colour assigned
+ * as `fillStyle`, and the PIXEL read back. Whatever the browser can paint, this
+ * resolves, exactly and without a matrix of magic constants — and if the value
+ * is not a colour at all, `fillStyle` keeps the seed it was set to, which is how
+ * a refusal is detected rather than guessed at (two different seeds, so a
+ * candidate that happens to equal the first one is not mistaken for a refusal).
+ *
+ * MEASURED on tailwindcss.com, before this existed: the page's own dark theme
+ * resolves to `lab(27.1134 -0.956401 -12.3224)` and `oklab(1 0 5.96e-8 / 0.1)`,
+ * every one of which parsed as "nothing", so 115 text elements sat on surfaces
+ * the engine had refused to paint and the page read as LIGHT to the detector —
+ * the engine then painted a native dark site on top of its own theme.
+ *
+ * Cached per colour string for the life of the document: a page has a few dozen
+ * distinct values, not one per element.
+ */
+export function createColorResolver(doc: Document): ColorResolver {
+  const cache = new Map<string, string | null>();
+  let ctx: CanvasRenderingContext2D | null | undefined;
+  const context = (): CanvasRenderingContext2D | null => {
+    if (ctx !== undefined) return ctx;
+    try {
+      const canvas = doc.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      ctx = canvas.getContext("2d", { willReadFrequently: true });
+    } catch {
+      ctx = null;
+    }
+    return ctx || null;
+  };
+  const SEED_A = "rgba(1, 2, 3, 1)";
+  const SEED_B = "rgba(4, 5, 6, 1)";
+  return (css: string): string | null => {
+    const key = String(css || "").trim();
+    if (!key) return null;
+    const hit = cache.get(key);
+    if (hit !== undefined) return hit;
+    let out: string | null = null;
+    const c = context();
+    if (c) {
+      const read = (seed: string): string => {
+        c.fillStyle = seed;
+        c.fillStyle = key;
+        c.fillRect(0, 0, 1, 1);
+        const d = c.getImageData(0, 0, 1, 1).data;
+        return "rgba(" + d[0] + ", " + d[1] + ", " + d[2] + ", " + Math.round((d[3]! / 255) * 1000) / 1000 + ")";
+      };
+      try {
+        const first = read(SEED_A);
+        out = first === SEED_A ? (read(SEED_B) === SEED_B ? null : read(SEED_B)) : first;
+      } catch {
+        out = null;
+      }
+    }
+    cache.set(key, out);
+    return out;
+  };
+}
+
+/**
+ * A `background-image` with every unreadable colour function resolved.
+ *
+ * A gradient's stops are colours, and a modern one is written in the same
+ * syntaxes as any other colour: `linear-gradient(oklch(1 0 0), oklch(.9 0 0))`
+ * used to survive untouched because the stop-rewriting regex in theme.ts only
+ * knows `rgb()`/`hsl()`. The whole value is not resolvable through a canvas
+ * (it is an image, not a colour), so each function is resolved on its own and
+ * substituted; a value that still contains an unreadable function is left as it
+ * is, which is the same behaviour as before rather than a broken gradient.
+ */
+function resolveInImage(image: string, resolve: ColorResolver): string {
+  const css = String(image || "");
+  if (!css || css.indexOf("url(") >= 0) return css;
+  if (!/\b(oklch|oklab|lab|lch|hwb|color|color-mix|light-dark)\(/i.test(css)) return css;
+  return css.replace(
+    /\b(oklch|oklab|lab|lch|hwb|color|color-mix|light-dark)\(([^()]*(?:\([^()]*\)[^()]*)*)\)/gi,
+    (whole) => {
+      if (parseColor(whole)) return whole;
+      return resolve(whole) || whole;
+    }
+  );
+}
 
 /** The elements we never recolour: their colours are content, not chrome. */
 const MEDIA_TAGS = new Set([
@@ -49,6 +145,19 @@ const MEDIA_TAGS = new Set([
 /** Our own hosts, by id prefix: never sampled, never mapped. */
 const OUR_ID_PREFIX = "lazyfox-";
 
+// HOW MANY ELEMENTS ONE PASS WALKS.
+//
+// This is a WINDOW, not a ceiling, and it used to be a ceiling in effect: the
+// walk started at the top of the document every time and stopped here, so a page
+// with more elements than this was painted only as far as the budget reached.
+// MEASURED on en.wikipedia.org/wiki/Firefox: 14 051 elements, 4 000 sampled, and
+// the article below the fold kept its own white panels with our mapped-light ink
+// on them — 991 unreadable text elements, and the report "issues with content".
+//
+// The walk therefore CONTINUES from where it stopped (see `cursor` in
+// createDarkApplier), and what it has measured so far is what the sheet is built
+// from, so a big page is painted progressively and completely instead of
+// partially and forever.
 const MAX_SCAN = 4000;
 const CHUNK = 250;
 // The smallest element worth a rule.
@@ -64,6 +173,19 @@ const CHUNK = 250;
 // — so the only price is a longer sheet. 24px² keeps the genuinely invisible
 // specks (a 1px spacer, an empty dot) out.
 const MIN_AREA = 24;
+// WHICH ELEMENTS' PSEUDO-ELEMENT LAYERS ARE MEASURED.
+//
+// A `::before`/`::after` is where a site puts its VEILS: a card's frosted
+// overlay, a photo's white wash, the sheet that dims a game board. None of them is
+// an element, so none of them was ever sampled — and a light veil over a mapped
+// dark surface is the report "some gray overlay on some elements", verbatim.
+//
+// The gate is AREA because that is what makes a layer worth a rule and what keeps
+// the cost bounded: two extra computed-style reads per element above this size,
+// which on a very dense page is a few hundred elements rather than fourteen
+// thousand. A 24px dot's `::before` is not a veil.
+const PSEUDO_LAYERS = ["::before", "::after"] as const;
+const PSEUDO_MIN_AREA = 2500;
 const RESAMPLE_MIN_MS = 400;
 // The burst allowance, and — this is the part that was missing — what happens
 // after it.
@@ -123,6 +245,15 @@ export interface DarkApplier {
   forget(): void;
   /** Whether a sheet is currently installed. */
   active(): boolean;
+  /**
+   * Elements the walk has not reached yet.
+   *
+   * Zero for a page that fits in one window. A page that does not (Wikipedia,
+   * a long feed, a spreadsheet) is painted in slices, and this is how the
+   * controller knows to ask for the next one without waiting for a mutation
+   * that a settled page will never produce.
+   */
+  pending(): number;
   /**
    * The `class` attributes of a bounded sample of the page's elements.
    *
@@ -369,6 +500,10 @@ function resolvedBackground(
 }
 
 function alphaOf(css: string): number {
+  // The parsed value first: a `lab(… / 0.5)` is translucent, and reading only
+  // the rgb syntax made every modern translucent colour look opaque.
+  const parsed = parseColor(css);
+  if (parsed) return parsed.a;
   const m = /rgba?\(([^)]*)\)/.exec(css || "");
   if (!m) return 1;
   const parts = m[1]!.indexOf(",") >= 0 ? m[1]!.split(",") : m[1]!.split(/[\s/]+/).filter(Boolean);
@@ -395,6 +530,19 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
   // a page that "is already dark". `forget()` drops it along with the originals,
   // because both answer the same question: what did the page look like before us?
   let backdrop: string | null = null;
+
+  // THE BROWSER'S OWN CONVERSION, for a colour this module cannot read: see
+  // createColorResolver. Everything the sampler records goes through `colour`,
+  // so a page written in `oklch()`/`lab()` is a page this engine can measure —
+  // and a page whose own dark theme is written in them is recognised as DARK
+  // instead of being painted over as if it were light.
+  const resolveColor = createColorResolver(doc);
+  const colour = (raw: string): string => {
+    const v = String(raw || "").trim();
+    if (!v) return v;
+    if (parseColor(v)) return v;
+    return resolveColor(v) || v;
+  };
   const backdropOf = (): string => {
     if (backdrop === null) backdrop = rootBackdrop(doc, win);
     return backdrop;
@@ -431,6 +579,26 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
   // tinted ones measure as white, and the rule built from that painted them
   // wrong. An element's own colour is a property of the element.
   let originals = new WeakMap<Element, { ownBg?: string; fg?: string; border?: string; image?: string }>();
+
+  // THE WALK IS A CURSOR OVER THE WHOLE DOCUMENT, and this is everything it has
+  // measured so far — the sheet is built from the union, not from one slice of
+  // it. Elements that have left the document are dropped on the next pass, so a
+  // single-page app that replaces its view does not accumulate the old one.
+  let cursor = 0;
+  let documentElements = 0;
+  // Elements the cursor has walked since the last wrap. It counts every element
+  // it PASSED, not every element it kept: a page half full of `display:none`
+  // chrome still has to reach the end of the walk, and "pending" must fall to
+  // zero when it does or the controller would ask forever.
+  let passed = 0;
+  const measured = new Map<Element, PageSample>();
+  // THE LAYERS, keyed by the element that owns them and rebuilt whenever that
+  // element is walked again (a `::before` exists only while its element does).
+  const measuredLayers = new Map<Element, PageSample[]>();
+  // The page's ORIGINAL layer colours, for the same reason as `originals`: a
+  // second pass runs with our sheet installed and would otherwise read our own
+  // paint back as the page's veil.
+  let layerOriginals = new WeakMap<Element, Partial<Record<(typeof PSEUDO_LAYERS)[number], { ownBg?: string; image?: string }>>>();
 
   const setSheet = (css: string): void => {
     if (!css) {
@@ -510,11 +678,32 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       return s;
     };
 
-    let all: Element[] = [];
+    // DROP WHAT HAS LEFT THE DOCUMENT first, so an SPA that replaces its view
+    // does not keep painting the old one.
+    for (const el of Array.from(measured.keys())) {
+      if (!el.isConnected) measured.delete(el);
+    }
+    for (const el of Array.from(measuredLayers.keys())) {
+      if (!el.isConnected) measuredLayers.delete(el);
+    }
+    // The window after the cursor, wrapping at the end: this pass walks the next
+    // MAX_SCAN elements, the next pass walks the one after that, and the whole
+    // document is covered over several passes without any single task doing all
+    // of it. See the note on MAX_SCAN.
+    let window: Element[] = [];
     try {
-      all = Array.prototype.slice.call(doc.querySelectorAll("*"), 0, MAX_SCAN);
+      const all = doc.querySelectorAll("*");
+      documentElements = all.length;
+      const from = documentElements ? cursor % documentElements : 0;
+      window = Array.prototype.slice.call(all, from, from + MAX_SCAN);
+      cursor = from + window.length;
+      passed = cursor;
+      if (cursor >= documentElements) {
+        cursor = 0;
+        passed = 0;
+      }
     } catch {
-      return samples;
+      return Array.from(measured.values());
     }
     // The recorded colour FIRST, the live one only when there is no record: see
     // `originals`. Consulted by `resolvedBackground` too, so a transparent
@@ -528,13 +717,13 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       const known = originals.get(el);
       if (known && known.ownBg) return known.ownBg;
       try {
-        return win.getComputedStyle(el).getPropertyValue("background-color") || "";
+        return colour(win.getComputedStyle(el).getPropertyValue("background-color") || "");
       } catch {
         return "";
       }
     };
     let processed = 0;
-    for (const el of all) {
+    for (const el of window) {
       processed++;
       if (!opts.sync && processed % CHUNK === 0) {
         // Yield, so the walk is several short tasks rather than one long one.
@@ -564,8 +753,27 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       // `background-image` is a GRADIENT — a surface — and its stops are mapped
       // (see mapGradient). Reading it here, once, is what keeps a gradient from
       // being re-read after we have painted a mapped copy of it over the page.
-      const imageRaw = cs.getPropertyValue("background-image") || "";
+      const imageRaw = resolveInImage(cs.getPropertyValue("background-image") || "", resolveColor);
       const hasBgImage = imageRaw.indexOf("url(") >= 0;
+      // READ ONLY FOR THE ELEMENTS THAT PAINT ONE, because that is the only case
+      // the answer changes a decision (see `hasContent` in detect.ts). One text
+      // walk of an image-bearing subtree is cheap next to the two style reads the
+      // element has already cost.
+      let hasContent: boolean | undefined;
+      let bgCovers: boolean | undefined;
+      if (hasBgImage) {
+        try {
+          hasContent = /\S/.test(String(el.textContent || "")) || el.children.length > 0;
+        } catch {
+          hasContent = undefined;
+        }
+        try {
+          const size = String(cs.getPropertyValue("background-size") || "").toLowerCase();
+          bgCovers = /cover\b/.test(size) || /\b100%\s+100%/.test(size);
+        } catch {
+          bgCovers = undefined;
+        }
+      }
       const gradientOf = (v: string | undefined): string | undefined =>
         v && v !== "none" && v.indexOf("url(") < 0 ? v : undefined;
       const borderWidth = parseFloat(cs.getPropertyValue("border-top-width") || "0") || 0;
@@ -575,16 +783,16 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       const known = originals.get(el);
       const ownBg = known && known.ownBg ? known.ownBg : read(el);
       const bg = resolvedBackground(el, read, bgCache, backdropOf);
-      const fg = known && known.fg ? known.fg : cs.getPropertyValue("color") || "";
+      const fg = known && known.fg ? known.fg : colour(cs.getPropertyValue("color") || "");
       const border =
         known && known.border
           ? known.border
           : borderWidth > 0
-            ? cs.getPropertyValue("border-top-color") || undefined
+            ? colour(cs.getPropertyValue("border-top-color") || "") || undefined
             : undefined;
       const bgImage = known ? known.image : gradientOf(imageRaw);
       if (!known) originals.set(el, { ownBg: ownBg || undefined, fg: fg || undefined, border, image: bgImage });
-      samples.push({
+      const one: PageSample = {
         selector,
         solo: sel.solo || undefined,
         share: area / viewport,
@@ -595,11 +803,70 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
         border,
         area,
         hasBgImage,
+        hasContent,
+        bgCovers,
         bgImage,
         media,
-      });
+      };
+      samples.push(one);
+      measured.set(el, one);
+      // THE LAYERS THIS ELEMENT PAINTS, measured once and then read from the
+      // record (see `layerOriginals`). Only a layer that paints a background at
+      // all becomes a sample; the rest would be rules saying nothing.
+      if (area >= PSEUDO_MIN_AREA) {
+        const kept: PageSample[] = [];
+        const knownLayers = layerOriginals.get(el);
+        for (const layer of PSEUDO_LAYERS) {
+          let ps: CSSStyleDeclaration | null = null;
+          try {
+            ps = win.getComputedStyle(el, layer);
+          } catch {
+            ps = null;
+          }
+          if (!ps) continue;
+          // `none` and `normal` mean the layer is not generated; a generated one
+          // with empty content still paints (`content:""`).
+          const content = ps.getPropertyValue("content");
+          if (!content || content === "none" || content === "normal" || content === "-moz-alt-content") continue;
+          if (ps.getPropertyValue("display") === "none" || ps.getPropertyValue("visibility") === "hidden") continue;
+          const known = knownLayers && knownLayers[layer];
+          const ownBg = known && known.ownBg !== undefined ? known.ownBg : colour(ps.getPropertyValue("background-color") || "");
+          const imageRaw = resolveInImage(ps.getPropertyValue("background-image") || "", resolveColor);
+          const hasImage = imageRaw.indexOf("url(") >= 0;
+          const layerImage = known ? known.image : gradientOf(imageRaw);
+          if (!known) {
+            const rec = knownLayers || {};
+            rec[layer] = { ownBg: ownBg || undefined, image: layerImage };
+            layerOriginals.set(el, rec);
+          }
+          // A layer with neither a colour nor a gradient is not a surface.
+          const alpha = ownBg ? alphaOf(ownBg) : 0;
+          if (alpha <= 0.02 && !layerImage) continue;
+          kept.push({
+            selector: selector + layer,
+            solo: sel.solo ? sel.solo + layer : undefined,
+            share: area / viewport,
+            tag: tag + layer,
+            bg: ownBg,
+            ownBg,
+            fg: "",
+            area,
+            hasBgImage: hasImage,
+            bgImage: layerImage,
+            media: false,
+            pseudo: layer,
+          });
+        }
+        if (kept.length) measuredLayers.set(el, kept);
+        else measuredLayers.delete(el);
+      }
     }
-    return samples;
+    // THE UNION, not this pass's slice: the sheet describes the page as measured
+    // so far, and an element measured two passes ago is still on the page. The
+    // layers come with it, keyed by the element whose selector reaches them.
+    const all: PageSample[] = Array.from(measured.values());
+    for (const layers of measuredLayers.values()) for (const layer of layers) all.push(layer);
+    return all;
   };
 
   return {
@@ -611,7 +878,10 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       backdrop = null;
       // A WeakMap has no `clear`; dropping the reference is the same thing.
       originals = new WeakMap();
+      layerOriginals = new WeakMap();
+      measuredLayers.clear();
     },
+    pending: () => Math.max(0, documentElements - passed),
     clear: () => {
       setSheet("");
       setScheme(null);

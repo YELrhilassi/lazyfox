@@ -1616,6 +1616,16 @@ pre{background:#eef1f6;color:#1b1f24;padding:12px;border-radius:8px;overflow:aut
    background image), so it washed white over the mapped colour and left the
    most visible artifact a dark theme can have: a light panel on a dark page. */
 .grad{grid-column:1 / -1;background:linear-gradient(180deg,#ffffff 0%,#e6eefc 100%);color:#1b1f24;padding:18px 20px;border-radius:10px}
+/* A VEIL. The frosted wash over a card is a ::before, not an element, and it
+   is the shape behind "some gray overlay on some elements": nothing read it, so
+   the white 75% sheet stayed white over the mapped surface underneath it. */
+.veil{grid-column:1 / -1;position:relative;padding:16px 18px;background:#f2f5fb;color:#1b1f24;border-radius:10px}
+.veil::before{content:"";position:absolute;inset:0;background:rgba(255,255,255,.75)}
+.veil > *{position:relative}
+/* A sortable header: a LIGHT background COLOUR under a small background IMAGE.
+   Skipping the colour because the value contains a url( left the cell light
+   while its text was mapped to near-white. */
+th.sortth{background:#eef1f6 url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'><path d='M0 0h8L4 6z' fill='%23555'/></svg>") no-repeat right 6px center}
 figure{margin:0}
 figure img{display:block;width:100%;height:120px;object-fit:cover}
 figcaption{color:#5b6472;font-size:13px;padding-top:6px}
@@ -1631,8 +1641,9 @@ a{color:#1257c9}
 <span class="badge">BADGE</span> label.</p>
 <div class="row"><input value="an input" aria-label="text"><select aria-label="pick"><option>one</option></select><button class="primary">Primary</button><button disabled>Disabled</button></div>
 <pre><code>const x = 1; // a code block</code></pre>
-<table><thead><tr><th>Head</th><th>Head</th></tr></thead><tbody><tr><td>cell</td><td>cell</td></tr><tr><td>cell</td><td>cell</td></tr></tbody></table>
+<table><thead><tr><th class="sortth">Sortable</th><th>Head</th></tr></thead><tbody><tr><td>cell</td><td>cell</td></tr><tr><td>cell</td><td>cell</td></tr></tbody></table>
 </div>
+<div class="veil"><h2>A veiled card</h2><p>The pale wash over this panel is a <code>::before</code> layer, so the engine has to measure the layer and not only the element.</p></div>
 <div class="grad"><h2>A gradient hero</h2><p>This panel's background is a CSS gradient, so its colour stops have to be mapped like any other surface — not skipped because it is not a photograph.</p></div><div class="card">
 <h2>Media and icons</h2>
 <figure><img alt="a photo" src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACwAAAAAAQABAAACAkQBADs="><figcaption>A photograph, which is never recoloured.</figcaption></figure>

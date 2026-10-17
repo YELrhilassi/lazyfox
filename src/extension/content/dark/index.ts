@@ -355,6 +355,34 @@ export function createDarkMode(deps: DarkDeps): DarkController {
   }
 
   /**
+   * THE NEXT SLICE OF A PAGE THAT IS BIGGER THAN ONE PASS.
+   *
+   * `sample()` walks a window of the document per pass and this asks for the
+   * next one, with no gate in the way: the gate exists to stop a page that
+   * mutates continuously from dragging a scan behind it, and this is the engine
+   * finishing a walk it has already started on a page that is NOT moving. The
+   * delay is one task, so the slices are separate tasks (the walk yields inside
+   * itself as well) and the browser keeps its frame budget.
+   *
+   * MEASURED: en.wikipedia.org/wiki/Firefox has 14 051 elements. Before this,
+   * the walk stopped at the first 4 000 and the article below the fold kept its
+   * white panels under our mapped-light ink — 991 unreadable text elements. A
+   * settled page produces no mutations, so nothing else would have asked.
+   */
+  function scheduleContinuation(): void {
+    if (tailTimer !== null) return;
+    try {
+      tailTimer = deps.win.setTimeout(() => {
+        tailTimer = null;
+        if (!state.on || applier.pending() <= 0) return;
+        requestApply(deps.getConfig());
+      }, 60);
+    } catch {
+      tailTimer = null;
+    }
+  }
+
+  /**
    * THE TAIL OF A MUTATION BURST.
    *
    * A rate-limited gate drops the mutations that arrive too soon after a pass —
@@ -738,6 +766,9 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     state.on = true;
     mirror();
     ensureObserver();
+    // A page with more elements than one pass walks is not finished being
+    // measured, and nothing else is coming for it: ask for the next slice.
+    if (applier.pending() > 0) scheduleContinuation();
   }
 
   function write(next: Config): void {
