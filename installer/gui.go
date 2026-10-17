@@ -32,11 +32,14 @@ var frontendAssets embed.FS
 func runGUI(src *payload.Source, cfg config.Config) error {
 	a := app.New(src, cfg)
 	return wails.Run(&options.App{
-		Title:     "Lazyfox installer",
-		Width:     960,
-		Height:    780,
-		MinWidth:  720,
-		MinHeight: 560,
+		Title: "Lazyfox installer",
+		// Sized to the window's actual content: one action rail, one panel, one
+		// footer. The old 960x780 left a column of empty dark space beside every
+		// step, which is part of why the flow read as a wizard instead of a tool.
+		Width:     880,
+		Height:    620,
+		MinWidth:  740,
+		MinHeight: 520,
 
 		AssetServer:      &assetserver.Options{Assets: frontendAssets},
 		BackgroundColour: &options.RGBA{R: 9, G: 9, B: 11, A: 255},

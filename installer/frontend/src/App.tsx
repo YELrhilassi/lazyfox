@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Loader2Icon, TriangleAlertIcon } from "lucide-react";
+import { Loader2Icon } from "lucide-react";
 
-import { ActionStep } from "@/components/ActionStep";
-import { ReviewStep } from "@/components/ReviewStep";
-import { RunStep } from "@/components/RunStep";
-import { StepRail } from "@/components/StepRail";
-import { TargetStep } from "@/components/TargetStep";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { ActionRail } from "@/components/ActionRail";
+import { PlanPanel } from "@/components/PlanPanel";
+import { RunPanel } from "@/components/RunPanel";
+import { SettingsPanel } from "@/components/SettingsPanel";
 import { Button } from "@/components/ui/button";
 import { installer, onStep } from "@/lib/installer";
 import { actionVerb, initialSelection, needsProfile, resetForAction, targetSummary, toRequest } from "@/lib/selection";
@@ -21,36 +19,51 @@ import {
   type Step,
 } from "@/lib/types";
 
-type Phase = 0 | 1 | 2 | 3;
-
-const PHASE_NAMES: Record<Phase, string> = {
-  0: "Action",
-  1: "Target",
-  2: "Review",
-  3: "Run",
-};
-
 /**
- * App owns the flow (action → target → review → run) and nothing else. Every
- * fact about the machine comes from the Go layer and every action goes back to
- * it, so the window can be redesigned without changing what the installer does.
+ * App owns the window: which action, the selection, the plan for that selection,
+ * and the run. Every fact about the machine comes from the Go layer and every
+ * action goes back to it, so the window can be redesigned without changing what
+ * the installer does.
+ *
+ * THE FLOW IS ONE SCREEN. There used to be four wizard phases (Action → Target →
+ * Review → Run), each with its own heading, its own "Continue" button and a rail
+ * of numbered circles; reaching an ordinary install took three clicks plus a
+ * page it never needed to show. Now the action list is always visible, the
+ * choices are one scrolling column, the plan loads itself beside them, and the
+ * only button that moves anything forward is the one that runs the operation.
+ *
+ * WHAT REPLACED THE REVIEW STEP'S SAFETY. The run button is enabled only while
+ * the plan on screen belongs to the selection that is currently chosen: the plan
+ * is keyed by the request it was computed from, and any change to the selection
+ * invalidates that key. A run therefore cannot start from a stale promise, and a
+ * plan the Go layer refused disables the button and shows the reason where the
+ * offending choice is, instead of walking the user to a dead end.
  */
+type Phase = "configure" | "run";
+
+/** How long to wait after a change before asking the Go layer for a new plan.
+ *  Long enough to swallow a burst of keystrokes in the profile-name field,
+ *  short enough that the plan feels like it is simply there. */
+const PLAN_DEBOUNCE_MS = 180;
+
 export function App() {
   const [state, setState] = useState<State | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
-  const [phase, setPhase] = useState<Phase>(0);
   const [sel, setSel] = useState<Selection | null>(null);
 
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [runError, setRunError] = useState<string | null>(null);
+  // The plan, tagged with the request it answers. `key === requestKey` is what
+  // makes the run button trustworthy.
+  const [plan, setPlan] = useState<{ key: string; preview: Preview } | null>(null);
+  const [planError, setPlanError] = useState<{ key: string; message: string } | null>(null);
+  const [planning, setPlanning] = useState(false);
 
+  const [phase, setPhase] = useState<Phase>("configure");
   const [steps, setSteps] = useState<Step[]>([]);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
 
-  // The profile name a preview promised. Held so the run creates exactly the
-  // folder the user reviewed, not a freshly generated one.
+  // The profile name a plan promised. Held so the run creates exactly the
+  // folder the plan showed, not a freshly generated one.
   const pinnedName = useRef("");
 
   useEffect(() => {
@@ -72,7 +85,20 @@ export function App() {
     };
   }, []);
 
+  /** requestKey identifies the selection a plan was computed for. */
+  const requestKey = useMemo(() => (sel ? JSON.stringify(toRequest(sel)) : ""), [sel]);
+
   const update = useCallback((patch: Partial<Selection>) => {
+    // A new destination means the plan may name a different folder, so the
+    // previous promise stops applying the moment the destination changes.
+    if (
+      patch.newProfile !== undefined ||
+      patch.newProfileName !== undefined ||
+      patch.profileDir !== undefined ||
+      patch.installDir !== undefined
+    ) {
+      pinnedName.current = "";
+    }
     setSel((prev) => (prev ? { ...prev, ...patch } : prev));
   }, []);
 
@@ -84,54 +110,68 @@ export function App() {
       // for an uninstall.
       setSel((prev) => (prev ? resetForAction(state, prev, id) : prev));
       pinnedName.current = "";
-      setPreview(null);
-      setRunError(null);
+      setPlan(null);
+      setPlanError(null);
+      // Picking a new action after a finished run is not a re-run: it goes back
+      // to configuring, so the previous run's log and outcome cannot linger
+      // under a different action's heading.
+      setResult(null);
+      setSteps([]);
+      setPhase("configure");
     },
     [state],
   );
 
-  const canContinue = useMemo(() => {
-    if (!state || !sel) return false;
-    if (phase === 0) return state.installs.length > 0 || sel.installDir !== "";
-    if (phase === 1) {
-      if (state.installs.length === 0 && !sel.installDir) return false;
-      if (!needsProfile(sel.action)) return true;
-      if (sel.action === "install" && sel.newProfile) {
-        return sel.newProfileName === "" || PROFILE_NAME_RE.test(sel.newProfileName);
-      }
-      return sel.profileDir !== "";
-    }
-    return phase === 2 && preview !== null;
-  }, [state, sel, phase, preview]);
+  /**
+   * Keep a plan for whatever is selected. This is the "review" that used to be a
+   * page: it is a read-only call, so running it on every change costs a round
+   * trip and no writes, and in exchange the button below the plan always
+   * describes itself with the current selection.
+   */
+  useEffect(() => {
+    if (!sel || phase !== "configure" || requestKey === "") return;
+    if (plan?.key === requestKey || planError?.key === requestKey) return;
 
-  /** loadPreview resolves the selection so the review can show exactly what it does. */
-  async function loadPreview(next: Selection) {
-    setBusy(true);
-    setRunError(null);
-    try {
-      // Send the pinned name so re-taking a preview for the same plan shows the
-      // same folder rather than a fresh random one.
-      const pv = await installer.preview(toRequest(next, pinnedName.current));
-      if (pv.createsProfile && pv.profile?.name) pinnedName.current = pv.profile.name;
-      setPreview(pv);
-      setPhase(2);
-    } catch (err) {
-      // A refused selection is shown where it can be fixed rather than as a
-      // dead end on the review screen.
-      setPreview(null);
-      setRunError((err as Error).message);
-      setPhase(1);
-    } finally {
-      setBusy(false);
-    }
-  }
+    let cancelled = false;
+    setPlanning(true);
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const preview = await installer.preview(toRequest(sel, pinnedName.current));
+          if (cancelled) return;
+          if (preview.createsProfile && preview.profile?.name) pinnedName.current = preview.profile.name;
+          setPlan({ key: requestKey, preview });
+          setPlanError(null);
+        } catch (err) {
+          if (cancelled) return;
+          setPlan(null);
+          setPlanError({ key: requestKey, message: (err as Error).message });
+        } finally {
+          if (!cancelled) setPlanning(false);
+        }
+      })();
+    }, PLAN_DEBOUNCE_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      setPlanning(false);
+    };
+  }, [sel, requestKey, phase, plan, planError]);
+
+  const refused = planError?.key === requestKey ? planError.message : null;
+  const currentPlan = plan?.key === requestKey ? plan.preview : null;
+
+  /** blocker is the one thing, if any, that stops the run from being possible. */
+  const blocker = useMemo(() => (state && sel ? blockerFor(state, sel) : null), [state, sel]);
+  const ready = Boolean(sel && currentPlan && !planning && !blocker && phase === "configure");
 
   async function run() {
     if (!sel) return;
     setRunning(true);
     setResult(null);
     setSteps([]);
-    setPhase(3);
+    setPhase("run");
     try {
       setResult(await installer.run(toRequest(sel, pinnedName.current)));
     } catch (err) {
@@ -143,11 +183,11 @@ export function App() {
 
   async function startOver() {
     pinnedName.current = "";
-    setPreview(null);
+    setPlan(null);
+    setPlanError(null);
     setResult(null);
     setSteps([]);
-    setRunError(null);
-    setPhase(0);
+    setPhase("configure");
     try {
       const st = await installer.state();
       setState(st);
@@ -160,13 +200,15 @@ export function App() {
   if (fatal) {
     return (
       <Shell>
-        <Alert variant="danger">
-          <TriangleAlertIcon />
-          <AlertDescription>
-            <p className="font-medium">The installer could not start.</p>
-            <p className="mt-1 whitespace-pre-wrap">{fatal}</p>
-          </AlertDescription>
-        </Alert>
+        <div className="flex flex-col gap-2">
+          <h1 className="text-[15px] font-semibold">The installer could not start.</h1>
+          <p className="selectable max-w-prose whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{fatal}</p>
+          <div className="mt-2">
+            <Button size="sm" onClick={() => installer.quit()}>
+              Close
+            </Button>
+          </div>
+        </div>
       </Shell>
     );
   }
@@ -174,110 +216,145 @@ export function App() {
   if (!state || !sel) {
     return (
       <Shell>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <p className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2Icon className="size-3.5 animate-spin" />
           Looking for Firefox…
-        </div>
+        </p>
       </Shell>
     );
   }
 
-  return (
-    <Shell
-      channel={state.channelShort}
-      rail={<StepRail current={phase} finished={phase === 3 && result?.ok === true} />}
-      footer={
-        phase < 3 ? (
-          <Footer
-            label={PHASE_NAMES[phase]}
-            summary={phase === 2 ? preview?.summary : phase === 1 ? targetSummary(state, sel) : state.profilePolicy}
-            onBack={phase === 0 ? undefined : () => setPhase((phase - 1) as Phase)}
-            primaryLabel={phase === 2 ? actionVerb(sel.action) : "Continue"}
-            primaryVariant={phase === 2 && sel.action === "uninstall" ? "destructive" : "default"}
-            busy={busy}
-            disabled={!canContinue}
-            onPrimary={() => {
-              if (phase === 0) setPhase(1);
-              else if (phase === 1) void loadPreview(sel);
-              else void run();
-            }}
-          />
-        ) : undefined
-      }
-    >
-      {runError && phase === 1 && (
-        <Alert variant="danger" className="mb-4 shrink-0">
-          <TriangleAlertIcon />
-          <AlertDescription className="whitespace-pre-wrap">{runError}</AlertDescription>
-        </Alert>
-      )}
-      {phase === 0 && <ActionStep state={state} action={sel.action} onAction={onAction} />}
-      {phase === 1 && <TargetStep state={state} sel={sel} onChange={update} />}
-      {phase === 2 && preview && <ReviewStep preview={preview} />}
-      {phase === 3 && (
-        <RunStep
-          preview={preview}
-          steps={steps}
-          running={running}
-          result={result}
-          onDone={() => installer.quit()}
-          onStartOver={startOver}
-        />
-      )}
-    </Shell>
-  );
-}
+  const action = state.actions.find((a) => a.id === sel.action);
+  const destructive = sel.action === "uninstall" || sel.action === "loader-remove";
+  const note = footerNote({ phase, running, refused, blocker, plan: currentPlan, planning, state, sel });
 
-/** Shell is the window frame: header, step rail, panel and footer. */
-function Shell({ channel, rail, footer, children }: { channel?: string; rail?: ReactNode; footer?: ReactNode; children: ReactNode }) {
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
-      <header className="flex shrink-0 items-center gap-2 border-b border-border px-5 py-3">
-        <span className="text-sm font-semibold tracking-tight">Lazyfox</span>
-        <span className="text-xs text-muted-foreground">installer</span>
-        {rail && <div className="ml-3">{rail}</div>}
-        {channel && <span className="ml-auto text-[11px] text-muted-foreground">{channel}</span>}
+      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
+        <span className="text-[13px] font-semibold tracking-tight">Lazyfox</span>
+        <span className="text-[11px] text-muted-foreground">installer</span>
+        {/* Which Firefox, and which add-on version this binary carries — read
+            from the embedded xpi, so it names the build a run would actually
+            write rather than a version someone remembered to type here. */}
+        <span className="ml-auto truncate text-[11px] text-muted-foreground">
+          {[state.channelLabel, state.addonVersion ? `add-on ${state.addonVersion}` : ""].filter(Boolean).join(" · ")}
+        </span>
       </header>
 
-      <main className="flex min-h-0 flex-1 flex-col overflow-auto px-5 py-5">{children}</main>
+      <div className="flex min-h-0 flex-1">
+        {/* The rail stays live after a run (only a run in flight disables it),
+            so "actually, remove it instead" is one click rather than Close and
+            start the installer again. */}
+        <ActionRail actions={state.actions} value={sel.action} onSelect={onAction} disabled={running} />
 
-      {footer ? <div className="shrink-0 border-t border-border px-5 py-3">{footer}</div> : null}
+        <main className="flex min-w-0 flex-1 flex-col overflow-auto px-6 py-5">
+          {phase === "configure" ? (
+            <>
+              <SettingsPanel
+                state={state}
+                sel={sel}
+                heading={action?.label ?? ""}
+                description={action?.desc ?? ""}
+                onChange={update}
+              />
+              <div className="mt-6 border-t border-border pt-5">
+                <PlanPanel preview={currentPlan} error={refused} planning={planning} />
+              </div>
+            </>
+          ) : (
+            <RunPanel preview={currentPlan} steps={steps} running={running} result={result} />
+          )}
+        </main>
+      </div>
+
+      <footer className="flex shrink-0 items-center gap-3 border-t border-border px-4 py-3">
+        {/* The summary line is the plan's own words for where this lands, or the
+            reason the button is disabled. It is one line and it truncates: the
+            footer is a status bar, not a second review screen. */}
+        <p className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title={note}>
+          {note}
+        </p>
+        {phase === "configure" ? (
+          <Button
+            size="sm"
+            variant={destructive ? "destructive" : "default"}
+            disabled={!ready}
+            onClick={() => void run()}
+          >
+            {planning && <Loader2Icon className="animate-spin" />}
+            {actionVerb(sel.action)}
+          </Button>
+        ) : (
+          <>
+            {!running && (
+              <Button size="sm" variant="outline" onClick={() => void startOver()}>
+                Start over
+              </Button>
+            )}
+            <Button size="sm" disabled={running} onClick={() => installer.quit()}>
+              Close
+            </Button>
+          </>
+        )}
+      </footer>
     </div>
   );
 }
 
-function Footer({
-  summary,
-  onBack,
-  primaryLabel,
-  primaryVariant,
-  onPrimary,
-  disabled,
-  busy,
-}: {
-  label: string;
-  summary?: string;
-  onBack?: () => void;
-  primaryLabel: string;
-  primaryVariant: "default" | "destructive";
-  onPrimary: () => void;
-  disabled: boolean;
-  busy: boolean;
-}) {
+/** Shell is the window frame for the two states that have no controls: loading
+ *  and a fatal error. */
+function Shell({ children }: { children: ReactNode }) {
   return (
-    <div className="flex items-center gap-3">
-      <p className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title={summary}>
-        {summary}
-      </p>
-      {onBack && (
-        <Button variant="outline" size="sm" disabled={busy} onClick={onBack}>
-          Back
-        </Button>
-      )}
-      <Button size="sm" variant={primaryVariant} disabled={disabled || busy} onClick={onPrimary}>
-        {busy && <Loader2Icon className="animate-spin" />}
-        {primaryLabel}
-      </Button>
+    <div className="flex h-full flex-col bg-background text-foreground">
+      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
+        <span className="text-[13px] font-semibold tracking-tight">Lazyfox</span>
+        <span className="text-[11px] text-muted-foreground">installer</span>
+      </header>
+      <main className="flex min-h-0 flex-1 flex-col overflow-auto px-6 py-5">{children}</main>
     </div>
   );
+}
+
+/**
+ * footerNote is the one line beside the button: what is about to happen, or what
+ * is stopping it. It prefers the plan's own summary — computed by the Go layer
+ * from the same selection the button will run — over anything the window could
+ * say for itself.
+ */
+function footerNote({
+  phase,
+  running,
+  refused,
+  blocker,
+  plan,
+  planning,
+  state,
+  sel,
+}: {
+  phase: Phase;
+  running: boolean;
+  refused: string | null;
+  blocker: string | null;
+  plan: Preview | null;
+  planning: boolean;
+  state: State;
+  sel: Selection;
+}): string {
+  if (phase === "run") return running ? "Working…" : "Finished.";
+  if (blocker) return blocker;
+  if (refused) return "This selection cannot be used — see the panel above.";
+  if (plan) return plan.summary;
+  return planning ? "Checking what this will do…" : targetSummary(state, sel);
+}
+
+/** blockerFor names the first thing that makes the current selection unrunnable. */
+function blockerFor(state: State, sel: Selection): string | null {
+  if (state.installs.length === 0 && !sel.installDir) return "Choose the Firefox folder to act on.";
+  if (!needsProfile(sel.action)) return null;
+  if (sel.newProfile) {
+    return sel.newProfileName !== "" && !PROFILE_NAME_RE.test(sel.newProfileName)
+      ? "That profile name cannot be a folder name."
+      : null;
+  }
+  return sel.profileDir ? null : "Choose a profile.";
 }

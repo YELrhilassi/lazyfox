@@ -167,6 +167,136 @@ function arm(leader: any): any {
   eq(";w is not the window category", runs.join(","), "");
   eq("and is reported as unknown", misses.join(","), "w");
   ok("and no category opened", leader.hasPending() === false);
+}/* ---------- a bare modifier never answers a category ---------- */
+
+// THE BUG THIS PINS, and why the suite could not see it: every test above types
+// the sub-key the way the KEYMAP spells it (`|` with `shift: true`), which is
+// what a synthetic event looks like. A real keyboard sends the modifier press
+// FIRST as its own keydown — so the sequence a user actually makes is
+// `;`, `W`, **`Shift`**, `|`, and the capture in the middle ate the Shift as
+// though it were the answer, reported `no binding for ;Shift`, and closed the
+// menu. `|`, `{`, `}`, `?`, `:`, `"`, `<`, `>`, `~`, `!`, `@` … every symbol
+// that needs Shift was unreachable inside a category, i.e. most of `;W` and
+// `;W m`.
+//
+// The report, verbatim: "if I hit ;W then let go to hit the next key like | i
+// get error shift not exist. I can only access | key by shift key and I can't do
+// it after ;W in steps".
+//
+// The rule the fix encodes: a naked modifier is DECLINED — false, not consumed —
+// while a category is open exactly as at the top level. A capture matches a
+// character plus its flags, so the `|` that follows is the key it was always
+// waiting for; the menu has to still be there to receive it.
+{
+  const { leader, runs, misses } = makeLeader();
+  arm(leader);
+  leader.handleKey(key("W", { shift: true }));
+  ok("the window menu is open", leader.hasPending() === true);
+  // The modifier keydown that precedes the character, exactly as a keyboard
+  // sends it. Declined (false = "not mine"), never consumed as a sub-key.
+  eq(
+    "a bare Shift is declined inside a category",
+    leader.handlePending(key("Shift", { shift: true })),
+    false
+  );
+  ok("and the menu is STILL open", leader.hasPending() === true);
+  ok("and the leader is still armed", leader.active === true);
+  eq("and nothing was reported as unknown", misses.join(","), "");
+  eq("and nothing ran", runs.join(","), "");
+  // ...so the symbol it was held for still lands.
+  eq("the `|` it was held for is consumed", leader.handlePending(key("|", { shift: true })), true);
+  eq("and runs its action", runs.join(","), "splitTab");
+
+  // Ctrl and Alt reach the capture the same way, and are declined the same way:
+  // a menu that takes them cannot tell a sub-key with modifiers from a modifier.
+  for (const mod of ["Control", "Alt", "Meta"]) {
+    const c = makeLeader();
+    arm(c.leader);
+    c.leader.handleKey(key("Z", { shift: true }));
+    ok(`the ${mod} menu is open`, c.leader.hasPending() === true);
+    eq(
+      `a bare ${mod} is declined inside a category`,
+      c.leader.handlePending(
+        key(mod, { ctrl: mod === "Control", alt: mod === "Alt", meta: mod === "Meta" })
+      ),
+      false
+    );
+    ok(`and the menu survives a bare ${mod}`, c.leader.hasPending() === true);
+    ok(`and the leader is still armed after ${mod}`, c.leader.active === true);
+  }
+}
+
+/* ---------- the which-key drives itself ---------- */
+
+// Tab, the arrows, PageUp/PageDown and Enter name no row in core/keymap.go, so
+// they used to fall into the `!m.found` branch: the panel was HIDDEN and a toast
+// answered "no binding for ;Tab" for keys the overlay's own footer advertises as
+// the way to drive it. The report: "whichkey can't be navigated. using tab or
+// arrows show error ';Tab or ;arrowLeft binding don't exist'".
+//
+// There is no document in this process, so the panel is stubbed: what is under
+// test is the DECISION (does the overlay own this key while it is painted), not
+// the painting — that half is covered in the browser by
+// scripts/e2e/suites/content/sequences.ts.
+{
+  const { leader, misses } = makeLeader();
+  const panel = {
+    ensure: () => {},
+    current: () => ({}) as any,
+    shown: () => true,
+    setShown: () => {},
+    fill: () => {},
+    bodyLength: () => 0,
+  };
+  (leader as any).panel = panel;
+  arm(leader);
+
+  eq("Tab is consumed while the overlay is up", leader.handleKey(key("Tab")), true);
+  eq("Shift+Tab too", leader.handleKey(key("Tab", { shift: true })), true);
+  eq("ArrowDown is consumed", leader.handleKey(key("ArrowDown")), true);
+  eq("ArrowUp is consumed", leader.handleKey(key("ArrowUp")), true);
+  eq("ArrowLeft / PageUp are consumed", leader.handleKey(key("ArrowLeft")), true);
+  eq("ArrowRight / PageDown are consumed", leader.handleKey(key("PageDown")), true);
+  eq("Enter is consumed", leader.handleKey(key("Enter")), true);
+  eq("and no one of them was reported as an unknown chord", misses.join(","), "");
+  ok("and the overlay is still up", leader.active === true);  // The other half of the rule: with the overlay OFF SCREEN they are ordinary
+  // keys answering with a message rather than silence.
+  panel.shown = () => false;
+  eq("Tab with no overlay on screen is still ours (the leader is armed)", leader.handleKey(key("Tab")), true);
+  // Reported in the browser's own spelling ("Tab", not "tab"): specOf only
+  // folds case for a single character, and specToText prints a named key with
+  // its own cap. This is the string the user saw as "no binding for ;Tab".
+  eq("and it SAYS so", misses.join(","), "Tab");
+}
+
+/* Regression: Tab/arrow navigation should steer the panel when it is shown.
+   Without the fix, pressing ;Tab or ;ArrowLeft inside the overlay would report
+   "no binding for ;Tab" or "no binding for ;arrowLeft" because these keys have
+   no binding in the core keymap. The fix allows the overlay's own navigation
+   to take over when the panel is painted.
+ */
+{
+  const { leader, misses } = makeLeader();
+  const panel = {
+    ensure: () => {},
+    current: () => ({}) as any,
+    shown: () => true,
+    setShown: () => {},
+    fill: () => {},
+    bodyLength: () => 0,
+  };
+  (leader as any).panel = panel;
+  arm(leader);
+
+  eq("Tab navigates panel forward while shown", leader.handleKey(key("Tab")), true);
+  eq("Shift+Tab navigates backward", leader.handleKey(key("Tab", { shift: true })), true);
+  eq("ArrowLeft navigates left", leader.handleKey(key("ArrowLeft")), true);
+  eq("ArrowRight navigates right", leader.handleKey(key("ArrowRight")), true);
+  eq("ArrowUp navigates up", leader.handleKey(key("ArrowUp")), true);
+  eq("ArrowDown navigates down", leader.handleKey(key("ArrowDown")), true);
+  eq("Enter confirms selection", leader.handleKey(key("Enter")), true);
+  eq("and no one was reported as unknown", misses.join(","), "");
+  ok("and the overlay stays up", leader.active === true);
 }
 
 /* ---------- a mistyped sub-key is reported, not swallowed ---------- */
@@ -570,4 +700,16 @@ function arm(leader: any): any {
   eq("modifier order is fixed", specOf(key("A", { meta: true, alt: true, shift: true, ctrl: true })), "ctrl+alt+shift+meta+a");
 }
 
-console.log(`\n${passed} checks passed.`);
+// The navigation and the keymap must stay in step: if a chord the overlay wants
+// to own ever gains a row in the keymap, the two rules above would disagree and
+// whichever is consulted first would silently win. Cheap here, and it is the
+// check that fails when someone binds `shift+arrowleft` and wonders why the
+// panel stopped scrolling.
+{
+  const { matchKey } = await import("../src/shared/keymap.ts");
+  for (const spec of ["tab", "shift+tab", "arrowleft", "arrowright", "arrowup", "arrowdown", "pageup", "pagedown", "enter"]) {
+    ok(`the overlay's own key \`${spec}\` is not also a binding`, matchKey(spec).found === false);
+  }
+}
+
+console.log(`\n${passed} checks passed.`);

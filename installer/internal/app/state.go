@@ -19,6 +19,7 @@ func (a *App) state(view fx.View) State {
 		PayloadOrigin:           a.src.Origin(),
 		HasDist:                 a.src.HasDist(),
 		AddonAvailable:          a.src.AddonAvailable(),
+		AddonVersion:            a.src.AddonVersion(),
 		DefaultInstall:          -1,
 		DefaultProfile:          -1,
 		DefaultUninstallProfile: -1,

@@ -274,5 +274,5 @@ export function makeSplitHelpers(ctx: any, file: string, tags: string[] = []) {
     await ctx.chromeState().catch(() => {});
   };
 
-  return { t, nativeSplit, waitNoSplit, waitPlusPopup, pageState };
+  return { t, nativeSplit, waitNoSplit, waitNoSplitStable, waitPlusPopup, pageState };
 }

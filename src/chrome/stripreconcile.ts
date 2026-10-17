@@ -115,6 +115,14 @@ export function createStripReconciler(opts: {
       const changed = reconcileTo(order);
       const after = identity.stripKey();
       const changedKey = after !== before;
+      // THE MINIMUM WINDOW IS NOT OPTIONAL, and this is measured rather than
+      // cautious: skipping it when the first pass found nothing to do (the
+      // obvious-looking optimisation, since the strip LOOKS right) made
+      // "splitting a middle tab keeps the other tabs' order" fail in the e2e
+      // split suite with want=[27,18,29] got=[18,27,29] — Firefox finishes
+      // parking the pair a few hundred milliseconds after the call that formed
+      // it, so a loop that stops the moment the strip reads correct is reading
+      // a strip that is still moving. The pair order is the user's 1-9 mapping.
       const quiet = !changed && !changedKey && !lastChanged;
       lastChanged = changed || changedKey;
       const elapsed = attempts * 150;

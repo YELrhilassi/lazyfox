@@ -96,6 +96,8 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     isTransientTab,
     activeSplitView: identityActiveSplitView,
     nativeSplitAvailable,
+    isDeadWrapper,
+    splitWrappers,
   } = identity;
 
   const reconcile = createStripReconciler({
@@ -210,6 +212,27 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       if (!active || active.pinned) {
         sp("refused: " + (!active ? "no-selected-tab" : "pinned"));
         return false;
+      }
+      // ALREADY IN A LIVE SPLIT: change nothing.
+      //
+      // This used to fall through to the "stale reference" handling below,
+      // which DISSOLVED the split the user was already in and formed a new one
+      // — so pressing `;|` on a working split threw the layout away, and the
+      // dissolve plus re-form added a second round of asynchronous regrouping
+      // to wait out. A tab already in a two-pane split has nothing to gain from
+      // the operation, so the honest answer is to leave it alone.
+      //
+      // The `isConnected` test is what separates that from the genuinely stale
+      // reference this path exists for: after an unsplit on some builds the tab
+      // can still point at a wrapper that is no longer in the document, and that
+      // one must be dissolved so `;|` works again.
+      const live = active && !isDeadWrapper(active) ? (active as any).splitview : null;
+      if (live && !isDeadWrapper(live) && live.isConnected !== false) {
+        const n = Array.isArray(live.tabs) ? live.tabs.length : 0;
+        if (n >= 2) {
+          sp("already in a split view (panes=" + n + "): nothing to do");
+          return true;
+        }
       }
       // A stale .splitview reference can linger after an unsplit on some
       // builds; dissolve it first so `;|` on the very same tab works again
@@ -439,6 +462,43 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         }
       }
       const preStrip = stripSnapshot();
+      const panesNow = Array.isArray(sv.tabs) ? sv.tabs.slice() : [];
+      const panelPane = panesNow.filter((p) => !!p && !isDeadWrapper(p) && isSplitPanelTab(p))[0];
+      // REPLACE OUR OWN PANE, ATOMICALLY, WHEN THERE IS ONE.
+      //
+      // The panel pane is ours (`;|`'s "move a tab here" list) and it must be
+      // REPLACED by the real tab. The order used to be add-then-close, which puts
+      // THREE tabs inside the wrapper for as long as the close takes — and native
+      // split view is a TWO-pane feature, so that is not a state Firefox renders:
+      // one pane shows content and the other is an empty, unusable half, which is
+      // the reported "after unsplitting it keeps showing the tab in two halves,
+      // one with content and the other with nothing in it". `replaceTab()` does
+      // the swap in ONE platform call, so the wrapper never holds three tabs and
+      // never falls back to a single pane (which would make its own observer
+      // unsplit the view in the middle of the move).
+      if (panelPane && typeof (sv as any).replaceTab === "function") {
+        try {
+          (sv as any).replaceTab(panelPane, tab);
+          mv("replaceTab(panel, tab) ok; tab.splitview=" + (tab.splitview ? "yes" : "no"));
+        } catch (e) {
+          mv("replaceTab threw " + String(e));
+          return false;
+        }
+        readbackSplit(mv, tab);
+        repinAfterSplit(coalesceIntoGroupOrder(preStrip, sv, tab));
+        rememberSplit();
+        return true;
+      }
+      // A WRAPPER THAT ALREADY HOLDS TWO REAL PANES IS FULL.
+      //
+      // Adding a third is the same three-tab state by another route, so the move
+      // is refused with a reason in the trail rather than performed into a
+      // layout the platform cannot draw. Nothing is closed and nothing is
+      // dissolved: the user's split is exactly as they left it.
+      if (!panelPane && panesNow.length >= 2) {
+        mv("refused: the split already has " + panesNow.length + " panes (two max)");
+        return false;
+      }
       if (typeof sv.addTabs !== "function") {
         mv("sv.addTabs missing");
         return false;
@@ -465,40 +525,212 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     }
   }
 
+  /**
+   * Take a split apart and PUT EVERY TAB BACK WHERE IT BELONGS.
+   *
+   * This is the operation the app was reported to die on: "the unsplit is
+   * completely broken ... after unsplitting the panes are not reset properly to
+   * their correct locations, the tab keeps showing in two halves with one of them
+   * empty and unusable, and then nothing works — `;Number` does nothing, `;t`
+   * shows an empty list, the history stops".
+   *
+   * Three things in the old body produced that, and all three are about ORDER 
+   * and about which element is asked:
+   *
+   *   1. IT ASKED THE WRONG THING. `activeSplitView()` describes the SELECTED
+   *      tab (or the last wrapper the platform mentioned). A split whose
+   *      selection moved away therefore answered "no split", the caller said
+   *      "not in a split view", and the two panes stayed on screen with no way
+   *      to take them apart. The strip is asked instead (splitidentity.ts,
+   *      splitWrappers) and a lone split in the window is taken as the one the
+   *      user means.
+   *   2. IT FINISHED BEFORE THE PLATFORM DID. `unsplitTabs()` moves the tabs out
+   *      synchronously but leaves the now-empty `<tab-split-view-wrapper>` for
+   *      the element's own MutationObserver to remove on a LATER turn, and it
+   *      releases its panel state when that element disconnects. Closing our
+   *      pane and re-pinning the strip in the same tick therefore ran against a
+   *      strip that was still mid-teardown — which is how the strip ended up
+   *      rendered as a half-empty pair while `browser.tabs` reported ordinary
+   *      tabs in other places (the "disconnect between the tab ids and their
+   *      locations"). Everything after the call now waits for the wrapper to
+   *      actually leave the document, with a bounded number of tries and a trace
+   *      line when it does not.
+   *   3. IT COULD BE SILENTLY DESTROYED BY A THROW. The wrapper is a DOM element
+   *      Firefox destroys; any property read on a dead one throws "can't access
+   *      dead object", and the old `catch` turned that into a plain `false` —
+   *      i.e. nothing happened, on a click that visibly did something. A dead
+   *      wrapper now means "it is already gone", and the repair (close our pane,
+   *      re-pin, keep a live selection) still runs.
+   *
+   * Returns false only when there is genuinely no split to take apart, because
+   * that answer is what the user sees as "not in a split view".
+   */
   function unsplit(): boolean {
     // Say so in the trail the split op keeps, BEFORE deciding anything. Every
     // path that takes a split apart — `;W u`, a stale reference being dissolved,
     // the auto-unsplit after a pane closes — ends up here, and a split that was
     // created a moment ago and is then gone is unreadable unless the thing that
     // removed it is on the record.
+    // One local writer for the trail, so no line of the reporting below can be
+    // the thing that fails the operation.
+    const mv = (msg: string): void => {
+      try {
+        if (deps.onMove) deps.onMove(msg);
+      } catch (e) {
+        // Diagnosis only.
+      }
+    };
+    const wrappers = splitWrappers();
+    const active = activeSplitView();
+    mv(
+      "unsplit CALLED (active-sv=" +
+        (active ? "yes" : "no") +
+        " live-splits=" +
+        wrappers.length +
+        ")"
+    );
     try {
-      deps.onMove && deps.onMove("unsplit CALLED (active-sv=" + (activeSplitView() ? "yes" : "no") + ")");
-    } catch (e) {
-      /* ignore */
-    }
-    try {
-      const sv = activeSplitView();
-      if (!sv || typeof sv.unsplitTabs !== "function") return false;
-      const panes = Array.isArray(sv.tabs) ? sv.tabs.slice() : [];
+      let sv: SplitViewWrapper | null = active;
+      if (!sv && lastNativeSplit && !isDeadWrapper(lastNativeSplit) && lastNativeSplit.isConnected) {
+        sv = lastNativeSplit;
+      }
+      // ONE split in the window and the selected tab not in it: that is still
+      // the split the user is looking at, and refusing to undo it is what left
+      // them with an empty pane and no way out.
+      const only = wrappers.length === 1 ? wrappers[0] : undefined;
+      if (!sv && only) sv = only;
+      if (!sv) {
+        mv("unsplit: no split view to take apart");
+        return false;
+      }
+      // The panes are captured BEFORE the call: after it the wrapper is empty and
+      // the list is the only record of which tabs were in it (one of them is our
+      // panel pane, which is pure UI and must not pile up as a stray tab).
+      const panes: ChromeTab[] = [];
+      try {
+        if (Array.isArray(sv.tabs)) for (const p of sv.tabs) if (p) panes.push(p);
+      } catch (e) {
+        // A wrapper whose panes cannot be read still has to be taken apart.
+      }
       const preStrip = stripSnapshot();
-      sv.unsplitTabs();
-      // The companion split-panel pane is pure UI: close it once the split
-      // dissolves so it never piles up as a stray tab. A pane the user
-      // navigated to real content is kept.
-      for (const p of panes) {
+      const dead = isDeadWrapper(sv) || typeof (sv as any).unsplitTabs !== "function";
+      if (dead) {
+        // Already gone (or not a split view at all): the tabs are out, and the
+        // repair below is exactly what is left to do.
+        mv("unsplit: wrapper already gone — repairing the strip");
+      } else {
         try {
-          if (!p || p.closing) continue;
-          if (isSplitPanelTab(p)) win.gBrowser.removeTab(p);
+          // The method is version-gated on the wrapper's TYPE (older builds have
+          // no unsplit on it at all), and the `dead` test above is what proved it
+          // is callable here.
+          (sv as any).unsplitTabs();
+        } catch (e) {
+          mv("unsplit threw " + String(e) + "; live-splits=" + splitWrappers().length);
+          return false;
+        }
+      }
+
+      // OUR OWN PANE GOES NOW, while the strip is provably in the right shape.
+      //
+      // `unsplitTabs()` releases the tabs into the tab container synchronously,
+      // so by this point every pane is an ordinary tab and closing ours is an
+      // ordinary tab close. It is NOT deferred with the re-pin below, and the
+      // difference matters: a leftover split-panel tab is REUSED as the next
+      // `;|`'s pane, so the sooner it is gone the smaller the window in which a
+      // close could land on a tab a brand new split has adopted. (That window
+      // is real — one e2e run saw "`;W |` produced no pair" with this line in the
+      // chrome trail — and the guard inside closeOurPanes is what makes it
+      // harmless as well as small.)
+      const closeOurPanes = (): void => {
+        for (const p of panes) {
+          try {
+            if (!p || isDeadWrapper(p) || p.closing) continue;
+            if (!isSplitPanelTab(p)) continue;
+            // A tab that is in a split view RIGHT NOW is not a leftover,
+            // whatever it used to be.
+            let inASplit = false;
+            try {
+              inASplit = !!p.splitview;
+            } catch (e) {
+              inASplit = true; // unreadable state is not a licence to close it
+            }
+            if (inASplit) continue;
+            win.gBrowser.removeTab(p);
+          } catch (e) {
+            // ignore
+          }
+        }
+      };
+      closeOurPanes();
+
+      // ---- from here on: the platform has been told, and we wait for it ----
+      const settled = (tries: number) => {
+        let stillThere = false;
+        try {
+          stillThere = !isDeadWrapper(sv) && (sv as any).isConnected !== false;
+        } catch (e) {
+          stillThere = false; // a dead wrapper is a gone wrapper
+        }
+        if (stillThere && tries < 10) {
+          env.setTimeout(() => settled(tries + 1), 50);
+          return;
+        }
+        if (stillThere) {
+          // It did not come apart. Do NOT start moving tabs around a strip whose
+          // split still exists — that is the half-empty pair. Say so and stop.
+          mv("unsplit: wrapper STILL CONNECTED after 500ms; leaving the strip alone");
+          return;
+        }
+        // The wrapper is gone, so the strip can finally be touched: pin it back
+        // so every tab returns to the slot it had and the user's 1-9 mapping is
+        // unchanged. This is the part that MUST wait — moving tabs while the
+        // empty wrapper is still in the strip is what renders the half-empty
+        // pair the report describes.
+        repinAfterSplit(preStrip);
+        // A split can dissolve out from under the selection (the selected pane
+        // was our own panel, which we just closed). Firefox then has no selected
+        // tab, and with no selected tab every later action that resolves "the
+        // current tab" — `;1`, the tab popup's active row, the history — has
+        // nothing to resolve against: the reported "after unsplit I can't
+        // navigate anywhere, `;t` shows an empty list though the bar counts 3
+        // tabs". Selecting a live tab is the whole fix for that.
+        try {
+          const sel = win.gBrowser.selectedTab;
+          let gone = false;
+          try {
+            gone = !sel || !!sel.closing || isDeadWrapper(sel);
+          } catch (e) {
+            gone = true;
+          }
+          if (gone) {
+            // Prefer a tab that was IN the split — that is where the user was
+            // looking — and fall back to the first real tab.
+            let next: ChromeTab | undefined;
+            for (const p of panes) {
+              try {
+                if (p && !p.closing && !isDeadWrapper(p) && p.isConnected !== false) {
+                  next = p;
+                  break;
+                }
+              } catch (e) {
+                // skip a pane whose state cannot be read
+              }
+            }
+            if (!next) next = realTabs()[0];
+            if (next) {
+              win.gBrowser.selectedTab = next;
+              mv("unsplit: nothing was selected; re-selected " + idOf(next));
+            }
+          }
         } catch (e) {
           // ignore
         }
-      }
-      // Unsplit releases the panes in place on most builds, but pin the strip
-      // back anyway: every tab must return to the exact slot it had, so the
-      // user's 1-9 mapping never changes just because a split dissolved.
-      repinAfterSplit(preStrip);
+        rememberSplit();
+      };
+      env.setTimeout(() => settled(0), 0);
       return true;
     } catch (e) {
+      mv("unsplit outer catch " + String(e));
       return false;
     }
   }

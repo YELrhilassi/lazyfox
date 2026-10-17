@@ -334,7 +334,11 @@ func listTargets(src *payload.Source, cfg config.Config) error {
 	payloadErr := src.Usable()
 	if payloadErr == nil {
 		if src.AddonAvailable() {
-			fmt.Println("  add-on payload : present (the installer can add the extension)")
+			// The version comes out of the xpi itself, so this line answers "which
+			// Lazyfox would this binary install?" without anyone bumping a string
+			// here — and a bare `--mode list` from a temp dir reports the embedded
+			// copy, which is what a downloaded installer would actually write.
+			fmt.Printf("  add-on payload : present (lazyfox %s)\n", src.AddonVersion())
 		} else {
 			fmt.Println("  add-on payload : MISSING — only the chrome loader could be installed")
 		}

@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"lazyfox/installer/internal/platform"
 )
@@ -18,6 +19,10 @@ type Source struct {
 	Root string
 	// Dist is the absolute path to dist/.
 	Dist string
+
+	// addonVersion memoizes the version read out of the embedded xpi (addon.go).
+	addonVersionOnce sync.Once
+	addonVersion     string
 }
 
 // Locate finds the repo checkout containing dist/ by searching upward from the
