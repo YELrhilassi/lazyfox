@@ -26,7 +26,11 @@ export const STATUS_BAR_CSS = `
    sign the leader captured a key. A minimal glyph-only pill: no prefix text,
    painted synchronously at key time (see setLeaderSignal), so it tracks the
    leader exactly instead of trailing the async store roundtrip. */
-.seg.leader{margin-left:auto;background:#2ac3de;color:#16161e;font-weight:800;
+/* The spacer, not a margin, pushes the right-hand pair flush: the leader
+   segment comes and goes, and an auto margin on a display:none element does
+   not exist — which would let the segments after it drift left. */
+.spacer{flex:1 1 auto;min-width:0;}
+.seg.leader{background:#2ac3de;color:#16161e;font-weight:800;
   clip-path:none;padding:0 9px;}
 .seg.leader .ic{font-size:12px;line-height:1;}
 /* A committed sub-key: monospace, tight tracking, so a "; W" reads as a chord
@@ -46,7 +50,9 @@ export const STATUS_BAR_CSS = `
 /* Dark mode: a moon and one word. The TONE carries the meaning, because the
    word alone ("dark") cannot say whether the page's own theme is in use or
    ours is painting it — and that is the difference the feature is judged on. */
-.seg.dark{font-weight:800;}
+/* The final segment: flat edges, because a chevron point on the last pixel of
+   the window reads as a clipped glyph. It sits immediately after the leader. */
+.seg.dark{font-weight:800;clip-path:none;padding:0 10px;}
 .seg.dark .ic{font-size:12px;line-height:1;}
 .seg.dark .lbl{font-weight:700;letter-spacing:.02em;}
 .seg.dark.tone-on{background:#9d7cd8;color:#16161e;}
