@@ -152,6 +152,80 @@ function firstPortedWindow(): number | null {
   return null;
 }
 
+// Deliver one command to ONE window's chrome helper, minting the sequence
+// number and (when that window has no live port yet) queueing it.
+//
+// Split out of requestChrome so a caller that already knows which window it
+// means can address it without going through the focus lookup. Session restore
+// is exactly that caller: it rebuilds several windows and each one's split
+// layout belongs to that window's helper, so "whichever window has the active
+// tab" is the wrong question once there is more than one.
+function sendChromeCommand<K extends string>(winId: number, action: K, arg?: any): void {
+  // Minted here, ONCE per request: the retry loop below may post this entry
+  // much later, and the point of the number is that it belongs to the
+  // DECISION to send — an entry that is never delivered must still leave a
+  // hole where the helper can see it.
+  const entry = { action, arg, seq: nextCmdSeq(winId) };
+  const tryPost = (): boolean => {
+    const port = relayPorts.get(winId);
+    if (!port) return false;
+    try {
+      // Always an object, never "": the chrome side reads named fields.
+      port.postMessage({
+        type: "cmd",
+        action,
+        arg: arg === undefined ? {} : arg,
+        seq: entry.seq,
+      });
+      return true;
+    } catch {
+      // Dead port (its relay tab was removed); drop it so the next
+      // attempt re-queues.
+      relayPorts.delete(winId);
+      return false;
+    }
+  };
+  if (tryPost()) return;
+  // No live port: the relay tab may be coming up (the helper creates it
+  // and the page connects a beat later). Queue the command and keep
+  // retrying until the port delivers or the command ages out — without
+  // ever creating a relay tab ourselves (the helper owns that). The entry
+  // stays queued so onConnect's drain can deliver it; the retry loop
+  // stops the moment the entry leaves the queue, so a command is never
+  // posted twice.
+  void findRelayTab().then(() => {
+    const started = Date.now();
+    const q = relayCmdQueues.get(winId) || [];
+    q.push(entry);
+    relayCmdQueues.set(winId, q);
+    const tick = () => {
+      const cur = relayCmdQueues.get(winId) || [];
+      const i = cur.indexOf(entry);
+      if (i < 0) return; // already delivered by onConnect's drain
+      if (tryPost()) {
+        cur.splice(i, 1);
+        return;
+      }
+      if (Date.now() - started > RELAY_QUEUE_TTL) {
+        cur.splice(i, 1);
+        return;
+      }
+      setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+
+// Ask a NAMED window's chrome helper to do something. Used by multi-window
+// session restore: a window it just created has no active tab and no focus yet,
+// so the focus-based targeting below would either miss it or hit the wrong
+// window. The helper in each window is its own (see chrome/main.ts), which is
+// what makes a per-window command meaningful at all.
+export function requestChromeToWindow<K extends string>(winId: number, action: K, arg?: any): void {
+  if (typeof winId !== "number" || !isFinite(winId)) return;
+  sendChromeCommand(winId, action, arg);
+}
+
 // Ask the chrome helper to do something only it can (native splits, status
 // pushes): post the command over the relay's runtime port.
 //
@@ -175,59 +249,7 @@ export function requestChrome<K extends string>(action: K, arg?: any): void {
       const active = ts && ts[0] ? ts[0].windowId : null;
       const winId = active != null ? active : firstPortedWindow();
       if (winId == null) return;
-      // Minted here, ONCE per request: the retry loop below may post this entry
-      // much later, and the point of the number is that it belongs to the
-      // DECISION to send — an entry that is never delivered must still leave a
-      // hole where the helper can see it.
-      const entry = { action, arg, seq: nextCmdSeq(winId) };
-      const tryPost = (): boolean => {
-        const port = relayPorts.get(winId);
-        if (!port) return false;
-        try {
-          // Always an object, never "": the chrome side reads named fields.
-          port.postMessage({
-            type: "cmd",
-            action,
-            arg: arg === undefined ? {} : arg,
-            seq: entry.seq,
-          });
-          return true;
-        } catch {
-          // Dead port (its relay tab was removed); drop it so the next
-          // attempt re-queues.
-          relayPorts.delete(winId);
-          return false;
-        }
-      };
-      if (tryPost()) return;
-      // No live port: the relay tab may be coming up (the helper creates it
-      // and the page connects a beat later). Queue the command and keep
-      // retrying until the port delivers or the command ages out — without
-      // ever creating a relay tab ourselves (the helper owns that). The entry
-      // stays queued so onConnect's drain can deliver it; the retry loop
-      // stops the moment the entry leaves the queue, so a command is never
-      // posted twice.
-      void findRelayTab().then(() => {
-        const started = Date.now();
-        const q = relayCmdQueues.get(winId) || [];
-        q.push(entry);
-        relayCmdQueues.set(winId, q);
-        const tick = () => {
-          const cur = relayCmdQueues.get(winId) || [];
-          const i = cur.indexOf(entry);
-          if (i < 0) return; // already delivered by onConnect's drain
-          if (tryPost()) {
-            cur.splice(i, 1);
-            return;
-          }
-          if (Date.now() - started > RELAY_QUEUE_TTL) {
-            cur.splice(i, 1);
-            return;
-          }
-          setTimeout(tick, 200);
-        };
-        tick();
-      });
+      sendChromeCommand(winId, action, arg);
     })
     .catch(() => {});
 }

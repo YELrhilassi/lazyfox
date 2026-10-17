@@ -87,9 +87,18 @@ async function createStealthContainer(): Promise<string> {
   return ci.cookieStoreId;
 }
 
-export async function stealthCreateTab(url: string, active: boolean): Promise<any> {
+// `winId` puts the container tab in a NAMED window. Restoring a session's
+// second window has to: `tabs.create` without it lands in the focused window,
+// so a stealth tab restored alongside the user's window would go into the
+// window they were already looking at.
+export async function stealthCreateTab(
+  url: string,
+  active: boolean,
+  winId?: number | null
+): Promise<any> {
   const cs = await createStealthContainer();
-  const t = await browser.tabs.create({ url, cookieStoreId: cs, active });
+  const inWin: any = winId != null ? { windowId: winId } : {};
+  const t = await browser.tabs.create({ url, cookieStoreId: cs, active, ...inWin });
   if (t && t.id != null) stealthTabs.set(t.id, cs);
   await persistStealth();
   return t;

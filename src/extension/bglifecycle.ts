@@ -37,7 +37,8 @@ import {
   acceptRelayPort,
   isRelayUrl,
   registerTransientRelayTab,
-  requestChrome
+  requestChrome,
+  requestChromeToWindow
 } from "./services/relay";
 import {
   checkChromeLayerHealth,
@@ -238,6 +239,13 @@ export function installBackgroundLifecycle(): void {
   installBrowserLifecycle();
   // Wire the chrome-helper hooks into the session manager (breaks the import
   // cycle sessions -> relay -> sessions).
-  bindChromeHooks({ requestChrome, pushSessionState: pushSessionStateToChrome });
+  bindChromeHooks({
+    requestChrome,
+    // A session restore rebuilds every window of the session, so its
+    // split-layout commands have to name their window instead of following the
+    // user's focus (see sessions/restore.ts).
+    requestChromeToWindow,
+    pushSessionState: pushSessionStateToChrome,
+  });
   installWatchers();
 }

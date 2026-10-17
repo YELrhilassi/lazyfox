@@ -23,7 +23,7 @@ import {
   readCurrentSessionName,
   readSessions,
   refreshSplits,
-  snapshotWindow,
+  snapshotWindows,
   writeCurrentSessionName,
   writeSessions
 } from "./sessions/storage";
@@ -35,8 +35,10 @@ import {
   scheduleSnapshot as scheduleSnapshotImpl,
   setLastWindowSnapshot
 } from "./sessions/autosave";
+import { sessionFromWindows, sessionWindowsOf } from "../shared/sessionwindows";
 import {
   bindRestoreRequestChrome,
+  bindRestoreRequestChromeToWindow,
   isRestoringFlag,
   resumeOnStartup as resumeOnStartupImpl,
   restoreSession as restoreSessionImpl
@@ -50,6 +52,14 @@ type ChromeHooks = {
   // `arg` may be any structured-cloneable value (the relay delivers objects
   // as objects).
   requestChrome: <K extends ChromeAction>(action: K, arg?: ChromeReq<K>) => void;
+  // The same, addressed to a window by id: a restore re-creates the split
+  // layout of every window it rebuilds, and only one of those windows is the
+  // focused one.
+  requestChromeToWindow: <K extends ChromeAction>(
+    winId: number,
+    action: K,
+    arg?: ChromeReq<K>
+  ) => void;
   pushSessionState: () => void;
 };
 let pushSessionState: ChromeHooks["pushSessionState"] = () => {};
@@ -57,6 +67,7 @@ let pushSessionState: ChromeHooks["pushSessionState"] = () => {};
 export function bindChromeHooks(h: ChromeHooks): void {
   pushSessionState = h.pushSessionState;
   bindRestoreRequestChrome(h.requestChrome);
+  bindRestoreRequestChromeToWindow(h.requestChromeToWindow);
 }
 
 export function isRestoring(): boolean {
@@ -95,11 +106,14 @@ export async function resumeOnStartup(autoRestore: boolean | undefined): Promise
   // from a stored one, so a fresh launch returns immediately instead of
   // paying the fixed startup delay.
   const fallback = await readKeyOr("lfLastSession", vSession);
-  const last =
-    cur && cur.tabs && cur.tabs.length
-      ? cur
-      : fallback;
-  if (!last || !last.tabs || !last.tabs.length) return;
+  // "Has tabs" is asked of the session's WINDOW SET (sessionWindowsOf), not of
+  // its flat tab list: a multi-window session whose focused window happened to
+  // be empty is still a session worth resuming, and reading the flat field alone
+  // made it look like nothing was saved.
+  const hasTabs = (s: Session | null | undefined) =>
+    !!s && sessionWindowsOf(s).some((w) => (w.tabs || []).length > 0);
+  const last = (hasTabs(cur) ? cur : fallback) || null;
+  if (!hasTabs(last)) return;
   await resumeOnStartupImpl(last, async () => {
     await setLastWindowSnapshot();
     scheduleAutosave();
@@ -139,21 +153,15 @@ export async function sessionTabs(name: string): Promise<PopupItem[]> {
 export async function saveSession(name: string): Promise<{ ok: boolean; session?: Session }> {
   const nm = (name || "").trim();
   if (!nm) return { ok: false };
-  const snap = await snapshotWindow();
+  // SAVE THE WHOLE WINDOW SET, not just the window on screen: a session is what
+  // you were doing, and "what you were doing" is every window.
+  const wins = await snapshotWindows();
   const all = await readSessions();
   const existing = all[nm];
   const marker =
     (existing && existing.marker) ||
     (await core.assignSessionMarker(Object.values(all).map((s) => s.marker || 0)));
-  const session: Session = {
-    name: nm,
-    marker,
-    tabs: snap.tabs,
-    active: snap.active,
-    windowState: snap.windowState,
-    updatedAt: Date.now(),
-    splits: snap.splits
-  };
+  const session: Session = sessionFromWindows(wins, nm, marker, Date.now());
   all[nm] = session;
   await writeSessions(all);
   await writeKey("lfCurrentSession", nm);
@@ -200,21 +208,22 @@ export async function restoreSession(name: string): Promise<{ ok: boolean; note?
   await autosaveCurrentSession(all);
   await restoreSessionImpl(
     s,
-    async () => {},
+    async () => {
+      // Refresh the in-memory snapshot to the freshly-restored WINDOW SET
+      // immediately (see sessions/autosave.ts for why a fast quit must not
+      // flush the stale pre-switch snapshot).
+      try {
+        await setLastWindowSnapshot();
+      } catch {
+        // ignore — fall back to the debounced autosave
+      }
+    },
     async () => {
       await writeCurrentSessionName(s.name);
       pushSessionState();
     }
   );
-  // Refresh the in-memory snapshot to the freshly-restored window immediately
-  // (see sessions/autosave.ts for why a fast quit must not flush the stale
-  // pre-switch snapshot), then re-arm the crash-recovery autosave the guard
-  // suppressed during the rebuild.
-  try {
-    await setLastWindowSnapshot();
-  } catch {
-    // ignore — fall back to the debounced autosave
-  }
+  // Re-arm the crash-recovery autosave the guard suppressed during the rebuild.
   scheduleAutosave();
   return { ok: true };
 }

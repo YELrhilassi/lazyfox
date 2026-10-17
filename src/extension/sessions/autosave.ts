@@ -8,28 +8,28 @@
 //   - scheduleSnapshot (250ms): refresh the in-memory lastSnapshot only, so
 //     flushOnQuit can persist the newest state when the last window closes.
 
-import type { Session } from "../../shared/types";
+import type { Session, SessionWindow } from "../../shared/types";
+import { sessionFromWindows } from "../../shared/sessionwindows";
 import { writeKey } from "../store";
 import {
   layoutSettled,
   readCurrentSessionName,
   readSessions,
-  snapshotWindow,
-  writeSessions,
-  type WindowSnapshot
+  snapshotWindows,
+  writeSessions
 } from "./storage";
 
-// Last successfully-captured window snapshot, so a quit can flush it without
-// re-querying (the window is already gone by the time windows.onRemoved fires,
+// Last successfully-captured WINDOW SET, so a quit can flush it without
+// re-querying (the windows are already gone by the time windows.onRemoved fires,
 // and an empty query would clobber the save).
-let lastSnapshot: WindowSnapshot | null = null;
+let lastSnapshot: SessionWindow[] | null = null;
 
-export function lastWindowSnapshot(): WindowSnapshot | null {
+export function lastWindowSnapshot(): SessionWindow[] | null {
   return lastSnapshot;
 }
 
 export async function setLastWindowSnapshot(): Promise<void> {
-  lastSnapshot = await snapshotWindow();
+  lastSnapshot = await snapshotWindows();
 }
 
 // Checkpoint: persist the current window before switching away. The snapshot
@@ -38,36 +38,24 @@ export async function setLastWindowSnapshot(): Promise<void> {
 // pre-captured snapshot (used by the quit flush) skips the re-query.
 export async function autosaveCurrentSession(
   all: Record<string, Session>,
-  preSnap?: WindowSnapshot
+  preSnap?: SessionWindow[]
 ): Promise<void> {
   try {
-    const snap = preSnap || (await snapshotWindow());
-    lastSnapshot = snap;
-    const recovery: Session = {
-      name: "last",
-      marker: 0,
-      tabs: snap.tabs,
-      active: snap.active,
-      windowState: snap.windowState,
-      updatedAt: Date.now(),
-      splits: snap.splits
-    };
+    const wins = preSnap && preSnap.length ? preSnap : await snapshotWindows();
+    lastSnapshot = wins;
+    // The session IS the window set now, so the checkpoint records every window
+    // — not just the one on screen. The focused window stays mirrored in the
+    // flat fields (sessionFromWindows), which is what every older reader and
+    // the tab move/copy paths still address.
     const name = await readCurrentSessionName();
-    if (name && all[name]) {
-      const existing = all[name];
-      all[name] = {
-        name,
-        marker: existing.marker || 0,
-        tabs: snap.tabs,
-        active: snap.active,
-        windowState: snap.windowState,
-        updatedAt: Date.now(),
-        splits: snap.splits
-      };
+    const existing = name ? all[name] : null;
+    if (name && existing) {
+      const session = sessionFromWindows(wins, name, existing.marker || 0, Date.now());
+      all[name] = session;
       await writeSessions(all);
-      await writeKey("lfLastSession", all[name]);
+      await writeKey("lfLastSession", session);
     } else {
-      await writeKey("lfLastSession", recovery);
+      await writeKey("lfLastSession", sessionFromWindows(wins, "last", 0, Date.now()));
     }
   } catch {
     // ignore — checkpoint is best-effort
@@ -129,7 +117,7 @@ export function scheduleLayoutSnapshot(whileRestoring: () => boolean): void {
     if (whileRestoring()) return;
     let settled = true;
     try {
-      lastSnapshot = await snapshotWindow();
+      lastSnapshot = await snapshotWindows();
       settled = await layoutSettled();
     } catch {
       // ignore — a failed read is not a reason to stop reading
@@ -154,7 +142,7 @@ export function scheduleSnapshot(whileRestoring: () => boolean): void {
   snapshotTimer = setTimeout(async () => {
     snapshotTimer = null;
     try {
-      lastSnapshot = await snapshotWindow();
+      lastSnapshot = await snapshotWindows();
     } catch {
       // ignore — best-effort
     }

@@ -7,7 +7,7 @@
 
 import { core } from "../../shared/core";
 import { splitIdsOf } from "../../shared/splits";
-import type { Session, SessionTab } from "../../shared/types";
+import type { Session, SessionTab, SessionWindow } from "../../shared/types";
 import { CC_URL, isUITab } from "../tabs";
 import { reconcileStealth, stealthContainers, stealthCreateTab } from "../stealth";
 import { readKey, writeKey, vString, vSessions } from "../store";
@@ -32,22 +32,21 @@ export async function writeCurrentSessionName(name: string): Promise<void> {
   await writeKey("lfCurrentSession", name);
 }
 
-export type WindowSnapshot = {
-  tabs: SessionTab[];
-  active: number;
-  windowState: string;
-  splits: string;
-};
+// A captured window is exactly a session window — one type, so a snapshot can
+// never be shaped differently from the thing a restore reads.
+export type WindowSnapshot = SessionWindow;
 
-export async function snapshotWindow(): Promise<WindowSnapshot> {
-  await reconcileStealth();
-  const win = await browser.windows.getCurrent();
-  const tabs = await browser.tabs.query({ currentWindow: true });
-  const list = tabs || [];
+/**
+ * Capture ONE window's tabs, selection and split layout.
+ *
+ * `tabs` is the window's raw tab list (the caller already knows which window it
+ * asked for); `win` is that window object, for its state.
+ */
+async function windowPart(tabs: any[], win: any): Promise<SessionWindow> {
   // Transient tabs are internal plumbing, never user content: the #lfc=
   // request channel and the splitpanel companion pane. Excluding them keeps a
   // checkpoint from capturing them and a restore from re-opening them.
-  const content = list.filter((t: any) => !isUITab(t));
+  const content = (tabs || []).filter((t: any) => !isUITab(t));
   let active = content.findIndex((t: any) => t.active);
   if (active < 0) active = 0;
   // The split layout is computed once, in the Go core, from the read-only
@@ -72,6 +71,48 @@ export async function snapshotWindow(): Promise<WindowSnapshot> {
   };
 }
 
+/** The window the background context is currently "in" — the focused one. */
+export async function snapshotWindow(): Promise<WindowSnapshot> {
+  await reconcileStealth();
+  const win = await browser.windows.getCurrent().catch(() => null);
+  const tabs = await browser.tabs.query({ currentWindow: true }).catch(() => []);
+  return windowPart((tabs || []) as any[], win);
+}
+
+/**
+ * Capture EVERY window, focused first.
+ *
+ * A session is the whole window set, so this is what a save and an autosave
+ * record. Order is part of the behavior rather than a detail: the first window
+ * is the one a switch rebuilds IN PLACE (the window the user is looking at) and
+ * the rest are created after it.
+ *
+ * Two things are deliberately not windows here:
+ *
+ *  - a window that is not a normal browser window (a popup, a devtools window),
+ *    because closing one on a session switch would be a bug rather than a
+ *    feature; and
+ *  - a window with no content tabs at all — the relay-only window a helper can
+ *    leave behind. Saving it would restore a window that exists to hold
+ *    plumbing.
+ */
+export async function snapshotWindows(): Promise<SessionWindow[]> {
+  await reconcileStealth();
+  const wins = ((await browser.windows.getAll().catch(() => [])) || []) as any[];
+  const focused = (await browser.windows.getLastFocused().catch(() => null)) as any;
+  const out: Array<{ id: number; focused: boolean; win: SessionWindow }> = [];
+  for (const w of wins) {
+    if (!w || w.id == null) continue;
+    if (w.type && w.type !== "normal") continue;
+    const tabs = ((await browser.tabs.query({ windowId: w.id }).catch(() => [])) || []) as any[];
+    const win = await windowPart(tabs, w);
+    if (!win.tabs.length) continue;
+    out.push({ id: w.id, focused: !!(focused && focused.id === w.id), win });
+  }
+  out.sort((a, b) => Number(b.focused) - Number(a.focused) || a.id - b.id);
+  return out.map((x) => x.win);
+}
+
 /**
  * Whether the window's split layout is fully described yet.
  *
@@ -89,11 +130,19 @@ export async function snapshotWindow(): Promise<WindowSnapshot> {
  */
 export async function layoutSettled(): Promise<boolean> {
   try {
-    const tabs = await browser.tabs.query({ currentWindow: true });
-    const ids = splitIdsOf((tabs || []).filter((t: any) => !isUITab(t)));
-    const members = new Map<number, number>();
-    for (const id of ids) {
-      if (id >= 0) members.set(id, (members.get(id) || 0) + 1);
+    // EVERY window, not just the focused one: a layout report can come from any
+    // of them, and the id space is per window — so two windows may each hold
+    // `splitViewId: 3` without being the same split. Keying by (window, id) is
+    // what keeps "one pane of two" visible instead of averaging it away against
+    // a pair in another window.
+    const tabs = ((await browser.tabs.query({}).catch(() => [])) || []) as any[];
+    const members = new Map<string, number>();
+    for (const t of tabs) {
+      if (isUITab(t)) continue;
+      const sv = (t as any).splitViewId;
+      if (typeof sv !== "number" || sv < 0) continue;
+      const key = String((t as any).windowId) + ":" + sv;
+      members.set(key, (members.get(key) || 0) + 1);
     }
     for (const n of members.values()) {
       if (n < 2) return false;
@@ -106,14 +155,27 @@ export async function layoutSettled(): Promise<boolean> {
   }
 }
 
-// Rebuild a saved tab list in the current window, replacing what is there.
-// Returns the ordered tab ids matching the saved order. Split into its own
-// function because both restoreSession and resumeOnStartup need the exact
-// same rebuild.
-export async function openTabsInCurrentWindow(tabs: SessionTab[]): Promise<number[]> {
+// Rebuild a saved tab list in ONE window, replacing what is there. Returns the
+// ordered tab ids matching the saved order. Split into its own function because
+// both restoreSession and resumeOnStartup need the exact same rebuild.
+//
+// `winId` null means the window the background is "in" (the focused one); an id
+// means that window — which is how the extra windows of a multi-window session
+// are filled after they are created.
+export async function openTabsInWindow(
+  winId: number | null,
+  tabs: SessionTab[],
+  opts: { focus?: boolean } = {}
+): Promise<number[]> {
   await reconcileStealth();
-  const win = await browser.windows.getCurrent();
-  const cur = await browser.tabs.query({ currentWindow: true });
+  const q: any = winId != null ? { windowId: winId } : { currentWindow: true };
+  const win = winId != null ? { id: winId, state: "normal" } : await browser.windows.getCurrent();
+  // Every tab this opens belongs to THIS window. Without it, `tabs.create`
+  // targets the window the background context considers current, so a session
+  // window built beside the focused one would collect tabs into the focused
+  // window and leave the new one holding a blank host.
+  const inWin: any = winId != null ? { windowId: winId } : {};
+  const cur = ((await browser.tabs.query(q).catch(() => [])) || []) as any[];
   const entries = (tabs || []).filter((t) => t && t.url);
   // Two different questions, previously answered by one list and therefore
   // wrong in both directions.
@@ -175,7 +237,7 @@ export async function openTabsInCurrentWindow(tabs: SessionTab[]): Promise<numbe
     if (first.stealth) {
       // Stealth tabs can't reuse the host (they need their own container);
       // open a fresh container tab first so the window never drops to zero.
-      const t = await stealthCreateTab(first.url, true);
+      const t = await stealthCreateTab(first.url, true, winId);
       if (t && t.id != null) created.push(t.id);
     } else if (host) {
       try {
@@ -186,14 +248,14 @@ export async function openTabsInCurrentWindow(tabs: SessionTab[]): Promise<numbe
       created.push(host.id);
       hostReused = true;
     } else {
-      const t = await browser.tabs.create({ url: first.url, active: true });
+      const t = await browser.tabs.create({ url: first.url, active: true, ...inWin });
       if (t && t.id != null) created.push(t.id);
     }
     for (let i = 1; i < entries.length; i++) {
       const e = entries[i]!;
       const t = e.stealth
-        ? await stealthCreateTab(e.url, false)
-        : await browser.tabs.create({ url: e.url, active: false });
+        ? await stealthCreateTab(e.url, false, winId)
+        : await browser.tabs.create({ url: e.url, active: false, ...inWin });
       if (t && t.id != null) created.push(t.id);
     }
   }
@@ -207,10 +269,12 @@ export async function openTabsInCurrentWindow(tabs: SessionTab[]): Promise<numbe
       // ignore
     }
   }
-  try {
-    await browser.windows.update(win.id, { focused: true });
-  } catch {
-    // ignore
+  if (opts.focus !== false) {
+    try {
+      await browser.windows.update(win.id, { focused: true });
+    } catch {
+      // ignore
+    }
   }
   return created;
 }

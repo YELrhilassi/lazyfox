@@ -159,7 +159,12 @@ itself — it builds the modules below and wires them together.
 - `sessions.ts` + `sessions/` — tmux-style sessions: save, restore, markers,
   autosave, startup restore, split-pane persistence. `sessions.ts` is the
   facade; `storage.ts` / `autosave.ts` / `restore.ts` / `state.ts` hold the
-  implementation.
+  implementation. A session is a WINDOW SET (`Session.windows`, see
+  `shared/sessionwindows.ts`): a capture records every content window with its
+  own split layout, and a restore rebuilds all of them — the focused one in
+  place, the rest created beside it — re-pairing each window's splits through
+  that window's own chrome helper (`requestChromeToWindow`). The flat
+  tabs/active/splits fields mirror the focused window for older readers.
 - `services/` — the chrome-helper-facing services the background talks to
   (relay, component discovery, home shim, navigation).
 - `search.ts` — search/URL suggestions, history and bookmarks.
