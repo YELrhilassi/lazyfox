@@ -68,6 +68,17 @@ export function installKeys(
     }
   };
 
+  // One key of a chord: either the key itself, or `{ k, ...modifiers }`.
+  //
+  // The OBJECT form exists because a real keyboard interleaves pure MODIFIER
+  // presses with the characters they modify: `;W |` typed by a hand is `;`, `W`,
+  // Shift, `|`, and the Shift keydown is a keystroke the product receives. A
+  // chord helper that could only send characters could not express it — and the
+  // bug that made every Shifted sub-key unreachable lived in exactly that gap.
+  const step = (s: any, base: any) =>
+    typeof s === "string" ? { k: s, opts: base } : { k: s.k, opts: Object.assign({}, base, s) };
+  ctx.chordStep = step;
+
   // Press a leader CHORD: the leader key, then every key in `keys` in order.
 //
 // Categories (`;W |`, `;Z i`) are two- and three-keystroke chords, and a test
@@ -84,7 +95,10 @@ ctx.leaderSeq = async function leaderSeq(tab, keys, opts) {
     await ctx.press(tab, ";");
     const armed = await ctx.tryArm(tab, 2500);
     if (armed) {
-      for (const k of keys) await ctx.press(tab, k, opts);
+      for (const s of keys) {
+        const st = step(s, opts);
+        await ctx.press(tab, st.k, st.opts);
+      }
       return;
     }
     await keyTap(tab, "Escape").catch(() => {});
@@ -143,8 +157,9 @@ ctx.leaderSeq = async function leaderSeq(tab, keys, opts) {
   // pacing between the leader and the first binding key — anything longer
   // races the leader's own arm timeout and the key lands as plain typing.
   await sleep(300);
-  for (const k of keys) {
-    await ctx.press(tab, k, opts);
+  for (const s of keys) {
+    const st = ctx.chordStep(s, opts);
+    await ctx.press(tab, st.k, st.opts);
     // The sub-key arms its own one-shot capture, so each key after the first
     // needs the same pacing.
     await sleep(250);

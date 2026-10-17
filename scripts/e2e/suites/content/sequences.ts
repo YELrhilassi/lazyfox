@@ -153,4 +153,71 @@ export async function run(ctx: any): Promise<void> {
     // the fixture is left at its original zoom as well.
     await ranCleanly("`;Z r` (zoom reset)", ["Z", "r"]);
   });
+
+  await t("the which-key drives itself: Tab and the arrows steer it instead of reporting 'no binding'", async () => {
+    // THE REPORTED BUG: "whichkey can't be navigated. using tab or arrows show
+    // error ';Tab or ;arrowLeft binding don't exist'".
+    //
+    // Tab, the arrows, PageUp/PageDown and Enter name no row in core/keymap.go
+    // — they are the overlay's OWN navigation, printed in its footer as the way
+    // to drive it — but the controller consulted the keymap first, so every one
+    // of them took the "chord the keymap does not know" branch: the panel was
+    // hidden and a toast answered for a key the overlay had just advertised.
+    //
+    // Both halves are asserted, because either alone can pass while the user's
+    // experience is still wrong: the overlay must STAY up (the miss path called
+    // hide()), and no "no binding" toast may be published (that was the message
+    // on screen). The mirror is the only readable surface — the host is a closed
+    // shadow root — and it is the same value the status bar reads.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const mirror = async (name: string): Promise<string> =>
+      String(
+        (await evalIn(
+          ctx.tabA,
+          `document.documentElement.getAttribute("data-lf-${name}")`
+        ).catch(() => null)) ?? ""
+      );
+    await ctx.press(ctx.tabA, ";");
+    const opened = await waitFor(async () => ((await mirror("whichkey")) === "1" ? true : null), 5000).catch(
+      () => null
+    );
+    assert(
+      opened === true,
+      "the which-key overlay did not open on `;` (data-lf-whichkey=" + (await mirror("whichkey")) + ")"
+    );
+
+    for (const k of ["Tab", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Enter"]) {
+      await ctx.press(ctx.tabA, k);
+      // Enter may legitimately CLOSE the panel (it runs the selected row), so
+      // it is the one key judged only by its toast; everything else must leave
+      // the overlay exactly where it was.
+      if (k !== "Enter") {
+        assert(
+          (await mirror("leader")) === "1",
+          k +
+            " dismissed the which-key overlay (data-lf-leader=" +
+            (await mirror("leader")) +
+            "): navigation keys must steer the panel, not spend the leader"
+        );
+        assert(
+          (await mirror("whichkey")) === "1",
+          k + " closed the which-key overlay (data-lf-whichkey is " + (await mirror("whichkey")) + ")"
+        );
+      }
+      const toast = await mirror("toast");
+      assert(
+        !/no binding/i.test(toast),
+        "the overlay reported its own navigation key as unbound: toast=" + JSON.stringify(toast)
+      );
+      if (k === "Enter") {
+        // Enter ran a row, so the gesture is over: re-arm for the next key.
+        await waitFor(async () => ((await mirror("leader")) === "" ? true : null), 3000).catch(() => null);
+        await ctx.press(ctx.tabA, ";");
+        await waitFor(async () => ((await mirror("whichkey")) === "1" ? true : null), 5000).catch(() => null);
+      }
+    }
+
+    await ctx.press(ctx.tabA, "Escape");
+    await waitFor(async () => ((await mirror("leader")) === "" ? true : null), 5000).catch(() => null);
+  });
 }

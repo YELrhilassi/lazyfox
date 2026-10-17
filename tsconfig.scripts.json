@@ -196,6 +196,17 @@
   // seam is theatre. Only the debug.ts import forces the exclusion, and when
   // config.ts is converted to the seam these two come straight back in.
   //
+  // scripts/test/split-unsplit.test.ts is the next one, and it is the same shape
+  // as window-sync.test.ts: it drives chrome/splitview.ts over the fake chrome
+  // environment, and that module's collaborators include statusbar.ts (via the
+  // split-change callback's owner) and the DOM-typed tab elements. The module is
+  // typechecked by tsconfig.json, which owns the browser tree; what is out of
+  // scope here is only the Node-side USE of it. It is listed rather than left out
+  // silently because it pins rules the user FEELS and reported — which element
+  // answers "where is the split", and what is allowed to happen before the
+  // platform has finished taking one apart — and a test no config compiles is
+  // exactly how such a rule quietly stops being true.
+  //
   // The Node-side tests themselves now live in scripts/test/*.test.ts and run
   // under node:test. They are INCLUDED here (see the include list below), so a
   // change to a test file cannot silently break the build — scripts/test/ is
@@ -228,7 +239,8 @@
     "scripts/test/keyboard-focus.test.ts",
     "scripts/test/window-sync.test.ts",
     "scripts/test/chrome-field.test.ts",
-    "scripts/test/sync-content.test.ts"
+    "scripts/test/sync-content.test.ts",
+    "scripts/test/split-unsplit.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

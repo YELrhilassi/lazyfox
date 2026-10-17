@@ -44,6 +44,9 @@ export interface State {
   payloadOrigin: string;
   hasDist: boolean;
   addonAvailable: boolean;
+  /** Version of the add-on this installer binary carries, read from its own xpi
+   *  manifest. Empty string when it could not be read. */
+  addonVersion: string;
   installs: InstallInfo[];
   profiles: ProfileInfo[];
   actions: ActionInfo[];

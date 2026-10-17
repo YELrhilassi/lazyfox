@@ -70,6 +70,33 @@ export function isCancel(e: {
   return !!(e.ctrlKey && !e.altKey && !e.metaKey && (e.key === "g" || e.key === "G"));
 }
 
+/**
+ * Is this keydown a MODIFIER PRESSING ITSELF — Shift, Ctrl, Alt, Meta or AltGr,
+ * with no character of its own?
+ *
+ * These are not chords, and nothing here may treat one as an answer. A physical
+ * keyboard always sends one BEFORE the character it modifies, so `;W` followed
+ * by the `|` a US layout reaches with Shift put a bare `Shift` keydown in front
+ * of the sub-key: the category capture ate it as though it were the answer,
+ * reported `no binding for ;Shift`, closed the menu, and the `|` that followed
+ * then had no menu left to belong to. Every symbol that needs Shift was
+ * unreachable as a sub-key, which is the report "I can only access | by shift
+ * key and I can't do it after ;W".
+ *
+ * ONE predicate, used by BOTH paths, because the two disagreeing IS the bug:
+ * the keymap path (handleKey) already knew a bare modifier is not a chord, and
+ * the capture path (handlePending) did not.
+ */
+export function isModifierKey(k: string): boolean {
+  return (
+    k === "Shift" ||
+    k === "Control" ||
+    k === "Alt" ||
+    k === "Meta" ||
+    k === "AltGraph"
+  );
+}
+
 export { WK_CSS };
 
 export class LeaderController {
@@ -338,8 +365,28 @@ export class LeaderController {
     this.capture.setExpectation(expect);
   }
 
-  /** Consumes the pending key, if any. Returns whether it was consumed. */
+  /**
+   * Consumes the pending key, if any. Returns whether it was consumed.
+   *
+   * A MODIFIER IS DECLINED, NOT CONSUMED. The capture keeps waiting for the key
+   * the user is actually reaching for — the very next keydown — instead of
+   * spending itself on the Shift that was only held to type `|`. Declining is
+   * the same answer the handler gives for any key that is not part of the
+   * sequence, so every host already knows what to do with it: hand the key back
+   * to the rest of the dispatcher. See isModifierKey for the report this fixes.
+   */
   handlePending(e: KeyLike): boolean {
+    // ALWAYS, category open or not. A modifier keydown carries no character of
+    // its own, so it can never be the sub-key the menu is waiting for; the
+    // capture matches on `e.key` PLUS the modifier flags, which means the `|`
+    // that follows is what must reach `consumeCatKey`.
+    //
+    // Letting a category "see" modifiers is the OPPOSITE of the fix and is the
+    // bug the user reported a second time: `;W`, Shift, `|` fed `Shift` to
+    // consumeCatKey, which found no binding and closed the menu with "no
+    // binding for ;Shift" — after which `|` had no menu left to belong to. The
+    // menu must keep waiting through the modifier press.
+    if (isModifierKey(e.key)) return false;
     return this.capture.handle(e);
   }
 
@@ -365,8 +412,19 @@ export class LeaderController {
     return this.bindingsLoaded;
   }
 
+  /**
+   * Whether the overlay is PAINTED right now: the host exists, the overlay is
+   * allowed by config, and the panel actually carries its `on` class.
+   *
+   * The last of those three is load-bearing and was missing. It used to ask
+   * only `current() !== null && enabled()`, and the host is persistent — after
+   * `hide()` the node is still there, so "shown" stayed true for a panel nobody
+   * could see. Navigation keys were then claimed by a menu that was not on
+   * screen, which is the same class of disagreement between the state and the
+   * pixels that the panel's own comments go to some length about avoiding.
+   */
   private shown(): boolean {
-    return this.panel.current() !== null && this.enabled();
+    return this.panel.current() !== null && this.enabled() && this.panel.shown();
   }
 
   /**
@@ -607,13 +665,7 @@ export class LeaderController {
     // A modifier on its own is not a chord. It precedes the real key on a
     // physical keyboard, and consuming it is one half of why a shifted binding
     // used to feel like it needed pressing twice.
-    if (
-      k === "Shift" ||
-      k === "Control" ||
-      k === "Alt" ||
-      k === "Meta" ||
-      k === "AltGraph"
-    ) {
+    if (isModifierKey(k)) {
       return false;
     }
     if (k === "Escape") {
@@ -635,6 +687,45 @@ export class LeaderController {
       if (this.buffered.length > LeaderController.BUFFER_LIMIT) this.buffered.shift();
       void loadKeymap();
       return true;
+    }
+    // THE OVERLAY'S OWN NAVIGATION, RESOLVED BEFORE THE KEYMAP IS CONSULTED.
+    //
+    // This block used to sit after `matchKey`, which made it unreachable: Tab,
+    // the arrows, PageUp/PageDown and Enter name no binding in core/keymap.go,
+    // so every one of them hit the `!m.found` branch first — the panel was
+    // HIDDEN and a toast answered "no binding for ;Tab" (or `;ArrowLeft`,
+    // `;Enter`) for a key the overlay prints in its own footer as the way to
+    // drive it. The which-key advertised navigation it could not perform.
+    //
+    // Only while it is genuinely painted: everywhere else Tab is the browser's
+    // Tab and an unlisted chord is answered with a message rather than silence.
+    if (this.shown()) {
+      if (k === "Tab") {
+        void this.wk.flip(e.shiftKey ? -1 : 1).then(() => this.render());
+        return true;
+      }
+      if (k === "ArrowLeft" || k === "PageUp") {
+        void this.wk.flip(-1).then(() => this.render());
+        return true;
+      }
+      if (k === "ArrowRight" || k === "PageDown") {
+        void this.wk.flip(1).then(() => this.render());
+        return true;
+      }
+      if (k === "ArrowDown") {
+        void this.wk.nav(1).then(() => this.render());
+        return true;
+      }
+      if (k === "ArrowUp") {
+        void this.wk.nav(-1).then(() => this.render());
+        return true;
+      }
+      if (k === "Enter") {
+        // Whether this closes the panel is the SELECTION's business (a head
+        // opens instead), so it is decided inside runSel where the row is known.
+        void this.runSel(true);
+        return true;
+      }
     }
     const spec = specOf(e);
     const m = matchKey(spec);
@@ -670,37 +761,6 @@ export class LeaderController {
     if (m.category) {
       this.openCategory(spec, chordFor(spec, m), m.catLabel, m.catKeys);
       return true;
-    }
-    // The overlay's own navigation. Tab and the arrows steer the panel only
-    // while it is actually on screen; everywhere else they are ordinary keys,
-    // and an unlisted chord is answered with a message rather than silence.
-    if (this.shown()) {
-      if (k === "Tab") {
-        void this.wk.flip(e.shiftKey ? -1 : 1).then(() => this.render());
-        return true;
-      }
-      if (k === "ArrowLeft" || k === "PageUp") {
-        void this.wk.flip(-1).then(() => this.render());
-        return true;
-      }
-      if (k === "ArrowRight" || k === "PageDown") {
-        void this.wk.flip(1).then(() => this.render());
-        return true;
-      }
-      if (k === "ArrowDown") {
-        void this.wk.nav(1).then(() => this.render());
-        return true;
-      }
-      if (k === "ArrowUp") {
-        void this.wk.nav(-1).then(() => this.render());
-        return true;
-      }
-      if (k === "Enter") {
-        // Whether this closes the panel is the SELECTION's business (a head
-        // opens instead), so it is decided inside runSel where the row is known.
-        void this.runSel(true);
-        return true;
-      }
     }
     this.runOrStay(m.action);
     return true;

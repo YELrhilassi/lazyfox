@@ -29,6 +29,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { runNpm } from "./npm.ts";
 import { ROOT, verifyBinaries } from "./payload.ts";
 
 const argv = process.argv.slice(2);
@@ -51,20 +52,12 @@ const run = (cmd: string, args: string[], env?: NodeJS.ProcessEnv): void => {
 /**
  * npmRunner invokes npm reliably on every platform.
  *
- * A bare "npm" fails on Windows (it is npm.cmd, and execFileSync does not go
- * through the shell), and this script is always itself started by npm — so
- * npm_execpath (the real npm-cli.js) is already known and is used directly.
- * That also means the nested run uses the SAME npm the user invoked, not
- * whatever happens to be first on PATH.
+ * The rule now lives in scripts/npm.ts, because the installer build needs the
+ * same one (it runs `npm run build` inside installer/frontend) and it had it
+ * wrong: a bare "npm" cannot be spawned on Windows, where npm.cmd is not an
+ * executable — the failure was a bare spawn error with no npm output.
  */
-const npmRunner = (args: string[]): void => {
-  const cli = process.env.npm_execpath;
-  if (cli && existsSync(cli)) {
-    run(process.execPath, [cli, ...args]);
-    return;
-  }
-  run(process.platform === "win32" ? "npm.cmd" : "npm", args);
-};
+const npmRunner = (args: string[]): void => runNpm(args, ROOT);
 
 const node = (script: string, env?: NodeJS.ProcessEnv): void => {
   run(process.execPath, [join(ROOT, "scripts", script)], env);

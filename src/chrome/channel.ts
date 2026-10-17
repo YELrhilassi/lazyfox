@@ -96,6 +96,20 @@ export interface Channel {
   // (idempotent; self-heals if the relay tab died). Returns whether the relay
   // is usable.
   startRelay(): boolean;
+  /**
+   * Read the relay's URL slot once, and act on what is there.
+   *
+   * The ONE thing that costs latency in this transport is that a command sits in
+   * a slot until somebody looks: the background already delivered it, the relay
+   * page already wrote it into its own URL, and the helper notices on its next
+   * look. `startRelay()` used to be the only look, on a 500ms timer shared with
+   * the status bar's own housekeeping — so a `;W [` waited behind the polls of
+   * every status push that got there first, and the measured result was a pane
+   * switch taking ~2.7s from the keypress. This is the same look, on its own
+   * faster clock, with none of startRelay's other work (no tab dedupe, no
+   * selection steering): the expensive half stays at 500ms.
+   */
+  poll(): void;
   // Fire-and-forget request to the background (the alive announce, session
   // ops, ...). Returns whether the request was accepted by the relay.
   // Typed against RelayApi: an unknown action, or an argument of the wrong
@@ -507,6 +521,7 @@ export function createChannel(deps: ChannelDeps): Channel {
   return {
     ccBaseUrl,
     startRelay,
+    poll: pollRelayUrl,
     requestBg,
     requestReply,
     requestSessionState,

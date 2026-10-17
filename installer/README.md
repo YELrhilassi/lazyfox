@@ -33,24 +33,59 @@ systems.
 
 `frontend/` is a Vite + React + TypeScript app styled with Tailwind v4 and
 [shadcn/ui](https://ui.shadcn.com) components (Radix primitives, in
-`src/components/ui/`). Its **compiled** output is committed to
-`frontend/dist/`, so a checkout can run `go test` and build an installer without
-a Node toolchain:
+`src/components/ui/`):
 
 ```
+npm run ui:deps        # npm ci in frontend/, from its own lockfile
 npm run ui:build       # tsc + vite build → installer/frontend/dist
 npm run ui:dev         # Vite dev server, for designing the window in a browser
 ```
 
-The Go build embeds `frontend/dist` with `//go:embed`, which is why the compiled
-output is committed rather than gitignored. `npm run ui:dev` serves the same UI
-with a fixture standing in for the Go layer (`src/lib/mock.ts`, dev builds only),
-so layout, empty states and the uninstall review can be checked without
-launching the native window or touching a real Firefox.
+The Go build embeds `frontend/dist` with `//go:embed`, and `frontend/dist/` is
+gitignored: `scripts/installer-build.ts`'s `ensureFrontend()` installs the
+dependencies (when missing) and rebuilds the bundle — when a source file is newer
+than the last bundle — before any Go compile, so a committed bundle would only be
+one more thing to go stale. `npm run ui:dev` serves the same UI with a fixture
+standing in for the Go layer (`src/lib/mock.ts`, dev builds only), so layout,
+empty states and the uninstall review can be checked without launching the native
+window or touching a real Firefox.
 
-The window is deliberately one dark theme: an installer should look the same on
-someone's machine as it did on ours. The brand orange appears only on the primary
-action and the current selection, so one thing at a time reads as "do this".
+### The window's design
+
+The window is one screen, and the rules that keep it that way are worth stating,
+because the previous one was a four-step wizard and read as generated:
+
+- **One screen, one decision at a time.** The action list is a left rail (data
+  from `State.actions`), the choices are one scrolling column, and the plan for
+  the current selection is shown under them. There is no step rail, no numbered
+  progress, and no "Continue": choosing an action is not a step, it is what the
+  rest of the panel is a consequence of.
+- **The plan is not a page.** `internal/app`'s preview (the exact list of files
+  an install writes or a removal takes) loads by itself whenever the selection
+  changes, and the run button is enabled only while that plan belongs to the
+  selection on screen (`App.tsx` keys it by the request it was computed from).
+  That keeps the safety property the wizard's required review step provided — a
+  run cannot start from a promise nobody saw — without the step.
+- **Flat surfaces.** One hairline per group, no nested cards, no shadows, no
+  filled alert boxes: a note is a short line with a coloured left rule. Two
+  colours per screen at most.
+- **A fact is a word, not a chip.** Profile rows used to carry up to five badges
+  (`in use`, `recommended`, `Lazyfox installed`, `default`, `Lazyfox profile`).
+  They are one muted line of text now, and colour is spent only where it changes
+  a decision: the recommendation is the accent, a profile Firefox currently holds
+  open is a warning.
+- **No icons as decoration.** The only glyphs left are a spinner while working
+  and the progress markers in the run log.
+- **One dark theme.** An installer should look the same on someone's machine as
+  it did on ours; the palette is neutral, and the brand orange appears on exactly
+  two things — the primary button and the selected row.
+
+The version the window shows comes from the payload, not from a constant: it is
+read out of the embedded xpi's own `manifest.json`
+(`payload.AddonVersion()`), so it names the build a run would actually write.
+`scripts/test/version-link.test.ts` fails if any carrier of the version disagrees
+with the extension manifest, and refuses a hardcoded version in the window's
+sources.
 
 ## Channels — one binary, one channel
 
@@ -201,10 +236,15 @@ installer/
 ## Building
 
 - `npm run build` — the normal dev build. It builds `dist/`, packages the
-  unsigned xpi, **and then refreshes this platform's dev installer** with that
-  fresh payload, so the binary you launch is always the one the build just
-  produced. This is the one command to run after changing anything the installer
-  ships; you should never have to hand-run a `go build`.
+  unsigned xpi, **and then refreshes every committed dev installer** with that
+  fresh payload (the platform's own as a windowed binary, the rest as terminal
+  installers), so the binaries you hand to somebody are always the ones the build
+  just produced. This is the one command to run after changing anything the
+  installer ships; you should never have to hand-run a `go build`.
+  `LF_SKIP_INSTALLERS=1` builds `dist/` and leaves `installer/bin/` alone — for
+  CI verification jobs, which run where the window cannot be compiled. Locally,
+  leave it unset: a build that leaves a committed installer carrying an older
+  payload is the bug the refresh exists to kill.
 - `npm run build:installers` — rebuild the committed per-OS **dev** binaries for
   every platform (unsigned xpi; used by `submit`/`ship:nightly`).
 - `npm run build:release-installers` — rebuild the committed **release** binaries
@@ -219,11 +259,21 @@ installer/
 **One staging + compile path.** `scripts/installer-build.ts`'s
 `buildInstallerSet()` is the only place payloads are staged and installer
 binaries are compiled. `scripts/build-dev-installers.ts` (dev) and
-`scripts/build-release-installers.ts` (release) are thin CLI wrappers; `npm run
-build` calls the dev one with `LF_INSTALLER_TARGETS=host` so only this machine's
-binary is rebuilt. Because everything stages into `internal/payload/data/` (where
-`//go:embed` reads) and nowhere else, a host refresh and a full refresh can never
-embed different payloads — which is how a stale embed once shipped.
+`scripts/build-release-installers.ts` (release) are thin CLI wrappers, and `npm
+run build` calls the dev one for every target (`LF_INSTALLER_TARGETS=host`
+narrows that to this machine's binary while iterating). Because everything stages
+into `internal/payload/data/` (where `//go:embed` reads) and nowhere else, a host
+refresh and a full refresh can never embed different payloads — which is how a
+stale embed once shipped.
+
+**What a committed binary was built from is recorded, and checked.** Every build
+writes `installer/bin/payload-state.json`: the payload content hash, the add-on
+xpi it embedded with its version, the **source fingerprint** and the binary's own
+sha256. `npm run check` recomputes both hashes and compares — so a stale binary is
+caught in a fresh clone without rebuilding anything. The source fingerprint
+includes this module's own Go sources, its window sources and
+`frontend/package.json`, because those are compiled into the binary: without them
+the check called an installer fresh while it carried the previous window.
 
 **The GUI needs the `production` build tag.** Wails v2 refuses to run unless it
 was compiled with `-tags production`; without it the binary shows "Wails
@@ -236,7 +286,7 @@ prints where the payload comes from and whether it is usable:
 
 ```
 Payload: embedded standalone payload
-  add-on payload : present (the installer can add the extension)
+  add-on payload : present (lazyfox 0.5.8)
 ```
 
 If a binary reports `payload check  : FAILED`, it was built without its payload
@@ -295,11 +345,13 @@ ignore a security prompt.
 
 ## Testing
 
-- `npm test` runs `go test ./...` here, then cross-compiles **every** shipping
-  target (`scripts/test-installer.ts`) with `-tags nogui` — that is what proves
-  the platform files (Windows UAC/registry, Unix sudo, the terminal back-ends)
-  still build for every platform from any host. The graphical window is covered
-  by the native build instead (see the workflow above).
+- `npm test` (from the repo root) runs `go test -C installer ./...` — every Go
+  package in this module — then cross-compiles **every** shipping target
+  (`scripts/test-installer.ts`) with `-tags nogui`; that is what proves the
+  platform files (Windows UAC/registry, Unix sudo, the terminal back-ends) still
+  build for every platform from any host. The graphical window is covered by the
+  native build instead (see the workflow above), and by `npm run ui:build` plus
+  the typecheck in CI.
 - `scripts/check-installer-payload.ts` (also run by `npm test`) guards the bug
   that is otherwise invisible until an install: a committed installer binary
   older than the payload in `dist/`, or one whose embedded payload is empty. It
@@ -316,7 +368,9 @@ ignore a security prompt.
   profile is never in it), `internal/ops/ops_test.go` (extensions.json surgery,
   user.js merge/drop, native-host manifest, verification),
   `internal/payload/payload_test.go` (embedded fallback, dist preference,
-  embed-path separators) and `main_test.go` (flag translation).
+  embed-path separators), `internal/payload/addon_test.go` (the version read out
+  of an xpi, including the cases that must answer "" rather than invent one) and
+  `main_test.go` (flag translation).
 - Profile discovery reads through the `fx.ProfilesFromRoots(root)` seam so the
   tests are hermetic on every OS instead of reading the host's real profiles.
 

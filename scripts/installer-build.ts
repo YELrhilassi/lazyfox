@@ -14,6 +14,7 @@
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { runNpm } from "./npm.ts";
 import { buildWinRes } from "./winres.ts";
 import { xpiVersion } from "./amo-lib.ts";
 import {
@@ -53,7 +54,7 @@ export function ensureFrontend(root: string, opts: { force?: boolean } = {}): st
 
   if (!existsSync(join(dir, "node_modules"))) {
     console.log("[installer-ui] installing the window's front-end dependencies…");
-    execFileSync("npm", ["install", "--no-audit", "--no-fund"], { cwd: dir, stdio: "inherit" });
+    runNpm(["install", "--no-audit", "--no-fund"], dir);
   }
 
   const built = existsSync(join(dist, "index.html"));
@@ -66,7 +67,9 @@ export function ensureFrontend(root: string, opts: { force?: boolean } = {}): st
   }
 
   console.log("[installer-ui] building the installer window…");
-  execFileSync("npm", ["run", "build"], { cwd: dir, stdio: "inherit" });
+  // Through the shared helper: `execFileSync("npm", …)` cannot spawn on Windows
+  // (npm is npm.cmd there), and this is the one call every installer build makes.
+  runNpm(["run", "build"], dir);
   return dist;
 }
 

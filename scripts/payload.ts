@@ -115,8 +115,34 @@ export function sha256File(p: string): string {
 // every installer binary) will contain. The Go core is here because it is
 // compiled to core.wasm and embedded in every bundle; native-host is here
 // because it is compiled into the installers.
-const SOURCE_DIRS = ["src", "core", "native-host"];
-const SOURCE_FILES = ["build.ts", "go.mod", "go.sum"];
+//
+// THE INSTALLER'S OWN INPUTS ARE HERE TOO, and they were not before. `installer/
+// internal` is the installer's Go logic and `installer/frontend/src` is the
+// window itself: both are compiled INTO the committed binaries, so a tree with
+// an edited installer is not the tree those binaries came from. Without them the
+// check answered "fresh" for a binary carrying last month's window — the
+// fingerprint moved for a chrome-layer edit and stayed still for the installer
+// that ships it, which is exactly backwards.
+const SOURCE_DIRS = ["src", "core", "native-host", "installer/internal", "installer/frontend/src"];
+const SOURCE_FILES = [
+  "build.ts",
+  "go.mod",
+  "go.sum",
+  "installer/go.mod",
+  "installer/go.sum",
+  "installer/wails.json",
+  "installer/frontend/index.html",
+  "installer/frontend/vite.config.ts",
+  "installer/frontend/tsconfig.json",
+  "installer/frontend/package.json",
+  "installer/frontend/components.json",
+];
+
+// Directories under a walked tree that are NOT inputs, because the build writes
+// them: the staged embed payloads are copies of dist/, and the front-end's dist/
+// is a compiled bundle. Hashing a build product would make the fingerprint move
+// every time anything was built, which is the one property it cannot have.
+const SKIP_DIRS = new Set(["installer/internal/payload/data", "installer/frontend/dist"]);
 
 // Build output that the build REGENERATES, placed inside the source tree.
 //
@@ -147,6 +173,13 @@ const GENERATED = new Set(["core/js/core.wasm", "src/shared/wasm-embed.ts"]);
  * fingerprint that moves when the builder runs cannot answer "did I edit
  * something and forget to rebuild?".
  *
+ * The version prefix (lazyfox-source-v1 → v2) is part of the hash on purpose:
+ * when the SET of inputs changes, every previously recorded fingerprint must stop
+ * matching rather than silently meaning something different. A record written by
+ * v1 says "the source hashed to X", and under v2 that number would have to mean
+ * something else for the comparison to hold — so the check must report those
+ * binaries as needing a rebuild, which is what a changed input set demands.
+ *
  * Line endings are normalised to LF before hashing, because the fingerprint is
  * a statement about the SOURCE, and the checkout is not the source: this repo
  * develops on Windows with `core.autocrlf=true` and runs CI on Linux with LF,
@@ -158,18 +191,31 @@ const GENERATED = new Set(["core/js/core.wasm", "src/shared/wasm-embed.ts"]);
  */
 export function sourceHash(root: string): string {
   const h = createHash("sha256");
-  h.update("lazyfox-source-v1\0");
+  h.update("lazyfox-source-v2\0");
   const files: string[] = [];
   const walk = (dir: string, prefix: string): void => {
     if (!existsSync(dir)) return;
     for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       if (e.name === "node_modules" || e.name === "testdata" || e.name.startsWith(".")) continue;
       const rel = `${prefix}/${e.name}`;
-      if (e.isDirectory()) walk(join(dir, e.name), rel);
-      else if (!e.name.endsWith("_test.go") && !GENERATED.has(rel)) files.push(rel);
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(rel)) walk(join(dir, e.name), rel);
+      } else if (!e.name.endsWith("_test.go") && !GENERATED.has(rel)) files.push(rel);
     }
   };
   for (const d of SOURCE_DIRS) walk(join(root, d), d);
+  // The installer's top-level Go files are DISCOVERED rather than listed, so a
+  // new one (a new entry point, a new build-tagged file) is an input the day it
+  // exists — but only `*.go` is collected: the same directory holds the
+  // generated Windows resource and whatever `go build .` left behind, and those
+  // are build products, not source.
+  const installerTop = join(root, "installer");
+  if (existsSync(installerTop)) {
+    for (const e of readdirSync(installerTop, { withFileTypes: true })) {
+      if (!e.isFile() || !e.name.endsWith(".go") || e.name.endsWith("_test.go")) continue;
+      files.push(`installer/${e.name}`);
+    }
+  }
   for (const f of SOURCE_FILES) if (existsSync(join(root, f))) files.push(f);
   files.sort();
   hashFiles(h, root, files, true);

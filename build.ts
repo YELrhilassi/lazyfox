@@ -31,6 +31,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)));
 // diagnostics compile in; the release build (npm run build:release) tree-shakes
 // them out entirely (__DEV__=false), keeping dist/ free of debug output.
 const DEV = process.argv.includes("--dev");
+// See the LF_SKIP_INSTALLERS note in the dev branch below: it is for CI
+// verification jobs, which run on machines that cannot compile the window.
+const skipInstallers = process.env.LF_SKIP_INSTALLERS === "1";
 
 interface Bundle {
   in: string;
@@ -173,6 +176,14 @@ console.log("[static] src/static/{extension,chrome} -> dist/");
 // ends up erroring or installing an old chrome layer.
 if (DEV) {
   const version = JSON.parse(readFileSync(join(root, "dist", "extension", "manifest.json"), "utf8")).version;
+  // LF_SKIP_INSTALLERS=1 builds dist/ and every artifact derived from it, and
+  // leaves installer/bin/ exactly as it is. It exists for CI VERIFICATION jobs:
+  // the window is compiled natively (Wails needs CGO plus the platform's webview
+  // headers), so on a Linux runner without libwebkit2gtk-dev the refresh below
+  // fails for reasons that have nothing to do with the tree being verified —
+  // while the binaries themselves are built, natively, by the installers
+  // workflow. Locally, leave it unset: a build that leaves the committed
+  // installer carrying an older payload is the bug the refresh exists to kill.
   const unsignedOut = join(root, "dist", `lazyfox2-${version}.xpi`);
   console.log(`[dev] packaging unsigned xpi -> dist/lazyfox2-${version}.xpi`);
   zipStore(join(root, "dist", "extension"), unsignedOut);
@@ -194,10 +205,20 @@ if (DEV) {
   // This is a hard step on purpose: `npm run build` already needs the Go
   // toolchain for the wasm core, so a failure here means the installer really
   // is broken and silently shipping a stale binary is the bug we are fixing.
-  console.log("\n[installer] refreshing the dev installers with the fresh payload…");
-  run(process.execPath, [join(root, "scripts", "build-dev-installers.ts")], {
-    cwd: root,
-  });
+  if (skipInstallers) {
+    console.log(
+      "\n[installer] LF_SKIP_INSTALLERS is set: dist/ is built and installer/bin/ was left alone.\n" +
+        "  Whether the committed binaries still match is a CONTENT question, so it is not\n" +
+        "  guessed at here: `npm run check` answers it (and `npm run build:installers`\n" +
+        "  refreshes them if the answer is no).",
+    );
+  }
+  if (!skipInstallers) {
+    console.log("\n[installer] refreshing the dev installers with the fresh payload…");
+    run(process.execPath, [join(root, "scripts", "build-dev-installers.ts")], {
+      cwd: root,
+    });
+  }
 
   // The RELEASE installers embed an AMO-signed add-on, so they can only be rebuilt
   // when a signed xpi exists (stable Firefox refuses an unsigned one). When one
@@ -208,7 +229,9 @@ if (DEV) {
   const signedXpis = existsSync(join(root, "dist"))
     ? readdirSync(join(root, "dist")).filter((f) => /^lazyfox2-.*-signed\.xpi$/.test(f))
     : [];
-  if (signedXpis.length > 0) {
+  if (skipInstallers) {
+    // Nothing to do: the release binaries were not touched either.
+  } else if (signedXpis.length > 0) {
     console.log("\n[installer] refreshing the release installers (signed add-on: …" + signedXpis[signedXpis.length - 1] + ")…");
     run(process.execPath, [join(root, "scripts", "build-release-installers.ts")], { cwd: root });
   } else {
@@ -220,7 +243,11 @@ if (DEV) {
   }
 
   console.log(`\nBuild complete. dist/ is ready to install (unsigned dev add-on).`);
-  console.log("Every committed installer was rebuilt from this payload — `npm run check` prints the table.");
+  console.log(
+    skipInstallers
+      ? "installer/bin/ was left alone (LF_SKIP_INSTALLERS); `npm run check` proves whether it still matches."
+      : "Every committed installer was rebuilt from this payload — `npm run check` prints the table.",
+  );
   process.exit(0);
 }
 
@@ -294,17 +321,24 @@ const INSTALLER_TARGETS: InstallerTarget[] = TARGETS.map((t) => ({
 // `dist/lazyfox2-<version>.xpi` is the canonical add-on: amo-sign.ts above has
 // made it the signed artifact for this version (or, failing that, left the most
 // recent committed signed xpi in its place and said so).
-buildInstallerSet({
-  root,
-  installerDir: join(root, "installer"),
-  targets: INSTALLER_TARGETS,
-  // The RELEASE installers carry the signed build and target stable Firefox;
-  // the dev installers (scripts/build-dev-installers.ts) stamp "nightly".
-  channel: "stable",
-  xpiPath: join(root, "dist", `lazyfox2-${extensionVersion}.xpi`),
-  version: extensionVersion,
-  logPrefix: "[installer]",
-});
+if (skipInstallers) {
+  console.log(
+    "\n[installer] LF_SKIP_INSTALLERS is set: the release installers were left alone too.\n" +
+      "  This is the verification shape of a build (CI); a shipping build does not set it.",
+  );
+} else {
+  buildInstallerSet({
+    root,
+    installerDir: join(root, "installer"),
+    targets: INSTALLER_TARGETS,
+    // The RELEASE installers carry the signed build and target stable Firefox;
+    // the dev installers (scripts/build-dev-installers.ts) stamp "nightly".
+    channel: "stable",
+    xpiPath: join(root, "dist", `lazyfox2-${extensionVersion}.xpi`),
+    version: extensionVersion,
+    logPrefix: "[installer]",
+  });
+}
 
 console.log("\nBuild complete. dist/ is ready to install.");
 

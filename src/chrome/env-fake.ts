@@ -375,6 +375,21 @@ export function createFakeChromeEnv(
       const i = tabs.indexOf(t);
       if (i !== -1) tabs.splice(i, 1);
     },
+    // The two tab-strip operations the split code calls. PERFORMED on the fake
+    // strip rather than recorded and ignored, because the questions the split
+    // tests ask are about the strip afterwards: did unsplit put the tabs back in
+    // their slots, and was our own panel pane actually closed.
+    moveTabTo: (tab: any, opts: any) => {
+      const to = opts && typeof opts.tabIndex === "number" ? opts.tabIndex : -1;
+      const from = tabs.indexOf(tab);
+      if (from === -1 || to < 0 || to >= tabs.length || to === from) return;
+      tabs.splice(from, 1);
+      tabs.splice(to, 0, tab);
+    },
+    removeTab: (tab: any) => {
+      const i = tabs.indexOf(tab);
+      if (i !== -1) tabs.splice(i, 1);
+    },
     selectedIndex: 0,
   };
 

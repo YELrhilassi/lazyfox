@@ -8,10 +8,20 @@ name: Master CI - Read-only verification
 # v<version> tag + creates the GitHub Release. That push is what triggers this
 # workflow.
 #
-# So this job only verifies the pushed master state (rebuild from source to
-# prove it compiles, then the full unit suite + dist self-containment check). It
-# NEEDS no AMO secrets and NEVER writes back, tags, or pushes — the tag and
+# So this job only verifies the pushed master state, and it verifies the same
+# things dev-nightly does, in the same order, because master is the tree users
+# download from:
+#
+#   check → build → typecheck → tests → check
+#
+# It NEEDS no AMO secrets and NEVER writes back, tags, or pushes — the tag and
 # GitHub Release are created by `ship`, exactly once.
+#
+# The build runs with LF_SKIP_INSTALLERS=1: dist/ is produced (which is what
+# proves the sources compile in release mode) while installer/bin/ is left
+# alone — the installers were built natively before the release was cut, and a
+# Linux runner without webview headers has no business rewriting the macOS and
+# Windows binaries.
 
 on:
   push:
@@ -38,11 +48,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install the installer window's dependencies
+        run: npm run ui:deps
+
+      # The released tree is the one place where "were the committed artifacts
+      # rebuilt before this was tagged?" must be provable, and this is that check.
+      - name: Released artifacts are up to date
+        run: npm run check
+
       - name: Build release-mode sources (compiles check)
         # RELEASE=1 builds the release-mode dist WITHOUT contacting AMO for the
         # signed xpi (sync-signed-xpi.ts reuses the committed signed xpi when
-        # it is already current, so it is offline-safe here).
+        # it is already current, so it is offline-safe here). Installer compiles
+        # are skipped — see this workflow's header.
+        env:
+          LF_SKIP_INSTALLERS: "1"
         run: npm run build:release
 
-      - name: Run full unit suite
+      - name: Types are consistent (extension, scripts, e2e, installer window)
+        run: npm run typecheck
+
+      - name: Full test suite
         run: npm test
+
+      - name: Build output is self-consistent
+        run: npm run check

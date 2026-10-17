@@ -24,6 +24,7 @@ const MACHINE: State = {
   payloadOrigin: "embedded standalone payload",
   hasDist: false,
   addonAvailable: true,
+  addonVersion: "0.5.8",
   installs: [{ label: "Stable", exec: `${FF_DIR}\\firefox.exe`, dir: FF_DIR, flavor: "stable", loader: "missing" }],
   profiles: [
     {

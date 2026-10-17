@@ -55,6 +55,9 @@ type State struct {
 	PayloadOrigin  string `json:"payloadOrigin"`
 	HasDist        bool   `json:"hasDist"`
 	AddonAvailable bool   `json:"addonAvailable"`
+	// AddonVersion is the version of the xpi THIS binary carries, read from the
+	// xpi's own manifest (payload.AddonVersion). Empty when it cannot be read.
+	AddonVersion string `json:"addonVersion"`
 
 	Installs []InstallInfo `json:"installs"`
 	Profiles []ProfileInfo `json:"profiles"`

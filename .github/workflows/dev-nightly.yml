@@ -1,15 +1,34 @@
 name: Dev Nightly - CI
 
-# Read-only verification of the UNSIGNED dev build on every push/PR to
-# dev-nightly: Go core + installer unit tests + dist completeness.
+# VERIFICATION of the unsigned dev build on every push/PR to dev-nightly.
+# Read-only: this workflow never pushes, tags, publishes or writes to the repo.
 #
-# This workflow NEVER writes to the repo, pushes, tags, or publishes — it only
-# builds and tests. It is intentionally single-job (free-plan time budget):
-# the full WebDriver BiDi e2e suite is run locally instead of on CI.
+# What it gates, in order, and why that order:
 #
-#   bash scripts/install-tools.sh geckodriver   # one-time
-#   npm run e2e                                # the full e2e suite locally
-#   npm run probe:chrome                        # the real chrome-layer probe
+#   1. `npm run check` BEFORE anything is built. It is the only step that can
+#      answer "is what is committed consistent with what is committed?" — every
+#      committed installer binary records the payload and source hash it was
+#      compiled from, so a stale binary is caught here, in a fresh clone, without
+#      building (or repairing) anything. Running the build first would rewrite
+#      the artifacts in place and then report success.
+#   2. The build itself, in its verification shape: LF_SKIP_INSTALLERS=1. The
+#      window is compiled natively (Wails goes through CGO and the platform's
+#      webview), so installers are built by the installers workflow on each
+#      operating system, not here.
+#   3. A typecheck of every tree — the extension, the scripts, the e2e suite and
+#      the installer's window — then a real build of that window. Before this, a
+#      type error in the window could only be discovered by someone building an
+#      installer binary, which needs the platform's GUI toolchain.
+#   4. The full test suite (Go core, installer Go packages, the JS/TS tiers, and
+#      the content-based artifact checks).
+#   5. `npm run check` again, after the build. Passing here proves the build
+#      cannot produce artifacts that disagree with each other.
+#
+# What does NOT run here, deliberately:
+#   * the WebDriver BiDi end-to-end suite: it needs geckodriver and a display,
+#     and it is run locally (`npm run e2e`, one-time `bash scripts/install-tools.sh
+#     geckodriver`), not on a free-plan runner.
+#   * the native installer compiles: see the installers workflow.
 
 on:
   push:
@@ -18,8 +37,8 @@ on:
     branches: [dev-nightly]
 
 jobs:
-  unit:
-    name: Unit tests
+  verify:
+    name: Verify dev-nightly
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,26 +57,36 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The installer window is a separate package with its own lockfile (there
+      # are no npm workspaces here). Its dependencies are needed by the typecheck
+      # and by the window build.
+      - name: Install the installer window's dependencies
+        run: npm run ui:deps
+
       # Before building anything: are the COMMITTED artifacts consistent with the
-      # committed source? This is the gate that catches "I changed a source file
-      # and forgot to rebuild" — running the build first (as this workflow used
-      # to) would repair the tree in place and then report success, so the mistake
-      # could only ever be discovered later, by whoever downloaded a binary.
-      #
-      # Both the source fingerprint and the payload content hash are compared, so
-      # this fails for a stale dist/ AND for a stale installer/bin/ binary. It is
-      # cheap: no build, no Go, just hashing the tree.
+      # COMMITTED source? This is the gate that catches "I changed a source file
+      # and forgot to rebuild" — for the extension AND for the installer binaries,
+      # whose own Go sources and window sources are part of the source
+      # fingerprint.
       - name: Committed artifacts are up to date
         run: npm run check
 
-      - name: Build dev extension (unsigned)
+      - name: Build dev extension (unsigned, no installer compiles)
+        env:
+          # dist/ is produced and installer/bin/ is left alone: compiling the
+          # window needs this platform's webview headers, and the native
+          # binaries are built by the installers workflow.
+          LF_SKIP_INSTALLERS: "1"
         run: npm run build
 
-      - name: Run full unit suite
-        run: npm test
+      - name: Types are consistent (extension, scripts, e2e, installer window)
+        run: npm run typecheck
 
-      - name: Verify dist is self-contained
-        run: node scripts/check-dist.ts
+      - name: The installer window builds
+        run: npm run ui:build
+
+      - name: Full test suite
+        run: npm test
 
       # After the build the check must still pass, which proves the build itself
       # cannot leave an artifact behind that disagrees with the source.

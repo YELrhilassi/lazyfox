@@ -42,6 +42,8 @@ export interface TabIdentity {
   rawUrl(tab: ChromeTab | null | undefined): string;
   /** The currently active split view wrapper, or null. */
   activeSplitView(): SplitViewWrapper | null;
+  /** EVERY live split-view wrapper in this window's strip, in strip order. */
+  splitWrappers(): SplitViewWrapper[];
   /** Does this Firefox build expose native split view at all? */
   nativeSplitAvailable(): boolean;
 }
@@ -193,14 +195,81 @@ export function createTabIdentity(env: ChromeEnv): TabIdentity {
     }
   }
 
+  /**
+   * EVERY live split-view wrapper in this window's strip, in strip order.
+   *
+   * This is the source of truth for "is there a split", and it is a DOM read on
+   * purpose. A native split IS a `<tab-split-view-wrapper>` element in the tab
+   * container; the two reference-based answers the operations used to trust
+   * describe something narrower — `selectedTab.splitview` describes the SELECTED
+   * tab, and `gBrowser.activeSplitView` the last wrapper the platform touched.
+   * A split whose selection has moved away therefore reads as "no split at all":
+   * `;W u` answers "not in a split view" with two panes on screen and no way to
+   * take them apart, which is the reported "the unsplit is completely broken and
+   * then nothing in the app works". Asking the strip cannot lie about how many
+   * splits are on it.
+   *
+   * Dead wrappers are skipped, not returned: Firefox destroys a wrapper while
+   * cancelling a split, and ANY read on a dead object throws "can't access dead
+   * object" straight through a key dispatcher.
+   */
+  function splitWrappers(): SplitViewWrapper[] {
+    const out: SplitViewWrapper[] = [];
+    try {
+      const container = win.gBrowser && win.gBrowser.tabContainer;
+      const found =
+        container && typeof container.querySelectorAll === "function"
+          ? container.querySelectorAll("tab-split-view-wrapper")
+          : null;
+      if (found && found.length) {
+        for (const el of Array.prototype.slice.call(found) as SplitViewWrapper[]) {
+          if (isDeadWrapper(el)) continue;
+          out.push(el);
+        }
+        return out;
+      }
+    } catch (e) {
+      // Fall through to the tab-derived answer below (older builds, and the
+      // fake environment the seam tests run against, expose no container).
+    }
+    try {
+      const seen = new Set<SplitViewWrapper>();
+      for (const t of win.gBrowser.tabs) {
+        if (isDeadWrapper(t)) continue;
+        const sv = t && t.splitview;
+        if (!sv || seen.has(sv) || isDeadWrapper(sv)) continue;
+        seen.add(sv);
+        out.push(sv);
+      }
+    } catch (e) {
+      // ignore
+    }
+    return out;
+  }
+
   function activeSplitView(): SplitViewWrapper | null {
     try {
       const tab = win.gBrowser.selectedTab;
-      if (tab && tab.splitview) return tab.splitview;
+      if (tab && !isDeadWrapper(tab) && tab.splitview) return tab.splitview;
       try {
-        if (win.gBrowser.activeSplitView) return win.gBrowser.activeSplitView;
+        const platform = win.gBrowser.activeSplitView;
+        // A DEAD ELEMENT IS NEVER THE ANSWER. This getter can hand back a
+        // wrapper Firefox has already destroyed, and every property read on one
+        // throws "can't access dead object" — straight through a key dispatcher,
+        // from a call that only wanted to know where the split is.
+        if (platform && !isDeadWrapper(platform)) return platform;
       } catch (e) {
         // not exposed on this build
+      }
+      // Both references can be silent while a split is on screen (see
+      // splitWrappers): the strip still knows, and the honest answer is the
+      // wrapper that CONTAINS the selected tab.
+      for (const sv of splitWrappers()) {
+        try {
+          if (Array.isArray(sv.tabs) && sv.tabs.indexOf(tab) !== -1) return sv;
+        } catch (e) {
+          // A wrapper whose pane list cannot be read is not a match.
+        }
       }
       return null;
     } catch (e) {
@@ -251,6 +320,7 @@ export function createTabIdentity(env: ChromeEnv): TabIdentity {
     tabUrl,
     rawUrl,
     activeSplitView,
+    splitWrappers,
     nativeSplitAvailable,
   };
 }

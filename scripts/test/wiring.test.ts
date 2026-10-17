@@ -68,9 +68,29 @@ describe("every test file is reachable from npm test", () => {
   test("npm test invokes the legacy tier and the artifact checks", () => {
     const t = pkg().scripts.test;
     assert.match(t, /test:legacy/, "npm test must run the not-yet-converted scripts");
-    assert.match(t, /go test/, "npm test must run the Go core tests");
     assert.match(t, /check-dist/, "npm test must verify dist is self-contained");
     assert.match(t, /check-installer-payload/, "npm test must verify the installer payload");
+  });
+
+  test("npm test runs the Go tests of every module", () => {
+    // Both modules, and the reason this is not just `/go test/` against the
+    // `test` script: the installer is a SEPARATE Go module, so `go test
+    // ./core/` in the root module cannot reach it — and for a long time nothing
+    // did, which left every installer package (the payload registry, the
+    // preview that promises what will happen, the operations, the profile
+    // discovery) untested in CI while this repo's own suite was green. The
+    // steps live in their own scripts, so the wiring is followed rather than
+    // assumed to be spelled one way.
+    const t = pkg().scripts.test || "";
+    assert.ok(t.includes("test:go"), "npm test must run test:go, or the Go tests are dead code");
+    const go = pkg().scripts["test:go"] || "";
+    assert.match(go, /go test (\.\/core\/|\/core\/|-C installer)/, "test:go must run the core tests");
+    assert.ok(go.includes("test:installer"), "test:go must reach the installer module too");
+    assert.match(
+      pkg().scripts["test:installer"] || "",
+      /go test -C installer/,
+      "test:installer must run the installer module's tests (go test -C installer ./...)",
+    );
   });
 
   const legacy = existsSync(join(ROOT, "scripts"))

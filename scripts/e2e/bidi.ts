@@ -490,7 +490,18 @@ export async function evalIn(
 
 // --- input -----------------------------------------------------------------
 
+// Named keys, by their WebDriver code point. The MODIFIERS are here for a
+// reason that is not symmetric with the rest: a real keyboard sends a modifier
+// press as its OWN keydown BEFORE the character it modifies, so the sequence a
+// hand produces for `;W |` is `;`, `W`, **Shift**, `|`. A suite that can only
+// send characters cannot express that, which is exactly why a capture that ate
+// the bare Shift as a sub-key (`no binding for ;Shift`, menu closed, `|` then
+// stranded) shipped: no test could type the sequence that broke it.
 const KEY_CODES: Record<string, string> = {
+  Shift: "\uE008",
+  Control: "\uE009",
+  Alt: "\uE00A",
+  Meta: "\uE03D",
   Enter: "\uE007",
   Tab: "\uE004",
   Escape: "\uE00C",

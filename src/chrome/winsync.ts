@@ -25,7 +25,12 @@ export interface WinSyncDeps {
   env: ChromeEnv;
   // The relay channel: startRelay keeps the relay tab alive, handleLfc routes
   // the real-tab #lfc= channels.
-  channel: { startRelay(): boolean; requestSessionState(): Promise<void>; handleLfc(browser: any, payload: string): void };
+  channel: {
+    startRelay(): boolean;
+    poll(): void;
+    requestSessionState(): Promise<void>;
+    handleLfc(browser: any, payload: string): void;
+  };
   // The alive announce, re-announced every tick.
   alive: { announce(): void };
   split: { rememberSplit(): void };
@@ -45,9 +50,18 @@ export interface WinSyncDeps {
   keyboard: { giveKeyboardToSelectedPage(): unknown };
 }
 
-// How often the relay is polled and the bar recomputed. The relay poll is not
-// an arbitrary tick: the messaging design in docs/MESSAGING.md has the helper
-// read the relay page's rewritten URL, and this is the rate at which it does.
+// How often the relay's URL is READ. The messaging design in docs/MESSAGING.md
+// has the helper read the relay page's rewritten URL, so this interval IS the
+// floor on how long any command from the background can sit unnoticed.
+//
+// It used to be 500ms, shared with the status bar's housekeeping — and that made
+// window manipulation feel broken rather than merely slow: a `;W [` is one push
+// in a queue that also carries the leader's own state pushes, each of which
+// needs its own look to be cleared, so the pane switch measured ~2.7s from the
+// keypress. Reading a URL string is a property access, not an IPC round trip, so
+// the read can afford to be frequent; the EXPENSIVE half of the tick (tab
+// dedupe, selection steering, status repaint) stays on RELAY_POLL_MS below.
+const RELAY_SLOT_MS = 80;
 const RELAY_POLL_MS = 500;
 // Download progress is allowed to be approximate — it is a visual indicator and
 // the popup reads the same manager cache, so the two always agree.
@@ -269,6 +283,13 @@ export function installWinSync(deps: WinSyncDeps): void {
   // status.update is idempotent and cheap. startRelay() keeps the relay tab
   // alive: the announce creates it, and if the relay ever dies (tab closed,
   // window rebuilt) this re-creates it within half a second.
+  // The slot read, on its own fast clock. Nothing else happens here on purpose:
+  // this runs ~12x/second, so it must stay a single string read when the slot is
+  // empty (the common case).
+  win.setInterval(() => {
+    deps.channel.poll();
+  }, RELAY_SLOT_MS);
+
   win.setInterval(() => {
     deps.alive.announce(); // once the extension URL resolves, tell it we're here
     deps.channel.startRelay();

@@ -66,6 +66,22 @@ for (const f of ["package.json", "package-lock.json"]) {
   console.log(`bumped ${f} → ${next}`);
 }
 
+// 2b. installer/frontend/package.json + its lock: the window's own package.
+// It is part of the version link, not decoration — the installer binary embeds
+// this front-end, `sourceHash` fingerprints this file, and the two used to drift
+// (the window said 0.5.7 while the extension it installed said 0.5.8, and
+// nothing anywhere compared them). scripts/test/version-link.test.ts now fails
+// when any carrier disagrees, and this is where they are all moved together.
+for (const f of ["installer/frontend/package.json", "installer/frontend/package-lock.json"]) {
+  const p = path.join(root, f);
+  if (!fs.existsSync(p)) continue;
+  const j = JSON.parse(fs.readFileSync(p, "utf8"));
+  if (j.version) j.version = next;
+  if (j.packages?.[""]?.version) j.packages[""].version = next;
+  fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+  console.log(`bumped ${f} → ${next}`);
+}
+
 // 3. src/static/extension/manifest.json.
 {
   const p = path.join(root, "src/static/extension/manifest.json");
