@@ -15,6 +15,9 @@
 //
 // The per-tab ids are derived from the same list, so grouping them is always
 // self-consistent. This predicate is what decides which of the two to believe.
+//
+// Positions here are 0-based, and they count the tabs a split can address (see
+// splitTabsOf), not every tab in the strip.
 
 /**
  * One 0-based pair of tab positions that belong to the same split view.
@@ -24,6 +27,37 @@
  * input type must not be a shape the caller has to translate first.
  */
 export type SplitPositions = [number, number];
+
+/** Enough of a saved or live tab to decide whether a split can address it. */
+export type SplitTab = { pinned?: boolean; splitViewId?: number };
+
+/**
+ * The tabs a split can address, in strip order.
+ *
+ * A native split view never pairs a pinned tab, so pinned tabs are not part of
+ * the coordinate space a saved layout is expressed in. Leaving them in was a
+ * silent off-by-N: the snapshot numbered positions over ALL tabs (pinned ones
+ * included, each carrying -1), while the restore resolved the same positions
+ * over unpinned tabs only — so a restored session with pinned tabs at the front
+ * paired the neighbours of the original pair and dropped the split.
+ *
+ * One definition, used by the save and by the restore, is the only way the two
+ * can agree.
+ */
+export function splitTabsOf<T extends SplitTab>(tabs: T[] | null | undefined): T[] {
+  return (tabs || []).filter((t) => !!t && !t.pinned);
+}
+
+/**
+ * The window-local `splitViewId` of each addressable tab, in strip order, with
+ * -1 for "not in a split". This is the exact input the Go core groups into
+ * pairs, so its length IS the tab count those positions refer to.
+ */
+export function splitIdsOf(tabs: SplitTab[] | null | undefined): number[] {
+  return splitTabsOf(tabs).map((t) =>
+    typeof t.splitViewId === "number" && t.splitViewId >= 0 ? t.splitViewId : -1
+  );
+}
 
 /**
  * Whether every pair addresses a real tab in a list of `count` tabs.

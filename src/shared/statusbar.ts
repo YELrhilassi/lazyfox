@@ -14,7 +14,7 @@ import {
   makeLeaderSignal,
   type LeaderSignal,
 } from "./leadersignal";
-import { pillColorFor, sessionPillText, statusMirrorFragment } from "./statusbar-segments";
+import { darkSegment, pillColorFor, sessionPillText, statusMirrorFragment } from "./statusbar-segments";
 import { STATUS_BAR_CSS } from "./statusbar-css";
 import type { StatusBarData } from "./types";
 
@@ -111,6 +111,10 @@ export class StatusBar {
       "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
       "<span class='seg tabs linked'><span class='ic'>▤</span><span class='st'>🕶</span><b></b><span class='cnt'></span></span>" +
       "<span class='seg find' style='display:none'><span class='ic'>🔍</span><b class='cur'></b><span class='cnt'></span></span>" +
+      // Dark mode, as the CONTENT SCRIPT sees this page: a moon for our remap,
+      // a moon in a different tone for the site's own theme, a sun for `light`.
+      // Hidden when the feature is not touching the page — see darkSegment.
+      "<span class='seg dark' style='display:none'><span class='ic'></span><span class='lbl'></span></span>" +
       "<span class='seg chips'></span>" +
       "<span class='seg dl' style='display:none'><span class='ic'>⭳</span><span class='items'></span></span>" +
       // Far-right leader indicator: the leader glyph alone while waiting for a
@@ -291,6 +295,7 @@ export class StatusBar {
     const tabIdx = tabs ? (tabs.querySelector("b") as HTMLElement | null) : null;
     const tabCnt = tabs ? (tabs.querySelector(".cnt") as HTMLElement | null) : null;
     const stealth = tabs ? (tabs.querySelector(".st") as HTMLElement | null) : null;
+    const dark = sh.querySelector(".dark") as HTMLElement | null;
     const find = sh.querySelector(".find") as HTMLElement | null;
     const findCur = find ? (find.querySelector(".cur") as HTMLElement | null) : null;
     const findCnt = find ? (find.querySelector(".cnt") as HTMLElement | null) : null;
@@ -352,6 +357,25 @@ export class StatusBar {
         findCur.classList.add("none");
       } else {
         find.style.display = "none";
+      }
+    }
+
+    // The dark segment: one icon, one word. `title` carries the longer story
+    // for a hover, because the bar is 18px tall and a sentence does not fit.
+    if (dark) {
+      const seg = darkSegment(this.data.dark);
+      dark.style.display = seg ? "" : "none";
+      if (seg) {
+        dark.className = "seg dark tone-" + seg.tone;
+        const ic = dark.querySelector(".ic");
+        const lbl = dark.querySelector(".lbl");
+        if (ic) ic.textContent = seg.icon;
+        if (lbl) lbl.textContent = seg.label;
+        dark.title =
+          "dark mode: " +
+          (this.data.dark && this.data.dark.mode ? this.data.dark.mode : "?") +
+          " \u00B7 " +
+          (this.data.dark && this.data.dark.engine ? this.data.dark.engine : "?");
       }
     }
 

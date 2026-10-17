@@ -132,6 +132,81 @@ export async function run(ctx: any): Promise<void> {
     assert(bg === "rgb(15, 17, 21)", "the page keeps its own canvas, got " + bg);
   });
 
+  // THE SITE'S OWN DARK THEME, which is a different question from "is it already
+  // dark?". `/nativetheme-light` forces itself light with `color-scheme: light`
+  // on the root while declaring both schemes in a meta tag, so it renders the
+  // same on any machine; the engine must ASK it for dark (one `color-scheme`
+  // write) and then stand down, leaving the site's own theme on screen.
+  await t("a page that ships its own dark theme is asked for it, not recoloured", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/nativetheme-light`);
+    // The fixture is light on arrival, but the engine's ask is allowed to land
+    // before this line reads it (it is the thing under test, and it is one write
+    // at config time). So the evidence that the ASK flipped the page — rather
+    // than our sheet recolouring it — is the colour that comes out: #0f1115 is
+    // the fixture's own dark canvas, while the shipped theme's background is
+    // #16161e and a remapped white canvas would come out as exactly that.
+    const off = await waitAttr("data-lf-dark", "off");
+    assert(
+      off !== null,
+      "the mirror says nothing of ours is painted, got " +
+        JSON.stringify(await attr("data-lf-dark")) +
+        " (" +
+        (await attr("data-lf-dark-reason")) +
+        ")"
+    );
+    const reason = (await attr("data-lf-dark-reason")) || "";
+    assert(/dark theme/i.test(reason), "the reason names the site's theme, got " + JSON.stringify(reason));
+    const engine = await attr("data-lf-dark-engine");
+    assert(engine === "native", "the engine mirror says the theme is the site's, got " + JSON.stringify(engine));
+    const sheet = await evalIn(ctx.tabA, `!!document.getElementById("lazyfox-dark")`);
+    assert(!sheet, "no stylesheet of ours is installed");
+    // And the page really IS dark now, in its own colours: #0f1115, not our
+    // #16161e. That difference is the whole point — the site's theme, not ours.
+    const after = await bodyBg();
+    assert(after === "rgb(15, 17, 21)", "the page paints its OWN dark canvas, got " + after);
+    const scheme = await evalIn(ctx.tabA, `getComputedStyle(document.documentElement).colorScheme`);
+    assert(String(scheme).indexOf("dark") >= 0, "the page was asked for dark, got " + scheme);
+  });
+
+  // THE STATE SWITCH. A single-page app throws its view away and renders a new
+  // one; for a few frames there is no surface at all, and the new view's colours
+  // were never sampled. The report: "it breaks when I switch state and shows
+  // blank dark overlay, it doesn't render dark elements properly".
+  //
+  // Both halves are asserted here: the theme is never given up during the
+  // teardown (no filter takeover of a blank document), and the colour that only
+  // exists AFTER the switch is themed too.
+  await t("a page that switches state keeps its theme, and the new view is themed too", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/spa`);
+    assert((await waitAttr("data-lf-dark", "on")) !== null, "the first view is darkened");
+    const firstEngine = await attr("data-lf-dark-engine");
+    // Wait for the fixture's own switch, then give the engine its gated pass.
+    await ctx.waitExpr(ctx.tabA, `document.documentElement.getAttribute("data-fixture-switched") === "1"`, true, 8000);
+    const lateThemed = await waitFor(async () => {
+      const bg = await evalIn(
+        ctx.tabA,
+        `(() => { const el = document.getElementById("late"); return el ? getComputedStyle(el).backgroundColor : null; })()`
+      ).catch(() => null);
+      return bg && bg !== "rgb(221, 227, 236)" ? (bg as string) : null;
+    }, 8000).catch(() => null);
+    assert(
+      lateThemed !== null,
+      "the view rendered after the state switch was left light (the engine never re-measured)"
+    );
+    console.log(`       (state switch: first engine=${firstEngine}, #late now ${lateThemed})`);
+    // The verdict itself must not have changed underneath the page: no takeover
+    // by the filter engine, which is what an empty mid-switch measurement used to
+    // produce (a page-wide inversion of a blank document).
+    assert(
+      (await attr("data-lf-dark")) === "on",
+      "the theme survived the switch, got " + JSON.stringify(await attr("data-lf-dark")) + " (" + (await attr("data-lf-dark-reason")) + ")"
+    );
+    assert(
+      (await attr("data-lf-dark-engine")) === firstEngine,
+      "the engine did not flip to a different one mid-switch: " + firstEngine + " → " + (await attr("data-lf-dark-engine"))
+    );
+  });
+
   await t(";Y d turns the theme off for this site and back on, and writes the per-site rule", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/light`);
     assert((await waitAttr("data-lf-dark", "on")) !== null, "the page starts darkened");

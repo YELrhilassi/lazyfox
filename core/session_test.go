@@ -248,7 +248,7 @@ func TestCategoryBindings(t *testing.T) {
 	// action and a label of its own, so the overlay cannot show a key that does
 	// not exist or miss one that does.
 	want := map[string][]string{
-		"W": {"|", "[", "]", "{", "}", ",", ".", "u", "m", "w", "z", "e"},
+		"W": {"|", "h", "l", "s", ",", ".", "o", "u", "m", "w", "z", "e"},
 		"Z": {"i", "o", "r"},
 		"K": {"c", "e"},
 		// Reading & theme. `d` is the per-site toggle (the frequent one), `g` the

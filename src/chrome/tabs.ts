@@ -76,6 +76,10 @@ export interface SplitViewWrapper {
   /** Add tabs to an existing split. Refuses a tab that still belongs to
    *  another view, which is why callers dissolve a stale group first. */
   addTabs?(tabs: ChromeTab[]): void;
+  /** Take ONE pane out of the group, leaving the others in it. Version-gated
+   *  like the rest of the wrapper's API; absent on older builds, where the
+   *  caller dissolves the group instead. */
+  removeTab?(tab: ChromeTab): void;
 }
 
 /** A `<tab>` element in gBrowser.tabs. */

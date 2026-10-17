@@ -526,11 +526,12 @@ const ENTRIES: Entry[] = [
     ],
   },
   {
-    name: "category: W | / ] / { / u — split, switch, swap, unsplit",
+    name: "category: W | / h / l / s / u — split, focus, swap, unsplit",
     steps: [
       { keys: ["W", "|"], must: statusMoved, label: ";W | (split)" },
-      { keys: ["W", "]"], must: statusMoved, label: ";W ] (next pane)" },
-      { keys: ["W", "{"], must: statusMoved, label: ";W { (swap)" },
+      { keys: ["W", "l"], must: statusMoved, label: ";W l (focus right)" },
+      { keys: ["W", "h"], must: statusMoved, label: ";W h (focus left)" },
+      { keys: ["W", "s"], must: statusMoved, label: ";W s (swap)" },
       { keys: ["W", "u"], must: statusMoved, label: ";W u (unsplit)" },
     ],
     post: async (ctx) => {

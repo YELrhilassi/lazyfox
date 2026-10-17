@@ -53,7 +53,24 @@ const MAX_SCAN = 4000;
 const CHUNK = 250;
 const MIN_AREA = 900; // ~30×30: below this a colour is a dot, not a surface
 const RESAMPLE_MIN_MS = 400;
+// The burst allowance, and — this is the part that was missing — what happens
+// after it.
+//
+// It used to be a hard stop: after 24 mutations the page kept whatever mapping it
+// had, for the rest of its life. That is exactly wrong for the pages people
+// actually use, because a state switch (a route change, opening a panel, loading
+// a second page of results) is a mutation BURST that lands minutes after the
+// first one, and the elements it creates were never in the sheet. The verdict the
+// user reported was "it doesn't render dark elements properly" — a mapping frozen
+// at whatever the page looked like when it first loaded.
+//
+// So the budget is a RATE LIMIT, not a lifetime cap: a burst is cheap and
+// immediate, and after the burst a page still earns a re-measure every
+// RESAMPLE_SLOW_MS while it keeps changing. A page that mutates forever still
+// costs at most one scan per few seconds, which is the same order as the scroll
+// work it is already doing.
 const MAX_RESAMPLES = 24;
+const RESAMPLE_SLOW_MS = 2500;
 const STYLE_ID = "lazyfox-dark";
 
 export interface DarkApplier {
@@ -65,6 +82,17 @@ export interface DarkApplier {
   setScheme(scheme: "dark" | "light" | null): void;
   /** Everything this applier put in the document. */
   clear(): void;
+  /**
+   * Drop the record of the page's ORIGINAL colours, so the next pass measures
+   * what is on screen now rather than what was there when this applier first
+   * looked.
+   *
+   * Only correct while NO sheet of ours is installed — the record is what keeps
+   * a re-measure from reading our own paint back as the page's. It exists for
+   * the one question that is about the page's CURRENT palette: "if I ask this
+   * site for its own dark theme, does it have one?"
+   */
+  forget(): void;
   /** Whether a sheet is currently installed. */
   active(): boolean;
 }
@@ -117,11 +145,52 @@ export function selectorFor(el: Element): string {
   return parts.join(" > ");
 }
 
+/**
+ * The pixels behind a transparent root — which is NOT always white.
+ *
+ * A page that paints only `body` leaves `html` transparent, and what shows
+ * through is the UA canvas: white in a light scheme, near-black in a dark one.
+ * Reporting white regardless is how a page whose own dark theme is already on
+ * screen measures as "light page", gets recoloured on top of its own theme, and
+ * produces the report "it doesn't render dark elements properly" — the site's
+ * dark panels are re-mapped as if they were its light ones.
+ *
+ * `color-scheme` is what decides it, and it is a fact about the page rather than
+ * a guess: `dark` alone forces the dark canvas, `light dark` follows the OS, and
+ * anything without `dark` is a light canvas. This is read from the page as it is
+ * BEFORE any sheet of ours is installed (see `backdrop` in createDarkApplier).
+ */
+function rootBackdrop(doc: Document, win: Window): string {
+  const LIGHT = "rgb(255, 255, 255)";
+  try {
+    const root = doc.documentElement;
+    if (!root) return LIGHT;
+    const scheme = String(win.getComputedStyle(root).colorScheme || "").toLowerCase();
+    if (!/\bdark\b/.test(scheme)) return LIGHT;
+    // `dark` alone is unconditional; `light dark` is the OS's business.
+    if (/\blight\b/.test(scheme)) {
+      let prefersDark = false;
+      try {
+        prefersDark = !!win.matchMedia && win.matchMedia("(prefers-color-scheme: dark)").matches;
+      } catch {
+        prefersDark = false;
+      }
+      if (!prefersDark) return LIGHT;
+    }
+    // The UA's dark canvas (`Canvas` system colour), close enough to be the
+    // surface the user is looking at; the exact shade does not change a verdict.
+    return "rgb(18, 18, 18)";
+  } catch {
+    return LIGHT;
+  }
+}
+
 /** Parse a computed `background-color`, resolving alpha against the ancestors. */
 function resolvedBackground(
   el: Element,
   read: (e: Element) => string,
-  cache: Map<Element, string>
+  cache: Map<Element, string>,
+  backdrop: () => string
 ): string {
   const cached = cache.get(el);
   if (cached !== undefined) return cached;
@@ -129,9 +198,10 @@ function resolvedBackground(
   const alpha = alphaOf(own);
   let out = own;
   if (alpha <= 0) {
-    // Fully transparent: the colour the user actually sees is an ANCESTOR's.
+    // Fully transparent: the colour the user actually sees is an ANCESTOR's —
+    // and at the root, the browser's own canvas.
     const parent = el.parentElement;
-    out = parent ? resolvedBackground(parent, read, cache) : "rgb(255, 255, 255)";
+    out = parent ? resolvedBackground(parent, read, cache, backdrop) : backdrop();
   }
   // A PARTIAL alpha is left exactly as it is. Compositing it against the
   // ancestor would invent a colour the page never asked for, and the entry
@@ -153,6 +223,17 @@ function alphaOf(css: string): number {
 
 export function createDarkApplier(doc: Document, win: Window): DarkApplier {
   let style: HTMLStyleElement | null = null;
+
+  // The colour behind a transparent root, measured ONCE on the page as it is —
+  // before our sheet exists — and kept. Re-reading it later would just measure
+  // our own `color-scheme: dark`, which would turn every page we had painted into
+  // a page that "is already dark". `forget()` drops it along with the originals,
+  // because both answer the same question: what did the page look like before us?
+  let backdrop: string | null = null;
+  const backdropOf = (): string => {
+    if (backdrop === null) backdrop = rootBackdrop(doc, win);
+    return backdrop;
+  };
 
   // THE PAGE'S OWN COLOURS, per selector — and the only colours this module is
   // ever allowed to decide from.
@@ -285,7 +366,7 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       const selector = selOf(el);
       if (!selector) continue;
       const known = originals.get(selector);
-      const bg = known && known.bg ? known.bg : resolvedBackground(el, read, bgCache);
+      const bg = known && known.bg ? known.bg : resolvedBackground(el, read, bgCache, backdropOf);
       const fg = known && known.fg ? known.fg : cs.getPropertyValue("color") || "";
       const border =
         known && known.border
@@ -312,6 +393,10 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
     sample,
     setSheet,
     setScheme,
+    forget: () => {
+      backdrop = null;
+      originals.clear();
+    },
     clear: () => {
       setSheet("");
       setScheme(null);
@@ -325,23 +410,43 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
 }
 
 /**
- * A bounded resample gate.
+ * A rate-limited resample gate.
  *
  * Returns a function to call on every mutation; it decides whether the page has
- * earned another measurement. Both limits exist because the alternative is a
+ * earned another measurement. The rate limit exists because the alternative is a
  * page that mutates at 60Hz dragging a 4000-element style scan behind it.
+ *
+ * `reset()` is for a NEW PAGE STATE rather than a new mutation: a same-document
+ * navigation (SPA route change) is a different page as far as the palette is
+ * concerned, and it must not inherit the previous one's exhausted burst.
  */
-export function createResampleGate(now: () => number): () => boolean {
+export interface ResampleGate {
+  (): boolean;
+  reset(): void;
+}
+
+export function createResampleGate(now: () => number): ResampleGate {
   let samples = 0;
-  let last = 0;
-  return () => {
+  // -Infinity rather than 0: "never measured" is not a timestamp, and starting
+  // the clock at zero means the FIRST call is refused whenever the clock is
+  // younger than the interval (a monotonic clock, or `Date.now()` at the epoch).
+  // The first pass is the one that has to happen.
+  let last = -Infinity;
+  const gate = () => {
     const t = now();
-    if (samples >= MAX_RESAMPLES) return false;
-    if (t - last < RESAMPLE_MIN_MS) return false;
+    // In the burst: the ordinary calm-down interval. Out of it: the slow one,
+    // which a page that keeps changing keeps earning.
+    const wait = samples < MAX_RESAMPLES ? RESAMPLE_MIN_MS : RESAMPLE_SLOW_MS;
+    if (t - last < wait) return false;
     last = t;
     samples++;
     return true;
   };
+  gate.reset = () => {
+    samples = 0;
+    last = 0;
+  };
+  return gate;
 }
 
 export const DARK_STYLE_ID = STYLE_ID;

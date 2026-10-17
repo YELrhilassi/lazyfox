@@ -10,7 +10,14 @@
 
 import type { Session } from "../../shared/types";
 import { writeKey } from "../store";
-import { readCurrentSessionName, readSessions, snapshotWindow, writeSessions, type WindowSnapshot } from "./storage";
+import {
+  layoutSettled,
+  readCurrentSessionName,
+  readSessions,
+  snapshotWindow,
+  writeSessions,
+  type WindowSnapshot
+} from "./storage";
 
 // Last successfully-captured window snapshot, so a quit can flush it without
 // re-querying (the window is already gone by the time windows.onRemoved fires,
@@ -84,6 +91,56 @@ export function scheduleAutosave(whileRestoring: () => boolean): void {
       // ignore — autosave is best-effort
     }
   }, 1500);
+}
+
+// How long a layout report keeps re-measuring before it writes down what it has
+// anyway. 250ms between reads, so this is about ten seconds — long enough for a
+// pair the platform describes lazily, short enough that a report never leaves a
+// window with no checkpoint at all.
+const LAYOUT_SETTLE_TRIES = 40;
+const LAYOUT_SETTLE_GAP_MS = 250;
+
+let layoutTimer: number | null = null;
+let layoutTries = 0;
+
+/**
+ * Record a LAYOUT CHANGE (a split formed, dissolved, or was rearranged).
+ *
+ * Unlike a tab change, this is not a measurement the moment it arrives: see
+ * `layoutSettled` for why the first read can see half a pair. So the report
+ * re-measures until the layout is fully described, keeps `lastSnapshot` fresh
+ * on every pass (that is what a quit flushes when the window is already gone),
+ * and only then persists it — a checkpoint written from a half-formed layout
+ * would be indistinguishable from "no split" and nothing would come back to
+ * fix it.
+ */
+export function scheduleLayoutSnapshot(whileRestoring: () => boolean): void {
+  if (whileRestoring()) return;
+  if (layoutTimer != null) clearTimeout(layoutTimer);
+  layoutTries = 0;
+  const step = async (): Promise<void> => {
+    layoutTimer = null;
+    // A restore can start while this loop is still running (the report that
+    // began it is often the split the user just dissolved to switch sessions).
+    // Its window is being torn down and rebuilt, so a measurement now would
+    // capture a half-replaced strip and then WRITE it — over the session being
+    // restored. The restore checkpoints the finished window itself, so the only
+    // correct thing here is to stand down.
+    if (whileRestoring()) return;
+    let settled = true;
+    try {
+      lastSnapshot = await snapshotWindow();
+      settled = await layoutSettled();
+    } catch {
+      // ignore — a failed read is not a reason to stop reading
+    }
+    if (settled || ++layoutTries >= LAYOUT_SETTLE_TRIES) {
+      await autosaveCurrentSession(await readSessions(), lastSnapshot || undefined);
+      return;
+    }
+    layoutTimer = setTimeout(() => void step(), LAYOUT_SETTLE_GAP_MS);
+  };
+  layoutTimer = setTimeout(() => void step(), LAYOUT_SETTLE_GAP_MS);
 }
 
 let snapshotTimer: number | null = null;

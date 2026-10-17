@@ -43,7 +43,8 @@ export function createPushDispatcher(deps: PushDeps): PushDispatcher {
       unsplit: () => deps.split.unsplit(),
       switchPane: (req) => deps.split.switchPane(req.dir >= 0 ? 1 : -1),
       swapSplitPanes: (req) => deps.split.swapPane(req.dir >= 0 ? 1 : -1),
-      moveToSplit: (req) => deps.split.addTabToSplitByIndex(req.index),
+      moveToSplit: (req) => deps.split.addTabToSplitByIndex(req.index, req.split),
+      pullFromSplit: () => deps.split.pullFromSplit(),
       // Session restore finished opening tabs; re-create the native split
       // groupings. Positions are 1-based over the SAVED tab list.
       restoreSplits: (req) => deps.split.restoreSplits(req.groups, req.expect),
@@ -70,6 +71,18 @@ export function createPushDispatcher(deps: PushDeps): PushDispatcher {
       // Content-script find-in-page count, cached the same way.
       findState: (req) => {
         if (req.index >= 0) deps.status.setContentFind(req.index, req.count || 0, req.cur || 0);
+      },
+      // The content script's dark-mode verdict for this tab. Cached per index
+      // like find, so a background tab's theme cannot relabel the page the user
+      // is looking at — and cleared when the content reports mode off.
+      darkState: (req) => {
+        if (req.index >= 0)
+          deps.status.setContentDark(
+            req.index,
+            !!req.on,
+            String(req.mode || ""),
+            String(req.engine || "")
+          );
       },
       // Global page-cache mode pushed by the background's diagnostics page.
       cacheGlobal: (req) => deps.cache.setGlobalMode(req.mode || "normal"),

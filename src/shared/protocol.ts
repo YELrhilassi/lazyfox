@@ -173,6 +173,11 @@ export interface BgApi {
   // to the chrome helper so its window-level status bar shows the find count
   // on web pages (where the content script owns the find widget).
   syncFind: { req: { cur: number; count: number }; res: { ok: boolean } };
+  // The content script's dark-mode verdict for THIS tab, relayed to the chrome
+  // helper's status bar. `mode` is auto|dark|light (an empty/off mode clears the
+  // segment) and `engine` is native|dynamic|filter, which is what lets the bar
+  // tell "the site's own theme" apart from one we recoloured.
+  syncDark: { req: { on: boolean; mode: string; engine: string }; res: { ok: boolean } };
   sessionList: { req: Record<string, never>; res: { sessions: Session[] } };
   sessionSave: { req: { name: string }; res: { ok: boolean; session?: Session } };
   sessionNew: { req: { name: string }; res: { ok: boolean; note?: string } };
@@ -185,14 +190,50 @@ export interface BgApi {
   sessionAssignMarker: { req: { name: string; marker: number }; res: { ok: boolean; note?: string } };
   sessionTabCopy: { req: { from: string; index: number; to: string }; res: { ok: boolean; note?: string } };
   sessionTabMove: { req: { from: string; index: number; to: string }; res: { ok: boolean; note?: string } };
+  // The chrome helper's report that the pane layout moved (split created,
+  // dissolved, pane added/removed). No payload: the groups are re-derived from
+  // `browser.tabs`' own `splitViewId` when the snapshot is written, so a
+  // payload could only disagree with the thing it describes.
+  layoutChanged: { req: Record<string, never>; res: null };
   sessionSplit: { req: { orientation: "horizontal" | "vertical" }; res: { ok: boolean; note?: string } };
   sessionUnsplit: { req: Record<string, never>; res: { ok: boolean; note?: string } };
   sessionSwitchPane: { req: { dir: number }; res: { ok: boolean; note?: string } };
   sessionSwapPane: { req: { dir: number }; res: { ok: boolean; note?: string } };
-  sessionSplitAddTabByIndex: { req: { index: number }; res: { ok: boolean; note?: string } };
+  // `split` is 1-based among the window's split groups in strip order, and is
+  // omitted when there is only one to choose from. A window can hold several
+  // native splits at once, so "move this tab into the split" is a question with
+  // more than one answer — see sessionSplitTargets for the list to ask with.
+  sessionSplitAddTabByIndex: { req: { index: number; split?: number }; res: { ok: boolean; note?: string } };
+  // The splits in this window, in strip order, with the panes inside each one.
+  // This is the list the `;W m` chooser draws: the tabs already carry
+  // `splitViewId`, so the extension can group them without asking the chrome
+  // helper for anything, and the order of the groups follows the strip the user
+  // is looking at.
+  sessionSplitTargets: {
+    req: Record<string, never>;
+    res: {
+      splits: { split: number; active: boolean; panes: { title: string; url: string; active: boolean }[] }[];
+    };
+  };
+  // Take the SELECTED tab out of its split without taking the split apart
+  // around the other pane. Different from sessionUnsplit: that dissolves the
+  // group, this leaves the rest of it exactly as it is.
+  sessionPullFromSplit: { req: Record<string, never>; res: { ok: boolean; note?: string } };
   splitPanelTabs: {
     req: Record<string, never>;
-    res: { tabs: { index: number; id: number; url: string; title: string; active: boolean; inSplit: boolean }[] };
+    res: {
+      tabs: {
+        index: number;
+        id: number;
+        url: string;
+        title: string;
+        active: boolean;
+        inSplit: boolean;
+        // The tab's own icon, so the pane's list reads like the tab strip
+        // instead of like an id dump. Empty when the tab has none.
+        favIconUrl?: string;
+      }[];
+    };
   };
   moveTabToSplit: { req: { index: number }; res: { ok: boolean } };
 
@@ -313,6 +354,19 @@ export interface RelayApi {
   // looked exactly like one that worked.
   sessionTabCopy: { req: { from: string; index: number; to: string }; res: { ok: boolean; note?: string } };
   sessionTabMove: { req: { from: string; index: number; to: string }; res: { ok: boolean; note?: string } };
+  // THE SPLIT LAYOUT CHANGED, and nothing else will say so.
+  //
+  // A native split does not touch the tab list: the same tabs are still there,
+  // they are just paired. So no `tabs.*` event fires, and the session autosave —
+  // which is driven entirely by those events — never re-measured. The saved
+  // `splits` string therefore stayed at whatever the last tab change saw, and a
+  // restart brought the tabs back without their pairings: the layout was lost
+  // because nobody had ever written it down. The helper is the only side that
+  // knows a split appeared or dissolved, so it says so here.
+  //
+  // Fire-and-forget like the other mutations: the reply would only tell the
+  // helper what it already knows.
+  layoutChanged: { req: Record<string, never>; res: null };
   // Tab strip / history actions the helper cannot do itself (they need the
   // background's storage view and its filtered reopen).
   alternateTab: { req: Record<string, never>; res: null };
@@ -353,7 +407,10 @@ export interface ChromeApi {
   unsplit: { req: Record<string, never>; res: void };
   switchPane: { req: { dir: number }; res: void };
   swapSplitPanes: { req: { dir: number }; res: void };
-  moveToSplit: { req: { index: number }; res: void };
+  moveToSplit: { req: { index: number; split?: number }; res: void };
+  // Pull one tab out of its split group (1-based pane position inside the
+  // selected group); nothing else changes.
+  pullFromSplit: { req: Record<string, never>; res: void };
   // Session restore finished opening tabs: re-create the native split
   // groupings. 1-based positions over the SAVED tab list.
   // `expect` is the number of real tabs the restore produced. The chrome side
@@ -377,6 +434,7 @@ export interface ChromeApi {
   // keystate.noteContentPresent.
   contentState: { req: { index: number; active: boolean; url: string; doc?: string }; res: void };
   findState: { req: { index: number; count: number; cur: number }; res: void };
+  darkState: { req: { index: number; on: boolean; mode: string; engine: string }; res: void };
   cacheGlobal: { req: { mode: CacheMode }; res: void };
   cachePolicy: { req: { mode: CacheMode; tabIds: number[] }; res: void };
 }

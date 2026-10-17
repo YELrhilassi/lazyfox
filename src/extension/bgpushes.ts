@@ -53,6 +53,20 @@ export function pushFindStateToChrome(index: number, count: number, cur: number)
   requestChrome("findState", { index, count, cur });
 }
 
+// Relay the content script's dark-mode verdict to the chrome helper, so the
+// window bar can show what is active on the page being looked at. `mode` empty
+// or "off" clears the segment — there is nothing to report about a page the
+// feature is not touching, and a stale moon is a claim that is no longer true.
+export function pushDarkStateToChrome(
+  index: number,
+  on: boolean,
+  mode: string,
+  engine: string
+): void {
+  if (index < 0) return;
+  requestChrome("darkState", { index, on, mode, engine });
+}
+
 // Tell the chrome helper to clear its download notification(s).
 //
 // `;D` is a leader binding like any other, so it runs in whichever host owns

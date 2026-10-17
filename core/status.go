@@ -34,6 +34,21 @@ type FindState struct {
 	Count int `json:"count"`
 }
 
+// DarkState is the content script's dark-mode verdict for one tab.
+//
+// It is the content script's answer, not the settings', because the question
+// the bar answers is "what is on screen RIGHT NOW": a page that already ships
+// its own dark theme is `engine: "native"` with `on: false`, and one the filter
+// engine inverted is `engine: "filter"`. A bar that only showed the setting
+// would tell every page the same thing and be worth nothing.
+type DarkState struct {
+	On     bool   `json:"on"`
+	// auto | dark | light | off — the mode that decided this page.
+	Mode   string `json:"mode"`
+	// native | dynamic | filter | auto — how it was rendered.
+	Engine string `json:"engine"`
+}
+
 // BarDownload is one rendered download segment (percent/speed pre-formatted).
 type BarDownload struct {
 	Key      string `json:"key"`
@@ -97,6 +112,7 @@ type StatusModel struct {
 	ActiveStealth    bool          `json:"activeStealth"`
 	Sessions         []SessionPill `json:"sessions"`
 	Find             *FindState    `json:"find"`
+	Dark             *DarkState    `json:"dark"`
 	Downloads        []BarDownload `json:"downloads"`
 	TabIds           []int         `json:"tabIds"`
 	StealthFlags     []bool        `json:"stealthFlags"`
@@ -139,6 +155,7 @@ type statusStoreT struct {
 	activeStealth    bool
 	sessions         []SessionPill
 	findByIndex      map[int]FindState
+	darkByIndex      map[int]DarkState
 	leaderByIndex    map[int]bool
 	tabIds           []int
 	stealthFlags     []bool
@@ -178,6 +195,7 @@ var statusStore = &statusStoreT{
 	name:          "default",
 	selectedIndex: -1,
 	findByIndex:   map[int]FindState{},
+	darkByIndex:   map[int]DarkState{},
 	leaderByIndex: map[int]bool{},
 	prevBytes:     map[string]int64{},
 	prevAt:        map[string]int64{},
@@ -217,6 +235,9 @@ func StatusSetTab(selected, tabIndex, tabCount int) {
 	for i := tabCount; i < len(s.findByIndex); i++ {
 		delete(s.findByIndex, i)
 	}
+	for i := tabCount; i < len(s.darkByIndex); i++ {
+		delete(s.darkByIndex, i)
+	}
 	for i := tabCount; i < len(s.leaderByIndex); i++ {
 		delete(s.leaderByIndex, i)
 	}
@@ -246,6 +267,21 @@ func StatusSetFind(index, cur, count int) {
 		return
 	}
 	statusStore.findByIndex[index] = FindState{Cur: cur, Count: count}
+}
+
+// StatusSetDark records the content script's dark-mode verdict for a tab
+// index. mode "" (or "off") clears it: a segment that outlives the theme it
+// describes is worse than no segment, because it is a claim about the page that
+// is no longer true.
+//
+// Keyed by tab index, like find: the bar shows the SELECTED tab's verdict, so a
+// push from a background tab cannot relabel the page being looked at.
+func StatusSetDark(index int, on bool, mode, engine string) {
+	if mode == "" || mode == "off" {
+		delete(statusStore.darkByIndex, index)
+		return
+	}
+	statusStore.darkByIndex[index] = DarkState{On: on, Mode: mode, Engine: engine}
 }
 
 // StatusSetStealth records the live stealth badge of the selected tab.
@@ -378,6 +414,11 @@ func StatusSnapshot() StatusModel {
 		ff := f
 		find = &ff
 	}
+	var dark *DarkState
+	if d, ok := s.darkByIndex[s.selectedIndex]; ok {
+		dd := d
+		dark = &dd
+	}
 	active := ActiveDownloads(s.downloads)
 	downloads := make([]BarDownload, 0, len(active))
 	for _, d := range active {
@@ -406,6 +447,7 @@ func StatusSnapshot() StatusModel {
 		ActiveStealth:    s.activeStealth,
 		Sessions:         sessions,
 		Find:             find,
+		Dark:             dark,
 		Downloads:        downloads,
 		TabIds:           s.tabIds,
 		StealthFlags:     s.stealthFlags,

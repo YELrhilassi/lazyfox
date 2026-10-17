@@ -27,6 +27,7 @@ import {
   quitBrowser,
   restoreSession,
   saveSession,
+  scheduleLayoutSnapshot,
   sessionState,
   sessionTabs,
   switchSessionByMarker
@@ -101,6 +102,14 @@ export const relayHandlers: {
   },
   quit: async () => {
     await quitBrowser();
+    return null;
+  },
+  // The helper's pane layout moved. This is the only report in the system that
+  // a split happened at all, because a split changes no tab and fires no
+  // tabs.* event — so it re-measures until the new layout is fully described
+  // and then persists it (see scheduleLayoutSnapshot).
+  layoutChanged: () => {
+    scheduleLayoutSnapshot();
     return null;
   },
   // The result ({ ok, error }) goes back so the helper can toast the outcome

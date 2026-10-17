@@ -70,8 +70,24 @@ export async function run(ctx: any): Promise<void> {
       const sv2 = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
       if (sv2.length !== 2 || !sv2.every((t) => [aRow.id, cRow.id].includes(t.id))) return null;
       return webOnly;
-    }, 4000);
-    assert(settled != null, "pair pinned next to the anchor (A first, then C, then B): web=" + JSON.stringify((await ctx.tabsInfo()).filter((t) => ctx.isRealTab(t) && !(t.url || "").includes("commandcenter.html")).map((t) => t.id)));
+      // Caught, so the assert below is what reports the failure — with the
+      // strip AND the chrome's account of the move. A bare timeout says the
+      // order was wrong; it cannot say whether the move ran, was refused, or
+      // was still settling when the wait gave up.
+    }, 4000).catch(() => null);
+    assert(
+      settled != null,
+      "pair pinned next to the anchor (A first, then C, then B): web=" +
+        JSON.stringify(
+          (await ctx.tabsInfo())
+            .filter((t) => ctx.isRealTab(t) && !(t.url || "").includes("commandcenter.html"))
+            .map((t) => t.id)
+        ) +
+        // The chrome's own account of the move: "the strip did not settle" is
+        // unreadable without knowing what the move thought it was doing.
+        " move=" +
+        JSON.stringify((await ctx.chromeState().catch(() => ({}))).lastMoveDebug || ""),
+    );
     // Clean up: unsplit and close the fresh tabs.
     await ctx.leaderSeq(a, ["W", "u"]);
     await waitNoSplit();

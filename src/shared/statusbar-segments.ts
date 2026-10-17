@@ -72,6 +72,38 @@ export function sessionPillText(s: StatusBarSessions): string {
 }
 
 /**
+ * The dark-mode segment: an icon, a word, and a tone.
+ *
+ * The bar is the only always-visible surface, so "is dark mode on for this page"
+ * has to be answerable at a glance without opening a menu. Three distinctions
+ * are worth the pixels, and no more:
+ *
+ *   site    the site's own dark theme was taken (nothing of ours is painted)
+ *   dark    our dynamic remap is painting the page
+ *   invert  our filter engine is inverting it (the colours are not ours)
+ *   light   the `light` mode recoloured a dark page
+ *
+ * It returns null when there is nothing to say — the feature is off for this
+ * page, or the content script never reported. A permanent moon would be noise
+ * on every tab, which is exactly the kind of always-on chrome this bar avoids.
+ */
+export interface DarkSegment {
+  icon: string;
+  label: string;
+  /** A class suffix the stylesheet colours: site | on | filter | light. */
+  tone: string;
+}
+
+export function darkSegment(d: { on: boolean; mode: string; engine: string } | null | undefined): DarkSegment | null {
+  if (!d || !d.mode || d.mode === "off") return null;
+  if (d.engine === "native") return { icon: "\u263E", label: "site", tone: "native" };
+  if (d.mode === "light") return { icon: "\u2600", label: "light", tone: "light" };
+  if (!d.on) return null;
+  if (d.engine === "filter") return { icon: "\u263E", label: "invert", tone: "filter" };
+  return { icon: "\u263E", label: "dark", tone: "on" };
+}
+
+/**
  * The bar's whole state as one pipe-delimited string on <html>.
  *
  * The shadow root is closed, so this attribute is the only page-level answer to
@@ -101,6 +133,7 @@ export function statusMirrorFragment(data: StatusBarData, position: string, lead
     // The far-right leader indicator's state, mirrored for the tests
     // and for debugging (the shadow root is closed).
     leaderMirrorFragment(leader || data.leader) +
+    (darkSegment(data.dark) ? "|dark:" + darkSegment(data.dark)!.tone + "/" + data.dark!.engine : "") +
     (data.find && data.find.count > 0
       ? "|find:" + data.find.cur + "/" + data.find.count
       : data.find && data.find.count === 0

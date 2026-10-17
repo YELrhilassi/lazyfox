@@ -43,6 +43,16 @@ export const STATUS_BAR_CSS = `
 .seg.tabs .cnt{color:#9aa5ce;font-weight:600;}
 .seg.tabs .st{color:#bb9af7;font-weight:800;padding-right:4px;}
 .seg.split{background:#e0af68;color:#1a1b26;font-weight:800;}
+/* Dark mode: a moon and one word. The TONE carries the meaning, because the
+   word alone ("dark") cannot say whether the page's own theme is in use or
+   ours is painting it — and that is the difference the feature is judged on. */
+.seg.dark{font-weight:800;}
+.seg.dark .ic{font-size:12px;line-height:1;}
+.seg.dark .lbl{font-weight:700;letter-spacing:.02em;}
+.seg.dark.tone-on{background:#9d7cd8;color:#16161e;}
+.seg.dark.tone-filter{background:#5a4a86;color:#e0dcf5;}
+.seg.dark.tone-native{background:#1f2335;color:#9d7cd8;border:1px solid #3b3f5c;}
+.seg.dark.tone-light{background:#e0af68;color:#1a1b26;}
 .seg.find{background:#2ac3de;color:#16161e;font-weight:800;}
 .seg.find b{font-weight:900;}
 .seg.find .none{color:#f7768e;}

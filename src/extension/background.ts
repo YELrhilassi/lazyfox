@@ -39,10 +39,11 @@ import {
   pageReport
 } from "./services/components";
 import { stealthOpen } from "./stealth";
-import { quitBrowser, saveSession } from "./sessions";
+import { quitBrowser, saveSession, scheduleLayoutSnapshot } from "./sessions";
 import { alternateTab as alternateTabOp, reopenTab } from "./windowops";
 import {
   pushContentStateToChrome,
+  pushDarkStateToChrome,
   pushFindStateToChrome,
   pushLeaderStateToChrome,
   pushSessionStateToChrome
@@ -68,7 +69,16 @@ const handlers = {
   ...createSessionHandlers({
     saveSession: (name: string) => saveSession(name),
   }),
-  ...createSplitHandlers({ requestChrome }),
+  ...createSplitHandlers({
+    requestChrome,
+    // The pane layout moved. Re-measure until the platform has finished
+    // describing it, then persist — see scheduleLayoutSnapshot. Without this a
+    // split made after the last tab change was never written down at all, and
+    // the next launch brought the tabs back flat.
+    onLayoutChanged: () => {
+      scheduleLayoutSnapshot();
+    },
+  }),
   ...createDiagnosticsHandlers({
     componentsInfo,
     pageReport,
@@ -84,6 +94,7 @@ const handlers = {
     pushLeaderStateToChrome,
     pushContentStateToChrome,
     pushFindStateToChrome,
+    pushDarkStateToChrome,
     stealthOpen,
     pushSessionStateToChrome,
   }),

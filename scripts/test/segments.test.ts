@@ -20,6 +20,7 @@ import {
   pillColorFor,
   readableOn,
   sessionPillText,
+  darkSegment,
   statusMirrorFragment,
 } from "../../src/shared/statusbar-segments.ts";
 import { makeLeaderSignal } from "../../src/shared/leadersignal.ts";
@@ -197,6 +198,38 @@ describe("statusMirrorFragment — the bar's own report of its state", () => {
   test("the leader fragment is appended from the whole signal", () => {
     const out = statusMirrorFragment(base, "bottom", makeLeaderSignal({ armed: true, prefix: "W", expect: "1-9" }));
     assert.ok(out.includes("|lead:W>1-9"), "got " + out);
+  });
+
+  test("the dark segment says WHICH dark, not just that it is dark", () => {
+    // The bar's whole job here is the distinction the feature is judged on:
+    // the site's own theme is not the same thing as our remap, and neither is
+    // the same as an inversion. One word each, and a tone for the colour.
+    assert.deepEqual(darkSegment({ on: true, mode: "auto", engine: "dynamic" }), {
+      icon: "\u263E",
+      label: "dark",
+      tone: "on",
+    });
+    assert.equal(darkSegment({ on: true, mode: "auto", engine: "filter" })!.tone, "filter");
+    assert.equal(darkSegment({ on: false, mode: "auto", engine: "native" })!.label, "site");
+    assert.equal(darkSegment({ on: true, mode: "light", engine: "dynamic" })!.tone, "light");
+  });
+
+  test("no segment when the page is not being touched", () => {
+    // A permanent moon on every tab would be chrome nobody asked for, and a
+    // `light` mode that paints nothing (a page already light) is nothing.
+    assert.equal(darkSegment(null), null);
+    assert.equal(darkSegment(undefined), null);
+    assert.equal(darkSegment({ on: false, mode: "off", engine: "dynamic" }), null);
+    assert.equal(darkSegment({ on: false, mode: "auto", engine: "dynamic" }), null);
+  });
+
+  test("the mirror carries the dark verdict for the harness", () => {
+    const out = statusMirrorFragment(
+      { ...base, dark: { on: true, mode: "auto", engine: "filter" } },
+      "bottom"
+    );
+    assert.ok(out.includes("|dark:filter/filter"), "got " + out);
+    assert.ok(!statusMirrorFragment(base, "bottom").includes("|dark:"));
   });
 
   test("an explicit signal wins over the snapshot on the data", () => {

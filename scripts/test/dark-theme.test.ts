@@ -8,7 +8,15 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { analyze, chooseEngine, shouldApply, type PageSample } from "../../src/extension/content/dark/detect.ts";
+import {
+  analyze,
+  chooseEngine,
+  declaresDarkSupport,
+  nativeDarkVerdict,
+  shouldApply,
+  type PageSample,
+} from "../../src/extension/content/dark/detect.ts";
+import { createResampleGate } from "../../src/extension/content/dark/apply.ts";
 import { buildTheme, composeSheet, entriesFor, fallbackSheet, OUR_HOSTS } from "../../src/extension/content/dark/theme.ts";
 import { parseFixList } from "../../src/shared/dark-rules.ts";
 import { DARK_DEFAULTS } from "../../src/shared/config.ts";
@@ -142,6 +150,98 @@ describe("whether to apply at all", () => {
     ] as const) {
       assert.ok(shouldApply(dir, a, skip).reason.length > 3);
     }
+  });
+});
+
+/* ---------- the site's own dark theme ---------- */
+
+// THE REPORT: "it should detect if the website is already in dark, it should be
+// smart to use website native dark mode if available". The already-dark half was
+// measured from pixels (and tested above). This is the other half: a page that
+// ships a dark theme and is rendering LIGHT because the OS is light. Asking that
+// page for its own theme is better than recolouring its light one, and
+// `color-scheme` is the declaration that makes the ask real.
+describe("asking the site for its own dark theme", () => {
+  test("a declaration of dark support is recognised, in both spellings", () => {
+    assert.equal(declaresDarkSupport("light dark"), true);
+    assert.equal(declaresDarkSupport("dark"), true);
+    assert.equal(declaresDarkSupport("only dark"), true);
+    assert.equal(declaresDarkSupport("LIGHT DARK"), true);
+    // A meta tag instead of CSS: same fact, other place.
+    assert.equal(declaresDarkSupport("light", "dark"), true);
+    assert.equal(declaresDarkSupport("light", "light dark"), true);
+  });
+
+  test("a page that says nothing about the scheme is not asked", () => {
+    // The default `color-scheme` is `normal`, which means "no preference": a
+    // page that never declared anything must be remapped, not interrogated.
+    assert.equal(declaresDarkSupport("normal"), false);
+    assert.equal(declaresDarkSupport(""), false);
+    assert.equal(declaresDarkSupport(null), false);
+    assert.equal(declaresDarkSupport(undefined), false);
+    assert.equal(declaresDarkSupport("light"), false);
+  });
+
+  test("the ask is the ONLY thing that turns a declaration into a verdict", () => {
+    const light = analyze(LIGHT_PAGE);
+    const dark = analyze(DARK_PAGE);
+    // Declared, not yet asked: still our job.
+    const before = nativeDarkVerdict(true, false, light);
+    assert.equal(before.native, false);
+    assert.match(before.reason, /asking/);
+    // Asked and the page went dark: it is the site's theme, so nothing of ours.
+    const after = nativeDarkVerdict(true, true, dark);
+    assert.equal(after.native, true);
+    assert.match(after.reason, /color-scheme/);
+    // Asked and it stayed light: a declaration it does not honour, so we remap.
+    const stubborn = nativeDarkVerdict(true, true, light);
+    assert.equal(stubborn.native, false);
+    assert.match(stubborn.reason, /still renders light/);
+    // No declaration at all: never asked, never taken.
+    assert.equal(nativeDarkVerdict(false, false, light).native, false);
+  });
+});
+
+/* ---------- the resample gate is a rate limit, not a lifetime cap ---------- */
+
+// THE OTHER HALF OF THE REPORT: "it breaks when I switch state and ... doesn't
+// render dark elements properly". A state switch is a mutation burst that lands
+// long after the first one, so a gate that stops answering forever freezes the
+// page's mapping at whatever it looked like on load.
+describe("how often a page may be re-measured", () => {
+  test("a burst is cheap, and a quiet page is never re-measured", () => {
+    let now = 0;
+    const gate = createResampleGate(() => now);
+    assert.equal(gate(), true, "the first pass is immediate");
+    assert.equal(gate(), false, "and the second, in the same instant, is not");
+    now += 400;
+    assert.equal(gate(), true);
+  });
+
+  test("after the burst the page still earns a pass, slowly", () => {
+    let now = 0;
+    const gate = createResampleGate(() => now);
+    for (let i = 0; i < 40; i++) {
+      now += 400;
+      gate();
+    }
+    // Past MAX_RESAMPLES: the calm-down interval no longer earns a pass...
+    now += 401;
+    assert.equal(gate(), false, "the burst allowance is a rate, not a queue");
+    // ...but a state switch ten seconds later does, which is the whole point.
+    now += 2500;
+    assert.equal(gate(), true, "a late change is measured, not ignored");
+  });
+
+  test("a new page state starts over", () => {
+    let now = 0;
+    const gate = createResampleGate(() => now);
+    for (let i = 0; i < 40; i++) {
+      now += 400;
+      gate();
+    }
+    gate.reset();
+    assert.equal(gate(), true, "a same-document navigation is a fresh page");
   });
 });
 

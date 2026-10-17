@@ -16,7 +16,7 @@ import { openBookmarksPopup } from "./bookmarks";
 import { openDownloadsPopup } from "./downloads";
 import { openSessionsPopup } from "./sessions";
 import { openHelpPopup } from "./help";
-import { openTabChooser } from "./tabjump";
+import { openSplitChooser, openTabChooser } from "./tabjump";
 import { planTabJump, tabCandidates, tabDigitHint } from "../tabjump";
 
 // The count and the rows are fetched lazily inside the branch that needs
@@ -309,18 +309,51 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     zen: () => ctx.ops.zen(),
     toggleReveal: () => ctx.ops.toggleReveal(),
     splitTab: () => ctx.ops.splitTab("horizontal"),
+    // PANES ARE ADDRESSED, NOT CYCLED. `h` / `l` name the pane (left, right)
+    // instead of stepping through a pair, and `s` swaps it — a swap has no
+    // direction to choose, which is why the two directional swap keys the menu
+    // used to carry were one action wearing two hats.
     splitPanePrev: () => ctx.ops.switchSplitPane(-1),
     splitPaneNext: () => ctx.ops.switchSplitPane(1),
-    swapPaneLeft: () => ctx.ops.swapSplitPane(-1),
-    swapPaneRight: () => ctx.ops.swapSplitPane(1),
+    swapPanes: () => ctx.ops.swapSplitPane(1),
     moveTabLeft: () => ctx.ops.moveActiveTab(-1),
     moveTabRight: () => ctx.ops.moveActiveTab(1),
     unsplit: () => ctx.ops.unsplitTab(),
+    // Two questions, and the second one only when it has more than one answer.
+    //
     // The move target is a tab POSITION, so it resolves exactly the way `;1`
     // does: one digit when that is a complete answer, two when it is not. It
     // used to take a bare single digit and therefore went unreachable —
     // silently, with no error — the moment a window passed nine tabs.
-    moveTabIntoSplit: () => armTabPosition(ctx, (n) => ctx.ops.splitAddTabByIndex(n)),
+    //
+    // THEN: which split. A window can hold several, and picking one silently is
+    // how the move lands somewhere the user did not choose. With one split the
+    // answer is not a question and nothing appears; with more, the destination
+    // chooser opens and the digits name the SPLIT. The tab number is resolved
+    // first because it is the number the strip shows and the user already typed
+    // it — asking for the destination first would make the menu a promise the
+    // sequence could not keep.
+    moveTabIntoSplit: () =>
+      armTabPosition(ctx, (n) => {
+        void (async () => {
+          let targets: { split: number; active: boolean; panes: { title: string; url: string; active: boolean }[] }[] = [];
+          try {
+            targets = await ctx.ops.splitTargets();
+          } catch {
+            targets = [];
+          }
+          if (targets.length > 1) {
+            openSplitChooser(ctx, targets, (split) => ctx.ops.splitAddTabByIndex(n, split));
+            return;
+          }
+          ctx.ops.splitAddTabByIndex(n, targets[0] ? targets[0].split : undefined);
+        })();
+      }),
+    // `;W o` — take THIS tab out of the split and leave the other panes where
+    // they are. `;W u` is still the "take the whole split apart" key; the two are
+    // different intentions, which is why they are two keys rather than two
+    // spellings of one.
+    pullFromSplit: () => ctx.ops.pullFromSplit(),
 
     // ---- `;Z` Zoom ----
     zoomIn: () => ctx.ops.zoom(0.2),

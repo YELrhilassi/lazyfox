@@ -58,9 +58,14 @@ export async function run(ctx: any): Promise<void> {
     })()`);
     const dump = JSON.parse(raw);
     assert(dump && (dump.listHTML || "").includes("data-index"), "split panel lists other tabs: " + String(raw));
-    // Each row must carry the real Firefox tab id so the user can tell tabs
-    // apart in the panel.
-    assert((dump.listHTML || "").includes("id "), "split panel rows show the tab id: " + String(raw));
+    // THE ROW SHOWS WHAT THE USER CAN RECOGNISE: the number to press, the
+    // title, and the site. It used to print `id 123 \u00B7 https://\u2026`, and
+    // the id was the problem — it is a number that appears nowhere else in the
+    // product, printed beside a URL long enough to be cut off, so the pane read
+    // as a debug dump. This pins the replacement, and that the id is gone.
+    assert(/(class="?kbd"?>)\d+</.test(dump.listHTML || ""), "rows carry the move number: " + String(raw));
+    assert((dump.listHTML || "").includes("txt"), "rows carry the title/site pair: " + String(raw));
+    assert(!/id \d/.test(dump.listHTML || ""), "rows no longer print the Firefox tab id: " + String(raw));
     // Clean up.
     await ctx.leaderSeq(ctx.tabA, ["W", "u"]);
     await waitNoSplit();
@@ -120,14 +125,14 @@ export async function run(ctx: any): Promise<void> {
     if (p2) await evalIn(ctx.probe, `browser.tabs.remove(${p2.id})`).catch(() => {});
     await waitNoSplit();
   });
-  await t("split: native split ;W [ / ;W ] switch the active pane", async () => {
+  await t("split: native split ;W h / ;W l switch the active pane", async () => {
     const pair = await nativeSplit();
     const p1 = pair.find((t) => t.active);
     const p2 = pair.find((t) => !t.active);
     assert(p1 && p2, "native split has an active and an inactive pane: " + JSON.stringify(pair));
     // The command center pane stays selected right after splitting (the helper
     // keeps the original tab active); keys on it reach the chrome helper.
-    await ctx.leaderSeq(ctx.tabA, ["W", "]"])
+    await ctx.leaderSeq(ctx.tabA, ["W", "h"])
     try {
       await waitFor(async () => {
         const a = await ctx.activeTabInfo();
@@ -138,7 +143,7 @@ export async function run(ctx: any): Promise<void> {
       const ts = await ctx.tabsInfo().catch((e2) => "ERR:" + String(e2 && e2.message ? e2.message : e2));
       throw new Error("pane switch to p2 failed; pair=" + JSON.stringify(pair) + " state=" + JSON.stringify(st) + " tabs=" + JSON.stringify(ts));
     }
-    await ctx.leaderSeq(ctx.tabA, ["W", "["])
+    await ctx.leaderSeq(ctx.tabA, ["W", "l"])
     try {
       await waitFor(async () => {
         const a = await ctx.activeTabInfo();
@@ -272,7 +277,7 @@ export async function run(ctx: any): Promise<void> {
     await ctx.leaderSeq(ctx.tabA, ["W", "u"]); // ;W u
     await waitNoSplit();
   });
-  await t("split: ;W { and ;W } swap the panes left/right", async () => {
+  await t("split: ;W s swaps the panes", async () => {
     // Isolate: collapse the window to just the probe + a fresh CC (tabA) and
     // a fresh content tab (tabB), so the split pair and its ;+N index are
     // deterministic (probe=1, tabA=2, tabB=3).
@@ -350,22 +355,23 @@ export async function run(ctx: any): Promise<void> {
     const before = await order();
     const flipped = before.split(",").reverse().join(",");
     assert(before.split(",").length === 2, "swap test has a 2-pane split: " + before);
-    // ;} moves the active pane right (order flips).
-    await ctx.leaderSeq(ctx.tabA, ["W", "}"])
+    // `;W s` swaps the pair (order flips). A two-pane split has no direction
+    // to pick, which is why the directional `{` / `}` keys are gone.
+    await ctx.leaderSeq(ctx.tabA, ["W", "s"])
     try {
       await waitFor(async () => ((await order()) === flipped ? flipped : null), 8000);
     } catch (e) {
       const now = await ctx.tabsInfo().catch(() => "ERR");
       const st = await ctx.chromeState().catch(() => "ERR");
-      throw new Error(";} did not flip panes; before=" + before + " now=" + JSON.stringify(now) + " state=" + JSON.stringify(st && { lastAction: st.lastAction, strip: st.strip }));
+      throw new Error(";W s did not flip panes; before=" + before + " now=" + JSON.stringify(now) + " state=" + JSON.stringify(st && { lastAction: st.lastAction, strip: st.strip }));
     }
     const after1 = await order();
-    assert(after1 === flipped, ";} swapped the panes: " + before + " -> " + after1);
-    // ;{ moves the active pane back left (order flips again).
-    await ctx.leaderSeq(ctx.tabA, ["W", "{"])
+    assert(after1 === flipped, ";W s swapped the panes: " + before + " -> " + after1);
+    // The same key again is the inverse: a swap is its own undo.
+    await ctx.leaderSeq(ctx.tabA, ["W", "s"])
     await waitFor(async () => ((await order()) === before ? before : null), 8000);
     const after2 = await order();
-    assert(after2 === before, ";{ swapped the panes back: " + after1 + " -> " + after2);
+    assert(after2 === before, ";W s swapped the panes back: " + after1 + " -> " + after2);
     // The pair must still be a live split after swapping.
     const live = (await ctx.tabsInfo()).filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
     assert(live.length === 2, "split intact after swapping: " + JSON.stringify(live));
@@ -666,7 +672,7 @@ export async function run(ctx: any): Promise<void> {
     };
 
     const before = await activeId();
-    await timed("switch pane", "[", async () => {
+    await timed("switch pane", "h", async () => {
       const id = await waitFor(async () => {
         const now = await activeId();
         return now != null && now !== before ? now : null;
@@ -701,5 +707,137 @@ export async function run(ctx: any): Promise<void> {
     await ctx.leaderSeq(ctx.tabA, ["W", "u"]);
     await waitNoSplit().catch(() => {});
     await waitNoSplitStable();
+  });
+
+  await t("split: the pairing and its place are written down (what a restart reads)", async () => {
+    // A split changes no tab, so it fires no `tabs.*` event, and the autosave is
+    // driven entirely by those events. Before the helper reported the layout
+    // change, a pair made after the last tab change was never written into the
+    // crash-recovery session — so the next launch had nothing to restore and
+    // came back flat. This asserts the WRITE, at the position level, because
+    // that is the thing a restart reads.
+    await ctx.collapseWindow();
+    ctx.tabA = await createTab();
+    await ctx.openCC(ctx.tabA);
+    const tabB = await createTab();
+    await navigate(tabB, `${ctx.base}/hello`, "complete");
+    await ctx.waitTabUrl("/hello", { timeoutMs: 10000 });
+    await ctx.openCC(ctx.tabA);
+    //
+    // Build the pair the way the persistence path can actually describe it:
+    // TWO CONTENT PANES. `;W |` alone pairs the active page with the
+    // split-panel companion, which is plumbing the snapshot drops on purpose
+    // (it is our own UI, recreated on demand, not something a restore reopens)
+    // — so that split has nothing to write down, and is not what this test is
+    // about. Moving a real page into the split replaces the companion, which is
+    // the layout a user ends up with and quits from.
+    const want = (expr: string, ms = 10000) => ctx.waitExpr(ctx.probe, expr, true, ms);
+    const get = (expr: string) => evalIn(ctx.probe, expr);
+    // The pair on screen, so the stored layout can be compared with it.
+    await nativeSplit();
+    const live = await ctx.tabsInfo();
+    const real = live.filter((t: any) => ctx.isRealTab(t));
+    const target = real.find((t: any) => (t.url || "").indexOf("/hello") !== -1);
+    assert(target, "found the content tab to pair with: " + JSON.stringify(live));
+    const targetIndex = await ctx.productNumberOf(target, real);
+    await ctx.leaderSeq(ctx.tabA, ["W", "m"]); // ;W m -> move tab into split
+    await waitPlusPopup(ctx.tabA);
+    await ctx.pressNumber(ctx.tabA, targetIndex); // ;+N
+    const panes = await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      const sv = now.filter((t: any) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 && sv.some((t: any) => t.id === target.id) ? sv : null;
+    }, 10000).catch(() => null);
+    assert(
+      panes,
+      "two content panes to remember: " + JSON.stringify(await ctx.tabsInfo().catch(() => "ERR"))
+    );
+    await want(
+      `browser.storage.local.get("lfLastSession").then((r) => { const s = r.lfLastSession;` +
+        ` return !!(s && s.tabs && /[0-9]+:[0-9]+/.test(String(s.splits || ""))); })`
+    ).catch(async (e) => {
+      const saved = await get(
+        `browser.storage.local.get("lfLastSession").then((r) => JSON.stringify(r.lfLastSession || null))`
+      ).catch(() => "ERR");
+      // What the EXTENSION can see, pane by pane: a stored layout can only be as
+      // good as this view, and "the id is not on the tab yet" and "the tab is
+      // not in the list at all" are different bugs with the same symptom.
+      const api = await get(
+        `browser.tabs.query({ currentWindow: true }).then((ts) => ts.map((t) => ({ id: t.id, u: String(t.url || "").slice(-28), sv: t.splitViewId === undefined ? "none" : t.splitViewId, pinned: !!t.pinned, hidden: !!t.hidden })))`
+      ).catch(() => "ERR");
+      throw new Error(
+        "the split was never written to the autosave: " + String(e) +
+        " last=" + saved + " api=" + JSON.stringify(api)
+      );
+    });
+    const paneUrls = panes.map((p: any) => String(p.url || ""));
+    assert(
+      paneUrls.every((u: string) => !u.includes("splitpanel.html")),
+      "both panes are content: " + JSON.stringify(paneUrls)
+    );
+    const saved: any = await get(`browser.storage.local.get("lfLastSession").then((r) => r.lfLastSession)`);
+    // `saved` is the crash-recovery "last" session, which is exactly what a
+    // restart reads when the window was never given a name.
+    //
+    // "a:b" per pair, 0-based over the tabs a split can address (unpinned).
+    const pairs: number[][] = String(saved.splits)
+      .split(",")
+      .filter(Boolean)
+      .map((p: string) => p.split(":").map(Number));
+    assert(pairs.length === 1, "exactly one pair is recorded: " + JSON.stringify(saved.splits));
+    const [a, b] = pairs[0];
+    assert(
+      Number.isInteger(a) && Number.isInteger(b) && a >= 0 && b >= 0,
+      "the pair is two positions: " + JSON.stringify(saved.splits)
+    );
+    const addressable = (saved.tabs || []).filter((x: any) => !x.pinned);
+    assert(
+      addressable.length > Math.max(a, b),
+      "both positions exist in the saved list: " + saved.splits + " of " + addressable.length + " tabs"
+    );
+    // The positions must name the two tabs that ARE the split, which is a
+    // stronger claim than "two tabs share an id": a snapshot taken while the
+    // panes are still settling can name the wrong pair, and the user sees that
+    // as "my layout came back paired with the wrong tab".
+    //
+    // Identity, not position arithmetic: two tabs in one window can share a URL
+    // (a command center each), so "the first tab with this URL" is not the pane.
+    // The multiset of the recorded panes is what must match.
+    const leaf = (u: unknown) => String(u || "").split("#")[0];
+    const asc = (xs: unknown[]) => xs.map(leaf).sort();
+    const atA = addressable[a];
+    const atB = addressable[b];
+    const got = asc([atA.url, atB.url]);
+    assert(
+      JSON.stringify(got) === JSON.stringify(asc(paneUrls)),
+      "the recorded pair is the pane pair: want " + JSON.stringify(asc(paneUrls)) +
+        " got " + JSON.stringify(got) + " at " + saved.splits + " over " +
+        JSON.stringify(addressable.map((x: any) => String(x.url || "").slice(-24)))
+    );
+    assert(
+      typeof atA.splitViewId === "number" && atA.splitViewId >= 0 && atA.splitViewId === atB.splitViewId,
+      "the recorded positions are the two panes of one split view: " +
+        JSON.stringify({ splits: saved.splits, a: atA, b: atB })
+    );
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]);
+    await waitNoSplit().catch(() => {});
+    await waitNoSplitStable();
+    // And the layout is written down again when it goes away — the same report,
+    // the other direction. An empty layout is absence of a pair, not a stale one.
+    await want(
+      `browser.storage.local.get("lfLastSession").then((r) => { const s = r.lfLastSession;` +
+        ` return !!(s && s.tabs && !/[0-9]+:[0-9]+/.test(String(s.splits || ""))); })`
+    ).catch((e) => {
+      throw new Error("the unsplit was never written to the autosave: " + String(e));
+    });
+    // Hand the window back. This test opens pages of its own, and the next test
+    // in the group reasons about WHERE a tab sits ("A stays first among the web
+    // tabs") — a page left behind by this one is a tab the next test never made
+    // and cannot account for, so its order assertion fails for a reason that has
+    // nothing to do with the order. Measured: the two `order` tests pass alone
+    // and failed only behind this one.
+    await ctx.collapseWindow();
+    ctx.tabA = await createTab();
+    await ctx.openCC(ctx.tabA);
   });
 }

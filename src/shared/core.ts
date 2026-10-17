@@ -21,6 +21,8 @@ export interface CoreApi {
   bindings(): WkItem[];
   // The keymap rows (spec + display chord + action id + category sub-keys) and
   // the shift/unshift pair the TS spec normaliser is pinned against.
+  // The content script's dark verdict for one tab: on/off + mode + engine.
+  statusDark(index: number, on: boolean, mode: string, engine: string): void;
   keymap(): unknown[];
   keymapValidate(): string;
   unshiftKey(key: string): string;
@@ -107,6 +109,7 @@ export type StatusOp =
   | { kind: "ui"; popup: boolean; leader: boolean }
   | { kind: "leader"; index: number; active: boolean }
   | { kind: "find"; index: number; cur: number; count: number }
+  | { kind: "dark"; index: number; on: boolean; mode: string; engine: string }
   | { kind: "stealth"; on: boolean }
   | { kind: "leaderSignal"; armed: boolean; prefix: string; expect: string }
   | { kind: "nav"; nav: NavState }
@@ -137,6 +140,9 @@ export function applyStatusOps(a: CoreApi, ops: StatusOp[]): void {
         break;
       case "find":
         a.statusFind(op.index, op.cur, op.count);
+        break;
+      case "dark":
+        a.statusDark(op.index, op.on, op.mode, op.engine);
         break;
       case "stealth":
         a.statusStealth(op.on);

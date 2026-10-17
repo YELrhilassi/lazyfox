@@ -142,7 +142,12 @@ export function openSessionsPopup(ctx: PopupCtx): void {
             (t.active ? "<span class='dot'></span>" : "") +
             (t.pinned ? "\uD83D\uDCCC " : "") +
             (t.stealth ? "\uD83D\uDD75 " : "") +
-            "<div class='t'>" + esc(t.title || "") + "</div>" +
+            // THE TITLE IS WRAPPED, not merely escaped. A bare text node
+            // inside a flex row is an anonymous flex item, and an anonymous
+            // flex item cannot be told to ellipsize — a long tab title pushed
+            // the column's width out instead of clipping, which is what "the
+            // tabs popup should truncate long text of the tab" was about.
+            "<div class='t'><span class='txt'>" + esc(t.title || "") + "</span></div>" +
             "<div class='s'>" + esc(t.subtitle || t.url || "") + "</div>";
           tabsPane.appendChild(row);
         });
@@ -256,21 +261,21 @@ export function openSessionsPopup(ctx: PopupCtx): void {
           if (s.kind === "save") {
             return (
               "<div class='t'><span class='dot'></span>" +
-              esc(s.title || "") +
+              "<span class='txt'>" + esc(s.title || "") + "</span>" +
               "</div><div class='s'>" + esc(s.subtitle || "") + "</div>"
             );
           }
           if (s.kind === "new") {
             return (
               "<div class='t'><span class='dot new'></span>" +
-              esc(s.title || "") +
+              "<span class='txt'>" + esc(s.title || "") + "</span>" +
               "</div><div class='s'>" + esc(s.subtitle || "") + "</div>"
             );
           }
           return (
             "<div class='t'>" +
             (s.marker ? "<span class='lf-marker'>" + s.marker + "</span>" : "") +
-            esc(s.title || "") +
+            "<span class='txt'>" + esc(s.title || "") + "</span>" +
             "</div><div class='s'>" + esc(s.subtitle || "") + "</div>"
           );
         },

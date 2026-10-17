@@ -20,7 +20,16 @@ import type { Domain } from "./types";
 // The actions this domain owns. The list is the contract: background.ts unions
 // every domain's list and requires the result to cover BgApi exactly, so a new
 // action cannot be declared without someone deciding which domain answers it.
-type Owns = "syncTyping" | "syncLeader" | "syncContent" | "syncFind" | "syncHold" | "setConfig" | "toggleWhichKey" | "stealthOpen";
+type Owns =
+  | "syncTyping"
+  | "syncLeader"
+  | "syncContent"
+  | "syncFind"
+  | "syncDark"
+  | "syncHold"
+  | "setConfig"
+  | "toggleWhichKey"
+  | "stealthOpen";
 
 const defaultHoldState = createTabHoldState({
   getTabValue: (tabId, key) => browser.sessions.getTabValue(tabId, key),
@@ -39,6 +48,7 @@ export interface SyncDeps {
   pushLeaderStateToChrome(index: number, signal: LeaderSignal): void;
   pushContentStateToChrome(index: number, active: boolean, url: string, doc?: string): void;
   pushFindStateToChrome(index: number, count: number, cur: number): void;
+  pushDarkStateToChrome(index: number, on: boolean, mode: string, engine: string): void;
   stealthOpen(onDone: () => void): Promise<{ ok: boolean; error?: string }>;
   pushSessionStateToChrome(): Promise<void>;
 }
@@ -162,6 +172,23 @@ export function createSyncHandlers(
           typeof tab.index === "number" ? tab.index : -1,
           isNaN(c) ? -1 : c,
           Math.max(0, Number(data.cur) || 0)
+        );
+      }
+      return { ok: true };
+    },
+
+    syncDark: (data, sender) => {
+      // The content script owns dark mode on a web page — it is the only side
+      // that can see the page's colours — but the bar is the helper's. So the
+      // verdict rides the same relay find uses, with the tab index the helper
+      // needs to show it only on the tab you are looking at.
+      const tab = (sender as { tab?: { id?: number; index?: number } } | undefined)?.tab;
+      if (tab && tab.id != null) {
+        deps.pushDarkStateToChrome(
+          typeof tab.index === "number" ? tab.index : -1,
+          !!data.on,
+          String(data.mode || ""),
+          String(data.engine || "")
         );
       }
       return { ok: true };

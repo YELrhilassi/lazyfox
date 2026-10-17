@@ -39,6 +39,77 @@ export function tabChooserPanel(prefix: string): string {
  * between the count and the rows simply has no title, and the number still
  * works, because the number is what the user is choosing.
  */
+/** One destination a tab can be moved into. */
+export interface SplitTarget {
+  split: number;
+  active: boolean;
+  panes: { title: string; url: string; active: boolean }[];
+}
+
+/**
+ * "Move this tab into WHICH split?"
+ *
+ * A window can hold more than one native split, so `;W m` is a question with
+ * several right answers. It used to pick one silently — the active split, or the
+ * last one the platform mentioned — which is fine until there are two and then
+ * reads as "it moved my tab somewhere I did not pick".
+ *
+ * The panel is the tab-position chooser's shape on purpose: a short, known list
+ * driven by digits, no search field (there is nothing to search for), and Enter
+ * for the highlighted row. The ROWS ARE THE SPLITS, not the tabs inside them —
+ * the tabs in each pane are shown so the choice is recognisable, but the number
+ * beside a row is the split's own number.
+ */
+export function openSplitChooser(
+  ctx: PopupCtx,
+  targets: SplitTarget[],
+  apply: (split: number) => void
+): void {
+  ctx.open(
+    keyPanel(
+      "Move into which split?",
+      "no split to move into",
+      "<span class='lf-badge'>1-9</span> pick a split &middot; " +
+        "<span class='lf-badge'>&uarr;&darr;</span> move &middot; " +
+        "<span class='lf-badge'>Enter</span> go &middot; " +
+        "<span class='lf-badge'>Esc</span> close"
+    ),
+    (root) =>
+      makeSelector<SplitTarget>(ctx, root, {
+        debounceMs: 0,
+        itemClass: "lf-tab",
+        emptyText: "no split to move into",
+        vimNav: true,
+        search: async () => targets,
+        keyOf: (t) => t.split,
+        render: (t) =>
+          "<div class='t'>" +
+          "<span class='lf-marker'>" +
+          t.split +
+          "</span>" +
+          (t.active ? "<span class='dot'></span>" : "") +
+          "<span class='txt'>" +
+          esc(t.panes.map((p) => p.title || p.url || "untitled").join("  \u2502  ")) +
+          "</span></div><div class='s'>" +
+          esc(t.panes.map((p) => p.url).join("  \u2502  ")) +
+          "</div>",
+        onPick: (t) => {
+          ctx.close();
+          apply(t.split);
+        },
+        extraKeys: (e) => {
+          if (e.ctrlKey || e.metaKey || e.altKey) return false;
+          const d = Number(e.key);
+          if (!(d >= 1 && d <= targets.length)) return false;
+          e.preventDefault();
+          ctx.close();
+          apply(d);
+          return true;
+        },
+      })
+  );
+}
+
 export function openTabChooser(
   ctx: PopupCtx,
   prefix: string,

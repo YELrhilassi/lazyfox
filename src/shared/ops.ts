@@ -120,7 +120,13 @@ export interface ActionOps {
   unsplitTab(): void;
   switchSplitPane(dir: number): void;
   swapSplitPane(dir: number): void;
-  splitAddTabByIndex(n: number): void;
+  // `split` is 1-based among the window's split groups; omitted when there is
+  // only one. See splitTargets for the list to choose from.
+  splitAddTabByIndex(n: number, split?: number): void;
+  /** The window's split groups, in strip order, for a destination chooser. */
+  splitTargets(): Promise<{ split: number; active: boolean; panes: { title: string; url: string; active: boolean }[] }[]>;
+  /** Take this tab out of its split, leaving the rest of the group intact. */
+  pullFromSplit(): void;
   sessionState(): Promise<{
     name: string;
     marker: number;

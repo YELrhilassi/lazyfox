@@ -369,12 +369,27 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
         else toast(r && r.note ? r.note : "not in a split view");
       });
     },
-    splitAddTabByIndex: (n: number) => {
+    splitAddTabByIndex: (n: number, split?: number) => {
       // Moving a tab into a split view is a native-split (chrome helper)
       // capability; the background relays the request to the chrome helper.
-      void send("sessionSplitAddTabByIndex", { index: n }).then((r) => {
-        if (r && r.ok) toast("moved tab " + n + " into split");
+      // `split` names WHICH group when the window holds more than one; the
+      // chooser that picks it is shared, and this is what it calls.
+      void send(
+        "sessionSplitAddTabByIndex",
+        split && split >= 1 ? { index: n, split: split } : { index: n }
+      ).then((r) => {
+        if (r && r.ok) toast("moved tab " + n + " into split " + (split && split > 1 ? split : ""));
         else toast(r && r.note ? r.note : "could not move tab into split");
+      });
+    },
+    splitTargets: async () => {
+      const r = await send("sessionSplitTargets");
+      return (r && r.splits) || [];
+    },
+    pullFromSplit: () => {
+      void send("sessionPullFromSplit").then((r) => {
+        if (r && r.ok) toast("moved tab out of the split");
+        else toast(r && r.note ? r.note : "not in a split view");
       });
     },
     toggleWhichKey: () => {

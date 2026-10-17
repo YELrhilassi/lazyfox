@@ -72,10 +72,10 @@ export async function run(ctx: any): Promise<void> {
     return ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
   };
 
-  await t("sessions: ;W [ split-pane switch is a no-op without a split", async () => {
+  await t("sessions: ;W h split-pane switch is a no-op without a split", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     const before = await ctx.tabsInfo();
-    await ctx.leaderSeq(ctx.tabA, ["W", "["]);
+    await ctx.leaderSeq(ctx.tabA, ["W", "h"]);
     await leaderDone(ctx.tabA);
     await chromeLeaderIdle();
     const after = await ctx.tabsInfo();

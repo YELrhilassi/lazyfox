@@ -41,7 +41,9 @@ export interface ChromeOpsDeps {
     unsplit(): boolean;
     switchPane(dir: number): boolean;
     swapPane(dir: number): boolean;
-    addTabToSplitByIndex(n: number): boolean;
+    addTabToSplitByIndex(n: number, split?: number): boolean;
+    pullFromSplit(): boolean;
+    splitTargets(): { split: number; active: boolean; panes: { title: string; url: string; active: boolean }[] }[];
   };
   // The chrome popup host (popup.ts).
   popup: { openResizePopup(): void };
@@ -262,7 +264,9 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     unsplitTab: () => splits.unsplitTab(),
     switchSplitPane: (dir: number) => splits.switchSplitPane(dir),
     swapSplitPane: (dir: number) => splits.swapSplitPane(dir),
-    splitAddTabByIndex: (n: number) => splits.splitAddTabByIndex(n),
+    splitAddTabByIndex: (n: number, split?: number) => splits.splitAddTabByIndex(n, split),
+    splitTargets: async () => splits.splitTargets(),
+    pullFromSplit: () => splits.pullFromSplit(),
     sessionState: () => {
       const tabsAll = win.gBrowser.tabs;
       let idx = 1;

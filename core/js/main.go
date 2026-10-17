@@ -647,6 +647,12 @@ var exportsTable = []jsExport{
 		core.StatusSetFind(argInt(args, 0), argInt(args, 1), count)
 		return nil
 	}},
+	// The content script's dark-mode verdict for one tab: on/off, the mode that
+	// decided it, and the engine that rendered it (native/dynamic/filter).
+	{"statusDark", func(args []js.Value) interface{} {
+		core.StatusSetDark(argInt(args, 0), argBool(args, 1), argStr(args, 2), argStr(args, 3))
+		return nil
+	}},
 	{"statusStealth", func(args []js.Value) interface{} {
 		core.StatusSetStealth(argBool(args, 0))
 		return nil
