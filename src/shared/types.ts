@@ -293,17 +293,44 @@ export interface SessionTab {
   stealth?: boolean;
 }
 
+/**
+ * One window's worth of a session: its tabs, its selection, and its split
+ * layout. A session used to be exactly this, unwrapped — see `windows` below.
+ */
+export interface SessionWindow {
+  tabs: SessionTab[];
+  active: number;
+  windowState: string;
+  // Compact split layout computed by the Go core (core.EncodeSplits):
+  // "a:b,c:d" pairs of 0-based tab indices over the tabs a split can address
+  // (unpinned). Authoritative for restore; the per-tab splitViewId remains only
+  // as a fallback for pre-encoding sessions.
+  splits?: string;
+}
+
 export interface Session {
   name: string;
   marker: number; // 1-9, 0 = unassigned
+  // THE FOCUSED WINDOW'S TABS, and deliberately still first-class: a session
+  // saved before windows were recorded has only these, the status bar shows the
+  // focused window, and tab move/copy addresses this list. `windows[0]` is the
+  // same window, so the two can never disagree about it.
   tabs: SessionTab[];
   active: number;
   windowState: string;
   updatedAt: number;
-  // Compact split layout computed by the Go core (core.EncodeSplits):
-  // "a:b,c:d" pairs of 0-based tab indices. Authoritative for restore; the
-  // per-tab splitViewId remains only as a fallback for pre-encoding sessions.
+  // Compact split layout of the FOCUSED window (see SessionWindow.splits).
   splits?: string;
+  /**
+   * EVERY window the session was saved from, focused window first.
+   *
+   * Absent means "one window, described by the flat fields above" — which is
+   * what every session saved by an older build looks like, and what a restore
+   * still has to work on. Present means the session owns the whole window set: a
+   * switch rebuilds each window (with its own split layout), and closes the
+   * windows the session does not describe.
+   */
+  windows?: SessionWindow[];
 }
 
 // One hinted element in a page report: enough for a human to see WHY a control
