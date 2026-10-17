@@ -1,7 +1,14 @@
 name: Dev Nightly - CI
 
-# VERIFICATION of the unsigned dev build on every push/PR to dev-nightly.
+# VERIFICATION of the unsigned dev build, on request, for the dev branch.
 # Read-only: this workflow never pushes, tags, publishes or writes to the repo.
+#
+# IT IS MANUAL (`workflow_dispatch`), and that is the policy: a dev push does no
+# longer spend a runner. The same four steps are run locally before anything is
+# committed (`npm run check && npm run build && npm run typecheck && npm test`),
+# and the PUSH gate is master's — `npm run ship` merges the dev branch into
+# master with -X theirs, and that push is what users download (see master.yml),
+# so the artifact that leaves the building is verified where it matters.
 #
 # What it gates, in order, and why that order:
 #
@@ -31,10 +38,7 @@ name: Dev Nightly - CI
 #   * the native installer compiles: see the installers workflow.
 
 on:
-  push:
-    branches: [dev-nightly]
-  pull_request:
-    branches: [dev-nightly]
+  workflow_dispatch:
 
 jobs:
   verify:
