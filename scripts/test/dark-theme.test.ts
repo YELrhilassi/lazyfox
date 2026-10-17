@@ -16,11 +16,18 @@ import {
   shouldApply,
   type PageSample,
 } from "../../src/extension/content/dark/detect.ts";
-import { createResampleGate } from "../../src/extension/content/dark/apply.ts";
-import { buildTheme, composeSheet, entriesFor, fallbackSheet, OUR_HOSTS } from "../../src/extension/content/dark/theme.ts";
+import { createResampleGate, touchesOnlyOwnStyle } from "../../src/extension/content/dark/apply.ts";
+import {
+  buildTheme,
+  composeSheet,
+  entriesFor,
+  fallbackSheet,
+  OUR_HOSTS,
+  preImage,
+} from "../../src/extension/content/dark/theme.ts";
 import { parseFixList } from "../../src/shared/dark-rules.ts";
 import { DARK_DEFAULTS } from "../../src/shared/config.ts";
-import { relativeLuminance, parseColor } from "../../src/extension/content/dark/color.ts";
+import { contrastRatio, relativeLuminance, parseColor } from "../../src/extension/content/dark/color.ts";
 
 function sample(over: Partial<PageSample> & { area: number }): PageSample {
   return {
@@ -109,6 +116,23 @@ describe("reading a page from its samples", () => {
     const messy = analyze([sample({ area: 1000, hasBgImage: true })]);
     assert.equal(chooseEngine("filter", flat), "filter");
     assert.equal(chooseEngine("dynamic", messy), "dynamic");
+  });
+
+  test("the engine does not flip while coverage hovers around the threshold", () => {
+    // THE FLICKER. Coverage is re-measured on every pass, and the two engines paint
+    // the page in opposite ways, so a page whose coverage drifts across one
+    // threshold was remapped on one pass and inverted on the next — a whole-page
+    // flash each time, on any page with a lazy panel or an ad slot. The band is
+    // what makes a switch a decision instead of a coin toss.
+    const at = (coverage: number) => ({ ...analyze(LIGHT_PAGE), coverage, sampled: true });
+    assert.equal(chooseEngine("auto", at(1), "dynamic"), "dynamic");
+    assert.equal(chooseEngine("auto", at(0.45), "dynamic"), "dynamic", "still well understood");
+    assert.equal(chooseEngine("auto", at(0.45), "filter"), "filter", "not yet clearly understood");
+    assert.equal(chooseEngine("auto", at(0.55), "filter"), "filter", "the band is sticky both ways");
+    assert.equal(chooseEngine("auto", at(0.1), "dynamic"), "filter", "a decisive loss switches");
+    assert.equal(chooseEngine("auto", at(0.9), "filter"), "dynamic", "a decisive gain switches");
+    // No previous engine is the cold decision, unchanged.
+    assert.equal(chooseEngine("auto", at(0.5)), "dynamic");
   });
 });
 
@@ -304,6 +328,141 @@ describe("the mapping entries", () => {
     assert.ok(entry!.fg);
   });
 
+  test("a transparent layer is not painted opaque over what it reveals", () => {
+    // THE REPORT: "the grid is completely hidden by some sort of gray overlay".
+    // The sampler resolves a transparent element's colour against its ancestors
+    // so the PAGE can be read; painting that resolved colour back turns the
+    // transparent layer into an opaque sheet over whatever it used to reveal.
+    const [e] = entriesFor(
+      [
+        sample({
+          selector: ".grid-layer",
+          area: 40_000,
+          ownBg: "rgba(0, 0, 0, 0)",
+          bg: "rgb(255, 255, 255)",
+          fg: "rgb(17, 17, 17)",
+        }),
+      ],
+      theme
+    );
+    assert.equal(e!.bg, undefined, "a layer that painted nothing must keep painting nothing");
+    assert.ok(e!.fg, "its text is still mapped");
+    // And the text is measured against the surface it shows through, not against
+    // a colour the element never had.
+    assert.ok(
+      contrastRatio(parseColor(e!.fg!)!, parseColor(theme.background)!) >= 4.5,
+      "text on the revealed surface is readable: " + e!.fg
+    );
+  });
+
+  test("an invisible layer with no text produces no rule at all", () => {
+    const entries = entriesFor(
+      [sample({ selector: ".veil", area: 5000, ownBg: "rgba(0, 0, 0, 0)", bg: "rgb(255, 255, 255)", fg: "rgba(0, 0, 0, 0)" })],
+      theme
+    );
+    assert.deepEqual(entries, []);
+  });
+
+  test("a translucent WHITE surface is mapped and keeps its alpha", () => {
+    // The frosted sticky header: `rgba(255,255,255,.85)` over a page that is now
+    // dark renders as a near-white bar across the top of the page — the most
+    // visible artifact a dark theme can produce. Mapping the RGB and keeping the
+    // alpha turns it into a translucent dark bar.
+    const [entry] = entriesFor(
+      [sample({ selector: ".frosted", bg: "rgba(255, 255, 255, 0.85)", fg: "rgb(17, 17, 17)", area: 1000 })],
+      theme
+    );
+    assert.equal(entry!.bg, "rgba(22, 22, 30, 0.85)", "the panel becomes the canvas at the same alpha");
+  });
+
+  // THE REPORT: "the colour that it picks ... is awful to look at". These are the
+  // surfaces a real site is made of, and the property each one has to keep.
+  test("a dark header keeps its weight, and its white text stays white", () => {
+    // A navy hero with white text is a SURFACE far from the canvas. Mapping it by
+    // position turned it pale (far from the canvas reads as text-like) and left
+    // its white text white: a light bar with invisible text on a dark page.
+    const [e] = entriesFor(
+      [sample({ selector: "header", bg: "rgb(11, 26, 51)", fg: "rgb(255, 255, 255)", area: 40_000 })],
+      theme
+    );
+    const bg = parseColor(e!.bg!)!;
+    const fg = parseColor(e!.fg!)!;
+    assert.ok(relativeLuminance(bg) < 0.25, "the header is still dark: " + e!.bg);
+    assert.ok(relativeLuminance(bg) > relativeLuminance(theme.poles.bg), "and still a panel: " + e!.bg);
+    assert.ok(relativeLuminance(fg) > 0.9, "white text was not inverted: " + e!.fg);
+    assert.ok(contrastRatio(fg, bg) >= 4.5, "the pair reads: " + e!.fg + " on " + e!.bg);
+  });
+
+  test("text on a coloured badge is lifted until it reads", () => {
+    // Black text on a yellow badge: both ends moved to the dark side under the
+    // positional model, and the label vanished. The surface mapping keeps the
+    // badge a badge; `ensureContrast` is what keeps the label a label.
+    const [e] = entriesFor(
+      [sample({ selector: ".badge", bg: "rgb(255, 235, 59)", fg: "rgb(17, 17, 17)", area: 1200 })],
+      theme
+    );
+    assert.ok(contrastRatio(parseColor(e!.fg!)!, parseColor(e!.bg!)!) >= 4.5, e!.fg + " on " + e!.bg);
+  });
+
+  test("a light panel is a panel, not the canvas again", () => {
+    const [e] = entriesFor([sample({ selector: ".card", bg: "rgb(242, 244, 248)", area: 5000 })], theme);
+    assert.notEqual(e!.bg, theme.background, "a page's cards must remain visible");
+  });
+
+  test("a border on a panel stays visible", () => {
+    const [e] = entriesFor(
+      [sample({ selector: ".card", bg: "rgb(247, 248, 250)", fg: "rgb(27, 31, 36)", border: "rgb(207, 214, 224)", area: 5000 })],
+      theme
+    );
+    assert.ok(e!.border, "a hairline is mapped");
+    assert.ok(
+      contrastRatio(parseColor(e!.border!)!, parseColor(e!.bg!)!) >= 1.3,
+      "the rule is still a rule: " + e!.border + " on " + e!.bg
+    );
+  });
+
+  test("a gradient's stop colours go through the same mapping", () => {
+    // A pale gradient used to be left alone (only `url(` counted as a background
+    // image), so it washed white over the mapped colour.
+    const [e] = entriesFor(
+      [
+        sample({
+          selector: ".hero",
+          bg: "rgb(255, 255, 255)",
+          bgImage: "linear-gradient(rgb(255, 255, 255) 0%, rgb(238, 238, 238) 100%)",
+          area: 40_000,
+        }),
+      ],
+      theme
+    );
+    assert.ok(e!.image, "the gradient was mapped");
+    const stops = e!.image!.match(/rgba?\([^)]*\)/g) || [];
+    assert.equal(stops.length, 2, "both stops survived: " + e!.image);
+    for (const stop of stops) {
+      assert.ok(relativeLuminance(parseColor(stop)!) < 0.2, "stop left light: " + stop);
+    }
+    assert.match(e!.image!, /linear-gradient/, "the shape of the gradient did not change");
+  });
+
+  test("a gradient that carries a url() is a photograph, and is left alone", () => {
+    const [e] = entriesFor(
+      [sample({ selector: ".hero", bg: "rgb(255, 255, 255)", hasBgImage: true, bgImage: "url(x.png)", area: 40_000 })],
+      theme
+    );
+    assert.equal(e!.image, undefined);
+    assert.equal(e!.bg, undefined, "and its colour is not ours either");
+  });
+
+  test("a translucent DARK veil is left alone", () => {
+    // A modal scrim is dark on purpose. Inverting it would wash the page under it
+    // light, which is the same artifact in the other direction.
+    const [entry] = entriesFor(
+      [sample({ selector: ".scrim", bg: "rgba(0, 0, 0, 0.5)", fg: "rgb(255, 255, 255)", area: 1000 })],
+      theme
+    );
+    assert.equal(entry!.bg, undefined);
+  });
+
   test("an element with nothing to say produces no entry", () => {
     assert.deepEqual(entriesFor([sample({ bg: "rgba(0,0,0,0)", fg: "rgba(0,0,0,0)", area: 1000 })], theme), []);
   });
@@ -324,6 +483,93 @@ describe("the mapping entries", () => {
     );
     assert.equal(entries.length, 1);
   });
+
+  test("a shared class whose members disagree is split, so no panel stays white", () => {
+    // THE REPORT: 556 of 827 text elements unreadable on merriam-webster.com.
+    // A heading's class is shared with a transparent wrapper; the wrapper used
+    // to veto the group's background, so the white panel was never painted while
+    // the text on it was mapped to near-white. One rule per element is the fix.
+    const entries = entriesFor(
+      [
+        sample({
+          selector: ".card",
+          solo: "div.card:nth-of-type(1)",
+          ownBg: "rgb(255, 255, 255)",
+          bg: "rgb(255, 255, 255)",
+          fg: "rgb(33, 37, 41)",
+          area: 5000,
+        }),
+        sample({
+          selector: ".card",
+          solo: "div.card:nth-of-type(2)",
+          ownBg: "rgba(0, 0, 0, 0)",
+          bg: "rgb(255, 255, 255)",
+          fg: "rgb(244, 244, 244)",
+          area: 1200,
+        }),
+      ],
+      theme
+    );
+    assert.deepEqual(entries.map((e) => e.selector), ["div.card:nth-of-type(1)", "div.card:nth-of-type(2)"]);
+    assert.equal(entries[0]!.bg, theme.background, "the opaque panel is painted");
+    assert.equal(entries[1]!.bg, undefined, "the transparent one still paints nothing");
+    // The white text of the transparent member is measured against the surface
+    // that will actually render (our canvas), so it stays readable.
+    assert.ok(
+      contrastRatio(parseColor(entries[1]!.fg!)!, parseColor(theme.background)!) >= 4.5,
+      "text on the revealed canvas is readable: " + entries[1]!.fg
+    );
+  });
+
+  test("a disagreeing member with no address of its own is left alone, not painted with its siblings", () => {
+    const entries = entriesFor(
+      [
+        sample({ selector: ".card", solo: "#only", ownBg: "rgb(255, 255, 255)", bg: "rgb(255, 255, 255)", area: 5000 }),
+        sample({ selector: ".card", ownBg: "rgba(0, 0, 0, 0)", bg: "rgb(255, 255, 255)", fg: "rgb(244, 244, 244)", area: 1200 }),
+      ],
+      theme
+    );
+    assert.deepEqual(entries.map((e) => e.selector), ["#only"]);
+  });
+
+  test("a translucent white sheet over the whole screen is darkened, not left as a gray blanket", () => {
+    // MEASURED, on nytimes.com/puzzles/sudoku: the game sits under
+    // `#modalWrapper-overlay` — `position:absolute;z-index:101;
+    // background:rgba(255,255,255,.376);opacity:.86` over a million square
+    // pixels. Invisible on the site's own white page; a grey blanket over the
+    // board once the page is dark. That is the report "the grid is completely
+    // hidden by some sort of gray overlay", so a large translucent WHITE surface
+    // is painted like any other light surface, with its alpha kept.
+    const [sheet] = entriesFor(
+      [sample({ selector: ".overlay", ownBg: "rgba(255, 255, 255, 0.376)", bg: "rgb(255, 255, 255)", fg: "rgb(238, 240, 252)", area: 994_969 })],
+      theme
+    );
+    assert.equal(sheet!.bg, "rgba(22, 22, 30, 0.376)", "the white sheet became a dark one");
+  });
+
+  test("a frosted header keeps its alpha", () => {
+    const [e] = entriesFor(
+      [sample({ selector: ".hdr", ownBg: "rgba(255, 255, 255, 0.85)", bg: "rgb(255, 255, 255)", fg: "rgb(17, 17, 17)", area: 800_000 })],
+      theme
+    );
+    assert.equal(e!.bg, "rgba(22, 22, 30, 0.85)");
+  });
+
+  test("a gradient over a transparent background-colour is still a surface", () => {
+    const [e] = entriesFor(
+      [
+        sample({
+          selector: ".hero",
+          ownBg: "rgba(0, 0, 0, 0)",
+          bg: "rgb(255, 255, 255)",
+          bgImage: "linear-gradient(rgb(255, 255, 255) 0%, rgb(238, 238, 238) 100%)",
+          area: 40_000,
+        }),
+      ],
+      theme
+    );
+    assert.ok(e!.image, "the wash was mapped");
+  });
 });
 
 describe("the sheet", () => {
@@ -331,7 +577,9 @@ describe("the sheet", () => {
 
   test("dynamic: the poles are defined, including upstream's variable names", () => {
     const css = composeSheet({ theme, entries: [], rules: [], userCss: "" });
-    assert.match(css, /:root\{color-scheme:dark !important/);
+    // The page's own scheme is NOT touched (see the scheme test below), so the
+    // root block starts at the variables.
+    assert.ok(!/:root\{[^}]*color-scheme/.test(css), "no color-scheme of ours: " + css.slice(0, 160));
     assert.match(css, /--darkreader-neutral-background:rgb\(22, 22, 30\)/);
     assert.match(css, /--darkreader-neutral-text:rgb\(192, 202, 245\)/);
     assert.match(css, /html\[data-lf-scheme\]\{background-color:rgb\(22, 22, 30\) !important/);
@@ -356,6 +604,32 @@ describe("the sheet", () => {
     assert.match(css, /\.thing \{ background: rgb\(192, 202, 245\) !important; \}/);
   });
 
+  test("an entry's mapped gradient is emitted as background-image", () => {
+    const entries = entriesFor(
+      [sample({ selector: ".hero", bg: "rgb(255,255,255)", bgImage: "linear-gradient(rgb(255, 255, 255), rgb(238, 238, 238))", area: 5000 })],
+      theme
+    );
+    const css = composeSheet({ theme, entries, rules: [], userCss: "" });
+    assert.match(css, /\.hero\{background-color:[^}]*background-image:linear-gradient\(rgb\(/);
+  });
+
+  test("a scheme is written only when the caller says the page has none of its own", () => {
+    // Native scrollbars and form controls come from `color-scheme`. It is safe
+    // ONLY on a page with no dark support: there `light-dark()` has nothing to
+    // flip, so the mapping cannot be invalidated by its own declaration.
+    const without = composeSheet({ theme, entries: [], rules: [], userCss: "" });
+    assert.ok(!/color-scheme/.test(without), "no scheme by default: " + without.slice(0, 160));
+    const withScheme = composeSheet({ theme, entries: [], rules: [], userCss: "", scheme: "dark" });
+    // The `;` matters: it is the separator between the last variable and this
+    // declaration, and without it the browser drops the whole declaration.
+    assert.match(withScheme, /;color-scheme:dark !important\}/);
+    const lightPage = buildTheme(DARK_DEFAULTS, "lighten", "dynamic", analyze(DARK_PAGE));
+    assert.match(
+      composeSheet({ theme: lightPage, entries: [], rules: [], userCss: "", scheme: "light" }),
+      /;color-scheme:light !important\}/
+    );
+  });
+
   test("the user's CSS is the last word", () => {
     const { rules } = parseFixList("example.com\nCSS\n.thing { color: red; }");
     const css = composeSheet({ theme, entries: [], rules, userCss: ".thing { color: blue; }" });
@@ -368,11 +642,53 @@ describe("the sheet", () => {
     assert.match(css, /img\.logo-dark\{filter:invert\(1\) hue-rotate\(180deg\) !important\}/);
   });
 
-  test("filter: the root is filtered and the canvas painted", () => {
+  test("filter: the root is filtered and the canvas is painted with its PRE-IMAGE", () => {
+    // THE ARTIFACT. `filter` applies to the element's own background too, so
+    // declaring the theme's dark canvas inside the filtered root rendered it
+    // LIGHT: the engine painted the page's background upside down. The declared
+    // value is therefore the channel complement of #16161e (233, 233, 225), which
+    // the inversion lands exactly on. The page guarantee (`html,body`) declares
+    // no text colour: the page's own text inverted is already the right text
+    // colour, and a colour there would be inverted on top of the page's.
     const filtered = buildTheme(DARK_DEFAULTS, "darken", "filter", analyze(LIGHT_PAGE));
     const css = composeSheet({ theme: filtered, entries: [], rules: [], userCss: "" });
     assert.match(css, /html\{filter:invert\(1\) hue-rotate\(180deg\) !important;\}/);
-    assert.match(css, /html,body\{background-color:rgb\(22, 22, 30\) !important\}/);
+    // Exactly one declaration: the canvas, and nothing else.
+    assert.match(css, /html,body\{background-color:rgb\(233, 233, 225\) !important\}/);
+    assert.ok(!/html,body\{[^}]*(;|\{)color:/.test(css), "no text colour under the inversion");
+    assert.deepEqual(preImage(parseColor("rgb(22, 22, 30)")!), { r: 233, g: 233, b: 225, a: 1 });
+    // And the anchor rule that guarantees a canvas uses the same value — the
+    // TEXT colour too, because a colour declared inside the filtered root is
+    // inverted as well: handed the theme's light text it would render dark.
+    assert.match(css, /html\[data-lf-scheme\]\{background-color:rgb\(233, 233, 225\) !important/);
+    assert.match(
+      css,
+      /html\[data-lf-scheme\]\{[^}]*color:rgb\(63, 53, 10\) !important/,
+      "the declared text colour is the pre-image of the theme's: " + css.slice(0, 400)
+    );
+  });
+
+  test("NEITHER engine forces the page's scheme, so light-dark() is not flipped under the mapping", () => {
+    // The palette engine reads the page's computed colours and writes a mapping
+    // for them. Installing `color-scheme: dark` next to that mapping changes the
+    // colours AFTER they were read: every `light-dark()` value and every
+    // scheme-aware UA style on the site flips to its dark variant, and the
+    // mapping repaints values it never saw. On a site that ships both schemes
+    // that is the reported "dark elements not rendered properly". The scheme the
+    // page was measured in is the scheme it keeps.
+    const filtered = buildTheme(DARK_DEFAULTS, "darken", "filter", analyze(LIGHT_PAGE));
+    const filterCss = composeSheet({ theme: filtered, entries: [], rules: [], userCss: "" });
+    assert.ok(!/:root\{[^}]*color-scheme/.test(filterCss), "no color-scheme in filter mode: " + filterCss.slice(0, 200));
+    const dynamic = buildTheme(DARK_DEFAULTS, "darken", "dynamic", analyze(LIGHT_PAGE));
+    const dynamicCss = composeSheet({ theme: dynamic, entries: [], rules: [], userCss: "" });
+    assert.ok(!/:root\{[^}]*color-scheme/.test(dynamicCss), "no color-scheme in the palette engine: " + dynamicCss.slice(0, 200));
+    // Both directions, both engines.
+    for (const engine of ["dynamic", "filter"] as const) {
+      for (const direction of ["darken", "lighten"] as const) {
+        const t = buildTheme(DARK_DEFAULTS, direction, engine, analyze(LIGHT_PAGE));
+        assert.ok(!/:root\{[^}]*color-scheme/.test(composeSheet({ theme: t, entries: [], rules: [], userCss: "" })));
+      }
+    }
   });
 
   test("filter: media is counter-inverted, and our own surfaces with it", () => {
@@ -405,7 +721,7 @@ describe("the sheet", () => {
     const { rules } = parseFixList("example.com\nREMOVE BG\n.photo");
     const filtered = buildTheme(DARK_DEFAULTS, "darken", "filter", analyze(LIGHT_PAGE));
     const css = composeSheet({ theme: filtered, entries: [], rules, userCss: "" });
-    assert.match(css, /\.photo\{background-image:none !important;background-color:rgb\(22, 22, 30\) !important\}/);
+    assert.match(css, /\.photo\{background-image:none !important;background-color:rgb\(233, 233, 225\) !important\}/);
   });
 
   test("filter: the adjustments only appear when they are not the identity", () => {
@@ -431,7 +747,49 @@ describe("the sheet", () => {
     assert.ok(css.indexOf(".card{background-color") < 0, "an inversion needs no per-element rules");
   });
 
-  test("the fallback paint is gated on the pending marker", () => {
-    assert.match(fallbackSheet(theme), /html\[data-lf-dark-pending\]\{background-color:/);
+  test("the fallback paint is gated on the pending marker, and covers the body too", () => {
+    // A page almost always paints its own body, which covers <html> completely: a
+    // placeholder that only painted the root bought nothing on the pages it
+    // existed for, and the white body showed through until the real sheet landed.
+    const css = fallbackSheet(theme);
+    assert.match(css, /html\[data-lf-dark-pending\],html\[data-lf-dark-pending\] body\{background-color:/);
+    assert.match(css, /body\{background-color:rgb\(22, 22, 30\) !important;color:rgb\(192, 202, 245\) !important\}/);
+  });
+});
+
+/* ---------- the observer's feedback loop ---------- */
+
+describe("telling our own writes from the page's", () => {
+  const style = { id: "lazyfox-dark" };
+  const pageNode = { id: "panel" };
+
+  test("a batch that only touches the sheet is ours", () => {
+    // `textContent = css` on the <style> is a childList mutation in the subtree
+    // the observer watches, and appending the <style> is another. Reading either
+    // as page activity made every write buy the next measurement — the loop that
+    // flickered the page.
+    assert.equal(touchesOnlyOwnStyle([{ target: style }], style), true);
+    assert.equal(
+      touchesOnlyOwnStyle([{ target: { id: "head" }, addedNodes: [style] }], style),
+      true
+    );
+    assert.equal(
+      touchesOnlyOwnStyle([{ target: { id: "head" }, removedNodes: [style] }], style),
+      true
+    );
+  });
+
+  test("a batch with any page mutation is the page's", () => {
+    assert.equal(touchesOnlyOwnStyle([{ target: pageNode }], style), false);
+    assert.equal(
+      touchesOnlyOwnStyle([{ target: style }, { target: { id: "head" }, addedNodes: [pageNode] }], style),
+      false,
+      "one page node is enough"
+    );
+  });
+
+  test("no sheet, no batch: nothing is ours", () => {
+    assert.equal(touchesOnlyOwnStyle([], style), false);
+    assert.equal(touchesOnlyOwnStyle([{ target: style }], null), false);
   });
 });

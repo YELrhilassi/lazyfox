@@ -39,10 +39,45 @@ import {
 export interface PageSample {
   /** A CSS selector that reaches this element (see selectorFor in apply.ts). */
   selector: string;
+  /**
+   * A selector that reaches THIS element and nothing else, or "" when there is
+   * none.
+   *
+   * `selector` is a NAME — a class the element shares with its siblings — and a
+   * name can only carry one decision. When the elements that share it disagree
+   * (one white card, one transparent one) the honest answer is one rule per
+   * element, and this is the selector that rule is written against. It is also
+   * how a page stops being half-painted: the previous answer was to drop the
+   * disagreeing group, which left light text on a still-white panel.
+   */
+  solo?: string;
+  /**
+   * The element's share of the viewport (area / viewport area), 0..1+.
+   *
+   * One question needs it: whether this surface is a PANEL or a BACKDROP. A
+   * card the size of a corner may be lifted to a visible panel; a mid-grey
+   * square covering half the screen may not — that is the sudoku board, and
+   * lifting it as far as a panel goes is the report "harsh colors". See
+   * `mapSurface` in color.ts, which is the only consumer.
+   */
+  share?: number;
   tag: string;
   /** Computed background-color. Alpha is resolved against ancestors by the
    *  sampler, so this is opaque unless the chain behind it was too. */
   bg: string;
+  /**
+   * The element's OWN `background-color`, alpha and all — the resolved `bg`
+   * above is for reading the PAGE, this one is for painting it.
+   *
+   * The difference is the reported "gray overlay hiding the grid": a wrapper
+   * with `background-color: transparent` resolves to the canvas behind it, and
+   * painting that resolved colour back onto the wrapper turns a transparent
+   * layer into an opaque one. On a normal page that is invisible (same colour);
+   * over a grid, a photograph or a canvas drawn by a SIBLING it covers the
+   * content completely. Only an element that paints its own colour may be
+   * painted.
+   */
+  ownBg?: string;
   /** Computed color. */
   fg: string;
   /** Computed border-top-color, when the element actually has a border. */
@@ -51,6 +86,15 @@ export interface PageSample {
   area: number;
   /** The element paints a background image, so its background is not ours to move. */
   hasBgImage: boolean;
+  /**
+   * The computed `background-image` when it is a GRADIENT rather than a picture.
+   *
+   * A gradient is a surface: its colour stops are mapped like any other
+   * background colour, which is what stops a page's pale hero wash from staying
+   * pale on a dark page. A value carrying `url()` never reaches here — that is
+   * `hasBgImage`, and it is left alone.
+   */
+  bgImage?: string;
   /** img/video/canvas/iframe/object/embed/picture/svg — never recoloured. */
   media: boolean;
 }
@@ -263,10 +307,23 @@ export function nativeDarkVerdict(
   return { native: false, reason: "the page declares a dark theme; asking for it" };
 }
 
-export function chooseEngine(engine: "auto" | "dynamic" | "filter", analysis: Analysis): "dynamic" | "filter" {
+export function chooseEngine(
+  engine: "auto" | "dynamic" | "filter",
+  analysis: Analysis,
+  previous?: "dynamic" | "filter" | "native" | "auto" | null
+): "dynamic" | "filter" {
   if (engine !== "auto") return engine;
   // A page with no usable samples cannot be remapped at all.
   if (!analysis.sampled) return "filter";
+  // HYSTERESIS, because the coverage figure is re-measured on every pass and the
+  // two engines paint the page in opposite ways. A page whose coverage drifts
+  // across a single threshold would be remapped on one pass and inverted on the
+  // next — a whole-page flash each time, on any page with an ad slot or a lazy
+  // panel that changes size. The band is wide on purpose: switching is a rare,
+  // decisive event (a page that turned out to be mostly photographs, or one that
+  // turned out to be flat after all), not a per-pass vote.
+  if (previous === "dynamic") return analysis.coverage >= 0.35 ? "dynamic" : "filter";
+  if (previous === "filter") return analysis.coverage >= 0.6 ? "dynamic" : "filter";
   return analysis.coverage >= 0.5 ? "dynamic" : "filter";
 }
 

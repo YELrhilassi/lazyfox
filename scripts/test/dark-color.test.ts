@@ -12,14 +12,19 @@ import assert from "node:assert/strict";
 import {
   colorKey,
   contrastRatio,
+  ensureContrast,
   formatColor,
   hslToRgb,
+  MIN_TEXT_CONTRAST,
   mapColor,
+  mapInk,
   mapLightness,
+  mapSurface,
   nearColor,
   parseColor,
   relativeLuminance,
   rgbToHsl,
+  withLuminance,
 } from "../../src/extension/content/dark/color.ts";
 
 const near = (a: number, b: number, tol = 1e-9) => Math.abs(a - b) <= tol;
@@ -168,6 +173,148 @@ describe("mapping a colour", () => {
     const anchors = { srcBg: 1, srcFg: 0, dstBg: 0.08, dstFg: 0.62 };
     assert.ok(near(rgbToHsl(mapColor({ r: 255, g: 255, b: 255, a: 1 }, anchors)).l, 0.08, 1e-6));
     assert.ok(near(rgbToHsl(mapColor({ r: 0, g: 0, b: 0, a: 1 }, anchors)).l, 0.62, 1e-6));
+  });
+});
+
+/* ---------- surfaces and inks: the model a real page is painted with ---------- */
+
+// THE REPORT behind these tests: "the colour that it picks is awful to look at".
+// The positional mapping (tested above) puts a colour at the same position
+// between text and canvas that it had on the light page — which means a DARK
+// HEADER comes back as a PALE BAR, and a badge comes back as a glowing one.
+// A surface and an ink are different questions; these are the answers.
+describe("mapping a surface", () => {
+  const lightPage = { canvas: parseColor("#ffffff")!, ink: parseColor("#111111")! };
+  const darkTheme = { canvas: parseColor("#16161e")!, ink: parseColor("#c0caf5")! };
+  const lum = (c: string) => relativeLuminance(parseColor(c)!);
+
+  test("the page's canvas lands EXACTLY on the theme's canvas", () => {
+    const mapped = mapSurface(parseColor("#ffffff")!, lightPage, darkTheme);
+    assert.equal(formatColor(mapped), formatColor(darkTheme.canvas));
+    // And a surface a rounding error away from it does too, or a white page
+    // would come back as a wash of near-misses.
+    assert.equal(formatColor(mapSurface(parseColor("#fefefe")!, lightPage, darkTheme)), formatColor(darkTheme.canvas));
+  });
+
+  test("a light panel becomes a slightly LIGHTER panel, not a second canvas", () => {
+    const mapped = mapSurface(parseColor("#f2f4f8")!, lightPage, darkTheme);
+    const d = relativeLuminance(mapped) - relativeLuminance(darkTheme.canvas);
+    assert.ok(d > 0.01 && d < 0.08, `the panel sits ${d} above the canvas`);
+  });
+
+  test("a DARK header stays dark — the artifact this model exists for", () => {
+    // #0b1a33 is a navy hero with white text on a white page. The old mapping
+    // lightened it to near-white (it is "far from the canvas") and the header's
+    // white text stayed white: a pale bar with invisible text in the middle of a
+    // dark page.
+    const mapped = mapSurface(parseColor("#0b1a33")!, lightPage, darkTheme);
+    assert.ok(relativeLuminance(mapped) < 0.25, `the header came back at luminance ${relativeLuminance(mapped)}`);
+    assert.ok(relativeLuminance(mapped) > relativeLuminance(darkTheme.canvas), "but it is still a visible panel");
+    // White text on it must survive as white (see the ink tests).
+    const ink = mapInk(parseColor("#ffffff")!, lightPage, darkTheme);
+    assert.ok(relativeLuminance(ink) > 0.9, "white text stayed light");
+    assert.ok(contrastRatio(ink, mapped) >= 4.5, "and reads on the panel it is on");
+  });
+
+  test("a saturated badge comes back deep, not neon", () => {
+    // Preserving HSL lightness put #c62828 at luminance ~0.2 — a glowing red on a
+    // dark page. Targeting luminance keeps its weight instead.
+    const mapped = mapSurface(parseColor("#c62828")!, lightPage, darkTheme);
+    assert.ok(relativeLuminance(mapped) < 0.2, `badge luminance ${relativeLuminance(mapped)}`);
+    assert.ok(relativeLuminance(mapped) > lum("#16161e"), "still a surface, not the canvas");
+    assert.ok(rgbToHsl(mapped).h < 10 || rgbToHsl(mapped).h > 350, "the hue survived");
+  });
+
+  test("a surface the size of the screen is quieter than a card", () => {
+    // MEASURED on nytimes.com/puzzles/sudoku: the board is
+    // `background:rgb(151,151,151)` over half a million px² (share 0.5). Lifted
+    // like a card it became rgb(94,94,94) on a #16161e page — a glaring grey
+    // square, the report "bunch of artifacts and harsh colors".
+    const board = parseColor("#979797")!;
+    const card = mapSurface(board, lightPage, darkTheme, 0.01);
+    const backdrop = mapSurface(board, lightPage, darkTheme, 0.5);
+    assert.ok(
+      relativeLuminance(backdrop) < relativeLuminance(card) * 0.7,
+      `the backdrop is quieter than the card: ${formatColor(backdrop)} vs ${formatColor(card)}`
+    );
+    assert.ok(
+      relativeLuminance(backdrop) > relativeLuminance(darkTheme.canvas),
+      "but it is still a surface, not the canvas"
+    );
+    // A small element is unaffected — the damping is about area, not colour.
+    assert.equal(formatColor(mapSurface(board, lightPage, darkTheme, 0)), formatColor(card));
+  });
+
+  test("alpha is carried through untouched", () => {
+    const frosted = parseColor("rgba(255,255,255,0.85)")!;
+    assert.equal(mapSurface(frosted, lightPage, darkTheme).a, 0.85);
+  });
+
+  test("lightening a dark page mirrors the rule: panels go slightly darker", () => {
+    const darkPage = { canvas: parseColor("#0f1115")!, ink: parseColor("#e6e6e6")! };
+    const lightTheme = { canvas: parseColor("#c0caf5")!, ink: parseColor("#16161e")! };
+    const mapped = mapSurface(parseColor("#202836")!, darkPage, lightTheme);
+    assert.ok(relativeLuminance(mapped) < relativeLuminance(lightTheme.canvas), "a panel on a light page is darker");
+    const canvas = mapSurface(parseColor("#0f1115")!, darkPage, lightTheme);
+    assert.equal(formatColor(canvas), formatColor(lightTheme.canvas));
+  });
+});
+
+describe("mapping an ink", () => {
+  const lightPage = { canvas: parseColor("#ffffff")!, ink: parseColor("#111111")! };
+  const darkTheme = { canvas: parseColor("#16161e")!, ink: parseColor("#c0caf5")! };
+
+  test("the page's own text colour lands on the theme's ink", () => {
+    assert.equal(formatColor(mapInk(parseColor("#111111")!, lightPage, darkTheme)), formatColor(darkTheme.ink));
+  });
+
+  test("a dark page's white text is not inverted into black text", () => {
+    // On a dark page, white text on a dark header is ALREADY correct. The
+    // positional model maps "far from the canvas" toward the other pole and
+    // turns it black, which is black text on a black bar.
+    const ink = mapInk(parseColor("#ffffff")!, lightPage, darkTheme);
+    assert.ok(relativeLuminance(ink) > 0.9, `white text came back at ${formatColor(ink)}`);
+  });
+
+  test("hierarchy survives: muted text is dimmer than body text", () => {
+    const body = mapInk(parseColor("#1b1f24")!, lightPage, darkTheme);
+    const muted = mapInk(parseColor("#5b6472")!, lightPage, darkTheme);
+    assert.ok(relativeLuminance(muted) < relativeLuminance(body), "muted must stay quieter");
+    assert.ok(contrastRatio(muted, darkTheme.canvas) >= MIN_TEXT_CONTRAST, "and still readable");
+  });
+
+  test("a saturated ink keeps its hue", () => {
+    const mapped = mapInk(parseColor("#1257c9")!, lightPage, darkTheme);
+    const hue = rgbToHsl(mapped).h;
+    assert.ok(hue > 200 && hue < 230, `blue link came back at hue ${hue}`);
+  });
+});
+
+describe("guaranteeing contrast", () => {
+  test("no text is left below the readable ratio", () => {
+    // Black text mapped onto a dark badge is the classic disaster: both ends of
+    // the pair moved to the dark side and the label vanished.
+    const surface = parseColor("#2b2b2b")!;
+    const out = ensureContrast(parseColor("#16161e")!, surface, MIN_TEXT_CONTRAST);
+    assert.ok(contrastRatio(out, surface) >= MIN_TEXT_CONTRAST, formatColor(out));
+  });
+
+  test("on a light surface it darkens rather than lightens", () => {
+    const surface = parseColor("#e8e8e8")!;
+    const out = ensureContrast(parseColor("#dddddd")!, surface, MIN_TEXT_CONTRAST);
+    assert.ok(contrastRatio(out, surface) >= MIN_TEXT_CONTRAST);
+    assert.ok(relativeLuminance(out) < relativeLuminance(surface));
+  });
+
+  test("a colour that already reads is returned untouched", () => {
+    const fg = parseColor("#c0caf5")!;
+    assert.equal(ensureContrast(fg, parseColor("#16161e")!, MIN_TEXT_CONTRAST), fg);
+  });
+
+  test("withLuminance hits its target exactly, hue intact", () => {
+    const out = withLuminance(parseColor("#c62828")!, 0.08);
+    assert.ok(near(relativeLuminance(out), 0.08, 0.004), `got ${relativeLuminance(out)}`);
+    assert.equal(rgbToHsl(out).h, rgbToHsl(parseColor("#c62828")!).h);
   });
 });
 

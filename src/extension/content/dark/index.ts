@@ -29,7 +29,7 @@ import {
   type DarkRule,
 } from "../../../shared/dark-rules";
 import type { Config, SiteRule } from "../../../shared/types";
-import { createDarkApplier, createResampleGate } from "./apply";
+import { createDarkApplier, createResampleGate, DARK_STYLE_ID, touchesOnlyOwnStyle } from "./apply";
 import {
   analyze,
   chooseEngine,
@@ -123,10 +123,42 @@ export function createDarkMode(deps: DarkDeps): DarkController {
   // different site rule) and it must not inherit the previous state's spent
   // resample burst — see the gate's reset in apply().
   let lastUrl = "";
-  // Whether we already asked THIS page for its own dark theme. The ask is a
-  // one-shot per state: setting `color-scheme: dark` is cheap but not free, and a
-  // page that answers "no" must not be asked again on every mutation.
-  let askedNative = false;
+  // Whether this page's own declaration has been READ — whether or not it
+  // declared dark support. One-shot: the ask (setting `color-scheme: dark` on the
+  // root) is cheap but not free, and a page that answers "no" must not be asked
+  // again on every mutation.
+  //
+  // This flag also decides whether a pass may touch the page's paint BEFORE
+  // measuring it, and that is the difference between a stable page and a
+  // flicker: it used to be only ever set by a page that declares dark support, so
+  // on every other page it stayed false for the life of the tab, and each pass
+  // cleared the live sheet, measured the undarkened page and painted it again. A
+  // whole-page flash on every single mutation — the reported "it flashes dark
+  // and light".
+  let nativeChecked = false;
+  // The ask is currently installed on the root (`color-scheme: dark`), so the page
+  // renders its own dark theme because of us and must be handed back its scheme
+  // when the user turns the site off.
+  let nativeHeld = false;
+  // The engine last used for this document's palette. The choice is re-measured
+  // on every pass, and passing it back in is what keeps the two engines from
+  // alternating (see the hysteresis note on `chooseEngine`).
+  let liveEngine: "dynamic" | "filter" | null = null;
+  // The measurement the LIVE palette was built from. Re-measuring a page that is
+  // already wearing our sheet cannot recover the page's own palette — parts of it
+  // are ours now — so the second pass measures something slightly different, and
+  // a theme rebuilt from that moves every colour on the page at once. That global
+  // shift, once per mutation burst, is what "it flashes dark and light" looks
+  // like from the outside. The anchors are therefore frozen for as long as this
+  // document's theme is the one we painted; new elements still get entries from
+  // the fresh samples, against the frozen mapping.
+  let liveAnalysis: Analysis | null = null;
+  // Whether the page declares its OWN dark scheme, read while the page is
+  // unpainted (or while our sheet is still scheme-free, which is the same thing
+  // for this question). Cached because the answer must survive the moment our
+  // sheet starts declaring a scheme: from then on, "what does the root say?" is
+  // a question about US.
+  let declaredNative: boolean | null = null;
 
   function rules(): DarkRule[] {
     const text = deps.getConfig().dark?.fixes ?? "";
@@ -192,7 +224,8 @@ export function createDarkMode(deps: DarkDeps): DarkController {
       const root = deps.doc.documentElement;
       if (!root) return false;
       inlineSchemeBefore = root.style.getPropertyValue("color-scheme") || "";
-      root.style.setProperty("color-scheme", "dark");
+      quietly(() => root.style.setProperty("color-scheme", "dark"));
+      nativeHeld = true;
       return true;
     } catch {
       return false;
@@ -200,29 +233,75 @@ export function createDarkMode(deps: DarkDeps): DarkController {
   }
 
   function unaskForNativeDark(): void {
+    nativeHeld = false;
+    unasked = true;
     try {
       const root = deps.doc.documentElement;
       if (!root) return;
-      if (inlineSchemeBefore) root.style.setProperty("color-scheme", inlineSchemeBefore);
-      else root.style.removeProperty("color-scheme");
+      quietly(() => {
+        if (inlineSchemeBefore) root.style.setProperty("color-scheme", inlineSchemeBefore);
+        else root.style.removeProperty("color-scheme");
+      });
     } catch {
       /* ignore */
     }
   }
 
+  // Whether the ask has ever been taken back on this document. A site that
+  // answered "yes" and then stopped honouring the ask must not be asked again in
+  // a loop: the ask is a fact-finding step, and once its answer is stale the only
+  // honest move is to paint.
+  let unasked = false;
+
+  // Our own writes on <html> (`color-scheme`, the scheme marker) match the
+  // observer's attribute filter, so they would otherwise buy a measurement of a
+  // page WE just changed — one extra pass per toggle, and a needless rewrite.
+  // The flag is cleared on a microtask, which is after the observer's batch has
+  // been delivered.
+  let quiet = 0;
+  function quietly(fn: () => void): void {
+    quiet++;
+    try {
+      fn();
+    } finally {
+      try {
+        queueMicrotask(() => {
+          quiet = Math.max(0, quiet - 1);
+        });
+      } catch {
+        quiet = Math.max(0, quiet - 1);
+      }
+    }
+  }
+
   /** The live theme, or null when the page should be left alone. */
-  function decide(config: Config, analysis: Analysis): { theme: Theme | null; direction: Mode; mode: Mode; engine: EnginePref; reason: string } {
+  function decide(
+    config: Config,
+    analysis: Analysis,
+    anchors: Analysis,
+    previous: "dynamic" | "filter" | null
+  ): { theme: Theme | null; direction: Mode; mode: Mode; engine: EnginePref; reason: string } {
     const mode: Mode = state.site?.mode ?? config.dark.mode;
     const enginePref: EnginePref = state.site?.engine ?? config.dark.engine;
     if (mode === "off") return { theme: null, direction: mode, mode, engine: enginePref, reason: "turned off" };
     const direction = mode === "light" ? "lighten" : "darken";
     // `auto` is where the already-dark check applies; an explicit `dark`/`light`
     // is the user overriding detection, so it is not consulted.
-    const skip = mode === "auto";
+    //
+    // THE CHECK IS A FIRST-PASS ANSWER, NOT A PER-PASS VOTE. Once a theme of ours
+    // is live, the page's colours are partly ours, so asking "is this page already
+    // dark?" again measures our own work: the answer drifts with every burst, and
+    // a page that flips between "paint" and "already dark" shows the user dark and
+    // light by turns. `previous !== null` means a theme is live, and a live theme
+    // under `auto` keeps living until the page state changes (a navigation resets
+    // `previous`) or the user says otherwise.
+    const skip = mode === "auto" && previous === null;
     const decision = shouldApply(direction, analysis, skip);
     if (!decision.on) return { theme: null, direction: mode, mode, engine: enginePref, reason: decision.reason };
-    const engine = chooseEngine(enginePref, analysis);
-    const theme = buildTheme(config.dark, direction, engine, analysis);
+    const engine = chooseEngine(enginePref, analysis, previous);
+    // The palette is built from the FROZEN anchors while a theme is live (see
+    // `liveAnalysis`); the engine choice still follows the fresh coverage.
+    const theme = buildTheme(config.dark, direction, engine, anchors);
     return { theme, direction: mode, mode, engine: enginePref, reason: decision.reason + " · " + engine + " engine" };
   }
 
@@ -308,11 +387,76 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     }
   }
 
+  /**
+   * THE SECOND CHANCE TO ASK.
+   *
+   * A quiet page produces no mutations, so nothing would ever re-open the
+   * native-theme question once the page has its stylesheet. Two document events do:
+   * `DOMContentLoaded` (the head has been parsed and its CSS applied, and the
+   * render-blocking part of a real page's theme is in place) and `load` (everything
+   * else). Each is ONE extra measurement, and only while the answer is still open.
+   */
+  let nativeChecksScheduled = false;
+  function scheduleNativeChecks(): void {
+    if (nativeChecksScheduled) return;
+    nativeChecksScheduled = true;
+    const run = (): void => {
+      if (nativeChecked || unasked) return;
+      requestApply(deps.getConfig());
+    };
+    try {
+      const state = deps.doc.readyState || "loading";
+      if (state === "loading") deps.doc.addEventListener("DOMContentLoaded", run, { once: true });
+      if (state !== "complete") deps.win.addEventListener("load", run, { once: true });
+    } catch {
+      /* a document that is going away has no events left to schedule */
+    }
+  }
+
+  /**
+   * Ask for one more pass once the document has its styles.
+   *
+   * Used when the only thing on the page yet is the placeholder's own paint: the
+   * palette arrives with the page's CSS, and `DOMContentLoaded` is the earliest
+   * moment it is guaranteed to be there. One-shot; a document that never fires it
+   * (it always does) simply keeps the placeholder, which is still dark.
+   */
+  let readyRerun = false;
+  function scheduleReadyRerun(): void {
+    if (readyRerun) return;
+    readyRerun = true;
+    const run = (): void => {
+      readyRerun = false;
+      requestApply(deps.getConfig());
+    };
+    try {
+      if ((deps.doc.readyState || "loading") === "loading") {
+        deps.doc.addEventListener("DOMContentLoaded", run, { once: true });
+      } else {
+        deps.win.setTimeout(run, 0);
+      }
+    } catch {
+      readyRerun = false;
+    }
+  }
+
   function ensureObserver(): void {
     if (observer) return;
     try {
-      observer = new MutationObserver(() => {
+      observer = new MutationObserver((records) => {
         if (!state.on) return;
+        // Our own write on <html>: not page activity.
+        if (quiet > 0) return;
+        // THE SHEET IS NOT PAGE ACTIVITY. Installing it and replacing its text is
+        // a mutation in the subtree the observer watches; reading that as "the
+        // page changed" made every write buy the next measurement, and the next
+        // measurement could write again. Excluding our own node from the batch is
+        // what bounds that loop to the page's own changes.
+        try {
+          if (touchesOnlyOwnStyle(records, deps.doc.getElementById(DARK_STYLE_ID))) return;
+        } catch {
+          /* the document may be going away; treat the batch as the page's */
+        }
         if (gate()) {
           requestApply(deps.getConfig());
           return;
@@ -347,34 +491,80 @@ export function createDarkMode(deps: DarkDeps): DarkController {
   }
 
   async function apply(config: Config): Promise<void> {
+    scheduleNativeChecks();
     const url = deps.url();
     state.site = siteFor();
-    // THE PENDING PAINT IS NOT PART OF THE MEASUREMENT, and this is the line that
-    // decides whether the feature works at all on a machine whose OS is dark.
-    //
-    // `early()` paints the OS's guess at document_start so there is no white
-    // flash, and the fallback sheet paints `html,body` — which is exactly where
-    // the sampler reads the CANVAS from. Measuring with it installed therefore
-    // reads our own paint back as the page's: a white page measures as dark, the
-    // decision comes out "the page is already dark", and the feature stands down
-    // on every light page for a user with a dark OS. (Measured in the e2e theme
-    // suite: `data-lf-dark-reason` read "the page is already dark" on a white
-    // fixture whose `prefers-color-scheme` was dark.)
-    //
-    // So the placeholder is removed first and reinstated only if the decision is
-    // to paint. The cost is the very flash the placeholder exists to prevent, for
-    // as long as one measurement takes — and only on that dark-OS machine, where
-    // the alternative is a feature that does nothing.
+    // THE PENDING PAINT IS NOT PART OF THE MEASUREMENT — see the placeholder
+    // block below, which keeps it installed while the page loads and measures
+    // only after it is off. Measuring through it reads our own canvas back as
+    // the page's, and a white page then measures as "already dark".
     if (url !== lastUrl) {
       // A new page state in the same document (an SPA route change, a hash
-      // navigation): it starts with a fresh budget, because its palette is a
-      // different palette and the old one's burst allowance has nothing to say
-      // about it.
+      // navigation): it starts with a fresh measurement budget, because its
+      // palette is a different palette and the old one's burst allowance has
+      // nothing to say about it. THE BUDGET IS ALL THAT IS RESET.
+      //
+      // The anchors and the engine USED to be forgotten here, and that was a
+      // flash on every SPA route change: the next pass rebuilt the palette from
+      // a re-measurement of a page that is partly wearing our sheet, so every
+      // colour on screen moved at once (and the engine could flip dynamic ↔
+      // filter, which is an even bigger jump). A route change is a new VIEW of
+      // the same site against the same canvas: new elements still get entries
+      // from the fresh samples, against the mapping the user is already looking
+      // at.
       lastUrl = url;
       gate.reset();
-      askedNative = false;
-      // The native verdict belongs to the page state that produced it.
+    }
+    // A MODE THAT NO LONGER WANTS DARK HANDS THE PAGE ITS OWN SCHEME BACK.
+    // The ask writes `color-scheme: dark` on the root and leaves it there for as
+    // long as the page is dark; switching the site off has to take it back, or the
+    // page keeps the site's dark theme under a rule that says "off".
+    if (nativeHeld && !wantsDarkScheme(config)) {
+      unaskForNativeDark();
       if (state.engine === "native") state.engine = "auto";
+    }
+
+    // THE PAGE'S OWN DECLARATION IS READ WHILE OUR SHEET IS NOT IN THE WAY.
+    // While the native question is still open our sheet declares no scheme, so
+    // the root's computed value is the PAGE's; once the answer is in, the cached
+    // value is the only honest source (see `declaredNative`).
+    if (!applier.active() || !nativeChecked) {
+      declaredNative = declaresDarkSupport(colorSchemeNow());
+    }
+    // THE PLACEHOLDER COVERS THE PAGE UNTIL THE DOCUMENT HAS ITS STYLES.
+    //
+    // The placeholder exists so the first frame is dark; taking it off early
+    // enough to measure put the undarkened page on screen for as long as a style
+    // walk takes — the white flash people report. It cannot be measured THROUGH
+    // either: everything it paints is our colour, inherited even by elements that
+    // set no background, so a white page would read as "already dark" and the
+    // feature would stand down. So the placeholder is left alone while the page
+    // is still loading, and the real pass runs at DOMContentLoaded — in one task,
+    // so the swap from placeholder to sheet happens between two paints.
+    const ready = (deps.doc.readyState || "loading") !== "loading";
+    if (!ready) {
+      if (!wantsDarkScheme(config)) {
+        // The stored config (or a site rule) says this page is not ours, so the
+        // placeholder `early()` guessed must not outlive it.
+        if (earlySheet) {
+          finishEarlySheet();
+          applier.clear();
+        }
+        state.reason = "turned off";
+        state.on = false;
+        mirror();
+        return;
+      }
+      // THE CONFIG CAN BE THE FIRST THING THAT KNOWS. `early()` runs before the
+      // stored config has loaded and therefore falls back to the OS preference;
+      // on a light-OS machine this is where the placeholder is installed — as
+      // soon as the real mode is known, which is normally still before the first
+      // paint.
+      if (!earlySheet && !state.on && !applier.active()) paintPlaceholder(config);
+      state.reason = earlySheet ? "waiting for the page (early canvas)" : "waiting for the page";
+      mirror();
+      scheduleReadyRerun();
+      return;
     }
     if (earlySheet) applier.clear();
 
@@ -393,21 +583,34 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     // It also means the answer is free when the page HAS a dark theme: there is
     // nothing left for us to paint, so we stand down and leave the site's own
     // design on screen.
-    if (!askedNative && wantsDarkScheme(config)) {
-      // OUR SHEET COMES OFF FIRST, before the declaration is even read. It sets
-      // `:root { color-scheme: dark !important }` — so asking "does this page
-      // declare dark support?" with our own paint installed answers YES on every
-      // page we have ever painted, including the ones that declared nothing. The
-      // sheet and the record of originals both go here; both are rebuilt below
-      // from what the page really is. Clearing also makes this path reachable at
-      // all: the sheet of a previous pass is what put the scheme on the root, so
-      // a guard on "no sheet installed" could never ask a page we had painted.
-      if (applier.active()) applier.clear();
+    //
+    // WHEN THE ANSWER CAN BE READ — and it is usually NOT on the first pass.
+    //
+    // At `document_start` the page's head has not been parsed, so its stylesheet
+    // does not exist yet and the computed `color-scheme` is the UA default on
+    // every site that declares its theme in CSS. Our first pass runs as soon as
+    // the config arrives, which is normally before the head is parsed. Reading the
+    // declaration exactly once, there, is why native dark mode so rarely got found:
+    // the page was asked "do you have a dark theme?" before it could answer.
+    //
+    // So the question stays open until the document has its styles, and is asked
+    // again at DOMContentLoaded and at `load` (see `scheduleNativeChecks`). Our
+    // sheet no longer touches `color-scheme` at all (see `varsBlock`), so the
+    // declaration can be READ with our paint installed; only the VERIFICATION
+    // needs the page unpainted, and that is the one place a pass takes its own
+    // paint off.
+    let repaintSync = earlySheet;
+    if (!nativeChecked && !unasked && wantsDarkScheme(config) && ready) {
       if (declaresDarkSupport(colorSchemeNow())) {
-        askedNative = true;
+        nativeChecked = true;
+        // Our own sheet would be measured as the page, and so would its record of
+        // the page's earlier colours. Both come off: the question is about what
+        // the page renders for the ask, not about what it looked like before.
+        applier.clear();
         applier.forget();
+        repaintSync = true;
         if (askForNativeDark()) {
-          const asked = analyze(await applier.sample());
+          const asked = analyze(await applier.sample({ sync: true }));
           const verdict = nativeDarkVerdict(true, true, asked);
           if (verdict.native) {
             finishEarlySheet();
@@ -427,10 +630,16 @@ export function createDarkMode(deps: DarkDeps): DarkController {
           unaskForNativeDark();
           applier.forget();
         }
+      } else if (deps.doc.readyState === "complete") {
+        // The document is finished loading and declares nothing: the answer is
+        // final, and no more checks are needed on this document.
+        nativeChecked = true;
       }
     }
 
-    let samples: PageSample[] = await applier.sample();
+    // The first pass after a placeholder paint still measures in ONE task: a
+    // yield there is a frame of half-dressed page, even with the placeholder up.
+    let samples: PageSample[] = await applier.sample({ sync: repaintSync });
     let analysis = analyze(samples);
 
     // ONCE THE SITE'S THEME IS THE ANSWER, IT STAYS THE ANSWER.
@@ -441,7 +650,12 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     // a stand-down — a new reason, a different engine, and on a `light` page the
     // sheet would come back. The verdict is therefore sticky while the page it
     // was made for is still dark.
-    if (state.engine === "native" && analysis.pageDark && analysis.sampled) {
+    // A MISSED SAMPLE IS NOT A BROKEN THEME. The verdict used to require a fresh
+    // measurement to still say "dark", which fails during every state switch (the
+    // document is briefly empty) — so a native page dropped back to light, and
+    // because the declaration is only read once it never came back. The verdict
+    // is kept unless a real measurement of a real page says otherwise.
+    if (state.engine === "native" && (analysis.pageDark || !analysis.sampled)) {
       finishEarlySheet();
       applier.clear();
       state.on = false;
@@ -452,6 +666,12 @@ export function createDarkMode(deps: DarkDeps): DarkController {
       ensureObserver();
       return;
     }
+    // The page was the site's own theme and is not any more (the site dropped it,
+    // or the user turned this site off): the inline `color-scheme` we wrote is
+    // ours to take back, because leaving it behind keeps a page dark that nobody
+    // asked to be dark — the reported "turning dark mode off does nothing on
+    // sites with their own theme".
+    if (nativeHeld) unaskForNativeDark();
 
     // A TRANSIENT EMPTY PAGE IS NOT A VERDICT.
     //
@@ -462,14 +682,21 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     // overlay" while the site is still building its next view. When a theme is
     // already live on this page, the honest answer is to keep it and let the next
     // gated mutation re-measure.
-    if (!analysis.sampled && state.on) {
+    // AND ONLY WHILE THE THEME IS ACTUALLY ON SCREEN (`applier.active()`). The
+    // flag alone is not enough, and the gap between the two was a real state:
+    // a user toggle clears the sheet and then re-applies, and if that pass
+    // measured a page mid-transition the early return kept `state.on` true over
+    // a DELETED sheet. The page then had dark mode "on" with nothing painted and
+    // nothing scheduled to fix it — the report "it shows a blank overlay and I
+    // have to reload the page to see the content again".
+    if (!analysis.sampled && state.on && applier.active()) {
       finishEarlySheet();
       state.reason = "page mid-transition; keeping the theme";
       mirror();
       return;
     }
 
-    const decision = decide(config, analysis);
+    const decision = decide(config, analysis, liveAnalysis ?? analysis, liveEngine);
     const rulesForPage = matchRules(rules(), url);
     state.coverage = analysis.coverage;
     state.pageDark = analysis.pageDark;
@@ -484,12 +711,29 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     if (!decision.theme) {
       applier.clear();
       state.on = false;
+      // No theme of ours is live, so the next pass that paints one starts from
+      // the page's own palette again rather than from a record of a palette that
+      // is no longer on screen.
+      liveAnalysis = null;
+      liveEngine = null;
       mirror();
       return;
     }
     const theme = decision.theme;
+    liveEngine = theme.engine;
+    liveAnalysis = liveAnalysis ?? analysis;
     const entries = theme.engine === "dynamic" ? entriesFor(samples, theme) : [];
-    applier.setSheet(composeSheet({ theme, entries, rules: rulesForPage, userCss: config.dark.userCss || "" }));
+    // The UA's own furniture (scrollbars, inputs, the select dropdown) is drawn
+    // from `color-scheme`, and without it a dark page keeps white scrollbars and
+    // white form controls — artifacts the mapping cannot reach because the UA
+    // paints them, not the page. It is only written for a page that declares NO
+    // dark support of its own: on a page that does, it would flip every
+    // `light-dark()` value after the mapping was measured from the other side.
+    const scheme =
+      nativeChecked && declaredNative === false ? (theme.direction === "darken" ? "dark" : "light") : null;
+    applier.setSheet(
+      composeSheet({ theme, entries, rules: rulesForPage, userCss: config.dark.userCss || "", scheme })
+    );
     applier.setScheme(theme.direction === "darken" ? "dark" : "light");
     state.on = true;
     mirror();
@@ -498,6 +742,21 @@ export function createDarkMode(deps: DarkDeps): DarkController {
 
   function write(next: Config): void {
     deps.setConfig(next);
+    // A user action re-opens the native-theme question: turning a site off and on
+    // again should give the site's own theme back rather than a recolouring of
+    // its light palette. Answering it needs the page unpainted, so our paint comes
+    // off here — which is only ever a user-initiated path, never a resample.
+    nativeChecked = false;
+    unasked = false;
+    liveAnalysis = null;
+    liveEngine = null;
+    // THE PAINT IS GONE, SO THE STATE SAYS SO. `state.on` used to stay true
+    // across the clear, which is the one thing that can make "dark mode is on"
+    // and "there is no sheet" both true at once if the pass that follows finds
+    // an unsampled page.
+    state.on = false;
+    applier.clear();
+    applier.forget();
     // Apply the local copy immediately so the toast and the sheet agree with
     // what the user just pressed; the storage broadcast will confirm it.
     requestApply(next);
@@ -520,42 +779,61 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     return { ...config, dark: { ...config.dark, sites } };
   }
 
+  /**
+   * Paint the canvas before anything is known about the page.
+   *
+   * Two writes: a marker on the root (the sheet's own selector is gated on it, so
+   * the paint can never outlive the state that installed it) and the fallback
+   * sheet. The colours come from the config that is in hand — the shipped theme
+   * at `document_start`, the stored one a few milliseconds later, which is why
+   * this is a function rather than a block in `early()`.
+   */
+  function paintPlaceholder(config: Config): void {
+    const mode = (state.site?.mode ?? config.dark.mode) as Mode;
+    if (mode === "off" || mode === "light") return;
+    const theme = buildTheme(config.dark, "darken", "dynamic", {
+      canvas: { r: 255, g: 255, b: 255, a: 1 },
+      text: { r: 0, g: 0, b: 0, a: 1 },
+      canvasKey: "",
+      textKey: "",
+      pageDark: false,
+      coverage: 0,
+      sampled: false,
+      distinct: 0,
+    });
+    try {
+      deps.doc.documentElement?.setAttribute("data-lf-dark-pending", "1");
+    } catch {
+      /* ignore */
+    }
+    applier.setSheet(fallbackSheet(theme));
+    earlySheet = true;
+    state.mode = mode;
+    state.reason = "waiting for the page (early canvas)";
+  }
+
   return {
     early(): void {
-      // THE WHITE FLASH. Between document_start and the moment the config
-      // arrives there is nothing to decide from except the operating system's
-      // preference — the one fact available synchronously — so it is used as a
-      // hint and nothing more. A user with a dark OS who has turned the feature
-      // OFF will see this paint for a few milliseconds before it is removed;
-      // the alternative (everyone else seeing a white flash on every page they
-      // open) is worse, and this is the trade, stated.
+      // THE WHITE FLASH. This runs before the page has painted, and it paints the
+      // canvas the theme is about to use so the first frame is dark instead of
+      // white.
+      //
+      // It can only guess, because the stored config is still loading and a site
+      // rule cannot be known yet. The guess is the OS preference: a user on a
+      // dark desktop asked for dark pages, and a dark placeholder over a page that
+      // turns out to be dark already is invisible, while a white one is not. On a
+      // light desktop the guess is skipped here and made again the moment the
+      // config lands (see `apply`), which is normally still before first paint.
       let prefersDark = false;
       try {
         prefersDark = !!deps.win.matchMedia && deps.win.matchMedia("(prefers-color-scheme: dark)").matches;
       } catch {
         prefersDark = false;
       }
-      if (!prefersDark) return;
       const config = deps.getConfig();
-      if (config.dark.mode === "off") return;
-      const theme = buildTheme(config.dark, "darken", "dynamic", {
-        canvas: { r: 255, g: 255, b: 255, a: 1 },
-        text: { r: 0, g: 0, b: 0, a: 1 },
-        canvasKey: "",
-        textKey: "",
-        pageDark: false,
-        coverage: 0,
-        sampled: false,
-        distinct: 0,
-      });
-      try {
-        deps.doc.documentElement?.setAttribute("data-lf-dark-pending", "1");
-      } catch {
-        /* ignore */
-      }
-      applier.setSheet(fallbackSheet(theme));
-      earlySheet = true;
-      state.reason = "waiting for the config (OS prefers dark)";
+      state.site = siteFor();
+      if (!prefersDark) return;
+      paintPlaceholder(config);
       mirror();
     },
 
@@ -569,10 +847,19 @@ export function createDarkMode(deps: DarkDeps): DarkController {
         deps.toast("dark mode: this page has no host");
         return;
       }
-      const on = state.on;
-      const next = upsertSite(host, { mode: on ? "off" : "dark" });
+      // A page showing the SITE's own theme counts as on. It used to read as off,
+      // because `state.on` means "we painted something" — so the first `;Y d` on
+      // such a site wrote mode `dark` (recolouring the theme the user was trying
+      // to leave alone) instead of turning it off.
+      const on = state.on || state.engine === "native" || nativeHeld;
+      // Turning it back on hands the page to the site's own theme when it has
+      // one, rather than recolouring a page that did not need recolouring. The
+      // DECLARATION IS THE CACHED ONE (`declaredNative`), not a live read: once a
+      // theme of ours is painting, the root's computed `color-scheme` may be ours
+      // too (§8), and asking it then would answer "dark" about our own sheet.
+      const mode: Mode = on ? "off" : declaredNative ? "auto" : "dark";
       deps.toast("dark mode: " + (on ? "off" : "on") + " for " + host);
-      write(next);
+      write(upsertSite(host, { mode }));
     },
 
     cycleGlobal(): void {

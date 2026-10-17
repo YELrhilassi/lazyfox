@@ -273,6 +273,234 @@ export function mapColor(c: Rgba, a: Anchors, poles?: { bg: Rgba; fg: Rgba }): R
   return { ...mapped, a: c.a };
 }
 
+/* ------------------------------------------------------------------------
+ * ROLE-AWARE MAPPING
+ *
+ * The positional mapping above (`mapColor`) is the right answer for a colour
+ * whose job on the page is unknown, and it is still what the pure tests pin.
+ * It is NOT the right answer for a real page, and the difference is the whole
+ * reason dark modes look bad:
+ *
+ *   a dark navy hero header with white text is a SURFACE that is far from the
+ *   canvas. Positional mapping treats "far from the canvas" as "text-like" and
+ *   lightens it to near-white — so the header turns pale, its white text stays
+ *   white, and the result is a washed-out bar nobody would design.
+ *
+ * A surface and an ink are different questions:
+ *
+ *   SURFACE  How far is this from the canvas, in EITHER direction? Keep that
+ *            separation, compressed onto the dark side. A white panel becomes
+ *            the canvas, a grey panel a slightly lighter panel, a navy header a
+ *            visibly distinct navy panel, a red badge a deep red one.
+ *
+ *   INK      Where does this sit between the text pole and the canvas? Keep
+ *            that position on the new side, but NEVER make ink darker than it
+ *            already was: white text on a dark header is already correct on a
+ *            dark page, and inverting it is how a dark theme produces black
+ *            text on a black bar.
+ *
+ * Both are done in relative LUMINANCE rather than HSL lightness, because
+ * luminance is the scale contrast is measured on: preserving an HSL lightness
+ * across a canvas change makes a deep red (#c62828, luminance 0.09) come back
+ * at a mid lightness with luminance 0.2 — a glowing badge. Targeting the
+ * luminance keeps the colour's weight instead of just its position on a wheel.
+ * ---------------------------------------------------------------------- */
+
+/** The two colours a page is built from, and the two they become. */
+export interface Poles {
+  /** The page's canvas (bright on a light page). */
+  canvas: Rgba;
+  /** The page's text (dark on a light page). */
+  ink: Rgba;
+}
+
+/**
+ * How far a surface is allowed to sit from the canvas, at most.
+ *
+ * 0.13 luminance is roughly #3f3f3f over #16161e: a panel you can see without
+ * a border, which is what the page's own layering looked like on white. Larger
+ * and every card competes with the content; smaller and the page flattens to
+ * one rectangle.
+ */
+const SURFACE_OFFSET = 0.13;
+
+/**
+ * Contrast to the canvas below which a colour IS the canvas.
+ *
+ * Tight on purpose. A page's surfaces are often only 5–10% away from its canvas
+ * (#f2f4f8 on white is 1.1:1), and those are real panels the page wants the eye
+ * to see — snapping them onto the canvas flattens the layout into one rectangle.
+ * What this absorbs is the genuine rounding difference (#fefefe, #ffffff), which
+ * has to land exactly on the theme's canvas or a white page becomes a wash of
+ * near-misses.
+ */
+const CANVAS_SNAP = 1.045;
+
+/** The least contrast between text and the surface it sits on. WCAG AA body text. */
+export const MIN_TEXT_CONTRAST = 4.5;
+
+/** The least contrast that still reads as a border/rule rather than nothing. */
+export const MIN_BORDER_CONTRAST = 1.3;
+
+/**
+ * The colour with the same hue and saturation whose luminance is `target`.
+ *
+ * Luminance is monotone in HSL lightness for a fixed hue and saturation, so a
+ * bisection lands on the value exactly; the saturation is deliberately left
+ * alone because a surface that changes hue is no longer the page's colour.
+ * Impossible targets (a saturated blue cannot be pure white) return the closest
+ * reachable colour rather than failing.
+ */
+export function withLuminance(c: Rgba, target: number): Rgba {
+  const want = clamp01(target);
+  if (want <= 0.0005) return { r: 0, g: 0, b: 0, a: c.a };
+  if (want >= 0.9995) return { r: 255, g: 255, b: 255, a: c.a };
+  const hsl = rgbToHsl(c);
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 24; i++) {
+    const mid = (lo + hi) / 2;
+    if (relativeLuminance(hslToRgb({ h: hsl.h, s: hsl.s, l: mid })) < want) lo = mid;
+    else hi = mid;
+  }
+  const out = hslToRgb({ h: hsl.h, s: hsl.s, l: (lo + hi) / 2 });
+  return { ...out, a: c.a };
+}
+
+/**
+ * `c` moved away from `bg` until it reaches `min` contrast.
+ *
+ * The direction is chosen from the surface, not from the colour: on a dark
+ * surface readable means lighter, on a light one it means darker. Hue and
+ * saturation are kept while it works, and pure white/black is the fallback —
+ * the point of this function is that no text is ever left unreadable, so it is
+ * allowed to win over the palette when there is no tinted answer.
+ */
+export function ensureContrast(c: Rgba, bg: Rgba, min: number): Rgba {
+  if (contrastRatio(c, bg) >= min) return c;
+  const hsl = rgbToHsl(c);
+  const towardLight = relativeLuminance(bg) < 0.5;
+  let lo = towardLight ? hsl.l : 0;
+  let hi = towardLight ? 1 : hsl.l;
+  let found: Rgba | null = null;
+  for (let i = 0; i < 24; i++) {
+    const mid = (lo + hi) / 2;
+    const cand = hslToRgb({ h: hsl.h, s: hsl.s, l: mid });
+    if (contrastRatio(cand, bg) >= min) {
+      found = cand;
+      if (towardLight) hi = mid;
+      else lo = mid;
+    } else if (towardLight) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  if (found) return { ...found, a: c.a };
+  return towardLight ? { r: 255, g: 255, b: 255, a: c.a } : { r: 0, g: 0, b: 0, a: c.a };
+}
+
+/** `c` composited over an opaque `base`. A translucent surface's real colour. */
+export function over(c: Rgba, base: Rgba): Rgba {
+  const a = clamp01(c.a);
+  return {
+    r: c.r * a + base.r * (1 - a),
+    g: c.g * a + base.g * (1 - a),
+    b: c.b * a + base.b * (1 - a),
+    a: 1,
+  };
+}
+
+/**
+ * A background: separation from the canvas, compressed onto the new canvas.
+ *
+ * See the block comment above. Two properties matter and both are tested: a
+ * colour indistinguishable from the page's canvas lands EXACTLY on the theme's
+ * canvas (so a white page becomes one clean colour rather than a wash of
+ * near-misses), and a surface that was far from the canvas stays visibly
+ * distinct — but as a panel, never as a second canvas.
+ */
+/**
+ * How much of a screen a surface may cover before its offset is damped.
+ *
+ * See `share` below. Half a screen is the point at which a surface stops being
+ * a panel and starts being a backdrop.
+ */
+const BACKDROP_SHARE = 0.5;
+
+/**
+ * A background: separation from the canvas, compressed onto the new canvas.
+ *
+ * See the block comment above. Three properties matter and all three are
+ * tested: a colour indistinguishable from the page's canvas lands EXACTLY on
+ * the theme's canvas (so a white page becomes one clean colour rather than a
+ * wash of near-misses), a surface that was far from the canvas stays visibly
+ * distinct — but as a panel, never as a second canvas — and a surface that
+ * covers the SCREEN is quieter than a card that covers a corner.
+ *
+ * `share` is the element's area over the viewport's, and it is the one number
+ * that separates "a card" from "the grey backdrop of a sudoku board". MEASURED
+ * on nytimes.com/puzzles/sudoku: the board is `background:rgb(151,151,151)` —
+ * a mid-grey half a million pixels wide (share 0.5) — and lifting it as far as
+ * the model allows put a `rgb(94,94,94)` square on a `#16161e` page. That is
+ * the report "bunch of artifacts and harsh colors": a panel's worth of lift is
+ * right for a panel and glaring for a backdrop, so the offset is damped by how
+ * much of the screen the surface covers.
+ */
+export function mapSurface(c: Rgba, src: Poles, dst: Poles, share = 0): Rgba {
+  if (contrastRatio(c, src.canvas) <= CANVAS_SNAP) return { ...dst.canvas, a: c.a };
+  const lc = relativeLuminance(src.canvas);
+  const x = Math.min(1, Math.abs(relativeLuminance(c) - lc));
+  const ld = relativeLuminance(dst.canvas);
+  // A light canvas means the page is going dark, and a panel can only be seen
+  // by being LIGHTER than it.
+  const sign = ld > 0.5 ? -1 : 1;
+  // SATURATED SURFACES GET LESS ROOM. A muted panel needs luminance to be seen
+  // at all; a coloured one is already distinct by its hue, and lifting it as far
+  // makes a navy header a vivid blue bar and a red badge a glowing one — the
+  // "neon dark mode" look. Damping by the colour's own saturation keeps the
+  // neutral layering intact and lets the colours keep their weight.
+  const sat = rgbToHsl(c).s;
+  // A BACKDROP IS NOT A PANEL. At half the screen and beyond the offset falls
+  // to 45% of a panel's: still visible layering, no glare.
+  const backdrop = 1 - 0.55 * clamp01(share / BACKDROP_SHARE);
+  const room = SURFACE_OFFSET * (1 - 0.45 * clamp01(sat)) * backdrop;
+  return withLuminance(c, clamp01(ld + sign * room * Math.pow(x, 0.6)));
+}
+
+/**
+ * Text and other inks: keep the position between the two poles, and never darken.
+ *
+ * The "never darken" rule is what keeps white text on a dark header white. The
+ * neutral path exists because a page's grey text should come back as this
+ * theme's ink, not as a neutral grey that happens to have the same brightness —
+ * that is what makes a themed page look like one design rather than a filter.
+ */
+export function mapInk(c: Rgba, src: Poles, dst: Poles): Rgba {
+  const hsl = rgbToHsl(c);
+  const lc = relativeLuminance(src.canvas);
+  const lt = relativeLuminance(src.ink);
+  const span = lc - lt;
+  const t = Math.abs(span) < 1e-6 ? 1 : clamp01((relativeLuminance(c) - lt) / span);
+  const darkening = relativeLuminance(dst.canvas) < 0.5;
+  if (hsl.s < NEUTRAL_SATURATION) {
+    const blended = blend(dst.ink, dst.canvas, t, c.a);
+    return keepWeight(blended, c, darkening);
+  }
+  const ld = relativeLuminance(dst.canvas);
+  const ink = relativeLuminance(dst.ink);
+  const target = clamp01(ink + t * (ld - ink));
+  return keepWeight(withLuminance(c, target), c, darkening);
+}
+
+/** The lighter (or darker) of the two, per the direction the page is moving. */
+function keepWeight(mapped: Rgba, source: Rgba, darkening: boolean): Rgba {
+  const a = relativeLuminance(mapped);
+  const b = relativeLuminance(source);
+  if (darkening) return a >= b ? mapped : { ...source };
+  return a <= b ? mapped : { ...source };
+}
+
 /** A bucket key for counting how much of the page uses a given colour. */
 export function colorKey(c: Rgba, levels = 16): string {
   const q = (v: number) => Math.round((clamp(v, 0, 255) / 255) * (levels - 1));

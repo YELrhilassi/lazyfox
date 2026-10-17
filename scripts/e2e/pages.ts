@@ -1438,6 +1438,42 @@ this page's own theme instead of remapping its light one.</p>
 </body></html>`,
   },
 
+  // A site that DECLARES its theme after the first paint.
+  //
+  // Nearly every real site ships its `color-scheme` in a stylesheet, and a content
+  // script at `document_start` runs before the head is parsed — so at the moment
+  // the first decision is made, a site's declaration usually does not exist yet.
+  // Here that is made deterministic: the declaration arrives in the page's own
+  // DOMContentLoaded handler, which runs AFTER the engine's (the engine's listener
+  // was registered first), so the only way to find it is to ask again once the
+  // document is loaded and styled.
+  "/lateTheme": {
+    body: `<!DOCTYPE html><html><head><title>LATE THEME</title>
+<style>
+html,body{margin:0}
+body{background:#ffffff;color:#111111;font:16px/1.55 system-ui,sans-serif}
+#panel{background:#f2f4f8;color:#202124;padding:24px;min-height:360px}
+</style>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  var s = document.createElement("style");
+  s.textContent = ":root{color-scheme:light dark}" +
+    "body{background:light-dark(#ffffff,#0f1115);color:light-dark(#111111,#e6e6e6)}" +
+    "#panel{background:light-dark(#f2f4f8,#141821);color:light-dark(#202124,#e6e6e6)}";
+  document.head.appendChild(s);
+  document.documentElement.setAttribute("data-fixture-theme", "1");
+});
+</script></head>
+<body>
+<div id="panel">
+<h1>Late theme</h1>
+<p>The declaration of both schemes arrives after the first paint. The engine has to
+ask again once the document has its styles, or it recolours a theme the site
+already had.</p>
+</div>
+</body></html>`,
+  },
+
   // The same site, but FORCED light right now: `color-scheme: light` on the root
   // wins over the OS, while the `<meta name="color-scheme">` still declares that
   // the site ships both schemes. This is the half of the native-theme story that
@@ -1500,6 +1536,110 @@ setTimeout(function () {
   }, 250);
 }, 1200);
 </script>
+</body></html>`,
+  },
+
+  // A GRID WITH A TRANSPARENT LAYER OVER IT — the shape of the reported "the
+  // grid is completely hidden by some sort of gray overlay" (a puzzle page).
+  //
+  // The interaction layer paints NOTHING (`background: transparent`) and sits
+  // above the grid with a z-index, which is how puzzle and canvas boards are
+  // built: the layer swallows pointer events while the board below it is drawn.
+  // The sampler resolves such a layer's colour against its ancestors so the
+  // PAGE can be read — and painting that resolved colour back onto the layer
+  // turned it into an opaque sheet of the canvas colour, over the whole board.
+  "/grid": {
+    body: `<!DOCTYPE html><html><head><title>GRID PAGE</title>
+<style>
+html,body{margin:0}
+body{background:#ffffff;color:#111111;font:16px/1.5 system-ui,sans-serif;padding:24px}
+.board{position:relative;width:420px;height:320px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(4,1fr);
+  gap:2px;background:#c9d1dc;border:2px solid #1b1f24;width:420px;height:320px;box-sizing:border-box}
+.cell{background:#ffffff;display:flex;align-items:center;justify-content:center}
+.num{font:600 22px/1 system-ui,sans-serif;color:#111111}
+.num.given{color:#0b3d91}
+#grid-layer{position:absolute;inset:0;z-index:2;background:transparent;pointer-events:none}
+.toolbar{display:flex;gap:8px;margin-bottom:12px}
+.toolbar button{font:14px system-ui,sans-serif;padding:6px 12px;background:#eef1f6;color:#1b1f24;border:1px solid #cfd6e0;border-radius:6px}
+</style></head>
+<body>
+<div class="toolbar"><button>Check</button><button>Reveal</button></div>
+<div class="board">
+  <div id="grid-layer"></div>
+  <div class="grid">
+    <div class="cell"><span class="num given">5</span></div><div class="cell"><span class="num">3</span></div><div class="cell"><span class="num">.</span></div><div class="cell"><span class="num given">7</span></div>
+    <div class="cell"><span class="num">6</span></div><div class="cell"><span class="num given">9</span></div><div class="cell"><span class="num">1</span></div><div class="cell"><span class="num">.</span></div>
+    <div class="cell"><span class="num">.</span></div><div class="cell"><span class="num">8</span></div><div class="cell"><span class="num given">4</span></div><div class="cell"><span class="num">.</span></div>
+    <div class="cell"><span class="num">2</span></div><div class="cell"><span class="num">.</span></div><div class="cell"><span class="num">6</span></div><div class="cell"><span class="num given">8</span></div>
+  </div>
+</div>
+</body></html>`,
+  },
+
+  // THE BUSY PAGE: the shapes a real site is made of, in one place.
+  //
+  // The other light fixtures are one canvas and two panels, which is enough to
+  // prove the engine measured and painted something but NOT enough to catch the
+  // failure people actually report: "artifacts in rendering, it's not clean".
+  // Artifacts come from the shapes a simple page does not have — a dark header with
+  // white text (a surface that is already inverted), a translucent sticky bar (a
+  // surface the plain `alpha >= 1` mapping used to skip, leaving a white strip on a
+  // dark page), a coloured badge, a table, form controls, an inline SVG, and a
+  // photograph that must not be recoloured at all.
+  //
+  // The assertion written against it is a CONTRAST sweep over every element with
+  // text (see the theme suite): whatever the engine does to the colours, the text
+  // has to stay readable, and it has to stay readable on the surfaces around it.
+  "/sitelike": {
+    body: `<!DOCTYPE html><html><head><title>SITE-LIKE PAGE</title>
+<style>
+html,body{margin:0}
+body{background:#ffffff;color:#1b1f24;font:16px/1.5 system-ui,sans-serif}
+header{background:#0b1a33;color:#ffffff;padding:18px 24px}
+header h1{margin:0;font-size:20px}
+.sticky{position:sticky;top:0;background:rgba(255,255,255,.85);backdrop-filter:blur(6px);padding:10px 24px;border-bottom:1px solid #dfe3ea;color:#1b1f24}
+main{padding:24px;display:grid;grid-template-columns:2fr 1fr;gap:18px;align-items:start}
+.card{background:#f7f8fa;color:#1b1f24;border:1px solid #e1e5ec;border-radius:10px;padding:16px}
+.card h2{margin:0 0 8px;font-size:16px}
+.muted{color:#5b6472}
+.badge{display:inline-block;background:#c62828;color:#ffffff;border-radius:999px;padding:2px 10px;font-size:12px}
+.row{display:flex;gap:10px;align-items:center;margin:8px 0}
+input,select,button{font:inherit;padding:6px 10px;border:1px solid #cfd6e0;border-radius:6px;background:#ffffff;color:#1b1f24}
+button.primary{background:#1a4fd6;color:#ffffff;border-color:#1a4fd6}
+button[disabled]{background:#eceff4;color:#93a0b1}
+table{width:100%;border-collapse:collapse;background:#ffffff}
+th,td{padding:8px 10px;border-bottom:1px solid #e6e9f0;text-align:left}
+th{background:#eef1f6;color:#1b1f24}
+pre{background:#eef1f6;color:#1b1f24;padding:12px;border-radius:8px;overflow:auto}
+/* A pale GRADIENT panel. It used to be left alone (only url() counted as a
+   background image), so it washed white over the mapped colour and left the
+   most visible artifact a dark theme can have: a light panel on a dark page. */
+.grad{grid-column:1 / -1;background:linear-gradient(180deg,#ffffff 0%,#e6eefc 100%);color:#1b1f24;padding:18px 20px;border-radius:10px}
+figure{margin:0}
+figure img{display:block;width:100%;height:120px;object-fit:cover}
+figcaption{color:#5b6472;font-size:13px;padding-top:6px}
+a{color:#1257c9}
+</style></head>
+<body>
+<header><h1>Busy fixture</h1></header>
+<div class="sticky">Sticky row <span class="muted">with a translucent bar</span></div>
+<main>
+<div class="card">
+<h2>A card with a heading</h2>
+<p>Body copy on a toned panel, with <a href="/target1">a link</a> and a
+<span class="badge">BADGE</span> label.</p>
+<div class="row"><input value="an input" aria-label="text"><select aria-label="pick"><option>one</option></select><button class="primary">Primary</button><button disabled>Disabled</button></div>
+<pre><code>const x = 1; // a code block</code></pre>
+<table><thead><tr><th>Head</th><th>Head</th></tr></thead><tbody><tr><td>cell</td><td>cell</td></tr><tr><td>cell</td><td>cell</td></tr></tbody></table>
+</div>
+<div class="grad"><h2>A gradient hero</h2><p>This panel's background is a CSS gradient, so its colour stops have to be mapped like any other surface — not skipped because it is not a photograph.</p></div><div class="card">
+<h2>Media and icons</h2>
+<figure><img alt="a photo" src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACwAAAAAAQABAAACAkQBADs="><figcaption>A photograph, which is never recoloured.</figcaption></figure>
+<p><svg width="20" height="20" viewBox="0 0 20 20" aria-label="icon"><circle cx="10" cy="10" r="9" fill="#1a4fd6"></circle></svg> an inline icon</p>
+<p class="muted">Muted helper text under the card.</p>
+</div>
+</main>
 </body></html>`,
   },
 
