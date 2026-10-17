@@ -19,9 +19,13 @@ name: Installers - native builds
 # binary has the record that goes with it instead of having to hand-write one.
 
 on:
+  # MANUAL, AND DELIBERATELY. Three native builds (Linux, macOS, Windows) are
+  # not something every dev push should spend: the binaries are rebuilt from the
+  # current payload before a release anyway (`npm run build`, which refreshes
+  # every committed installer locally), and this workflow is here for the case
+  # where one of them must be produced on the platform itself. A push that needs
+  # verification is a push to master — see master.yml.
   workflow_dispatch:
-  push:
-    branches: [dev-nightly]
 
 jobs:
   installer:
