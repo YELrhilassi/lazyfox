@@ -13,7 +13,7 @@
 // activator all need answered the same way.
 
 import { collectHintables } from "./collect";
-import { selectHintables, targetKey } from "./select";
+import { selectHintables, targetKey, type HintCandidate } from "./select";
 import { deepHit } from "./probe";
 import { createVisibilityPass, type VisibilityPass } from "./visibility";
 import { HINTABLE_SELECTOR, MAX_HINTS, PAGE_FACTOR, type HintItem } from "./selectors";
@@ -60,8 +60,12 @@ export interface HintResolveDeps {
 }
 
 export interface HintResolve {
-  /** The hintable elements currently in the viewport. */
-  viewportItems(): Element[];
+  /**
+   * The hintable elements currently in the viewport, each with the occlusion
+   * answer the batch was built from — a covered control is INCLUDED and flagged
+   * (its label is dimmed), never dropped. See hints/select.ts.
+   */
+  viewportItems(): HintCandidate[];
   /**
    * Rebuild the pool from the live document, with a fresh visibility pass.
    *
@@ -117,8 +121,9 @@ export function createHintResolve(deps: HintResolveDeps): HintResolve {
   }
 
   // The currently-hintable elements: everything in `pool` that is in the
-  // viewport, CSS-visible, not occluded and not a nested/duplicate target.
-  function viewportItems(): Element[] {
+  // viewport, CSS-visible and not a nested/duplicate target. A covered control
+  // is in this list too, carrying the flag its label is drawn with.
+  function viewportItems(): HintCandidate[] {
     return selectHintables(deps.pool(), deps.maxHints ?? MAX_HINTS, pass).kept;
   }
 

@@ -117,9 +117,9 @@ function renderPage(r: PageReport | null, note?: string): void {
     [
       "Hint candidates",
       String(r.hints.candidates) +
-        " found · " + r.hints.hinted + " hinted · rejected: " +
+        " found · " + r.hints.hinted + " hinted (" + r.hints.covered +
+        " dimmed: covered) · rejected: " +
         r.hints.rejected.hidden + " hidden, " +
-        r.hints.rejected.covered + " covered, " +
         r.hints.rejected.duplicate + " duplicate",
       r.hints.hinted ? "ok" : "warn",
     ],
