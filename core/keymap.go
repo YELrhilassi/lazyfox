@@ -224,7 +224,12 @@ var Keymap = []KeymapRow{
 	{Spec: "q", Key: "q", Action: "toggleWhichKey", Label: "Toggle which-key overlay", Group: "Tools"},
 	{Spec: "shift+d", Key: "D", Action: "dismissDownload", Label: "Dismiss download notification", Group: "Tools"},
 	{Spec: "shift+n", Key: "N", Action: "stealthOpen", Label: "Stealth tab (isolated, wiped on close)", Group: "Tools"},
-	{Spec: "shift+i", Key: "I", Action: "openSetup", Label: "Install & setup", Group: "Tools"},
+	// `;I` (openSetup) is deliberately absent. The setup page is a one-time
+	// install step, not a keyboard command: it lives on the home page ("Complete
+	// the install", plus the first-run banner) where a user who needs it is
+	// already looking. A chord for it crowded the Tools group with something
+	// nobody presses twice, and every chord is a promise that the key does
+	// something worth remembering.
 
 	// ---- Reading & theme ----
 	//

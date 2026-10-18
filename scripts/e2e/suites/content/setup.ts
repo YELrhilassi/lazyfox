@@ -12,19 +12,16 @@ export async function run(ctx: any): Promise<void> {
     fn: () => Promise<void>,
     opts: { tags?: string[] } = {},
   ) => ctx.runTest(FILE, name, fn, { tags: opts.tags });
-  await t(";I opens the setup page with a GitHub Releases standalone installer download", async () => {
-    // The store add-on cannot write profile files itself, so ;I opens the
-    // setup page that directs the user to download the standalone Go installer
-    // from GitHub Releases. The page must render its status + steps and point
-    // its Download control at a releases/latest/download asset URL.
+  await t("the home page's install row opens the setup page with a GitHub Releases installer download", async () => {
+    // The store add-on cannot write profile files itself, so the setup page ——
+    // reached from the home page's "Complete the install" row (`;I` is gone, a
+    // one-time install step does not deserve a chord) — directs the user to
+    // download the standalone Go installer from GitHub Releases. The page must
+    // render its status + steps and point its Download control at a
+    // releases/latest/download asset URL.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    await ctx.leaderPress(ctx.tabA, "i", { shift: true });
-    const setupTab = await waitFor(async () => {
-      const ts = await ctx.tabsInfo();
-      const t = ts.find((x) => (x.url || "").includes("setup.html"));
-      return t || null;
-    }, 8000);
-    assert(setupTab, ";I opened a setup.html tab");
+    const setupTab = await ctx.openSetupFromHome(ctx.tabA);
+    assert(setupTab, "the install row opened a setup.html tab");
     const all = contextsOf(await getTree());
     const setupCtx = all.find((c) => (c.url || "").includes("setup.html"));
     assert(setupCtx, "found the setup page's browsing context");
@@ -112,12 +109,8 @@ export async function run(ctx: any): Promise<void> {
     // chromeAlive shows the green state + uninstall help; clearing it returns to
     // the honest todo state.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
-    await ctx.leaderPress(ctx.tabA, "I", { shift: true });
-    const setupTab = await waitFor(async () => {
-      const ts = await ctx.tabsInfo();
-      return ts.find((x) => (x.url || "").includes("setup.html")) || null;
-    }, 8000);
-    assert(setupTab, ";I opened a setup.html tab");
+    const setupTab = await ctx.openSetupFromHome(ctx.tabA);
+    assert(setupTab, "the install row opened a setup.html tab");
     const setupCtx = contextsOf(await getTree()).find((c) => (c.url || "").includes("setup.html"));
     assert(setupCtx, "found the setup page context");
     const snap = () =>

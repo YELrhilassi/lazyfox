@@ -113,7 +113,8 @@ async function main() {
   console.log("");
   console.log(`${BOLD}Profile:${NC} ${profileDir}`);
   console.log(`${BOLD}Launch (default):${NC}  "${firefoxBin}"`);
-  console.log(`${BOLD}Quick test commands:${NC}  ;I  ;P  ;N`);
+  // `;I` is gone: the setup page is a home-page row ("Complete the install").
+  console.log(`${BOLD}Quick test commands:${NC}  ;P  ;N  ;f`);
   console.log(`\n${GREEN}==================================================`);
 }
 

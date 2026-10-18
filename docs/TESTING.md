@@ -684,7 +684,7 @@ offered as one.
 | split | **13/13** | with the new post-`addTabs` trail readback in place. |
 | options | **5/5** | |
 | content | **114/115** | the one failure is `a page that never responds still answers the leader key`, whose baseline row already records it as a **harness gap rather than a product gap** (the navigation to the never-answering route is not observably started). Nothing else in the group fails. |
-| commandcenter | **35/35** standalone | the eight tests this section used to list as the group's known standalone set (`;I`, `;m`, `;n ;x ;v ;c`, `;N`, `;f` ×2, `;h`, "closing a tab down to two") all pass standalone on this tree, as do the modes/popups tests that used to stand or fall with `ctx.reset()`. |
+| commandcenter | **35/35** standalone | the eight tests this section used to list as the group's known standalone set (`;m`, `;n ;x ;v ;c`, `;N`, `;f` ×2, `;h`, "closing a tab down to two", and the install-row case that replaced `;I`) all pass standalone on this tree, as do the modes/popups tests that used to stand or fall with `ctx.reset()`. |
 
 **This pass's group run (2026-10-15/16, reader mode + smart dark mode + the report
 window's readout):** `npm run e2e -- --suite content` — **177/178**, no

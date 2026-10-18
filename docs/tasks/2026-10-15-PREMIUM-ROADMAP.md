@@ -95,9 +95,11 @@ verification list should include it so it cannot drift again.
 
 It measures 21/29 alone and 29/29 inside a full run — the opposite of the usual
 pattern, and worth understanding before anything else in it is touched. Note the
-split: `;m` and `;N` are real bindings in `core/bindings.go` while `;I`, `;n`,
-`;x`, `;v`, `;c` are not, and are chords the command center handles itself. Which
-is which decides whether this is product work or harness work.
+split: `;m` and `;N` are real bindings in `core/bindings.go` while `;n`, `;x`,
+`;v`, `;c` are not, and are chords the command center handles itself. Which is
+which decides whether this is product work or harness work. (`;I` was the odd
+one out and has since been removed, so the setup page is now a home-page row
+rather than a chord — see `core/keymap.go`.)
 
 ---
 
