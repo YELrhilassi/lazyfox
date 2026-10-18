@@ -290,7 +290,12 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     toggleWhichKey: () => ctx.ops.toggleWhichKey(),
     dismissDownload: () => ctx.ops.dismissDownload(),
     stealthOpen: () => ctx.ops.stealthOpen(),
-    openSetup: () => ctx.ops.openSetup(),
+    // NOTE: no `openSetup` here. The setup page lost its chord (`;I`) because it
+    // is a one-time install step rather than a command — it is reached from the
+    // home page instead. Keeping the entry would make the keymap-coverage test
+    // fail the other way round: an action nobody routes to is dead code that
+    // reads like a binding. The ACTION still exists (`ops.openSetup`), and the
+    // chrome helper, the home page and the install banner use it directly.
 
     // ---- Sessions ----
     //

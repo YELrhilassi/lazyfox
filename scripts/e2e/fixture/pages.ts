@@ -72,11 +72,37 @@ export function installPages(
       return n > 0 ? n : null;
     }, 15000);
     // The CC page opens in COMMAND mode (it blurs its own input on load), so
-    // hjkl navigate, `;` arms the leader and ;f/;I work on a fresh new tab.
+    // hjkl navigate, `;` arms the leader and ;f works on a fresh new tab.
     // Re-blur defensively in case a script inject during navigation left focus
     // elsewhere — tests that follow expect command mode (mode keys 1-6, hjkl
     // navigation, ...).
     await evalIn(tab, `document.activeElement && document.activeElement.blur ? (document.activeElement.blur(), true) : true`).catch(() => {});
+  };
+
+  // THE SETUP PAGE'S ONLY ROUTE, since `;I` was removed: the home page's
+  // "Complete the install" row (the first-run banner is the other surface, and
+  // it is only up while the chrome helper is missing).
+  //
+  // Clicked rather than asked for through the protocol on purpose: the row's
+  // handler is what a user hits, and the tab-reuse rule under test — replace the
+  // home tab, never stack a second extension tab — is decided further in.
+  ctx.openSetupFromHome = async function openSetupFromHome(tab) {
+    await ctx.openCC(tab);
+    const clicked = await evalIn(
+      tab,
+      `(() => {
+        var rows = Array.prototype.slice.call(document.querySelectorAll("#results .result"));
+        var row = rows.filter(function (r) { return /Complete the install/.test(r.textContent || ""); })[0];
+        if (!row) return false;
+        row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+        return true;
+      })()`,
+    );
+    if (!clicked) throw new Error("the home page has no \"Complete the install\" row");
+    return waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      return ts.find((x) => (x.url || "").includes("setup.html")) || null;
+    }, 15000);
   };
 
   ctx.ccFacts = function ccFacts(tab) {

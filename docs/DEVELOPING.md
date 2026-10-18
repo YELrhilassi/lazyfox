@@ -100,8 +100,9 @@ npm run sync                              # unsigned xpi + every dev installer (
 npm run ship:nightly                        # (re)publish the rolling `nightly` prerelease
 ```
 
-`ship:nightly` never touches `master` and needs no AMO credentials. The `;I`
-setup page detects the running Firefox (`a1` → Nightly, `b` → Developer
+`ship:nightly` never touches `master` and needs no AMO credentials. The setup
+page (home page → **Complete the install**) detects the running Firefox (`a1` →
+Nightly, `b` → Developer
 Edition) and links Nightly/Dev users at this prerelease, stable users at
 `releases/latest`. So both audiences always get the build that matches their
 browser — see `docs/INSTALLER-ANALYSIS.md`.

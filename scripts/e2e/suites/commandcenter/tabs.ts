@@ -32,22 +32,23 @@ export async function run(ctx: any): Promise<void> {
     }
   };
 
-  await t("leader ;I from the home opens the setup page in the current tab", async () => {
-    // Regression: ;I used to spawn a NEW tab (browser.tabs.create). From the
-    // command-center home it must reuse the tab in place (like ;o/;h) so the
-    // install page never stacks a second extension tab.
+  await t("the home page's install row opens the setup page in the current tab", async () => {
+    // The setup page's only route since `;I` was removed: the home page's
+    // "Complete the install" row. Regression it still guards: opening it used
+    // to spawn a NEW tab (browser.tabs.create). From the home it must reuse the
+    // tab in place (like ;o/;h) so the install page never stacks a second
+    // extension tab.
     await ctx.openCC(ctx.tabA);
     await ctx.activateTab(ctx.tabA);
-    // Declared, then asserted: the tab count must be the SAME after ;I. This
-    // is the shape that replaces reconciling — the test states the number it
-    // needs and the product has to meet it. Nothing is closed or opened to
+    // Declared, then asserted: the tab count must be the SAME after the click.
+    // This is the shape that replaces reconciling — the test states the number
+    // it needs and the product has to meet it. Nothing is closed or opened to
     // make room, so the test is order-independent.
     const before = await ctx.tabCount();
-    await ctx.leaderPress(ctx.tabA, "I");
-    const setupTab = await ctx.waitActiveUrl("setup.html", 15000);
-    assert(setupTab, ";I opened the setup page");
+    const setupTab = await ctx.openSetupFromHome(ctx.tabA);
+    assert(setupTab, "the install row opened the setup page");
     await ctx.expectTabs(before, 8000).catch(async () => {
-      throw new Error(";I opened a tab: wanted " + before + ", saw " + (await ctx.tabCount()));
+      throw new Error("the install row opened a tab: wanted " + before + ", saw " + (await ctx.tabCount()));
     });
     const a = await ctx.activeTabInfo();
     assert(a.url.includes("setup.html"), "active tab is the setup page, got " + a.url);

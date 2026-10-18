@@ -58,8 +58,9 @@ setup paths work on **stable** Firefox — no Developer Edition or Nightly neede
 (it is only required if you manually load a *unsigned* dev build from
 `about:debugging`).
 
-**From the store** — install `Lazyfox` from addons.mozilla.org, then press
-`;I` (or open the extension's setup page). It detects the right profile,
+**From the store** — install `Lazyfox` from addons.mozilla.org, then open the
+home page and pick **Complete the install** (the first-run banner points at the
+same page). It detects the right profile,
 writes the four `chrome/` files, merges Lazyfox's preferences, installs the
 add-on, and asks for admin rights **once** to drop the autoconfig loader into
 the Firefox install folder. The page never assumes the install worked — it verifies
@@ -271,8 +272,10 @@ The popup footer always shows the keys for what you're doing at the moment.
 new-tab page. It is keyboard-first: the home grid shows your quick-launch web
 apps and the browser/settings access, and it opens in command mode —
 `h`/`j`/`k`/`l` (or the arrows) move across the tiles, `Enter` runs the
-selection, and `;` arms the leader right here (so `;I`, `;f`, `;n`, … all
-work with no mouse click). Type any letter and the input takes over for a
+selection, and `;` arms the leader right here (so `;f`, `;n`, … all work with
+no mouse click). **Complete the install** is a tile here rather than a chord:
+setting Lazyfox up is a one-time step, not something you press while reading.
+Type any letter and the input takes over for a
 search. `1`–`6` (or `Tab`) switch modes — Search · URL · Tabs · History ·
 Bookmarks · Downloads — where `j`/`k` move through the list and `Enter` runs
 it. `Esc` clears back to command mode.

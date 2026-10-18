@@ -107,12 +107,6 @@
     "runs": 7,
     "passes": 5
   },
-  "commandcenter/tabs › leader ;I from the home opens the setup page in the current tab": {
-    "status": "pass",
-    "group": "commandcenter",
-    "runs": 7,
-    "passes": 5
-  },
   "commandcenter/tabs › leader ;m mutes the active tab": {
     "status": "pass",
     "group": "commandcenter",
@@ -262,12 +256,6 @@
     "group": "content",
     "runs": 10,
     "passes": 10
-  },
-  "content/setup › ;I opens the setup page with a GitHub Releases standalone installer download": {
-    "status": "fail",
-    "group": "content",
-    "runs": 10,
-    "passes": 8
   },
   "content/setup › setup page: the installed state and uninstall help appear only on a confirmed chrome signal": {
     "status": "fail",
@@ -2017,6 +2005,18 @@
   "content/hints › link hints: a visible aria-hidden link is hinted; hidden, inert and pointer-dead ones are not": {
     "status": "pass",
     "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/setup › the home page's install row opens the setup page with a GitHub Releases installer download": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "commandcenter/tabs › the home page's install row opens the setup page in the current tab": {
+    "status": "pass",
+    "group": "commandcenter",
     "runs": 1,
     "passes": 1
   }

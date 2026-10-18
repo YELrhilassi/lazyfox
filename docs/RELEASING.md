@@ -108,8 +108,13 @@ scratch clone).
 
 | File | Trigger | Purpose |
 |------|---------|---------|
-| `dev-nightly.yml` | push / PR to `dev-nightly` | Compile the unsigned dev build + unit tests + dist check. |
+| `dev-nightly.yml` | **manual** (`workflow_dispatch`) | The same pipeline `npm run ci` runs: committed artifacts up to date → unsigned dev build (`LF_SKIP_INSTALLERS=1`) → four typechecks → full test suite → artifacts still consistent. |
+| `installers.yml` | **push to `dev-nightly`** (and manual) | Builds every committed installer on its own OS (the macOS/Linux windows need CGO + the platform webview, so a Linux runner cannot produce them) and verifies the binaries it just built before uploading them as artifacts. It never writes to the repo. Builds locally with `npm run build`; this is the cross-platform proof. |
 | `master.yml` | push to `master` | Compile release-mode sources (offline — reuses the committed signed xpi) + unit tests. |
+
+A dev push therefore spends a runner only on `installers.yml`. Everything else
+in this file is a local command, which is why `npm run ci` exists: it is the
+same sequence, on your machine, before the push.
 
 Neither workflow has AMO secrets, and neither pushes, tags, or creates a
 release. Releases are created by `npm run ship`, exactly once.

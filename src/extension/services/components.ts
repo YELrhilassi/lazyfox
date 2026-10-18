@@ -41,9 +41,10 @@ export async function componentsInfo(): Promise<{
   };
 }
 
-// Shared tab-reuse rule for ;I (setup) and ;T (diagnostics): from the command
-// center the tab is replaced in place so a second extension tab never stacks;
-// from a real page a fresh tab opens (replacing the user's page would lose it).
+// Shared tab-reuse rule for the setup page (home page row / install banner) and
+// ;T (diagnostics): from the command center the tab is replaced in place so a
+// second extension tab never stacks; from a real page a fresh tab opens
+// (replacing the user's page would lose it).
 function openExtensionPageInActiveOrNewTab(page: string): Promise<{ ok: boolean }> {
   const url = browser.runtime.getURL(page);
   return getActiveTab()
