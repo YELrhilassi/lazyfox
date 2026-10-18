@@ -55,8 +55,10 @@ remember.
 
 Packs the fresh **unsigned** build, uploads it to addons.mozilla.org as a
 **listed** version (which starts the review clock), and rebuilds the dev
-installer binaries. Requires `AMO_API_KEY` / `AMO_API_SECRET` (a gitignored
-`.env`). Refuses to re-submit a version that already exists.
+installer binaries. Requires `AMO_API_KEY` / `AMO_API_SECRET`, from the
+environment or from a gitignored `.env` **at the repo root** (copy
+`.env.example`); an exported variable wins over the file. Refuses to re-submit
+a version that already exists.
 
 **AMO does not sign at upload.** A listed version is only signed after a
 reviewer approves it. Wait for that before `ship`.
