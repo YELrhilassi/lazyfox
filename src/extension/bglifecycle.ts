@@ -10,7 +10,7 @@
 
 import { getConfig } from "./config";
 import { probeHostOnce } from "./host";
-import { transientTabIds } from "./tabs";
+import { isUITab, transientTabIds } from "./tabs";
 import { createCacheController } from "./cache";
 import { forgetTabTrack, noteTabTitle, noteTabUrl, primeTracks } from "./navstore";
 import {
@@ -140,19 +140,37 @@ function installNavTracks(): void {
 
 // Session autosave + the in-memory quit snapshot, kept current on every tab
 // change so flushing on quit never persists a stale window.
+//
+// PLUMBING TABS ARE NOT SESSION CONTENT, and their events are not a reason to
+// re-measure. The chrome helper's `relay.html` tab navigates on EVERY hash write
+// (that is how the port is re-opened), so it reports `status: complete` several
+// times a second for as long as the helper is talking to us. Feeding those
+// events to a 1.5s debounce meant the debounce was reset forever and the
+// checkpoint never fired at all — measured as 200+ schedules in 15s with zero
+// autosaves, i.e. a session saved by hand and then silently frozen while the
+// user kept opening tabs. `isUITab` is the same answer the snapshot itself
+// uses, so the two cannot disagree about what a session contains.
 function installSessionAutosave(): void {
   const onTabChange = () => {
     scheduleAutosave();
     scheduleSnapshot();
   };
-  browser.tabs.onCreated.addListener(onTabChange);
-  browser.tabs.onRemoved.addListener(onTabChange);
+  browser.tabs.onCreated.addListener((tab: any) => {
+    if (!isUITab(tab)) onTabChange();
+  });
+  browser.tabs.onRemoved.addListener((tabId: number) => {
+    // The removed tab has no URL to test, so the recorded id is what is left:
+    // a relay tab closing is plumbing, a real tab closing is a session change.
+    if (!transientTabIds.has(tabId)) onTabChange();
+  });
   browser.tabs.onMoved.addListener(onTabChange);
   browser.tabs.onAttached.addListener(onTabChange);
   browser.tabs.onDetached.addListener(onTabChange);
   browser.tabs.onActivated.addListener(onTabChange);
-  browser.tabs.onUpdated.addListener((_tabId: number, info: any) => {
-    if (info.url || info.status === "complete") onTabChange();
+  browser.tabs.onUpdated.addListener((_tabId: number, info: any, tab: any) => {
+    if (!info.url && info.status !== "complete") return;
+    if (isUITab(tab)) return;
+    onTabChange();
   });
 }
 

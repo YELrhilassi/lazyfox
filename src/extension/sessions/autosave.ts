@@ -62,10 +62,33 @@ export async function autosaveCurrentSession(
   }
 }
 
+// THE WAIT IS A DEBOUNCE WITH A CEILING, not a pure debounce.
+//
+// A pure debounce assumes the event stream goes quiet. It does not: the chrome
+// helper's relay tab reloads on every relay hash write, so it can report a
+// finished load many times a second for as long as the helper is talking to us,
+// and any page that updates itself in a loop does the same. Under a pure
+// debounce that means the checkpoint never fires again — the session the user
+// saved before opening ten tabs stayed frozen at those ten tabs' absence, which
+// is exactly the "tabs opened after saving are not persisted" failure that was
+// measured here (200+ schedules in 15s, zero autosaves). The first change still
+// starts the clock and a quiet page still saves 1.5s after its last change, but
+// a change that arrives once the ceiling is reached no longer postpones the save
+// that is already due.
+const AUTOSAVE_DEBOUNCE_MS = 1500;
+const AUTOSAVE_MAX_WAIT_MS = 4000;
+
 let autosaveTimer: number | null = null;
+// When the pending save first became due (only meaningful while one is pending).
+let autosaveDueAt = 0;
 
 export function scheduleAutosave(whileRestoring: () => boolean): void {
   if (whileRestoring()) return;
+  const now = Date.now();
+  if (autosaveTimer == null) autosaveDueAt = now;
+  // Past the ceiling the pending save is allowed to happen: keeping the timer
+  // it already has is what bounds the latency.
+  else if (now - autosaveDueAt >= AUTOSAVE_MAX_WAIT_MS) return;
   if (autosaveTimer != null) clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(async () => {
     autosaveTimer = null;
@@ -78,7 +101,7 @@ export function scheduleAutosave(whileRestoring: () => boolean): void {
     } catch {
       // ignore — autosave is best-effort
     }
-  }, 1500);
+  }, AUTOSAVE_DEBOUNCE_MS);
 }
 
 // How long a layout report keeps re-measuring before it writes down what it has
@@ -132,12 +155,23 @@ export function scheduleLayoutSnapshot(whileRestoring: () => boolean): void {
 }
 
 let snapshotTimer: number | null = null;
+let snapshotDueAt = 0;
+const SNAPSHOT_DEBOUNCE_MS = 250;
+const SNAPSHOT_MAX_WAIT_MS = 1000;
 
 // Short in-memory debounce, no storage write. Suppressed while a restore is
 // rebuilding the window (it would capture a partial teardown); the restore
 // refreshes lastSnapshot itself when it finishes.
+//
+// The ceiling is here for the same reason as the autosave one: a continuous
+// event source would otherwise keep resetting this timer, and the snapshot a quit
+// flush writes would stay frozen at whatever the window looked like when the
+// churn started. Refreshing is a query, not a write, so it is cheap to bound.
 export function scheduleSnapshot(whileRestoring: () => boolean): void {
   if (whileRestoring()) return;
+  const now = Date.now();
+  if (snapshotTimer == null) snapshotDueAt = now;
+  else if (now - snapshotDueAt >= SNAPSHOT_MAX_WAIT_MS) return;
   if (snapshotTimer != null) clearTimeout(snapshotTimer);
   snapshotTimer = setTimeout(async () => {
     snapshotTimer = null;
@@ -146,7 +180,7 @@ export function scheduleSnapshot(whileRestoring: () => boolean): void {
     } catch {
       // ignore — best-effort
     }
-  }, 250);
+  }, SNAPSHOT_DEBOUNCE_MS);
 }
 
 // Flush on quit: when the last window closes, Firefox is quitting. Persist
