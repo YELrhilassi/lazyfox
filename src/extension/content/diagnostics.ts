@@ -146,6 +146,7 @@ export async function collectPageReport(
     hints: {
       candidates: hints.candidates,
       hinted: hints.hinted,
+      covered: hints.covered,
       rejected: hints.rejected,
       probes: hints.probes,
       shadowRoots: hints.shadowRoots,

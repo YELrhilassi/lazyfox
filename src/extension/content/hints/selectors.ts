@@ -30,6 +30,11 @@ export interface HintItem {
   // re-rendered node be matched back to the control it replaced, so its key
   // survives a virtual-DOM re-render instead of reshuffling.
   target: string;
+  // Something is painted over this control right now (see hints/select.ts). The
+  // key still works, so the label is NOT withheld — it is drawn dimmed, which is
+  // the only way the user can tell "there is a link there, something is on top
+  // of it" from "there is no link there at all".
+  covered: boolean;
 }
 
 // THE LABEL. Flat, and that is the whole design: no border, no outline ring, no
@@ -105,6 +110,16 @@ export const HINT_CSS =
   // the label is still the whole key (never an empty box), and the enter badge
   // beside it is what says what to press.
   ".hint.hint-wait{background:" + HINT_LABEL.wait + ";color:" + HINT_LABEL.text + "}" +
+  // COVERED: the key works, but something is painted over the control right now
+  // (a sticky header, a cookie wall, a player's control bar, an ad layer). The
+  // label used to be withheld entirely, which left the user no way to learn the
+  // control was there — see hints/select.ts for why that is the worse failure.
+  //
+  // Dimmed rather than hollow: the label's shape is the product's one visual
+  // constant (no border, no ring), and a hollow copy would read as a different
+  // KIND of object. Half-opacity says "same thing, weaker claim" without adding
+  // a second visual vocabulary, and it survives both grounds a label sits on.
+  ".hint.hint-covered{opacity:.55}" +
   // Off-screen hint labels are hidden, not moved; see the note in overlay.ts.
   ".hint[style*='display:none'],.hint-off{display:none}";
 

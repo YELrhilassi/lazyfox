@@ -518,6 +518,46 @@ still produce a checkpoint, and inside the ceiling), storm (200 changes at 200ms
 for 40s). Removing the ceiling makes it fail, which is what makes it a test of
 the rule rather than of the timer.
 
+### DONE — a control with something over it had no key at all, and no way to say so
+
+The hint engine ran one strict pipeline for two different jobs: deciding what is
+on the page, and deciding what a key may safely press. Every strictness in
+DISCOVERY therefore became an invisible missing feature, and the worst of them
+was occlusion. `selectHintables` asked `reachable()` — five hit tests across the
+control's own surface — and on "no" dropped the candidate. A link under a
+cookie wall, a row under a sticky header, a player's control bar over the video,
+an ad layer: each of them had **no key**, and nothing on screen said a control was
+there at all.
+
+The check was also wrong in both directions. It is not stacking-context aware, so
+a SIBLING overlay put a control out of reach even when the control is what the
+user can see and press once the overlay goes; and it pierces only OPEN shadow
+roots, so a control in a closed root was unreachable by construction.
+
+The rule is now **degrade, not veto**. The control is kept, flagged, and its
+label is drawn dimmed (`.hint-covered`); the key still fires, because activation
+clicks the ELEMENT and deliberately keeps the synthetic pointer sequence off a
+foreign target (`hints/activate.ts` justifies that split, and the activation
+watcher already reports a page that ignores the press — silence was the part that
+made this class of failure expensive). The flag rides the batch, is re-applied on
+EVERY render because coverage is a fact about the page rather than the item (a
+scrim that scrolls away clears it with nothing else changed), and is on the hint
+snapshot rows, so a test asserts the state instead of inferring it from a key
+that is missing.
+
+Deliberately not taken: the other half of the P0 note — "resolve the topmost
+actionable node at press time". Pressing an overlay the user never chose would
+let one keystroke operate two elements (the scrim's handler and the control's own
+click), which is worse than a dimmed label that says what is true.
+
+Verified: `scripts/test/hints-occlusion.test.ts` (6 cases, occlusion answer
+injected so the policy is testable without painting a scrim) pins kept+flagged,
+that coverage does NOT resurrect an invisible control, and that it does not
+defeat the duplicate rule. End to end on the real `/uitest` fixture, the covered
+link is hinted with `covered: true` while its uncovered neighbour is not, and its
+key navigates to `#cov` — `content/hints` 36/36 on a headless run, with the
+renamed case recorded in the baseline.
+
 ---
 
 ## Measurement corrections (a claim that turned out to be wrong)
