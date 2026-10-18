@@ -130,7 +130,10 @@ export async function run(ctx: any): Promise<void> {
       if (!shapeMatches(a, ["lfmulti-a1", "lfmulti-a2", "lfmulti-a3"], [1, 2])) return null;
       if (!shapeMatches(b, ["lfmulti-b1", "lfmulti-b2"], [0, 1])) return null;
       return wins;
-    }, 25000).catch(async () => "timeout; windows=" + JSON.stringify(await readWindows().catch(() => "ERR")));
+    }, 25000).catch(async () =>
+      "timeout; windows=" + JSON.stringify(await readWindows().catch(() => "ERR")) +
+      " ALL=" + JSON.stringify(await evalIn(ctx.probe, `(async () => { const ws = await browser.windows.getAll(); const out = []; for (const w of ws) { if (w.type && w.type !== "normal") continue; const ts = await browser.tabs.query({ windowId: w.id }); out.push({ id: w.id, tabs: ts.map((t) => ({ u: (t.url || "").slice(-28), s: typeof t.splitViewId === "number" ? t.splitViewId : -1 })) }); } return out; })()`).catch(() => "ERR"))
+    );
     assert(
       Array.isArray(got),
       "both windows restored, each with its own pairing: " + JSON.stringify(got)
