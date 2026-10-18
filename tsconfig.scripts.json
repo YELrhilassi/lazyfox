@@ -228,6 +228,18 @@
   // owns the browser tree; what is out of scope here is only the Node-side USE
   // of them, over a faked browser.
   //
+  // scripts/test/session-autosave.test.ts joins it for the same reason and with
+  // the same subject: it drives sessions/autosave.ts — the checkpoint debounce
+  // and its ceiling — over a faked browser, and that module's collaborators
+  // (sessions/storage.ts, store.ts, stealth.ts) reach `browser`, while its timer
+  // is typed as a DOM `number` rather than Node's Timeout. It is the only test
+  // of the timing rule at all: the e2e tier can see that a tab opened after a
+  // save eventually lands in the session, but not the 4-second ceiling that
+  // bounds the wait, and a ceiling nobody measures is a ceiling that silently
+  // stops existing. Those modules are typechecked by tsconfig.json, which owns
+  // the browser tree; what is out of scope here is only the Node-side USE of
+  // them.
+  //
   // The Node-side tests themselves now live in scripts/test/*.test.ts and run
   // under node:test. They are INCLUDED here (see the include list below), so a
   // change to a test file cannot silently break the build — scripts/test/ is
@@ -263,7 +275,8 @@
     "scripts/test/sync-content.test.ts",
     "scripts/test/split-unsplit.test.ts",
     "scripts/test/dark-theme.test.ts",
-    "scripts/test/startup-resume.test.ts"
+    "scripts/test/startup-resume.test.ts",
+    "scripts/test/session-autosave.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

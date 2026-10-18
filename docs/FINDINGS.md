@@ -474,6 +474,50 @@ it. Two suites in `scripts/test-leader-sequences.ts` pin the queue and the
 cancel; the first was verified by mutating the code back to one slot, where it
 fails with `actual: ''` (the chord runs nothing), which is the bug in one line.
 
+### DONE — the session checkpoint was starved by a tab that reloads on purpose
+
+The e2e session suite reported "tabs opened after saving are persisted into the
+session" failing after the window-set work — and the sentence is exact: a session
+saved by hand stayed frozen at the tabs it was saved with. Nothing was lost, no
+write failed, and the code that folds a new tab into the named session was
+present and correct.
+
+**Measured, because the guess was wrong twice.** The first reading was "the
+write goes out with an empty window set" (the harness serializer maps `undefined`
+to `null` and truncates nothing, so `windows[0].tabs` looked empty — it was not
+the product's shape, it was the reader's). Instrumenting the write itself showed
+the saved record was EXACTLY right and untouched afterwards. What was wrong was
+that nothing was written after it: `scheduleAutosave` had been called **210 times
+in ~15 seconds and the timer had fired zero times**, with the event counters
+naming `updated` as 201 of them.
+
+**The cause is a debounce with no ceiling.** Every `tabs.*` event resets a 1.5s
+timer, and one tab produces them faster than that forever: the chrome helper's
+`relay.html` navigates on every relay write (that is how its port is re-opened),
+so it reports `status: complete` many times a second for as long as the helper is
+talking to the extension. It is plumbing — `isUITab` excludes it from every
+numbering path and from the snapshot itself — but it was the loudest source of
+tab events in the process. Any page that updates itself in a loop does the same
+thing, which is why this is a product bug and not a harness one.
+
+Two independent fixes, because either alone leaves the checkpoint reachable by
+churn:
+
+- `installSessionAutosave` ignores events from UI tabs (`isUITab`, and the
+  transient id set for a removal, where there is no URL left to test). Its
+  `onUpdated` filter now asks the same question the snapshot asks, so the two
+  cannot disagree about what a session contains.
+- the debounce has a CEILING: the first change starts the clock, and a change
+  that arrives once 4s have passed does not postpone the save that is already
+  due. A quiet page still saves 1.5s after its last change; a busy one saves
+  every ~5.5s instead of never.
+
+`scripts/test/session-autosave.test.ts` pins all three cases on node:test's mock
+timers — quiet (write lands at 1.5s), churn (a change every 500ms for 6s must
+still produce a checkpoint, and inside the ceiling), storm (200 changes at 200ms
+for 40s). Removing the ceiling makes it fail, which is what makes it a test of
+the rule rather than of the timer.
+
 ---
 
 ## Measurement corrections (a claim that turned out to be wrong)
