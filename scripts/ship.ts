@@ -28,6 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv } from "./amo-lib.ts";
+import { runNpm } from "./npm.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -132,7 +133,11 @@ shout("git", ["merge", "--no-ff", "-X", "theirs", "-m", `Merge ${devBranch} (sou
 // 5. Release build on master: sync the signed xpi (already fetched above; this
 //    reuses it deterministically), rebuild release-mode dist, and the installers.
 console.log("\n[ship] building the signed release artifacts…");
-shout("npm", ["run", "build:release"]);
+// Through the shared launcher, NOT `execFileSync("npm", …)`: on Windows npm is
+// `npm.cmd` and spawning it without a shell is ENOENT, which would stop the
+// release AFTER master had been merged — the worst possible place to fail. See
+// scripts/npm.ts.
+runNpm(["run", "build:release"], root);
 
 // 6. Verify.
 console.log("\n[ship] verifying release artifacts…");

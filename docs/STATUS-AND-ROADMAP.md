@@ -608,14 +608,16 @@ status lines rather than the original text.
 2. **The `commandcenter` group is the largest untouched block, and it is
    inconsistent about it.** It measures 21/29 run alone and 29/29 inside a full
    run, which is the opposite of the usual pattern and is worth understanding
-   before anything else is attempted. The failures when it runs alone are `;I`
-   (setup page), `;m` (mute), `;n ;x ;v ;c` (tab commands), `;N` (stealth),
-   `;f` (home-grid hint-pick) and `;h` (history filter). Note that `;m` and `;N`
-   *are* real bindings in `core/bindings.go` while `;I`, `;n`, `;x`, `;v` and
-   `;c` are not — so this group is a mix of real product gaps and chords the
-   command center handles on its own. Establish which is which before touching
-   anything; the `;f` pair is known pre-existing and should not be counted
-   twice.
+   before anything else is attempted. The failures when it runs alone are the
+   setup page, `;m` (mute), `;n ;x ;v ;c` (tab commands), `;N` (stealth), `;f`
+   (home-grid hint-pick) and `;h` (history filter). Note that `;m` and `;N` *are*
+   real bindings in `core/bindings.go` while `;n`, `;x`, `;v` and `;c` are not —
+   so this group is a mix of real product gaps and chords the command center
+   handles on its own. Establish which is which before touching anything; the
+   `;f` pair is known pre-existing and should not be counted twice.
+   (The setup page had a chord when this list was written; `;I` has since been
+   removed and its case now opens the page from the home row, which is the only
+   route left.)
 3. **Do not re-run the harness rewrite.** It is built, measured and documented
    in `docs/TESTING.md`. The remaining work is product work plus the two
    narrow harness gaps above, and the baseline in `scripts/e2e/baseline.json`

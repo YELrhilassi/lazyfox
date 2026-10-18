@@ -608,6 +608,10 @@ import type { ContentPopupShell } from "./content/find";
 
   // First-run install indicator: once the chrome helper is alive, Lazyfox is
   // fully installed and the banner stays hidden. Shown (amber) otherwise.
+  //
+  // This banner and the "Complete the install" row above it are now the ONLY
+  // route to the setup page: `;I` was removed because a one-time install step
+  // does not deserve a chord, and the home page is where someone looks for it.
   const banner = document.getElementById("installBanner");
   const installBtn = document.getElementById("installGo");
   function refreshInstallBanner(alive: boolean | undefined): void {
@@ -631,9 +635,9 @@ import type { ContentPopupShell } from "./content/find";
   void ensureCore().catch(() => {});
   // Start in COMMAND mode with the input blurred: the home grid is keyboard-
   // first, so hjkl/arrows navigate the tiles, Enter opens the selection, and
-  // `;` arms the leader (so ;I / ;f and ctrl/shift combos reach their actions)
-  // with no need to click first. Typing any other printable key focuses the
-  // input and starts a search (the key handler drives that).
+  // `;` arms the leader (so ;f and ctrl/shift combos reach their actions) with
+  // no need to click first. Typing any other printable key focuses the input
+  // and starts a search (the key handler drives that).
   renderer.setStateTag("cmd");
   window.addEventListener("load", () => {
     renderer.setStateTag("cmd");
