@@ -142,6 +142,9 @@ const MEDIA_TAGS = new Set([
   "TRACK",
 ]);
 
+/** The four border sides, in painting order, for the per-side colour read. */
+const SIDES = ["top", "right", "bottom", "left"] as const;
+
 /** Our own hosts, by id prefix: never sampled, never mapped. */
 const OUR_ID_PREFIX = "lazyfox-";
 
@@ -184,8 +187,13 @@ const MIN_AREA = 24;
 // the cost bounded: two extra computed-style reads per element above this size,
 // which on a very dense page is a few hundred elements rather than fourteen
 // thousand. A 24px dot's `::before` is not a veil.
+//
+// 2500 was measured too high on bbc.com/news, where a navigation item paints
+// `::before{content:"";position:absolute;background:rgb(230,232,234)}` — a light
+// bar on a menu that is a dark panel once the page is themed, i.e. one more
+// "gray overlay on some elements". The gate now starts where a menu item does.
 const PSEUDO_LAYERS = ["::before", "::after"] as const;
-const PSEUDO_MIN_AREA = 2500;
+const PSEUDO_MIN_AREA = 1200;
 const RESAMPLE_MIN_MS = 400;
 // The burst allowance, and — this is the part that was missing — what happens
 // after it.
@@ -578,7 +586,16 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
   // to every other element with the same class: one white card made twenty
   // tinted ones measure as white, and the rule built from that painted them
   // wrong. An element's own colour is a property of the element.
-  let originals = new WeakMap<Element, { ownBg?: string; fg?: string; border?: string; image?: string }>();
+  let originals = new WeakMap<
+    Element,
+    {
+      ownBg?: string;
+      fg?: string;
+      border?: string;
+      borders?: Array<{ side: "top" | "right" | "bottom" | "left"; color: string }>;
+      image?: string;
+    }
+  >();
 
   // THE WALK IS A CURSOR OVER THE WHOLE DOCUMENT, and this is everything it has
   // measured so far — the sheet is built from the union, not from one slice of
@@ -776,6 +793,18 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       }
       const gradientOf = (v: string | undefined): string | undefined =>
         v && v !== "none" && v.indexOf("url(") < 0 ? v : undefined;
+      // EVERY PAINTED SIDE, in one pass over the four widths and colours. A
+      // `border-bottom: 1px solid` row separator has no top width at all, so a
+      // top-only read found no border and left a light hairline on a dark page;
+      // and a ring written on three sides (`border: 4px solid rgba(255,255,255,.5)`
+      // minus one) came back as three untouchable light edges.
+      const paintedSides: Array<{ side: "top" | "right" | "bottom" | "left"; color: string }> = [];
+      for (const side of SIDES) {
+        const w = parseFloat(cs.getPropertyValue("border-" + side + "-width") || "0") || 0;
+        if (w <= 0) continue;
+        const c = colour(cs.getPropertyValue("border-" + side + "-color") || "");
+        if (c) paintedSides.push({ side, color: c });
+      }
       const borderWidth = parseFloat(cs.getPropertyValue("border-top-width") || "0") || 0;
       const sel = selOf(el);
       const selector = sel.shared;
@@ -789,9 +818,19 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
           ? known.border
           : borderWidth > 0
             ? colour(cs.getPropertyValue("border-top-color") || "") || undefined
-            : undefined;
+            : paintedSides.length
+              ? paintedSides[0]!.color
+              : undefined;
       const bgImage = known ? known.image : gradientOf(imageRaw);
-      if (!known) originals.set(el, { ownBg: ownBg || undefined, fg: fg || undefined, border, image: bgImage });
+      if (!known) {
+        originals.set(el, {
+          ownBg: ownBg || undefined,
+          fg: fg || undefined,
+          border,
+          borders: paintedSides.length ? paintedSides : undefined,
+          image: bgImage
+        });
+      }
       const one: PageSample = {
         selector,
         solo: sel.solo || undefined,
@@ -801,6 +840,7 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
         ownBg,
         fg,
         border,
+        borders: (known && known.borders) || paintedSides,
         area,
         hasBgImage,
         hasContent,

@@ -755,11 +755,16 @@ export async function run(ctx: any): Promise<void> {
     "https://tailwindcss.com/",
     "https://news.ycombinator.com/",
   ];
-  const LIVE = process.env.LF_LIVE_SITES
-    ? process.env.LF_LIVE_SITES === "wide"
-      ? WIDE
-      : KNOWN
-    : [];
+  // An ARBITRARY LIST, for the round that has to find a shape rather than
+  // re-check a known one: `LF_LIVE_URLS=a,b,c`. The sets above stay as the
+  // reproducible baseline.
+  const LIVE = process.env.LF_LIVE_URLS
+    ? process.env.LF_LIVE_URLS.split(",").map((s) => s.trim()).filter(Boolean)
+    : process.env.LF_LIVE_SITES
+      ? process.env.LF_LIVE_SITES === "wide"
+        ? WIDE
+        : KNOWN
+      : [];
   const SWEEP = `(() => {
     const C = (s) => {
       const i = String(s).indexOf("("), j = String(s).lastIndexOf(")");
@@ -911,7 +916,7 @@ export async function run(ctx: any): Promise<void> {
           desc(el) + " " + Math.round(a) + "px2 img=" + (cs.backgroundImage === "none" ? "-" : "yes") + " kids=" + el.children.length + " size=" + cs.backgroundSize
         );
       }
-      if (a > 30000) {
+      if (a >= 1500) {
         for (const which of ["::before", "::after"]) {
           const ps = getComputedStyle(el, which);
           if (!ps || ps.content === "none" || ps.content === "normal") continue;
@@ -924,6 +929,52 @@ export async function run(ctx: any): Promise<void> {
       if (a > 400 && /^(svg|path|circle|rect|polygon|ellipse|g|use)$/i.test(el.tagName)) {
         const f = C(cs.fill);
         if (f && f.a > 0.5 && L(f) < 0.2) bump(darkSvg, cs.fill + " @" + Math.round(a), desc(el) + " fill=" + cs.fill + " color=" + cs.color + " " + Math.round(a) + "px2");
+      }
+    }
+    // THE FOUR THINGS THE SHEET CANNOT SAY.
+    //
+    // The engine emits exactly four declarations — background-color,
+    // background-image (gradients), color, and the TOP border's colour. So
+    // everything else the page paints is still the page's, on a dark canvas:
+    // a light box-shadow (a ring, a hairline, an inset glow), a light outline, a
+    // border on the other three sides, and a gradient that shares its value with
+    // a url() (which makes the whole value a "photograph" and leaves the wash
+    // in place). Each of those is a candidate for "some gray overlay on some
+    // elements", and each is counted here rather than argued about.
+    const shadow = new Map(), outlineC = new Map(), lightBorder = new Map(), mixed = new Map();
+    for (const el of document.querySelectorAll("body *")) {
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") continue;
+      const r = el.getBoundingClientRect();
+      const a = r.width * r.height;
+      if (a < 2000) continue;
+      const sh = cs.boxShadow;
+      if (sh && sh !== "none") {
+        const m = sh.match(/rgba?\\([^)]*\\)/g) || [];
+        for (const one of m) {
+          const c = C(one);
+          if (c && c.a >= 0.2 && L(c) > 0.55) {
+            bump(shadow, one + " @" + Math.round(a), desc(el) + " " + Math.round(a) + "px2 shadow=" + sh.slice(0, 42));
+            break;
+          }
+        }
+      }
+      if (cs.outlineStyle !== "none" && parseFloat(cs.outlineWidth) > 0) {
+        const c = C(cs.outlineColor);
+        if (c && c.a >= 0.4 && L(c) > 0.6) bump(outlineC, cs.outlineColor + " @" + Math.round(a), desc(el) + " " + Math.round(a) + "px2 outline=" + cs.outlineWidth + " " + cs.outlineStyle);
+      }
+      if (a >= 10000) {
+        for (const side of ["Right", "Bottom", "Left"]) {
+          const w = parseFloat(cs["border" + side + "Width"]) || 0;
+          if (w <= 0) continue;
+          const c = C(cs["border" + side + "Color"]);
+          if (c && c.a >= 0.5 && L(c) > 0.72) {
+            bump(lightBorder, side.toLowerCase() + " " + cs["border" + side + "Color"] + " @" + Math.round(a), desc(el) + " " + side + " " + w + "px " + cs["border" + side + "Color"] + " " + Math.round(a) + "px2 top=" + cs.borderTopColor);
+          }
+        }
+      }
+      if (cs.backgroundImage.indexOf("url(") >= 0 && /gradient\\(/.test(cs.backgroundImage)) {
+        bump(mixed, "url+gradient @" + Math.round(a), desc(el) + " " + Math.round(a) + "px2 bg=" + cs.backgroundColor + " kids=" + el.children.length);
       }
     }
     // The game board itself, when there is one: a grid is small elements with
@@ -961,6 +1012,10 @@ export async function run(ctx: any): Promise<void> {
       probe: probeRows,
       modern: Array.from(modern.entries()).length ? { kinds: modern.size, rows: list(modern) } : null,
       pseudo: Array.from(pseudo.entries()).length ? { kinds: pseudo.size, rows: list(pseudo) } : null,
+      shadow: Array.from(shadow.entries()).length ? { kinds: shadow.size, rows: list(shadow) } : null,
+      outline: Array.from(outlineC.entries()).length ? { kinds: outlineC.size, rows: list(outlineC) } : null,
+      lightBorder: Array.from(lightBorder.entries()).length ? { kinds: lightBorder.size, rows: list(lightBorder) } : null,
+      mixed: Array.from(mixed.entries()).length ? { kinds: mixed.size, rows: list(mixed) } : null,
       stillLight: Array.from(stillLight.entries()).length ? { kinds: stillLight.size, rows: list(stillLight) } : null,
       darkSvg: Array.from(darkSvg.entries()).length ? { kinds: darkSvg.size, rows: list(darkSvg) } : null,
     });
