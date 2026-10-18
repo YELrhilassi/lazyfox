@@ -80,8 +80,25 @@ export interface PageSample {
   ownBg?: string;
   /** Computed color. */
   fg: string;
-  /** Computed border-top-color, when the element actually has a border. */
+  /**
+   * Computed border-top-color, when the element actually has a border.
+   *
+   * The sampler fills `borders` with every painted SIDE; this stays as the
+   * single-colour form that a hand-built sample (and the unit tests) use, and is
+   * read as the top side.
+   */
   border?: string;
+  /**
+   * Every border SIDE the element actually paints, with its own colour.
+   *
+   * The engine used to read `border-top-color` and write `border-color`, which
+   * is wrong in both directions: a card with only a `border-bottom` hairline was
+   * never sampled at all (its top width is 0, so there was no "it has a border"
+   * to detect) and a card with a coloured left accent had the accent repainted
+   * from the top side's colour. Measured on merriam-webster.com, a hero ringed by
+   * `border: 4px solid rgba(255,255,255,.5)` kept all three of its light sides.
+   */
+  borders?: Array<{ side: "top" | "right" | "bottom" | "left"; color: string }>;
   /** On-screen area in CSS px². Zero-area samples are dropped by the sampler. */
   area: number;
   /** The element paints a background image, so its background is not ours to move. */

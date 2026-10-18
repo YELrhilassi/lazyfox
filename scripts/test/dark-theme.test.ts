@@ -447,6 +447,90 @@ describe("the mapping entries", () => {
     );
   });
 
+  test("a translucent white border is a grey ring, and it is mapped like a surface", () => {
+    // MEASURED on merriam-webster.com: a hero card is ringed by
+    // `border: 4px solid rgba(255,255,255,.5)` on three sides. Reading only the
+    // TOP side (and only an OPAQUE one) left all three of those edges as they
+    // were — a half-white 4px ring on a dark card, which reads as exactly the
+    // "gray overlay on some elements" in the report.
+    const [e] = entriesFor(
+      [
+        sample({
+          selector: ".hero",
+          bg: "rgb(255, 255, 255)",
+          fg: "rgb(17, 17, 17)",
+          area: 16_000,
+          borders: [
+            { side: "right", color: "rgba(255, 255, 255, 0.5)" },
+            { side: "bottom", color: "rgba(255, 255, 255, 0.5)" },
+            { side: "left", color: "rgba(255, 255, 255, 0.5)" },
+          ],
+        }),
+      ],
+      theme
+    );
+    // Three sides that AGREE are one declaration: `border-color` is the page's
+    // own shape, and a side with no width paints nothing whatever colour it is
+    // given. (Sides that disagree go to `borders` — the next case.)
+    assert.ok(e!.border, "the ring is mapped: " + JSON.stringify(e));
+    const c = parseColor(e!.border!)!;
+    assert.ok(relativeLuminance(c) < 0.3, "the ring is no longer light: " + e!.border);
+    // The ALPHA is kept, like a translucent surface's: the page's own softness is
+    // the design, and what it must stop being is white.
+    assert.ok(c.a > 0.4 && c.a < 0.999, "the ring lost its alpha: " + e!.border);
+  });
+
+  test("a border on one side only is painted on that side, and nowhere else", () => {
+    // A row separator is `border-bottom: 1px solid #e5e7eb`. Its TOP width is 0,
+    // so a top-only read found no border at all and left a light hairline in a
+    // dark page; writing `border-color` would be the opposite mistake and would
+    // give the three unpainted sides a colour too.
+    const [e] = entriesFor(
+      [
+        sample({
+          selector: ".row",
+          bg: "rgb(255, 255, 255)",
+          fg: "rgb(17, 17, 17)",
+          area: 5000,
+          borders: [{ side: "bottom", color: "rgb(227, 230, 232)" }],
+        }),
+      ],
+      theme
+    );
+    assert.ok(e!.border, "the separator is mapped at all: " + JSON.stringify(e));
+    assert.ok(!e!.borders, "one side is not a per-side rule: " + JSON.stringify(e));
+    const css = composeSheet({ theme, entries: [e!], rules: [], userCss: "" });
+    assert.match(css, /border-color:rgb\(\d+, \d+, \d+\)/, "the colour is written: " + css);
+    const c = parseColor(/border-color:(rgb\([^)]*\))/.exec(css)![1]!)!;
+    assert.ok(relativeLuminance(c) < 0.25, "a hairline on a dark page is a hairline, not a highlight: " + css);
+  });
+
+  test("two different border colours keep their own, so an accent stays an accent", () => {
+    // `border-top: 1px solid #eee; border-left: 4px solid #e11d48` is a card with
+    // an accent rule. One `border-color` from the top side repaints the accent in
+    // the neutral colour — a small thing that is very visible on a red rule.
+    const [e] = entriesFor(
+      [
+        sample({
+          selector: ".card",
+          bg: "rgb(255, 255, 255)",
+          fg: "rgb(17, 17, 17)",
+          area: 5000,
+          borders: [
+            { side: "top", color: "rgb(238, 238, 238)" },
+            { side: "left", color: "rgb(225, 29, 72)" },
+          ],
+        }),
+      ],
+      theme
+    );
+    assert.ok(!e!.border, "no shorthand when the sides disagree");
+    const top = parseColor(e!.borders!.find((b) => b.side === "top")!.color)!;
+    const left = parseColor(e!.borders!.find((b) => b.side === "left")!.color)!;
+    assert.ok(left.r - left.g > 25, "the accent is still red: " + JSON.stringify(e!.borders));
+    assert.ok(Math.abs(top.r - top.g) < 20, "and the neutral rule is still neutral");
+  });
+
   test("a gradient's stop colours go through the same mapping", () => {
     // A pale gradient used to be left alone (only `url(` counted as a background
     // image), so it washed white over the mapped colour.

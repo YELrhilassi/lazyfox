@@ -94,7 +94,29 @@ export interface StyleEntry {
   selector: string;
   bg?: string;
   fg?: string;
+  /**
+   * A border colour, written as `border-color` — every side at once.
+   *
+   * Only used when ALL of the element's painted sides share one colour, which
+   * is the usual `border: 1px solid #e5e7eb`. When they differ (a card with a
+   * coloured left accent) the colour goes into `borders` instead: one
+   * `border-color` would repaint the accent from the top side's sample, which
+   * is how a red rule turns grey.
+   */
   border?: string;
+  /**
+   * Per-side border colours, for an element whose painted sides disagree.
+   *
+   * Measured on merriam-webster.com: a hero card is ringed by
+   * `border: 4px solid rgba(255,255,255,.5)` on three sides. Computed only from
+   * the TOP side (and only when that side has a width) it was invisible to the
+   * engine, so the ring stayed a half-white hairline around a dark card — the
+   * report "some gray overlay on some elements", as a 4px semi-transparent
+   * white edge reads exactly as a grey one. Every painted side is sampled now,
+   * and a TRANSLUCENT border is treated like a translucent surface: light ones
+   * are mapped with their alpha kept, dark ones are scrims and stay.
+   */
+  borders?: Array<{ side: "top" | "right" | "bottom" | "left"; color: string }>;
   /**
    * A mapped `background-image` — a gradient whose colour stops went through
    * the same surface mapping as a flat background.
@@ -318,7 +340,13 @@ export function entriesFor(samples: PageSample[], theme: Theme, ignored?: (s: Pa
 /** Whether two selector-less decisions are the same declarations. */
 function sameEntry(a: StyleEntry | null, b: StyleEntry | null): boolean {
   if (!a || !b) return a === b;
-  return a.bg === b.bg && a.fg === b.fg && a.border === b.border && a.image === b.image;
+  return (
+    a.bg === b.bg &&
+    a.fg === b.fg &&
+    a.border === b.border &&
+    a.image === b.image &&
+    JSON.stringify(a.borders || null) === JSON.stringify(b.borders || null)
+  );
 }
 
 /**
@@ -386,11 +414,46 @@ function entryFor(s: PageSample, theme: Theme): StyleEntry | null {
   if (fg && fg.a >= 0.999) {
     entry.fg = formatColor(ensureContrast(mapInk(fg, theme.src, dst), surface, MIN_TEXT_CONTRAST));
   }
-  const border = parseColor(s.border || "");
-  if (border && border.a >= 0.999) {
-    entry.border = formatColor(ensureContrast(mapInk(border, theme.src, dst), surface, MIN_BORDER_CONTRAST));
+  // EVERY PAINTED SIDE, not just the top one (see `StyleEntry.borders`). The
+  // samples come side-by-side with their side names; a sample that predates them
+  // (or a unit test) still carries `border`, and it is read as the top side.
+  const sides: Array<{ side: "top" | "right" | "bottom" | "left"; color: string }> =
+    s.borders && s.borders.length
+      ? s.borders
+      : s.border
+        ? [{ side: "top", color: s.border }]
+        : [];
+  // THE MAPPED COLOUR OF ONE BORDER.
+  //
+  // A BORDER IS A SURFACE, NOT INK, and that is a correction rather than a
+  // preference: mapped as ink, a `#e3e6e8` hairline (Stack Overflow's row
+  // separators) and a `rgba(255,255,255,.5)` ring (Merriam-Webster's hero cards)
+  // both stayed near-white — `mapInk` never darkens — so a dark page came back
+  // covered in bright 1px grids and grey rings. What a separator is FOR is the
+  // separation, so it goes through `mapSurface`: the distance from the canvas it
+  // had on the light page, compressed onto the dark side, and then the contrast
+  // floor against the surface it is drawn on.
+  //
+  // A TRANSLUCENT border keeps its alpha and is only ours when it is LIGHT: a
+  // dark translucent edge is a scrim, exactly as in `paints`.
+  const mapBorder = (raw: string): string | null => {
+    const c = parseColor(raw);
+    if (!c || c.a <= 0.001) return null;
+    if (c.a < 0.999 && !paints(c, theme)) return null;
+    return formatColor(ensureContrast(mapSurface(c, theme.src, dst, s.share ?? 0), surface, MIN_BORDER_CONTRAST));
+  };
+  const mapped = sides
+    .map((one) => ({ side: one.side, color: mapBorder(one.color) }))
+    .filter((one): one is { side: "top" | "right" | "bottom" | "left"; color: string } => !!one.color);
+  if (mapped.length) {
+    // ONE COLOUR ACROSS EVERY PAINTED SIDE is the shorthand — the page wrote
+    // `border: 1px solid …` and we write its `border-color` back. Otherwise each
+    // side keeps its own, so an accent border stays an accent.
+    const one = mapped[0]!.color;
+    if (mapped.every((m) => m.color === one)) entry.border = one;
+    else entry.borders = mapped;
   }
-  if (!entry.bg && !entry.fg && !entry.border && !entry.image) return null;
+  if (!entry.bg && !entry.fg && !entry.border && !entry.borders && !entry.image) return null;
   return entry;
 }
 
@@ -675,6 +738,9 @@ export function composeSheet(input: SheetInput): string {
       if (e.image) decls.push("background-image:" + e.image + " !important");
       if (e.fg) decls.push("color:" + e.fg + " !important");
       if (e.border) decls.push("border-color:" + e.border + " !important");
+      // A per-side entry only names the sides the page actually painted, so a
+      // zero-width side is never given a colour it did not have.
+      if (e.borders) for (const b of e.borders) decls.push("border-" + b.side + "-color:" + b.color + " !important");
       if (decls.length) chunks.push(e.selector + "{" + decls.join(";") + "}");
     }
   }
