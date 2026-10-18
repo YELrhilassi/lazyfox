@@ -13,7 +13,12 @@ import type { HintProbe } from "../../../shared/types";
 export interface HintDiagnosticsSnapshot {
   candidates: number;
   hinted: number;
-  rejected: { hidden: number; covered: number; duplicate: number };
+  /**
+   * Hinted, with a DIMMED label: something is over the control right now. It is
+   * a state of the batch, not a rejection — the key still fires.
+   */
+  covered: number;
+  rejected: { hidden: number; duplicate: number };
   shadowRoots: number;
   pointerControls: number;
   /** Candidates that qualified only as a large media surface (a player's video). */
@@ -60,7 +65,11 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     let reason: string;
     if (!vis) reason = "outside the viewport (page to it with ])";
     else if (reach) reason = "clickable here";
-    else reason = "covered by " + (hit ? String(hit.tagName || "?").toLowerCase() : "another element");
+    else
+      reason =
+        "covered by " +
+        (hit ? String(hit.tagName || "?").toLowerCase() : "another element") +
+        " \u2014 still hinted, label dimmed";
     probes.push({
       tag: String(el.tagName || "?").toLowerCase(),
       role: role,
@@ -75,7 +84,8 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
   return {
     candidates: pool.length,
     hinted: sel.kept.length,
-    rejected: { hidden: sel.hidden, covered: sel.covered, duplicate: sel.duplicate },
+    covered: sel.covered,
+    rejected: { hidden: sel.hidden, duplicate: sel.duplicate },
     shadowRoots: stats.shadowRoots,
     pointerControls: stats.pointerControls,
     mediaSurfaces: stats.mediaSurfaces,

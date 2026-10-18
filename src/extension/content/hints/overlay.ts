@@ -40,8 +40,10 @@ export interface HintSnapshot {
    * for a HELD row (see `held`), where there is no element to measure and the
    * label's own box is reported instead.
    */
-  positions: Array<{ key: string; x: number; y: number; held?: boolean }>;
-  boxes: Array<{ key: string; l: number; t: number; r: number; b: number; held?: boolean }>;
+  positions: Array<{ key: string; x: number; y: number; held?: boolean; covered?: boolean }>;
+  boxes: Array<
+    { key: string; l: number; t: number; r: number; b: number; held?: boolean; covered?: boolean }
+  >;
   /**
    * Dev diagnostics: what the session REMEMBERS when positions came back
    * empty. `items`/`pool`/`typed`/`active` say whether collection still runs;
@@ -269,6 +271,12 @@ export function createHintOverlay(): HintOverlay {
       }
       if (waiting) it.label.classList.add("hint-wait");
       else it.label.classList.remove("hint-wait");
+      // A covered control keeps its label and its key; the class is what says so
+      // on screen. Re-applied every render because coverage is a fact about the
+      // PAGE, not about the item: a scrim that scrolls away clears it on the
+      // next pass with nothing else having changed (see select.ts).
+      if (it.covered) it.label.classList.add("hint-covered");
+      else it.label.classList.remove("hint-covered");
     }
     return reposition(items, resolve);
   }
@@ -589,13 +597,19 @@ export function createHintOverlay(): HintOverlay {
       try {
         const r = el.getBoundingClientRect();
         const b = label.getBoundingClientRect();
-        positions.push({ key: it.key, x: Math.round(r.left), y: Math.round(r.top) });
+        positions.push({
+          key: it.key,
+          x: Math.round(r.left),
+          y: Math.round(r.top),
+          ...(it.covered ? { covered: true } : {}),
+        });
         boxes.push({
           key: it.key,
           l: Math.round(b.left),
           t: Math.round(b.top),
           r: Math.round(b.right),
           b: Math.round(b.bottom),
+          ...(it.covered ? { covered: true } : {}),
         });
       } catch (e) {
         // This is an explicit diagnostic pull; omit a node that disappeared

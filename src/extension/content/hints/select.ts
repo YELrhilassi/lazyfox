@@ -3,13 +3,43 @@
 //
 // The order matters and the diagnostics page runs this exact function, so the
 // numbers it reports are the numbers `;f` acted on.
+//
+// OCCLUSION DEGRADES THE LABEL, IT DOES NOT DELETE THE CONTROL.
+//
+// This used to be a veto: `reachable()` false dropped the candidate, so any
+// control with something painted over it — a sticky header over the first row, a
+// cookie wall, a player's control bar, an ad layer — simply had no key. That is
+// the one failure the hint layer cannot recover from, because the user has no
+// way to learn the control exists: there is nothing on screen to say "this one is
+// there, but something is on top of it right now". A hint under a scrim is
+// usually still activatable (activation clicks the ELEMENT, not the point the
+// label sits on — see hints/activate.ts, which deliberately keeps the pointer
+// sequence off a foreign target and still calls the control's own click), and
+// when it is not, the existing activation watcher reports "the page did nothing"
+// rather than silence (docs/HINTS.md §3).
+//
+// So a covered control is KEPT and FLAGGED. The flag reaches the overlay, which
+// draws that label dimmed, and it is in the hint snapshot so a test can assert
+// the state instead of inferring it from a missing key.
 import { hintVisible, inViewport, reachable } from "./probe";
 import { createVisibilityPass, type VisibilityPass } from "./visibility";
 import { isMediaSurface, specificity } from "./collect";
 
+/** One element that earned a label, and whether something is over it right now. */
+export interface HintCandidate {
+  el: Element;
+  /**
+   * Nothing of the control's own surface could be hit-tested when the batch was
+   * built — an overlay, a sticky bar or a scrim is on top of it. The label is
+   * drawn DIMMED and the key still works; see the note at the top of this file.
+   */
+  covered: boolean;
+}
+
 export interface SelectResult {
-  kept: Element[];
+  kept: HintCandidate[];
   hidden: number;
+  /** Kept, and flagged as covered. Not a rejection count any more. */
   covered: number;
   duplicate: number;
 }
@@ -65,10 +95,14 @@ export function selectHintables(
   // about the same elements (in-viewport is a subset of collected), so sharing
   // the cache means the selector matches are not re-walked here. Given none, a
   // one-shot pass is created — the pre-cache cost, nothing left behind.
-  pass?: VisibilityPass
+  pass?: VisibilityPass,
+  // The occlusion answer, injectable for the same reason the pass is: the claim
+  // here is a POLICY (covered is kept and flagged), and a policy should be
+  // testable without a browser to paint a scrim in. Defaults to the real probe.
+  reach: (el: Element) => boolean = reachable
 ): SelectResult {
   const vis = pass || createVisibilityPass();
-  const kept: Array<{ el: Element; r: DOMRect; key: string }> = [];
+  const kept: Array<{ el: Element; r: DOMRect; key: string; covered: boolean }> = [];
   let hidden = 0;
   let covered = 0;
   let duplicate = 0;
@@ -77,10 +111,9 @@ export function selectHintables(
       hidden++;
       continue;
     }
-    if (!reachable(el)) {
-      covered++;
-      continue;
-    }
+    // Covered is a LABEL STATE, not a rejection (see the note at the top).
+    const isCovered = !reach(el);
+    if (isCovered) covered++;
     const r = el.getBoundingClientRect();
     const key = targetKey(el);
     let dup = false;
@@ -96,7 +129,8 @@ export function selectHintables(
       // container is replaced IN PLACE when it loses, so the surviving control
       // keeps the container's early slot (and therefore a short key).
       if (s.el.contains(el)) {
-        if (specificity(el) > specificity(s.el)) kept[i] = { el: el, r: r, key: key };
+        if (specificity(el) > specificity(s.el))
+          kept[i] = { el: el, r: r, key: key, covered: isCovered };
         dup = true;
         break;
       }
@@ -136,11 +170,11 @@ export function selectHintables(
       duplicate++;
       continue;
     }
-    kept.push({ el: el, r: r, key: key });
+    kept.push({ el: el, r: r, key: key, covered: isCovered });
     if (kept.length >= limit) break;
   }
   return {
-    kept: kept.map((k) => k.el),
+    kept: kept.map((k) => ({ el: k.el, covered: k.covered })),
     hidden: hidden,
     covered: covered,
     duplicate: duplicate,

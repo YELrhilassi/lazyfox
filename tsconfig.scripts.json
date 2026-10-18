@@ -276,7 +276,8 @@
     "scripts/test/split-unsplit.test.ts",
     "scripts/test/dark-theme.test.ts",
     "scripts/test/startup-resume.test.ts",
-    "scripts/test/session-autosave.test.ts"
+    "scripts/test/session-autosave.test.ts",
+    "scripts/test/hints-occlusion.test.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

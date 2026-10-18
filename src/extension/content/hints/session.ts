@@ -27,7 +27,7 @@ import {
 } from "./selectors";
 import { createHintOverlay } from "./overlay";
 import { createActivator } from "./activate";
-import { targetKey } from "./select";
+import { targetKey, type HintCandidate } from "./select";
 import { createHintResolve, type HintPager } from "./hintresolve";
 // NOTE: collection is reached through `resolve.refreshPool()` rather than by
 // calling `collectHintables` here, so the pool and the visibility pass it is
@@ -301,25 +301,33 @@ export function createLinkHints(
   // read could be gone (or mean a different control) by the time they typed it,
   // and a late control like an ad's "Skip" button arrived with a key that no
   // longer described it.
-  async function assign(list: Element[]): Promise<void> {
+  async function assign(list: HintCandidate[]): Promise<void> {
     if (!list.length) return;
     const chosen = list.slice(0, MAX_HINTS);
     const prev = items;
     // Identical batch: keep everything (including a half-typed prefix).
+    //
+    // The covered flags are refreshed even on this path. Identity is what makes a
+    // batch "the same", but coverage is a fact about the PAGE — a scrim that
+    // fades out, a sticky header that appears — and the elements are the same
+    // ones, so returning without touching the flags would leave a dimmed label
+    // over a control nothing covers any more (and vice versa) until something
+    // else changed the batch. It costs one comparison per item and one render.
     if (
       prev.length === chosen.length &&
-      chosen.every((el, i) => prev[i] && prev[i]!.el === el)
+      chosen.every((c, i) => prev[i] && prev[i]!.el === c.el)
     ) {
+      for (let i = 0; i < chosen.length; i++) prev[i]!.covered = chosen[i]!.covered;
       render();
       return;
     }
     const taken = new Set<string>();
     const inherited = new Map<Element, string>();
     // 1. The same node object is still there: keep its key verbatim.
-    for (const el of chosen) {
+    for (const c of chosen) {
       for (const it of prev) {
-        if (it.el === el && !taken.has(it.key)) {
-          inherited.set(el, it.key);
+        if (it.el === c.el && !taken.has(it.key)) {
+          inherited.set(c.el, it.key);
           taken.add(it.key);
           break;
         }
@@ -328,17 +336,17 @@ export function createLinkHints(
     // 2. A re-rendered node: the control did not really move, so neither should
     //    its key. Match by destination (an href may survive a small reflow) or
     //    by being in essentially the same place.
-    for (const el of chosen) {
-      if (inherited.has(el)) continue;
+    for (const c of chosen) {
+      if (inherited.has(c.el)) continue;
       let box: DOMRect;
       try {
-        box = el.getBoundingClientRect();
+        box = c.el.getBoundingClientRect();
       } catch (e) {
         continue;
       }
       const cx = box.left + box.width / 2;
       const cy = box.top + box.height / 2;
-      const target = targetKey(el);
+      const target = targetKey(c.el);
       let best: HintItem | null = null;
       let bestD = Infinity;
       for (const it of prev) {
@@ -354,20 +362,28 @@ export function createLinkHints(
         }
       }
       if (best) {
-        inherited.set(el, best.key);
+        inherited.set(c.el, best.key);
         taken.add(best.key);
       }
     }
     // 3. Genuinely new controls draw the shortest still-free key.
     const nextItems: HintItem[] = [];
-    for (const el of chosen) {
-      let key = inherited.get(el);
+    for (const c of chosen) {
+      let key = inherited.get(c.el);
       if (!key) {
         key = takeKey(taken) ?? undefined;
         if (!key) continue; // pool exhausted (more controls than MAX_HINTS)
         taken.add(key);
       }
-      nextItems.push({ el: el, key: key, label: null, cx: 0, cy: 0, target: targetKey(el) });
+      nextItems.push({
+        el: c.el,
+        key: key,
+        label: null,
+        cx: 0,
+        cy: 0,
+        target: targetKey(c.el),
+        covered: c.covered,
+      });
     }
     for (const it of prev) {
       if (it.label) {
@@ -393,7 +409,7 @@ export function createLinkHints(
     if (!active || typed !== "" || syncing) return;
     const vis = resolve.viewportItems();
     if (!vis.length) return;
-    if (vis.length === items.length && vis.every((el, i) => items[i] && items[i]!.el === el)) {
+    if (vis.length === items.length && vis.every((c, i) => items[i] && items[i]!.el === c.el)) {
       return;
     }
     syncing = true;

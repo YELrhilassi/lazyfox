@@ -390,7 +390,14 @@ export interface PageReport {
   hints: {
     candidates: number;
     hinted: number;
-    rejected: { hidden: number; covered: number; duplicate: number };
+    /**
+     * Hinted, but drawn DIMMED because something is painted over the control
+     * right now (a sticky header, a scrim, a player's control bar). Covered
+     * controls are no longer rejected — the key works and the label says so —
+     * so this is a subset of `hinted`, not a filter stage. See hints/select.ts.
+     */
+    covered: number;
+    rejected: { hidden: number; duplicate: number };
     probes: HintProbe[];
     shadowRoots: number;
     pointerControls: number;

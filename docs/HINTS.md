@@ -173,20 +173,43 @@ and the suite now pins that.
 Regression fixture: `/press`, a button that only commits when it has seen a
 press go down and come back up, deciding purely from `event.buttons`.
 
-### 2.3 Occlusion is a veto, and it is decided by five sample points
+### 2.3 Occlusion is a LABEL STATE, not a veto — FIXED
 
 `reachable()` samples the centre and four inset corners; if none of them hit the
-element (or a descendant/ancestor of it), the element is dropped as "covered".
-An ad overlay, a player control bar, a cookie wall or a sticky header all sit
-*on top of* the thing you want to click, and that is precisely the case this
-rejects. Two further weaknesses:
+element (or a descendant/ancestor of it), something is painted over it.
 
-- It is not stacking-context aware. It only asks "is the topmost element at
-  this point related to me", so an element that is visually on top but a
-  *sibling overlay* is treated as unreachable, even when the control is the one
-  the user can actually see and press after the overlay is gone.
-- `deepHit()` pierces **open** shadow roots only. A control inside a closed
-  shadow root is unreachable by construction and is dropped.
+The old answer was to drop the element. That was the one failure the hint layer
+cannot recover from: a control under an ad overlay, a player control bar, a
+cookie wall or a sticky header simply had **no key**, and nothing on screen told
+the user it was there. It also caught the wrong cases — the check is not
+stacking-context aware (a *sibling* overlay put the control out of reach even
+when the control is what the user can see and press once the overlay goes), and
+it only pierces **open** shadow roots, so a control in a closed root was
+unreachable by construction.
+
+The answer now is to **keep the control and dim its label** (`.hint-covered`):
+the key still fires, because activation clicks the element rather than the point
+the badge sits on (`hints/activate.ts` deliberately keeps the synthetic pointer
+sequence off a foreign target and still calls the control's own click). A label
+that does nothing is a recoverable mistake — the activation watcher reports it
+(`§3`) — and a missing label is not.
+
+Where the state lives: `selectHintables` keeps the candidate and sets
+`{covered: true}`, the batch carries it into the item, the overlay applies the
+class on every render (coverage is a fact about the PAGE, so a scrim that scrolls
+away clears it with nothing else having changed), and the hint snapshot reports
+`covered` on the row so a test can assert the state instead of inferring it from
+a missing key. `scripts/test/hints-occlusion.test.ts` pins the policy with the
+occlusion answer injected, including the two directions it could have gone
+wrong: coverage must not resurrect an invisible control, and it must not defeat
+the duplicate rule. The e2e case on `/uitest` asserts the dimmed label AND that
+its key navigates.
+
+What is deliberately NOT taken from the P0 note below is the second half —
+"let activation resolve the topmost actionable node at press time". Pressing an
+overlay the user did not choose would let one keystroke operate two different
+elements (the scrim's handler and the control's own click), which is worse than
+the label's honest "something is on top of this".
 
 ### 2.4 The 80-hint cap is first-come in document order
 
@@ -280,7 +303,7 @@ be recorded as a success *and* must not report an ignored click, and the
 cover — must be reported as ignored. Both tests were checked to fail when the
 feature is removed or neutered.
 
-### P0 — Separate discovery strictness from activation correctness (open)
+### P0 — Separate discovery strictness from activation correctness (occlusion half DONE)
 
 Today one strict pipeline does both jobs, and every strictness in *discovery*
 becomes an invisible missing feature. Split them:
@@ -288,11 +311,12 @@ becomes an invisible missing feature. Split them:
 - **Discovery should be permissive.** Show a label for anything plausibly
   actionable, including elements that currently fail the occlusion veto. A label
   that does nothing is a recoverable mistake (and now says so); a missing label
-  is not.
-- **Occlusion should degrade, not veto.** Mark a control that is currently
-  covered with a dimmed/hollow label (it means "something is on top of this
-  right now") instead of dropping it, and let activation resolve the topmost
-  actionable node at press time.
+  is not. **DONE for occlusion** (§2.3): the control is kept and its label is
+  dimmed.
+- ~~**Occlusion should degrade, not veto.**~~ **DONE** — see §2.3: the label is
+  dimmed and the key still fires (`.hint-covered`, `select.ts`). The "resolve the
+  topmost actionable node at press time" half was considered and rejected: it
+  would let one keystroke operate the overlay AND the control.
 - **Activation resolves.** At press time, walk from the element toward the
   nearest ancestor that is actually activatable (`a[href]`, `button`,
   `[role]`, `[onclick]`, form control) or the deepest descendant under the
@@ -373,7 +397,7 @@ Until (1) exists, the privileged path is strictly worse than the synthetic one.
 | Real-YouTube snapshot testing | **removed** — downloader, nightly workflow, `/real` route, stress test, gitignore entry, docs |
 | Outer-wins nesting suppressing a wrapper's own controls | **fixed** — `specificity()` + in-place replacement, with a fixture that fails on the old rule |
 | Silent activation failure | **fixed** — activation feedback + `hints.lastActivation` in the page report; "anything but total silence counts as success" |
-| Occlusion veto dropping covered-but-visible controls | open (P0) — deliberately not done in this pass |
+| Occlusion veto dropping covered-but-visible controls | **fixed (P0)** — kept and drawn dimmed; the key still fires (§2.3) |
 | The 80-hint cap is first-come in document order | open (P1) |
 | "Why is this not hinted?" inspector in the overlay | open (P1) |
 | Hint suite not run by any gate | open by decision — kept manual |

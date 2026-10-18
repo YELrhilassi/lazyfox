@@ -131,7 +131,9 @@ export async function run(ctx: any): Promise<void> {
     );
     return pos.map((p) => {
       const el = (els || []).find((candidate) => Math.abs(candidate.x - p.x) <= 2 && Math.abs(candidate.y - p.y) <= 2);
-      return { key: p.key, id: el ? el.id : null, dataId: el ? el.dataId : null, x: p.x, y: p.y };
+      // `covered` rides through: it is the label's own state (dimmed), pulled
+      // from the overlay's snapshot, and the occlusion test asserts on it.
+      return { key: p.key, id: el ? el.id : null, dataId: el ? el.dataId : null, x: p.x, y: p.y, covered: !!p.covered };
     });
   };
   // WHERE THE LABELS ARE WHEN A "THE PAGE SCROLLED BUT THE LABELS DID NOT
@@ -218,16 +220,42 @@ export async function run(ctx: any): Promise<void> {
   // two attributes that really mean "nobody can use this" are `hidden` (out of
   // layout) and `inert` (not clickable, not focusable), and those stay pinned
   // here, together with the CSS and occlusion cases.
-  await t("link hints: a visible aria-hidden link is hinted; hidden, inert and occluded ones are not", async () => {
+  // Occlusion is no longer a veto: `covered-link` sits under a scrim and is
+  // hinted anyway, with a DIMMED label. Withholding its key was the one failure
+  // the hint layer cannot recover from — there is nothing on screen to say "the
+  // control is there, something is on top of it right now" — and activation
+  // clicks the ELEMENT rather than the point under the label, so the key works
+  // (see hints/select.ts). What stays un-hinted is what nobody can use at all:
+  // `hidden`, `inert`, `visibility:hidden`, an `opacity:0` ancestor and
+  // `pointer-events:none`.
+  await t("link hints: a visible aria-hidden link is hinted; hidden, inert and pointer-dead ones are not", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
     await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
     await scrollDone(0);
     await beginHints();
-    const ids = (await readHints()).map((x) => x.id || x.dataId);
-    const must = ["visible-link", "nested-btn", "act-btn", "scroll-input", "nearby-link", "body-visible", "thumbnail-link"];
+    const rows = await readHints();
+    const ids = rows.map((x) => x.id || x.dataId);
+    const must = ["visible-link", "nested-btn", "act-btn", "scroll-input", "nearby-link", "body-visible", "thumbnail-link", "covered-link"];
     for (const id of must) assert(ids.indexOf(id) !== -1, "expected a hint for " + id + " (got: " + ids.join(",") + ")");
-    const mustNot = ["hidden-opacity-link", "hidden-vis-link", "inert-link", "hidden-link", "hidden-shadow-inner", "pe-none-btn", "covered-link"];
+    const mustNot = ["hidden-opacity-link", "hidden-vis-link", "inert-link", "hidden-link", "hidden-shadow-inner", "pe-none-btn"];
     for (const id of mustNot) assert(ids.indexOf(id) === -1, "a non-actionable element was hinted: " + id);
+    // The FLAG is the observable half of the new rule: the batch says the
+    // control is covered, and that is what draws its label dimmed. A row that
+    // is merely present would not distinguish "kept and dimmed" from "kept and
+    // pretending nothing is over it".
+    const coveredRow = rows.find((x) => (x.id || x.dataId) === "covered-link");
+    assert(coveredRow && coveredRow.covered === true, "the covered control's label is flagged as dimmed");
+    const plainRow = rows.find((x) => (x.id || x.dataId) === "nearby-link");
+    assert(plainRow && !plainRow.covered, "an uncovered control's label is NOT dimmed: " + JSON.stringify(plainRow));
+    // ...and the dimmed hint is not decoration: the key has to ACT. Activation
+    // clicks the element itself, so a control under a scrim is still reachable by
+    // key — which is the whole reason it is kept rather than withheld.
+    await activateHint("covered-link");
+    await ctx.waitExpr(ctx.tabA, `location.hash`, "#cov", 8000);
+    assert(
+      (await evalIn(ctx.tabA, `location.hash`)) === "#cov",
+      "a covered control's key still activated it"
+    );
     await ctx.press(ctx.tabA, "Escape");
   });
   // The other half of the report: the hint has to ACT. On the real page the
