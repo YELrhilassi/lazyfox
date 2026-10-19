@@ -12,9 +12,25 @@
 (function () {
   "use strict";
 
+  // Only in the top-level window.
+  //
+  // This MUST fail closed. `content.top` throws for a CROSS-ORIGIN frame — the
+  // most common kind of embedded frame there is — and the previous form was:
+  //
+  //     try { if (content.top !== content) return; } catch (e) {}
+  //
+  // which swallowed the throw and fell THROUGH, so the script carried on inside
+  // exactly the frames the guard exists to exclude, reporting their focused
+  // element to chrome. A guard whose error path does the unsafe thing is worse
+  // than no guard: it looks deliberate.
+  let isTopWindow = false;
   try {
-    if (content.top !== content) return;
-  } catch (e) {}
+    isTopWindow = content.top === content;
+  } catch (e) {
+    // Cross-origin: not the top window, so leave.
+    isTopWindow = false;
+  }
+  if (!isTopWindow) return;
 
   // Deepest element actually focused inside an open shadow root: custom
   // elements (Reddit's <faceplate-search-input>, ...) keep their real input
@@ -55,7 +71,11 @@
     last = typing;
     try {
       sendAsyncMessage("lazyfox:editing", { typing: typing });
-    } catch (e) {}
+    } catch (e) {
+      // Best-effort signal, and the whole module is documented as such: the
+      // frame script can be inert on recent Firefox. Losing one report is fine;
+      // chrome has a second source for the same fact.
+    }
   }
 
   content.addEventListener("focusin", report, true);

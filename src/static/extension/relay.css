@@ -1,0 +1,3 @@
+/* Invisible relay tab: dark and empty immediately so a momentary selection
+   shows the app background, never a white flash. */
+html, body { margin: 0; height: 100%; background: #16161e; }

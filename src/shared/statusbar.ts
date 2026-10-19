@@ -9,92 +9,25 @@
 // The bar is thin (20px) so it never gets in the way of content.
 //
 // Rendered in a closed shadow root so page CSS cannot restyle it.
+import {
+  leaderSeqText,
+  makeLeaderSignal,
+  type LeaderSignal,
+} from "./leadersignal";
+import { darkSegment, pillColorFor, sessionPillText, statusMirrorFragment } from "./statusbar-segments";
+import { STATUS_BAR_CSS } from "./statusbar-css";
+import type { StatusBarData } from "./types";
 
-export interface StatusBarSessions {
-  marker: number;
-  name: string;
-  current: boolean;
-  tabCount: number;
-  splitCount: number;
-}
+// The bar's data shape lives in types.ts alongside every other shared model:
+// the pure formatters in statusbar-segments.ts read it without importing the
+// bar, and a type-only import of this file from there would be a cycle.
+export type { StatusBarSessions, StatusBarDownload, StatusBarData } from "./types";
+// The active tab's history-stack shape lives in types.ts (both the Go status
+// model and the nav popup use it); re-exported here for bar consumers.
+export type { NavEntry, NavState } from "./types";
 
-export interface StatusBarDownload {
-  key: string;
-  filename: string;
-  state: string; // in_progress | paused | complete | failed
-  percent: number; // 0..100, -1 when total is unknown
-  speed: string; // pre-formatted "2.4 MB/s" or ""
-}
 
-export interface StatusBarData {
-  name: string;
-  marker: number;
-  tabIndex: number;
-  tabCount: number;
-  inSplit: boolean;
-  splitOrientation?: "horizontal" | "vertical";
-  // 0-based active pane and pane count while a split view is focused.
-  splitActive: number;
-  splitPanes: number;
-  mode: string;
-  sessions: StatusBarSessions[];
-  // Active (un-dismissed) downloads whose progress belongs on the bar.
-  downloads: StatusBarDownload[];
-  // True when the active tab is a stealth tab — shows a badge on the bar.
-  activeStealth?: boolean;
-  // Live find-in-page state (content-script find widget): current match
-  // (1-based, 0 = none selected yet) and total matches. Shown as a "find"
-  // segment; null (or count 0) hides it. Pushed by the content script and
-  // relayed from the background for the chrome helper's window-level bar.
-  find?: { cur: number; count: number } | null;
-}
-
-const CSS = `
-:host{all:initial;}
-.lf-status{position:fixed;left:0;right:0;height:18px;z-index:2147482000;
-  display:flex;align-items:stretch;
-  background:#1a1b26;color:#c0caf5;
-  font:600 11px/18px ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
-  pointer-events:none;user-select:none;}
-.lf-status.top{top:0;border-bottom:1px solid #24283b;}
-.lf-status.bottom{bottom:0;border-top:1px solid #24283b;}
-.seg{display:flex;align-items:center;gap:6px;white-space:nowrap;
-  padding:0 12px 0 10px;
-  clip-path:polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%);}
-.seg.linked{margin-left:-8px;padding-left:18px;}
-.seg .ic{opacity:.95;font-weight:700;}
-.seg.leader{background:transparent;clip-path:none;color:#2ac3de;font-size:14px;
-  font-weight:800;padding:0 6px 0 10px;
-  animation:lfLeadPulse 1.1s ease-in-out infinite;}
-@keyframes lfLeadPulse{0%,100%{opacity:.35}50%{opacity:1}}
-.seg.sess{background:#7aa2f7;color:#1a1b26;font-weight:800;}
-.seg.sess .marker{font-weight:800;}
-.seg.tabs{background:#24283b;color:#c0caf5;font-weight:600;}
-.seg.tabs b{color:#7aa2f7;font-weight:800;}
-.seg.tabs .cnt{color:#9aa5ce;font-weight:600;}
-.seg.tabs .st{color:#bb9af7;font-weight:800;padding-right:4px;}
-.seg.split{background:#e0af68;color:#1a1b26;font-weight:800;}
-.seg.find{background:#2ac3de;color:#16161e;font-weight:800;}
-.seg.find b{font-weight:900;}
-.seg.find .none{color:#f7768e;}
-.seg.dl{margin-left:auto;background:#16161e;color:#c0caf5;font-weight:700;clip-path:none;
-  border-left:1px solid #24283b;pointer-events:auto;cursor:pointer;}
-.seg.dl .ic{color:#7dcfff;}
-.seg.dl .dlitem{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;padding:0 10px;}
-.seg.dl .dlitem+.dlitem{padding-left:10px;border-left:1px solid #24283b;}
-.seg.dl .pct{color:#7dcfff;font-weight:700;}
-.seg.dl .ok{color:#9ece6a;font-weight:900;}
-.seg.dl .bad{color:#f7768e;font-weight:900;}
-.seg.chips{background:none;clip-path:none;margin-left:0;gap:0;
-  overflow:hidden;padding:0;align-items:stretch;}
-.sesspill{display:flex;align-items:center;white-space:nowrap;
-  padding:0 10px 0 16px;font-weight:700;
-  /* Both edges are ">" chevrons pointing right: the right edge is the pin
-  (protruding) and the left edge is the socket (cut in). Consecutive pills
-  overlap so each pin pierces the next pill's socket, plug-into-socket. */
-  clip-path:polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%, 8px 50%);}
-.sesspill.linked{margin-left:-8px;padding-left:16px;}
-`;
+const CSS = STATUS_BAR_CSS;
 
 type StatusHost = HTMLElement & { _sh: ShadowRoot };
 
@@ -102,19 +35,6 @@ const BAR_HEIGHT = 18;
 
 // Pick readable text for a hex background: near-black on bright fills,
 // near-white on dark ones (HSL lightness).
-function readableOn(hex: string): string {
-  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
-  if (!m) return "#16161e";
-  const r = parseInt(m[1]!, 16);
-  const g = parseInt(m[2]!, 16);
-  const b = parseInt(m[3]!, 16);
-  // HSL lightness ((max+min)/2): the palette is pastel, so blue/green/amber
-  // read as bright even though their W3C weighted luminance is low. Use it to
-  // pick dark-vs-light text instead of the weighted luminance.
-  const l = (Math.max(r, g, b) + Math.min(r, g, b)) / 2; // 0..255
-  return l > 150 ? "#16161e" : "#f2f4ff";
-}
-
 export class StatusBar {
   private host: StatusHost | null = null;
   private position: "top" | "bottom" = "bottom";
@@ -141,12 +61,19 @@ export class StatusBar {
   // not reflow the tab strip.
   private readonly reserveSelector: string | null;
 
+  // The document the bar mounts into. Defaults to the ambient one, so the
+  // content script (which runs inside the page and has no ChromeEnv) is
+  // unaffected; the chrome helper passes its own so the bar's mount/reserve/
+  // render lifecycle can be exercised in Node (see src/chrome/env.ts).
+  private readonly doc: any;
+
   // Called when a download notification on the bar is clicked (dismiss it).
   private onDownloadDismiss: ((key: string) => void) | null = null;
 
-  constructor(reserveSpace = true, reserveSelector: string | null = null) {
+  constructor(reserveSpace = true, reserveSelector: string | null = null, doc?: any) {
     this.reserveSpace = reserveSpace;
     this.reserveSelector = reserveSelector;
+    this.doc = doc || (typeof document !== "undefined" ? document : null);
   }
 
   setDownloadDismiss(fn: (key: string) => void): void {
@@ -172,7 +99,7 @@ export class StatusBar {
 
   show(): void {
     if (this.host) return;
-    const host = document.createElement("div") as unknown as StatusHost;
+    const host = this.doc.createElement("div") as unknown as StatusHost;
     host.id = "lazyfox-status";
     const sh = host.attachShadow({ mode: "closed" });
     // The leader segment is a small pulsing chevron shown only while the
@@ -181,15 +108,30 @@ export class StatusBar {
     sh.innerHTML =
       "<style>" + CSS + "</style>" +
       "<div class='lf-status " + this.position + "'>" +
-      "<span class='seg leader'><span class='ic'>»</span></span>" +
       "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
       "<span class='seg tabs linked'><span class='ic'>▤</span><span class='st'>🕶</span><b></b><span class='cnt'></span></span>" +
       "<span class='seg find' style='display:none'><span class='ic'>🔍</span><b class='cur'></b><span class='cnt'></span></span>" +
       "<span class='seg chips'></span>" +
-      "<span class='seg dl'><span class='ic'>⭳</span><span class='items'></span></span>" +
+      "<span class='seg dl' style='display:none'><span class='ic'>⭳</span><span class='items'></span></span>" +
+      // THE RIGHT HAND SIDE, in the order the user asked for:
+      //
+      //   ────────── leader  dark mode │
+      //
+      // The spacer takes every spare pixel, so this pair is flush right; the
+      // leader indicator comes first because it is a transient (a chord in
+      // progress) and the dark-mode verdict is the last thing on the bar, where
+      // a steady status belongs. The leader glyph alone is shown while waiting
+      // for a first key and `<glyph> <committed key>` once a chord is in
+      // progress, painted synchronously at key time (see setLeaderSignal).
+      "<span class='spacer'></span>" +
+      "<span class='seg leader' style='display:none'></span>" +
+      // Dark mode, as the CONTENT SCRIPT sees this page: a moon for our remap,
+      // a moon in a different tone for the site's own theme, a sun for `light`.
+      // Hidden when the feature is not touching the page — see darkSegment.
+      "<span class='seg dark' style='display:none'><span class='ic'></span><span class='lbl'></span></span>" +
       "</div>";
     host._sh = sh;
-    document.documentElement.appendChild(host);
+    this.doc.documentElement.appendChild(host);
     this.host = host;
     this.reserve();
     this.render();
@@ -229,7 +171,7 @@ export class StatusBar {
   private ensureReserveStyle(): void {
     if (this.reserveStyle) return;
     try {
-      const st = document.createElement("style");
+      const st = this.doc.createElement("style");
       st.id = "lazyfox-status-reserve";
       st.textContent =
         ":root.lf-status-reserve-bottom{padding-bottom:" + BAR_HEIGHT + "px !important;}" +
@@ -240,7 +182,7 @@ export class StatusBar {
           ? this.reserveSelector + ".lf-status-reserve-bottom{margin-bottom:" + BAR_HEIGHT + "px !important;}" +
             this.reserveSelector + ".lf-status-reserve-top{margin-top:" + BAR_HEIGHT + "px !important;}"
           : "");
-      (document.head || document.documentElement).appendChild(st);
+      (this.doc.head || this.doc.documentElement).appendChild(st);
       this.reserveStyle = st;
     } catch (e) {
       this.reserveStyle = null;
@@ -263,7 +205,7 @@ export class StatusBar {
     if (this.reserveSelector) {
       // Chrome helper: shrink the browser content area so the fixed window
       // bar sits in reserved space instead of over the page.
-      const el = document.querySelector(this.reserveSelector);
+      const el = this.doc.querySelector(this.reserveSelector);
       if (el) {
         el.classList.add(cls);
         this.reservedEl = el;
@@ -273,7 +215,7 @@ export class StatusBar {
     }
     // In a XUL chrome document document.scrollingElement is null; fall back to
     // the <window> root, which :root padding rules also match.
-    const el = document.scrollingElement || document.documentElement;
+    const el = this.doc.scrollingElement || this.doc.documentElement;
     if (!el) return;
     el.classList.add(cls);
     this.reservedEl = el;
@@ -288,7 +230,7 @@ export class StatusBar {
   private reserveBody(): void {
     if (!this.reservedEl || !this.reservedCls) return;
     if (this.bodyReserved) return;
-    const body = document.body;
+    const body = this.doc.body;
     if (!body || body === this.reservedEl) return;
     try {
       body.classList.add(this.reservedCls);
@@ -302,7 +244,7 @@ export class StatusBar {
     if (!this.reservedEl || !this.reservedCls) return;
     try {
       this.reservedEl.classList.remove(this.reservedCls);
-      const body = document.body;
+      const body = this.doc.body;
       if (body && body !== this.reservedEl) body.classList.remove(this.reservedCls);
     } catch (e) {
       // ignore
@@ -312,8 +254,30 @@ export class StatusBar {
     this.bodyReserved = false;
   }
 
+  // The last rendered snapshot (serialized) — identical snapshots skip the
+  // DOM write entirely. The Go store is the source of truth; this view only
+  // paints when the store's model actually changed.
+  private lastKey: string | null = null;
+
   setData(d: Partial<StatusBarData>): void {
-    this.data = Object.assign({}, this.data, d);
+    const next = Object.assign({}, this.data, d);
+    const key = JSON.stringify(next);
+    if (this.lastKey === key) return;
+    this.lastKey = key;
+    this.data = next;
+    this.render();
+  }
+
+  // Paints the leader indicator SYNCHRONOUSLY, bypassing the async store
+  // roundtrip. A `;` press runs the leader's onChange → statusBatch → wasm →
+  // paint chain; that chain crosses several await boundaries and can land
+  // visibly late (or land out of order behind a queued snapshot). Arming is a
+  // state flag, not data, so paint it directly: zero hops between keypress and
+  // pixel. The next store repaint simply confirms whatever this decided.
+  setLeaderSignal(sig: LeaderSignal): void {
+    this.data.leader = sig;
+    const key = JSON.stringify(this.data);
+    this.lastKey = key;
     this.render();
   }
 
@@ -338,6 +302,7 @@ export class StatusBar {
     const tabIdx = tabs ? (tabs.querySelector("b") as HTMLElement | null) : null;
     const tabCnt = tabs ? (tabs.querySelector(".cnt") as HTMLElement | null) : null;
     const stealth = tabs ? (tabs.querySelector(".st") as HTMLElement | null) : null;
+    const dark = sh.querySelector(".dark") as HTMLElement | null;
     const find = sh.querySelector(".find") as HTMLElement | null;
     const findCur = find ? (find.querySelector(".cur") as HTMLElement | null) : null;
     const findCnt = find ? (find.querySelector(".cnt") as HTMLElement | null) : null;
@@ -345,7 +310,30 @@ export class StatusBar {
     const dlItems = dl ? (dl.querySelector(".items") as HTMLElement | null) : null;
     const chips = sh.querySelector(".chips");
 
-    if (leader) leader.style.display = this.data.mode === "LEADER" ? "" : "none";
+    if (leader) {
+      // The indicator is armed while the leader bar is up OR a sequence is in
+      // progress. setLeaderSignal paints this synchronously at key time — the
+      // store snapshot (data.leader) only reconciles it on the next repaint.
+      //
+      // The prefix is rendered, not just stored: once `;W` has been pressed the
+      // user has committed half the chord, and an indicator that looks the same
+      // at `;` and at `;W` tells them nothing about which key they are now
+      // waiting for. `leaderSeqText` owns the shape so it can be tested.
+      const sig =
+        this.data.leader ||
+        makeLeaderSignal({ armed: this.data.mode === "LEADER" });
+      leader.style.display = sig.armed ? "" : "none";
+      if (sig.armed) {
+        const txt = leaderSeqText(sig.prefix, sig.expect);
+        leader.textContent = txt;
+        leader.classList.toggle("seq", !!sig.prefix);
+        // The pulse is the "we are waiting on you" signal, and it belongs on
+        // exactly the states that have something to wait FOR: a bare leader
+        // that takes any key, and a capture that wants a specific one. Pulsing
+        // a bar that is merely idle would train the eye to ignore it.
+        leader.classList.toggle("stale", true);
+      }
+    }
     if (name) name.textContent = this.data.name;
     if (marker) {
       marker.textContent = this.data.marker ? String(this.data.marker) : "";
@@ -379,38 +367,57 @@ export class StatusBar {
       }
     }
 
+    // The dark segment: one icon, one word. `title` carries the longer story
+    // for a hover, because the bar is 18px tall and a sentence does not fit.
+    if (dark) {
+      const seg = darkSegment(this.data.dark);
+      dark.style.display = seg ? "" : "none";
+      if (seg) {
+        dark.className = "seg dark tone-" + seg.tone;
+        const ic = dark.querySelector(".ic");
+        const lbl = dark.querySelector(".lbl");
+        if (ic) ic.textContent = seg.icon;
+        if (lbl) lbl.textContent = seg.label;
+        dark.title =
+          "dark mode: " +
+          (this.data.dark && this.data.dark.mode ? this.data.dark.mode : "?") +
+          " \u00B7 " +
+          (this.data.dark && this.data.dark.engine ? this.data.dark.engine : "?");
+      }
+    }
+
     if (dl && dlItems) {
       dl.style.display = this.data.downloads.length > 0 ? "" : "none";
       dlItems.textContent = "";
       for (const d of this.data.downloads) {
-        const item = document.createElement("span");
+        const item = this.doc.createElement("span");
         item.className = "dlitem";
         item.title = "dismiss";
-        const name = document.createElement("span");
+        const name = this.doc.createElement("span");
         name.className = "n";
         name.textContent = d.filename;
         item.appendChild(name);
         if (d.state === "complete") {
           // small green indicator for a finished download
-          const ok = document.createElement("span");
+          const ok = this.doc.createElement("span");
           ok.className = "ok";
           ok.textContent = "\u2713";
           item.appendChild(ok);
         } else if (d.state === "failed") {
           // small red indicator for a failed download
-          const bad = document.createElement("span");
+          const bad = this.doc.createElement("span");
           bad.className = "bad";
           bad.textContent = "\u2717";
           item.appendChild(bad);
         } else {
           if (d.percent >= 0) {
-            const pct = document.createElement("span");
+            const pct = this.doc.createElement("span");
             pct.className = "pct";
             pct.textContent = d.percent + "%";
             item.appendChild(pct);
           }
           if (d.speed) {
-            const spd = document.createElement("span");
+            const spd = this.doc.createElement("span");
             spd.className = "pct";
             spd.textContent = d.speed;
             item.appendChild(spd);
@@ -428,33 +435,20 @@ export class StatusBar {
       // each reads `id:name count` and links into the previous one. The active
       // session is already shown by the first (session-name) segment, so the
       // list needs no extra current marker; split counts were dropped as noise.
-      const PILL_COLORS = [
-        ["#7aa2f7", "#5d89ea"], // blue
-        ["#9ece6a", "#7fae49"], // green
-        ["#e0af68", "#cd9445"], // amber
-        ["#bb9af7", "#9e77ef"], // purple
-        ["#7dcfff", "#4fb6ea"], // cyan
-        ["#f7768e", "#e75f79"], // red
-        ["#ff9e64", "#f58541"], // orange
-        ["#2ac3de", "#14a9c6"], // teal
-        ["#c0caf5", "#a3aee4"], // lavender
-      ];
-      const frag = document.createDocumentFragment();
+      const frag = this.doc.createDocumentFragment();
       this.data.sessions.slice(0, 12).forEach((s, i) => {
         // First block is a full chevron (> id:name count); every block after
         // it links into the previous one's point (> id:name count > ...).
-        const block = document.createElement("span");
+        const block = this.doc.createElement("span");
         block.className = "sesspill" + (i > 0 ? " linked" : "");
         // Stable color keyed to the marker (not list position), so switching
         // sessions never recolors another one.
-        const idx = s.marker > 0 ? (s.marker - 1) % PILL_COLORS.length : 0;
-        const c = PILL_COLORS[idx]!;
-        block.style.background = "linear-gradient(180deg," + c[0] + "," + c[1] + ")";
-        block.style.color = readableOn(c[0] || "#7aa2f7");
-        const id = s.marker > 0 ? String(s.marker) : "\u00B7";
-        let text = id + ":" + s.name;
-        if (s.tabCount > 0) text += " " + s.tabCount;
-        block.textContent = text;
+        // Stable color keyed to the marker (not list position), so switching
+        // sessions never recolors another one — see statusbar-segments.ts.
+        const c = pillColorFor(s.marker);
+        block.style.background = c.gradient;
+        block.style.color = c.ink;
+        block.textContent = sessionPillText(s);
         frag.appendChild(block);
       });
       chips.textContent = "";
@@ -464,31 +458,9 @@ export class StatusBar {
     // Testability/debug hook: mirror the state onto the document root (the
     // shadow root is closed, so suites read this attribute instead).
     try {
-      document.documentElement.setAttribute(
+      this.doc.documentElement.setAttribute(
         "data-lf-status",
-        this.data.name +
-          "|" +
-          (this.data.marker || 0) +
-          "|" +
-          this.data.tabIndex +
-          "/" +
-          this.data.tabCount +
-          "|" +
-          (this.data.inSplit
-            ? "split-" + (this.data.splitOrientation === "vertical" ? "v" : "h") +
-              "-" + this.data.splitActive + "/" + this.data.splitPanes
-            : "") +
-          "|" +
-          this.data.mode +
-          "|" +
-          this.position +
-          "|" +
-          (this.data.activeStealth ? "stealth" : "") +
-          (this.data.find && this.data.find.count > 0
-            ? "|find:" + this.data.find.cur + "/" + this.data.find.count
-            : this.data.find && this.data.find.count === 0
-              ? "|find:0/0"
-              : "")
+        statusMirrorFragment(this.data, this.position, this.data.leader)
       );
     } catch (e) {
       // ignore

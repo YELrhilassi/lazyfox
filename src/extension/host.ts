@@ -3,10 +3,15 @@
 // The Go host (native-host/, built as lazyfox-host and installed by the
 // installer with a native-messaging manifest) speaks JSON-RPC 2.0 over stdio.
 // This module is the extension's thin client: browser.runtime.connectNative
-// + request/response over the port, with an automatic reconnect and a
-// `hostAvailable` flag so callers degrade cleanly when the host is missing —
-// which is the NORMAL state for AMO/store installs that never ran the
-// installer's host step.
+// + request/response over the port, with an automatic reconnect.
+//
+// "The host is missing" is a NORMAL state, not an error: AMO/store installs
+// never ran the installer's host step, and a developer may not have built it.
+// So every call resolves to { ok: false, error } instead of throwing, and the
+// two callers simply treat a null result as "no host". (This module used to
+// keep a `hostAvailable` flag "so callers degrade cleanly" — nothing ever read
+// it, and hostInfo()/hostDiag() returning null IS the signal. The flag was
+// written in five places and read in none.)
 //
 // The host owns only what an external process can do (health/diagnostics +
 // system-level ops). Everything else (tabs, sessions, history, …) stays in
@@ -20,13 +25,8 @@ const HOST_NAME = "lazyfox";
 // serializes anyway. Reconnect-on-drop so a host that dies mid-session is
 // picked up on the next call.
 let port: any = null;
-let hostAvailable: boolean | null = null;
 let seq = 0;
 let waiter: { resolve: (v: any) => void; method: string } | null = null;
-
-export function hostStatus(): { available: boolean | null } {
-  return { available: hostAvailable };
-}
 
 function connect(): boolean {
   if (port) return true;
@@ -36,10 +36,8 @@ function connect(): boolean {
     port = null;
   }
   if (!port) {
-    hostAvailable = false;
     return false;
   }
-  hostAvailable = true;
   port.onMessage.addListener((msg: any) => {
     if (!waiter) return;
     const w = waiter;
@@ -55,7 +53,6 @@ function connect(): boolean {
     // down). Drop the port; the next call reconnects. A pending waiter gets
     // the failure so it never hangs.
     port = null;
-    hostAvailable = false;
     if (waiter) {
       const w = waiter;
       waiter = null;
@@ -87,7 +84,6 @@ export function hostCall(method: string, params?: any): Promise<{ ok: boolean; r
       const w = waiter;
       waiter = null;
       port = null;
-      hostAvailable = false;
       w.resolve({ ok: false, error: String((e && (e as Error).message) || e) });
     }
   });
@@ -96,13 +92,6 @@ export function hostCall(method: string, params?: any): Promise<{ ok: boolean; r
 export async function hostInfo(): Promise<any | null> {
   const r = await hostCall("host.info");
   return r.ok ? r.result : null;
-}
-
-export async function hostPing(): Promise<number | null> {
-  const t0 = Date.now();
-  const r = await hostCall("host.ping");
-  if (!r.ok) return null;
-  return Date.now() - t0;
 }
 
 export async function hostDiag(): Promise<any | null> {

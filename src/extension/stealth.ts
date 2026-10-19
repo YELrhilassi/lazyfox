@@ -8,8 +8,7 @@
 // label a tab without an extra query.
 
 import { CC_URL } from "./tabs";
-
-const STEALTH_KEY = "lfStealth";
+import { readKey, writeKey, vStealth, type StealthRecord } from "./store";
 // cookieStoreIds WE own. A tab's cookieStoreId alone can't identify a stealth
 // tab (a user's own container would look identical), so snapshot/restore test
 // membership in this set.
@@ -18,19 +17,12 @@ export const stealthContainers = new Set<string>();
 const stealthTabs = new Map<number, string>();
 let stealthReconcile: Promise<void> | null = null;
 
-async function readStealth(): Promise<{ containers: string[] }> {
-  try {
-    const r = await browser.storage.local.get(STEALTH_KEY);
-    const v = r && r[STEALTH_KEY];
-    if (v && Array.isArray(v.containers)) return v as { containers: string[] };
-  } catch (e) {
-    // fall through
-  }
-  return { containers: [] };
+async function readStealth(): Promise<StealthRecord> {
+  return readKey("lfStealth", vStealth, { containers: [] });
 }
 
-async function writeStealth(st: { containers: string[] }): Promise<void> {
-  await browser.storage.local.set({ [STEALTH_KEY]: st });
+async function writeStealth(st: StealthRecord): Promise<void> {
+  await writeKey("lfStealth", st);
 }
 
 async function persistStealth(): Promise<void> {
@@ -95,9 +87,18 @@ async function createStealthContainer(): Promise<string> {
   return ci.cookieStoreId;
 }
 
-export async function stealthCreateTab(url: string, active: boolean): Promise<any> {
+// `winId` puts the container tab in a NAMED window. Restoring a session's
+// second window has to: `tabs.create` without it lands in the focused window,
+// so a stealth tab restored alongside the user's window would go into the
+// window they were already looking at.
+export async function stealthCreateTab(
+  url: string,
+  active: boolean,
+  winId?: number | null
+): Promise<any> {
   const cs = await createStealthContainer();
-  const t = await browser.tabs.create({ url, cookieStoreId: cs, active });
+  const inWin: any = winId != null ? { windowId: winId } : {};
+  const t = await browser.tabs.create({ url, cookieStoreId: cs, active, ...inWin });
   if (t && t.id != null) stealthTabs.set(t.id, cs);
   await persistStealth();
   return t;

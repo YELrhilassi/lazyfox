@@ -8,9 +8,10 @@
 // on the first broken step.
 //
 // Usage:
-//   npm run ci              # build + unit tests + dist check + workflow lint
-//   npm run ci:bidi         # also run the BiDi end-to-end suite (needs a real
-//                           # Firefox + geckodriver, see below)
+//   npm run ci              # build + unit tests + dist check + workflow lint//   npm run ci:bidi         # also run the BiDi end-to-end suite (needs a real
+//                           #   Firefox + geckodriver, see below)
+//   npm run test:mutation   # prove the unit suite can actually fail
+//   npm run ci:hints        # the link-hint tests only (local pages, no network)
 //
 // Env (all optional; matches what the workflows set):
 //   BIDI_FIREFOX_BIN  path to a Firefox binary (default: a detected install)
@@ -21,9 +22,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runNpm } from "./npm.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runBidi = process.argv.includes("--bidi");
+const runHints = process.argv.includes("--hints");
 
 function sh(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv } = {}): void {
   console.log(`\n$ ${cmd} ${args.join(" ")}`);
@@ -31,6 +34,26 @@ function sh(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv } = {})
     execFileSync(cmd, args, { cwd: root, stdio: "inherit", env: { ...process.env, CI: "1", ...opts.env } });
   } catch (e) {
     console.error(`\n❌ Step failed: ${cmd} ${args.join(" ")}`);
+    process.exit(typeof e === "object" && e !== null && "status" in e ? Number(e.status) || 1 : 1);
+  }
+}
+
+/**
+ * An npm step, through the shared launcher rather than `execFileSync("npm")`.
+ *
+ * THIS IS THE DIFFERENCE BETWEEN CI RUNNING AND CI REPORTING A MYSTERY. On
+ * Windows npm is `npm.cmd`, and spawning a `.cmd` without a shell raises ENOENT
+ * — with no npm output at all, so the run printed one line, "Step failed: npm
+ * ci", and stopped at step two. The launcher (scripts/npm.ts) runs npm-cli.js
+ * through the Node already executing this file, which works everywhere and uses
+ * the same npm the user invoked; see that file for the full reasoning.
+ */
+function npm(args: string[], opts: { env?: NodeJS.ProcessEnv } = {}): void {
+  console.log(`\n$ npm ${args.join(" ")}`);
+  try {
+    runNpm(args, root, { CI: "1", ...opts.env });
+  } catch (e) {
+    console.error(`\n❌ Step failed: npm ${args.join(" ")}`);
     process.exit(typeof e === "object" && e !== null && "status" in e ? Number(e.status) || 1 : 1);
   }
 }
@@ -44,20 +67,36 @@ const steps: Array<[string, () => void]> = [
     }
     sh(al, readdirSync(join(root, ".github", "workflows")).filter((f) => f.endsWith(".yml")).map((f) => join(root, ".github", "workflows", f)));
   }],
-  ["install dependencies (npm ci)", () => sh("npm", ["ci"])],
-  ["toolchain check", () => sh("npm", ["run", "prepare"])],
-  ["build dev extension (unsigned)", () => sh("npm", ["run", "build"])],
-  ["run full unit suite (go core + installer + dist)", () => sh("npm", ["test"])],
+  ["install dependencies (npm ci)", () => npm(["ci"])],
+  ["toolchain check", () => npm(["run", "prepare"])],
+  ["build dev extension (unsigned)", () => npm(["run", "build"])],
+  ["run full unit suite (go core + installer + dist)", () => npm(["test"])],
+  // Also inside `npm test`, listed separately so their failures are NAMED in
+  // the output. A seam regression and a wire-drift regression both arrive as
+  // "npm test failed" otherwise, and they have nothing to do with each other.
+  ["env seam audit (no browser globals outside env)", () => npm(["run", "test:seam"])],
+  ["#lfc= wire replay (recorded traces)", () => npm(["run", "test:wire"])],
   ["verify dist self-contained", () => sh("node", ["scripts/check-dist.ts"])],
 ];
 
+function bidiEnv(): NodeJS.ProcessEnv {
+  const ff = process.env.BIDI_FIREFOX_BIN;
+  if (!ff) console.warn("\n⚠️  BIDI_FIREFOX_BIN not set — pass a Firefox binary to enable the BiDi suite.");
+  const gecko = process.env.BIDI_GECKODRIVER || join(root, ".tools", "geckodriver");
+  return { BIDI_HEADLESS: "1", ...(ff ? { FIREFOX_BIN: ff } : {}), GECKODRIVER: gecko };
+}
+
 if (runBidi) {
   steps.push(["BiDi end-to-end", () => {
-    const ff = process.env.BIDI_FIREFOX_BIN;
-    if (!ff) console.warn("\n⚠️  BIDI_FIREFOX_BIN not set — pass a Firefox binary to enable the BiDi suite.");
-    const gecko = process.env.BIDI_GECKODRIVER || join(root, ".tools", "geckodriver");
-    const env = { BIDI_HEADLESS: "1", ...(ff ? { FIREFOX_BIN: ff } : {}), GECKODRIVER: gecko };
-    sh("node", ["scripts/bidi/test.ts"], { env });
+    sh("node", ["scripts/e2e/main.ts"], { env: bidiEnv() });
+  }]);
+}
+
+if (runHints) {
+  steps.push(["BiDi link hints (local pages)", () => {
+    sh("node", ["scripts/e2e/main.ts", "--suite", "content", "--only", "link hints:"], {
+      env: bidiEnv(),
+    });
   }]);
 }
 

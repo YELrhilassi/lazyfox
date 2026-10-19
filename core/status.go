@@ -1,0 +1,457 @@
+package core
+
+// The status store: the single owner of everything the window-level status
+// bar shows and of the download list the downloads popup reads. It is a
+// singleton (one instance per wasm context) and the ONLY place that state
+// lives. The chrome helper is a thin adapter: it pushes raw events in
+// (session state, tab selection, leader/find signals, download snapshots) and
+// paints whatever StatusSnapshot returns through its one StatusBar view.
+// Nothing else holds bar state and nothing else renders a bar.
+//
+// The wasm runtime is single-threaded and every exported call is synchronous,
+// so the singleton needs no locking.
+
+import (
+	"sort"
+	"time"
+)
+
+// nowMillis is a tiny seam so tests can pin time if they ever need to.
+var nowMillis = func() int64 { return time.Now().UnixMilli() }
+
+// SessionPill is one session chip on the bar (mirrors StatusBarSessions).
+type SessionPill struct {
+	Marker     int    `json:"marker"`
+	Name       string `json:"name"`
+	Current    bool   `json:"current"`
+	TabCount   int    `json:"tabCount"`
+	SplitCount int    `json:"splitCount"`
+}
+
+// FindState is the content-script find widget state for one tab.
+type FindState struct {
+	Cur   int `json:"cur"`
+	Count int `json:"count"`
+}
+
+// DarkState is the content script's dark-mode verdict for one tab.
+//
+// It is the content script's answer, not the settings', because the question
+// the bar answers is "what is on screen RIGHT NOW": a page that already ships
+// its own dark theme is `engine: "native"` with `on: false`, and one the filter
+// engine inverted is `engine: "filter"`. A bar that only showed the setting
+// would tell every page the same thing and be worth nothing.
+type DarkState struct {
+	On     bool   `json:"on"`
+	// auto | dark | light | off — the mode that decided this page.
+	Mode   string `json:"mode"`
+	// native | dynamic | filter | auto — how it was rendered.
+	Engine string `json:"engine"`
+}
+
+// BarDownload is one rendered download segment (percent/speed pre-formatted).
+type BarDownload struct {
+	Key      string `json:"key"`
+	Filename string `json:"filename"`
+	State    string `json:"state"`
+	Percent  int    `json:"percent"`
+	Speed    string `json:"speed"`
+}
+
+// NavState is the active tab's history-stack shape, pushed by the chrome
+// helper / content script whenever the session history changes. CanBack and
+// CanForward drive the "no more history" indications; Index/Count describe
+// where the user sits in the stack (Index is the current entry, 0-based;
+// Count the total). Entries carries the stack itself (oldest first, current
+// included) for the navigation-stack popup.
+type NavState struct {
+	CanBack    bool       `json:"canBack"`
+	CanForward bool       `json:"canForward"`
+	Index      int        `json:"index"`
+	Count      int        `json:"count"`
+	Entries    []NavEntry `json:"entries,omitempty"`
+}
+
+// NavEntry is one row of the navigation stack.
+type NavEntry struct {
+	URL   string `json:"url"`
+	Title string `json:"title"`
+}
+
+// LeaderSignal is the far-right leader indicator's input: armed (the leader
+// is active right now) and the keys pressed so far in the current sequence
+// (empty for a bare `;`, "l" after `;l` while a two-key binding is pending). The
+// indicator works regardless of whether the which-key overlay is enabled —
+// with the overlay off it is the ONLY visible sign the leader captured a key.
+type LeaderSignal struct {
+	Armed  bool   `json:"armed"`
+	Prefix string `json:"prefix"`
+	// What the next key must be, when the answer is not "anything" — the
+	// digits still legal after `;W m 1`, for instance. Empty means no hint,
+	// which is the honest answer for a plain binding and for a bare leader.
+	//
+	// It lives in the store rather than only in the view because the store is
+	// what every repaint reads: a hint that existed only on the painted DOM
+	// would be erased by the next poll, and an indicator that flickers between
+	// "waiting for a digit" and "nothing pending" is worse than no indicator.
+	Expect string `json:"expect,omitempty"`
+}
+
+// StatusModel is the render model the single view paints. Field names match
+// the shared StatusBarData shape so the view needs no mapping.
+type StatusModel struct {
+	Name             string        `json:"name"`
+	Marker           int           `json:"marker"`
+	TabIndex         int           `json:"tabIndex"` // 1-based, over real tabs
+	TabCount         int           `json:"tabCount"` // real tabs only
+	InSplit          bool          `json:"inSplit"`
+	SplitOrientation string        `json:"splitOrientation"`
+	SplitActive      int           `json:"splitActive"`
+	SplitPanes       int           `json:"splitPanes"`
+	Mode             string        `json:"mode"` // POPUP | LEADER | NORMAL
+	ActiveStealth    bool          `json:"activeStealth"`
+	Sessions         []SessionPill `json:"sessions"`
+	Find             *FindState    `json:"find"`
+	Dark             *DarkState    `json:"dark"`
+	Downloads        []BarDownload `json:"downloads"`
+	TabIds           []int         `json:"tabIds"`
+	StealthFlags     []bool        `json:"stealthFlags"`
+	// The far-right leader indicator: armed + the prefix typed so far.
+	Leader LeaderSignal `json:"leader"`
+	// The active tab's history-stack shape ("at root" indications).
+	Nav NavState `json:"nav"`
+}
+
+// SessionPatch is the sessionState blob the background sends (name, marker,
+// split state, session pills, tab ids + stealth flags for the tab switcher).
+// It crosses the wasm bridge as JSON, so it is exported.
+type SessionPatch struct {
+	Name             string        `json:"name"`
+	Marker           int           `json:"marker"`
+	InSplit          bool          `json:"inSplit"`
+	SplitOrientation string        `json:"splitOrientation"`
+	SplitActive      int           `json:"splitActive"`
+	SplitPanes       int           `json:"splitPanes"`
+	Sessions         []SessionPill `json:"sessions"`
+	TabIds           []int         `json:"tabIds"`
+	StealthFlags     []bool        `json:"stealthFlags"`
+}
+
+// statusStoreT is the store's shape. Downloaded bytes/timestamps are kept per
+// download id so speed (an EMA across polls, mirroring the old JS behavior)
+// is computed here, not in the view.
+type statusStoreT struct {
+	name             string
+	marker           int
+	selectedIndex    int // 0-based raw strip index; -1 = none
+	tabIndex         int // 1-based over REAL tabs
+	tabCount         int // REAL tab count
+	inSplit          bool
+	splitOrientation string
+	splitActive      int
+	splitPanes       int
+	popupOpen        bool
+	chromeLeader     bool
+	activeStealth    bool
+	sessions         []SessionPill
+	findByIndex      map[int]FindState
+	darkByIndex      map[int]DarkState
+	leaderByIndex    map[int]bool
+	tabIds           []int
+	stealthFlags     []bool
+
+	// Downloads: the merged cache (dismissed flags carried across polls), the
+	// "seeded" flag (pre-existing terminal downloads are dismissed on the
+	// first poll so history never floods the bar), and the speed EMA inputs.
+	downloads []Download
+	seeded    bool
+	prevBytes map[string]int64
+	prevAt    map[string]int64
+	prevSpeed map[string]int64
+
+	// The leader indicator: armed state + the prefix typed so far in the
+	// current sequence ("" for a bare leader press, "l" after `;l`).
+	leaderPrefix string
+
+	// What the armed leader capture wants next, cleared whenever it disarms.
+	leaderExpect string
+
+	// The signal's own armed flag. The bar's MODE resolves from chromeLeader /
+	// leaderByIndex, but an armed one-shot capture is a third thing entirely:
+	// no leader is "up" in the mode sense, yet the next key is still captured
+	// and must still be advertised. Resolving the indicator from the mode
+	// alone therefore switched it off one poll after the press that turned it
+	// on — a hint that appears and vanishes is worse than no hint, because the
+	// user learns to distrust the one element that was telling them the truth.
+	leaderSignalArmed bool
+
+	// The active tab's history-stack shape, pushed by the owning context.
+	nav NavState
+}
+
+// statusStore is the singleton. The session name defaults to "default" so a
+// freshly booted bar (before the first sessionState reply) reads correctly.
+var statusStore = &statusStoreT{
+	name:          "default",
+	selectedIndex: -1,
+	findByIndex:   map[int]FindState{},
+	darkByIndex:   map[int]DarkState{},
+	leaderByIndex: map[int]bool{},
+	prevBytes:     map[string]int64{},
+	prevAt:        map[string]int64{},
+	prevSpeed:     map[string]int64{},
+}
+
+// StatusApplySession merges the background's sessionState reply.
+func StatusApplySession(p SessionPatch) {
+	s := statusStore
+	if p.Name != "" {
+		s.name = p.Name
+	}
+	s.marker = p.Marker
+	s.inSplit = p.InSplit
+	s.splitOrientation = p.SplitOrientation
+	s.splitActive = p.SplitActive
+	s.splitPanes = p.SplitPanes
+	s.sessions = p.Sessions
+	if p.TabIds != nil {
+		s.tabIds = p.TabIds
+	}
+	if p.StealthFlags != nil {
+		s.stealthFlags = p.StealthFlags
+	}
+}
+
+// StatusSetTab records the live selection. Prunes per-tab maps (find, leader)
+// beyond the tab count so closed tabs can't resurrect a stale badge.
+func StatusSetTab(selected, tabIndex, tabCount int) {
+	s := statusStore
+	s.selectedIndex = selected
+	s.tabIndex = tabIndex
+	s.tabCount = tabCount
+	if tabCount <= 0 {
+		return
+	}
+	for i := tabCount; i < len(s.findByIndex); i++ {
+		delete(s.findByIndex, i)
+	}
+	for i := tabCount; i < len(s.darkByIndex); i++ {
+		delete(s.darkByIndex, i)
+	}
+	for i := tabCount; i < len(s.leaderByIndex); i++ {
+		delete(s.leaderByIndex, i)
+	}
+}
+
+// StatusSetUi records the raw chrome-side signals that decide the bar mode:
+// whether a popup is open and whether the chrome helper's own leader is armed
+// (web pages arm the content-script leader instead, tracked per tab index).
+func StatusSetUi(popupOpen, chromeLeader bool) {
+	statusStore.popupOpen = popupOpen
+	statusStore.chromeLeader = chromeLeader
+}
+
+// StatusSetLeader records a content-script leader arm for a tab-strip index.
+func StatusSetLeader(index int, active bool) {
+	if active {
+		statusStore.leaderByIndex[index] = true
+	} else {
+		delete(statusStore.leaderByIndex, index)
+	}
+}
+
+// StatusSetFind records find-in-page state for a tab index. count < 0 clears.
+func StatusSetFind(index, cur, count int) {
+	if count < 0 {
+		delete(statusStore.findByIndex, index)
+		return
+	}
+	statusStore.findByIndex[index] = FindState{Cur: cur, Count: count}
+}
+
+// StatusSetDark records the content script's dark-mode verdict for a tab
+// index. mode "" (or "off") clears it: a segment that outlives the theme it
+// describes is worse than no segment, because it is a claim about the page that
+// is no longer true.
+//
+// Keyed by tab index, like find: the bar shows the SELECTED tab's verdict, so a
+// push from a background tab cannot relabel the page being looked at.
+func StatusSetDark(index int, on bool, mode, engine string) {
+	if mode == "" || mode == "off" {
+		delete(statusStore.darkByIndex, index)
+		return
+	}
+	statusStore.darkByIndex[index] = DarkState{On: on, Mode: mode, Engine: engine}
+}
+
+// StatusSetStealth records the live stealth badge of the selected tab.
+func StatusSetStealth(on bool) {
+	statusStore.activeStealth = on
+}
+
+// StatusSetLeaderSignal records the far-right leader indicator state. An
+// empty prefix with armed=true is a bare `;`; a non-empty prefix means a
+// sequence is in progress (e.g. `;l` waiting for its final key). `expect` is
+// what the next key must be ("1-9"); it is cleared on disarm, because a hint
+// for a capture that has ended is a hint to press a dead key.
+func StatusSetLeaderSignal(armed bool, prefix, expect string) {
+	s := statusStore
+	s.leaderSignalArmed = armed
+	if armed {
+		s.leaderPrefix = prefix
+		s.leaderExpect = expect
+	} else {
+		s.leaderPrefix = ""
+		s.leaderExpect = ""
+	}
+}
+
+// StatusSetNav records the active tab's history-stack shape.
+func StatusSetNav(n NavState) {
+	statusStore.nav = n
+}
+
+// StatusSetDownloads merges a fresh snapshot from Firefox into the cache,
+// carrying dismissed flags across polls, seeding pre-existing terminal
+// downloads as dismissed, and deriving an EMA speed per download.
+func StatusSetDownloads(fresh []Download) {
+	s := statusStore
+	if !s.seeded {
+		for i := range fresh {
+			if fresh[i].State == "complete" || fresh[i].State == "failed" || fresh[i].State == "canceled" {
+				fresh[i].Dismissed = true
+			}
+		}
+		s.seeded = true
+	}
+	s.downloads = MergeDownloads(s.downloads, fresh)
+	now := nowMillis()
+	for i := range s.downloads {
+		d := &s.downloads[i]
+		pb, okB := s.prevBytes[d.ID]
+		pt, okT := s.prevAt[d.ID]
+		if okB && okT && now > pt {
+			instant := int64(0)
+			delta := d.Received - pb
+			if delta > 0 {
+				instant = delta * 1000 / (now - pt)
+			}
+			prev, okS := s.prevSpeed[d.ID]
+			if okS {
+				d.Speed = (prev*3 + instant) / 4 // 75/25 EMA, mirrors the old JS blend
+			} else {
+				d.Speed = instant
+			}
+		}
+		s.prevBytes[d.ID] = d.Received
+		s.prevAt[d.ID] = now
+		s.prevSpeed[d.ID] = d.Speed
+	}
+	sort.SliceStable(s.downloads, func(i, j int) bool {
+		ti := s.downloads[i].StartTime
+		if ti == 0 {
+			ti = s.downloads[i].EndTime
+		}
+		tj := s.downloads[j].StartTime
+		if tj == 0 {
+			tj = s.downloads[j].EndTime
+		}
+		return ti > tj
+	})
+}
+
+// StatusDismiss marks download notification(s) dismissed on the bar (the
+// popup still shows them). Empty keys dismiss everything.
+func StatusDismiss(keys []string) {
+	s := statusStore
+	if len(keys) == 0 {
+		for i := range s.downloads {
+			s.downloads[i].Dismissed = true
+		}
+		return
+	}
+	set := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		set[k] = true
+	}
+	for i := range s.downloads {
+		if set[s.downloads[i].ID] {
+			s.downloads[i].Dismissed = true
+		}
+	}
+}
+
+// StatusDownloads returns the merged cache (newest first) for the popup.
+func StatusDownloads() []Download {
+	out := make([]Download, len(statusStore.downloads))
+	copy(out, statusStore.downloads)
+	return out
+}
+
+// StatusSnapshot builds the render model the single view paints. Mode and the
+// find/leader signals are resolved against the current selection; the current
+// session pill carries the LIVE tab count (a sessionState reply is not polled
+// on every tab open/close).
+func StatusSnapshot() StatusModel {
+	s := statusStore
+	mode := "NORMAL"
+	if s.popupOpen {
+		mode = "POPUP"
+	} else if s.chromeLeader || s.leaderByIndex[s.selectedIndex] {
+		mode = "LEADER"
+	}
+	sessions := make([]SessionPill, len(s.sessions))
+	copy(sessions, s.sessions)
+	if s.tabCount > 0 {
+		for i := range sessions {
+			if sessions[i].Current {
+				sessions[i].TabCount = s.tabCount
+			}
+		}
+	}
+	var find *FindState
+	if f, ok := s.findByIndex[s.selectedIndex]; ok {
+		ff := f
+		find = &ff
+	}
+	var dark *DarkState
+	if d, ok := s.darkByIndex[s.selectedIndex]; ok {
+		dd := d
+		dark = &dd
+	}
+	active := ActiveDownloads(s.downloads)
+	downloads := make([]BarDownload, 0, len(active))
+	for _, d := range active {
+		downloads = append(downloads, BarDownload{
+			Key:      d.ID,
+			Filename: d.Filename,
+			State:    d.State,
+			Percent:  Progress(d.Received, d.Total),
+			Speed:    FormatSpeed(d.Speed),
+		})
+	}
+	// The leader indicator is armed while the overlay is up OR a one-shot
+	// capture is pending — both mean "the next key runs a binding". The prefix
+	// shows what was typed so far, so a sequence (`;l` …) reads as one.
+	leaderArmed := mode == "LEADER" || s.leaderSignalArmed
+	return StatusModel{
+		Name:             s.name,
+		Marker:           s.marker,
+		TabIndex:         s.tabIndex,
+		TabCount:         s.tabCount,
+		InSplit:          s.inSplit,
+		SplitOrientation: s.splitOrientation,
+		SplitActive:      s.splitActive,
+		SplitPanes:       s.splitPanes,
+		Mode:             mode,
+		ActiveStealth:    s.activeStealth,
+		Sessions:         sessions,
+		Find:             find,
+		Dark:             dark,
+		Downloads:        downloads,
+		TabIds:           s.tabIds,
+		StealthFlags:     s.stealthFlags,
+		Leader:           LeaderSignal{Armed: leaderArmed, Prefix: s.leaderPrefix, Expect: s.leaderExpect},
+		Nav:              s.nav,
+	}
+}

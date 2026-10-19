@@ -27,11 +27,11 @@
 //
 // Usage: npm run submit
 
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { api, sleep } from "./amo-lib.ts";
+import { runNpm } from "./npm.ts";
 
 const GUID = "lazyfox@lazyfox.dev";
 const guid = () => encodeURIComponent(GUID);
@@ -52,7 +52,10 @@ if (!process.env.AMO_API_KEY || !process.env.AMO_API_SECRET) {
 // 2. Build the fresh unsigned xpi (fast dev build; no signing involved).
 console.log("\n[submit] building the fresh unsigned xpi (npm run build)…");
 try {
-  execFileSync("npm", ["run", "build"], { cwd: root, stdio: "inherit" });
+  // Through the shared launcher: a bare `execFileSync("npm", …)` cannot spawn on
+  // Windows (npm.cmd, no shell) and would fail here with no output at all. See
+  // scripts/npm.ts.
+  runNpm(["run", "build"], root);
 } catch (e) {
   fail("`npm run build` failed — fix the build before submitting.");
 }
@@ -143,7 +146,7 @@ console.log(`[submit] submitted v${version} as a public listed version (AMO id $
 //    per-OS dev binaries are current for the next development phase.
 console.log("\n[submit] rebuilding dev installers (npm run build:installers)…");
 try {
-  execFileSync("npm", ["run", "build:installers"], { cwd: root, stdio: "inherit" });
+  runNpm(["run", "build:installers"], root);
 } catch (e) {
   console.error("[submit] build:installers failed — the version is submitted but dev installers are stale.");
   process.exit(1);

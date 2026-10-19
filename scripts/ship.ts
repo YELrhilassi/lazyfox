@@ -2,6 +2,8 @@
 // SHIP — the single, self-serviceable release command.
 //
 //   npm run ship
+//   npm run ship -- --rehearse    (alias --dry-run: the same release, in a
+//                                  scratch worktree, publishing nothing)
 //
 // Turns the current dev branch into master's next signed release, end to end:
 //
@@ -28,6 +30,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv } from "./amo-lib.ts";
+import { gatherWorkflowChanges, ghOauthScopes, pushScopeVerdict } from "./release-auth.ts";
+import { mergeDevBranch } from "./ship-merge.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -72,6 +76,24 @@ for (const r of [...REMOTES, "mine", "origin"]) {
 if (!remote) remote = REMOTES.includes("origin") ? "origin" : (REMOTES[0] || "mine");
 console.log(`[ship] remote: ${remote}.`);
 
+// `--rehearse` (alias `--dry-run`): the same release, with every write withheld.
+// It runs the guards, the AMO signing check, the master merge and the release
+// build inside a scratch worktree, then reports — so the failure mode this
+// command has (master merged and every artifact rebuilt, then a refusal) can be
+// seen without being paid for. Deliberately before the preconditions below, which
+// exit: a rehearsal's whole job is to report the preconditions that fail, not to
+// stop at the first one. See scripts/ship-rehearse.ts.
+if (process.argv.includes("--rehearse") || process.argv.includes("--dry-run")) {
+  const { rehearse } = await import("./ship-rehearse.ts");
+  process.exit(
+    await rehearse({
+      root,
+      remote,
+      devBranch: sh("git", ["rev-parse", "--abbrev-ref", "HEAD"]),
+    })
+  );
+}
+
 // 1. Preconditions.
 if (sh("git", ["status", "--porcelain"])) {
   fail("working tree is not clean — commit or stash changes first, then re-run.", "git status");
@@ -104,6 +126,47 @@ if (localTags) {
   fail(`v${version} already exists as a local tag — delete it (after confirming the remote doesn't have it) or bump the version.`);
 }
 
+// 1b. Can the credential that pushes master carry the workflow files the merge
+//     is about to change? GitHub refuses any push that adds or updates
+//     `.github/workflows/` when it is authenticated with an OAuth token that
+//     lacks the `workflow` scope — and that push is the LAST thing ship does,
+//     after master has been merged and every release artifact rebuilt. Asking
+//     here means the answer arrives while this command has still touched
+//     nothing. The decision itself is a pure function; see release-auth.ts.
+function pushScopeGuard(): void {
+  if (process.env.LF_SKIP_PUSH_SCOPE_CHECK) {
+    console.log("[ship] push-credential scope check skipped (LF_SKIP_PUSH_SCOPE_CHECK set).");
+    return;
+  }
+  try {
+    const pushUrl = sh("git", ["remote", "get-url", "--push", remote]);
+    // Read-only: this updates the remote-tracking refs, never the working tree.
+    // EVERY branch, because the exemption this guard applies is a question about
+    // what the remote already has, file by file.
+    sh("git", ["fetch", remote]);
+    // The blob question — does this workflow content already exist, at this path,
+    // on another branch the remote already has? — lives in release-auth.ts,
+    // because the rehearsal asks it too, and a rehearsal that answers it with its
+    // own copy of the rule is a rehearsal that can disagree with the release.
+    const verdict = pushScopeVerdict({
+      pushUrl,
+      scopes: ghOauthScopes(),
+      workflowFiles: gatherWorkflowChanges(remote, devBranch, root),
+    });
+    if (verdict.level === "fail") fail(verdict.why, verdict.fix);
+    if (verdict.level === "warn") console.warn(`\n⚠️  ${verdict.why}\n   → ${verdict.fix}`);
+    else console.log(`[ship] push credential: ${verdict.why}.`);
+  } catch (e) {
+    // This guard is a prediction about a push that has not happened yet. It must
+    // never be the reason a release stops, so a failure to gather its inputs is
+    // reported and stepped over.
+    console.warn(
+      `[ship] could not check the push credential's scopes (${e instanceof Error ? e.message : e}) — continuing.`,
+    );
+  }
+}
+pushScopeGuard();
+
 // 2. Read-only check that the version is actually signed on AMO before we touch
 //    git state (no writes — so the later `git checkout master` is clean).
 console.log("[ship] checking the AMO-signed xpi for this version…");
@@ -126,13 +189,36 @@ shout("git", ["merge", "--ff-only", `${remote}/master`]);
 
 // 4. Merge the dev branch into master, resolving every conflict (source + the
 //    generated dist/installers, which we rebuild below) in the dev branch's favor.
+//    `-X theirs` alone does not do that: it settles conflicting hunks, and this
+//    release also has a modify/delete conflict on a committed binary
+//    (build/native-host/lazyfox-host, deleted on the dev branch). scripts/ship-merge.ts
+//    applies the same policy to whatever is left — and the rehearsal runs it too.
 console.log(`\n[ship] merging \`${devBranch}\` into master (-X theirs)…`);
-shout("git", ["merge", "--no-ff", "-X", "theirs", "-m", `Merge ${devBranch} (source for v${version})`, devBranch]);
+{
+  const outcome = mergeDevBranch({
+    cwd: root,
+    branch: devBranch,
+    message: `Merge ${devBranch} (source for v${version})`,
+  });
+  for (const r of outcome.resolved) console.log(`[ship] resolved ${r.path}: ${r.action}.`);
+  if (!outcome.ok) {
+    fail(
+      `the merge of \`${devBranch}\` into master did not complete: ${outcome.error}`,
+      "master is now mid-merge — `git merge --abort` returns it to master, and `npm run ship -- --rehearse` reports the same without touching it"
+    );
+  }
+}
 
 // 5. Release build on master: sync the signed xpi (already fetched above; this
 //    reuses it deterministically), rebuild release-mode dist, and the installers.
 console.log("\n[ship] building the signed release artifacts…");
-shout("npm", ["run", "build:release"]);
+// Through scripts/release-build.ts, NOT `npm run build:release`: that script was
+// spelled `RELEASE=1 node build.ts`, and npm runs scripts through the platform's
+// shell — cmd.exe on Windows, which has no `VAR=value command` form and answers
+// "'RELEASE' is not recognized" with exit 1. Like the ENOENT this replaced, it
+// would have stopped the release AFTER master had been merged. The entry point
+// sets the environment in JS, so it means the same thing on every platform.
+shout(process.execPath, [path.join(__dirname, "release-build.ts")]);
 
 // 6. Verify.
 console.log("\n[ship] verifying release artifacts…");
@@ -170,6 +256,13 @@ const assets = [
   path.join(root, "installer", "bin", "lazyfox-install-linux"),
   path.join(root, "installer", "bin", "lazyfox-install-darwin"),
   path.join(root, "installer", "bin", "lazyfox-install-windows.exe"),
+  // The one-line installers. They download the binaries above and run them, so
+  // they must be published alongside — and they are uploaded under their base
+  // names, giving the stable one-liners:
+  //   curl -fsSL …/releases/latest/download/install.sh | sh
+  //   irm …/releases/latest/download/install.ps1 | iex
+  path.join(root, "installer", "scripts", "install.sh"),
+  path.join(root, "installer", "scripts", "install.ps1"),
   signedXpi,
 ].join(" ");
 shout("gh", ["release", "create", tag, "--title", `Lazyfox ${tag}`, "--notes", "Signed release for stable Firefox", ...assets.split(" ")]);

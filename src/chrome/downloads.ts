@@ -1,13 +1,11 @@
-// The chrome helper's download manager. It is the single owner of the live
-// download list: it polls Firefox's Downloads.sys.mjs, maps each entry to the
-// shared DownloadEntry shape, and reconciles snapshots through the Go core
-// (mergeDownloads keeps the user's "dismissed" flags across polls while
-// activeDownloads decides what belongs on the status bar). Actions (open,
-// reveal, remove) run against the real Download objects here.
-//
-// Nothing else should touch Downloads.sys.mjs directly; ops.ts (the popup) and
-// main.ts (the status bar) both read from this module so the popup and the bar
-// always agree on state.
+// The chrome helper's download manager. It polls Firefox's Downloads.sys.mjs
+// and hands every fresh snapshot to the Go status store, which OWNS the
+// merged cache, the dismissed flags, the seeded history and the speed EMA
+// (see core/status.go). This module keeps only what Go cannot: the real
+// Download objects needed to run actions (open, reveal, remove, retry) and
+// the Firefox-read snapshot itself. The status bar and the downloads popup
+// both read the store's snapshot, so they always agree — and there is exactly
+// one place the download state lives.
 
 import { core } from "../shared/core";
 import type { DownloadEntry } from "../shared/types";
@@ -25,18 +23,8 @@ function downloadsModule(): Promise<any> {
   return downloadsModulePromise;
 }
 
-// The live merged list, newest first (authoritative for the popup and bar).
-let cache: DownloadEntry[] = [];
-// Real Download objects by stable key (full target path).
+// Real Download objects by stable key (full target path), for actions only.
 const objs = new Map<string, any>();
-// Previous byte counts + timestamps per key, to derive speed across polls.
-const prevBytes = new Map<string, number>();
-const prevAt = new Map<string, number>();
-// True after the first poll. Pre-existing history (downloads that finished or
-// failed before the chrome helper loaded) is seeded as dismissed so it never
-// floods the bar with terminal dots — only downloads observed during THIS
-// session get a done/failed indicator until the user dismisses it.
-let seeded = false;
 
 function stateOf(d: any): string {
   if (d.succeeded) return "complete";
@@ -54,12 +42,13 @@ async function snapshot(): Promise<DownloadEntry[]> {
   const items = await list.getAll();
   await Promise.all(
     items.map((d: any) => {
-      try {
-        if (!d.succeeded && !d.error && !d.canceled) return d.refresh();
-      } catch (e) {
-        // ignore
-      }
-      return Promise.resolve();
+      if (d.succeeded || d.error || d.canceled) return Promise.resolve();
+      // refresh() can reject (the download left the store, or its target was
+      // cleaned up). One bad entry must never kill the whole poll — that would
+      // freeze the status bar at a stale state forever. Guard each refresh.
+      return Promise.resolve()
+        .then(() => d.refresh())
+        .catch(() => {});
     })
   );
   objs.clear();
@@ -81,10 +70,13 @@ async function snapshot(): Promise<DownloadEntry[]> {
     } catch (e) {
       // ignore — a partial download may not expose target/source yet
     }
-    const key = path || url || "dl:" + out.length;
+    // Path is the stable key (pathless entries fall back to a key anchored on
+    // startTime so a shifting index can't make a dismissed flag leak across
+    // different downloads between polls).
+    const key = path || url || "dl:" + startTime + ":" + out.length;
     if (path) objs.set(key, d);
     const filename =
-      (path ? path.split(/[\\/]/).pop() : "") ||
+      (path ? path.split(/[\\\\/]/).pop() : "") ||
       (url ? url.split("/").pop() : "") ||
       url ||
       "";
@@ -106,52 +98,34 @@ async function snapshot(): Promise<DownloadEntry[]> {
   return out;
 }
 
-// Poll once and reconcile into the live cache (dismissed flags survive).
-export async function updateDownloads(): Promise<void> {
+// Poll once and push the fresh snapshot into the Go store (the single source
+// of truth: it merges, carries dismissed flags, seeds history and derives
+// the speed EMA). Returns the entry count for the caller, or throws so the
+// poller can decide how to degrade.
+export async function updateDownloads(): Promise<number> {
   const fresh = await snapshot();
-  if (!seeded) {
-    for (const d of fresh) {
-      if (d.state === "complete" || d.state === "failed" || d.state === "canceled") {
-        d.dismissed = true;
-      }
-    }
-    seeded = true;
-  }
-  const now = Date.now();
-  for (const d of fresh) {
-    const pb = prevBytes.get(d.id);
-    const pt = prevAt.get(d.id);
-    if (pb != null && pt != null && now > pt) {
-      d.speed = Math.max(0, Math.round((d.received - pb) / ((now - pt) / 1000)));
-    }
-    prevBytes.set(d.id, d.received);
-    prevAt.set(d.id, now);
-  }
-  cache = await core.mergeDownloads(cache, fresh);
+  // Batched rather than a bare setter: the poller runs on an interval for the
+  // whole life of the window, and going through the per-call path means an
+  // await boundary between the store write and the snapshot the status bar
+  // reads back — a window in which a TabSelect push could interleave. The
+  // store is the single source of truth, so a download update and a tab update
+  // must not be able to tear.
+  await core.statusBatch([{ kind: "downloads", fresh }]);
+  return fresh.length;
 }
 
-// The current merged list (no polling). Popup + bar read this.
-export function listDownloads(): DownloadEntry[] {
-  return cache.slice();
-}
-
-// The subset whose progress notification belongs on the status bar.
-export async function activeDownloads(): Promise<DownloadEntry[]> {
-  return core.activeDownloads(cache);
+// The merged list (newest first) for the downloads popup, from the store.
+export async function listDownloads(): Promise<DownloadEntry[]> {
+  return core.downloadsList();
 }
 
 // Dismiss download notification(s) from the status bar (the popup still shows
-// them). With no key, every bar-visible notification is dismissed; with a key,
-// just that one.
-export function dismissDownload(key?: string): void {
-  if (key != null) {
-    const d = cache.find((x) => x.id === key);
-    if (d) d.dismissed = true;
-    return;
-  }
-  for (const d of cache) {
-    if (!d.dismissed) d.dismissed = true;
-  }
+// them). With no key, every bar-visible notification is dismissed; with a
+// key, just that one. Dismissal is store state.
+export function dismissDownload(key?: string): Promise<void> {
+  return core
+    .statusBatch([{ kind: "dismiss", keys: key != null ? [key] : [] }])
+    .then(() => undefined);
 }
 
 export async function openDownload(key: string): Promise<boolean> {
@@ -181,9 +155,28 @@ export async function removeDownload(key: string): Promise<boolean> {
   if (!d) return false;
   try {
     await d.remove();
-    // Drop it from the cache so the popup/bar agree immediately.
-    cache = cache.filter((x) => x.id !== key);
     return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export async function retryDownload(key: string): Promise<boolean> {
+  const d = objs.get(key);
+  if (!d) return false;
+  try {
+    if (d.error && typeof d.retry === "function") {
+      // Failed download: Firefox restarts it from its source.
+      await d.retry();
+      return true;
+    }
+    if (d.stopped && typeof d.start === "function") {
+      // Paused download: resume in place.
+      await d.start();
+      return true;
+    }
+    // In-progress or complete — nothing to retry.
+    return false;
   } catch (e) {
     return false;
   }

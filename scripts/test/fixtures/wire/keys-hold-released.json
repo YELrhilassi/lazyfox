@@ -1,0 +1,9 @@
+{
+  "name": "keys-hold-released",
+  "about": "The release half of a held key, which is the part that has actually broken. A key-up that never arrives leaves the leader armed and poisons every key pressed afterwards — and the trace cannot see the poison, so it asserts the reply instead.",
+  "steps": [
+    { "send": "lfc=keys.eyJrZXlzIjpbeyJrIjoiOyJ9LHsiayI6ImIifV19.k1-1", "expect": "keys.ok", "cmd": "keys" },
+    { "send": "lfc=keys.eyJrZXlzIjpbeyJrIjoiYiIsInVwIjp0cnVlfV19.k2-2", "expect": "keys.ok", "cmd": "keys", "note": "{keys:[{k:'b',up:true}]} — the release" },
+    { "send": "lfc=state.k3-3", "expect": "reply", "cmd": "state" }
+  ]
+}

@@ -1,6 +1,7 @@
 import "../vendor/wasm_exec.js";
 import { WASM_BASE64 } from "./wasm-embed";
-import type { DownloadEntry, HistoryRow, Lfc, RecoveryRow, VisitedItem, WkItem, WkPage } from "./types";
+import { createCoreFacade } from "./corefacade";
+import type { DownloadEntry, HistoryRow, Lfc, NavState, RecoveryRow, VisitedItem, WkItem, WkPage } from "./types";
 
 // The Go core (core.wasm) is compiled to a single wasm module and exposed to
 // JS as the "LazyfoxCore" object. Every Lazyfox context uses this facade; the
@@ -18,6 +19,14 @@ import type { DownloadEntry, HistoryRow, Lfc, RecoveryRow, VisitedItem, WkItem, 
 export interface CoreApi {
   version(): string;
   bindings(): WkItem[];
+  // The keymap rows (spec + display chord + action id + category sub-keys) and
+  // the shift/unshift pair the TS spec normaliser is pinned against.
+  // The content script's dark verdict for one tab: on/off + mode + engine.
+  statusDark(index: number, on: boolean, mode: string, engine: string): void;
+  keymap(): unknown[];
+  keymapValidate(): string;
+  unshiftKey(key: string): string;
+  shiftKey(key: string): string;
   normalizeUrl(text: string): string;
   isLikelyUrl(text: string): boolean;
   rankVisited(items: VisitedItem[], query: string): VisitedItem[];
@@ -63,10 +72,95 @@ export interface CoreApi {
   downloadProgress(received: number, total: number): number;
   mergeDownloads(prev: DownloadEntry[], fresh: DownloadEntry[]): DownloadEntry[];
   activeDownloads(downloads: DownloadEntry[]): DownloadEntry[];
+  // ---- status store: single source of truth for the status bar ----
+  // All events flow IN via these setters (JSON for structured payloads); the
+  // render model flows OUT via statusSnapshot(). The chrome helper pushes and
+  // paints; nothing else owns bar state.
+  statusSession(state: string): void;
+  statusTab(selected: number, tabIndex: number, tabCount: number): void;
+  statusUi(popup: boolean, leader: boolean): void;
+  statusLeader(index: number, active: boolean): void;
+  statusFind(index: number, cur: number, count: number): void;
+  statusStealth(on: boolean): void;
+  // The far-right leader indicator: armed + the prefix typed so far + what the
+  // next key must be ("" when any key will do).
+  statusLeaderSignal(armed: boolean, prefix: string, expect: string): void;
+  // The active tab's history-stack shape (JSON NavState).
+  statusNav(nav: string): void;
+  statusDownloads(fresh: string): void;
+  statusDismiss(keys: string): void;
+  statusSnapshot(): string;
+  downloadsList(): string;
   sessionSummary(
     sessions: { name: string; marker: number; tabCount: number; splits: string; legacySplitTabs: number }[],
     current: string
   ): { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[];
+}
+
+/**
+ * One status-store mutation. A discriminated union rather than a string tag and
+ * an args array: the whole point of batching is that the operations are known
+ * at compile time, and a tuple of unknown[] would throw that away — every
+ * caller would be free to pass the wrong arity and get a runtime no-op.
+ */
+export type StatusOp =
+  | { kind: "session"; state: unknown }
+  | { kind: "tab"; selected: number; tabIndex: number; tabCount: number }
+  | { kind: "ui"; popup: boolean; leader: boolean }
+  | { kind: "leader"; index: number; active: boolean }
+  | { kind: "find"; index: number; cur: number; count: number }
+  | { kind: "dark"; index: number; on: boolean; mode: string; engine: string }
+  | { kind: "stealth"; on: boolean }
+  | { kind: "leaderSignal"; armed: boolean; prefix: string; expect: string }
+  | { kind: "nav"; nav: NavState }
+  | { kind: "downloads"; fresh: DownloadEntry[] }
+  | { kind: "dismiss"; keys: string[] };
+
+/**
+ * Apply every op synchronously against an already-resolved core.
+ *
+ * Exported because the chrome helper's own status path builds a batch and needs
+ * the same mapping, and because a second applier would be exactly the drift
+ * this change exists to prevent.
+ */
+export function applyStatusOps(a: CoreApi, ops: StatusOp[]): void {
+  for (const op of ops) {
+    switch (op.kind) {
+      case "session":
+        a.statusSession(JSON.stringify(op.state || {}));
+        break;
+      case "tab":
+        a.statusTab(op.selected, op.tabIndex, op.tabCount);
+        break;
+      case "ui":
+        a.statusUi(op.popup, op.leader);
+        break;
+      case "leader":
+        a.statusLeader(op.index, op.active);
+        break;
+      case "find":
+        a.statusFind(op.index, op.cur, op.count);
+        break;
+      case "dark":
+        a.statusDark(op.index, op.on, op.mode, op.engine);
+        break;
+      case "stealth":
+        a.statusStealth(op.on);
+        break;
+      case "leaderSignal":
+        a.statusLeaderSignal(op.armed, op.prefix, op.expect);
+        break;
+      case "nav":
+        a.statusNav(JSON.stringify(op.nav || { canBack: false, canForward: false, index: 0, count: 0 }));
+        break;
+      case "downloads":
+        a.statusDownloads(JSON.stringify(op.fresh || []));
+        break;
+      case "dismiss":
+        a.statusDismiss(JSON.stringify(op.keys || []));
+        break;
+    }
+  }
 }
 
 declare global {
@@ -91,90 +185,9 @@ export async function initCoreIn(scope: any): Promise<CoreApi> {
   return api;
 }
 
-// Builds a promise-returning facade over the CoreApi. getApi() is consulted on
-// every call so a context can swap in a different backend (e.g. the chrome
-// helper's sandbox core) without changing the call sites.
-export function createCoreFacade(getApi: () => Promise<CoreApi>) {
-  const call = <T>(fn: (a: CoreApi) => T): Promise<T> => getApi().then(fn);
-  return {
-    version: (): Promise<string> => call((a) => a.version()),
-    bindings: (): Promise<WkItem[]> => call((a) => a.bindings()),
-    normalizeUrl: (t: string): Promise<string> => call((a) => a.normalizeUrl(t)),
-    isLikelyUrl: (t: string): Promise<boolean> => call((a) => a.isLikelyUrl(t)),
-    rankVisited: (items: VisitedItem[], q: string): Promise<VisitedItem[]> =>
-      call((a) => a.rankVisited(items, q)),
-    makeHints: (n: number, chars: string): Promise<string[]> =>
-      call((a) => a.makeHints(n, chars)),
-    wkPageCount: (): Promise<number> => call((a) => a.wkPageCount()),
-    wkPageSlice: (p: number): Promise<WkPage> => call((a) => a.wkPageSlice(p)),
-    wkClampSel: (s: number, p: number): Promise<number> =>
-      call((a) => a.wkClampSel(s, p)),
-    wkFlip: (p: number, d: number): Promise<number> => call((a) => a.wkFlip(p, d)),
-    wkNav: (s: number, p: number, d: number): Promise<number> =>
-      call((a) => a.wkNav(s, p, d)),
-    lfcParse: (f: string): Promise<Lfc> => call((a) => a.lfcParse(f)),
-    lfcOpen: (t: string, c: boolean): Promise<string> =>
-      call((a) => a.lfcOpen(t, c)),
-    lfcCfg: (n: string, e: string): Promise<string> => call((a) => a.lfcCfg(n, e)),
-    lfcReq: (act: string, arg: string): Promise<string> =>
-      call((a) => a.lfcReq(act, arg)),
-    lfcOk: (n: string): Promise<string> => call((a) => a.lfcOk(n)),
-    lfcErr: (n: string): Promise<string> => call((a) => a.lfcErr(n)),
-    assignSessionMarker: (taken: number[]): Promise<number> =>
-      call((a) => a.assignSessionMarker(taken)),
-    organizeHistory: (
-      items: { url: string; title: string; time: number }[],
-      query: string,
-      now: number,
-      tzOffsetMinutes: number
-    ): Promise<HistoryRow[]> =>
-      call((a) => a.organizeHistory(items, query, now, tzOffsetMinutes)),
-    organizeRecovery: (
-      items: { key: string; kind: string; title: string; url: string; tabCount: number; time: number }[],
-      now: number
-    ): Promise<RecoveryRow[]> =>
-      call((a) => a.organizeRecovery(items, now)),
-    splitPairsOf: (ids: number[]): Promise<[number, number][]> =>
-      call((a) => a.splitPairsOf(ids)),
-    encodeSplits: (pairs: [number, number][]): Promise<string> =>
-      call((a) => a.encodeSplits(pairs)),
-    decodeSplits: (encoded: string): Promise<[number, number][]> =>
-      call((a) => a.decodeSplits(encoded)),
-    splitPartnerOf: (pairs: [number, number][], i: number): Promise<number> =>
-      call((a) => a.splitPartnerOf(pairs, i)),
-    coalescePair: (pre: string[], anchor: string, partner: string): Promise<string[]> =>
-      call((a) => a.coalescePair(pre, anchor, partner)),
-    coalesceIntoGroup: (pre: string[], members: string[], tab: string): Promise<string[]> =>
-      call((a) => a.coalesceIntoGroup(pre, members, tab)),
-    planStrip: (current: string[], desired: string[], groups: string[][]): Promise<[string, number][]> =>
-      call((a) => a.planStrip(current, desired, groups)),
-    yankParse: (text: string): Promise<{ lines: number; total: number; lineStart: number[] }> =>
-      call((a) => a.yankParse(text)),
-    yankMotion: (op: string, arg: string, line: number, col: number): Promise<{ line: number; col: number }> =>
-      call((a) => a.yankMotion(op, arg, line, col)),
-    yankObject: (
-      op: string,
-      line: number,
-      col: number
-    ): Promise<{ ok: boolean; sl: number; sc: number; el: number; ec: number }> =>
-      call((a) => a.yankObject(op, line, col)),
-    formatBytes: (n: number): Promise<string> => call((a) => a.formatBytes(n)),
-    formatSpeed: (n: number): Promise<string> => call((a) => a.formatSpeed(n)),
-    downloadProgress: (received: number, total: number): Promise<number> =>
-      call((a) => a.downloadProgress(received, total)),
-    mergeDownloads: (prev: DownloadEntry[], fresh: DownloadEntry[]): Promise<DownloadEntry[]> =>
-      call((a) => a.mergeDownloads(prev, fresh)),
-    activeDownloads: (downloads: DownloadEntry[]): Promise<DownloadEntry[]> =>
-      call((a) => a.activeDownloads(downloads)),
-    sessionSummary: (
-      sessions: { name: string; marker: number; tabCount: number; splits: string; legacySplitTabs: number }[],
-      current: string
-    ): Promise<
-      { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[]
-    > => call((a) => a.sessionSummary(sessions, current)),
-  };
-}
-export type CoreFacade = ReturnType<typeof createCoreFacade>;
+// The promise facade lives in corefacade.ts, built from one method table so
+// adding a core function is one interface entry + one table entry.
+export type { CoreFacade } from "./corefacade";
 
 // The API object once it has been initialized (used for the synchronous hot
 // path by WkSession). Both backends call setCoreApi with their init promise.

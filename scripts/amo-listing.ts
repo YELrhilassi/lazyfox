@@ -36,7 +36,7 @@ const DESCRIPTION = [
   "Everything works on internal pages too (about:* and error pages), so you can never get stuck. The browser stays fully in your control: it is customizable from the settings page, and no telemetry, analytics or data ever leaves your machine.",
   "",
   "Install notes",
-  "Lazyfox is two halves: the add-on (this listing) and a one-time companion installer that physically removes the browser chrome for the full keyboard-first experience. Install from this page, press `;I` (or open the extension's setup page) and follow the one dialog — your bookmarks, passwords and other add-ons are untouched.",
+  "Lazyfox is two halves: the add-on (this listing) and a one-time companion installer that physically removes the browser chrome for the full keyboard-first experience. Install from this page, open the home page and pick \"Complete the install\", then follow the one dialog — your bookmarks, passwords and other add-ons are untouched.",
 ].join("\n");
 
 const HOMEPAGE = "https://github.com/YELrhilassi/lazyfox";

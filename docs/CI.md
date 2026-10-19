@@ -16,11 +16,39 @@ This runs, in order (mirroring `.github/workflows/dev-nightly.yml` → `unit`):
    expression errors statically)
 2. `npm ci`
 3. `npm run prepare` (toolchain check: node + go)
-4. `npm run build` (compiles Go wasm core + bundles the unsigned dev xpi)
-5. `npm test` (Go core tests + installer tests + dist completeness)
-6. `node scripts/check-dist.ts` (dist is self-contained)
+4. `npm run check` (**before** anything is built: are the committed artifacts
+   consistent with the committed source?)
+5. `npm run build` (compiles Go wasm core + bundles the unsigned dev xpi, and
+   refreshes every committed installer binary)
+6. `npm test` (Go core tests + installer tests + payload tests + dist
+   completeness + the installer freshness check)
+7. `node scripts/check-dist.ts` (dist is self-contained)
+8. `npm run check` again (the build itself left nothing inconsistent)
 
-If all six pass, the `unit` job **will** be green on GitHub too.
+If all of them pass, the `unit` job **will** be green on GitHub too.
+
+### The step that runs *before* the build
+
+Step 4 exists because of a specific, previously-invisible failure: `dist/` and
+the installer binaries in `installer/bin/` are committed, so it is possible to
+change a source file, commit, and push — with the artifacts still holding the
+previous build. Every other step in the workflow would pass, because they either
+rebuild first (repairing the tree in place, so the mistake never surfaces) or
+never look at the artifacts at all. Whoever later downloaded `installer/bin/…`
+would get old code.
+
+`npm run check` compares two content hashes recorded by the last build:
+
+- the **source fingerprint** (everything under `src/`, `core/`, `native-host/`,
+  plus `build.ts` and the Go module files) — catches "source edited, nothing
+  rebuilt", even when `dist/` was not touched;
+- the **payload hash** (the staged chrome files, the loader files, the native
+  host's source, and the embedded add-on) — catches "dist/ rebuilt, installers
+  not", for every platform, including the ones this machine cannot run.
+
+It is a hash comparison, not a build, so it is fast and it does not depend on
+the toolchain. `npm run check:fix` rebuilds whatever it finds and re-checks, for
+when you want the repair rather than the report.
 
 End-to-end (optional, needs a real Firefox):
 
@@ -33,19 +61,60 @@ Set `BIDI_FIREFOX_BIN=/path/to/firefox` (and it auto-uses `.tools/geckodriver`)
 when you want the browser-session tests included.
 
 > **Why BiDi is local-only (not on GitHub Actions):** the full e2e suite boots
-> a fresh Firefox and can take many minutes — more than GitHub's free-plan
-> minutes allow. So the `dev-nightly` workflow now runs only the fast `unit`
-> job (~50s) on push, and the browser suites are run locally (`npm run bidi`,
-> `npm run probe:chrome`). Kill orphaned Firefox processes between runs
+> a fresh Firefox, needs geckodriver and a display, and can take many minutes.
+> So `dev-nightly.yml` is **manual** (`workflow_dispatch`): it is the same
+> pipeline `npm run ci` runs locally, on demand, and a dev push spends no runner
+> on it. `installers.yml` is manual for the same shape of reason — it exists to
+> build the macOS and Linux graphical installers natively (their windows need
+> CGO and the platform's own webview, so one machine cannot cross-compile them),
+> and a maintainer dispatches it when a binary has to be produced on that
+> platform itself. The only push-triggered workflow is `master.yml`, which
+> verifies the release commit. The browser suites are run locally
+> (`npm run e2e`, `npm run probe:chrome`). Kill
+> orphaned Firefox processes between runs
 > (`pkill -9 geckodriver; pkill -9 firefox`) or a fresh run can stall waiting
 > for a port CPU.
 
+### Link hints (local only)
+
+The link-hint suite runs **locally only**, against the local test pages:
+
+```bash
+npm run e2e:hints      # just the link-hint tests
+npm run ci:hints        # the above with the full local CI prefix
+```
+
+It needs no network and no third-party markup: `scripts/e2e/pages.ts` serves
+deliberately hostile local pages (occluding overlays, nested clickable wrappers,
+shadow roots, virtual-DOM churn, a fixed header) and the suite asserts real
+behaviour — which elements get keys, that keys stay stable across a re-render,
+that Escape clears state, that nothing is anchored outside the viewport.
+
+There used to be a scheduled workflow that downloaded real YouTube and GitHub
+home pages and ran a "stress" test against the saved HTML. It is gone, and so is
+the downloader: a snapshot of someone's home page is not a test fixture (its
+markup changes under you, the external CSS/JS 404s so the page renders
+unstyled, and the assertion it could make — "the collector completes and
+anchors N hints" — is one the local pages already assert far more precisely).
+Debugging a hint that will not appear is now a job for the in-page diagnostics
+page (it reports the hint pipeline's found/hinted/rejected counters and probes
+each candidate), not for a nightly scrape.
+
+A full run is ~10+ minutes (the browser is real, and the suites wait on
+network/timing). If your shell enforces a shorter cap, run the groups one at a
+time — `--suite commandcenter`, `--suite content`, `--suite sessions`,
+`--suite split`, `--suite options` — and `--only <text>` to iterate on a single
+test.
+
 ### Testing the real chrome layer (the production bugs live here)
 
-The BiDi suites only install the *extension*. The chrome helper — which draws
-the window-level status bar, owns the leader key and runs the relay — is a
-separate install-dir script (`userChrome.uc.js` via the fx-autoconfig loader)
-and is exactly where the tab-churn / double-status-bar bugs live. To probe it:
+The BiDi harness installs the *full* Lazyfox layer into its throwaway profile —
+the extension plus the chrome helper (`userChrome.css`, `userChrome.uc.js` via
+the fx-autoconfig loader) — so the suites that need it exercise the real
+chrome-document path: the native split view, the window-level status bar, the
+leader/popup engine, per-tab cache enforcement and the relay. The chrome helper
+is exactly where the tab-churn / double-status-bar bugs live, so a focused
+probe of it is also available:
 
 ```bash
 npm run probe:chrome

@@ -1,6 +1,8 @@
 // Keyboard handling for the options page: Esc-to-back, `;` leader menu and
 // j/k scrolling, plus the window resize/move mini-modes. Sits alongside
 // options.ts (the options.html page loads both bundles).
+import { UI_FONT } from "../shared/theme";
+import { windowStep } from "../shared/resize";
 
 (function () {
   "use strict";
@@ -22,7 +24,7 @@
       const style = document.createElement("style");
       style.textContent =
         "#lazyfox-hud{position:fixed;top:12px;right:12px;z-index:2147483647;" +
-        "background:rgba(22,22,30,.96);color:#7aa2f7;font:12px ui-monospace,Menlo,Consolas,monospace;" +
+        "background:rgba(22,22,30,.96);color:#7aa2f7;font:12px " + UI_FONT + ";" +
         "padding:6px 12px;border:1px solid #414868;border-radius:8px;pointer-events:none;" +
         "box-shadow:0 6px 24px rgba(0,0,0,.5);}";
       const sh = hudEl.attachShadow({ mode: "closed" });
@@ -85,7 +87,7 @@
   }
 
   function handleResize(e: KeyboardEvent): boolean {
-    const fine = e.shiftKey ? 8 : 32;
+    const fine = windowStep(e);
     if (e.key === "ArrowLeft") { e.preventDefault(); send("resizeWindow", { dx: -fine, dy: 0 }).then(updateSize); return true; }
     if (e.key === "ArrowRight") { e.preventDefault(); send("resizeWindow", { dx: fine, dy: 0 }).then(updateSize); return true; }
     if (e.key === "ArrowUp") { e.preventDefault(); send("resizeWindow", { dx: 0, dy: -fine }).then(updateSize); return true; }
@@ -96,7 +98,7 @@
   }
 
   function handleMove(e: KeyboardEvent): boolean {
-    const fine = e.shiftKey ? 8 : 32;
+    const fine = windowStep(e);
     if (e.key === "ArrowLeft") { e.preventDefault(); send("moveWindow", { dx: -fine, dy: 0 }).then(updateMove); return true; }
     if (e.key === "ArrowRight") { e.preventDefault(); send("moveWindow", { dx: fine, dy: 0 }).then(updateMove); return true; }
     if (e.key === "ArrowUp") { e.preventDefault(); send("moveWindow", { dx: 0, dy: -fine }).then(updateMove); return true; }

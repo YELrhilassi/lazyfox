@@ -1,0 +1,150 @@
+// order tests (split). Split verbatim from the original
+// split.ts monolith — behavior unchanged, timing fixed separately.
+import { createTab, evalIn, navigate, waitFor } from "../../bidi.ts";
+import { assert } from "../../runner.ts";
+import { makeSplitHelpers } from "./_shared.ts";
+export async function run(ctx: any): Promise<void> {
+  // Tags: `--tags newfeatures` selects these. "destructive" marks tests
+  // that dissolve and rebuild splits, so a quick subset can skip them.
+  const TAGS: string[] = ["newfeatures","split","destructive"];const { t, waitNoSplit, waitPlusPopup } = makeSplitHelpers(ctx, "split/order", TAGS);
+
+  await t("split: ;W m +N auto-split keeps the other tabs' order", async () => {
+    // Regression: addTabSplitView used to park a freshly glued pair at the
+    // END of the strip, renumbering every tab between the pair and the tail —
+    // so ;1-9 could silently point at a different tab after a split. Splitting
+    // a MIDDLE tab must keep the anchor at its own slot, seat the partner
+    // right next to it, and leave every other tab exactly where it was.
+    await waitNoSplit();
+    const a = await createTab();
+    await navigate(a, `${ctx.base}/orderA`, "complete");
+    const b = await createTab();
+    await navigate(b, `${ctx.base}/hello`, "complete");
+    const c = await createTab();
+    await navigate(c, `${ctx.base}/target1`, "complete");
+    // Wait for all three fresh tabs to be listed in the strip.
+    await ctx.waitTabUrl("/target1", { timeoutMs: 10000 });
+    const ids = await ctx.tabsInfo();
+    const urlOf = (t) => (t.url || "").split("?")[0].split("#")[0];
+    const short = (u) => String(u).replace(ctx.base, "");
+    const realIds = ids.filter((t) => !(t.url || "").includes("commandcenter.html"));
+    const aRow = realIds.find((t) => short(urlOf(t)) === "/orderA");
+    const bRow = realIds.find((t) => short(urlOf(t)) === "/hello");
+    const cRow = realIds.find((t) => short(urlOf(t)) === "/target1");
+    assert(aRow && bRow && cRow, "found the three fresh tabs: " + JSON.stringify(ids));
+    // Activate A (a MIDDLE tab, not the last) and auto-split A with C.
+    await evalIn(ctx.probe, `browser.tabs.update(${aRow.id}, { active: true })`).catch(() => {});
+    await waitFor(async () => ((await ctx.activeTabInfo() || {}).id === aRow.id ? true : null), 5000).catch(() => {});
+    // ;+N resolves against the PRODUCT's numbering, which is not the strip
+    // order the test can see: it skips the split panel and the relay but keeps
+    // a real tab carrying a momentary #lfc= request hash. Ask for C's number
+    // rather than counting, then type it in full — C is nowhere near 1-9 once
+    // the suite has accumulated tabs.
+    const chromeReal = ids.filter((t) => ctx.isRealTab(t));
+    const cRealIndex = await ctx.productNumberOf(cRow, chromeReal);
+    assert(cRealIndex >= 1, "the product's numbering knows C: " + cRealIndex);
+    await ctx.leaderSeq(a, ["W", "m"]); // ;W m -> move tab into split
+    await waitPlusPopup(a);
+    await ctx.pressNumber(a, cRealIndex);
+    try {
+      await waitFor(async () => {
+        const now = await ctx.tabsInfo();
+        const split = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+        return split.length === 2 ? split : null;
+      }, 10000);
+    } catch (e) {
+      const st = await ctx.chromeState().catch(() => "ERR");
+      throw new Error("auto-split keeps: pair never formed; state=" + JSON.stringify(st && { strip: st.strip, lastAction: st.lastAction }) + " tabs=" + JSON.stringify(await ctx.tabsInfo().catch(() => "ERR")));
+    }
+    // The achievable invariant: the ANCHOR (A) stays first among the web
+    // tabs, the partner (C) sits right next to it, and B keeps its relative
+    // position — the old bug flung B to the strip end and moved A too. The
+    // strip settles a moment after the split forms, so wait for it.
+    const settled = await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      const realAfter2 = now.filter((t) => ctx.isRealTab(t));
+      const webOnly = realAfter2.filter((t) => !(t.url || "").includes("commandcenter.html"));
+      const wA = webOnly.findIndex((t) => t.id === aRow.id);
+      const wC = webOnly.findIndex((t) => t.id === cRow.id);
+      const wB = webOnly.findIndex((t) => t.id === bRow.id);
+      if (wA !== 0 || wC !== 1 || wB !== 2) return null;
+      const sv2 = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      if (sv2.length !== 2 || !sv2.every((t) => [aRow.id, cRow.id].includes(t.id))) return null;
+      return webOnly;
+      // Caught, so the assert below is what reports the failure — with the
+      // strip AND the chrome's account of the move. A bare timeout says the
+      // order was wrong; it cannot say whether the move ran, was refused, or
+      // was still settling when the wait gave up.
+    }, 4000).catch(() => null);
+    assert(
+      settled != null,
+      "pair pinned next to the anchor (A first, then C, then B): web=" +
+        JSON.stringify(
+          (await ctx.tabsInfo())
+            .filter((t) => ctx.isRealTab(t) && !(t.url || "").includes("commandcenter.html"))
+            .map((t) => t.id)
+        ) +
+        // The chrome's own account of the move: "the strip did not settle" is
+        // unreadable without knowing what the move thought it was doing.
+        " move=" +
+        JSON.stringify((await ctx.chromeState().catch(() => ({}))).lastMoveDebug || ""),
+    );
+    // Clean up: unsplit and close the fresh tabs.
+    await ctx.leaderSeq(a, ["W", "u"]);
+    await waitNoSplit();
+    for (const id of [aRow.id, bRow.id, cRow.id]) {
+      await evalIn(ctx.probe, `browser.tabs.remove(${id}).catch(() => {})`);
+      await waitFor(async () => {
+        const ts = await ctx.tabsInfo();
+        return ts.every((x) => x.id !== id) ? true : null;
+      }, 5000).catch(() => {});
+    }
+  });
+  await t("split: splitting a middle tab keeps the other tabs' order", async () => {
+    // Regression for the shuffle: gBrowser.addTabSplitView used to move the
+    // pair to the end, reordering every tab between the split root and the
+    // panel. Three fresh tabs with distinct URLs; splitting the middle one
+    // must leave the real tabs in their relative order.
+    await waitNoSplit();
+    const a = await createTab();
+    await navigate(a, `${ctx.base}/`, "complete");
+    const b = await createTab();
+    await navigate(b, `${ctx.base}/hello`, "complete");
+    const c = await createTab();
+    await navigate(c, `${ctx.base}/target1`, "complete");
+    await ctx.waitTabUrl("/target1", { timeoutMs: 10000 });
+    const ids = await ctx.tabsInfo();
+    const urlOf = (t) => (t.url || "").split("?")[0].split("#")[0];
+    const aId = ids.find((t) => urlOf(t) === `${ctx.base}/`)?.id;
+    const bId = ids.find((t) => urlOf(t) === `${ctx.base}/hello`)?.id;
+    const cId = ids.find((t) => urlOf(t) === `${ctx.base}/target1`)?.id;
+    assert(aId != null && bId != null && cId != null, "found the three fresh tabs: " + JSON.stringify(ids));
+    // Split the middle tab (B) via its content-script leader.
+    await evalIn(ctx.probe, `browser.tabs.update(${bId}, { active: true })`).catch(() => {});
+    await waitFor(async () => ((await ctx.activeTabInfo() || {}).id === bId ? true : null), 5000).catch(() => {});
+    await ctx.leaderSeq(b, ["W", "|"]); // ;W | on B
+    await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      const sv = now.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 ? sv : null;
+    }, 8000);
+    const after = await ctx.tabsInfo();
+    const realOrder = after
+      .filter((t) => ctx.isRealTab(t))
+      .map((t) => t.id)
+      .filter((id) => id === aId || id === bId || id === cId);
+    assert(
+      realOrder.join(",") === [aId, bId, cId].join(","),
+      "real tabs kept their order after a middle split: want=" + JSON.stringify([aId, bId, cId]) + " got=" + JSON.stringify(realOrder)
+    );
+    // Clean up: unsplit and close the fresh tabs + panel.
+    await ctx.leaderSeq(b, ["W", "u"]); // ;W u
+    await waitNoSplit();
+    const leftovers = await ctx.tabsInfo();
+    for (const id of [aId, bId, cId]) {
+      await evalIn(ctx.probe, `browser.tabs.remove(${id})`).catch(() => {});
+    }
+    const panel = leftovers.find((t) => (t.url || "").includes("splitpanel.html"));
+    if (panel) await evalIn(ctx.probe, `browser.tabs.remove(${panel.id})`).catch(() => {});
+    await waitNoSplit();
+  });
+}

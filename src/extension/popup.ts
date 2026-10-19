@@ -1,33 +1,40 @@
-// Browser-action popup: sends an "openUI" request to the background so the
-// popups appear in the chrome helper (which can render them on about:/error
-// pages too). Plain web-ext page, no core needed.
+// Browser-action popup: asks the background to open one of the chrome
+// helper's popups, so they appear over about:/error pages too (the content
+// script cannot run there). Plain web-ext page, no core needed.
+//
+// The messages go through the typed `send()` helper rather than hand-rolled
+// runtime.sendMessage calls. This file used to build its own message objects,
+// which meant the one place a user clicks first was the one place the protocol
+// contract was not checked: a renamed action or a changed payload compiled
+// fine here and failed only when the button was pressed.
+import { send } from "../shared/protocol";
 
 (function () {
   "use strict";
 
-  function sendToBackground(which: string) {
-    browser.runtime.sendMessage({ action: "openUI", data: { which: which } }).catch(() => {});
+  function openUI(which: string): void {
+    void send("openUI", { which: which });
     window.close();
   }
 
   const handlers: { [k: string]: () => void } = {
-    search: () => sendToBackground("search"),
-    tabs: () => sendToBackground("tabs"),
-    history: () => sendToBackground("history"),
-    bookmarks: () => sendToBackground("bookmarks"),
-    downloads: () => sendToBackground("downloads"),
+    search: () => openUI("search"),
+    tabs: () => openUI("tabs"),
+    history: () => openUI("history"),
+    bookmarks: () => openUI("bookmarks"),
+    downloads: () => openUI("downloads"),
     settings: () => {
-      browser.runtime.sendMessage({ action: "openPage", data: { url: "about:preferences" } });
+      void send("openPage", { url: "about:preferences" });
       window.close();
     },
     zen: () => {
-      browser.runtime.sendMessage({ action: "zen", data: {} });
+      void send("zen");
       window.close();
     },
     options: () => {
-      browser.runtime.openOptionsPage();
+      void browser.runtime.openOptionsPage();
       window.close();
-    }
+    },
   };
 
   document.querySelectorAll(".item[data-open]").forEach((el) => {

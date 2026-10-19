@@ -15,6 +15,91 @@ export interface Config {
   // is one tile (site favicon + name); togglable and editable in the options
   // page. `enabled=false` hides the tile without deleting its definition.
   apps: QuickApp[];
+  // Dark mode: one theme, four policy modes, and a per-site rule list. See
+  // docs/DARK-MODE.md for why the corpus is a text field rather than a table.
+  dark: DarkConfig;
+  // Reader mode: the article overlay's own typography.
+  reader: ReaderConfig;
+}
+
+/**
+ * How the dark engine should treat pages, globally.
+ *
+ * `auto` is the interesting one and the default: darken a page UNLESS it is
+ * already dark. The three others are the user overruling that judgement.
+ */
+export type DarkMode = "auto" | "dark" | "light" | "off";
+
+/**
+ * Which engine to run. `auto` chooses per page from a measurement — see
+ * `chooseEngine` in content/dark/detect.ts — and is the default because the two
+ * engines fail in opposite directions.
+ *
+ *   dynamic  remaps the page's own palette. Best on text-and-panels pages;
+ *            cannot see a colour that reaches the screen through an image, a
+ *            canvas, or a stylesheet it never sampled.
+ *   filter   one root `invert() hue-rotate(180deg)` plus counter-inverted media.
+ *            Uniform, but photographs have to be protected from it and a
+ *            counter-inversion is a per-element guess.
+ */
+export type DarkEngine = "auto" | "dynamic" | "filter";
+
+export interface DarkConfig {
+  mode: DarkMode;
+  engine: DarkEngine;
+  /** The colour the page's canvas becomes (the "black" pole). */
+  background: string;
+  /** The colour its text becomes (the "white" pole). */
+  foreground: string;
+  /** The colour an unstyled link becomes. */
+  accent: string;
+  brightness: number;
+  contrast: number;
+  sepia: number;
+  grayscale: number;
+  /**
+   * The per-site fix corpus, in Dark Reader's plain-text format, as EDITABLE
+   * TEXT. It ships populated (shared/dark-fixes.ts) and a user may paste in a
+   * list written for that project, because the parser reads its format.
+   */
+  fixes: string;
+  /** Extra CSS for every page, applied last: the user's last word. */
+  userCss: string;
+  /** Per-site overrides, most specific rule winning. */
+  sites: SiteRule[];
+}
+
+/**
+ * One site's override.
+ *
+ * Every field is optional and an entry with no fields is removed rather than
+ * stored: an empty rule reads like a setting and behaves like nothing. That is
+ * why the toggle writes `mode` and the engine switch writes `engine` onto the
+ * entry the other one may have created.
+ */
+export interface SiteRule {
+  /** Host pattern: `example.com`, `*.example.com`, `example.*`, `example.com/x`. */
+  match: string;
+  mode?: DarkMode;
+  engine?: DarkEngine;
+  /** Reserved for a future per-site CSS block; parsed today, appended last. */
+  css?: string;
+}
+
+export type ReaderTheme = "dark" | "light" | "sepia";
+
+export interface ReaderConfig {
+  /** Column width in `ch` units — the reading measure, not a pixel width. */
+  width: number;
+  /** Base font size in px. */
+  fontSize: number;
+  lineHeight: number;
+  /** `auto` follows the dark-mode decision for this page (`data-lf-scheme`). */
+  theme: ReaderTheme | "auto";
+  /** Keep the article's own images. Off is for a distraction-free read. */
+  images: boolean;
+  /** Override the article font; empty means the UI font stack. */
+  font: string;
 }
 
 // One quick-launch web app tile on the command-center home grid.
@@ -37,6 +122,12 @@ export interface WkItem {
   label: string;
   group: string;
   native: boolean;
+  // The binding this row runs, when the display key is not itself a dispatch
+  // key — the collapsed `1-9` run shows a range while the binding behind it is
+  // `1`. Empty for native (reference-only) rows. Absent on rows that came from
+  // an older core, which is why the leader still falls back to the reverse
+  // lookup by display key.
+  spec?: string;
 }
 
 export interface WkRow {
@@ -46,7 +137,13 @@ export interface WkRow {
   groupStart: boolean;
   native: boolean;
   lazyIndex: number;
+  /** A category HEAD: pressing its key opens a menu instead of running. */
+  cat?: boolean;
+  /** How many keys that menu holds, for the row's affordance. */
+  subs?: number;
 }
+
+import type { LeaderSignal } from "./leadersignal";
 
 export interface WkPage {
   items: WkRow[];
@@ -93,6 +190,24 @@ export interface Lfc {
 }
 
 // A tab row as returned by the background (and mirrored by the chrome helper).
+// One row of the active tab's navigation stack (the navigation popup).
+export interface NavEntry {
+  url: string;
+  title: string;
+}
+
+// The active tab's history-stack shape, pushed into the Go status store by
+// the owning context and rendered by the status bar + navigation popup.
+export interface NavState {
+  canBack: boolean;
+  canForward: boolean;
+  // 0-based index of the current entry within the stack; count the total.
+  index: number;
+  count: number;
+  // The stack itself, oldest first, current included.
+  entries?: NavEntry[];
+}
+
 export interface TabInfo {
   id: number;
   title: string;
@@ -114,6 +229,10 @@ export interface PopupItem {
   // helper's `id` is its internal strip index, which is what its actions
   // address — the real id is carried here so the popup can show it).
   realId?: number;
+  // The tab's jump number (1-based strip position), the same identity `;1`-`;9`
+  // use. Set by the tab list in both contexts; the tab popup shows it and its
+  // digit keys jump to it.
+  number?: number;
   url?: string;
   title?: string;
   subtitle?: string;
@@ -174,17 +293,167 @@ export interface SessionTab {
   stealth?: boolean;
 }
 
+/**
+ * One window's worth of a session: its tabs, its selection, and its split
+ * layout. A session used to be exactly this, unwrapped — see `windows` below.
+ */
+export interface SessionWindow {
+  tabs: SessionTab[];
+  active: number;
+  windowState: string;
+  // Compact split layout computed by the Go core (core.EncodeSplits):
+  // "a:b,c:d" pairs of 0-based tab indices over the tabs a split can address
+  // (unpinned). Authoritative for restore; the per-tab splitViewId remains only
+  // as a fallback for pre-encoding sessions.
+  splits?: string;
+}
+
 export interface Session {
   name: string;
   marker: number; // 1-9, 0 = unassigned
+  // THE FOCUSED WINDOW'S TABS, and deliberately still first-class: a session
+  // saved before windows were recorded has only these, the status bar shows the
+  // focused window, and tab move/copy addresses this list. `windows[0]` is the
+  // same window, so the two can never disagree about it.
   tabs: SessionTab[];
   active: number;
   windowState: string;
   updatedAt: number;
-  // Compact split layout computed by the Go core (core.EncodeSplits):
-  // "a:b,c:d" pairs of 0-based tab indices. Authoritative for restore; the
-  // per-tab splitViewId remains only as a fallback for pre-encoding sessions.
+  // Compact split layout of the FOCUSED window (see SessionWindow.splits).
   splits?: string;
+  /**
+   * EVERY window the session was saved from, focused window first.
+   *
+   * Absent means "one window, described by the flat fields above" — which is
+   * what every session saved by an older build looks like, and what a restore
+   * still has to work on. Present means the session owns the whole window set: a
+   * switch rebuilds each window (with its own split layout), and closes the
+   * windows the session does not describe.
+   */
+  windows?: SessionWindow[];
+}
+
+// One hinted element in a page report: enough for a human to see WHY a control
+// was or was not detected and whether a click would land, without ever firing a
+// click (which would have side effects).
+export interface HintProbe {
+  tag: string;
+  role: string;
+  name: string;
+  href: boolean;
+  cursor: string;
+  reachable: boolean;
+  reason: string;
+}
+
+// A scroll region as the scroll controller sees it.
+export interface ScrollRegionInfo {
+  label: string;
+  clientHeight: number;
+  scrollHeight: number;
+}
+
+// What the content script knows about the page it is running in. Produced on
+// demand by the diagnostics page — never collected in the background.
+// The outcome of the last link-hint activation, mirrored from the content
+// script's hint engine (see hints.ts). Kept here so the diagnostics page and
+// the browser tests can both read it.
+export interface HintActivation {
+  target: string;
+  signal: string;
+  watchedMs: number;
+  ignored: boolean;
+  /**
+   * Whether the privileged (trusted-click) retry was attempted after the page
+   * showed no reaction. Tri-state on purpose:
+   *
+   *   undefined — the click worked, or was never ignored, so no retry happened
+   *   false     — the page ignored us AND no actor was listening, so the
+   *               privileged path was never tried (standalone mode, or a page
+   *               where the chrome layer is not installed)
+   *   true      — the privileged path WAS tried and the page still did nothing
+   *
+   * The last case is the interesting one: it means the control is not a
+   * control, and no amount of event synthesis will reach it.
+   */
+  trustedRetry?: boolean;
+}
+
+export interface PageReport {
+  ok: boolean;
+  url: string;
+  title: string;
+  readyState: string;
+  // Hint pipeline: how many candidates were found and how many survived each
+  // filter, then a sample of survivors with the reason they are (or are not)
+  // clickable. This is the "why isn't this button detected" answer.
+  hints: {
+    candidates: number;
+    hinted: number;
+    /**
+     * Hinted, but drawn DIMMED because something is painted over the control
+     * right now (a sticky header, a scrim, a player's control bar). Covered
+     * controls are no longer rejected — the key works and the label says so —
+     * so this is a subset of `hinted`, not a filter stage. See hints/select.ts.
+     */
+    covered: number;
+    rejected: { hidden: number; duplicate: number };
+    probes: HintProbe[];
+    shadowRoots: number;
+    pointerControls: number;
+    // What the last hint activation actually did. This is the answer to "I
+    // pressed the key and nothing happened": it names the target and says
+    // whether the page reacted at all, so "the hint found the wrong element"
+    // and "the hint found the right one and the page ignored it" stop looking
+    // identical from the outside.
+    lastActivation: HintActivation | null;
+  };
+  scroll: {
+    target: string;
+    custom: boolean;
+    regions: ScrollRegionInfo[];
+  };
+  editor: string;
+  perf: {
+    domNodes: number;
+    fps: number;
+    heapMB: number | null;
+    resources: number;
+    transferKB: number;
+    // Resources the browser answered from a cache (no bytes on the wire) vs.
+    // fetched over the network — a real, page-level cache-hit picture.
+    cachedResources: number;
+    networkResources: number;
+    loadMs: number;
+    domContentLoadedMs: number;
+  };
+}
+
+// Page-cache policy Lazyfox can impose, per scope. Firefox's own cache is
+// global, so only the "global" scope maps to a real browser setting; the
+// narrower scopes are enforced by the privileged chrome helper, which can add
+// `Cache-Control: no-cache` to the requests of specific tabs. That is why a
+// per-tab policy can only work when the chrome layer is installed.
+export type CacheScope = "global" | "session" | "tab";
+export type CacheMode = "normal" | "fresh" | "off";
+
+export interface CacheState {
+  // The scope/mode currently in force.
+  scope: CacheScope;
+  mode: CacheMode;
+  // Whether the browser exposes the global cache switch (browserSettings).
+  globalSupported: boolean;
+  // The switch's CURRENT value, or null when this build will not say. Read from
+  // browserSettings rather than inferred from the policy: the switch is a
+  // browser-wide setting that outlives the policy record, so "what is in force"
+  // cannot be answered from the record alone.
+  globalOn: boolean | null;
+  // Whether the chrome helper is alive and can enforce the per-tab scopes.
+  chromeSupported: boolean;
+  // Tabs the current session/tab policy covers (empty for a global policy).
+  tabIds: number[];
+  // Short human sentence describing exactly what is in force right now.
+  note: string;
 }
 
 // One row of the status bar's session list. Carries only names, markers and
@@ -195,4 +464,60 @@ export interface SessionSummaryItem {
   current: boolean;
   tabCount: number;
   splitCount: number;
+}
+
+// ---- status bar (was declared in statusbar.ts; moved here so the bar's pure
+// formatters in statusbar-segments.ts can use them without importing the bar)
+
+export interface StatusBarSessions {
+  marker: number;
+  name: string;
+  current: boolean;
+  tabCount: number;
+  splitCount: number;
+}
+
+export interface StatusBarDownload {
+  key: string;
+  filename: string;
+  state: string; // in_progress | paused | complete | failed
+  percent: number; // 0..100, -1 when total is unknown
+  speed: string; // pre-formatted "2.4 MB/s" or ""
+}
+
+export interface StatusBarData {
+  name: string;
+  marker: number;
+  tabIndex: number;
+  tabCount: number;
+  inSplit: boolean;
+  splitOrientation?: "horizontal" | "vertical";
+  // 0-based active pane and pane count while a split view is focused.
+  splitActive: number;
+  splitPanes: number;
+  mode: string;
+  sessions: StatusBarSessions[];
+  // Active (un-dismissed) downloads whose progress belongs on the bar.
+  downloads: StatusBarDownload[];
+  // True when the active tab is a stealth tab — shows a badge on the bar.
+  activeStealth?: boolean;
+  // Live find-in-page state (content-script find widget): current match
+  // (1-based, 0 = none selected yet) and total matches. Shown as a "find"
+  // segment; null (or count 0) hides it. Pushed by the content script and
+  // relayed from the background for the chrome helper's window-level bar.
+  find?: { cur: number; count: number } | null;
+  // The content script's dark-mode verdict for the selected tab: whether we
+  // painted it, the mode that decided it and the engine that rendered it. Absent
+  // when the feature is not touching this page, which is what keeps the bar from
+  // showing a moon on every tab forever.
+  dark?: { on: boolean; mode: string; engine: string } | null;
+  // Real tab ids + stealth flags in strip order, from the Go store's session
+  // snapshot — read by the tab switcher (badges + true Firefox ids).
+  tabIds?: number[];
+  stealthFlags?: boolean[];
+  // The far-right leader indicator: armed + the prefix typed so far in the
+  // current sequence. Works regardless of the which-key overlay setting.
+  leader?: LeaderSignal;
+  // The active tab's history-stack shape.
+  nav?: NavState;
 }

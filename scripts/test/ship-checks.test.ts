@@ -1,0 +1,219 @@
+// THE RULES `ship` REFUSES ON, tested as values.
+//
+// These matter because two modes now read them: the release, which stops at the
+// first `fail`, and the rehearsal, which prints all of them. A rule that is wrong
+// in one direction wastes a release (master merged, artifacts rebuilt, then a
+// refusal); wrong in the other, a rehearsal promises a ship that cannot happen.
+// Every case below is one of those two failures.
+
+import { describe, test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  alreadyReleasedCheck,
+  amoCredentialsCheck,
+  amoSignatureCheck,
+  blocks,
+  branchCheck,
+  ghCheck,
+  manifestCheck,
+  pushCredentialCheck,
+  renderReport,
+  tagRefs,
+  treeCheck,
+} from "../ship-checks.ts";
+
+describe("the working-tree check", () => {
+  test("a clean tree passes", () => {
+    const c = treeCheck("");
+    assert.equal(c.level, "ok");
+    assert.match(c.detail, /clean/);
+  });
+
+  test("trailing newlines alone are not a dirty tree", () => {
+    // `git status --porcelain` ends every line, so a clean-but-nonempty string is
+    // the normal shape; reading it as dirty would block every release.
+    assert.equal(treeCheck("\n").level, "ok");
+    assert.equal(treeCheck("  \n\n").level, "ok");
+  });
+
+  test("a dirty tree fails and names what is uncommitted", () => {
+    const c = treeCheck(" M scripts/ship.ts\n?? scripts/new.ts\n");
+    assert.equal(c.level, "fail");
+    assert.match(c.detail, /scripts\/ship\.ts/);
+    assert.match(c.detail, /scripts\/new\.ts/);
+    assert.match(c.fix ?? "", /commit or stash/);
+  });
+
+  test("it truncates the list instead of printing a whole diff", () => {
+    const porcelain = ["a", "b", "c", "d", "e"].map((_, i) => ` M file${i}.ts`).join("\n");
+    const c = treeCheck(porcelain, 2);
+    assert.equal(c.level, "fail");
+    assert.match(c.detail, /\+3 more/);
+  });
+});
+
+describe("the branch check", () => {
+  test("a dev branch passes and names the merge it implies", () => {
+    const c = branchCheck("dev-nightly");
+    assert.equal(c.level, "ok");
+    assert.match(c.detail, /dev-nightly → master/);
+  });
+
+  test("starting on master fails", () => {
+    assert.equal(branchCheck("master").level, "fail");
+  });
+
+  test("a detached HEAD fails, because there is no branch to merge", () => {
+    assert.equal(branchCheck("HEAD").level, "fail");
+    assert.equal(branchCheck("").level, "fail");
+  });
+});
+
+describe("the credential and tool checks", () => {
+  test("both AMO values passes", () => {
+    assert.equal(amoCredentialsCheck(true, true).level, "ok");
+  });
+
+  test("it names the half that is missing", () => {
+    assert.match(amoCredentialsCheck(true, false).detail, /AMO_API_SECRET/);
+    assert.match(amoCredentialsCheck(false, true).detail, /AMO_API_KEY/);
+    assert.doesNotMatch(amoCredentialsCheck(false, true).detail, /SECRET/);
+    assert.equal(amoCredentialsCheck(false, false).level, "fail");
+  });
+
+  test("a missing gh is a failure, not a warning", () => {
+    // ship creates the GitHub Release with gh; without it the release would end
+    // with a pushed tag and no release page, which is worse than not starting.
+    assert.equal(ghCheck(false).level, "fail");
+    assert.equal(ghCheck(true).level, "ok");
+  });
+
+  test("a missing version fails with the command that produces one", () => {
+    const c = manifestCheck(null);
+    assert.equal(c.level, "fail");
+    assert.match(c.fix ?? "", /npm run submit/);
+    assert.equal(manifestCheck("0.5.9").detail, "0.5.9");
+  });
+});
+
+describe("tag refs", () => {
+  test("it reads the ref name out of ls-remote output", () => {
+    const out = [
+      "0923154029c2e8425947e54ad47e3d95b59435d6\trefs/tags/v0.5.7",
+      "477b6c5fd193432141acde44410b8da09051e84c\trefs/tags/v0.5.7^{}",
+    ].join("\n");
+    assert.deepEqual(tagRefs(out), ["refs/tags/v0.5.7", "refs/tags/v0.5.7"]);
+  });
+
+  test("a nearby version number is not a match", () => {
+    // The failure this prevents: releasing 0.5.90 is refused because 0.5.9 exists,
+    // or 0.5.9 is refused because the remote has v0.5.90 — a substring test says
+    // yes to both.
+    const refs = tagRefs("aaa\trefs/tags/v0.5.90\nbbb\trefs/tags/v0.5.91");
+    assert.equal(refs.includes("refs/tags/v0.5.9"), false);
+    assert.equal(refs.includes("refs/tags/v0.5.90"), true);
+  });
+
+  test("empty output has no refs", () => {
+    assert.deepEqual(tagRefs(""), []);
+    assert.deepEqual(tagRefs("\n\n"), []);
+  });
+});
+
+describe("the already-released check", () => {
+  test("a free version passes", () => {
+    assert.equal(alreadyReleasedCheck(false, false, "0.5.9").level, "ok");
+  });
+
+  test("a remote tag fails — that is the re-release this guards against", () => {
+    const c = alreadyReleasedCheck(false, true, "0.5.9");
+    assert.equal(c.level, "fail");
+    assert.match(c.fix ?? "", /npm run bump/);
+  });
+
+  test("a local-only tag also fails, with the different fix it deserves", () => {
+    // A local tag is not proof of a release, but pushing it would either fail or
+    // create one, so the release must stop and let a human decide.
+    const c = alreadyReleasedCheck(true, false, "0.5.9");
+    assert.equal(c.level, "fail");
+    assert.match(c.fix ?? "", /git tag -d v0\.5\.9/);
+  });
+});
+
+describe("the AMO signature check", () => {
+  test("a signed file passes and names the file", () => {
+    const c = amoSignatureCheck(200, 5137409, "0.5.9", "public");
+    assert.equal(c.level, "ok");
+    assert.match(c.detail, /5137409/);
+    assert.match(c.detail, /public/);
+  });
+
+  test("a version in review has no file id, and that blocks the release", () => {
+    const c = amoSignatureCheck(200, null, "0.5.9");
+    assert.equal(c.level, "fail");
+    assert.match(c.detail, /still in review/);
+  });
+
+  test("an unsubmitted version says so, with submit as the fix", () => {
+    const c = amoSignatureCheck(404, null, "0.5.9");
+    assert.equal(c.level, "fail");
+    assert.match(c.fix ?? "", /npm run submit/);
+  });
+
+  test("any other status is a failure to look, not a verdict about AMO", () => {
+    const c = amoSignatureCheck(503, null, "0.5.9");
+    assert.equal(c.level, "fail");
+    assert.match(c.detail, /HTTP 503/);
+  });
+
+  test("a file id with a non-200 status is not treated as signed", () => {
+    // Defensive: the id is only meaningful on a 200 response.
+    assert.equal(amoSignatureCheck(500, 123, "0.5.9").level, "fail");
+  });
+});
+
+describe("the push-credential check", () => {
+  test("ok carries no fix", () => {
+    const c = pushCredentialCheck({ level: "ok", why: "no workflow file changes" });
+    assert.equal(c.level, "ok");
+    assert.equal(c.fix, undefined);
+  });
+
+  test("warn and fail keep the fix that was computed for them", () => {
+    const w = pushCredentialCheck({ level: "warn", why: "scopes unreadable", fix: "gh auth refresh" });
+    assert.equal(w.level, "warn");
+    assert.equal(w.fix, "gh auth refresh");
+    const f = pushCredentialCheck({ level: "fail", why: "new workflow content", fix: "gh auth refresh -s workflow" });
+    assert.equal(f.level, "fail");
+    assert.match(f.fix ?? "", /workflow/);
+  });
+});
+
+describe("the verdict", () => {
+  const okCheck = treeCheck("");
+  const warnCheck = { name: "w", level: "warn" as const, detail: "d" };
+  const skipCheck = { name: "s", level: "skip" as const, detail: "d" };
+  const failCheck = branchCheck("master");
+
+  test("only a fail blocks", () => {
+    assert.equal(blocks([okCheck, warnCheck, skipCheck]), false);
+    assert.equal(blocks([okCheck, failCheck]), true);
+    assert.equal(blocks([]), false);
+  });
+
+  test("the report aligns names and indents fixes under them", () => {
+    const report = renderReport([okCheck, failCheck]);
+    const lines = report.split("\n");
+    assert.match(lines[0]!, /^ {2}ok\s+working tree\s+clean/);
+    assert.match(lines[1]!, /^ {2}FAIL\s+dev branch\s+you are on master/);
+    // The fix sits on its own line, and its column is the detail column of the
+    // check it belongs to — that alignment is the whole point of the table.
+    assert.match(lines[2]!, /^\s+→ switch to the dev branch/);
+    assert.equal(lines[2]!.indexOf("→"), lines[1]!.indexOf("you are on master"));
+  });
+
+  test("a skipped build says why it was skipped", () => {
+    const report = renderReport([{ name: "release build", level: "skip", detail: "not attempted — no signature" }]);
+    assert.match(report, /skip\s+release build\s+not attempted/);
+  });
+});

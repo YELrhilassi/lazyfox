@@ -31,6 +31,98 @@ So messaging is really **two separate channels**, with two separate fixes:
 | Helper ↔ background | both | throwaway `#lfc=` tabs | **persistent relay tab** (no tab churn, no create/remove race) — DONE |
 | Extension ↔ Go host | extension → host | scaffold stubs, not built, not wired | **built, installed with a native-messaging manifest, used via `host.ts`** — DONE |
 
+The relay is itself two buses, and the third message bus is the one still
+untidy:
+
+| Bus | Contract | Carries |
+|-----|----------|---------|
+| extension contexts → background | `BgApi` (`src/shared/protocol.ts`) | content script, command center, popup, options |
+| chrome helper ↔ background | `RelayApi` + `ChromeApi` | the relay tab's port |
+| background → content script | **none** — still bare `{ action: "..." }` objects | `startHints`, `focusFirstInput`, `pageReport` |
+
+## Stage 2 — typing the relay (`RelayApi` / `ChromeApi`) — DONE
+
+Goal: **an action nobody handles must be a compile error, not a silent no-op.**
+
+The relay was a second, completely untyped message bus. `requestBg(action:
+string, arg?: string)` met a background `handleRelayReq(action: string, arg:
+any)` that string-matched its way down a 30-branch if-chain. Nothing checked
+that the two ends agreed.
+
+This was not theoretical. `openDiagnostics` was sent by the chrome side and
+handled by nobody: the chain fell off the end and returned null in total
+silence. `;T` worked when the *content* script owned the keypress (that path
+goes through `send("openDiagnostics")`) and did **nothing** when the chrome
+helper owned it — an action that is broken only in half its entry points, with
+no error anywhere.
+
+`RelayApi` and `ChromeApi` in `src/shared/protocol.ts` now declare a request
+and response per action, and both dispatchers are tables keyed on
+`keyof RelayApi` / `keyof ChromeApi`, so a missing or renamed handler is a
+compile error. The two things that made the old code possible are gone:
+
+- **String-packed arguments.** Requests used to carry a bare string, which
+  forced `assignSessionMarker` and `sessionTabCopy`/`sessionTabMove` to join
+  their fields with `U+0001` and have the background re-split them by hand.
+  Requests now carry JSON on the wire, exactly as replies and commands
+  already did, and those separators are gone. The same change let
+  `restoreSplits` take `number[][]` rather than a JSON string.
+- **Silently-ignored pushes.** A command the helper did not recognise used to
+  fall out of `handleCmd` and vanish; the table makes that impossible.
+
+The typing also surfaced real dead behaviour: `moveTabBetweenSessions` returns
+a human-readable `note` ("no such tab", "same session") that the chrome side
+discarded, so a failed tab copy looked exactly like a successful one. Those two
+actions are now reply-bearing and the failure is toasted.
+
+## Stage 3 — one wire format, tested — DONE
+
+The three message shapes are packed into a URL fragment:
+
+```
+#lfr=rq.<id>.<action>.<jsonArg>            helper -> page -> background   (request)
+#lfr=rp.<id>.<jsonResult>                 background -> page -> helper   (reply)
+#lfr=cm.<seq>.<lost>.<action>.<jsonArg>   background -> page -> helper   (command)
+```
+
+The command's two leading numbers are added 2026-10-16, and they exist for the
+one message whose loss is SILENT: a dropped request or reply times its sender
+out, while a dropped command simply never happens — which is how a presence
+report goes missing and a live page's keys end up answered by nobody
+(docs/KEYBOARD-FREEZE.md). `seq` is the background's per-window sequence number,
+minted when it DECIDES to send (so a command it cannot post still consumes a
+number, and a real drop leaves a visible hole); `lost` is the relay page's own
+count of commands it had to discard, carried so the helper can tell a command
+its buffer ate from one the background never handed over. The helper counts both
+in `src/chrome/relayseq.ts` and publishes the result as `relay` in the
+`#lfc=state` reply (`recv`, `gaps`, `lastGap`, `lostInRelay`, `lostBeforeRelay`).
+
+That format used to be hand-encoded and hand-parsed **independently on each
+side**: `channel.ts` wrote `rq` and read `rp`/`cm`, `relay.ts` wrote `rp`/`cm`
+and read `rq`. Each had its own `indexOf`/`slice` parsing, and nothing said so
+if the two drifted — the symptom being a message that simply never arrives, with
+no error anywhere, on the one channel whose entire job is to be hard to
+observe. It already had: the request direction carried a bare string while the
+reply direction carried JSON, which is what the U+0001 packing existed to
+work around.
+
+`shared/relay-wire.ts` is now the only implementation, used by both sides, with
+its round trips and its robustness cases asserted in
+`scripts/test/relay-wire.test.ts` (part of tier 1, so `npm run test:unit`). The round trips are the point — anything one side
+encodes, the other must decode — but the robustness cases matter almost as much,
+because the message passes through a URL a browser may truncate, and a decoder
+that throws there takes down whatever was polling.
+
+Two latent bugs surfaced while writing those tests, both inherited from the
+hand-rolled parsers and both invisible because nothing currently violates them:
+
+- `encodeURIComponent` leaves `.` unescaped, so a command action name
+  containing a dot would be split at the wrong place and decode truncated. No
+  `ChromeAction` key has a dot today; a wire format should not depend on that
+  staying true. `encodeCommand` now escapes `.` explicitly.
+- `Number("")` is `0`, so a corrupt or truncated hash with no id decoded to
+  id 0 rather than being rejected. Ids must now match `/^\d+$/`.
+
 ## Stage 1 — persistent relay (replaces throwaway `#lfc=` tabs) — DONE
 
 Goal: **zero tab churn**. One dedicated, hidden relay tab carries every
@@ -76,12 +168,17 @@ helper↔background message; nothing is created or removed per message.
 
 ### Files
 
-- `src/chrome/channel.ts` — the helper side: relay resolution/creation, the
-  req/resp/cmd bridge, reply waiters, and the real-tab `#lfc=` channels that
-  deliberately ride REAL tabs (`keys` test synthesizer, `state`/`cfg`/`open`
-  debug/UI hashes).
-- `src/extension/background.ts` — `requestChrome` (robust delivery above), the
-  relay port handling (`onConnect` drain + `relayCmdQueues`), `ensureRelayTab`.
+- `src/chrome/channel.ts` — the helper side: the req/resp/cmd bridge, reply
+  waiters, and the real-tab `#lfc=` channels that deliberately ride REAL tabs
+  (`keys` test synthesizer, `state`/`cfg`/`open` debug/UI hashes). The relay
+  TAB itself was split out to `src/chrome/relaytab.ts` (find/create/dedupe/
+  navigate) and the push dispatcher to `src/chrome/pushes.ts`; see
+  `docs/ARCHITECTURE.md` §2.7 for why those are separate questions.
+- `src/shared/relay-wire.ts` — the `#lfr=` grammar itself, plus `isRelayUrl`.
+  One implementation used by both ends, so the two cannot drift.
+- `src/extension/services/relay.ts` — the background side: `requestChrome`
+  (robust delivery above), the relay port handling (`onConnect` drain +
+  `relayCmdQueues`). Split out of `background.ts` during the restructure.
 - `src/extension/relay.ts` — the tiny relay page: port connect/reconnect,
   message shuttle, the command buffer + hello handshake.
 - `src/shared/transient.ts` — `isRelayTabUrl` (relay.html + the leftover
@@ -114,10 +211,11 @@ owns what only an external process can:
   a piped EOF can't race a reply out of existence), `host.info`/`ping`/`diag`
   only. Unknown methods return a proper JSON-RPC error.
 - `build.ts` and `scripts/build-dev-installers.ts` build `lazyfox-host` for
-  each installer target into `installer/payload/native-host/<goos>/`, embedded
+  each installer target into `installer/internal/payload/data/native-host/<goos>/`,
+  embedded
   into the installer binary (bare downloaded installers can install the full
   stack). The current-platform host also goes to `build/native-host/`.
-- `installer/host_install.go` — during install: writes the host binary to a
+- `installer/internal/ops/nativehost.go` — during install: writes the host binary to a
   user-writable path (`~/.local/bin` on Unix, `%LOCALAPPDATA%\Lazyfox` on
   Windows) and the native-messaging manifest into the OS-native location
   (Linux `~/.mozilla/native-messaging-hosts/`, macOS
@@ -147,6 +245,30 @@ owns what only an external process can:
   deliberate real-tab channels, not throwaway churn.
 - `docs/ARCHITECTURE.md` + `README.md` describe the persistent relay + native
   host picture (no more "throwaway relay tabs").
+
+## Link hint activation — synthetic only (there was a trusted-press path)
+
+Hint activation fires a synthetic pointer/mouse sequence plus a native
+`.click()`, in the content process, and nothing else. There is no privileged
+press on the relay any more.
+
+A trusted-press path existed: `trustedClick` carried the target's viewport
+coordinates extension → background → chrome helper → the tab's "Lazyfox" window
+actor, whose child half dispatched them through `windowUtils.sendMouseEvent`, so
+the page would see a click with `isTrusted === true`. It was removed because it
+made link hints *worse*, and the reason is worth remembering, because the
+mistake is easy to repeat: the background could only report that it had
+**posted** the request, never that a press had happened, so the content script
+read "a relay port exists" as success and skipped its own click. Every page where
+the privileged side did not act — no window actor registered, the command
+dropped, the helper absent — got a hint that did nothing at all. Six of the
+thirteen local BiDi hint tests failed; with the synthetic path they all pass.
+
+If it is ever reintroduced, the rule is: **never report a privileged action as
+done from the sender's side of an asynchronous hop.** It needs a real reply from
+the chrome helper (nonce-correlated, with a short timeout), a per-tab cache of
+whether that reply ever arrives, and a synthetic fallback on anything but a
+confirmed press. See `docs/HINTS.md`.
 
 ## Out of scope (explicitly)
 

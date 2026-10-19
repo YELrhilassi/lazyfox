@@ -29,6 +29,21 @@ npm run ship                 # (3) the release: merge to master, sync signed xpi
                              # rebuild release installers, tag, GitHub Release
 ```
 
+And, anytime you want to refresh the **dev channel** (no AMO, no master, no
+review) — so Developer Edition / Nightly users get the newest build from the
+setup page:
+
+```
+npm run build && npm run build:installers   # unsigned xpi + dev installers
+npm run ship:nightly                        # (re)publish the `nightly` prerelease
+```
+
+`ship:nightly` updates the rolling GitHub prerelease tagged `nightly` in place
+with the dev installers and the unsigned xpi. It is completely independent of
+the signed release: it never touches `master`, never needs AMO, and is safe to
+run as often as you like. The setup page points Developer Edition / Nightly at
+this prerelease and stable Firefox at `releases/latest`.
+
 ### 1 · `npm run bump -- X.Y.Z`
 
 Updates the version in every tracked place at once (`package.json`,
@@ -40,8 +55,10 @@ remember.
 
 Packs the fresh **unsigned** build, uploads it to addons.mozilla.org as a
 **listed** version (which starts the review clock), and rebuilds the dev
-installer binaries. Requires `AMO_API_KEY` / `AMO_API_SECRET` (a gitignored
-`.env`). Refuses to re-submit a version that already exists.
+installer binaries. Requires `AMO_API_KEY` / `AMO_API_SECRET`, from the
+environment or from a gitignored `.env` **at the repo root** (copy
+`.env.example`); an exported variable wins over the file. Refuses to re-submit
+a version that already exists.
 
 **AMO does not sign at upload.** A listed version is only signed after a
 reviewer approves it. Wait for that before `ship`.
@@ -53,7 +70,19 @@ It does everything, in order, and stops with a clear message on the first
 problem:
 
 1. **Guards:** clean tree, you're on a non-master branch, AMO creds, `gh`
-   available, and the version is not already tagged.
+   available, the version is not already tagged, and — since the merge brings
+   this branch's `.github/workflows/` files onto master — that the git credential
+   may push them. GitHub rejects a push that adds or updates a workflow file when
+   it is authenticated with an OAuth token lacking the `workflow` scope, with one
+   documented exemption: content that already exists, byte for byte, on another
+   branch of the same repository — which is what a merge from an already-pushed
+   dev branch is. Ship checks both halves (scopes from the token's own header,
+   exemption by comparing blobs against the remote's branches) and checks them
+   HERE, before it touches anything, because the push is the last thing it does:
+   new workflow content plus a scoped-out token stops the release, while exempt
+   content is only a warning. Either way the remedy it prints is
+   `gh auth refresh -h github.com -s workflow`; `LF_SKIP_PUSH_SCOPE_CHECK=1`
+   skips the check for a credential git pushes with that `gh` does not report.
 2. **Signed?** Read-only AMO API check that the version's signed xpi exists. If
    AMO is still reviewing, it stops here — you have not touched git yet.
 3. **Merge:** fast-forwards master, then merges your dev branch into master with
@@ -93,8 +122,21 @@ scratch clone).
 
 | File | Trigger | Purpose |
 |------|---------|---------|
-| `dev-nightly.yml` | push / PR to `dev-nightly` | Compile the unsigned dev build + unit tests + dist check. |
+| `dev-nightly.yml` | **manual** (`workflow_dispatch`) | The same pipeline `npm run ci` runs: committed artifacts up to date → unsigned dev build (`LF_SKIP_INSTALLERS=1`) → four typechecks → full test suite → artifacts still consistent. |
+| `installers.yml` | **manual** (`workflow_dispatch`) | Builds every committed installer on its own OS (the macOS/Linux windows need CGO + the platform webview, so a Linux runner cannot produce them) and verifies the binaries it just built before uploading them as artifacts. It never writes to the repo. Builds locally with `npm run build`; this is the cross-platform proof. |
 | `master.yml` | push to `master` | Compile release-mode sources (offline — reuses the committed signed xpi) + unit tests. |
+
+A dev push therefore spends **no runner at all**: both dev-side workflows are
+manual (`workflow_dispatch`), and the only push-triggered workflow is
+`master.yml`, which runs once per release. Everything else in this file is a
+local command, which is why `npm run ci` exists: it is the same sequence, on
+your machine, before the push.
+
+**What the runners cost: nothing.** This repository is public, and standard
+GitHub-hosted runner minutes are free in a public repository — they are not
+drawn from the account's included minutes, which apply to private repositories
+(larger runners are the only paid kind, and no workflow here uses one). The
+reason the dev pipelines are manual is turnaround time, not minutes.
 
 Neither workflow has AMO secrets, and neither pushes, tags, or creates a
 release. Releases are created by `npm run ship`, exactly once.
@@ -123,10 +165,14 @@ CI, no permission gymnastics.
 
 ## Installer binaries — dev vs release
 
-| Binary | Embedded payload | Built by |
-|--------|------------------|----------|
-| `installer/bin/lazyfox-install-{linux,darwin,windows.exe}` | **signed** xpi | `npm run ship` (release) |
-| `installer/bin/lazyfox-install-dev-{linux,darwin,windows.exe}` | **unsigned** xpi | `npm run submit` (dev) |
+| Binary | Channel | Embedded payload | Targets | Built & published by |
+|--------|---------|------------------|---------|----------------------|
+| `installer/bin/lazyfox-install-{linux,darwin,windows.exe}` | **stable** | **signed** xpi | stable / ESR | `npm run ship` → GitHub Release (`releases/latest`) |
+| `installer/bin/lazyfox-install-dev-{linux,darwin,windows.exe}` | **nightly** | **unsigned** xpi | Developer Edition / Nightly | `npm run build:installers` + `npm run ship:nightly` → `nightly` prerelease |
+
+The installer auto-detects the Firefox of its channel, the profile that Firefox
+is actually using (no prompting), and falls back to a dedicated Lazyfox-owned
+profile if the user's own cannot be used. See `docs/INSTALLER-ANALYSIS.md`.
 
 ## CLI reference
 
@@ -137,6 +183,7 @@ CI, no permission gymnastics.
 | `npm run dev-install` / `dev-install:clean` | Daily dev | Build + install the unsigned build into a fresh Nightly/Dev profile. |
 | `npm run submit` | Publish a version to AMO | Uploads the unsigned build as a listed version + rebuilds dev installers. |
 | `npm run ship` | **Release** (after AMO signs) | Merge to master, sync signed xpi, rebuild release installers, tag, push, GitHub Release. |
+| `npm run ship:nightly` | **Dev channel refresh** (any time) | (Re)publish the rolling `nightly` prerelease with the dev installers + unsigned xpi. No AMO, no master. |
 | `npm run ci` | Before pushing | Run the local CI (compile + unit suite). |
 | `npm test` / `npm run verify` | Quick check | Unit suite / typecheck+suite. |
 | `npm run clean` | Free-space/rebuild | Remove regenerable build products. |

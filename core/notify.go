@@ -14,19 +14,20 @@ import (
 
 // Download is one row of the download list / notification stream. ID is a
 // stable key (the full target path in the chrome helper, the numeric id in the
-// background) so a dismissed flag survives across polls.
+// background) so a dismissed flag survives across polls. The json tags match
+// the DownloadEntry shape the JS contexts exchange over the wasm bridge.
 type Download struct {
-	ID        string
-	Filename  string
-	Path      string // full file location
-	URL       string
-	State     string // in_progress | paused | complete | failed | canceled
-	Received  int64  // bytes received so far
-	Total     int64  // total bytes (0 = unknown)
-	Speed     int64  // bytes per second (0 = unknown)
-	Dismissed bool   // notification dismissed from the status bar
-	StartTime int64
-	EndTime   int64
+	ID        string `json:"id"`
+	Filename  string `json:"filename"`
+	Path      string `json:"path"` // full file location
+	URL       string `json:"url"`
+	State     string `json:"state"` // in_progress | paused | complete | failed | canceled
+	Received  int64  `json:"received"`  // bytes received so far
+	Total     int64  `json:"total"`    // total bytes (0 = unknown)
+	Speed     int64  `json:"speed"`    // bytes per second (0 = unknown)
+	Dismissed bool   `json:"dismissed"` // notification dismissed from the status bar
+	StartTime int64  `json:"startTime"`
+	EndTime   int64  `json:"endTime"`
 }
 
 // InProgressState reports whether a download state string means the download

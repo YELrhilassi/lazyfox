@@ -57,12 +57,33 @@ dist/        the built output (committed so installs need no toolchain)
 
 - `types.ts`, `config.ts`, `protocol.ts` — shared data shapes, config
   defaults, and the message protocol between contexts.
-- `core.ts` — the facade the rest of the code uses to reach the Go core.
-- `leader.ts` — the which-key leader bar (the `;` overlay).
-- `popups.ts` — the popup engine (search/URL/tabs/history/bookmarks/
-  downloads/sessions) and the leader-action table.
-- `overlay.ts` — popup CSS and the toast helper.
-- `statusbar.ts` — the tmux-style status bar renderer.
+- `core.ts` — the typed `CoreApi` interface plus the wasm loader.
+- `corefacade.ts` — the promise-returning facade built over that interface
+  from one method table.
+- `leader.ts` — the which-key leader bar (the `;` overlay): its state and its
+  key grammar, composed from four modules that each own one thing —
+  `leader-css.ts` (the stylesheet and static markup), `leadercapture.ts` (the
+  one-shot key capture), `leaderpanel.ts` (the persistent closed-shadow host
+  and its painting) and `leadersequence.ts` (the two-key `;<head>;<final>`
+  rules).
+- `leadersignal.ts` — the leader's ONE readout value, and every pure decision
+  derived from it (see “The leader signal is one value” below).
+- `popups/` — the popup engine, one module per surface (search/URL/tabs/
+  history/bookmarks/downloads/sessions/nav) over the shared `kit.ts` shell,
+  plus the leader-action table in `leader.ts`. The history popup is the worked
+  example of the house shape; see “How a popup is put together” below.
+- `overlay.ts` — the import face for popups, and nothing else. It re-exports
+  four modules: `overlay-popup.ts` (the closed-shadow host, backdrop, wheel
+  guard), `overlay-selector.ts` (the list engine), `overlay-rects.ts` (the
+  fixed-position rect overlays behind find/yank/visual selection) and
+  `overlay-toast.ts` (the one-line command report). The CSS lives in
+  `overlaycss.ts`; every one of these modules is behaviour only.
+- `observability.ts` — the page-level contract the e2e suite reads
+  (`data-lf-*` mirrors, `lazyfox:list` events).
+- `statusbar.ts` — the tmux-style status bar renderer. Its stylesheet is in
+  `statusbar-css.ts` and its pure formatters (pill colours, readable ink, the
+  `data-lf-status` mirror string) are in `statusbar-segments.ts`, so the bar’s
+  own report of its state can be asserted without a DOM.
 - `ops.ts` — the `ActionOps` interface: every capability a popup or action
   needs, abstracted per context.
 - `dom.ts`, `dev.ts`, `wk.ts`, `wasm-embed.ts` — DOM helpers, dev logging,
@@ -76,12 +97,28 @@ itself — it builds the modules below and wires them together.
 - `config.ts` — reads/writes the chrome prefs (bindings + config).
 - `popup.ts` — mounts and unmounts popups in the browser window, plus the
   chrome-native window resize popup.
-- `splitview.ts` — drives Firefox's native split view (create, move a tab in,
-  unsplit, switch/swap panes, restore).
+- `splitview.ts` — drives Firefox's native split view. The OPERATIONS only
+  (create, move a tab in, unsplit, switch/swap panes, restore); the questions
+  around them live next door:
+  - `splitidentity.ts` — pure reads of the strip (what counts as a real tab,
+    the stable pane id, whether native split exists at all)
+  - `stripreconcile.ts` — the settle loop and the pin plan (the ordering math
+    is in the Go core, `core/strip.go`)
+  - `splitreadback.ts` — the delayed observation that turns a move’s trail into
+    an outcome rather than an attempt
+  - `splitrestore.ts` — re-forming saved splits after a session restore, which
+    must WAIT for the strip to settle before positions mean anything
+  - `splitpanes.ts` — where a pair is parked, and which panes are not real
 - `statusbar.ts` — the single window-level status bar: its data, its
   render/update cycle, and the download segment.
-- `channel.ts` — the `#lfc=` request channel and the router that dispatches
-  every reply.
+- `channel.ts` — the composition root for the helper↔background relay. It holds
+  the MESSAGE state (the queue, the reply waiters, the single URL slot, the
+  500ms poll) and wires four collaborators around it:
+  - `extbaseurl.ts` — what the extension’s base URL is (four callers need it)
+  - `relaytab.ts` — the relay TAB: find/create/dedupe/navigate/identity
+  - `tabguard.ts` — is the selected tab a real user tab
+  - `pushes.ts` — what each background→chrome command DOES, as a table typed
+    over `ChromeAction` so an unhandled action is a compile error
 - `debug.ts` — verification commands the test harness uses to inspect the
   browser's live state.
 - `ops.ts` — the chrome implementation of `ActionOps` (gBrowser, Places,
@@ -94,16 +131,53 @@ itself — it builds the modules below and wires them together.
   key types normally instead of opening the bar.
 - `core.ts`, `corebootstrap.ts` — load the wasm core in a CSP-free sandbox.
 - `frame.ts` — a tiny frame script that reports focused inputs.
+- `env.ts` / `env-fake.ts` — THE SEAM. `env.ts` holds the interfaces and the
+  real implementation over the chrome globals, and is the only module allowed
+  to name them; `env-fake.ts` is the Node-side test double that makes every
+  other chrome module constructible outside Firefox. They are separate files
+  because the dependency runs one way: the double needs the types, nothing
+  needs the double.
+- `winlisteners.ts`, `winsync.ts`, `actorbridge.ts`, `actorscroll.ts` — the
+  chrome document’s own wiring: the keydown/keypress/keyup/blur/TabSelect
+  listeners, the pollers and the `#lfc=` progress route, the content-process
+  actor bridge, and the pure “what does a declined key mean” decision behind
+  it. All four take `env`, so they are under the same rule as everything else
+  in this layer.
+- `leadersetup.ts` — the chrome leader’s controller plus its binding table.
+- `dependency-audit.ts` — the check that keeps the env seam from rotting (see
+  “The env seam” below).
 
 ### src/extension/ — the WebExtension
 
 `background.ts` is the composition root for the background script.
 
-- `sessions.ts` — tmux-style sessions: save, restore, markers, autosave,
-  startup restore, split-pane persistence.
+- `handlers/` — every background message action, one module per domain
+  (tabs, sessions, split, history, search, downloads, window, sync,
+  diagnostics). `types.ts` types each factory's `Owns` list, and
+  `background.ts` unions the lists and fails the build if any action in
+  `protocol.ts` has no owner.
+- `sessions.ts` + `sessions/` — tmux-style sessions: save, restore, markers,
+  autosave, startup restore, split-pane persistence. `sessions.ts` is the
+  facade; `storage.ts` / `autosave.ts` / `restore.ts` / `state.ts` hold the
+  implementation. A session is a WINDOW SET (`Session.windows`, see
+  `shared/sessionwindows.ts`): a capture records every content window with its
+  own split layout, and a restore rebuilds all of them — the focused one in
+  place, the rest created beside it — re-pairing each window's splits through
+  that window's own chrome helper (`requestChromeToWindow`). The flat
+  tabs/active/splits fields mirror the focused window for older readers.
+- `services/` — the chrome-helper-facing services the background talks to
+  (relay, component discovery, home shim, navigation).
 - `search.ts` — search/URL suggestions, history and bookmarks.
 - `stealth.ts` — isolated container tabs that wipe their data on close.
-- `windowops.ts` — window resize/move/zoom/zen and tab activate/mute/reopen.
+- `windowops.ts` — window resize/move/zoom/zen and tab activate/mute. Its two
+  recovery flows live beside it and are re-exported, so the leader key surface
+  still has one import site: `closedtabs.ts` (Firefox’s recently-closed list,
+  for the `;V` popup) and `reopentab.ts` (the verified `;v` undo chain, and the
+  record of what was closed).
+- `bgrelay.ts`, `bgpushes.ts`, `bglifecycle.ts` — the three things
+  `background.ts` owns besides its message router: the relay request table the
+  chrome helper dispatches, the four status-bar pushes, and every browser event
+  listener behind one `installBackgroundLifecycle()` call.
 - `downloads.ts` — the background download list + open/delete/reveal.
 - `tabs.ts`, `config.ts` — shared tab helpers and config read/merge.
 
@@ -123,15 +197,174 @@ plus the find-in-page widget — a flat, shadow-piercing page-text model that
 feeds both the search hit list and the Go-backed yank mode), `splitpanel.ts`
 (the split companion pane), `options.ts` and `popup.ts`.
 
+`content/hints/` is the link-hints pipeline, split so that each question has one
+owner:
+
+- `selectors.ts` — what counts as hintable, and every limit the engine works
+  within (cap, walk budgets, resync delays).
+- `collect.ts` — walking the page, open AND closed shadow roots included.
+- `visibility.ts` — "would a human see this, and could they click it?", answered
+  for a whole PASS: the element's own style is read once, and the ancestor
+  predicates (hidden/inert, `opacity:0`) are memoised per element so
+  a candidate list sharing ancestors does not re-walk them per candidate. A pass
+  never outlives the collection/selection run that made it.
+- `select.ts` — which candidates get a label, in document order up to the cap.
+- `overlay.ts` — the label DOM and where each badge goes; the single answer to
+  "is this hint on screen" (`shownKeys()`).
+- `activate.ts` + `life.ts` — clicking a target, and what counts as "the page did
+  something" afterwards.
+- `hintresolve.ts` — re-finding the element a label belongs to after the page
+  replaced it (framework re-render, late insert).
+- `motion.ts` — the events that mean "the page moved", with what each kind
+  implies (a scroll can invalidate the batch, a transition cannot).
+- `frames.ts` — one measurement pass per frame, and the bounded cadence of the
+  safety net that covers movement nothing announces.
+- `session.ts` — the one `;f` press: the state that is genuinely session-scoped,
+  and the composition of everything above.
+- `diagnose.ts`, `index.ts` — the "why is this not hinted" report, and the
+  import face the content script uses.
+
 ## How a keypress flows
 
 1. You press `;`. Either the content script or the chrome helper intercepts
    it (whichever owns the page).
 2. The leader bar appears. You press the next key.
-3. The leader-action table (`shared/popups.ts`) maps that key to an action.
+3. The leader-action table (`shared/popups/leader.ts`) maps that key to an
+   action.
 4. The action calls into the context's `ActionOps` implementation — the
    chrome helper directly, the content script by messaging the background.
 5. The result renders as a popup, a navigation, or a status-bar update.
+
+### Keyboard isolation
+
+While a Lazyfox surface owns the keyboard (a popup, the leader bar, link
+hints, the find widget, an armed one-shot capture), **nothing the user types
+may reach the page or the browser chrome behind it**. Swallowing `keydown`
+at the window capture phase is not enough on its own: Firefox still dispatches
+the `keypress`/`keyup` that follow a consumed `keydown`, so a page script
+listening on those saw keystrokes typed into Lazyfox's own search box (the
+"input leaks to the window behind it" bug), and on chrome-owned pages an
+unconsumed key could trip a browser shortcut behind the overlay.
+
+`shared/keyguard.ts` (`KeyGuard`) is the one place that closes the hole. A
+context records every keydown it consumed; the following keypress/keyup is
+then swallowed, and `keyGuard.clear()` drops the records when the window
+loses focus mid-key. Call `ownsTail` **unconditionally** for each keypress/
+keyup — short-circuiting past it leaves a stale record that would swallow a
+later, legitimate press of the same key while the user is typing. Scroll is
+isolated at the same time: a wheel on the backdrop is preventDefaulted, and
+the popup's own lists carry `overscroll-behavior:contain` so they never chain
+to the page.
+
+### The leader signal is one value
+
+The status bar's far-right indicator has to answer three separate questions
+about the leader — *is it armed*, *what chord has it committed*, and *what must
+the next key be* — and it has to answer them for a leader that does not live in
+the same context as the bar. The chrome helper owns the bar but not the leader
+on a web page; the content script owns the leader but not the bar.
+
+`shared/leadersignal.ts` is the single answer. `LeaderController.signal()`
+returns one `LeaderSignal`, and that one value is what the content script pushes
+to the background and the background pushes to the helper.
+
+Before it existed, each host assembled the three halves itself:
+
+```ts
+const armed = leader.active || leader.hasPending();
+const prefix = leader.prefix;
+const expect = leader.pendingExpect;
+```
+
+which is correct until it is not. A host that read `active` a moment before a
+capture armed it painted an unlit bar while the keyboard was already armed; a
+host that read `prefix` after a sequence fired painted a chord from a tab the
+user had already left; a host that cached `pendingExpect` across the capture's
+death promised a digit for a capture that had expired. Each of those is a bar
+that disagrees with the keyboard, and each of them was a real bug.
+
+`LeaderSignal` plus the pure helpers beside it (`makeLeaderSignal`,
+`subKeyExpect`, and the decisions derived from it) makes the disagreement
+impossible to *express* rather than merely unlikely: a host cannot read half a
+signal, because there is no half to read.
+
+`armed` deliberately covers an armed one-shot capture as well as the bare
+leader. After `;W m` the overlay is gone and the chord is spent, so the signal
+is then the only thing anywhere saying a keystroke of the user is about to be
+eaten.
+
+### How a popup is put together
+
+Every popup — in both contexts — is four layers, and the layers are separate
+modules so a change to one does not drag the others:
+
+1. **The host** (`shared/overlay-popup.ts`) opens a closed shadow root on
+   `<html>`, paints the style sheet, swallows backdrop clicks and
+   backdrop scrolls, and removes itself on close. It knows nothing about lists.
+2. **The engine** (`shared/overlay-selector.ts`) is the whole list behaviour:
+   debounced search, the highlighted row, arrows/`j`/`k`/`Home`/`End`/paging,
+   `Enter`, and the hand-rolled caret movement for arrows inside the input.
+   `createSelector(opts)` takes a `search`, a `render` and an `onPick` and owns
+   everything else.
+3. **The surface** (`shared/popups/<name>.ts`) supplies the data and the rows.
+   This is the only layer that knows what a "bookmark" or a "session" is.
+4. **The ops** (`shared/ops.ts`) is the capability interface — reached through
+   the chrome implementation or the content implementation, so a surface never
+   knows which context it is running in.
+
+The history popup is the worked example of the house shape, because it is the
+one surface with enough behaviour to need all four:
+
+| module | owns |
+|---|---|
+| `popups/history.ts` | the wiring: build the shell, call the engine, install keys |
+| `popups/history-state.ts` | what the popup knows: the query, the selection, the timers |
+| `popups/history-render.ts` | rows, group headers, the empty state |
+| `popups/history-keys.ts` | the key grammar (j/k, `/`, Enter, chords) |
+| `popups/history-groups.ts` | how a URL or title is grouped for display |
+| `popups/history-actions.ts` | the intent table: one entry per command |
+
+`history-actions.ts` is the part worth copying. It is a **table of intents**, not
+a chain of `if`s: every command is one entry saying which effect it runs, and
+every effect it needs is *injected*. Nothing in that file names the DOM. That
+is what makes the whole table unit-testable — `scripts/test/history-actions.test.ts`
+runs 40 checks against it with no browser at all, and it found a real defect
+(`disarmAll` left a cancelled timer handle on the state).
+
+The same seam is what keeps `scripts/test/` able to reach the modules that
+matter: a module that names `HTMLElement` in its signature cannot be loaded by
+Node's strip-only TypeScript loader, so anything intended to be tested either
+takes `any` for its DOM handles or receives the DOM functions it calls.
+
+### The env seam
+
+The chrome helper runs in Firefox's chrome document, where a dozen private
+globals (`window`, `gBrowser`, `Services`, `ChromeUtils`, `ExtensionUtils`, the
+`#lfc=` DOM) are ambient — there is no import for them, they are just there.
+That is exactly what makes the layer untestable and unlintable: a module can
+reach for any of them from anywhere and nothing complains.
+
+`src/chrome/env.ts` draws the line. It holds two things:
+
+- the **interfaces** the chrome layer programs against (`ChromeEnv`,
+  `ChromeTab`, …), and
+- the **one implementation** over the real globals.
+
+and it is the only module permitted to name them. Every other chrome module
+takes an `env: ChromeEnv` and calls methods on it.
+
+`src/chrome/env-fake.ts` is the Node-side double. It is a **separate file**
+because the dependency runs one way: the double needs the types, and nothing in
+the product needs the double. Putting both in one file would drag the fake into
+every production import.
+
+The seam is enforced, not merely documented. `src/chrome/dependency-audit.ts`
+holds the list of modules that must conform (`SEAMED`, currently sixteen) and
+what each is allowed to import; `scripts/test/dependency-audit.test.ts` walks
+the real files on disk and fails the build when one of them imports something
+outside its allowance. A module that needs a new capability therefore has to
+extend the interface and the fake together, which is the moment someone notices
+whether the capability is real.
 
 ## Principles
 
@@ -203,7 +436,7 @@ history of breakages and fixes, and the post-update checklist.
 ## Testing
 
 The end-to-end suite drives a real Firefox over WebDriver BiDi
-(`scripts/bidi/`). It boots a fresh profile, installs `dist/extension`, and
+(`scripts/e2e/`). It boots a fresh profile, installs `dist/extension`, and
 exercises every feature. `go test ./core/` covers the Go layer and
 `npm run typecheck` covers the TypeScript. See the README's Development
 section for the exact commands.

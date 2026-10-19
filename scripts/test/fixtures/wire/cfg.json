@@ -1,0 +1,9 @@
+{
+  "name": "cfg",
+  "about": "The config write path. `#lfc=cfg.<nonce>.<encoded json>` answers `ok.<nonce>` / `err.<nonce>` under its own name, so a cfg request and a cfg reply have nearly the same shape — which is why classifyLfc needs a dedicated arm for it.",
+  "steps": [
+    { "send": "lfc=cfg.c1-1", "expect": "cfg.reply", "cmd": "cfg", "note": "a bare nonce and no json" },
+    { "send": "lfc=cfg.c2-2.%7B%22bindings%22%3A%7B%7D%7D", "expect": "cfg.ok", "cmd": "cfg", "note": "an empty bindings object must answer ok, not err" },
+    { "send": "lfc=cfg.c3-3.%7Bnot-json", "expect": "cfg.err", "cmd": "cfg", "note": "unparseable json answers err rather than throwing" }
+  ]
+}

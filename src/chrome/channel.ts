@@ -8,21 +8,42 @@
 // timing-sensitive handshake (a reply racing the removal, safety timeouts
 // dropping late requests).
 //
-// Today ONE hidden relay tab (relay.html) carries everything. The helper
-// reaches the relay page's window directly (postMessage); the page holds a
-// long-lived runtime port to the background and forwards traffic both ways.
-// Nothing is created or removed per message.
+// Today ONE hidden relay tab (relay.html) carries everything. The helper reaches
+// the relay page's window directly; the page holds a long-lived runtime port to
+// the background and forwards traffic both ways. Nothing is created or removed
+// per message.
 //
-// This module owns the helper side of the channel: relay resolution/creation,
-// the message bridge (req/resp/cmd/ready), the reply waiters, and the command
-// dispatcher for background->chrome pushes. The deliberate per-message URL
-// channels that ride REAL tabs (the #lfc=keys test synthesizer, the #lfc=state
-// debug query, #lfc=cfg, #lfc=open) are handled here too, in handleLfc.
+// WHAT THIS FILE IS: the composition root for the helper side of that channel.
+// It holds the MESSAGE state — the queue, the reply waiters, the single URL
+// slot, and the 500ms poll that drains them — and wires four collaborators
+// around it:
+//
+//   extbaseurl  what is the extension's base URL (four other callers too)
+//   relaytab    the relay TAB: find/create/dedupe/navigate/identity
+//   tabguard    is the selected tab a real user tab (existing module)
+//   pushes      what each background->chrome command DOES
+//
+// and it owns the per-message real-tab channels that ride URL hashes on a real
+// tab instead of the relay (the #lfc= keys synthesizer, the state query, cfg,
+// open), which is a different transport and deliberately does not share the
+// relay's state.
+//
+// The dependency runs one way: this file imports the collaborators, none of
+// them import it.
 
 import { mergeConfig, mergeHotkeys } from "../shared/config";
 import { openBookmarksPopup, openDownloadsPopup, openHistoryPopup, openSearchPopup, openTabsPopup, openUrlPopup, type PopupCtx } from "../shared/popups";
-import type { ChromeHotkeys, Config, PopupItem } from "../shared/types";
+import type { PopupItem } from "../shared/types";
+import type { RelayAction, RelayReq, RelayRes } from "../shared/protocol";
+import { HASH_PREFIX, decodeCommand, decodeReply, encodeRequest } from "../shared/relay-wire";
 import { applyHoverRevealPref, type ChromeCfg } from "./config";
+import { handleKeys } from "./keys";
+import { createRelaySeq, noteCmdSeq, relaySeqReadout } from "./relayseq";
+import { createTabGuard } from "./tabguard";
+import { resolveCcBaseUrl } from "./extbaseurl";
+import { createRelayTabCtl } from "./relaytab";
+import { createPushDispatcher } from "./pushes";
+import type { CacheCtl } from "./cache";
 import type { DebugHandlers } from "./debug";
 import type { SplitView } from "./splitview";
 import type { StatusBarCtl } from "./statusbar";
@@ -38,8 +59,18 @@ export interface ChannelDeps {
   };
   split: SplitView;
   status: StatusBarCtl;
+  // Records that a tab's own content script is running (see noteContentPresent).
+  // `doc` identifies the reporting DOCUMENT — the URL describes it but cannot
+  // identify it across a single-page navigation.
+  setContentPresent(index: number, active: boolean, url: string, doc?: string): void;
+  // Clear the bar's download notification(s) at a page's request (`;D` runs in
+  // the page's own leader, but the bar is this side's).
+  dismissDownloads(): void;
   cfg: ChromeCfg;
   debug: DebugHandlers;
+  // Per-tab / per-session page-cache enforcement (the global scope is owned by
+  // the extension background).
+  cache: CacheCtl;
   // The chrome window's capture-phase keydown dispatch (leader, popups,
   // hotkeys, typing guard). Returns whether the key was consumed; the #lfc=
   // keys channel runs it so synthesized keys exercise the real code path.
@@ -51,7 +82,11 @@ export interface ChannelDeps {
       shiftKey: boolean;
       metaKey: boolean;
       isComposing: boolean;
-    }): boolean;
+    }, target?: any): boolean;
+    // The matching keyup for a synthesized key — see KeysDeps. The channel
+    // forwards it to the SAME handler the real window keyup listener runs, so
+    // a synthetic release and a genuine one cannot disagree.
+    release(key: string): void;
   };
 }
 
@@ -61,9 +96,25 @@ export interface Channel {
   // (idempotent; self-heals if the relay tab died). Returns whether the relay
   // is usable.
   startRelay(): boolean;
+  /**
+   * Read the relay's URL slot once, and act on what is there.
+   *
+   * The ONE thing that costs latency in this transport is that a command sits in
+   * a slot until somebody looks: the background already delivered it, the relay
+   * page already wrote it into its own URL, and the helper notices on its next
+   * look. `startRelay()` used to be the only look, on a 500ms timer shared with
+   * the status bar's own housekeeping — so a `;W [` waited behind the polls of
+   * every status push that got there first, and the measured result was a pane
+   * switch taking ~2.7s from the keypress. This is the same look, on its own
+   * faster clock, with none of startRelay's other work (no tab dedupe, no
+   * selection steering): the expensive half stays at 500ms.
+   */
+  poll(): void;
   // Fire-and-forget request to the background (the alive announce, session
   // ops, ...). Returns whether the request was accepted by the relay.
-  requestBg(action: string, arg?: string): boolean;
+  // Typed against RelayApi: an unknown action, or an argument of the wrong
+  // shape, is a compile error rather than a message nobody handles.
+  requestBg<K extends RelayAction>(action: K, arg?: RelayReq<K>): boolean;
   // True once the relay has actually connected its port (ready), i.e.
   // requestBg is being delivered rather than buffered. Callers use this to
   // decide whether a fire-and-forget request actually reached the background
@@ -73,7 +124,7 @@ export interface Channel {
   relayReady(): boolean;
   // Request with a reply (the background's response resolves the promise).
   // Resolves null on timeout / relay failure — callers must tolerate that.
-  requestReply(action: string, arg?: string): Promise<any>;
+  requestReply<K extends RelayAction>(action: K, arg?: RelayReq<K>): Promise<RelayRes<K> | null>;
   requestSessionState(): Promise<void>;
   // Fetches one named session's tabs (for the sessions popup's right pane).
   requestSessionTabs(name: string): Promise<PopupItem[]>;
@@ -84,12 +135,17 @@ export interface Channel {
   // Debug/verification: the helper's view of the relay (found window, ready
   // flag, tab list) — surfaced through the #lfc=state channel.
   relayDebug(): any;
+  // True when this tab element IS the window's relay, by reference as well as
+  // by URL — see relaytab.ts for why the URL alone is not enough.
+  isKnownRelayTab(tab: any): boolean;
 }
 
-const EXT_ID = "lazyfox@lazyfox.dev";
 // How long a request may sit queued before the relay becomes ready, and how
 // long a reply-bearing request waits for its response.
 const RELAY_TIMEOUT = 6000;
+// How long a queued request may keep waiting for the relay to come up (or for
+// the slot ahead of it to free) before it is given up on. See requestBg.
+const RELAY_BOOT_MAX = 45000;
 
 export function createChannel(deps: ChannelDeps): Channel {
   // The persistent relay tab (relay.html) carries every helper<->background
@@ -108,254 +164,60 @@ export function createChannel(deps: ChannelDeps): Channel {
   // own URL to #lfr=rp/cm.<...> which the helper polls (it already polls every
   // 500ms). The URL is a single slot: one request in flight at a time, the
   // rest queue here; the page never clobbers a pending request hash.
-  let relayTab: { browser: any; tab: any } | null = null;
   let relayReady = false;
-  // Requests queued for the single URL slot (helper -> background).
-  let pendingReqs: Array<{ id: number; action: string; arg?: string }> = [];
+  // Requests queued for the single URL slot (helper -> background). The arg is
+  // a structured value from RelayApi, not a string: the wire JSON-encodes it
+  // exactly as it already did replies and commands.
+  let pendingReqs: Array<{ id: number; action: RelayAction; arg: unknown }> = [];
+  // THE LOST-COMMAND COUNTER (docs/KEYBOARD-OWNERSHIP.md 5.6): the background's
+  // per-window sequence numbers, the gaps between them, and which hop ate each
+  // one. Every command that reaches this side is noted here, and the whole thing
+  // is published in the state reply as `relay`, so "a report never arrived" is a
+  // number a premise can assert on instead of a mystery. See relayseq.ts.
+  //
+  // Named for the COMMAND numbering, not `relaySeq` — that name belongs to the
+  // request-id counter above, which numbers this side's own requests.
+  const commandSeq = createRelaySeq();
+  let relaySeq = 0;
   // Reply waiters keyed by request id, resolved when the relay page writes the
   // `#lfr=rp.<id>.<json>` hash back into the tab URL.
-  let relaySeq = 0;
   const relayWaiters: Record<number, { resolve: (v: any) => void; timer: any }> = {};
 
-  function ccBaseUrl(): string | null {
-    // Primary: resolve the extension's policy directly. Firefox's
-    // WebExtensionPolicy.getByID() keys on the add-on's moz-extension HOSTNAME
-    // UUID (e.g. ebf1759a-…), not the email-style add-on id, so on a permanent
-    // install it can return null for EXT_ID. Iterate the active policies and
-    // match by the add-on id — the field that is ALWAYS the email id we ship —
-    // so the helper resolves its base URL on a cold boot even with no
-    // extension page tab open (no commandcenter yet). This is what lets the
-    // alive announce + relay come up on a real interactive session; relying
-    // only on getByID + a commandcenter-tab scan left the announce stuck and a
-    // second content status bar drawn.
-    try {
-      const policies = WebExtensionPolicy.getActiveExtensions();
-      for (const p of policies) {
-        if (p && p.id === EXT_ID) return p.getURL("");
-      }
-    } catch (e) {
-      // fall through to getByID then tab scan
-    }
-    // Secondary: getByID by id (works for some installs), then fall back to
-    // scanning for an open commandcenter/relay/extension page tab.
-    try {
-      const p = WebExtensionPolicy.getByID(EXT_ID);
-      if (p) return p.getURL("");
-    } catch (e) {
-      // fall through to tab scan
-    }
-    for (const t of window.gBrowser.tabs) {
-      try {
-        const s = t.linkedBrowser.currentURI.spec;
-        if (s.indexOf("moz-extension://") !== 0) continue;
-        // Any extension page tab works — commandcenter, relay, setup, options.
-        if (
-          s.indexOf("commandcenter.html") !== -1 ||
-          s.indexOf("relay.html") !== -1 ||
-          s.indexOf("setup.html") !== -1 ||
-          s.indexOf("options") !== -1
-        ) {
-          // base = moz-extension://<hostname>/  (slice past hostname to slash).
-          const host = s.indexOf("//") + 2;
-          const slash = s.indexOf("/", host);
-          return slash < 0 ? s : s.slice(0, slash + 1);
-        }
-      } catch (e) {
-        // skip tab
-      }
-    }
-    return null;
-  }
+  const ccBaseUrl = resolveCcBaseUrl;
+  const relayTab = createRelayTabCtl({ ccBaseUrl });
+  const handlePush = createPushDispatcher(deps);
+  // The tab-selection guard (what a real user tab is, same-tick steering
+  // after a close, delayed stranded recovery). Hooked once from startRelay, and
+  // consulted by nothing else.
+  const tabGuard = createTabGuard({ ccBaseUrl });
+
+  // Declared once, in shared/relay-wire.ts, and used by the relay page too.
+  const RELAY_HASH_PREFIX = HASH_PREFIX;
 
   /* ===================== relay bridge ===================== */
 
-  // The relay tab is identified by its page name (relay.html) — its URL never
-  // changes, so scanning is unambiguous even while messages are in flight.
-  // The <browser>'s contentWindow object is REPLACED when the page commits
-  // (the initial about:blank window dies), so the window must be re-resolved
-  // from the tab on every use — never cached from creation time.
-  const relayBrowsers = new Set<any>();
-
-  // Any live <browser> in this window whose tab is a relay page — the one true
-  // answer to "do we already have a relay?", regardless of which side created
-  // it (chrome helper via addTab, or the background via browser.tabs.create).
-  // Returns { browser, tab } or null.
-  function findRelayTab(): { browser: any; tab: any } | null {
-    try {
-      for (const t of window.gBrowser.tabs) {
-        const b = t.linkedBrowser;
-        if (!b) continue;
-        let isRelay = false;
-        try {
-          isRelay = b.currentURI.spec.indexOf("relay.html") !== -1;
-        } catch (e) {
-          // ignore
-        }
-        // A relay tab created a moment ago may still show about:blank; the
-        // created-browsers set covers that window.
-        if (!isRelay && relayBrowsers.has(b)) isRelay = true;
-        if (!isRelay) continue;
-    // A relay must carry the extension's page (never a stale leftover);
-    // check the created set OR a committed relay URL.
-    return { browser: b, tab: t };
-      }
-    } catch (e) {
-      // ignore
-    }
-    return null;
-  }
-
-  // Resolve + cache the relay tab's { browser, tab }. Prunes a dead cache
-  // (tab recreated after a death), hides the tab natively (cosmetic — never
-  // browser.tabs.hide(), which detaches the browsing context and nulls the
-  // URL/loadURI path), and returns null when no relay exists yet.
-  function resolveRelayTab(): { browser: any; tab: any } | null {
-    for (const b of relayBrowsers) {
-      try {
-        if (!window.gBrowser.tabs.some((t: any) => t.linkedBrowser === b)) relayBrowsers.delete(b);
-      } catch (e) {
-        relayBrowsers.delete(b);
-      }
-    }
-    const r = findRelayTab();
-    if (!r) return null;
-    relayBrowsers.add(r.browser);
-    try {
-      r.tab.hidden = true; // cosmetic hide only (see above)
-    } catch (e) {
-      // ignore
-    }
-    relayTab = r;
-    return r;
-  }
-
-  function createRelayTab(): void {
-    // One relay per window, ever: if a relay already exists (helper-created or
-    // background-created), never add another. Before this guard, a 500ms poll
-    // that ran before the first relay's page committed (currentURI was still
-    // about:blank) could spawn a duplicate relay tab every tick — the "tabs
-    // flashing open and closed" + one content process per stray tab.
-    if (findRelayTab()) return;
-    const base = ccBaseUrl();
-    if (!base) return;
-    try {
-      const tab = window.gBrowser.addTab(base + "relay.html", {
-        inBackground: true,
-        skipAnimation: true,
-        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-      });
-      if (tab && tab.linkedBrowser) relayBrowsers.add(tab.linkedBrowser);
-      relayTab = tab && tab.linkedBrowser ? { browser: tab.linkedBrowser, tab: tab } : null;
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // ---- URL-slot relay (see the state comment above) ----------------------
-
-  const RELAY_HASH_PREFIX = "#lfr=";
-
-  function relayBrowser(): any {
-    const cached = relayTab;
-    if (cached && cached.browser) {
-      try {
-        if (window.gBrowser.tabs.some((t: any) => t.linkedBrowser === cached.browser)) return cached.browser;
-      } catch (e) {
-        // ignore
-      }
-    }
-    const r = resolveRelayTab();
-    return r ? r.browser : null;
-  }
-
-  // Exactly one relay tab per window, ever. Session restore recreates the
-  // previous relay tab while the helper is also creating one at startup, and a
-  // stray second relay means a second hidden page + content process for no
-  // benefit (and the "many processes on htop" the user saw). Called from
-  // startRelay's 500ms poll, so any extra is closed within half a second.
-  function dedupeRelayTabs(): void {
-    try {
-      const relays = Array.from(window.gBrowser.tabs).filter((t: any) => {
-        try {
-          return t.linkedBrowser && t.linkedBrowser.currentURI && t.linkedBrowser.currentURI.spec.indexOf("relay.html") !== -1;
-        } catch (e) {
-          return false;
-        }
-      });
-      for (const extra of relays.slice(1)) {
-        try {
-          window.gBrowser.removeTab(extra);
-        } catch (e) {
-          // ignore
-        }
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  function relayUrl(browser: any): string {
-    try {
-      return (browser && browser.currentURI && browser.currentURI.spec) || "";
-    } catch (e) {
-      return "";
-    }
-  }
-
-  // Navigate the relay tab to url. Same-document hash changes (the common
-  // case) never reload the page; even a full reload is survivable (the page
-  // re-connects its port and re-reads the hash on pageshow). Works for remote
-  // (out-of-process) tabs from the chrome side — plain navigation.
-  function loadRelay(url: string): void {
-    const b = relayBrowser();
-    if (!b) return;
-    try {
-      // Fragment-only changes must stay same-document (no reload, no content
-      // process churn per message): loadURI with an nsIURI preserves the
-      // document for a pure fragment change, while fixupAndLoadURIString can
-      // fix up a fragment-bearing URL into a FULL RELOAD (verified: the relay
-      // page's boot counter incremented on every rq write / hash clear,
-      // spinning a content process per message). loadURI accepts an nsIURI,
-      // not a bare string.
-      const uri = Services.io.newURI(url);
-      b.loadURI(uri, {
-        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-      });
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // Clear a handled #lfr hash (same-document navigation back to the bare
-  // relay URL), freeing the slot for the next message.
-  function clearRelayHash(): void {
-    const b = relayBrowser();
-    if (!b) return;
-    const base = ccBaseUrl();
-    if (!base) return;
-    loadRelay(base + "relay.html");
-  }
-
   // Pop the next queued request and write it into the URL slot.
   function sendNextRelay(): void {
-    const b = relayBrowser();
+    const b = relayTab.browser();
     if (!b) return;
     const base = ccBaseUrl();
     if (!base) return;
-    const cur = relayUrl(b);
-    if (cur.indexOf(RELAY_HASH_PREFIX) !== -1) return; // slot busy
+    if (relayTab.url().indexOf(RELAY_HASH_PREFIX) !== -1) return; // slot busy
     const next = pendingReqs.shift();
     if (!next) return;
-    const argEnc = next.arg != null ? "." + encodeURIComponent(next.arg) : "";
-    loadRelay(base + "relay.html" + RELAY_HASH_PREFIX + "rq." + next.id + "." + next.action + argEnc);
+    // The wire format is shared/relay-wire.ts, which the relay page also uses,
+    // so the two ends cannot drift apart.
+    relayTab.load(
+      base + "relay.html" + RELAY_HASH_PREFIX + encodeRequest(next.id, next.action, next.arg)
+    );
   }
 
   // Poll the relay tab's URL (called from startRelay every 500ms): handle a
   // reply or command hash the page wrote, then send the next queued request.
   function pollRelayUrl(): void {
-    const b = relayBrowser();
+    const b = relayTab.browser();
     if (!b) return;
-    const spec = relayUrl(b);
+    const spec = relayTab.url();
     const i = spec.indexOf(RELAY_HASH_PREFIX);
     if (i < 0) {
       // Slot free (page cleared a forwarded request): send the next one.
@@ -364,212 +226,47 @@ export function createChannel(deps: ChannelDeps): Channel {
     }
     const frag = spec.slice(i + RELAY_HASH_PREFIX.length);
     if (frag.indexOf("rq.") === 0) return; // our own pending request; page will clear it
-    if (frag.indexOf("rp.") === 0) {
-      // Reply hash: #lfr=rp.<id>.<encodeURIComponent(JSON result)>
-      const rest = frag.slice(3);
-      const dot = rest.indexOf(".");
-      if (dot < 0) {
-        clearRelayHash();
-        return;
-      }
-      const id = Number(rest.slice(0, dot));
-      let result: any = null;
-      try {
-        result = JSON.parse(decodeURIComponent(rest.slice(dot + 1)));
-      } catch (e) {
-        result = null;
-      }
-      const w = relayWaiters[id];
+    const reply = decodeReply(frag);
+    if (reply) {
+      const w = relayWaiters[reply.id];
       if (w) {
         clearTimeout(w.timer);
-        delete relayWaiters[id];
-        w.resolve(result);
+        delete relayWaiters[reply.id];
+        w.resolve(reply.result);
       }
-      clearRelayHash();
+      relayTab.clearHash();
       sendNextRelay();
       return;
     }
-    if (frag.indexOf("cm.") === 0) {
-      // Command hash: #lfr=cm.<action>.<encodeURIComponent(JSON arg)>
-      const rest = frag.slice(3);
-      const dot = rest.indexOf(".");
-      const action = dot < 0 ? decodeURIComponent(rest) : decodeURIComponent(rest.slice(0, dot));
-      let arg: any = null;
-      if (dot >= 0 && rest.slice(dot + 1)) {
-        try {
-          arg = JSON.parse(decodeURIComponent(rest.slice(dot + 1)));
-        } catch (e) {
-          arg = decodeURIComponent(rest.slice(dot + 1));
-        }
-      }
-      handleCmd(action, arg);
-      clearRelayHash();
+    const cmd = decodeCommand(frag);
+    if (cmd) {
+      // Counted BEFORE the push runs, and whatever the push does with it: this
+      // counter measures whether the MESSAGE got here, and a command whose
+      // handler throws was still delivered.
+      noteCmdSeq(commandSeq, { seq: cmd.seq, lost: cmd.lost, slot: frag });
+      handlePush(cmd.action, cmd.arg);
+      relayTab.clearHash();
       sendNextRelay();
-    }
-  }
-
-  // Real user tabs only: alive, and not the hidden relay. The just-closed
-  // tab is excluded separately (lastClosedTabs): Firefox keeps a closing tab
-  // in gBrowser.tabs while it tears down, and steering the selection onto that
-  // dying wrapper is exactly the blank-gray-page dead end (with two tabs the
-  // strip is [A, relay, B], so closing B selects the relay and the guard must
-  // NOT "fix" it by selecting B again). We deliberately do NOT filter on
-  // t.closing here: session restore marks EVERY tab closing during its
-  // close-all phase, and treating that as "no real tabs" made the guard open
-  // a command-center tab for each pass, corrupting the restored window.
-  const lastClosedTabs = new Set<any>();
-  function realUserTabs(): any[] {
-    return Array.from(window.gBrowser.tabs).filter((t: any) => {
-      try {
-        if (Cu && Cu.isDeadWrapper(t)) return false;
-        if (lastClosedTabs.has(t)) return false;
-        const spec =
-          t.linkedBrowser && t.linkedBrowser.currentURI
-            ? t.linkedBrowser.currentURI.spec
-            : "";
-        return spec.indexOf("relay.html") === -1;
-      } catch (e) {
-        return false;
-      }
-    });
-  }
-
-  // Delayed stranded-recovery. When no real tab remains, the window may be
-  // mid-restore (its close-all phase leaves only the relay for a moment) or
-  // genuinely stranded (the user closed the last real tab). Recover on a
-  // delayed pass: if a real tab reappears first (restore proceeded), just
-  // steer; only when the window is STILL relay-only do we open a fresh
-  // command-center tab. One in-flight pass, ever.
-  let recoveryTimer: any = null;
-  function scheduleStrandedRecovery(): void {
-    if (recoveryTimer) return;
-    recoveryTimer = setTimeout(() => {
-      recoveryTimer = null;
-      try {
-        const real = realUserTabs();
-        if (real.length) {
-          ensureRealTabSelected(); // restore proceeded — just steer if needed
-          return;
-        }
-        let onlyRelay = true;
-        try {
-          for (const t of Array.from(window.gBrowser.tabs) as any[]) {
-            const spec =
-              t.linkedBrowser && t.linkedBrowser.currentURI
-                ? t.linkedBrowser.currentURI.spec
-                : "";
-            if (spec.indexOf("relay.html") === -1) {
-              onlyRelay = false;
-              break;
-            }
-          }
-        } catch (e) {
-          onlyRelay = false;
-        }
-        if (onlyRelay) {
-          const base = ccBaseUrl();
-          if (base) {
-            const tab = window.gBrowser.addTab(base + "commandcenter.html", {
-              inBackground: false,
-              skipAnimation: true,
-              triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-            });
-            if (tab) window.gBrowser.selectedTab = tab;
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
-    }, 700);
-  }
-
-  // Firefox may select the adjacent tab AFTER a close — which can be the
-  // hidden relay (blank, keys dead) or a wrapper still being torn down
-  // (blank gray content, nothing renderable). Never leave the user stranded:
-  // on the next tick, if the selected tab is not a real user tab, steer to
-  // the last real tab; if no real tab remains, defer to the delayed recovery
-  // (a restore in progress must not be clobbered with a new tab).
-  function ensureRealTabSelected(): void {
-    try {
-      const sel = window.gBrowser.selectedTab;
-      const real = realUserTabs();
-      if (!real.length) {
-        scheduleStrandedRecovery();
-        return;
-      }
-      let selBad = false;
-      try {
-        if (Cu && Cu.isDeadWrapper(sel)) selBad = true;
-      } catch (e) {
-        selBad = true;
-      }
-      if (!selBad) {
-        try {
-          const s =
-            sel && sel.linkedBrowser && sel.linkedBrowser.currentURI
-              ? sel.linkedBrowser.currentURI.spec
-              : "";
-          if (s.indexOf("relay.html") !== -1) selBad = true;
-        } catch (e) {
-          selBad = true;
-        }
-      }
-      if (selBad) window.gBrowser.selectedTab = real[real.length - 1];
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // The 500ms poll alone leaves a window where the relay sits selected after
-  // Firefox auto-selects an adjacent tab on a close (the white flash / blank
-  // dead end). Hook the tab container so selection is corrected on the same
-  // tick. Idempotent; guards against double-hooking.
-  let tabEventsHooked = false;
-  function hookTabSelectionGuard(): void {
-    if (tabEventsHooked) return;
-    tabEventsHooked = true;
-    try {
-      const container = window.gBrowser && window.gBrowser.tabContainer;
-      if (!container) return;
-      container.addEventListener("TabSelect", () => ensureRealTabSelected());
-      container.addEventListener("TabClose", (e: any) => {
-        // Remember the exact tab that closed: while it tears down it still
-        // sits in gBrowser.tabs, and steering onto it is the blank dead end.
-        const closed = e && e.target;
-        if (closed) {
-          lastClosedTabs.add(closed);
-          setTimeout(() => lastClosedTabs.delete(closed), 3000);
-        }
-        // Firefox may select the adjacent tab (possibly the relay or a dying
-        // wrapper) AFTER the close event; steer on the next tick once
-        // selection has settled, and check again once the removal completes.
-        setTimeout(() => {
-          ensureRealTabSelected();
-          setTimeout(() => ensureRealTabSelected(), 250);
-        }, 0);
-      });
-    } catch (e) {
-      // ignore
     }
   }
 
   function startRelay(): boolean {
     if (!ccBaseUrl()) return false;
-    let r = resolveRelayTab();
-    hookTabSelectionGuard();
+    const r = relayTab.browser();
+    tabGuard.hook();
     if (!r) {
       // No relay yet: create the tab; requests queue until it exists.
-      createRelayTab();
+      relayTab.create();
       return true;
     }
     relayReady = true;
-    dedupeRelayTabs();
-    ensureRealTabSelected();
+    relayTab.dedupe();
+    tabGuard.ensureRealTabSelected();
     pollRelayUrl();
     return true;
   }
 
-  function requestBg(action: string, arg?: string): boolean {
+  function requestBg<K extends RelayAction>(action: K, arg?: RelayReq<K>): boolean {
     if (!ccBaseUrl()) return false;
     if (!startRelay()) return false;
     // Queue into the single URL slot; sendNextRelay drains it as the slot
@@ -577,17 +274,44 @@ export function createChannel(deps: ChannelDeps): Channel {
     // are handled+cleared by pollRelayUrl). If the relay never comes up, drop
     // the entry after RELAY_TIMEOUT (the caller — e.g. the alive announce —
     // retries on its own schedule).
-    const entry = { id: 0, action: action, arg: arg };
+    const entry = { id: 0, action: action, arg: arg ?? {} };
     pendingReqs.push(entry);
-    setTimeout(() => {
+    // THE DROP DEADLINE IS NOT A STARTUP DEADLINE.
+    //
+    // A queued request is dropped after RELAY_TIMEOUT so a background that never
+    // answers cannot leak the queue. But the relay is a real TAB: on a fresh
+    // launch it has to be created and commit, and on a cold profile — or while a
+    // session restore is reopening a windowful of tabs — that takes longer than
+    // this window. The request was then dropped before it was ever sent, and
+    // nothing said so: the action simply did not happen. That is what "not all
+    // functionality works right after Firefox launches" was.
+    //
+    // So the timer re-arms while there has been NO OPPORTUNITY to send — the
+    // relay tab is not up yet, or its single URL slot is still busy with the
+    // request ahead of this one — up to a hard ceiling. Once the relay is up and
+    // the slot is free, the original deadline applies again, so the queue still
+    // cannot grow without bound.
+    const queuedAt = Date.now();
+    const dropIfStuck = (): void => {
       const i = pendingReqs.indexOf(entry);
-      if (i >= 0) pendingReqs.splice(i, 1);
-    }, RELAY_TIMEOUT);
+      if (i < 0) return;
+      const relayUp = !!relayTab.browser();
+      const slotBusy = relayUp && relayTab.url().indexOf(RELAY_HASH_PREFIX) !== -1;
+      if ((!relayUp || slotBusy) && Date.now() - queuedAt < RELAY_BOOT_MAX) {
+        setTimeout(dropIfStuck, RELAY_TIMEOUT);
+        return;
+      }
+      pendingReqs.splice(i, 1);
+    };
+    setTimeout(dropIfStuck, RELAY_TIMEOUT);
     sendNextRelay();
     return true;
   }
 
-  function requestReply(action: string, arg?: string): Promise<any> {
+  // Resolves the background's reply, or null on timeout / relay failure —
+  // callers must tolerate null, because "the other end never answered" is a
+  // normal state for a channel that rides a browser tab's URL.
+  function requestReply<K extends RelayAction>(action: K, arg?: RelayReq<K>): Promise<RelayRes<K> | null> {
     return new Promise((resolve) => {
       const id = ++relaySeq;
       const timer = setTimeout(() => {
@@ -601,112 +325,29 @@ export function createChannel(deps: ChannelDeps): Channel {
         resolve(null);
         return;
       }
-      const entry = { id: id, action: action, arg: arg };
-      pendingReqs.push(entry);
+      pendingReqs.push({ id: id, action: action, arg: arg ?? {} });
       sendNextRelay();
     });
   }
 
-  /* ===================== background -> chrome commands ===================== */
-
-  // Commands the background pushes through the relay (native splits, status
-  // pushes, ...). `arg` arrives structured-cloned: objects come through as
-  // objects, strings as strings.
-  function handleCmd(action: string, arg: any): void {
-    if (action === "splitTab") {
-      try {
-        deps.split.splitCurrentTab("horizontal");
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "unsplit") {
-      try {
-        deps.split.unsplit();
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "switchPane") {
-      try {
-        deps.split.switchPane(parseInt(arg, 10) || 1);
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "swapSplitPanes") {
-      try {
-        deps.split.swapPane(parseInt(arg, 10) || 1);
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "moveToSplit") {
-      try {
-        deps.split.addTabToSplitByIndex(parseInt(arg, 10) || 0);
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "restoreSplits") {
-      // Session restore finished opening tabs; re-create the native split
-      // groupings. `arg` is JSON of [[index, ...], ...] with 1-based
-      // positions over the SAVED tab list.
-      try {
-        deps.split.restoreSplits(String(arg));
-      } catch (e) {
-        // ignore
-      }
-      return;
-    }
-    if (action === "sessionState") {
-      // Status-bar push/reply: the fresh session summary as an object.
-      deps.status.applySessionState(arg);
-      return;
-    }
-    if (action === "leaderState") {
-      // Content-script leader arm/disarm: cache it per tab-strip index so the
-      // window-level status bar can show the pulsing LEADER chevron on web
-      // pages.
-      const st = arg || {};
-      if (typeof st.index === "number" && st.index >= 0) {
-        deps.status.setContentLeader(st.index, !!st.active);
-      }
-      return;
-    }
-    if (action === "findState") {
-      // Content-script find-in-page count: cache it per tab-strip index so
-      // the window-level status bar shows the live match count on web pages.
-      const st = arg || {};
-      if (typeof st.index === "number" && st.index >= 0) {
-        deps.status.setContentFind(st.index, st.count || 0, st.cur || 0);
-      }
-    }
-  }
-
   /* ===================== public request wrappers ===================== */
 
+  // The three read-only pulls the chrome UI makes, each with its reply already
+  // shaped by RelayApi. They survive the `Array.isArray` / object guards
+  // because the reply crosses a URL and a port: a truncated or half-parsed
+  // payload must degrade to an empty list, never to a render-time crash.
   function requestSessionState(): Promise<void> {
-    return requestReply("sessionState").then((state: any) => {
+    return requestReply("sessionState").then((state) => {
       if (state && typeof state === "object") deps.status.applySessionState(state);
     });
   }
 
   function requestSessionTabs(name: string): Promise<PopupItem[]> {
-    return requestReply("sessionTabs", name).then((items: any) =>
-      Array.isArray(items) ? (items as PopupItem[]) : []
-    );
+    return requestReply("sessionTabs", { name }).then((items) => (Array.isArray(items) ? items : []));
   }
 
   function requestRecentlyClosed(): Promise<PopupItem[]> {
-    return requestReply("recentlyClosed").then((items: any) =>
-      Array.isArray(items) ? (items as PopupItem[]) : []
-    );
+    return requestReply("recentlyClosed").then((items) => (Array.isArray(items) ? items : []));
   }
 
   /* ===================== real-tab channels (keys/state/cfg/open) ===================== */
@@ -730,6 +371,16 @@ export function createChannel(deps: ChannelDeps): Channel {
     }, 0);
   }
 
+  // Close the requesting command-center tab. Shared by both arms of handleOpen.
+  function closeRequestingTab(browser: any): void {
+    try {
+      const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
+      if (tab) window.gBrowser.removeTab(tab);
+    } catch (e) {
+      // ignore
+    }
+  }
+
   function handleOpen(target: string, browser: any): void {
     // `.c` marks "close the requesting command-center tab after opening".
     // Checked by SUFFIX (not contains): the base64 URL payload below can
@@ -749,14 +400,7 @@ export function createChannel(deps: ChannelDeps): Channel {
       } catch (e) {
         // malformed payload — ignore
       }
-      if (closeCc && browser) {
-        try {
-          const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
-          if (tab) window.gBrowser.removeTab(tab);
-        } catch (e) {
-          // ignore
-        }
-      }
+      if (closeCc && browser) closeRequestingTab(browser);
       return;
     }
     const which = target.split(".")[0]!;
@@ -775,225 +419,13 @@ export function createChannel(deps: ChannelDeps): Channel {
     } else {
       deps.ops.openTarget(which);
     }
-    if (closeCc && browser) {
-      try {
-        const tab = window.gBrowser.tabs.find((t: any) => t.linkedBrowser === browser);
-        if (tab) window.gBrowser.removeTab(tab);
-      } catch (e) {
-        // ignore
-      }
-    }
+    if (closeCc && browser) closeRequestingTab(browser);
   }
 
-  // Apply the Shift modifier to a printable key the way a real keyboard does
-  // (the harness asks for `;|` as key "\\" + shift, `;+` as "=" + shift). The
-  // real key path has Firefox compute the shifted character; the synthetic
-  // #lfc=keys path must do it itself or the leader sees "\\" instead of "|".
-  function shiftedKey(key: string): string {
-    if (key.length !== 1) return key;
-    if (key >= "a" && key <= "z") return key.toUpperCase();
-    const map: Record<string, string> = {
-      "`": "~", "1": "!", "2": "@", "3": "#", "4": "$", "5": "%",
-      "6": "^", "7": "&", "8": "*", "9": "(", "0": ")",
-      "-": "_", "=": "+", "[": "{", "]": "}", "\\": "|",
-      ";": ":", "'": "\"", ",": "<", ".": ">", "/": "?",
-    };
-    return map[key] || key;
-  }
-
-  // Key names -> DOM_VK_ key codes for sendKeyEvent (printable chars use
-  // charCode with keyCode 0).
-  const SPECIAL_KEYS: Record<string, number> = {
-    Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46,
-    ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
-    Home: 36, End: 35, PageUp: 33, PageDown: 34, Space: 32,
-  };
-
-  // Synthesize a key sequence through the trusted input path (sendKeyEvent),
-  // so the chrome document's capture-phase keydown listener AND the focused
-  // page see exactly what a real key produces. The e2e harness drives the
-  // command center this way because geckodriver's BiDi input is rejected on
-  // moz-extension ("privileged scope") contexts and Marionette keys never
-  // reach the chrome window's listener (so the helper's leader/popups — the
-  // real user code path — would never see the leader key).
-  // Build a synthetic KeyboardEvent matching a key spec, dispatching through
-  // the normal DOM path so a page's window/document keydown listeners see it.
-  // The constructor comes from the TARGET window's realm: an event created
-  // with the chrome window's KeyboardEvent and dispatched into a content
-  // document is invisible to the page's listeners (its internal Window is the
-  // creator's), which is exactly what broke cross-realm dispatch.
-  function buildKeyEvent(
-    type: string,
-    ev: { key: string; shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean },
-    ctor: typeof KeyboardEvent = KeyboardEvent
-  ): KeyboardEvent {
-    const keyCode = SPECIAL_KEYS[ev.key] !== undefined ? SPECIAL_KEYS[ev.key] : ev.key.length === 1 ? ev.key.toUpperCase().charCodeAt(0) : 0;
-    const charCode = ev.key.length === 1 ? ev.key.charCodeAt(0) : 0;
-    return new ctor(type, {
-      key: ev.key,
-      code: ev.key,
-      keyCode,
-      which: keyCode || charCode,
-      charCode,
-      bubbles: true,
-      cancelable: true,
-      shiftKey: ev.shiftKey,
-      ctrlKey: ev.ctrlKey,
-      altKey: ev.altKey,
-      metaKey: ev.metaKey,
-    });
-  }
-
-  // Synthetic (untrusted) key events never run the browser's native text
-  // insertion, which pages rely on for typing. Emulate it exactly: only when
-  // the keydown was NOT defaultPrevented (the page left the default action
-  // to the browser) and the target is a text field, insert the character.
-  function maybeInsertText(
-    target: Element | null,
-    ev: { key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean },
-    notCanceled: boolean
-  ): void {
-    if (!notCanceled || !target) return;
-    if (ev.key.length !== 1 || ev.ctrlKey || ev.altKey || ev.metaKey) return;
-    try {
-      const tag = String(target.tagName || "").replace(/^.*:/, "").toUpperCase();
-      const input = tag === "INPUT" || tag === "TEXTAREA"
-        ? (target as HTMLInputElement)
-        : target.closest && target.closest("input, textarea")
-          ? (target.closest("input, textarea") as HTMLInputElement)
-          : null;
-      if (!input || input.readOnly || input.disabled) return;
-      const s = input.selectionStart == null ? input.value.length : input.selectionStart;
-      const en = input.selectionEnd == null ? input.value.length : input.selectionEnd;
-      input.value = input.value.slice(0, s) + ev.key + input.value.slice(en);
-      try {
-        input.setSelectionRange(s + 1, s + 1);
-      } catch (e) {
-        // ignore
-      }
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // Deliver an unconsumed key to wherever focus lives: the chrome popup input
-  // when a popup is open, otherwise the target tab's content (the command
-  // center). This mirrors what a real key would do after the chrome capture
-  // listener lets it through. `targetTab` is the tab the harness asked to
-  // address (defaults to the selected tab) — the chrome-level dispatch runs on
-  // the REAL selection (so relative actions like ;[/;] switch the actual active
-  // pane), but a key the chrome layer lets through lands in the addressed tab.
-  function dispatchToFocused(
-    ev: {
-      key: string;
-      shiftKey: boolean;
-      ctrlKey: boolean;
-      altKey: boolean;
-      metaKey: boolean;
-    },
-    targetTab: any
-  ): void {
-    try {
-      const popupInput = document.querySelector(".lf-input") as HTMLElement | null;
-      if (popupInput) {
-        // No keypress: the editor inserts text natively on a trusted keypress,
-        // so a synthetic one would double-insert alongside maybeInsertText.
-        // Neither the command center nor the popups listen to keypress.
-        const notCanceled = popupInput.dispatchEvent(buildKeyEvent("keydown", ev));
-        popupInput.dispatchEvent(buildKeyEvent("keyup", ev));
-        maybeInsertText(popupInput, ev, notCanceled);
-        return;
-      }
-    } catch (e) {
-      // fall through to content
-    }
-    try {
-      const tab = targetTab || (window.gBrowser && window.gBrowser.selectedTab);
-      const cw = tab && tab.linkedBrowser && tab.linkedBrowser.contentWindow;
-      if (cw && cw.document) {
-        const ctor = (cw as { KeyboardEvent?: typeof KeyboardEvent }).KeyboardEvent || KeyboardEvent;
-        const target = cw.document.activeElement || cw.document.documentElement;
-        // No keypress (see the popup path): a synthetic keypress with a
-        // charCode makes the editor insert the text natively, double-inserting
-        // alongside maybeInsertText.
-        const notCanceled = target.dispatchEvent(buildKeyEvent("keydown", ev, ctor));
-        target.dispatchEvent(buildKeyEvent("keyup", ev, ctor));
-        maybeInsertText(target, ev, notCanceled);
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  function handleKeys(browser: any, rest: string, setHash: (b: any, h: string) => void): void {
-    // Reply loop guard: our own reply hash (keys.ok.<nonce>) re-enters via
-    // onLocationChange. base64 payloads never start with "ok."/"err.".
-    if (rest.startsWith("ok.") || rest.startsWith("err.")) return;
-    const dot = rest.indexOf(".");
-    const payload = dot < 0 ? rest : rest.slice(0, dot);
-    const nonce = dot < 0 ? "" : rest.slice(dot + 1);
-    let req: { idx?: number; keys?: Array<{ k: string; shift?: boolean; ctrl?: boolean; alt?: boolean; meta?: boolean }> } = {};
-    try {
-      const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
-      req = JSON.parse(new TextDecoder().decode(bytes));
-    } catch (e) {
-      setHash(browser, "#lfc=keys.err." + nonce);
-      return;
-    }
-    const seq = Array.isArray(req.keys) ? req.keys : [];
-    const errReply = (e: unknown): void => {
-      try {
-        const msg = String((e && (e as Error).message) || e);
-        const st = String((e && (e as Error).stack) || "").split("\n").slice(0, 2).join(" @ ");
-        Services.console.logStringMessage("lfc keys error: " + msg + " @ " + st);
-        setHash(browser, "#lfc=keys.err." + btoa(msg + " @ " + st).replace(/=+$/g, "") + "." + nonce);
-      } catch (e2) {
-        setHash(browser, "#lfc=keys.err." + nonce);
-      }
-    };
-    // Resolve the tab the harness addressed (idx -1 means the selected tab).
-    // The chrome key dispatch runs on the REAL current selection, so leader
-    // actions that are relative to the active pane (;[/;], ;+N, ;|) work on
-    // whatever pane is actually active; only keys the chrome layer lets through
-    // (typing) are routed to the addressed tab's content. Never force-select
-    // req.idx here: that would reset the active pane mid-split and make ;[ /
-    // ;] switch from the wrong pane (and it undid ;c's selection of the copy).
-    let targetTab: any = window.gBrowser && window.gBrowser.selectedTab;
-    try {
-      if (typeof req.idx === "number" && req.idx >= 0 && window.gBrowser.tabs[req.idx]) {
-        targetTab = window.gBrowser.tabs[req.idx];
-      }
-    } catch (e) {
-      // ignore
-    }
-    let i = 0;
-    const step = (): void => {
-      if (i >= seq.length) {
-        setHash(browser, "#lfc=keys.ok." + nonce);
-        return;
-      }
-      const k = seq[i++] || { k: "" };
-      try {
-        const ev = {
-          key: k.shift ? shiftedKey(k.k) : k.k,
-          ctrlKey: !!k.ctrl,
-          altKey: !!k.alt,
-          shiftKey: !!k.shift,
-          metaKey: !!k.meta,
-          isComposing: false,
-        };
-        const consumed = deps.keys.dispatch(ev);
-        if (!consumed) dispatchToFocused(ev, targetTab);
-      } catch (e) {
-        errReply(e);
-        return;
-      }
-      setTimeout(step, 20);
-    };
-    step();
-  }
-
+  // The #lfc=keys channel — the e2e harness's synthetic key path (shift
+  // maps, VK codes, cross-realm event construction, text-insert emulation,
+  // reply nonce) — lives in keys.ts. It touches no relay state; its only
+  // channel-side input is deps.keys.dispatch, passed through below.
   function handleLfc(browser: any, payload: string): void {
     const idx = payload.indexOf(".");
     const cmd = idx < 0 ? payload : payload.slice(0, idx);
@@ -1002,12 +434,30 @@ export function createChannel(deps: ChannelDeps): Channel {
       handleOpen(rest, browser);
       return;
     }
-    if (cmd === "reveal" || cmd === "console" || cmd === "diag" || cmd === "state") {
+    if (
+      cmd === "reveal" ||
+      cmd === "console" ||
+      cmd === "diag" ||
+      cmd === "state" ||
+      // The keyboard rule, runnable on demand — see debug.ts handleFocus and
+      // DebugState.giveKeyboard. Dev/verification only, like its neighbours.
+      cmd === "focus" ||
+      // Put the keyboard in the browser's own UI — the state a user reaches with
+      // the mouse, and the one no e2e input can produce (see debug.ts handleBlur).
+      cmd === "blur" ||
+      // Drop the selected tab's presence record, so the "the helper answers a live
+      // page's keys" state is reachable in a test (see debug.ts handleForget).
+      cmd === "forget" ||
+      // Put TEXT in the URL bar and mark it the way Firefox marks a field the
+      // user typed into — the reported freeze, whose whole point is that the
+      // field is one nobody can see (see debug.ts handleUrlText).
+      cmd === "urltext"
+    ) {
       deps.debug.handle(browser, cmd, rest, setHash);
       return;
     }
     if (cmd === "keys") {
-      handleKeys(browser, rest, setHash);
+      handleKeys(deps.keys, browser, rest, setHash);
       return;
     }
     if (cmd === "cfg") {
@@ -1019,14 +469,14 @@ export function createChannel(deps: ChannelDeps): Channel {
         const parsed = JSON.parse(json) as Record<string, unknown>;
         if (parsed && typeof parsed === "object") {
           if (parsed.bindings && typeof parsed.bindings === "object") {
-            deps.cfg.bindings = mergeHotkeys(parsed.bindings as Partial<ChromeHotkeys>);
+            deps.cfg.bindings = mergeHotkeys(parsed.bindings as Partial<ChannelDeps["cfg"]["bindings"]>);
             Services.prefs.setStringPref("lazyfox.chrome.bindings", JSON.stringify(deps.cfg.bindings));
           } else {
-            deps.cfg.bindings = mergeHotkeys(parsed as Partial<ChromeHotkeys>);
+            deps.cfg.bindings = mergeHotkeys(parsed as Partial<ChannelDeps["cfg"]["bindings"]>);
             Services.prefs.setStringPref("lazyfox.chrome.bindings", JSON.stringify(deps.cfg.bindings));
           }
           if (parsed.config && typeof parsed.config === "object") {
-            deps.cfg.config = mergeConfig(parsed.config as Partial<Config>);
+            deps.cfg.config = mergeConfig(parsed.config as Partial<ChannelDeps["cfg"]["config"]>);
             Services.prefs.setStringPref("lazyfox.chrome.config", JSON.stringify(deps.cfg.config));
             applyHoverRevealPref(deps.cfg);
           }
@@ -1039,20 +489,27 @@ export function createChannel(deps: ChannelDeps): Channel {
   }
 
   function relayDebug(): any {
-    const out: any = { ready: relayReady };
+    // The counter first, and OUTSIDE the try: the relay-tab details below are
+    // best-effort (a tab can be torn down mid-enumeration), but the counter is
+    // arithmetic on integers this side has already been handed, and a failure to
+    // enumerate the strip must not be the reason a lost report cannot be read.
+    const out: any = { ready: relayReady, ...relaySeqReadout(commandSeq) };
     try {
       const tabs = Array.from(window.gBrowser.tabs).map((t: any) => {
         let spec = "";
         try {
           spec = t.linkedBrowser && t.linkedBrowser.currentURI ? t.linkedBrowser.currentURI.spec : "";
-        } catch (e) {}
+        } catch (e) {
+          // A tab can be torn down while we enumerate; its linkedBrowser is
+          // already gone. A tab with no readable URL just is not a match.
+        }
         return spec;
       });
       out.relayTabs = tabs.filter((s: string) => s.indexOf("relay.html") !== -1).length;
       out.allTabs = tabs.map((s: string) => s.replace(/^moz-extension:\/\/[^/]+\//, "ext:").slice(0, 60));
-      const b = relayBrowser();
+      const b = relayTab.browser();
       out.windowLive = !!b;
-      out.urlSlot = b ? relayUrl(b).split("#")[1] || "(empty)" : null;
+      out.urlSlot = b ? relayTab.url().split("#")[1] || "(empty)" : null;
       out.pending = pendingReqs.length;
       out.awaiting = Object.keys(relayWaiters).length;
     } catch (e) {
@@ -1064,6 +521,7 @@ export function createChannel(deps: ChannelDeps): Channel {
   return {
     ccBaseUrl,
     startRelay,
+    poll: pollRelayUrl,
     requestBg,
     requestReply,
     requestSessionState,
@@ -1072,6 +530,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     setHash,
     handleLfc,
     relayDebug,
+    isKnownRelayTab: relayTab.isKnown,
     relayReady: () => relayReady,
   };
-}
+}
