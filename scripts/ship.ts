@@ -9,6 +9,9 @@
 //
 //   1. Preconditions: clean tree, on a non-master dev branch, AMO creds present,
 //      the version in dist/extension/manifest.json is already submitted&signed.
+//   1b. Pushes the dev branch that is about to be merged, BEFORE anything is
+//      merged or tagged: a merge commit names both parents, and master must not
+//      reference a commit that exists only on this machine.
 //   2. Fetches, checks out master, and merges the dev branch into it with
 //      `-X theirs` so ALL conflicts (source AND generated dist/installers)
 //      resolve in the dev branch's favor — master is just "dev source, signed".
@@ -31,6 +34,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv } from "./amo-lib.ts";
 import { gatherWorkflowChanges, ghOauthScopes, pushScopeVerdict } from "./release-auth.ts";
+import { devBranchPushCheck } from "./ship-checks.ts";
+import { gitOutput } from "./ship-git.ts";
 import { mergeDevBranch } from "./ship-merge.ts";
 import { createGitHubRelease } from "./ship-release.ts";
 
@@ -182,6 +187,26 @@ if (res.status !== 200 || !fileId) {
   );
 }
 console.log(`[ship] version ${version} is signed on AMO (file ${fileId}).`);
+
+// 2b. Push the branch this release is about to merge, before anything is merged,
+//     built or tagged. A merge commit names BOTH parents, so a master pushed
+//     while the dev branch was still local-only would reference a commit nobody
+//     else can resolve — a history that reads as corrupt to anyone who clones,
+//     bisects or builds it. Asking with a dry run first is what makes a refusal
+//     cheap: a remote that moved on stops the release with NOTHING done, rather
+//     than after master has been rewritten. The rule itself is in
+//     scripts/ship-checks.ts, and the rehearsal reports the same verdict.
+{
+  const verdict = devBranchPushCheck(
+    gitOutput(["push", "--dry-run", "--porcelain", remote, devBranch], root),
+    devBranch
+  );
+  if (verdict.level === "fail") fail(verdict.detail, verdict.fix);
+  if (verdict.level === "warn") console.warn(`\n⚠️  ${verdict.detail}`);
+  else console.log(`[ship] ${verdict.detail}.`);
+  console.log(`[ship] pushing \`${devBranch}\` (master's merge commit will name it as a parent)…`);
+  shout("git", ["push", remote, devBranch]);
+}
 
 // 3. Everything up to here was read-only. Now fetch and switch to master.
 shout("git", ["fetch", remote]);

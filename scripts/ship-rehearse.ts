@@ -33,10 +33,12 @@ import os from "node:os";
 import path from "node:path";
 import { api, isSignedXpi, xpiVersion } from "./amo-lib.ts";
 import { gatherWorkflowChanges, ghOauthScopes, pushScopeVerdict } from "./release-auth.ts";
+import { gitOutput } from "./ship-git.ts";
 import { mergeDevBranch } from "./ship-merge.ts";
 import {
   alreadyReleasedCheck,
   amoCredentialsCheck,
+  devBranchPushCheck,
   amoSignatureCheck,
   blocks,
   branchCheck,
@@ -176,6 +178,12 @@ export async function rehearse(opts: RehearseOptions): Promise<number> {
         : alreadyReleasedCheck(localHasTag, remoteHasTag, version)
     );
   }
+
+  // Would the remote accept the branch this release will merge? ship pushes it
+  // BEFORE the merge (a merge commit names both parents), so a remote that has
+  // moved on is a release-stopper worth knowing about now rather than after the
+  // build. Read-only: `--dry-run` contacts the remote and changes nothing.
+  checks.push(devBranchPushCheck(gitOutput(["push", "--dry-run", "--porcelain", remote, devBranch], root), devBranch));
 
   // The push-credential guard, on the same inputs ship uses.
   try {
