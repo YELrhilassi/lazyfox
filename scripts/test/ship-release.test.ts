@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { missingAssets, releaseAssets } from "../ship-release.ts";
+import { createGitHubRelease, missingAssets, releaseAssets } from "../ship-release.ts";
 
 describe("the release asset list", () => {
   test("it names every asset a stable release publishes", () => {
@@ -54,6 +54,31 @@ describe("the release asset list", () => {
     const assets = releaseAssets("/repo", "0.5.9");
     assert.ok(assets.some((a) => a.endsWith("lazyfox2-0.5.9-signed.xpi")));
     assert.ok(!assets.some((a) => a.endsWith("lazyfox2-0.5.9.xpi")), "never publish the unsigned xpi as a stable asset");
+  });
+});
+
+describe("the upload guard", () => {
+  test("it refuses to publish a signed xpi that is not the verified file", () => {
+    // The release page is what users download, so the uploaded asset must be the
+    // file ship proved against AMO's published hash. The refusal happens BEFORE gh
+    // is spawned, which is what lets this test run offline — and what keeps a
+    // lookalike from ever reaching a release page.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "lazyfox-release-"));
+    try {
+      for (const asset of releaseAssets(root, "9.9.9")) {
+        fs.mkdirSync(path.dirname(asset), { recursive: true });
+        fs.writeFileSync(asset, "x");
+      }
+      const signed = releaseAssets(root, "9.9.9").find((p) => p.endsWith("-signed.xpi"))!;
+      fs.writeFileSync(signed, "a lookalike");
+      assert.throws(
+        () => createGitHubRelease({ root, version: "9.9.9" }),
+        /not the file verified against AMO/,
+        "an unverified xpi must not be uploaded"
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

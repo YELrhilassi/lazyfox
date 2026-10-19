@@ -202,6 +202,92 @@ export function devBranchPushCheck(porcelain: string, branch: string): Check {
 }
 
 /**
+ * signedXpiCheck is "is the artifact we are about to publish the one AMO
+ * published?" — as opposed to "is it a signed xpi of the right version?".
+ *
+ * The two questions are not the same, and only the first one is worth anything.
+ * AMO re-signs and re-compresses what it accepts, so the file users must receive
+ * is the 5.9 MB download from AMO, not the 20 MB unsigned build that was uploaded
+ * for review; `sync-signed-xpi.ts` fetches it, and a release that ships anything
+ * else would ship an add-on AMO never reviewed. Timestamps, a stale `-signed.xpi`
+ * from an earlier attempt, a hand-edited dist — all of them produce a file that
+ * looks right and is not, which is exactly what a byte comparison catches and a
+ * "isSignedXpi + version" test does not.
+ *
+ * The comparison is against the fingerprint AMO itself publishes for the file
+ * (see amo-lib.ts). A fingerprint that is missing or in an algorithm this code
+ * cannot compute is reported as a warning naming what could not be proven — never
+ * as a pass, and not as a hard failure either, because the release's own gate is
+ * the signed file id, which AMO only produces once a reviewer has signed.
+ */
+export interface SignedXpiInput {
+  /** The version being released, from dist/extension/manifest.json. */
+  version: string;
+  /** Does the file carry the META-INF signature block? */
+  signed: boolean;
+  /** The version stamped inside the xpi, or null when it is not readable. */
+  xpiVersion: string | null;
+  /** sha256 (bare hex) of the file the release would ship. */
+  localHash: string;
+  localSize: number;
+  /** sha256 hex AMO published for this file, already normalized; null if none. */
+  amoHash: string | null;
+  /** Size AMO published for this file, or null. */
+  amoSize: number | null;
+}
+
+export function signedXpiCheck(input: SignedXpiInput): Check {
+  const { version, localHash, localSize, amoHash, amoSize } = input;
+  const file = `dist/lazyfox2-${version}.xpi`;
+
+  if (!input.signed) {
+    return fail("signed xpi", `${file} is not a signed xpi`, "run `npm run sync` to fetch the AMO-signed build for this version");
+  }
+  if (input.xpiVersion !== version) {
+    return fail(
+      "signed xpi",
+      `${file} is stamped ${input.xpiVersion ?? "no readable version"}, not ${version}`,
+      "delete the stale file and re-run `npm run sync -- --force`"
+    );
+  }
+
+  if (amoHash) {
+    // Case-insensitive on both sides: AMO lowercases its hex, but a caller that
+    // passed the header through unchanged should still get the right answer.
+    if (amoHash.toLowerCase() !== localHash.toLowerCase()) {
+      return fail(
+        "signed xpi",
+        `NOT what AMO published — local sha256 ${localHash.toLowerCase()}, AMO sha256 ${amoHash}`,
+        "this release would ship an add-on AMO never signed. Re-fetch the published file:\n" +
+          "  node scripts/sync-signed-xpi.ts --force   (then re-run the release)"
+      );
+    }
+    return ok("signed xpi", `byte-identical to the file AMO published (sha256 ${localHash.slice(0, 12)}…)`);
+  }
+
+  if (amoSize !== null) {
+    if (amoSize !== localSize) {
+      return fail(
+        "signed xpi",
+        `NOT what AMO published — local size ${localSize}, AMO size ${amoSize}`,
+        "re-fetch the published file: `node scripts/sync-signed-xpi.ts --force`"
+      );
+    }
+    return warn(
+      "signed xpi",
+      `AMO published no sha256 to compare, so byte-identity is unproven; the size matches (${localSize} B)`,
+      "treat as unverified if the artifact's origin is in doubt"
+    );
+  }
+
+  return warn(
+    "signed xpi",
+    "AMO published no fingerprint for this file, so byte-identity with what it signed is unproven",
+    "the file is signed and the right version, but nothing ties it to the reviewed upload"
+  );
+}
+
+/**
  * pushCredentialCheck turns the scope verdict (release-auth.ts) into a report
  * line. It stays a separate module because the verdict is a decision about
  * GitHub's documented `workflow`-scope exemption, which needs blob comparisons
