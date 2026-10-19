@@ -470,10 +470,15 @@ export async function run(ctx: any): Promise<void> {
     assert(val === ";'1", "input got ;'1, got " + JSON.stringify(val));
     await evalIn(ctx.tabA, 'document.activeElement && document.activeElement.blur(); true');
   });
-  await t("Esc blurs the focused input and reaches the page", async () => {
-    // Esc must unfocus whatever element holds focus AND still reach the page:
-    // page-level Esc handlers (modals, cookie banners, info bars) close on the
-    // same keypress. The content script must blur, never consume the key.
+  await t("Esc is a ladder: it blurs the focused input, and the page gets the next press", async () => {
+    // ONE PRESS, ONE RUNG.
+    //
+    // Esc must unfocus whatever element holds focus — and STOP THERE. It used to
+    // blur and reach the page in the same keystroke, which meant a page-level Esc
+    // handler (this product's own report: a WhatsApp dialog, a menu, a modal with
+    // a form half filled in) closed on the press that only meant "put the caret
+    // down". The next press, with nothing of Lazyfox's left to clean and no field
+    // focused, is the page's — that is how those surfaces close at all.
     await ctx.gotoPage(ctx.tabA, ctx.base + "/");
     await evalIn(
       ctx.tabA,
@@ -486,8 +491,20 @@ export async function run(ctx: any): Promise<void> {
     await ctx.waitExpr(ctx.tabA, `document.activeElement && document.activeElement.id !== "inp1"`, true, 5000);
     const ae = await evalIn(ctx.tabA, `document.activeElement && document.activeElement.id`);
     assert(ae !== "inp1", "Esc blurred the focused input, activeElement=" + JSON.stringify(ae));
-    const keys = await evalIn(ctx.tabA, `window.__lfEscKeys`);
-    assert(keys && keys.indexOf("Escape") !== -1, "page received Esc, got " + JSON.stringify(keys));
+    const afterFirst = await evalIn(ctx.tabA, `window.__lfEscKeys`);
+    assert(
+      (afterFirst || []).indexOf("Escape") === -1,
+      "the first Esc must NOT reach the page — a modal with a form in it would close " +
+        "under the user (page saw " +
+        JSON.stringify(afterFirst) +
+        ")"
+    );
+    await ctx.press(ctx.tabA, "Escape");
+    const afterSecond = await evalIn(ctx.tabA, `window.__lfEscKeys`);
+    assert(
+      (afterSecond || []).indexOf("Escape") !== -1,
+      "the second Esc must reach the page, got " + JSON.stringify(afterSecond)
+    );
   });
   await t("Esc during hints clears state so the next ;f re-hints everything", async () => {
     // Regression: ;f, type one letter of a hint, then Esc — the next ;f used

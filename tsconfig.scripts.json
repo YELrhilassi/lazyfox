@@ -259,6 +259,12 @@
     "scripts/test/relay-queue.test.ts",
     "scripts/test/typing-target.test.ts",
     "scripts/test/keymap.test.ts",
+    // hints-collect is excluded for the same reason as the other hints tests
+    // listed here: it drives collect.ts, which is DOM-typed (Element, window,
+    // document, getComputedStyle) and is typechecked by tsconfig.json, which
+    // owns the browser tree. This config would otherwise pull the whole hint
+    // engine into a project with no DOM lib and report a hundred missing names.
+    "scripts/test/hints-collect.test.ts",
     "scripts/test/hints-visibility.test.ts",
     "scripts/test/hints-motion.test.ts",
     "scripts/test/hints-focus.test.ts",

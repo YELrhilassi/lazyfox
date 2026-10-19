@@ -1041,8 +1041,10 @@ html,body{margin:0}
   // in it), which is exactly the accident a user hits when all they wanted was to
   // leave a field. So the page records Escape presses and whether its dialog is
   // still up, and the suite asserts the two cancel keys do DIFFERENT things:
-  // Escape still reaches the page and keeps the caret, the cancel chord leaves
-  // the field and tells the page nothing.
+  // Escape is a ladder here: the first press leaves the field and the page hears
+  // nothing (its dialog, with a form in it, stays up); the second press, with
+  // nothing of Lazyfox's left and no field focused, is the page's. The cancel
+  // chord does the first half and always tells the page nothing.
   "/field": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>FIELD</title>
 <style>
@@ -1110,6 +1112,62 @@ html,body{margin:0}
 </script>
 </body></html>`,
   },
+  // Chat-shaped rows: the WhatsApp Web shape that had no keys.
+  //
+  // Each row is an avatar wrapper, a title/preview column, a timestamp and (on
+  // the third one) extra action columns — four to eight element children, no
+  // role, no aria-label, `cursor:pointer`, and a textContent that carries the
+  // WHOLE last message while the row paints one ellipsized line. The old leaf
+  // bounds (at most 3 children, at most 120 characters) removed exactly the rows
+  // whose last message was long, which reads to a user as "hints show for some of
+  // these and not the rest of the identical ones".
+  "/chatrows": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>CHATROWS</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.4 system-ui,sans-serif; background:#111; color:#eee; }
+  #list { width:360px; }
+  .row { display:flex; align-items:center; gap:8px; width:360px; height:72px;
+         cursor:pointer; border-bottom:1px solid #333; padding:0 8px; }
+  .avatar { width:48px; height:48px; border-radius:50%; background:#345; flex:0 0 auto; }
+  .col { flex:1 1 auto; min-width:0; }
+  .title { font-weight:600; }
+  .preview { color:#aaa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .meta { color:#888; font-size:12px; }
+</style></head>
+<body>
+<div id="list" role="list">
+  <div class="row" id="row-short" data-id="row-short">
+    <div class="avatar"></div>
+    <div class="col"><div class="title">Ada</div><div class="preview">See you at six</div></div>
+    <div class="meta">18:02</div>
+  </div>
+  <div class="row" id="row-long" data-id="row-long">
+    <div class="avatar"></div>
+    <div class="col"><div class="title">Grace</div><div class="preview" id="row-long-preview"></div></div>
+    <div class="meta">17:41</div>
+  </div>
+  <div class="row" id="row-many" data-id="row-many">
+    <div class="avatar"></div>
+    <div class="col"><div class="title">Linus</div><div class="preview">ok</div></div>
+    <div class="meta">17:02</div>
+    <div class="meta">pinned</div>
+    <div class="meta">muted</div>
+    <div class="meta">unread</div>
+    <div class="meta">starred</div>
+    <div class="meta">archived</div>
+  </div>
+</div>
+<script>
+  // The row's text is long; the row is one line tall. This is the case the old
+  // text bound removed, so it is written here rather than left to a fixture
+  // coincidence.
+  document.getElementById("row-long-preview").textContent =
+    "the long message that makes this row different from its neighbours ".repeat(4);
+</script>
+</body></html>`,
+  },
+
   // A page that NEVER goes quiet, with a control that only answers a TRUSTED
   // click. This is the shape the privileged retry exists for and the shape that
   // used to make it unreachable: the page-level signal answered "the page updated

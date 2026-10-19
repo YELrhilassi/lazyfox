@@ -798,9 +798,30 @@ export function createLinkHints(
     // survive this. Safe at `;f` time because `assign()` runs synchronously
     // before control returns to the event loop, so a keydown can never be
     // processed against a batch that has not been assigned yet.
-    if (!items.length || overlay.shownKeys().size === 0) {
+    if (!items.length) {
       exit();
       return false;
+    }
+    if (overlay.shownKeys().size === 0) {
+      // A LAYER THAT LOOKS DEAD IS NOT A DEAD LAYER: TRY TO HEAL IT FIRST.
+      //
+      // `shownKeys()` is empty when the placement pass could not get a single
+      // label on screen — the page re-rendered under the batch, a virtual list
+      // parked its rows for a frame, a dialog re-mounted itself. Tearing the
+      // whole session down on the next keypress turned that one bad frame into
+      // "the hints just disappeared", which is precisely what users of chat and
+      // mail apps report: the layer was still valid, it had simply lost its
+      // anchors.
+      //
+      // Re-anchor first (synchronous, and enough when the page only moved), then
+      // re-collect against the DOM as it is now. The key is DECLINED so the host
+      // still gets it — the layer no longer eats keys it cannot answer with —
+      // and the next `;f` keystroke finds labels again.
+      render();
+      if (overlay.shownKeys().size === 0) {
+        syncViewport();
+        return false;
+      }
     }
     // A MODIFIED keystroke is never a hint key.
     //

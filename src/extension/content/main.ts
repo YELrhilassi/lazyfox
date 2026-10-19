@@ -758,7 +758,15 @@ import type { ContentPopupShell } from "./find";
   // same thing in both places — hints gone, capture dropped, leader hidden, the
   // scroll target back to automatic, and no field left focused that the user did
   // not ask to keep.
-  function cancelOverlays(): void {
+  //
+  // RETURNS whether it removed something the user could SEE. That answer is the
+  // difference between the two halves of the Escape ladder below: a press that
+  // cleaned a surface (or left a field) belongs to Lazyfox and is consumed, so
+  // the page's own Escape handler does not fire in the same keystroke; a press
+  // with nothing to clean belongs to the page, which is how a dialog or a menu
+  // closes at all.
+  function cancelOverlays(): boolean {
+    let cleaned = false;
     // READER MODE GOES WITH EVERYTHING ELSE, and it is listed FIRST because it is
     // the biggest thing on screen: the article REPLACES the page, so a cancel
     // that left it standing would leave the user looking at a document they
@@ -766,10 +774,22 @@ import type { ContentPopupShell } from "./find";
     // out, which is not a key anybody guesses under a page that has vanished).
     // Escape is this product's master cancel on every other surface, and the
     // reader is a Lazyfox surface like the hint layer and the which-key panel.
-    if (reader.active()) reader.close();
-    if (hints.active || hints.starting) hints.exit();
-    if (leader.hasPending()) leader.cancelPending();
-    if (leader.active) leader.hide();
+    if (reader.active()) {
+      reader.close();
+      cleaned = true;
+    }
+    if (hints.active || hints.starting) {
+      hints.exit();
+      cleaned = true;
+    }
+    if (leader.hasPending()) {
+      leader.cancelPending();
+      cleaned = true;
+    }
+    if (leader.active) {
+      leader.hide();
+      cleaned = true;
+    }
     // AND THE HOLD WITH IT. Escape / Ctrl+G end the gesture, and the gesture
     // includes the claim this document published to the background. Hiding the
     // overlay and leaving that claim standing is how a cancel came back: the
@@ -787,7 +807,10 @@ import type { ContentPopupShell } from "./find";
     if (cancelHold(leader)) holdWatchdog.stop();
     // Return the scroll keys to the automatic target (document scroller on
     // ordinary pages) so a cycled sidebar can never trap them.
-    if (scroll.isCustom()) scroll.reset();
+    if (scroll.isCustom()) {
+      scroll.reset();
+      cleaned = true;
+    }
     // Unfocus whatever holds focus (an input, a button, a link) so the page
     // returns to its default state. A FIELD is blurred through the deep helper:
     // a field inside a closed shadow root reports its HOST as activeElement, and
@@ -795,16 +818,20 @@ import type { ContentPopupShell } from "./find";
     // caret exactly where it was.
     if (isTypingTarget(document.activeElement)) {
       blurTypingFocus();
-      return;
+      // Leaving a field is the case the ladder exists for: the caret is gone, so
+      // there IS a visible change to report.
+      return true;
     }
     const ae = document.activeElement;
     if (ae && ae !== document.body && ae !== document.documentElement) {
       try {
         (ae as HTMLElement).blur();
+        cleaned = true;
       } catch (err) {
         // ignore
       }
     }
+    return cleaned;
   }
 
   function onKeyDown(e: KeyboardEvent) {
@@ -991,21 +1018,27 @@ import type { ContentPopupShell } from "./find";
       // again, and the page's own Escape semantics are not Lazyfox's to deny.
       if (isCancel(e)) {
         br = e.key === "Escape" ? "cancel-field" : "cancel-field-chord";
-        // ESCAPE IS THE MASTER CANCEL HERE TOO, and it used to not be: while the
-        // caret was in a field, Escape was passed straight through with the
-        // overlays left standing, so the one key every user reaches for both
-        // ways out was the only key that did nothing at all. It now clears
-        // every Lazyfox surface exactly as the chord does — hints, leader,
-        // capture, scroll target — and it still reaches the page, because that
-        // is what Escape means on the web (a site closing its own menu, a
-        // player leaving fullscreen).
+        // ESCAPE IS A LADDER, ONE RUNG PER PRESS.
         //
-        // Ctrl+G is the difference the user gets to choose: the SAME cleanup,
-        // consumed, so a page with its own Escape binding — the dialog with a
-        // form in it — sees nothing and keeps its UI. Two keys, one meaning,
-        // and the only disagreement is whether the page is told.
-        cancelOverlays();
-        if (e.key !== "Escape") {
+        // The rule: a press that CHANGED something on this screen is Lazyfox's
+        // and is consumed; a press that changed nothing belongs to the page,
+        // which is how a menu, a dialog or a fullscreen video closes at all.
+        //
+        // So Escape in a field leaves the field and stops there. The site's own
+        // Escape handler does NOT also run in that keystroke, and that is the
+        // point: the container the caret sits in is usually a dialog with a form
+        // the user is half way through — a chat composer, a search panel, a
+        // compose window — and closing it on the keystroke that merely put the
+        // caret down destroyed work nobody asked to destroy. The next Escape,
+        // with nothing left of Lazyfox's and no field focused, reaches the page
+        // and closes it, which is exactly the step-by-step the user asked for.
+        //
+        // Ctrl+G still does the same cleanup and is ALWAYS consumed: it exists
+        // for the page that fights Lazyfox for Escape, and no page can receive
+        // Ctrl+G as text.
+        const cancelChord = e.key !== "Escape";
+        const cleaned = cancelOverlays();
+        if (cancelChord || cleaned) {
           e.preventDefault();
           e.stopImmediatePropagation();
         }
@@ -1032,15 +1065,18 @@ import type { ContentPopupShell } from "./find";
       // on the user's behalf to say they wanted to press none.
       const cancelChord = e.key !== "Escape";
       br = cancelChord ? "cancel-chord" : "cancel";
-      cancelOverlays();
-      // Esc is deliberately NOT consumed: the page must also receive it so it
-      // can close its own popups, info bars, cookie banners and fullscreen
-      // video.
+      // THE SAME LADDER as the field case above, with one rung fewer: this press
+      // has no caret to put down, so it is the PAGE's turn the moment Lazyfox has
+      // nothing on screen. Anything that WAS ours (hints, the leader, an armed
+      // capture, reader mode, a cycled scroll region) is cleaned and the press is
+      // consumed — a modal must not vanish because the user dismissed a hint
+      // layer with the same keystroke.
       //
-      // Ctrl+G IS consumed. It exists precisely because a page that binds Esc
-      // fights Lazyfox for it, and a page cannot receive Ctrl+G as text anyway —
-      // so the chord is ours alone and nothing downstream needs it.
-      if (cancelChord) {
+      // Ctrl+G IS always consumed. It exists precisely because a page that binds
+      // Escape fights Lazyfox for it, and a page cannot receive Ctrl+G as text
+      // anyway — so the chord is ours alone and nothing downstream needs it.
+      const cleaned = cancelOverlays();
+      if (cancelChord || cleaned) {
         e.preventDefault();
         e.stopImmediatePropagation();
       }

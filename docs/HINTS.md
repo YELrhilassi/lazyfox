@@ -730,28 +730,45 @@ down and that the NEXT keystroke arms the leader — so the fix cannot regress i
 
 ## 9. The second field report (2026-10-11): Escape's job, and four ways the keyboard went quiet
 
-### 9.1 Escape is the master cancel again; Ctrl+G is the one that keeps quiet
+### 9.1 Escape is a ladder, one rung per press; Ctrl+G is the one that keeps quiet
 
 §8.2 made the caret in a field outrank Escape entirely, on the reasoning that
 leaving an edit in progress is the accident Escape must not cause. That was the
 wrong trade in daily use: Escape is the key every user already reaches for, so
 "it does nothing here" reads as broken, not as safe.
 
-The rule is now one sentence per key:
+§9.1 then made Escape do *everything* in one keystroke — clear every Lazyfox
+surface, put the caret down, **and** let the page act — which turned out to be the
+other half of the same mistake, and it took a user of the released build to name
+it: *"esc sometimes is used by the website to do actions like close menus or
+modal or windows, i still need the esc to be step by step cleanup … we might
+still want the window or the modal to be showing as it might have a form that we
+are filling"*. A dialog with a half-filled form closed on the press that only
+meant "get me out of this box", and Ctrl+G — the key that exists precisely to
+avoid that — was the only way to leave a field without losing the form.
 
-* **Escape does everything.** Every Lazyfox surface stands down — hints, leader,
-  capture, scroll target — *and* the caret leaves the field, and the key is
-  **not** consumed, so a page that binds Escape still acts on it. One key, the
-  master cancel, nothing to remember.
-* **Ctrl+G does the same and consumes the keystroke**, so a page with its own
-  Escape binding — the dialog with a form in it — sees nothing and keeps its UI.
-  It exists for exactly that choice, so it is now the *only* difference between
-  the two keys.
+The rule is now one rung per press:
 
-Pinned by `content/field › Escape is the master cancel: the page still sees it
-and the caret leaves the field` (page-side counters: one Escape seen, dialog
-gone, `activeElement` no longer the field) next to the Ctrl+G case, which must
-see zero Escapes and a dialog still up.
+* **An Escape that changed something on screen is Lazyfox's, and is consumed.**
+  The caret leaving a field counts as a change; so does a hint layer, the leader,
+  an armed capture, reader mode or a cycled scroll region being cleaned up. The
+  page's own handler does not also run in that keystroke, so the modal, menu or
+  panel the user is working in stays exactly as it was.
+* **An Escape that changed nothing is the page's.** With nothing of Lazyfox's on
+  screen and no field focused, the press is passed through untouched — which is
+  how a menu, a dialog or a fullscreen video closes at all. It is the *second*
+  press in the common case, and that is the point: one key, two rungs, nothing to
+  remember, and nothing destroyed that the user did not ask to destroy.
+* **Ctrl+G does the same cleanup and is always consumed**, so a page with its own
+  Escape binding — the dialog with a form in it — sees nothing at all. It stays
+  the one-key answer when the page must never hear about it.
+
+Pinned by `content/field › Escape is a ladder: the caret leaves first, the page's
+own action second` (page-side counters: zero Escapes and a dialog still up after
+the first press, one Escape and a closed dialog after the second), by
+`content/field › Escape with nothing to clean is the page's, first press` (the
+other end of the ladder: consume-when-it-cleaned must not become consume-always),
+and next to the Ctrl+G case, which must see zero Escapes and a dialog still up.
 
 ### 9.2 The command center let an armed leader outrank the caret
 
@@ -1296,12 +1313,110 @@ missing key and a duplicated key are both a failure, and neither can be excused 
   it does not break in eight cycles on a fixture page, with each cycle's two
   states asserted. A page that is re-rendering under the layer is a different
   fixture (`/ytcard`, `/busy`) and those tests are unchanged.
-* Escape is still deliberately NOT consumed on a web page (§9.1), so its first
-  press can be answered by the page and by Lazyfox at once. Nothing here changes
-  that trade.
+* Escape is consumed on a web page only when it cleaned something (§9.1, §14.3),
+  so "did the page also see it" now depends on whether Lazyfox had anything on
+  screen. §13.4's eight `;f` → Esc cycles change accordingly: each cycle's Esc
+  lands on a live hint layer, so it is consumed and never reaches the page.
 * §13.1 changed WHERE paging scrolls, not how far (`PAGE_FACTOR` is unchanged at
   0.8 viewports) and not the keymap. It follows the controller's existing target
   rule, which includes "the scrollable region under the pointer", so hovering a
   sidebar and pressing Tab pages the sidebar — exactly as `j`/`d` already do. That
   consistency is the point (one answer to "which region do the keys move"), and it
   is stated here because it is a consequence a user can notice.
+
+## 14. The sixth field report (2026-10-18): the rows that never got a key, and Escape's ladder
+
+The report, from the released build on WhatsApp Web:
+
+> "hints don't show for all the important elements, they might show for some but
+> not the rest of similar items, or even when they show they might disappear for
+> some reason … esc sometimes is used by the website to do actions like close
+> menus or modal or windows, i still need the esc to be step by step cleanup"
+
+Three faults, each named by the report and each findable in this repo without the
+site: a discovery bound that is a fact about hand-written markup, a teardown that
+fires on one bad frame, and Escape doing two rungs of work in one press.
+
+### 14.1 The rows that never got a key: the bounds were about markup, not meaning
+
+`leafClickable` is the rule that turns a bare `cursor:pointer` div — no `<a>`, no
+`<button>`, no ARIA role, which is how modern web apps build their lists — into a
+hintable control. It required **at most 3 element children** and **at most 120
+characters of text**.
+
+Both are properties of how a framework happens to nest its markup. A WhatsApp chat
+row is an avatar wrapper, a title/preview column, a timestamp column and an
+actions column: four children, rejected by the first rule. Its `textContent` is the
+**whole last message** while the row paints one ellipsized line, so a row whose last
+message was long was rejected by the second. The two rules combined removed exactly
+the rows that looked like their neighbours in every way a user can see — which is
+what "some of these are hinted and the rest are not" means, and why it was never a
+missing feature: those rows were never candidates.
+
+The rules are now about the element's meaning and its SIZE:
+
+* up to `LEAF_MAX_CHILDREN` (8) children. The check that actually keeps containers
+  out is the hintable-descendant test directly above it — a wrapper around real
+  controls was already excluded there, so the child count was doing nothing but
+  rejecting row-shaped controls.
+* long text only counts as "this is a container" when the BOX is big: over
+  `LEAF_TEXT_SOFT_MAX` (120) the element's area is compared against
+  `LEAF_MAX_AREA` (15% of the viewport), and over `LEAF_TEXT_HARD_MAX` (400) it is
+  a container regardless. The reading pane the rule was written for cannot be
+  small; a row cannot be big.
+
+Pinned by `scripts/test/hints-collect.test.ts` (the row shape, every length up to
+the hard bound, the generous child bound, and the four cases the bounds must keep
+out) and end-to-end by `content/rows › a row whose last message is long is a row
+too, not a container`, whose fixture (`/chatrows`) is written in the reported shape
+rather than in a convenient one.
+
+### 14.2 The layer that disappeared: one bad frame tore the session down
+
+"Even when they show they might disappear" is a single line of code, and it was
+written for a good reason that does not hold on a churning app:
+
+```ts
+if (!items.length || overlay.shownKeys().size === 0) { exit(); return false; }
+```
+
+`shownKeys()` is empty whenever the placement pass could not put a label on screen
+— the page re-rendered under the batch, a virtual list parked its rows for a frame,
+a dialog re-mounted itself. That is a normal frame on a chat or mail app. The old
+rule turned it into "the hints are gone" on the next keypress: the session
+**destroyed itself** rather than acknowledging that it had lost its anchors.
+
+The session now heals first and declines the key instead of exiting: re-anchor
+synchronously (`render()`), and if there is still nothing placed, re-collect against
+the DOM as it is now (`syncViewport()`) and hand the keystroke back to the host. A
+layer with no labels therefore still answers the next `;f`, and it can no longer eat
+a key it cannot answer with — which was the other half of the old rule's intent.
+
+There is no e2e test for this yet: the honest fixture is a page that re-renders
+under a live layer, and `/busy` plus `/ytcard` cover the re-render paths that exist.
+It is called out here rather than implied by silence.
+
+### 14.3 Escape's ladder
+
+§9.1 rewritten: consume the press when it cleaned something, pass it through when
+it did not. The first Escape leaves the field and the page hears nothing (the modal
+with the half-filled form stays); the second closes the modal. Ctrl+G is unchanged
+— same cleanup, always consumed.
+
+### 14.4 What is NOT claimed here
+
+* Nothing in this section was measured on WhatsApp Web itself. The site is
+  authenticated, and its DOM was not available to the harness: what is modeled is
+  the SHAPE the report describes (row controls with several columns and a long
+  ellipsized preview), which is what the discovery rules can actually be wrong
+  about.
+* The 14.1 bounds are heuristics and are stated as such. They are wider than they
+  were, so a page can now collect a few candidates it previously dropped; the
+  nesting and overlap passes in `select.ts` still suppress duplicates, and the
+  `MAX_HINTS` cap is unchanged, so the visible failure mode of "too wide" is more
+  labels on a page with many row-shaped controls, not a flood.
+* 14.2 is a change of failure mode, not a proof that nothing disappears: a layer
+  whose batch is genuinely gone (every element removed from the document) still
+  ends, now through the re-collect rather than through a keypress.
+* AppleScript/BiDi suites were not run for this change (geckodriver and a display
+  are needed); the unit tests and both typechecks were.

@@ -1091,11 +1091,12 @@ navigating, and a key a capture declined is not swallowed (`;W m`, then `;`, and
 the leader arms). `npm run typecheck`, `npm run test:unit` (617) and the hints
 suite are green on the result.
 
-**Still open in §4.4:** `Escape` itself remains shared with the page by design
-(not consumed on a web page, so a site can close its own banner), which means the
-*first* press of Escape can be answered by the page and the Lazyfox surface at the
-same time. `Ctrl+G` is the escape hatch that has no such ambiguity, and it now
-works everywhere — including places it used to type a letter or open a tile.
+**§4.4, revised 2026-10-18 (HINTS.md §9.1/§14.3):** `Escape` is no longer shared by
+design. It is consumed when it cleaned something and passed through when it did
+not, so a site still closes its own banner — with the *second* press — while the
+press that leaves a field no longer closes the dialog the field was in. `Ctrl+G`
+remains the one-key version that never tells the page anything, and it still works
+everywhere — including places it used to type a letter or open a tile.
 
 **And the ledger now proves it can fail.** `scripts/mutation-check.ts` — which
 applies a deliberate revert, runs the tests that must catch it, and restores the
