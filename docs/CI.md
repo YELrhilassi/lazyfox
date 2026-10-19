@@ -46,6 +46,15 @@ would get old code.
   host's source, and the embedded add-on) — catches "dist/ rebuilt, installers
   not", for every platform, including the ones this machine cannot run.
 
+Both hashes must mean the same thing on every platform, and that is a property
+they are built with rather than one to hope for: line endings are normalised to
+LF for the source fingerprint and for the native host's contribution to the
+payload hash, and `build.ts` writes the static text it copies into `dist/` as LF.
+A Windows checkout (`core.autocrlf=true`) and a Linux CI runner therefore hash
+the same bytes of the same commit. The chrome files and the add-on are hashed
+exactly as they are, because those bytes are what ships. Keep that split when you
+add an input to either hash.
+
 It is a hash comparison, not a build, so it is fast and it does not depend on
 the toolchain. `npm run check:fix` rebuilds whatever it finds and re-checks, for
 when you want the repair rather than the report.
