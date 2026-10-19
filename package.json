@@ -24,7 +24,7 @@
     "ui:build": "npm --prefix installer/frontend run build",
     "ui:deps": "npm --prefix installer/frontend ci",
     "ui:dev": "npm --prefix installer/frontend run dev",
-    "build:release": "RELEASE=1 node build.ts",
+    "build:release": "node scripts/release-build.ts",
     "installer": "node scripts/open-installer.ts",
     "dev-install": "node scripts/dev-install.ts",
     "dev-install:clean": "node scripts/dev-install.ts --clean",

@@ -299,7 +299,8 @@ then compile the installer:
 - every other platform gets the cross-compiled terminal installer (`-tags
   nogui`), with a line in the log saying so. Wails' macOS and Linux backends
   need CGO, so those windows are built on their own platform —
-  `.github/workflows/installers.yml` does exactly that on every push.
+  `.github/workflows/installers.yml` does exactly that, on request
+  (`workflow_dispatch`), for a binary that has to be produced there.
 
 For the Windows target both paths run `scripts/winres.ts`
 (`go run … go-winres make`) to generate `rsrc_windows_amd64.syso` (manifest +

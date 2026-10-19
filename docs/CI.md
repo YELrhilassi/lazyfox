@@ -61,13 +61,16 @@ Set `BIDI_FIREFOX_BIN=/path/to/firefox` (and it auto-uses `.tools/geckodriver`)
 when you want the browser-session tests included.
 
 > **Why BiDi is local-only (not on GitHub Actions):** the full e2e suite boots
-> a fresh Firefox and can take many minutes — more than GitHub's free-plan
-> minutes allow. So `dev-nightly.yml` is **manual** (`workflow_dispatch`): it is
-> the same pipeline `npm run ci` runs locally, on demand, and a dev push spends
-> no runner on it. The one workflow that does run on a dev-nightly push is
-> `installers.yml`, because only CI can build the macOS and Linux graphical
-> installers (their windows need CGO and the platform's own webview). The
-> browser suites are run locally (`npm run e2e`, `npm run probe:chrome`). Kill
+> a fresh Firefox, needs geckodriver and a display, and can take many minutes.
+> So `dev-nightly.yml` is **manual** (`workflow_dispatch`): it is the same
+> pipeline `npm run ci` runs locally, on demand, and a dev push spends no runner
+> on it. `installers.yml` is manual for the same shape of reason — it exists to
+> build the macOS and Linux graphical installers natively (their windows need
+> CGO and the platform's own webview, so one machine cannot cross-compile them),
+> and a maintainer dispatches it when a binary has to be produced on that
+> platform itself. The only push-triggered workflow is `master.yml`, which
+> verifies the release commit. The browser suites are run locally
+> (`npm run e2e`, `npm run probe:chrome`). Kill
 > orphaned Firefox processes between runs
 > (`pkill -9 geckodriver; pkill -9 firefox`) or a fresh run can stall waiting
 > for a port CPU.
