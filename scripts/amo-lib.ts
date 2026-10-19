@@ -326,6 +326,24 @@ export function xpiVersion(buf: Buffer): string {
   return manifest.version;
 }
 
+/**
+ * compareVersions orders dotted numeric versions, so 0.5.10 sorts AFTER 0.5.9.
+ *
+ * It exists because "pick the newest") kept being written as `.sort()` over file
+ * names, where "lazyfox2-0.5.10-signed.xpi" sorts BEFORE
+ * "lazyfox2-0.5.9-signed.xpi". That silently selects the older add-on — the
+ * wrong-build bug every installer record exists to prevent.
+ */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
 export function isSignedXpi(buf: Buffer): boolean {
   try {
     const names = zipNames(buf);
