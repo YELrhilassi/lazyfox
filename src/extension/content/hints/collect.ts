@@ -28,6 +28,10 @@
 //     same rule the chrome-side hint engine follows for its ninth link.
 import {
   HINTABLE_SELECTOR,
+  LEAF_MAX_AREA,
+  LEAF_MAX_CHILDREN,
+  LEAF_TEXT_HARD_MAX,
+  LEAF_TEXT_SOFT_MAX,
   MAX_SCAN,
   MEDIA_SELECTOR,
   MEDIA_SURFACE_MIN_AREA,
@@ -38,6 +42,17 @@ import {
 } from "./selectors";
 import { createVisibilityPass, type VisibilityPass } from "./visibility";
 import { shadowRootOf, walkElements } from "../../../shared/dom";
+
+// The viewport's area, or 0 where there is no window (the unit tests drive this
+// module with plain fakes, and a hostile frame must not turn a predicate into a
+// throw).
+function viewportArea(): number {
+  try {
+    return (window.innerWidth || 0) * (window.innerHeight || 0);
+  } catch (e) {
+    return 0;
+  }
+}
 
 export function isOrHasMedia(el: Element): boolean {
   try {
@@ -61,7 +76,13 @@ export function leafClickable(el: Element, pass?: VisibilityPass): boolean {
   } catch (e) {
     return false;
   }
-  if (children > 3) return false;
+  // A control, not a container. The old bound was 3, which is a fact about a
+  // hand-written <button>, not about the row-shaped controls frameworks build:
+  // WhatsApp's chat row is avatar + title/preview + timestamp + actions, and the
+  // fourth child alone made it un-hintable while its neighbours qualified. The
+  // check that actually keeps containers out is the hintable-descendant test just
+  // below (a wrapper around real controls is already excluded by it).
+  if (children > LEAF_MAX_CHILDREN) return false;
   try {
     if (el.querySelector(HINTABLE_SELECTOR)) return false;
   } catch (e) {
@@ -69,8 +90,21 @@ export function leafClickable(el: Element, pass?: VisibilityPass): boolean {
   }
   const r = el.getBoundingClientRect();
   if (r.width < 6 || r.height < 6) return false;
+  // LONG TEXT IS ONLY A CONTAINER SIGNAL WHEN THE BOX IS BIG.
+  //
+  // `textContent` is the whole subtree's text, including anything the page
+  // ellipsizes. A chat row showing one truncated line reports the entire last
+  // message, so a 120-character cap silently removed exactly the rows whose last
+  // message happened to be long — the reported "some of these are hinted and the
+  // rest are not", on rows that are identical in every way that matters. Size is
+  // the honest discriminator: the tall block this rule was written for cannot be
+  // small, and a row cannot be big.
   const text = (el.textContent || "").trim();
-  if (text.length > 120) return false;
+  if (text.length > LEAF_TEXT_SOFT_MAX) {
+    if (text.length > LEAF_TEXT_HARD_MAX) return false;
+    const area = r.width * r.height;
+    if (viewportArea() > 0 && area > viewportArea() * LEAF_MAX_AREA) return false;
+  }
   // A bare cursor:pointer node with no text, no aria-label/title and no role is
   // almost always decorative chrome (icon wrappers, scrims, layout spacers).
   // Hinting those was a large part of the "hints everywhere" flood on framework

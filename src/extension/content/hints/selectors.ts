@@ -183,6 +183,31 @@ export const MEDIA_SURFACE_MIN_AREA = 0.12;
 export const MEDIA_SURFACE_MIN_W = 160;
 export const MEDIA_SURFACE_MIN_H = 90;
 
+// The bounds a bare `cursor:pointer` control has to stay inside to count as a
+// LEAF rather than a container (see leafClickable in collect.ts).
+//
+// They are shaped by the failure they replace, not by taste. The old rules were
+// "at most 3 element children" and "at most 120 characters of text", and both are
+// properties of how a framework happens to nest its markup rather than of what
+// the element does. On WhatsApp Web a chat row is an avatar wrapper, a title/
+// preview column, a timestamp column and an actions column — four children — and
+// its textContent carries the FULL last message, which is routinely longer than
+// 120 characters while the row itself is one ellipsized line. So rows with a long
+// message got no key while their neighbours did: "hints show for some of these
+// but not the rest", with nothing wrong with the page.
+//
+// Children are now bounded generously, and length only counts as a container
+// signal when the BOX is big: a tall/wrapping block with hundreds of characters
+// is a reading container (the thing the rule was written to keep out), while a
+// short row carrying a long string is a control.
+export const LEAF_MAX_CHILDREN = 8;
+/** Characters after which an element's size is consulted before it is trusted. */
+export const LEAF_TEXT_SOFT_MAX = 120;
+/** Characters that are a container whatever the box is. */
+export const LEAF_TEXT_HARD_MAX = 400;
+/** Fraction of the viewport above which a long-text element is a container. */
+export const LEAF_MAX_AREA = 0.15;
+
 // Cap per viewport. With the default 9 hint chars this keeps every key at one
 // or two characters (9 + 81 = 90 > 80), so labels never sprawl.
 export const MAX_HINTS = 80;
