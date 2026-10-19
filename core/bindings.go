@@ -1,82 +1,33 @@
 package core
 
-// Bindings is the single source of truth for every leader-key binding shown in
-// the which-key overlay and the help popups. Both the chrome helper
-// (chrome/userChrome.uc.js) and the extension content script build their key
-// dispatch and their which-key data from this one table, so the two can never
-// drift apart again.
+// The overlay's row types, and the ONE class of row that is not the keymap:
+// Firefox's own shortcuts, which are reference-only and cannot be pressed from
+// the leader.
 //
-// Groups are ordered; items inside a group are ordered. The whole list is
-// rendered lazily-first (selectable), then the Firefox-native shortcuts
-// (dimmed, display-only).
+// The Lazyfox rows are not written here. They are projected from `Keymap` by
+// `DisplayBindings` / `lazyBindings`, so the menu is a view of the dispatch
+// table rather than a second hand-maintained opinion about it. That is the
+// whole reason this file shrank: it used to contain its own copy of every
+// Lazyfox binding, and the two copies drifted until the menu advertised keys
+// (`y`, `F`, `B`, `'`) that nothing could run.
 
 type WkItem struct {
 	Key    string
 	Label  string
 	Group  string
 	Native bool
+	// Spec is the canonical spec this row runs. Carried on the row because a
+	// DISPLAY key is not always a dispatch key: a collapsed run of digits shows
+	// `1-9` while the binding behind it is `1`, and the reverse lookup
+	// (key → spec) has no entry for a range. Empty for native rows, which are
+	// not pressable at all.
+	Spec string
 }
 
-var Bindings = []WkItem{
-	// ---- Tabs ----
-	{Key: "n", Label: "New tab", Group: "Tabs"},
-	{Key: "x", Label: "Close tab", Group: "Tabs"},
-	{Key: "v", Label: "Reopen closed tab", Group: "Tabs"},
-	{Key: "V", Label: "Recently closed tabs", Group: "Tabs"},
-	{Key: "c", Label: "Duplicate tab", Group: "Tabs"},
-	{Key: "j", Label: "Next tab", Group: "Tabs"},
-	{Key: "k", Label: "Previous tab", Group: "Tabs"},
-	{Key: "a", Label: "Alternate tab (last used)", Group: "Tabs"},
-	{Key: "1", Label: "Go to tab 1-8", Group: "Tabs"},
-	{Key: "9", Label: "Go to last tab", Group: "Tabs"},
-
-	// ---- Navigation ----
-	{Key: "r", Label: "Reload", Group: "Navigation"},
-	{Key: "g", Label: "Back", Group: "Navigation"},
-	{Key: "l", Label: "Forward", Group: "Navigation"},
-	{Key: "y", Label: "Copy URL", Group: "Navigation"},
-	{Key: "m", Label: "Mute tab", Group: "Navigation"},
-	{Key: "=", Label: "Zoom in", Group: "Navigation"},
-	{Key: "-", Label: "Zoom out", Group: "Navigation"},
-	{Key: "0", Label: "Reset zoom", Group: "Navigation"},
-
-	// ---- Open ----
-	{Key: "o", Label: "Open URL (new tab)", Group: "Open"},
-	{Key: "O", Label: "Open URL in current tab", Group: "Open"},
-	{Key: "t", Label: "Tab switcher", Group: "Open"},
-	{Key: "s", Label: "Search the web (new tab)", Group: "Open"},
-	{Key: "S", Label: "Search in current tab", Group: "Open"},
-	{Key: "h", Label: "History", Group: "Open"},
-	{Key: "b", Label: "Bookmarks", Group: "Open"},
-	{Key: "d", Label: "Downloads", Group: "Open"},
-	{Key: "i", Label: "Focus first input", Group: "Open"},
-
-	// ---- Tools ----
-	{Key: "f", Label: "Link hints", Group: "Tools"},
-	{Key: "w", Label: "Resize window", Group: "Tools"},
-	{Key: "/", Label: "Find in page", Group: "Tools"},
-	{Key: "?", Label: "Keybindings help", Group: "Tools"},
-	{Key: "q", Label: "Toggle which-key overlay", Group: "Tools"},
-	{Key: "e", Label: "Toggle toolbar reveal", Group: "Tools"},
-	{Key: "z", Label: "Zen mode", Group: "Tools"},
-	{Key: "D", Label: "Dismiss download notification", Group: "Tools"},
-	{Key: "N", Label: "Stealth tab (isolated, wiped on close)", Group: "Tools"},
-
-	// ---- Sessions (tmux-style) ----
-	{Key: "p", Label: "Sessions", Group: "Sessions"},
-	{Key: "Q", Label: "Save session and quit", Group: "Sessions"},
-	{Key: "'", Label: "Switch session 1-9", Group: "Sessions"},
-	{Key: "|", Label: "Split side-by-side", Group: "Sessions"},
-	{Key: "[", Label: "Split pane left", Group: "Sessions"},
-	{Key: "]", Label: "Split pane right", Group: "Sessions"},
-	{Key: "{", Label: "Swap pane left", Group: "Sessions"},
-	{Key: "}", Label: "Swap pane right", Group: "Sessions"},
-	{Key: "+", Label: "Move tab 1-9 into split", Group: "Sessions"},
-	{Key: ",", Label: "Move tab left", Group: "Sessions"},
-	{Key: ".", Label: "Move tab right", Group: "Sessions"},
-	{Key: "\\", Label: "Close split view", Group: "Sessions"},
-
-	// ---- Firefox native (display only) ----
+// NativeBindings are Firefox's own shortcuts, listed so the help popup can
+// remind the user what the browser already does. They are display-only: the
+// overlay dims them and the which-key selector skips them.
+var NativeBindings = []WkItem{
 	{Key: "Ctrl+T", Label: "New tab", Group: "Firefox native", Native: true},
 	{Key: "Ctrl+W", Label: "Close tab", Group: "Firefox native", Native: true},
 	{Key: "Ctrl+Shift+T", Label: "Reopen closed tab", Group: "Firefox native", Native: true},
@@ -94,3 +45,80 @@ var Bindings = []WkItem{
 	{Key: "Ctrl+= / Ctrl+- / Ctrl+0", Label: "Zoom", Group: "Firefox native", Native: true},
 	{Key: "F11", Label: "Fullscreen", Group: "Firefox native", Native: true},
 }
+
+// DisplayBindings is what the menu and the help popup read: the keymap's own
+// rows, projected, followed by the native reference rows. Built from the table
+// rather than written out, so a row can never exist in the menu without
+// existing in the dispatch.
+func DisplayBindings() []WkItem {
+	out := DisplayRows()
+	out = append(out, NativeBindings...)
+	return out
+}
+
+// DisplayRows is the keymap as a READER should see it: one row per IDEA, which
+// is not the same thing as one row per binding.
+//
+// The difference is the digits. `Keymap` holds nine rows — `1` … `9` — because
+// that is what the dispatcher matches on: `;3` has to resolve to the binding for
+// position three. The overlay listing them is nine lines saying "go to the tab at
+// this position", which is one thought, and it was eight of the panel's ~40 rows
+// spent on the least surprising thing a keyboard does. So a run of single-digit
+// bindings inside one group is projected as ONE row: key `1-9`, and the spec of
+// the run's first row, so Enter on it arms the same digit capture a `;1` does
+// (and the user then picks the digit they actually wanted).
+//
+// The run label is derived here rather than written into the keymap because it
+// describes the RANGE, and a range is a property of the projection: the keymap
+// has no row for "1-9" to carry a label.
+func DisplayRows() []WkItem {
+	out := make([]WkItem, 0, len(Keymap))
+	for i := 0; i < len(Keymap); {
+		r := Keymap[i]
+		n := digitRunLen(i)
+		if n > 1 {
+			last := Keymap[i+n-1]
+			out = append(out, WkItem{
+				Key:   r.Key + "-" + last.Key,
+				Label: digitRunLabel(r.Group, r.Key, last.Key),
+				Group: r.Group,
+				Spec:  r.Spec,
+			})
+			i += n
+			continue
+		}
+		out = append(out, WkItem{Key: r.Key, Label: r.Label, Group: r.Group, Spec: r.Spec})
+		i++
+	}
+	return out
+}
+
+// digitRunLen is how many rows from `i` form one run of single-digit bindings in
+// the same group. 1 for anything that is not a digit.
+func digitRunLen(i int) int {
+	if i >= len(Keymap) || !isDigitKey(Keymap[i].Key) {
+		return 1
+	}
+	n := 1
+	for i+n < len(Keymap) && isDigitKey(Keymap[i+n].Key) && Keymap[i+n].Group == Keymap[i].Group {
+		n++
+	}
+	return n
+}
+
+func isDigitKey(k string) bool {
+	return len(k) == 1 && k[0] >= '1' && k[0] <= '9'
+}
+
+// digitRunLabel names a collapsed run, SHORT on purpose: the panel is two
+// columns wide, so a long label is truncated on screen and the truncation eats
+// whatever was at the end. The composition rule (a digit may wait for a second
+// one past nine tabs) is not lost by dropping it here — the status bar prints
+// `▸ 1-9` while a digit is pending, and the chooser opens when a prefix is
+// ambiguous — and it is written down where the digits are (`Keymap`, Tabs).
+func digitRunLabel(group, first, last string) string {
+	if group == "Tabs" {
+		return "Go to tab " + first + "-" + last
+	}
+	return "Positions " + first + "-" + last
+}

@@ -12,21 +12,26 @@
 //   installer/bin/lazyfox-install-dev-darwin
 //   installer/bin/lazyfox-install-dev-windows.exe
 //
-// Usage: npm run build:installers   (run after `npm run build`)
-//
-// The host-form binary (lazyfox-install, no suffix) the older dev scripts used
-// is intentionally NOT produced here: dev scripts now prefer the committed
-// per-OS dev binary for the current platform (see ensureHostInstaller).
+// Usage:
+//   npm run build:installers            every platform
+//   LF_INSTALLER_TARGETS=host <script>  only this machine — what `npm run build`
+//                                       calls, so the installer you launch is
+//                                       always the one the build just produced
 
-import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, existsSync, writeFileSync, rmSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildWinRes } from "./winres.ts";
+import { buildInstallerSet, type InstallerTarget } from "./installer-build.ts";
+import {
+  HOST,
+  TARGETS as ALL_PLATFORM_TARGETS,
+  isNativeTarget,
+  latestUnsignedXpi,
+} from "./payload.ts";
+import { xpiVersion } from "./amo-lib.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installerDir = join(root, "installer");
-const binDir = join(installerDir, "bin");
 
 const distChrome = join(root, "dist", "chrome");
 const distDir = join(root, "dist", "extension");
@@ -35,79 +40,59 @@ if (!existsSync(distChrome) || !existsSync(distDir)) {
   process.exit(1);
 }
 
-// Latest UNsigned xpi (exclude the -signed artifacts).
-function latestUnsignedXpi() {
-  let xpi = null;
-  for (const f of readdirSync(join(root, "dist"))) {
-    if (!f.startsWith("lazyfox2-") || !f.endsWith(".xpi")) continue;
-    if (f.includes("-signed.")) continue;
-    xpi = join(root, "dist", f);
-  }
-  return xpi;
-}
-const unsignedXpi = latestUnsignedXpi();
+const unsignedXpi = latestUnsignedXpi(root);
 if (!unsignedXpi) {
   console.error("build-dev-installers: no unsigned xpi in dist/ — run `npm run build` first.");
   process.exit(1);
 }
 
-// Extension version tag (from the xpi filename) used for the Windows resource.
-const m = /lazyfox2-(\d+\.\d+\.\d+)\.xpi$/.exec(unsignedXpi);
-const latestUnsignedXpiVersion = m ? m[1]! : "0.0.0";
+// Extension version for the Windows resource, read out of the xpi itself rather
+// than guessed from its file name (the same rule the release path uses).
+const latestUnsignedXpiVersion = xpiVersion(readFileSync(unsignedXpi));
 
 console.log(`[dev-installer] embedding unsigned xpi: ${unsignedXpi}`);
 
-// Stage chrome profile files (same set the release build stages).
-const chromeDst = join(installerDir, "payload", "chrome");
-mkdirSync(chromeDst, { recursive: true });
-for (const f of ["userChrome.css", "userChrome.uc.js", "frame.js", "corebootstrap.js", "user.js"]) {
-  cpSync(join(distChrome, f), join(chromeDst, f));
+// The target list is declared once, in installer/internal/payload/artifacts.json
+// (see scripts/payload.ts), not restated here: a fourth copy of "which platforms
+// ship an installer" is a fourth place to forget one.
+const ALL_TARGETS: InstallerTarget[] = ALL_PLATFORM_TARGETS.map((t) => ({
+  goos: t.goos,
+  arch: t.arch,
+  out: t.devOut,
+}));
+
+// Which binaries this run produces.
+//
+//   all  (default) — every platform, what `npm run build:installers` needs.
+//   host           — only this machine's installer, so `npm run build` can
+//                    refresh the binary you actually launch after every build.
+const ONLY = (process.env.LF_INSTALLER_TARGETS || "all").toLowerCase();
+let TARGETS = ALL_TARGETS;
+if (ONLY === "host") {
+  const native = ALL_TARGETS.filter(isNativeTarget);
+  // Unusual host (e.g. linux/arm64): fall back to a plain host-form binary so
+  // the dev flow still gets a freshly-built installer for THIS machine.
+  TARGETS = native.length
+    ? native
+    : [
+        {
+          goos: HOST.goos,
+          arch: HOST.goarch,
+          out: HOST.goos === "windows" ? "lazyfox-install.exe" : "lazyfox-install",
+        },
+      ];
 }
+console.log(`[dev-installer] building: ${TARGETS.map((t) => t.goos + "/" + t.arch + " -> " + t.out).join(", ")}`);
 
-// Stage the unsigned add-on xpi as the embedded extension payload.
-const extDst = join(installerDir, "payload", "extension");
-rmSync(extDst, { recursive: true, force: true });
-mkdirSync(extDst, { recursive: true });
-cpSync(unsignedXpi, join(extDst, "lazyfox2.xpi"));
-console.log(`[dev-installer] staged payloads -> installer/payload/chrome + extension/lazyfox2.xpi`);
-
-const TARGETS = [
-  { goos: "linux", arch: "amd64", out: "lazyfox-install-dev-linux" },
-  { goos: "darwin", arch: "arm64", out: "lazyfox-install-dev-darwin" },
-  { goos: "windows", arch: "amd64", out: "lazyfox-install-dev-windows.exe" },
-];
-
-mkdirSync(binDir, { recursive: true });
-for (const t of TARGETS) {
-  // Stage the native host binary for THIS installer target (each installer
-  // binary embeds the host for its own platform).
-  const hostExe = t.goos === "windows" ? "lazyfox-host.exe" : "lazyfox-host";
-  const hostDst = join(installerDir, "payload", "native-host", t.goos, hostExe);
-  mkdirSync(dirname(hostDst), { recursive: true });
-  try {
-    execFileSync(
-      "go",
-      ["build", "-trimpath", "-ldflags=-s -w", "-o", hostDst, "."],
-      { cwd: join(root, "native-host"), env: { ...process.env, GOOS: t.goos, GOARCH: t.arch }, stdio: "inherit" }
-    );
-    console.log(`[dev-installer] staged native host for ${t.goos}/${t.arch}`);
-  } catch (e) {
-    console.warn("[dev-installer] native host build failed for " + t.goos + "; installer will skip the host step: " + String(e instanceof Error && e.message ? e.message : e));
-    writeFileSync(hostDst, "");
-  }
-  const out = join(binDir, t.out);
-  // Windows links the interactive GUI wizard (GUI subsystem so double-click
-  // opens the wizard, not a console flash) and embeds its manifest/icon
-  // resource via go-winres (best-effort: missing resource -> default icon).
-  let ldflags = "-s -w";
-  if (t.goos === "windows") {
-    buildWinRes(installerDir, latestUnsignedXpiVersion);
-    ldflags += " -H windowsgui";
-  }
-  execFileSync(
-    "go",
-    ["build", "-trimpath", `-ldflags=${ldflags}`, "-o", out, "."],
-    { cwd: installerDir, env: { ...process.env, GOOS: t.goos, GOARCH: t.arch }, stdio: "inherit" }
-  );
-  console.log(`[dev-installer] ${t.goos}/${t.arch} -> installer/bin/${t.out}`);
-}
+// One staging + compile path, shared with the release installers. It also writes
+// each binary's record into installer/bin/payload-state.json, which is what
+// `npm run check:installers` reads to prove no committed installer is stale.
+buildInstallerSet({
+  root,
+  installerDir,
+  targets: TARGETS,
+  channel: "nightly",
+  xpiPath: unsignedXpi,
+  version: latestUnsignedXpiVersion,
+  logPrefix: "[dev-installer]",
+});

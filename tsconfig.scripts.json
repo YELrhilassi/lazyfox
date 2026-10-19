@@ -5,9 +5,281 @@
   // from tsconfig.json because the src/ tree targets the browser/DOM and
   // deliberately declares no ambient Node types.
   //
-  // scripts/bidi/ is a test harness that talks to the raw (untyped) WebDriver
+  // scripts/e2e/ is a test harness that talks to the raw (untyped) WebDriver
   // BiDi protocol, so it is excluded here: its values are protocol messages,
   // and forcing types on them would be a lie.
+  //
+  // scripts/test-page-text.ts is excluded for the opposite reason: it unit-tests
+  // a DOM module (the page-text walk), so it needs the DOM lib this config
+  // deliberately omits. The module itself is still typechecked — by
+  // tsconfig.json, which is the config that owns the browser tree.
+  //
+  // scripts/test-store.ts is excluded for a near-identical reason: it unit-tests
+  // a browser module (the storage schema), and store.ts reaches the `browser`
+  // global, which is declared ambiently in src/shared/globals.d.ts. That file
+  // is browser-chrome-only and drags in Firefox chrome globals this config
+  // knows nothing about. The store is still typechecked by tsconfig.json; only
+  // the Node-side TEST of it is out of scope here, exactly as with page-text.
+  // scripts/test-render-escaping.ts is excluded for the same reason: it calls
+  // the real row renderers, which live in DOM modules, and their typechecking
+  // belongs to tsconfig.json. The renderers are still checked there; only the
+  // Node-side test of them is out of scope for this config.
+  //
+  // scripts/test-find-text.ts is the fourth of these: it tests find/text.ts,
+  // whose segment tables are typed as DOM Text nodes. Note that excluding the
+  // test also stops this config reaching find/text.ts at all, because nothing
+  // else here imports it — which is the intent. find/text.ts is typechecked by
+  // tsconfig.json, like every module in the browser tree.
+  //
+  // scripts/test-chrome-keys.ts is the fifth: it tests chrome/keys.ts, the
+  // synthetic #lfc=keys channel, which reaches Firefox chrome globals
+  // (Services, window, Cu) that only src/chrome's ambient declarations name.
+  // The module and the test's DOM-free parts are still typechecked by
+  // tsconfig.json; only the Node-side test of it is out of scope here.
+  //
+  // scripts/test-overlays.ts is the sixth: it tests favicon.ts and
+  // manualtext.ts, whose signatures speak in DOM types (KeyboardEvent,
+  // HTMLInputElement) this DOM-less config cannot name. The modules are still
+  // typechecked by tsconfig.json.
+  //
+  // scripts/test-leader-sequences.ts is the seventh, for the same reason: it
+  // drives LeaderController.handleKey with synthetic KeyboardEvent-shaped
+  // objects, and leader.ts's public surface is typed against the DOM.
+  //
+  // scripts/test/keyhold.test.ts is excluded for the reason the older files
+  // were: it drives chrome/keysdispatch.ts, whose deps and key shapes are
+  // typed against the DOM and Firefox chrome globals this config knows nothing
+  // about. The module is typechecked by tsconfig.json; only the Node-side test
+  // of it is out of scope here.
+  //
+  // scripts/test/chrome-state.test.ts and scripts/test/wire-replay.test.ts are
+  // the eighth and ninth, for the same reason and by the same mechanism: both
+  // drive the REAL createDebug().handle() (the first to prove a reply the
+  // product writes round-trips through the decoder the harness reads with; the
+  // second to replay the committed traces through it), and debug.ts imports
+  // chrome/config.ts, which still reads `Services` directly — it is one of the
+  // declared backlog modules in src/chrome/dependency-audit.ts, not yet on the
+  // env seam. So importing debug.ts from a Node-side test drags Firefox chrome
+  // globals into a DOM-less config.
+  //
+  // scripts/test/relay-queue.test.ts is the tenth, and for the same reason as
+  // test-store.ts: it drives extension/services/relay.ts, which reaches the
+  // `browser` global (and so does the port bookkeeping under test). The module
+  // is typechecked by tsconfig.json; only the Node-side test of it is out of
+  // scope here.
+  //
+  // scripts/test/typing-target.test.ts is the eleventh, and for the same
+// reason: it drives shared/dom.ts — the typing-target predicate — with
+// synthetic event/element objects. dom.ts is DOM-typed top to bottom
+// (Element, ShadowRoot, composedPath), so the test cannot live in a DOM-less
+// config. The module itself is typechecked by tsconfig.json, which owns the
+// browser tree.
+//
+// scripts/test/keymap.test.ts is the twelfth. It is the DRIFT CHECK between
+// the Go keymap (core/keymap.go) and the TypeScript action tables, so it has
+// to be able to see the action tables — popups/leader.ts and the three host
+// tables — and those are DOM-typed because they are what builds the popups.
+// The keymap module it checks (shared/keymap.ts) is DOM-free and typechecked
+// by tsconfig.json; only this Node-side harness is out of scope here.
+//
+// scripts/test/typing-signals.test.ts is the eighteenth, and it is the same
+// shape as keyhold.test.ts: it drives chrome/typing.ts, whose signature is typed
+// against the DOM (KeyboardEvent, Element) and whose collaborators are Firefox
+// chrome globals (SessionStore, Services, window.gBrowser) that only src/chrome's
+// ambient declarations name. The module is typechecked by tsconfig.json; only the
+// Node-side test of it is out of scope here. It is the one test in this list
+// whose SUBJECT is a trust rule rather than a computation — "is this typing
+// signal still true?" — and the rule lives in a DOM-free seam precisely so that
+// it can be pinned here at all; only the channel that reads it is DOM-typed.
+//
+// scripts/test/hints-focus.test.ts and scripts/test/hints-activation.test.ts are
+// the sixteenth and seventeenth, and they are the same shape as
+// typing-target.test.ts: each drives DOM-typed modules — shared/dom.ts's focus
+// aim and verdict, hints/life.ts's target/page signal split, hints/escalate.ts's
+// retry rule and hints/collect.ts's media-surface threshold — with synthetic
+// element objects that a DOM-less config cannot name. All of those modules are
+// typechecked by tsconfig.json, which owns the browser tree.
+//
+// scripts/test/hints-visibility.test.ts, scripts/test/hints-motion.test.ts and
+// scripts/wk-preview.ts are the thirteenth, fourteenth and fifteenth, for the
+// same reason in three shapes. The two tests drive
+// content/hints/visibility.ts and content/hints/motion.ts — modules whose whole
+// subject IS the DOM (Element, CSSStyleDeclaration, window, document) — with
+// synthetic elements and real EventTargets; the preview renders the real
+// which-key markup from shared/wk.ts, which reaches shared/dom.ts. All four
+// modules are DOM-typed on purpose and are typechecked by tsconfig.json, which
+// owns the browser tree; what is out of scope here is only the Node-side USE of
+// them.
+//
+// scripts/hints-preview.ts joins them for the same reason in a fourth shape: it
+// renders the REAL hint-label stylesheet, imported from
+// content/hints/selectors.ts, whose interface speaks in HTMLSpanElement and
+// Element — types this DOM-less config cannot name. The stylesheet itself is
+// typechecked by tsconfig.json like every module in the browser tree; only this
+// Node-side use of it is out of scope. That import is deliberate rather than a
+// copied string, because a preview that renders a stylesheet the extension no
+// longer ships is worse than no preview at all.
+//  // scripts/test/chrome-pagehints.test.ts is the latest of these, for the same
+  // reason in a new shape: it drives the REAL chrome/pagehints.ts, which draws its
+  // labels by calling shared/overlay.ts's toast for the outcomes a user has to be
+  // told about, and overlay.ts speaks in DOM types this config cannot name. The
+  // module and the rule it uses (shared/hintlabel.ts) are both typechecked by
+  // tsconfig.json; only this Node-side use of them is out of scope here.
+  //
+  // scripts/test/hints-resolve.test.ts is the nineteenth, and its exclusion is
+  // the one that has a reason of its own rather than the same one again: it
+  // drives content/hints/hintresolve.ts, which is DOM-typed (Element, DOMRect,
+  // and a collect/select/probe neighbourhood that reaches document and window),
+  // so it cannot be named here. What it pins is a PERFORMANCE contract —
+  // resolve() may not collect the document, and nearest() may not build a pass
+  // per candidate — and the absence of the DOM lib in this config is what makes
+  // that testable: the test hands the layer no document at all, so the moment
+  // the hot path starts collecting, the test fails on the missing global rather
+  // than on a stopwatch. The module itself is typechecked by tsconfig.json.
+//
+// scripts/test/window-listeners.test.ts is the twentieth, and it is the same
+// shape as typing-signals.test.ts and keyhold.test.ts: it drives the chrome
+// window's real listener set (chrome/winlisteners.ts), whose deps are typed
+// against the DOM (KeyboardEvent) and whose collaborators — the popup host, the
+// typing channel, the leader — are Firefox chrome modules only src/chrome's
+// ambient declarations name. The module is typechecked by tsconfig.json, which
+// owns the browser tree; what is out of scope here is only the Node-side use of
+// it. It is listed rather than left out silently because it pins a rule a user
+// FEELS — whether the tail of a keystroke is withheld — and a test no config
+// compiles is exactly how such a rule quietly stops being true.
+//
+// scripts/test/keyboard-focus.test.ts and scripts/test/window-sync.test.ts are
+// the latest two, and they are the same shape as window-listeners: both drive
+// chrome-side modules whose signatures are typed against the DOM and the
+// browser's own globals. The first drives commandcenterfocus.ts
+// (KeyboardEvent, Element, contentWindow) and the fake environment the chrome
+// modules are constructed over; the second drives winsync.ts, whose
+// collaborators include statusbar.ts and toplayer.ts (HTMLElement, Document).
+// Those modules are typechecked by tsconfig.json, which owns the browser tree;
+// what is out of scope here is only the Node-side USE of them. They are listed
+// rather than left out silently for the same reason window-listeners.test.ts
+// is: both pin rules a user FEELS — which page the keyboard belongs to, and
+// which events hand it over — and a test no config compiles is how such a rule
+// quietly stops being true.
+//  // scripts/test/chrome-field.test.ts joins them, and it is the same shape as
+  // keyboard-focus.test.ts: it drives chrome/commandcenterfocus.ts's veto
+  // (`chromeFieldHoldsUserText`) and chrome/chromefield.ts's rendering rule with
+  // synthetic chrome-document elements, and commandcenterfocus.ts is typed
+  // against the DOM (Element, contentWindow, the focus service). Both modules are
+  // typechecked by tsconfig.json, which owns the browser tree; what is out of
+  // scope here is only the Node-side USE of them. It is listed rather than left
+  // out silently because it pins the rule behind the user's freeze report — a
+  // field nobody can see must not veto the rescue — and a test no config
+  // compiles is exactly how such a rule quietly stops being true.
+  //
+//  // scripts/test/sync-content.test.ts joins them for the same reason, with a
+//  // sharper edge: it holds a REJECTING and a NEVER-SETTLING hold store open and
+//  // asserts that the presence report is relayed anyway, which is an ORDERING
+//  // between two things only the real background handler has (handlers/sync.ts
+//  // awaits session storage behind a per-tab queue before it touches presence).
+//  // That module is typed against the WebExtension `browser` global this config
+//  // does not include, so the Node-side driver is out of scope here while the
+//  // module itself is checked by tsconfig.json. Listed rather than left out
+//  // silently because the rule it pins is the one behind the freeze report: a
+//  // report that waits for bookkeeping is a live page the helper claims.
+  //
+  // Note which module is deliberately not on this list:
+// content/hints/frames.ts (the measurement-pass coalescer and the safety net's
+// cadence) is DOM-free by construction — its frame host is injected — so it IS
+// checked here, and its test is too. That is the half of the frames work a Node
+// test can pin exactly, and the split is why it can.
+//
+// Worth being precise about what is and is not checked here. src/chrome/
+  // env.ts and src/chrome/stateapi.ts — the two modules these tests exist to
+  // cover — are DOM-free and DO typecheck cleanly under this config, which is
+  // deliberate: the state contract has to be readable from Node or the whole
+  // seam is theatre. Only the debug.ts import forces the exclusion, and when
+  // config.ts is converted to the seam these two come straight back in.
+  //
+  // scripts/test/split-unsplit.test.ts is the next one, and it is the same shape
+  // as window-sync.test.ts: it drives chrome/splitview.ts over the fake chrome
+  // environment, and that module's collaborators include statusbar.ts (via the
+  // split-change callback's owner) and the DOM-typed tab elements. The module is
+  // typechecked by tsconfig.json, which owns the browser tree; what is out of
+  // scope here is only the Node-side USE of it. It is listed rather than left out
+  // silently because it pins rules the user FEELS and reported — which element
+  // answers "where is the split", and what is allowed to happen before the
+  // platform has finished taking one apart — and a test no config compiles is
+  // exactly how such a rule quietly stops being true.
+  //
+  // scripts/test/dark-theme.test.ts is the latest, and it is the same shape as
+  // keyhold.test.ts: it drives the dark engine's DOM shell
+  // (content/dark/apply.ts), whose signatures are typed against Element,
+  // Document and Window, and whose sampler reads computed styles and bounding
+  // rectangles — none of which a config without the DOM lib can name. The
+  // decisions it tests (detect.ts's verdicts, apply.ts's resample gate) are
+  // still checked wherever they are DOM-free, and every module in the browser
+  // tree is typechecked by tsconfig.json; what is out of scope here is only the
+  // Node-side USE of them.
+  //
+  // scripts/test/startup-resume.test.ts is the latest, and it is the same shape
+  // as relay-queue.test.ts: it drives the real resumeOnStartup, whose
+  // collaborators (sessions/storage.ts, sessions/restore.ts, tabs.ts,
+  // stealth.ts, store.ts) all reach the WebExtension `browser` global this
+  // config does not include. It is the only test of the LAUNCH path — the
+  // browser harness never relaunches Firefox, so nothing else in any tier calls
+  // it — which is why it exists at all and why it is listed here rather than
+  // left out silently. Those modules are typechecked by tsconfig.json, which
+  // owns the browser tree; what is out of scope here is only the Node-side USE
+  // of them, over a faked browser.
+  //
+  // scripts/test/session-autosave.test.ts joins it for the same reason and with
+  // the same subject: it drives sessions/autosave.ts — the checkpoint debounce
+  // and its ceiling — over a faked browser, and that module's collaborators
+  // (sessions/storage.ts, store.ts, stealth.ts) reach `browser`, while its timer
+  // is typed as a DOM `number` rather than Node's Timeout. It is the only test
+  // of the timing rule at all: the e2e tier can see that a tab opened after a
+  // save eventually lands in the session, but not the 4-second ceiling that
+  // bounds the wait, and a ceiling nobody measures is a ceiling that silently
+  // stops existing. Those modules are typechecked by tsconfig.json, which owns
+  // the browser tree; what is out of scope here is only the Node-side USE of
+  // them.
+  //
+  // The Node-side tests themselves now live in scripts/test/*.test.ts and run
+  // under node:test. They are INCLUDED here (see the include list below), so a
+  // change to a test file cannot silently break the build — scripts/test/ is
+  // one level below the old "scripts/*.ts" pattern and was, briefly, in no
+  // typecheck at all, exactly like the e2e harness was.
+  "exclude": [
+    "scripts/test-page-text.ts",
+    "scripts/test-store.ts",
+    "scripts/test-render-escaping.ts",
+    "scripts/test-find-text.ts",
+    "scripts/test-chrome-keys.ts",
+    "scripts/test-overlays.ts",
+    "scripts/test-leader-sequences.ts",
+    "scripts/test/keyhold.test.ts",
+    "scripts/test/chrome-state.test.ts",
+    "scripts/test/wire-replay.test.ts",
+    "scripts/test/relay-queue.test.ts",
+    "scripts/test/typing-target.test.ts",
+    "scripts/test/keymap.test.ts",
+    "scripts/test/hints-visibility.test.ts",
+    "scripts/test/hints-motion.test.ts",
+    "scripts/test/hints-focus.test.ts",
+    "scripts/test/hints-activation.test.ts",
+    "scripts/test/hints-resolve.test.ts",
+    "scripts/test/typing-signals.test.ts",
+    "scripts/wk-preview.ts",
+    "scripts/hints-preview.ts",
+    "scripts/test/chrome-pagehints.test.ts",
+    "scripts/test/window-listeners.test.ts",
+    "scripts/test/keyboard-focus.test.ts",
+    "scripts/test/window-sync.test.ts",
+    "scripts/test/chrome-field.test.ts",
+    "scripts/test/sync-content.test.ts",
+    "scripts/test/split-unsplit.test.ts",
+    "scripts/test/dark-theme.test.ts",
+    "scripts/test/startup-resume.test.ts",
+    "scripts/test/session-autosave.test.ts",
+    "scripts/test/hints-occlusion.test.ts",
+    "scripts/test/home-grid-keys.test.ts"
+  ],
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
@@ -24,5 +296,5 @@
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["build.ts", "scripts/*.ts"]
+  "include": ["build.ts", "scripts/*.ts", "scripts/test/**/*.ts"]
 }

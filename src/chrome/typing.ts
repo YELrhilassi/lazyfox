@@ -40,10 +40,44 @@ function isTypingTarget(t: unknown): boolean {
 export interface TypingChannel {
   focusedIsTyping(e: KeyboardEvent): boolean;
   focusedTypingValue(e: KeyboardEvent): string;
+  // The element that actually holds focus, whichever signal found it (null when
+  // focus is not in an editable). Used to tell the browser's own URL bar from a
+  // page's editable — see isChromeUiFocus in main.ts.
+  focusedTypingTarget(e: KeyboardEvent): Element | null;
   reset(): void;
 }
 
-export function createTypingChannel(): TypingChannel {
+export interface TypingChannelOptions {
+  /**
+   * Whether a typing signal that came from PAGE CONTENT can be believed right
+   * now.
+   *
+   * It matters because the two content-derived signals are STICKY and outlive
+   * the document that set them: `contentTyping` is a latch fed by the frame
+   * script and reset only on window blur, and `lfTyping` is a session value on
+   * the TAB, written by whichever content script last saw a caret in a field.
+   * Neither is retracted when the document they describe goes away — a
+   * navigation, a crash, a page whose script never runs again (a PDF viewer, a
+   * restricted domain).
+   *
+   * While a stale one says "typing", the chrome helper declines EVERY key, and
+   * on a chrome-owned page (about:, an extension page, an error page) nothing
+   * else answers either: the leader key stops working, and so does every
+   * binding, because the typing branch returns before any of them — while a
+   * fresh tab in the same window works perfectly, which is why it reads as "it
+   * stops responding for a while and then comes back on its own".
+   *
+   * So the host says when those signals can be trusted: only while this tab has
+   * a content script that could still be reporting (see keystate's presence
+   * model). The per-keystroke signals — the event's own target, the command
+   * dispatcher, Services.focus — are always consulted, and they are the ones a
+   * chrome-owned page needs.
+   */
+  contentSignalsLive?: () => boolean;
+}
+
+export function createTypingChannel(opts: TypingChannelOptions = {}): TypingChannel {
+  const contentSignalsLive = opts.contentSignalsLive || (() => true);
   let contentTyping = false;
 
   function initFrameChannel() {
@@ -127,6 +161,17 @@ export function createTypingChannel(): TypingChannel {
 
   function focusedIsTyping(e: KeyboardEvent): boolean {
     if (focusedTypingTarget(e)) return true;
+    // The sticky, content-derived answers, and only while content is here to
+    // keep them honest (see TypingChannelOptions.contentSignalsLive).
+    let live = true;
+    try {
+      live = contentSignalsLive();
+    } catch (err) {
+      // A predicate that throws is not evidence of typing; the live per-event
+      // signals above have already had their say.
+      live = false;
+    }
+    if (!live) return false;
     try {
       const tab = window.gBrowser && window.gBrowser.selectedTab;
       if (tab && typeof SessionStore !== "undefined" && SessionStore.getCustomTabValue) {
@@ -161,6 +206,7 @@ export function createTypingChannel(): TypingChannel {
   return {
     focusedIsTyping,
     focusedTypingValue,
+    focusedTypingTarget,
     reset: () => {
       contentTyping = false;
     },

@@ -9,38 +9,74 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 
 export const uri = "https://addons.mozilla.org/api/v5";
 
-// Load KEY=VALUE pairs from <repo root>/.env into process.env, without
-// overwriting variables already present in the real environment. Quoting and
-// inline comments are honored lightly; export lines are accepted too.
-export function loadEnv() {
-  try {
-    const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-    const file = path.join(root, ".env");
-    if (!fs.existsSync(file)) return;
-    const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
-    for (let line of lines) {
-      line = line.trim();
-      if (!line || line.startsWith("#")) continue;
-      line = line.replace(/^export\s+/, "");
-      const eq = line.indexOf("=");
-      if (eq < 0) continue;
-      const key = line.slice(0, eq).trim();
-      let val = line.slice(eq + 1).trim();
-      val = val.replace(/\s+#.*$/, "");
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      if (process.env[key] === undefined) process.env[key] = val;
+// WHERE THE CREDENTIALS FILE IS, and why it is resolved this way rather than
+// with `new URL(import.meta.url).pathname`: on Windows that idiom yields
+// `/C:/Users/…` — a leading slash and a drive letter, which `path.resolve`
+// turns into `C:\C:\Users\…` — and it percent-encodes spaces, so a checkout in
+// `Documents\Default Project\` resolves to `Default%20Project`. Either one makes
+// `existsSync` false, and the file is then SKIPPED IN SILENCE: `npm run submit`
+// tells you to put your AMO keys in `.env`, and then refuses the credentials
+// sitting right there. It failed on this machine's own path (a space) forever.
+// `fileURLToPath` is the API that handles both, and the rest of the repo already
+// uses it for exactly this.
+export function envFilePath(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".env");
+}
+
+// Load KEY=VALUE pairs from <repo root>/.env into `env`, without overwriting
+// variables already present in the real environment (an exported value wins over
+// the file). Quoting and inline comments are honored lightly; `export` lines are
+// accepted too. Returns the keys it actually set, which is what the test asserts
+// on — the alternative, reading them back out of process.env, cannot tell a key
+// that came from the file from one that was already exported.
+export function applyEnvFile(file: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  if (!fs.existsSync(file)) return [];
+  const loaded: string[] = [];
+  const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+  for (let line of lines) {
+    line = line.trim();
+    if (!line || line.startsWith("#")) continue;
+    line = line.replace(/^export\s+/, "");
+    const eq = line.indexOf("=");
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim();
+    if (!key) continue;
+    let val = line.slice(eq + 1).trim();
+    const quoted =
+      (val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"));
+    // A QUOTED value is taken verbatim; only an unquoted one can carry an inline
+    // comment. Stripping `#` first, as this used to, truncated
+    // `AMO_API_SECRET="ab#cd"` to `"ab` — which then failed to unquote and was
+    // handed to the JWT signer as a secret with a stray quote in it.
+    if (quoted) val = val.slice(1, -1);
+    else val = val.replace(/\s+#.*$/, "");
+    if (env[key] === undefined) {
+      env[key] = val;
+      loaded.push(key);
     }
+  }
+  return loaded;
+}
+
+/** Read <repo root>/.env into process.env. Best-effort: no file is not an error. */
+export function loadEnv(): string[] {
+  try {
+    return applyEnvFile(envFilePath());
   } catch {
-    /* best-effort: absence of .env is fine */
+    return [];
   }
 }
 
+// CALLED AT IMPORT, DELIBERATELY. Every script that needs AMO credentials imports
+// this module (submit, ship, amo-listing, amo-screenshots, amo-sign,
+// sync-signed-xpi), and ES modules are fully evaluated before the importing
+// module's own body runs — so a credential guard at the top of one of those
+// scripts sees the `.env` values without seven copies of this call.
 loadEnv();
 
 function b64url(s: string): string {
@@ -130,13 +166,42 @@ function crc32(buf: Buffer): number {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-function dosDateTime(d: Date = new Date()): [number, number] {
-  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
-  const date = (d.getFullYear() - 1980) << 9 | (d.getMonth() + 1) << 5 | d.getDate();
+// Zip entry timestamps are PINNED, because they were the reason the build was not
+// reproducible. A zip header carries a DOS date and time, and `new Date()` put
+// the moment of the build into every entry — so `dist/lazyfox2-<ver>.xpi`
+// differed on every `npm run build` even from identical source. That is not a
+// cosmetic annoyance: the installer payload hash includes the xpi's bytes, so
+// every rebuild silently invalidated all six committed installer binaries and
+// the committed xpi looked permanently dirty against a tree nobody had edited.
+// "Is the committed add-on the current source?" became unanswerable by inspection.
+//
+// A fixed date makes the same source produce the same bytes, so `npm run build`
+// is a no-op on a clean tree and the payload check means what it says.
+// SOURCE_DATE_EPOCH (the reproducible-builds convention) is honoured when set,
+// so a release pipeline can still stamp a real time deliberately.
+const DEFAULT_ZIP_EPOCH_MS = Date.UTC(2020, 0, 1, 0, 0, 0);
+
+function zipEpochMs(): number {
+  const raw = process.env.SOURCE_DATE_EPOCH;
+  if (!raw) return DEFAULT_ZIP_EPOCH_MS;
+  const secs = Number(raw);
+  return Number.isFinite(secs) && secs > 0 ? secs * 1000 : DEFAULT_ZIP_EPOCH_MS;
+}
+
+// DOS date/time fields, read in UTC so the same instant encodes identically on
+// any machine.
+function dosDateTime(ms: number = zipEpochMs()): [number, number] {
+  const d = new Date(ms);
+  const time = (d.getUTCHours() << 11) | (d.getUTCMinutes() << 5) | (d.getUTCSeconds() >> 1);
+  const date = ((d.getUTCFullYear() - 1980) << 9) | ((d.getUTCMonth() + 1) << 5) | d.getUTCDate();
   return [time >>> 0, date >>> 0];
 }
 
 // Write a valid (store) zip archive of every regular file under `dir`.
+//
+// Deterministic by construction: entries are sorted, stored uncompressed, and
+// stamped with a fixed date (see dosDateTime). Two builds of the same tree
+// produce byte-identical archives.
 export function zipStore(dir: string, outPath: string): void {
   const files = [];
   (function walk(p) {

@@ -1,0 +1,9 @@
+{
+  "name": "multi-key",
+  "about": "Several requests in flight, told apart only by nonce. If a handler ever echoed the wrong nonce the harness would read a reply that belonged to a different question — the failure that makes a wire look flaky and gets blamed on timing.",
+  "steps": [
+    { "send": "lfc=state.m1-1", "expect": "nonce:m1-1", "cmd": "state" },
+    { "send": "lfc=state.m2-2", "expect": "nonce:m2-2", "cmd": "state" },
+    { "send": "lfc=state.m3-3", "expect": "nonce:m3-3", "cmd": "state" }
+  ]
+}

@@ -4,12 +4,24 @@
 // mounting/unmounting the popup, the chrome-native window resize popup, and
 // the single `currentPopup` slot so the key dispatcher can route Esc/arrows.
 
+import { backdropWheel } from "../shared/keyguard";
+// The arrow-key step, shared with every other host that resizes or moves the
+// window: Shift is the fine step everywhere (shared/resize.ts).
+import { windowStep } from "../shared/resize";
 import { PANEL_CSS, type PopupCtl } from "../shared/overlay";
+import { UI_FONT } from "../shared/theme";
+import { focusSelectedContent } from "./commandcenterfocus";
+import type { ChromeEnv, ChromeDocument } from "./env";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 
-function el(tag: string, attrs?: Record<string, string> | null, text?: string | null): HTMLElement {
-  const e = document.createElementNS(XHTML, tag) as HTMLElement;
+// `el` returns `HTMLElement` even though `env.document` is only structurally a
+// document: the real env's `createElementNS` produces one, and the fake's
+// satisfies the same shape. Typing it keeps the listener callbacks below
+// contextually typed (`e` is an Event, not `any`) — which is the whole point of
+// parameterising the document instead of widening it to `any`.
+function el(doc: ChromeDocument, tag: string, attrs?: Record<string, string> | null, text?: string | null): HTMLElement {
+  const e = doc.createElementNS(XHTML, tag) as HTMLElement;
   if (attrs) {
     for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]!);
   }
@@ -25,13 +37,19 @@ export interface PopupHost {
   openResizePopup(): void;
   closeResize(): void;
   resizeOnKey(e: KeyboardEvent): boolean;
+  // Whether an event target lies inside the open popup's DOM (its input and
+  // rows). The key dispatcher uses this to tell "a key typed into the popup"
+  // from "a key aimed at the browser chrome behind it".
+  containsTarget(target: EventTarget | null): boolean;
   // Routes a key to the open popup's selector (used for keys the window
   // capture listener would otherwise consume first — Esc). Returns whether the
   // popup consumed it. Popups that don't expose onKey return false.
   handleKey(e: KeyboardEvent): boolean;
 }
 
-export function createPopupHost(): PopupHost {
+export function createPopupHost(env: ChromeEnv): PopupHost {
+  const doc = env.document;
+  const win = env.window;
   let currentPopup: {
     root: HTMLElement;
     onKey?: (e: KeyboardEvent) => boolean;
@@ -55,10 +73,22 @@ export function createPopupHost(): PopupHost {
     // by a normal one (or removed some other way), a stale resizeHost must
     // never keep arrow keys resizing the window.
     resizeHost = null;
+    // THE KEYBOARD GOES BACK THROUGH THE PRODUCT'S OWN RULE, not a second
+    // implementation of it. A popup's input is a field in the BROWSER's UI, so
+    // closing the popup removes the element that had the keyboard — and an
+    // element focus is not always enough to give it to the page (measured: the
+    // browser's focus manager can be left naming NO element at all, which is
+    // the state the user repairs by clicking the page). `focusSelectedContent`
+    // is the escalating repair the tab-switch rule uses; it returns immediately
+    // when the keyboard is already in the selected content, so this is the same
+    // call the raw `selectedBrowser.focus()` was, only complete.
     try {
-      window.gBrowser.selectedBrowser.focus();
+      const fm = env.services.focus;
+      const flags =
+        (env.Ci && env.Ci.nsIFocusManager && env.Ci.nsIFocusManager.FLAG_NOSCROLL) || 0;
+      focusSelectedContent(win, fm, flags);
     } catch (e) {
-      // ignore
+      // a torn-down tab cannot take the keyboard; the next tab switch tries again
     }
   }
 
@@ -73,11 +103,11 @@ export function createPopupHost(): PopupHost {
   }
 
   function openChromePopupInner(html: string, build: (root: HTMLElement) => PopupCtl): PopupCtl {
-    const root = el("div");
+    const root = el(doc, "div");
     root.style.cssText =
       "position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;" +
-      "background:rgba(8,8,14,.4);font-family:ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace";
-    const hdoc = document.implementation.createHTMLDocument("");
+      "background:rgba(8,8,14,.4);font-family:" + UI_FONT;
+    const hdoc = (doc as any).implementation.createHTMLDocument("");
     hdoc.body.innerHTML = html;
     while (hdoc.body.firstChild) root.appendChild(hdoc.body.firstChild);
     // Firefox's HTML-fragment parser drops form controls (<input>, <button>,
@@ -87,7 +117,7 @@ export function createPopupHost(): PopupHost {
     if (!root.querySelector(".lf-input")) {
       const panel = root.querySelector(".lf-panel");
       if (panel) {
-        const input = el("input");
+        const input = el(doc, "input");
         input.className = "lf-input";
         input.setAttribute("spellcheck", "false");
         const empty = panel.querySelector(".lf-empty");
@@ -97,13 +127,23 @@ export function createPopupHost(): PopupHost {
         else panel.appendChild(input);
       }
     }
-    const st = el("style");
+    const st = el(doc, "style");
     st.textContent = PANEL_CSS;
     root.appendChild(st);
-    document.documentElement.appendChild(root);
+    doc.documentElement.appendChild(root);
     root.addEventListener("mousedown", (e) => {
       if (e.target === root) closePopup();
     });
+    // A wheel over the backdrop must not scroll the browser chrome / page
+    // behind the popup; wheels inside the panel scroll its own lists (which
+    // carry `overscroll-behavior:contain` so they never chain outward).
+    root.addEventListener(
+      "wheel",
+      (e) => {
+        if (backdropWheel(e.target, root)) e.preventDefault();
+      },
+      { passive: false }
+    );
     let ctl: PopupCtl;
     try {
       ctl = build(root);
@@ -130,7 +170,7 @@ export function createPopupHost(): PopupHost {
       });
     }
     currentPopup = { root: root, onKey: ctl.onKey, refresh: ctl.refresh, focus: ctl.focus, close: ctl.close };
-    setTimeout(() => {
+    env.setTimeout(() => {
       if (currentPopup && currentPopup.focus) currentPopup.focus();
       if (currentPopup && currentPopup.refresh) currentPopup.refresh();
     }, 0);
@@ -139,11 +179,11 @@ export function createPopupHost(): PopupHost {
 
   function openResizePopup(): void {
     closePopup();
-    const root = el("div");
+    const root = el(doc, "div");
     root.style.cssText =
       "position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;" +
-      "background:rgba(8,8,14,.4);font-family:ui-monospace,Menlo,Consolas,monospace";
-    const panel = el("div");
+      "background:rgba(8,8,14,.4);font-family:" + UI_FONT;
+    const panel = el(doc, "div");
     panel.style.cssText =
       "width:520px;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;" +
       "box-shadow:0 24px 70px rgba(0,0,0,.6);padding:20px 22px;text-align:center";
@@ -152,13 +192,13 @@ export function createPopupHost(): PopupHost {
       "<div style='margin-top:12px;font-size:12px;color:#7aa2f7'>" +
       "arrows resize \u00b7 shift+arrows move \u00b7 Esc close</div>";
     root.appendChild(panel);
-    document.documentElement.appendChild(root);
+    doc.documentElement.appendChild(root);
     root.addEventListener("mousedown", (e) => {
       if (e.target === root) closeResize();
     });
     resizeHost = root;
     currentPopup = { root: root };
-    window.focus();
+    win.focus();
   }
 
   function closeResize(): void {
@@ -180,23 +220,28 @@ export function createPopupHost(): PopupHost {
     // popup input ever saw them — resizing the window and swallowing the
     // popup's own navigation.
     if (!resizeHost) return false;
-    const step = e.shiftKey ? 40 : 20;
+    const step = windowStep(e);
+    // The window is read through `win`, not the global `window`, so the resize
+    // geometry is assertable in a test: the fake records the deltas instead of
+    // asking a display server for them.
+    const move = (dx: number, dy: number) => win.moveBy && win.moveBy(dx, dy);
+    const resize = (dw: number, dh: number) => win.resizeBy && win.resizeBy(dw, dh);
     switch (e.key) {
       case "ArrowLeft":
-        if (e.shiftKey) window.moveBy(-step, 0);
-        else window.resizeBy(-step, 0);
+        if (e.shiftKey) move(-step, 0);
+        else resize(-step, 0);
         return true;
       case "ArrowRight":
-        if (e.shiftKey) window.moveBy(step, 0);
-        else window.resizeBy(step, 0);
+        if (e.shiftKey) move(step, 0);
+        else resize(step, 0);
         return true;
       case "ArrowUp":
-        if (e.shiftKey) window.moveBy(0, -step);
-        else window.resizeBy(0, -step);
+        if (e.shiftKey) move(0, -step);
+        else resize(0, -step);
         return true;
       case "ArrowDown":
-        if (e.shiftKey) window.moveBy(0, step);
-        else window.resizeBy(0, step);
+        if (e.shiftKey) move(0, step);
+        else resize(0, step);
         return true;
       case "Escape":
         closeResize();
@@ -215,5 +260,13 @@ export function createPopupHost(): PopupHost {
     resizeOnKey,
     handleKey: (e: KeyboardEvent) =>
       currentPopup && currentPopup.onKey ? currentPopup.onKey(e) : false,
+    containsTarget: (target: EventTarget | null) => {
+      if (!currentPopup || !target) return false;
+      try {
+        return currentPopup.root.contains(target as Node);
+      } catch (e) {
+        return false;
+      }
+    },
   };
 }
