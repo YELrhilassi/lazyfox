@@ -29,6 +29,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { sha256File } from "./payload.ts";
 
 /** The notes every signed release carries. */
 export const RELEASE_NOTES = "Signed release for stable Firefox";
@@ -72,6 +73,19 @@ export function createGitHubRelease(opts: { root: string; version: string; tag?:
   const missing = missingAssets(root, version);
   if (missing.length > 0) {
     throw new Error(`missing release asset(s): ${missing.map((p) => path.relative(root, p)).join(", ")}`);
+  }
+  // THE LAST GATE BEFORE THE BYTES LEAVE THE MACHINE. The signed xpi is uploaded
+  // under its `-signed` name, and that file is what users download and install;
+  // ship proved the CANONICAL file (dist/lazyfox2-<version>.xpi) against AMO's
+  // published hash. If the two ever differ, the release page would carry an
+  // artifact nothing verified — so the upload refuses rather than trusting that
+  // sync-signed-xpi.ts wrote both. See ship-checks.ts for the AMO comparison.
+  const uploaded = releaseAssets(root, version).find((p) => p.endsWith("-signed.xpi"))!;
+  const canonical = path.join(root, "dist", `lazyfox2-${version}.xpi`);
+  if (sha256File(uploaded) !== sha256File(canonical)) {
+    throw new Error(
+      `dist/lazyfox2-${version}-signed.xpi is not the file verified against AMO (dist/lazyfox2-${version}.xpi) — refusing to publish it`
+    );
   }
   console.log(`\n[ship] creating GitHub Release ${tag}…`);
   execFileSync(
