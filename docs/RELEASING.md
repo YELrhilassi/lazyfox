@@ -100,8 +100,14 @@ problem:
 5. **Build release:** syncs the AMO-**signed** xpi for that version, rebuilds the
    release-mode `dist/` bundles, and rebuilds the release installers
    (`installer/bin/lazyfox-install-{linux,darwin,windows.exe}`).
-6. **Verify:** `check-dist`, installer tests, and confirms the committed xpi is
-   signed and the right version.
+6. **Verify:** `check-dist`, installer tests, and that the xpi is not merely signed
+   but **byte-identical to what AMO published**. The check compares the sha256 AMO
+   reports for the signed file against the artifact about to be uploaded, so a
+   locally built lookalike — a stale `-signed.xpi`, a hand-edited `dist/`, an
+   unsigned build left in its place — cannot reach a release page. The same
+   comparison runs when `sync-signed-xpi.ts` downloads the file (the moment it
+   enters the repository), and the release upload refuses a `-signed.xpi` that is
+   not the file that passed the check.
 7. **Commit + tag + push:** commits on master, tags `v<version>`, pushes master
    and the tag. The dev branch itself went up in step 3, so both parents of the
    merge commit are on the remote.

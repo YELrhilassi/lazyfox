@@ -32,9 +32,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnv } from "./amo-lib.ts";
+import { fingerprintOf, loadEnv, normalizeAmoHash } from "./amo-lib.ts";
+import { sha256File } from "./payload.ts";
 import { gatherWorkflowChanges, ghOauthScopes, pushScopeVerdict } from "./release-auth.ts";
-import { devBranchPushCheck } from "./ship-checks.ts";
+import { devBranchPushCheck, signedXpiCheck } from "./ship-checks.ts";
 import { gitOutput } from "./ship-git.ts";
 import { mergeDevBranch } from "./ship-merge.ts";
 import { createGitHubRelease } from "./ship-release.ts";
@@ -186,6 +187,9 @@ if (res.status !== 200 || !fileId) {
     "Wait for AMO review to sign the submitted version (see AMO dashboard), then re-run `npm run ship`."
   );
 }
+// What AMO says the published bytes ARE, kept for step 6: the release proves the
+// artifact it ships is that file, not merely a signed xpi of this version.
+const amoFile = fingerprintOf(res.json?.file);
 console.log(`[ship] version ${version} is signed on AMO (file ${fileId}).`);
 
 // 2b. Push the branch this release is about to merge, before anything is merged,
@@ -250,13 +254,28 @@ shout(process.execPath, [path.join(__dirname, "release-build.ts")]);
 console.log("\n[ship] verifying release artifacts…");
 shout("node", [path.join(__dirname, "check-dist.ts")]);
 shout("node", [path.join(__dirname, "test-installer.ts")]);
+//    The xpi check is no longer "does it look signed": the artifact must be the
+//    exact file AMO published, byte for byte. Anything else — a stale -signed.xpi
+//    from an earlier attempt, a hand-edited dist, an unsigned build left in its
+//    place — is an add-on AMO never reviewed, and `signedXpiCheck` is what says so.
 const { isSignedXpi, xpiVersion } = await import("./amo-lib.ts");
 {
+  const canonical = path.join(root, "dist", `lazyfox2-${version}.xpi`);
   try {
-    const buf = fs.readFileSync(path.join(root, "dist", `lazyfox2-${version}.xpi`));
-    if (!isSignedXpi(buf) || xpiVersion(buf) !== version) {
-      fail(`dist/lazyfox2-${version}.xpi is not a signed xpi for ${version}`);
-    }
+    const buf = fs.readFileSync(canonical);
+    const signed = isSignedXpi(buf);
+    const verdict = signedXpiCheck({
+      version,
+      signed,
+      xpiVersion: signed ? xpiVersion(buf) : null,
+      localHash: sha256File(canonical),
+      localSize: buf.length,
+      amoHash: normalizeAmoHash(amoFile?.hash),
+      amoSize: amoFile?.size ?? null,
+    });
+    if (verdict.level === "fail") fail(verdict.detail, verdict.fix);
+    if (verdict.level === "warn") console.warn(`\n⚠️  ${verdict.detail}\n   → ${verdict.fix ?? "unverified"}`);
+    else console.log(`[ship] ${verdict.detail}.`);
   } catch (e) {
     fail(`could not verify the signed xpi: ${e instanceof Error ? e.message : e}`);
   }
