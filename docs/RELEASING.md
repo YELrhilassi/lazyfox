@@ -183,7 +183,37 @@ profile if the user's own cannot be used. See `docs/INSTALLER-ANALYSIS.md`.
 | `npm run dev-install` / `dev-install:clean` | Daily dev | Build + install the unsigned build into a fresh Nightly/Dev profile. |
 | `npm run submit` | Publish a version to AMO | Uploads the unsigned build as a listed version + rebuilds dev installers. |
 | `npm run ship` | **Release** (after AMO signs) | Merge to master, sync signed xpi, rebuild release installers, tag, push, GitHub Release. |
+| `npm run ship -- --rehearse` | **Before** `npm run ship` | Run every guard, the AMO signing check, the master merge and the release build in a scratch worktree; publishes nothing. |
+| `npm run ship:release` | Recovery | Re-create the GitHub Release page for the current version, when master and the tag are already pushed. |
 | `npm run ship:nightly` | **Dev channel refresh** (any time) | (Re)publish the rolling `nightly` prerelease with the dev installers + unsigned xpi. No AMO, no master. |
 | `npm run ci` | Before pushing | Run the local CI (compile + unit suite). |
 | `npm test` / `npm run verify` | Quick check | Unit suite / typecheck+suite. |
 | `npm run clean` | Free-space/rebuild | Remove regenerable build products. |
+
+## Rehearsing a release
+
+`npm run ship` is deliberately all-or-nothing: it merges the dev branch into
+master and rebuilds every artifact before it can discover that something is
+wrong, and by then the expensive state exists. `npm run ship -- --rehearse` runs
+the same release against a scratch `git worktree` and prints one table — every
+guard, the AMO signature check, the master merge, the release build, the artifact
+checks — then a verdict.
+
+It never checks out master in your checkout, commits, tags, pushes or creates a
+release; the merge commit and the rebuilt artifacts live only in the scratch
+worktree, which is removed when the run ends (including on failure). It proves
+that rather than promising it: HEAD and the working tree are compared before and
+after, and a difference is reported as a bug in the rehearsal.
+
+The checks live in `scripts/ship-checks.ts` and the merge in
+`scripts/ship-merge.ts` — the same code the real release runs, because a
+rehearsal with its own copy of a rule can disagree with the thing it rehearses.
+That merge is worth knowing about: `-X theirs` resolves conflicting *hunks*, and
+this repository also produces binary and modify/delete conflicts (master tracked
+`build/native-host/lazyfox-host`, which the dev branch deleted), which the
+strategy option cannot settle. `ship-merge.ts` applies the same policy to what is
+left and completes the merge commit.
+
+If the GitHub Release page fails after master and the tag are already pushed,
+`npm run ship` cannot finish it (it would stop at "already tagged");
+`npm run ship:release` creates just that page from the same asset list.

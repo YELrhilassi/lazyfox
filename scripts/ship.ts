@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import { loadEnv } from "./amo-lib.ts";
 import { gatherWorkflowChanges, ghOauthScopes, pushScopeVerdict } from "./release-auth.ts";
 import { mergeDevBranch } from "./ship-merge.ts";
+import { createGitHubRelease } from "./ship-release.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -249,23 +250,21 @@ shout("git", ["push", remote, "master"]);
 shout("git", ["push", remote, tag]);
 
 // 8. GitHub Release with the installers + signed xpi.
-const signedXpi = path.join(root, "dist", `lazyfox2-${version}-signed.xpi`);
-if (!fs.existsSync(signedXpi)) fail(`signed xpi not found after build: ${signedXpi}`);
-console.log(`\n[ship] creating GitHub Release ${tag}…`);
-const assets = [
-  path.join(root, "installer", "bin", "lazyfox-install-linux"),
-  path.join(root, "installer", "bin", "lazyfox-install-darwin"),
-  path.join(root, "installer", "bin", "lazyfox-install-windows.exe"),
-  // The one-line installers. They download the binaries above and run them, so
-  // they must be published alongside — and they are uploaded under their base
-  // names, giving the stable one-liners:
-  //   curl -fsSL …/releases/latest/download/install.sh | sh
-  //   irm …/releases/latest/download/install.ps1 | iex
-  path.join(root, "installer", "scripts", "install.sh"),
-  path.join(root, "installer", "scripts", "install.ps1"),
-  signedXpi,
-].join(" ");
-shout("gh", ["release", "create", tag, "--title", `Lazyfox ${tag}`, "--notes", "Signed release for stable Firefox", ...assets.split(" ")]);
+//    The asset list is built and passed as an ARRAY in scripts/ship-release.ts.
+//    It used to be assembled here with `.join(" ")` and handed over as
+//    `...assets.split(" ")`, which re-tokenizes every path on a space — and this
+//    checkout lives in `Documents\Default Project\`. gh got half a path, failed,
+//    and left master and the tag pushed with no release page (v0.5.9 hit exactly
+//    that). The same function finishes a release whose page failed, which is why
+//    the fix line below can promise it.
+try {
+  createGitHubRelease({ root, version, tag });
+} catch (e) {
+  fail(
+    `the GitHub Release could not be created: ${e instanceof Error ? e.message : e}`,
+    `master AND the tag ${tag} are already pushed. Finish the release page with \`npm run ship:release\` once the cause is fixed.`
+  );
+}
 
 // 9. Back to the dev branch.
 shout("git", ["checkout", devBranch]);
