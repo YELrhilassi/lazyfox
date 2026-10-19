@@ -70,7 +70,19 @@ It does everything, in order, and stops with a clear message on the first
 problem:
 
 1. **Guards:** clean tree, you're on a non-master branch, AMO creds, `gh`
-   available, and the version is not already tagged.
+   available, the version is not already tagged, and — since the merge brings
+   this branch's `.github/workflows/` files onto master — that the git credential
+   may push them. GitHub rejects a push that adds or updates a workflow file when
+   it is authenticated with an OAuth token lacking the `workflow` scope, with one
+   documented exemption: content that already exists, byte for byte, on another
+   branch of the same repository — which is what a merge from an already-pushed
+   dev branch is. Ship checks both halves (scopes from the token's own header,
+   exemption by comparing blobs against the remote's branches) and checks them
+   HERE, before it touches anything, because the push is the last thing it does:
+   new workflow content plus a scoped-out token stops the release, while exempt
+   content is only a warning. Either way the remedy it prints is
+   `gh auth refresh -h github.com -s workflow`; `LF_SKIP_PUSH_SCOPE_CHECK=1`
+   skips the check for a credential git pushes with that `gh` does not report.
 2. **Signed?** Read-only AMO API check that the version's signed xpi exists. If
    AMO is still reviewing, it stops here — you have not touched git yet.
 3. **Merge:** fast-forwards master, then merges your dev branch into master with
@@ -111,12 +123,20 @@ scratch clone).
 | File | Trigger | Purpose |
 |------|---------|---------|
 | `dev-nightly.yml` | **manual** (`workflow_dispatch`) | The same pipeline `npm run ci` runs: committed artifacts up to date → unsigned dev build (`LF_SKIP_INSTALLERS=1`) → four typechecks → full test suite → artifacts still consistent. |
-| `installers.yml` | **push to `dev-nightly`** (and manual) | Builds every committed installer on its own OS (the macOS/Linux windows need CGO + the platform webview, so a Linux runner cannot produce them) and verifies the binaries it just built before uploading them as artifacts. It never writes to the repo. Builds locally with `npm run build`; this is the cross-platform proof. |
+| `installers.yml` | **manual** (`workflow_dispatch`) | Builds every committed installer on its own OS (the macOS/Linux windows need CGO + the platform webview, so a Linux runner cannot produce them) and verifies the binaries it just built before uploading them as artifacts. It never writes to the repo. Builds locally with `npm run build`; this is the cross-platform proof. |
 | `master.yml` | push to `master` | Compile release-mode sources (offline — reuses the committed signed xpi) + unit tests. |
 
-A dev push therefore spends a runner only on `installers.yml`. Everything else
-in this file is a local command, which is why `npm run ci` exists: it is the
-same sequence, on your machine, before the push.
+A dev push therefore spends **no runner at all**: both dev-side workflows are
+manual (`workflow_dispatch`), and the only push-triggered workflow is
+`master.yml`, which runs once per release. Everything else in this file is a
+local command, which is why `npm run ci` exists: it is the same sequence, on
+your machine, before the push.
+
+**What the runners cost: nothing.** This repository is public, and standard
+GitHub-hosted runner minutes are free in a public repository — they are not
+drawn from the account's included minutes, which apply to private repositories
+(larger runners are the only paid kind, and no workflow here uses one). The
+reason the dev pipelines are manual is turnaround time, not minutes.
 
 Neither workflow has AMO secrets, and neither pushes, tags, or creates a
 release. Releases are created by `npm run ship`, exactly once.
