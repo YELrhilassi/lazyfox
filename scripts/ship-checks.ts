@@ -145,6 +145,63 @@ export function alreadyReleasedCheck(local: boolean, remote: boolean, version: s
 }
 
 /**
+ * devBranchPushCheck reads `git push --dry-run --porcelain <remote> <branch>`.
+ *
+ * THE RELEASE PUSHES THE BRANCH IT MERGES, FIRST, and this is the check behind
+ * that. master's next commit is a MERGE, so the branch being merged is one of its
+ * two parents; if that parent exists only on the machine that ran the release,
+ * master names a commit nobody else can resolve — a history that reads as corrupt
+ * to anyone who clones, bisects or builds it, and a release whose source commit is
+ * a phantom. Pushing the branch before the merge removes the possibility.
+ *
+ * Asking with a DRY RUN first is what makes the failure free and legible: a
+ * rejected push (the remote moved on while the release was being prepared) stops
+ * the release with NOTHING done — no merge, no build, no tag — and the fix is a
+ * merge or a rebase away.
+ *
+ * Porcelain lines are `<flag>\t<from>:<to>\t<summary>`; git also prints a
+ * "To <url>" line and "Done" on the same stream, which are not status lines and
+ * are skipped rather than parsed.
+ */
+export function devBranchPushCheck(porcelain: string, branch: string): Check {
+  const status = porcelain
+    .split(/\r?\n/)
+    .filter((line) => line.includes("\t"))
+    .map((line) => {
+      const [flag = "", refs = "", ...rest] = line.split("\t");
+      const to = refs.includes(":") ? refs.slice(refs.lastIndexOf(":") + 1) : refs;
+      return { flag, ref: to.replace(/^refs\/heads\//, "") || branch, summary: rest.join(" ").trim() };
+    });
+
+  if (status.length === 0) {
+    return warn(
+      "dev branch push",
+      `could not read the remote's answer for ${branch} (git printed no status line)`,
+      "check the network and the remote, then re-run"
+    );
+  }
+
+  // The flag is `!` for a rejected ref; the summary is matched too, because a
+  // rejection reason is the part a reader needs and the flag alone is not enough
+  // to explain it.
+  const rejected = status.filter(
+    (s) => s.flag === "!" || /rejected|non-fast-forward|fetch first|stale info|behind/i.test(s.summary)
+  );
+  if (rejected.length > 0) {
+    return fail(
+      "dev branch push",
+      `the remote would REJECT it: ${rejected.map((s) => `${s.ref} ${s.summary || "rejected"}`).join("; ")}`,
+      `the remote branch moved on since this checkout, so merging it into master would reference a commit that is not there.\n` +
+        `Fetch the remote branch, merge (or rebase) it into ${branch}, then re-run —\n` +
+        "nothing has been merged, built or tagged yet."
+    );
+  }
+
+  const described = status.map((s) => `${s.ref} ${s.summary || "ok"}`).join("; ");
+  return ok("dev branch push", `the remote would accept it: ${described}`);
+}
+
+/**
  * pushCredentialCheck turns the scope verdict (release-auth.ts) into a report
  * line. It stays a separate module because the verdict is a decision about
  * GitHub's documented `workflow`-scope exemption, which needs blob comparisons

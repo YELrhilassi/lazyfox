@@ -14,6 +14,7 @@ import {
   amoSignatureCheck,
   blocks,
   branchCheck,
+  devBranchPushCheck,
   ghCheck,
   manifestCheck,
   pushCredentialCheck,
@@ -137,6 +138,77 @@ describe("the already-released check", () => {
     const c = alreadyReleasedCheck(true, false, "0.5.9");
     assert.equal(c.level, "fail");
     assert.match(c.fix ?? "", /git tag -d v0\.5\.9/);
+  });
+});
+
+// The three shapes below are the real `git push --dry-run --porcelain` output,
+// captured from this repository (the "To <url>" and "Done" lines included — they
+// are on the same stream and must not be mistaken for refs).
+const PUSH_NOISE = "To https://github.com/YELrhilassi/lazyfox.git";
+
+describe("the dev branch push check", () => {
+  test("up to date passes, and the url line is not read as a ref", () => {
+    const c = devBranchPushCheck(
+      [PUSH_NOISE, "=\trefs/heads/dev-nightly:refs/heads/dev-nightly\t[up to date]", "Done"].join("\n"),
+      "dev-nightly"
+    );
+    assert.equal(c.level, "ok");
+    assert.match(c.detail, /dev-nightly \[up to date\]/);
+    assert.doesNotMatch(c.detail, /github\.com/);
+  });
+
+  test("a fast-forward passes", () => {
+    const c = devBranchPushCheck(
+      [PUSH_NOISE, " \trefs/heads/dev-nightly:refs/heads/dev-nightly\t[fast-forward]", "Done"].join("\n"),
+      "dev-nightly"
+    );
+    assert.equal(c.level, "ok");
+    assert.match(c.detail, /fast-forward/);
+  });
+
+  test("a first-ever push of the branch passes", () => {
+    const c = devBranchPushCheck(`*\trefs/heads/dev-nightly:refs/heads/dev-nightly\t[new branch]`, "dev-nightly");
+    assert.equal(c.level, "ok");
+  });
+
+  test("a rejection fails, names the ref and quotes git's reason", () => {
+    // The real shape: git reports this on STDOUT and exits 1, which is why the
+    // reader in ship-git.ts keeps stdout on a failed command.
+    const c = devBranchPushCheck(
+      [PUSH_NOISE, "!\t8da8048:refs/heads/dev-nightly\t[rejected] (non-fast-forward)", "Done"].join("\n"),
+      "dev-nightly"
+    );
+    assert.equal(c.level, "fail");
+    assert.match(c.detail, /dev-nightly/);
+    assert.match(c.detail, /non-fast-forward/);
+    assert.match(c.fix ?? "", /merge \(or rebase\)/);
+  });
+
+  test("a rejection is caught even without the ! flag", () => {
+    const c = devBranchPushCheck(" \trefs/heads/dev-nightly:refs/heads/dev-nightly\t[rejected] (fetch first)", "dev-nightly");
+    assert.equal(c.level, "fail");
+    assert.match(c.detail, /fetch first/);
+  });
+
+  test("one rejected ref is enough, even beside a healthy one", () => {
+    const c = devBranchPushCheck(
+      [" \trefs/heads/other:refs/heads/other\t[fast-forward]", "!\trefs/heads/dev-nightly:refs/heads/dev-nightly\t[rejected] (stale info)"].join(
+        "\n"
+      ),
+      "dev-nightly"
+    );
+    assert.equal(c.level, "fail");
+  });
+
+  test("no status line is a warning, not a pass", () => {
+    // "we could not ask" must never read as "the push is fine"; the release warns
+    // and still attempts the push, whose failure is then loud.
+    assert.equal(devBranchPushCheck("", "dev-nightly").level, "warn");
+    assert.equal(devBranchPushCheck(PUSH_NOISE + "\nDone", "dev-nightly").level, "warn");
+  });
+
+  test("a warning does not block a release", () => {
+    assert.equal(blocks([devBranchPushCheck("", "dev-nightly")]), false);
   });
 });
 

@@ -85,18 +85,27 @@ problem:
    skips the check for a credential git pushes with that `gh` does not report.
 2. **Signed?** Read-only AMO API check that the version's signed xpi exists. If
    AMO is still reviewing, it stops here — you have not touched git yet.
-3. **Merge:** fast-forwards master, then merges your dev branch into master with
+3. **Push the branch being merged:** pushes your dev branch FIRST, before
+   anything is merged or tagged. The commit master is about to gain is a merge,
+   so it names both parents — a master referencing a commit that exists only on
+   this machine is a history nobody else can resolve. A dry run asks the remote
+   first, so a branch that has moved on since your checkout stops the release
+   here, with nothing merged, built or tagged, and a fix that is a merge away.
+4. **Merge:** fast-forwards master, then merges your dev branch into master with
    `-X theirs`. That resolves **every** conflict — source *and* generated
-   `dist/`/installers — in your dev branch's favor. Master becomes "latest dev
-   source, exactly", with no manual conflict resolution ever.
-4. **Build release:** syncs the AMO-**signed** xpi for that version, rebuilds the
+   `dist/`/installers — in your dev branch's favor. `scripts/ship-merge.ts` also
+   settles the two shapes a merge strategy cannot resolve on its own (conflicting
+   binary files, and modify/delete) by the same rule, so master becomes "latest
+   dev source, exactly" with no manual conflict resolution ever.
+5. **Build release:** syncs the AMO-**signed** xpi for that version, rebuilds the
    release-mode `dist/` bundles, and rebuilds the release installers
    (`installer/bin/lazyfox-install-{linux,darwin,windows.exe}`).
-5. **Verify:** `check-dist`, installer tests, and confirms the committed xpi is
+6. **Verify:** `check-dist`, installer tests, and confirms the committed xpi is
    signed and the right version.
-6. **Commit + tag + push:** commits on master, tags `v<version>`, pushes master
-   and the tag.
-7. **GitHub Release:** creates the public release via `gh` with the three
+7. **Commit + tag + push:** commits on master, tags `v<version>`, pushes master
+   and the tag. The dev branch itself went up in step 3, so both parents of the
+   merge commit are on the remote.
+8. **GitHub Release:** creates the public release via `gh` with the three
    installers and the signed xpi as assets.
 
 Nothing — not CI, not a workflow — writes back, tags, or publishes. Every write
