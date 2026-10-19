@@ -82,11 +82,27 @@ for (const v of verdicts) {
 /* ---------- 2. is the embedded payload staged from dist/? ---------- */
 
 const stagedMismatches: string[] = [];
-for (const f of STAGED_CHROME_FILES) {
-  const staged = join(PAYLOAD_DATA, "chrome", f);
-  if (!existsSync(staged)) stagedMismatches.push(`data/chrome/${f} is not staged`);
-  else if (readFileSync(staged).equals(readFileSync(join(ROOT, "dist", "chrome", f)))) continue;
-  else stagedMismatches.push(`data/chrome/${f} differs from dist/chrome/${f}`);
+
+// data/chrome/ is a GITIGNORED build product (installer/.gitignore), so a fresh
+// clone has never staged it — and `npm run check` is the first thing CI runs,
+// before any build (master.yml: check → build → … → check). Comparing against a
+// directory that does not exist yet reported six "is not staged" failures on a
+// clean checkout and turned the gate red for every push, which is how a check
+// stops being read at all. Nothing is embedded in that state, and the committed
+// payload-state record is what proves the binaries' provenance; the comparison
+// applies as soon as a build has staged something. A directory that EXISTS but
+// disagrees is still a failure — that is a half-staged or mixed-build payload,
+// exactly what this section is for.
+const stagedChrome = join(PAYLOAD_DATA, "chrome");
+if (existsSync(stagedChrome)) {
+  for (const f of STAGED_CHROME_FILES) {
+    const staged = join(stagedChrome, f);
+    if (!existsSync(staged)) stagedMismatches.push(`data/chrome/${f} is not staged`);
+    else if (readFileSync(staged).equals(readFileSync(join(ROOT, "dist", "chrome", f)))) continue;
+    else stagedMismatches.push(`data/chrome/${f} differs from dist/chrome/${f}`);
+  }
+} else {
+  log("staged payload (//go:embed input): nothing staged in this checkout — skipped (a build stages it)");
 }
 for (const f of LOADER_FILES) {
   const staged = join(PAYLOAD_DATA, "loader", f);
