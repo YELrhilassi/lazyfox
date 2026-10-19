@@ -1,0 +1,11 @@
+{
+  "name": "grammar-bad",
+  "about": "Malformed input. The channel receives whatever the URL happens to contain, so every one of these must be routed nowhere — never answered, and never thrown on. A throw here would take down the location listener that serves every other request on the channel, and an answer would mean the grammar turned a stranger into a command.",
+  "steps": [
+    { "send": "lfc=", "noReply": true },
+    { "send": "lfc=nonsense.x1-1", "noReply": true },
+    { "send": "lfc=.y1-1", "noReply": true },
+    { "send": "not-a-lfc-message", "noReply": true },
+    { "send": "lfc=keys.notbase64!!..k9-9", "expect": "keys.err", "cmd": "keys", "note": "a corrupt key payload answers err — it does NOT throw" }
+  ]
+}

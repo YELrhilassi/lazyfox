@@ -9,8 +9,10 @@
 //   - src/static/extension/manifest.json (the extension manifest source of
 //     truth — build.ts copies src/static/extension → dist/, so bump the source
 //     manifest, then `npm run build` propagates it into dist/extension)
-//   - src/chrome/main.ts                 (CHROME_HELPER_VERSION, surfaced on the
+//   - src/chrome/alive.ts                (CHROME_HELPER_VERSION, surfaced on the
 //     Components page)
+//   - core/js/main.go                    (the Go core's `version`, returned by
+//     core.version() and surfaced in the command center / status bar)
 //
 // The version in dist/extension/manifest.json is DERIVED from src/static during
 // `npm run build`, so it is not edited here — run `npm run build` after bumping
@@ -64,6 +66,22 @@ for (const f of ["package.json", "package-lock.json"]) {
   console.log(`bumped ${f} → ${next}`);
 }
 
+// 2b. installer/frontend/package.json + its lock: the window's own package.
+// It is part of the version link, not decoration — the installer binary embeds
+// this front-end, `sourceHash` fingerprints this file, and the two used to drift
+// (the window said 0.5.7 while the extension it installed said 0.5.8, and
+// nothing anywhere compared them). scripts/test/version-link.test.ts now fails
+// when any carrier disagrees, and this is where they are all moved together.
+for (const f of ["installer/frontend/package.json", "installer/frontend/package-lock.json"]) {
+  const p = path.join(root, f);
+  if (!fs.existsSync(p)) continue;
+  const j = JSON.parse(fs.readFileSync(p, "utf8"));
+  if (j.version) j.version = next;
+  if (j.packages?.[""]?.version) j.packages[""].version = next;
+  fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+  console.log(`bumped ${f} → ${next}`);
+}
+
 // 3. src/static/extension/manifest.json.
 {
   const p = path.join(root, "src/static/extension/manifest.json");
@@ -73,9 +91,9 @@ for (const f of ["package.json", "package-lock.json"]) {
   console.log(`bumped ${path.relative(root, p)} → ${next}`);
 }
 
-// 4. src/chrome/main.ts: CHROME_HELPER_VERSION = "x.y.z".
+// 4. src/chrome/alive.ts: CHROME_HELPER_VERSION = "x.y.z".
 {
-  const p = path.join(root, "src/chrome/main.ts");
+  const p = path.join(root, "src/chrome/alive.ts");
   const s = fs.readFileSync(p, "utf8");
   const re = /(CHROME_HELPER_VERSION\s*=\s*")[^"]+(")/;
   if (re.test(s)) {
@@ -83,6 +101,23 @@ for (const f of ["package.json", "package-lock.json"]) {
     console.log(`bumped ${path.relative(root, p)} (CHROME_HELPER_VERSION) → ${next}`);
   } else {
     console.warn(`note: no CHROME_HELPER_VERSION in ${p} — left unchanged.`);
+  }
+}
+
+// 5. core/js/main.go: `const version = "x.y.z"` (the Go core's own version).
+// This is a separate, hand-maintained const (not generated), so it MUST be
+// bumped here or the core silently reports an old version forever.
+{
+  const p = path.join(root, "core/js/main.go");
+  if (fs.existsSync(p)) {
+    const s = fs.readFileSync(p, "utf8");
+    const re = /(const version\s*=\s*")[^"]+(")/;
+    if (re.test(s)) {
+      fs.writeFileSync(p, s.replace(re, `$1${next}$2`));
+      console.log(`bumped ${path.relative(root, p)} (core version) → ${next}`);
+    } else {
+      console.warn(`note: no \`const version\` in ${p} — left unchanged.`);
+    }
   }
 }
 

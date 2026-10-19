@@ -47,7 +47,7 @@ export interface QuickActions {
 // The home screen command grid, grouped into sections. `group` drives the
 // section headers; items are rendered in order within each section. This list
 // is deliberately SHORT: everything already on the which-key leader menu
-// (`;n` new tab, `;x` close, `;z` zen, `;w` resize, `;S` strip, sessions, ...)
+// (`;n` new tab, `;x` close, `;W z` zen, `;W w` resize, `;P` sessions, ...)
 // is removed so the home page only surfaces what the leader does not — the
 // browser page access and Lazyfox settings, plus the quick-launch apps below.
 export interface QuickCmd {
@@ -63,7 +63,11 @@ export interface QuickCmd {
 export function quickCommands(a: QuickActions): QuickCmd[] {
   return [
     { kind: "cmd", group: "Browser", ic: "\u2699", title: "Lazyfox settings", keys: "", desc: "tune the leader, apps, sessions and chrome", run: () => a.openOptions() },
-    { kind: "cmd", group: "Browser", ic: "\u{1F527}", title: "Complete the install", keys: "I", desc: "open the installer / setup page (;I)", run: () => a.openSetup() },
+    // The setup page has NO chord by design (see core/keymap.go): it is a
+    // one-time install step, so it is a row here and the first-run banner, not
+    // a key. `keys` is empty for that reason — a badge would advertise a chord
+    // that no longer exists.
+    { kind: "cmd", group: "Browser", ic: "\u{1F527}", title: "Complete the install", keys: "", desc: "open the installer / setup page", run: () => a.openSetup() },
     { kind: "cmd", group: "Browser", ic: "\u{1F98A}", title: "Firefox settings", keys: "", desc: "open about:preferences", run: () => a.openPage("about:preferences") },
     { kind: "cmd", group: "Browser", ic: "\u2609", title: "Add-ons manager", keys: "", desc: "open about:addons", run: () => a.openPage("about:addons") },
     { kind: "cmd", group: "Browser", ic: "\u21ba", title: "History", keys: "", desc: "show history here", run: () => a.setMode("history") },

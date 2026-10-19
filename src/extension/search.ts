@@ -35,7 +35,10 @@ async function getVisited() {
     }
     visitedCache = Array.from(seen.values());
     visitedCacheAt = now;
-  } catch (e) {}
+  } catch (e) {
+    // The visited-URL suggestions are a convenience built on the history API.
+    // If history cannot be read they are simply absent from the list.
+  }
   return visitedCache;
 }
 
@@ -48,7 +51,10 @@ export async function suggestSearch(q: string) {
     const engines = await browser.search.get();
     const g = engines.find((e: any) => /google/i.test(e.name));
     if (g) engine = g.name;
-  } catch (e) {}
+  } catch (e) {
+    // The engine list is only used to label the row. If it cannot be read, the
+    // row still searches -- the label just stays generic.
+  }
   entries.push({
     kind: "search",
     title: "Search the web for \u201C" + text + "\u201D",
@@ -117,6 +123,8 @@ export async function suggestUrls(q: string) {
   return { entries };
 }
 
+// The URL a query should navigate to, from the browser's own search engines so
+// the user's configured choice is honoured.
 export async function searchUrlFor(q: string): Promise<string> {
   let url = "";
   try {
@@ -127,7 +135,10 @@ export async function searchUrlFor(q: string): Promise<string> {
         .replace("{searchTerms}", encodeURIComponent(q))
         .replace("{inputEncoding}", "UTF-8");
     }
-  } catch (e) {}
+  } catch (e) {
+    // browser.search is unavailable (a permission not granted, or an engine
+    // list that cannot be read). A public search URL still searches.
+  }
   if (!url) url = "https://www.google.com/search?q=" + encodeURIComponent(q);
   return url;
 }
@@ -143,12 +154,15 @@ export async function doSearch(query: string) {
   try {
     await browser.search.search({ query: q });
     return { ok: true };
-  } catch (e) {}
-  await browser.tabs.create({
-    url: "https://www.google.com/search?q=" + encodeURIComponent(q),
-    active: true
-  });
-  return { ok: true, engine: "Google" };
+  } catch (e) {
+    // browser.search.search throws when the engine is disabled or the user
+    // removed it. Fall back to opening a search URL ourselves -- through
+    // searchUrlFor, not a hardcoded Google: this path previously hardcoded
+    // google.com, so a user whose engine was DuckDuckGo silently got Google
+    // the one time the preferred API failed.
+  }
+  await browser.tabs.create({ url: await searchUrlFor(q), active: true });
+  return { ok: true, engine: "fallback" };
 }
 
 export async function historySearch(q: string) {

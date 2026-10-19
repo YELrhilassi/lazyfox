@@ -1,26 +1,41 @@
-// The window-level status bar (tmux-style). The chrome helper draws ONE bar
-// into the browser XUL document and reserves space by shrinking the #browser
-// content area (margin), so the fixed bar sits in reserved space instead of
-// overlapping the page — for a single tab and for split panes alike. The
-// content script hides its own bar whenever the chrome helper is alive, so
-// there is exactly one bar.
+// The window-level status bar. This module is the ONLY owner of the bar's
+// lifecycle and the ONLY consumer of the bar's render model: it mounts the
+// single StatusBar view into the browser document, pushes every raw event
+// into the Go status store (the single source of truth — see core/status.go),
+// and paints whatever the store's snapshot says. It holds no bar state of its
+// own; `lastSnap` below is a read-only mirror of the Go snapshot kept only so
+// synchronous consumers (the tab switcher, the debug relay, the TabSelect
+// stealth badge) can read without crossing the async wasm boundary. Nothing
+// else renders a bar, and nothing else may hold bar state.
 //
-// This module owns the bar's data (current session, tab ids, stealth flags,
-// download segment) and its render/update cycle. It is pure chrome: it reads
-// the shared StatusBar renderer, the download manager and the injected
-// getters, and never touches the leader or popups directly.
+// The content script never renders a bar: when the chrome layer is alive it
+// owns the single window-level bar for every tab; when it is absent (stand-
+// alone extension mode) there is simply no bar.
 
-import { core } from "../shared/core";
-import { StatusBar } from "../shared/statusbar";
-import { activeDownloads, dismissDownload, updateDownloads } from "./downloads";
+import { core, type StatusOp } from "../shared/core";
+import {
+  idleSignal,
+  makeLeaderSignal,
+  resolveLeaderSignal,
+  type LeaderSignal,
+} from "../shared/leadersignal";
+import { StatusBar, type StatusBarData } from "../shared/statusbar";
+import { updateDownloads } from "./downloads";
 import type { ChromeCfg } from "./config";
+import type { ChromeEnv } from "./env";
 
 export interface StatusBarDeps {
+  // The chrome document's environment. Injected rather than read from a
+  // global so the bar's lifecycle (mount, fullscreen hide, selection read) is
+  // assertable in Node; see src/chrome/env.ts.
+  env: ChromeEnv;
   // Real (user) tabs in strip order (splitview.realTabs) — the live count.
   realTabs(): any[];
   getConfig(): ChromeCfg;
-  // Rendering mode for the bar: a popup or the leader overlay is open.
-  getMode(): "POPUP" | "LEADER" | "NORMAL";
+  // Raw chrome-side UI signals that decide the bar's mode: whether a popup is
+  // open and whether the chrome helper's own leader is armed. The content
+  // leader on web pages is tracked per tab-strip index (setContentLeader).
+  getUi(): { popup: boolean; leader: boolean };
 }
 
 export interface StatusBarCtl {
@@ -29,7 +44,7 @@ export interface StatusBarCtl {
   refreshDownloads(): Promise<void>;
   pollDownloads(): Promise<void>;
   // Apply a sessionState reply from the background (the parsed state object,
-  // delivered structured-cloned over the relay) and re-render.
+  // delivered structured-cloned over the relay) — pushed into the Go store.
   applySessionState(state: any): void;
   // True while a page element is in DOM fullscreen (a video, a gallery
   // lightbox, ...). Only then does the bar hide: browser-level fullscreen
@@ -38,19 +53,27 @@ export interface StatusBarCtl {
   getTabIds(): number[];
   getStealthFlags(): boolean[];
   // The stealth badge must track the tab you switched to immediately (without
-  // a sessionState round-trip), so the caller sets the active flag locally.
+  // a sessionState round-trip), so the caller sets it locally and it is
+  // pushed into the store.
   setActiveStealth(on: boolean): void;
   // Content-script leader state by tab-strip index (pushed by the background
   // on every arm/disarm). The window-level bar shows the LEADER chevron on
   // web pages — where the content script owns the leader key and the chrome
-  // helper's own leader never arms — by consulting this per-index cache.
-  setContentLeader(index: number, active: boolean): void;
-  contentLeaderActive(index: number): boolean;
+  // helper's own leader never arms — by resolving this per-index state in the
+  // Go store against the current selection.
+  setContentLeader(index: number, sig: LeaderSignal): void;
+  // The far-right leader indicator for this context's own leader. `prefix` is
+  // the chord committed so far ("" or ";" = waiting for the first key, "W" =
+  // a category armed and waiting for its sub-key). `expect` is what an armed
+  // capture will accept next ("1-9"), empty when it takes any key. Paints
+  // synchronously (see shared/statusbar.ts) so it tracks the keypress exactly.
+  setLeaderSignal(sig: LeaderSignal): void;
   // Content-script find-in-page state by tab-strip index (pushed by the
-  // background on every count change). The window-level bar shows the live
-  // match count for the selected web page, where the content script owns the
-  // find widget and the chrome helper's own find bar never opens.
+  // background on every count change). Same resolution as the leader chevron.
   setContentFind(index: number, count: number, cur: number): void;
+  // The content script's dark verdict for a tab. Per index like find, so the
+  // bar describes the page on screen rather than whichever tab reported last.
+  setContentDark(index: number, on: boolean, mode: string, engine: string): void;
   mounted(): boolean;
   dlActive(): string[];
   getInfo(): {
@@ -66,49 +89,50 @@ export interface StatusBarCtl {
 }
 
 export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
-  const chromeStatusBar = new StatusBar(true, "#browser");
+  const env = deps.env;
+  const win = env.window as any;
+  const doc = env.document as any;
+  const chromeStatusBar = new StatusBar(true, "#browser", doc);
+  // The chrome helper's OWN leader readout, exactly as its controller reports
+  // it (see LeaderController.signal). Held whole rather than as loose prefix
+  // and expectation strings because it has to reach BOTH the store (so the
+  // next repaint agrees) and the view (so this keypress paints now); writing
+  // only the view is what previously let a later repaint restore a stale
+  // readout.
+  let ownSignal = idleSignal();
+
+  // The SELECTED tab's content script, reporting the same shape by a different
+  // road, plus the tab-strip index it belongs to. The index is what decides
+  // whether that chord belongs on the bar at all.
+  //
+  // This is not an optimisation: on a web page the content script owns the
+  // leader key and the chrome helper's own leader never arms at all, so before
+  // this the window bar could only ever show a bare glyph there — on exactly
+  // the pages where the leader is pressed most, and while `;W` and a digit
+  // capture were both invisible.
+  let contentSignal = idleSignal();
+  let contentLeaderIndex = -1;
+
+  // The selected tab's RAW strip index. This is the coordinate the background
+  // pushes content-leader state in (sender.tab.index) and the one the Go store
+  // resolves leaderByIndex against — NOT the real-tab index, which counts only
+  // visible tabs and would disagree whenever plumbing tabs exist.
+  function selectedStripIndex(): number {
+    try {
+      return win.gBrowser.tabs.indexOf(win.gBrowser.selectedTab);
+    } catch (e) {
+      return -1;
+    }
+  }
   // Clicking a download notification on the bar dismisses just that one (the
-  // popup list keeps it). The download manager is this module's direct
-  // dependency, so it is imported rather than threaded through deps.
+  // popup list keeps it). Dismissal is store state — the Go store owns it.
   chromeStatusBar.setDownloadDismiss((key) => {
-    dismissDownload(key);
-    void refreshDownloadStatus();
+    void core.statusDismiss(key != null ? [key] : []).then(() => refreshDownloads());
   });
 
-  let chromeStatusInfo = {
-    name: "default",
-    marker: 0,
-    inSplit: false,
-    splitOrientation: undefined as "horizontal" | "vertical" | undefined,
-    splitActive: 0,
-    splitPanes: 0,
-    activeStealth: false,
-    sessions: [] as { marker: number; name: string; current: boolean; tabCount: number; splitCount: number }[],
-  };
-  // Real tab ids in strip order from the last sessionState reply, so the tab
-  // switcher popup can show each tab's true Firefox id.
-  let chromeStatusTabIds: number[] = [];
-  // Stealth flags parallel to chromeStatusTabIds (strip order), so the tab
-  // switcher can badge stealth tabs without re-querying the containers.
-  let chromeStatusStealthFlags: boolean[] = [];
-  // Active (un-dismissed) downloads for the status bar's progress segment.
-  let chromeStatusDownloads: { key: string; filename: string; state: string; percent: number; speed: string }[] = [];
-  // Content-script leader arm state by tab-strip index (the index the
-  // background's sender.tab.index reports — same ordering as gBrowser.tabs).
-  let contentLeaderByIndex: Record<number, boolean> = {};
-  // Content-script find-in-page state by tab-strip index (1-based current
-  // match, 0 = query typed but nothing walked to; total matches).
-  let contentFindByIndex: Record<number, { count: number; cur: number }> = {};
-
-  // ONE window-level bar owns the bottom of the window for EVERY tab — plain
-  // web pages, chrome-only pages, and split panes alike. The bar lives in the
-  // chrome document (outside the web content) and reserves its 18px by
-  // shrinking the #browser content area, so the page reflows above it instead
-  // of rendering underneath it. Always true here: the chrome helper owns the
-  // single bar for every page.
-  function chromePageNeedsStatus(): boolean {
-    return true;
-  }
+  // Read-only mirror of the Go store's snapshot, updated only in paint(). The
+  // bar's authoritative state lives in Go; this exists for synchronous reads.
+  let lastSnap: StatusBarData | null = null;
 
   function isFullscreen(): boolean {
     // DOM fullscreen (a video, a gallery lightbox) must hide the window
@@ -120,182 +144,311 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     // is stable across versions. Either signal alone hides the bar; the
     // 500ms poll plus the fullscreenchange events keep both edges fresh.
     try {
-      if (document.documentElement.hasAttribute("inDOMFullscreen")) return true;
-      const b = window.gBrowser && window.gBrowser.selectedBrowser;
+      if (doc.documentElement.hasAttribute("inDOMFullscreen")) return true;
+      const b = win.gBrowser && win.gBrowser.selectedBrowser;
       // The selected browser can be a dead wrapper mid-collapse (its tab is
       // being torn down); any property access then throws. Skip it.
-      if (b && Cu && Cu.isDeadWrapper(b)) return false;
-      const doc = b && b.contentDocument;
-      if (doc && doc.fullscreenElement) return true;
+      if (b && env.Cu && env.Cu.isDeadWrapper(b)) return false;
+      const contentDoc = b && b.contentDocument;
+      if (contentDoc && contentDoc.fullscreenElement) return true;
     } catch (e) {
       // ignore
     }
     return false;
   }
 
-  function computeChromeStatus(): void {
-    // Never throw out of here: the leader's status callback runs this MID key
-    // dispatch (a ;| split collapses the window while the bar re-renders), so
-    // a dead tab or a half-torn-down window must degrade to a best-effort
-    // render instead of breaking the key. All reads below are already
-    // defensive (realTabs skips dead wrappers); the try/catch is the final
-    // backstop for anything that still throws.
+  // Pull the store's render model and paint it through the single view. Also
+  // decides show/hide from config + fullscreen, so a mid-render fullscreen
+  // transition can never leave the bar over full-screen content.
+  async function paint(): Promise<void> {
     try {
-      const tabs = window.gBrowser.tabs;
-      const sel = tabs.indexOf(window.gBrowser.selectedTab);
-      const mode = deps.getMode();
-      const findState = sel >= 0 ? contentFindByIndex[sel] : undefined;
-      // The CURRENT session's pill count tracks live tabs, so opening/closing
-      // a tab updates the pill immediately — without a sessionState
-      // round-trip (which used to create a transient tab and churn counts
-      // under automation). Other sessions' counts are refreshed on session
-      // actions/startup as usual. Numbering counts REAL tabs only: the
-      // persistent relay tab and split companion panes are internal plumbing
-      // and must never shift the user-visible index/count.
-      const real = deps.realTabs();
-      const liveCount = real.length;
-      const realSel = real.indexOf(window.gBrowser.selectedTab);
-      // The stealth badge is a LIVE property of the selected tab (its
-      // container), never a cached flag: flags keyed by raw tab index go stale
-      // the moment a tab closes and shift every index after it, so a normal
-      // tab would inherit a dead tab's badge. userContextId > 0 means the tab
-      // runs in an isolated container (Lazyfox stealth opens one per tab).
-      let selStealth = false;
-      try {
-        const t = window.gBrowser.selectedTab;
-        selStealth = !!(
-          t && typeof t.userContextId === "number" && t.userContextId > 0
-        );
-      } catch (e) {
-        // selection not readable mid-collapse; keep the pushed value
-        selStealth = !!chromeStatusInfo.activeStealth;
-      }
-      const sessions = chromeStatusInfo.sessions.map((s) =>
-        s.current ? { ...s, tabCount: liveCount } : s
-      );
-      chromeStatusBar.setData({
-        name: chromeStatusInfo.name,
-        marker: chromeStatusInfo.marker,
-        tabIndex: (realSel < 0 ? 0 : realSel) + 1,
-        tabCount: liveCount,
-        inSplit: chromeStatusInfo.inSplit,
-        splitOrientation: chromeStatusInfo.splitOrientation,
-        splitActive: chromeStatusInfo.splitActive,
-        splitPanes: chromeStatusInfo.splitPanes,
-        activeStealth: selStealth,
-        mode: mode,
-        sessions: sessions,
-        downloads: chromeStatusDownloads,
-        // count -1 = no active find session (segment hidden); 0 = query with
-        // no matches (red 0); >0 = live cur/count.
-        find: findState && findState.count >= 0 ? findState : null,
-      });
+      paintSnapshot(await core.statusSnapshot());
     } catch (e) {
       // a mid-collapse render must never escape
     }
   }
 
-  function updateChromeStatus(): void {
+  // Paint an already-read snapshot. Split out of paint() so the batch path can
+  // hand over the snapshot it just read instead of reading it a second time.
+  function paintSnapshot(snap: StatusBarData): void {
+    try {
+      lastSnap = snap;
+      const cfg = deps.getConfig();
+      if (cfg.config.statusBar === false || isFullscreen()) {
+        chromeStatusBar.hide();
+        return;
+      }
+      chromeStatusBar.setPosition(cfg.config.statusBarPosition || "bottom");
+      chromeStatusBar.show();
+      chromeStatusBar.setData(snap);
+    } catch (e) {
+      // a mid-collapse render must never escape
+    }
+  }
+
+  // Push several store updates and repaint, atomically.
+  //
+  // This used to take an array of promises, Promise.all them, and then call
+  // paint() — which reads the snapshot back. That is five microtask hops
+  // between a keystroke and a repaint, on a path that runs on every TabSelect
+  // and every leader key, and it is worse than slow: each of those hops is an
+  // await boundary, so two concurrent pushes could interleave and one paint
+  // could read a snapshot where the other's updates had half landed. The store
+  // is the single source of truth precisely so that cannot happen, and the
+  // composition was quietly breaking that guarantee.
+  //
+  // statusBatch applies the whole batch synchronously against the resolved core
+  // and returns the snapshot from the same call, so there is no window in
+  // which another writer can slip in.
+  function pushAndPaint(ops: StatusOp[]): void {
+    void core
+      .statusBatch(ops)
+      .then((snap) => paintSnapshot(snap))
+      .catch(() => {});
+  }
+
+  function update(): void {
+    // Show/hide + position only (data re-renders via compute/paint). The
+    // chrome helper owns the single bar for every page, so it always shows
+    // unless disabled or in DOM fullscreen.
     const cfg = deps.getConfig();
     if (cfg.config.statusBar === false || isFullscreen()) {
       chromeStatusBar.hide();
       return;
     }
     chromeStatusBar.setPosition(cfg.config.statusBarPosition || "bottom");
-    if (chromePageNeedsStatus()) chromeStatusBar.show();
-    else chromeStatusBar.hide();
+    chromeStatusBar.show();
   }
 
-  // Recompute the status bar's download segment from the manager cache (the
-  // Go activeDownloads/formatSpeed/progress helpers do the work) and re-render.
-  async function refreshDownloadStatus(): Promise<void> {
-    const active = await activeDownloads();
-    const out: { key: string; filename: string; state: string; percent: number; speed: string }[] = [];
-    for (const d of active) {
-      const percent = await core.downloadProgress(d.received, d.total);
-      const speed = await core.formatSpeed(d.speed);
-      out.push({ key: d.id, filename: d.filename, state: d.state, percent: percent, speed: speed });
+  // Push the live chrome-side signals (selection, mode inputs, stealth badge)
+  // and re-render. Never throws: the leader's status callback runs this MID
+  // key dispatch (a ;| split collapses the window while the bar re-renders),
+  // so a dead tab or a half-torn-down window must degrade to best-effort.
+  function compute(): void {
+    // The raw strip index, read defensively and SEPARATELY. It is the one
+    // volatile input the leader indicator needs, and it is exactly what throws
+    // when the window is mid-collapse — so it gets its own guarded read that
+    // falls back to -1 ("selection not readable"), which leaderSignalOn
+    // already handles by falling back to the other signals. Reading it here
+    // rather than inside the batch try/catch below is what lets the indicator
+    // still be repainted when the rest of the batch gives up.
+    let sel = -1;
+    try {
+      sel = win.gBrowser.tabs.indexOf(win.gBrowser.selectedTab);
+    } catch (e) {
+      // mid-collapse; -1 is the documented "unreadable" coordinate
     }
-    chromeStatusDownloads = out;
-    computeChromeStatus();
+    try {
+      const real = deps.realTabs();
+      const liveCount = real.length;
+      const realSel = real.indexOf(win.gBrowser.selectedTab);
+      const ui = deps.getUi();
+      // The stealth badge is a LIVE property of the selected tab (its
+      // container), never a cached flag: flags keyed by raw tab index go stale
+      // the moment a tab closes. userContextId > 0 = isolated container.
+      let selStealth = false;
+      try {
+        const t = win.gBrowser.selectedTab;
+        selStealth = !!(
+          t && typeof t.userContextId === "number" && t.userContextId > 0
+        );
+      } catch (e) {
+        // selection not readable mid-collapse; keep the pushed value
+        selStealth = !!(lastSnap && lastSnap.activeStealth);
+      }
+      pushAndPaint([
+        { kind: "tab", selected: sel, tabIndex: (realSel < 0 ? 0 : realSel) + 1, tabCount: liveCount },
+        { kind: "ui", popup: ui.popup, leader: ui.leader },
+        { kind: "stealth", on: selStealth },
+      ]);
+    } catch (e) {
+      // ignore — mid-collapse reads can throw. The leader indicator below is
+      // deliberately OUTSIDE this guard: it is the one signal the user reads
+      // as "did my key land", so a stale value here is the exact bug it
+      // exists to prevent.
+    }
+    // The far-right indicator rides OUTSIDE the store batch: it is painted
+    // directly on the view so a `;` press lights it with zero async hops, and
+    // it is repainted even when the batch above could not run.
+    paintLeader(sel);
   }
 
+  // The ONE place the window-level leader readout is decided and written.
+  //
+  // Both contexts report the same LeaderSignal, so this function resolves
+  // between them once (resolveLeaderSignal, unit-tested) instead of carrying
+  // four loose variables and an inline ternary — which is how the bar came to
+  // show a chord belonging to a tab the user had already left.
+  //
+  // The store write is in the same tick as the view paint, on purpose. A `;`
+  // press must light the indicator with zero async hops, but painting ONLY the
+  // view leaves the Go store holding the previous value and the next store
+  // repaint (any TabSelect, any poll) resurrects it — which is how a `;`
+  // followed by Esc could leave the indicator lit forever. statusLeaderSignal
+  // returns void, so the store is authoritative and still lands synchronously.
+  function paintLeader(sel: number): void {
+    try {
+      const sig = resolveLeaderSignal({
+        own: ownSignal,
+        content: contentSignal,
+        contentIndex: contentLeaderIndex,
+        // `sel` is the raw strip index, the same coordinate
+        // contentLeaderIndex is pushed in.
+        selectedStrip: sel,
+        uiLeader: deps.getUi().leader,
+      });
+      try {
+        core.statusLeaderSignal(sig.armed, sig.prefix, sig.expect);
+      } catch (e) {
+        // a wasm that is not up yet must not break key dispatch
+      }
+      chromeStatusBar.setLeaderSignal(sig);
+    } catch (e) {
+      // ignore — a dead view must not break key dispatch
+    }
+  }
+
+  function refreshDownloads(): Promise<void> {
+    return paint();
+  }
+
+  let downloadsPolling = false;
   async function pollDownloads(): Promise<void> {
+    // Never overlap polls: a slow Downloads.sys.mjs read (large histories,
+    // long-lived big downloads) must not pile up intervals that race the
+    // store. updateDownloads pushes the fresh snapshot into Go, which owns
+    // the merge, dismissed flags and speed.
+    if (downloadsPolling) return;
+    downloadsPolling = true;
     try {
       await updateDownloads();
-      await refreshDownloadStatus();
+      await paint();
     } catch (e) {
       // downloads are best-effort; never let a poll break the bar
+    } finally {
+      downloadsPolling = false;
     }
   }
 
   function applySessionState(state: any): void {
     try {
       state = state || {};
-      chromeStatusInfo = {
-        name: state && state.name ? String(state.name) : "default",
-        marker: state && state.marker ? Number(state.marker) : 0,
-        inSplit: !!(state && state.inSplit),
-        splitOrientation:
-          state && state.splitOrientation === "vertical" ? "vertical" : "horizontal",
-        splitActive: state && typeof state.splitActive === "number" ? state.splitActive : 0,
-        splitPanes: state && typeof state.splitPanes === "number" ? state.splitPanes : 0,
-        activeStealth: !!(state && state.activeStealth),
-        sessions: (state && state.sessions) || [],
-      };
-      chromeStatusTabIds = Array.isArray(state && state.tabIds) ? state.tabIds : [];
-      chromeStatusStealthFlags = Array.isArray(state && state.stealthFlags)
-        ? state.stealthFlags
-        : [];
-      // The background computes activeStealth at push time, which can race
-      // the tab becoming SELECTED: tabs.create resolves before the selection
-      // flips, so a push right after ;N can carry activeStealth=false for a
-      // just-opened stealth tab, and the TabSelect fallback already ran with
-      // the PREVIOUS reply's flags (no stealth tab yet). The flags are keyed
-      // by raw tab index and the selection is live here, so re-derive the
-      // badge from flags + current selection — always correct, never stale.
-      try {
-        const sel = window.gBrowser.tabs.indexOf(window.gBrowser.selectedTab);
-        if (sel >= 0 && chromeStatusStealthFlags[sel]) {
-          chromeStatusInfo.activeStealth = true;
-        } else {
-          chromeStatusInfo.activeStealth = !!chromeStatusInfo.activeStealth;
-        }
-      } catch (e) {
-        // selection not readable mid-collapse; keep the pushed value
-      }
-      computeChromeStatus();
+      const ui = deps.getUi();
+      pushAndPaint([
+        { kind: "session", state: {
+          name: state.name ? String(state.name) : "default",
+          marker: state.marker ? Number(state.marker) : 0,
+          inSplit: !!state.inSplit,
+          splitOrientation:
+            state.splitOrientation === "vertical" ? "vertical" : "horizontal",
+          splitActive: typeof state.splitActive === "number" ? state.splitActive : 0,
+          splitPanes: typeof state.splitPanes === "number" ? state.splitPanes : 0,
+          sessions: Array.isArray(state.sessions) ? state.sessions : [],
+          tabIds: Array.isArray(state.tabIds) ? state.tabIds : [],
+          stealthFlags: Array.isArray(state.stealthFlags) ? state.stealthFlags : [],
+        } },
+        // Re-derive the stealth badge from the fresh flags + current selection
+        // (the background's activeStealth can race the tab becoming selected).
+        {
+          kind: "stealth",
+          on: (() => {
+            try {
+              const sel = win.gBrowser.tabs.indexOf(win.gBrowser.selectedTab);
+              return sel >= 0 && !!(state.stealthFlags && state.stealthFlags[sel]);
+            } catch (e) {
+              return !!(lastSnap && lastSnap.activeStealth);
+            }
+          })(),
+        },
+        { kind: "ui", popup: ui.popup, leader: ui.leader },
+      ]);
     } catch (e) {
       // ignore
     }
   }
 
   return {
-    update: updateChromeStatus,
-    compute: computeChromeStatus,
-    refreshDownloads: refreshDownloadStatus,
+    update,
+    compute,
+    refreshDownloads,
     pollDownloads,
     applySessionState,
     isFullscreen,
-    getTabIds: () => chromeStatusTabIds.slice(),
-    getStealthFlags: () => chromeStatusStealthFlags.slice(),
-    getInfo: () => chromeStatusInfo,
+    getTabIds: () => (lastSnap && lastSnap.tabIds ? lastSnap.tabIds.slice() : []),
+    getStealthFlags: () =>
+      lastSnap && lastSnap.stealthFlags ? lastSnap.stealthFlags.slice() : [],
     setActiveStealth: (on) => {
-      chromeStatusInfo = { ...chromeStatusInfo, activeStealth: on };
+      pushAndPaint([{ kind: "stealth", on }]);
     },
-    setContentLeader: (index, active) => {
-      contentLeaderByIndex[index] = active;
-      computeChromeStatus();
+    setContentLeader: (index, sig) => {
+      // Keep the store authoritative (it resolves which index is selected),
+      // but light the indicator the moment the state arrives. On a web page
+      // the content script owns the leader and this push has already crossed
+      // content -> background -> relay tab -> here, so routing the *pixel*
+      // through the Go batch as well left the chevron visibly trailing the key
+      // press. Paint directly for the selected tab; the batch repaint that
+      // follows just confirms the same decision.
+      contentLeaderIndex = index;
+      contentSignal = makeLeaderSignal(sig);
+      // paintLeader re-derives whose chord this is, so a push for a tab the
+      // user has since left cannot leave the previous tab's chord on screen.
+      paintLeader(selectedStripIndex());
+      pushAndPaint([{ kind: "leader", index, active: sig.armed }]);
     },
-    contentLeaderActive: (index) => !!contentLeaderByIndex[index],
+    // The far-right indicator for the chrome helper's OWN leader. Painted
+    // synchronously on the view — the store roundtrip would trail the key
+    // press by several await hops and land visibly late.
+    //
+    // The synchronous core write is what keeps that fast path HONEST. Painting
+    // only the view left the Go store holding the previous value, and the next
+    // store repaint (any TabSelect, any poll) re-read that stale state and lit
+    // the chevron again — so a `;` press followed by Esc could leave the
+    // indicator on forever, which is exactly the "out of sync with the key"
+    // symptom. `statusLeaderSignal` returns void, so it lands in the same tick
+    // as the keypress: the store is authoritative, the view just follows it
+    // immediately instead of waiting for the round trip.
+    setLeaderSignal: (sig) => {
+      // One assignment, one paint. The signal arrived whole from the leader
+      // controller, so there is nothing here that can put the prefix from one
+      // read next to the expectation from another — and nothing to normalise,
+      // because makeLeaderSignal already did it.
+      ownSignal = makeLeaderSignal(sig);
+      paintLeader(selectedStripIndex());
+    },
     setContentFind: (index, count, cur) => {
-      contentFindByIndex[index] = { count: count, cur: cur };
-      computeChromeStatus();
+      pushAndPaint([{ kind: "find", index, cur, count }]);
+    },
+    setContentDark: (index, on, mode, engine) => {
+      pushAndPaint([{ kind: "dark", index, on, mode, engine }]);
     },
     mounted: () => chromeStatusBar.mounted,
     dlActive: () =>
-      chromeStatusDownloads.map(
-        (d) => d.filename + "|" + d.state + (d.percent >= 0 ? "|" + d.percent : "")
-      ),
+      (lastSnap && lastSnap.downloads
+        ? lastSnap.downloads.map(
+            (d) => d.filename + "|" + d.state + (d.percent >= 0 ? "|" + d.percent : "")
+          )
+        : []),
+    getInfo: () =>
+      lastSnap
+        ? {
+            name: lastSnap.name,
+            marker: lastSnap.marker,
+            inSplit: lastSnap.inSplit,
+            splitOrientation: lastSnap.splitOrientation,
+            splitActive: lastSnap.splitActive,
+            splitPanes: lastSnap.splitPanes,
+            activeStealth: !!lastSnap.activeStealth,
+            sessions: lastSnap.sessions || [],
+          }
+        : {
+            name: "default",
+            marker: 0,
+            inSplit: false,
+            splitOrientation: undefined,
+            splitActive: 0,
+            splitPanes: 0,
+            activeStealth: false,
+            sessions: [],
+          },
   };
 }

@@ -6,12 +6,27 @@
 
 import { mergeConfig } from "../shared/config";
 import { core, ensureCore } from "../shared/core";
+import { LeaderController, isCancel } from "../shared/leader";
+import { specToText } from "../shared/keymap";
+import { mirror, mirrorFlag } from "../shared/observability";
+import { createThrottle } from "../shared/throttle";
+import {
+  openPopup as overlayOpenPopup,
+  popupIsAlive,
+  toast,
+  type PopupCtl,
+} from "../shared/overlay";
+import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
 import { send } from "../shared/protocol";
-import type { QuickApp } from "../shared/types";
+import { readKey, vBoolean, vConfig, vStealth, vString } from "./store";
+import type { Config, QuickApp } from "../shared/types";
 import { openItem } from "./commandcenter/data";
 import { createKeyHandler } from "./commandcenter/keys";
 import { createRenderer, type CCRefs } from "./commandcenter/render";
 import { createStore } from "./commandcenter/state";
+import { createContentOps } from "./content/ops";
+import { traceDecision } from "./commandcenter/trace";
+import type { ContentPopupShell } from "./content/find";
 
 (function () {
   "use strict";
@@ -30,20 +45,34 @@ import { createStore } from "./commandcenter/state";
 
   const store = createStore();
 
+  // The page's own view of the config. It used to read only `apps`, because the
+  // leader lived in the chrome helper; now that the page arms the shared leader
+  // itself it needs the same two settings every other host reads: the leader key
+  // and whether the which-key overlay is enabled.
+  //
+  // It starts at the DEFAULTS, not at `{}`, and `apps` is seeded from those same
+  // defaults below. That matters for the first paint: the stored config arrives
+  // over an async storage read, and until it landed the grid rendered from an
+  // EMPTY app list — so a fresh tab showed a half-empty home page for as long
+  // as the background took to answer, and under load that was seconds. The
+  // defaults are the right first answer because they are exactly what a
+  // first-run user has, and the read replaces them the moment it arrives.
+  let config: Config = mergeConfig(undefined);
   // Enabled quick-launch apps for the home grid. Kept mutable so a config
   // change (options page) refreshes the grid live.
-  let apps: QuickApp[] = [];
+  let apps: QuickApp[] = config.apps;
   function getApps(): QuickApp[] {
     return apps;
   }
-  void browser.storage.local.get("config").then((r: any) => {
-    apps = mergeConfig(r && r.config).apps;
+  function applyConfig(c: Partial<Config> | undefined): void {
+    config = mergeConfig(c);
+    apps = config.apps;
     renderer.refresh();
-  });
+  }
+  void readKey("config", vConfig, {}).then(applyConfig);
   browser.storage.onChanged.addListener((changes: any, area: any) => {
     if (area === "local" && changes.config && changes.config.newValue) {
-      apps = mergeConfig(changes.config.newValue).apps;
-      renderer.refresh();
+      applyConfig(changes.config.newValue);
     }
   });
 
@@ -59,13 +88,305 @@ import { createStore } from "./commandcenter/state";
     openOptions: () => {
       try {
         browser.runtime.openOptionsPage();
-      } catch (e) {}
+      } catch (e) {
+        // openOptionsPage is unavailable in some contexts; the rest of the command
+        // center stays usable without it.
+      }
     },
     openSetup: () => void send("openSetup"),
     openPage: (url: string) => void send("openPage", { url }),
     setMode: (m: string) => renderer.setMode(m),
     stealthOpen: () => void send("stealthOpen"),
   };
+
+  /* ===================== the shared leader ===================== */
+
+  // THE HOME PAGE RUNS THE SAME KEYMAP AS EVERY OTHER PAGE.
+  //
+  // Everything behind `;` here used to be this page's own private table: a
+  // dozen hand-written branches that had drifted from the shared one in both
+  // directions. Keys the rest of the browser has were missing outright — `;a`
+  // (alternate tab), `;G`/`;L` (the navigation stack), `;P` (sessions), the
+  // whole two-key category grammar, the digit jumps — while the keys it did
+  // have were spelled differently. That is what "the home page uses its own
+  // shortcuts" was, and why `;f` here behaved unlike `;f` everywhere else.
+  //
+  // So this is the same three-piece construction the content script builds:
+  //
+  //   createContentOps     the ActionOps adapter (protocol messages plus the
+  //                        shared popups) — already written, already shared
+  //   makeLeaderActions    the ONE action table; which CHORD runs which action
+  //                        is core/keymap.go, fetched by keymap.ts, and it is
+  //                        the same table `;W` / `;Z` / `;K` are rows of
+  //   LeaderController     the armed state, the which-key overlay, the captures
+  //
+  // What stays page-specific is only what is genuinely about THIS page: `;f`
+  // arms hint-PICK on the home grid rather than drawing link hints, and the grid
+  // itself (hjkl, Enter, the quick-view filters) is untouched.
+  let currentPopup: PopupCtl | null = null;
+
+  function closePopup(): void {
+    if (currentPopup) {
+      try {
+        currentPopup.close();
+      } catch (e) {
+        // ignore — a popup that fails to close must not wedge the page
+      }
+      currentPopup = null;
+    }
+  }
+
+  const shell: ContentPopupShell = {
+    open: (html, build) => {
+      closePopup();
+      leader.hide();
+      const ctl = overlayOpenPopup(html, (root: HTMLElement) => build(root), () => {
+        currentPopup = null;
+      });
+      currentPopup = ctl;
+      return ctl;
+    },
+    close: closePopup,
+  };
+
+  // `;f` on the home grid: every tile gets a letter badge and the next key runs
+  // that tile — the home-page equivalent of web link hints. Anywhere else it
+  // focuses the search box, which is what the chrome helper's `lazyfox-find`
+  // signal does too.
+  function startGridHints(): void {
+    if (renderer.isHome()) {
+      store.patch({ hintArmed: true });
+      renderer.refresh();
+      return;
+    }
+    renderer.setStateTag("insert");
+    focusInput();
+  }
+
+  const ccOps = createContentOps({
+    shell: shell,
+    config: () => config,
+    startHints: startGridHints,
+    focusFirstInput: focusInput,
+    // The page has no window-level bar of its own; the chrome helper owns the
+    // single one, and this is how a find running in THIS page reaches it.
+    setFindState: (s) => {
+      void send("syncFind", s ? { cur: s.cur, count: s.count } : { cur: 0, count: -1 });
+    },
+  });
+
+  const ctx: PopupCtx = {
+    ops: ccOps,
+    open: shell.open,
+    close: closePopup,
+    toast: toast,
+    runAction: (k) => {
+      // The leaf that ran, by ACTION ID — the page's answer to chrome's
+      // `lastAction`, and the difference between "the chord never resolved" and
+      // "the action ran and the op behind it did not".
+      traceDecision("action:" + k);
+      runLeaderAction(leaderActions, k);
+    },
+    bindings: () => leader.bindings(),
+    armDigits: (apply, timeoutMs, expect, onTimeout) => {
+      const generation = leader.armPending(apply, { timeoutMs: timeoutMs || 3000, expect, onTimeout });
+      return {
+        cancel: () => leader.cancelPendingGeneration(generation),
+        retarget: (next: string) => {
+          if (leader.isPendingGeneration(generation)) leader.setPendingExpect(next);
+        },
+        isActive: () => leader.isPendingGeneration(generation),
+      };
+    },
+    // The popup's input lives in a CLOSED shadow root, so no real keystroke ever
+    // reaches it and the selector has to insert text itself. Same setting as the
+    // content script, for the same reason.
+    manualText: true,
+  };
+  const leaderActions = makeLeaderActions(ctx);
+  // The page-surface family, on the home page — which IS a page but is not a WEB
+  // page: there is no article to read and no site theme to apply. Answering with
+  // a note is the same contract the chrome helper keeps, and it is what stops a
+  // key pressed here from looking broken rather than inapplicable.
+  leaderActions["readerMode"] = () => toast("reader mode: web pages only");
+  leaderActions["darkToggleSite"] = () => toast("dark mode: web pages only");
+  leaderActions["darkCycleGlobal"] = () => toast("dark mode defaults: change them in settings");
+  leaderActions["darkEngineToggle"] = () => toast("dark engine: web pages only");
+  leaderActions["darkResetSite"] = () => toast("dark mode: web pages only");
+  // The home page is a PAGE: it runs the same key engine a web page does, from
+  // the same keymap and the same action table. There is no second keymap here
+  // to keep in step, which is what "the home page uses its own shortcuts" used
+  // to mean.
+  const leader = new LeaderController(
+    (action) => runLeaderAction(leaderActions, action),
+    () => config.whichKey !== false,
+    () => {
+      // Mirror the readout onto <html> and send it to the chrome helper's bar,
+      // exactly as the content script does: the which-key overlay is in a closed
+      // shadow root, so nothing outside it can see whether the leader is armed
+      // without this.
+      const sig = leader.signal();
+      mirrorFlag("leader", sig.armed);
+      mirror("lead-expect", sig.expect || null);
+      void send("syncLeader", { signal: sig });
+    },
+    // An unknown chord is reported rather than swallowed, exactly as on a web
+    // page. The home page is where a new key is most often tried first — and it
+    // says what was pressed the way the user pressed it (`D`, not `shift+d`),
+    // because this page also prints the which-key table right next to it. The
+    // internal spec stays on the trace line, where the reader is a program.
+    (spec) => {
+      traceDecision("miss:" + spec);
+      toast("no binding for ;" + specToText(spec));
+    }
+  );
+
+  // The page's analogue of a host's key dispatcher. A popup gets first refusal
+  // (its own onKey, so the sessions popup can cancel a pending copy instead of
+  // closing); then the leader — cancel first, so ONE Escape backs all the way
+  // out of a category, then the armed capture, then the binding.
+  function overlayKey(e: KeyboardEvent): boolean {
+    // Same stale-panel rule as the content script's dispatcher, for the same
+    // reason: this page is a single-page app that re-renders, and a panel whose
+    // host the page removed must not keep the keyboard. See popupIsAlive.
+    if (currentPopup && !popupIsAlive(currentPopup)) closePopup();
+    if (currentPopup) {
+      traceDecision("popup");
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      try {
+        if (currentPopup.onKey && currentPopup.onKey(e)) return true;
+      } catch (err) {
+        closePopup();
+        return true;
+      }
+      if (isCancel(e)) closePopup();
+      return true;
+    }
+    if (leader.active || leader.hasPending()) {
+      // WHICH surface took the key matters: a stale one-shot capture (";W m"s
+      // digit capture, never fed) eats the NEXT chord's leader key, and the
+      // whole sequence silently shifts by one. Naming the surface is what makes
+      // that readable instead of mysterious.
+      traceDecision(leader.hasPending() ? "capture" : "leader");
+      // The cancel is decided FIRST and unconditionally: it is the escape hatch,
+      // and no surface may be able to keep it.
+      if (isCancel(e)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        leader.cancelPending();
+        leader.hide();
+        // ...AND THE FIELD WITH IT, in the same press. The master cancel means
+        // one thing on every surface: the overlays are gone AND the caret is
+        // out. Leaving the box focused here would make Escape and Ctrl+G differ
+        // on this page for no reason a user could name — there is no site UI to
+        // protect here, which is the only thing the two keys disagree about.
+        if (document.activeElement === refs.input) {
+          refs.input.blur();
+          renderer.setStateTag("cmd");
+        }
+        return true;
+      }
+      // TYPING WINS OVER THE LEADER, HERE TOO — and this host is where it used
+      // to lose.
+      //
+      // `;` arms the leader in command mode (the caret is deliberately out of
+      // the box there, so the leader is free to). The user then clicks the
+      // search box, or a mode button, and types: this function runs FIRST, so
+      // the first character was dispatched as a `;x` binding — `g` navigated
+      // back, `t` opened the tab switcher, `x` closed a tab — and a character
+      // that named no binding was swallowed with a "no binding" toast. Either
+      // way it never reached the box, and the second press is the one that
+      // typed it. That is the report, verbatim: "while I'm typing I have to hit
+      // g or similar keys multiple times for it to type".
+      //
+      // The content script and the chrome helper both already rank the caret
+      // above an armed leader (isTypingEvent, typingWins). This page had the
+      // order reversed, and it is the page with the most typing on it. The
+      // leader is STOOD DOWN rather than merely skipped, because an armed
+      // leader that declines one key would take the next one — the user's
+      // gesture was "I am writing in the box now".
+      //
+      // A POPUP keeps its claim: it is a surface the user opened explicitly, and
+      // its own field (a closed shadow root the page cannot focus) never makes
+      // the home box the focused element, so the two states do not coexist.
+      if (document.activeElement === refs.input) {
+        traceDecision("typing-wins");
+        leader.cancelPending();
+        leader.hide();
+        return false;
+      }
+      // Then the leader (or its capture) gets the key — and its answer is
+      // honoured. A capture says `false` for a key that is not part of the
+      // sequence it is collecting; consuming it anyway is how a keystroke the
+      // user aimed at the page disappeared on the home page too. The key is only
+      // swallowed once somebody says they took it, which is the rule this page's
+      // own tracer reports as `leader` / `capture`.
+      const took = leader.hasPending() ? leader.handlePending(e) : leader.handleKey(e);
+      if (!took) return false;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return true;
+    }
+    return false;
+  }
+
+  // REPORT IN, exactly as a content script does.
+  //
+  // The chrome helper has to know whether this page owns its own keys before it
+  // may claim them, and it cannot find out for itself (`contentDocument` is null
+  // for an out-of-process tab). Without this report the helper treated the
+  // command center as chrome territory and armed its OWN leader for the same
+  // keypress the page was handling — so a key ran twice when the tab happened to
+  // be in-process, and the two answers disagreed (";f works sometimes").
+  // This DOCUMENT's identity, generated once. The URL cannot serve as one: the
+  // command center is a single-page app, so its URL changes without a navigation
+  // and a URL-keyed record went stale the moment it did (see
+  // keystate.noteContentPresent). Same nonce, same reason, as the content script.
+  const docId =
+    String(Date.now()) + "-" + Math.random().toString(36).slice(2, 10);
+  const reportPresence = (active: boolean) => {
+    let href = "";
+    try {
+      href = location.href;
+    } catch (e) {
+      // ignore — an unreadable location simply reports no URL
+    }
+    return send("syncContent", { active, url: href, doc: docId });
+  };
+  void reportPresence(true);
+  try {
+    window.addEventListener("pagehide", () => void reportPresence(false), { capture: true });
+  } catch (e) {
+    // ignore — presence is re-derived on the next load regardless
+  }
+  // Same re-assertion as the content script's, for the same reason: presence is
+  // held by the helper in a Map keyed by tab, and a single report is not a
+  // durable answer. If that entry is lost the helper claims this page's keys
+  // and paints its own overlay over the home grid's — the double-handled
+  // keystroke the presence report exists to prevent.
+  //
+  // `pageshow` is not enough on its own, and the gap is the one the field report
+  // describes (docs/KEYBOARD-FREEZE.md): a report can go missing while this
+  // document is alive, and a page that only speaks at boot cannot correct the
+  // helper. A KEY is the proof this document is the one holding the keyboard,
+  // and a click into the page is the repair the user performs by hand — so both
+  // re-assert it, throttled because a key sequence is many keys.
+  const presenceThrottle = createThrottle(3000);
+  const reassertPresence = (): void => {
+    if (!presenceThrottle.allow()) return;
+    try {
+      void Promise.resolve(reportPresence(true)).catch(() => {});
+    } catch (e) {
+      // an undeliverable report leaves the state as it was; the next key retries
+    }
+  };
+  try {
+    window.addEventListener("pageshow", () => void reportPresence(true), { capture: true });
+    window.addEventListener("focus", reassertPresence, true);
+  } catch (e) {
+    // ignore
+  }
 
   // The renderer owns the view; the key handler owns input. They depend on
   // each other (renderer drives the grid, keys drive the renderer), so wire
@@ -89,6 +410,12 @@ import { createStore } from "./commandcenter/state";
       isHome: () => renderer.isHome(),
     },
     focusInput,
+    overlayKey,
+    showLeader: () => {
+      traceDecision("arm");
+      leader.show();
+    },
+    leaderKey: () => config.leader,
   });
 
   renderer = createRenderer({
@@ -98,6 +425,12 @@ import { createStore } from "./commandcenter/state";
     openItem,
     getApps,
   });
+  // Draw the home grid NOW, from the defaults, instead of waiting for the
+  // storage read that carries the user's real config. The read is still the
+  // authority — applyConfig re-renders when it lands — but the page is
+  // usable and keyboard-driven from its first frame, which is the whole
+  // promise of opening a new tab onto this page.
+  renderer.refresh();
 
   function focusInput(): void {
     try {
@@ -107,7 +440,35 @@ import { createStore } from "./commandcenter/state";
     }
   }
 
-  window.addEventListener("keydown", keyHandler.onKeyDown, true);
+  window.addEventListener(
+    "keydown",
+    (e: KeyboardEvent) => {
+      keyHandler.onKeyDown(e);
+      // The helper is reminded that THIS document is the one holding the
+      // keyboard, because it just received a key (see reassertPresence).
+      reassertPresence();
+    },
+    true,
+  );
+
+  // THIS DOCUMENT ANSWERS KEYS — and says so in the same statement that makes it
+  // true, so the two can never disagree.
+  //
+  // The chrome helper forwards a key INTO this page rather than run it itself
+  // (its `#lfc=keys` channel and the content-process actor both arrive that way,
+  // and so does every key the harness sends). A command-center document that has
+  // not finished loading its script yet — a tab caught mid-redirect, which is
+  // exactly what a fresh new tab is for a moment, or one whose reload is in
+  // flight — has the URL and the static markup and none of the engine, and a key
+  // handed to it there was consumed by nobody: `;` on such a tab left the
+  // keyboard dead until the user navigated away. The helper needs to be able to
+  // tell "the page took it" from "there is no page here yet" (see
+  // chrome/keysdispatch.ts, and commandCenterPageReady in commandcenterfocus.ts).
+  //
+  // Unconditional, NOT `if (__DEV__)`: the release build's page has the same
+  // engine and the same problem, and this is the one thing the helper reads to
+  // decide whether to answer the key itself.
+  mirrorFlag("engine", true);
 
   refs.input.addEventListener("focus", () => {
     renderer.setStateTag("insert");
@@ -180,12 +541,7 @@ import { createStore } from "./commandcenter/state";
   // that arms hint-pick (letter = run tile), in any other mode it focuses the
   // search box. Out-of-process CC pages arm hint-pick via their own leader.
   document.addEventListener("lazyfox-find", () => {
-    if (renderer.isHome()) {
-      store.patch({ hintArmed: true });
-      renderer.refresh();
-    } else {
-      focusInput();
-    }
+    startGridHints();
   });
 
   // Brand logo: ship the horizontal lockup (icon + wordmark). It is a
@@ -221,7 +577,10 @@ import { createStore } from "./commandcenter/state";
           refreshMeta();
         })
         .catch(() => {});
-    } catch (e) {}
+    } catch (e) {
+      // The runtime API is missing entirely in a stripped build. Nothing this
+      // block starts is essential; the rest of the command center still works.
+    }
     const renderMeta = (sess: string, prof: string): void => {
       const manifest = browser.runtime.getManifest();
       const parts: string[] = [];
@@ -232,9 +591,14 @@ import { createStore } from "./commandcenter/state";
       meta.innerHTML = parts.join(" &middot; ");
     };
     const refreshMeta = (): void => {
-      void browser.storage.local.get(["lfCurrentSession", "lfProfileName"]).then((r: any) => {
-        renderMeta((r && r.lfCurrentSession) || "", (r && r.lfProfileName) || "");
-      });
+      // Two keys, so this is the one place the store's one-key-at-a-time
+      // rule is worth bending: the meta line is one string assembled from
+      // both, and an extra storage round-trip to render half of it would be
+      // the only cost. Read in parallel, never sequentially.
+      void Promise.all([
+        readKey("lfCurrentSession", vString, ""),
+        readKey("lfProfileName", vString, ""),
+      ]).then(([sess, prof]) => renderMeta(sess, prof));
     };
     refreshMeta();
     browser.storage.onChanged.addListener((changes: any, area: any) => {
@@ -244,6 +608,10 @@ import { createStore } from "./commandcenter/state";
 
   // First-run install indicator: once the chrome helper is alive, Lazyfox is
   // fully installed and the banner stays hidden. Shown (amber) otherwise.
+  //
+  // This banner and the "Complete the install" row above it are now the ONLY
+  // route to the setup page: `;I` was removed because a one-time install step
+  // does not deserve a chord, and the home page is where someone looks for it.
   const banner = document.getElementById("installBanner");
   const installBtn = document.getElementById("installGo");
   function refreshInstallBanner(alive: boolean | undefined): void {
@@ -255,7 +623,7 @@ import { createStore } from "./commandcenter/state";
     installBtn.addEventListener("click", () => void send("openSetup"));
   }
   if (banner) {
-    void browser.storage.local.get("chromeAlive").then((r: any) => refreshInstallBanner(r.chromeAlive));
+    void readKey("chromeAlive", vBoolean, false).then(refreshInstallBanner);
     browser.storage.onChanged.addListener((changes: any, area: any) => {
       if (area === "local" && changes.chromeAlive) refreshInstallBanner(!!changes.chromeAlive.newValue);
     });
@@ -267,9 +635,9 @@ import { createStore } from "./commandcenter/state";
   void ensureCore().catch(() => {});
   // Start in COMMAND mode with the input blurred: the home grid is keyboard-
   // first, so hjkl/arrows navigate the tiles, Enter opens the selection, and
-  // `;` arms the leader (so ;I / ;f and ctrl/shift combos reach their actions)
-  // with no need to click first. Typing any other printable key focuses the
-  // input and starts a search (the key handler drives that).
+  // `;` arms the leader (so ;f and ctrl/shift combos reach their actions) with
+  // no need to click first. Typing any other printable key focuses the input
+  // and starts a search (the key handler drives that).
   renderer.setStateTag("cmd");
   window.addEventListener("load", () => {
     renderer.setStateTag("cmd");
@@ -307,9 +675,8 @@ import { createStore } from "./commandcenter/state";
       const tabs = await browser.tabs.query({ active: true, currentWindow: true });
       const t = tabs && tabs[0];
       if (!t || !t.cookieStoreId || t.cookieStoreId === "firefox-default") return;
-      const r = await browser.storage.local.get("lfStealth");
-      const containers = r && r.lfStealth && r.lfStealth.containers;
-      if (Array.isArray(containers) && containers.indexOf(t.cookieStoreId) !== -1) {
+      const { containers } = await readKey("lfStealth", vStealth, { containers: [] });
+      if (containers.indexOf(t.cookieStoreId) !== -1) {
         document.documentElement.classList.add("lf-stealth");
       }
     } catch (e) {

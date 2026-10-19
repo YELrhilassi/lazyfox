@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<title>Lazyfox — diagnostics &amp; performance</title>
+<link rel="stylesheet" href="diagnostics.css">
+</head>
+<body id="lazyfox-diagnostics">
+  <div class="wrap">
+    <header class="head">
+      <div class="logo"><img id="logoImg" alt="Lazyfox"></div>
+      <div class="headline">
+        <h1>Diagnostics &amp; performance</h1>
+        <p class="tagline">What Lazyfox sees right now: the live page report, why elements are or are not detected, and how much the page and the browser are costing.</p>
+      </div>
+      <div class="controls">
+        <label class="switch"><input type="checkbox" id="live" checked> Live</label>
+        <button class="ghost" id="refresh">Refresh now</button>
+      </div>
+    </header>
+
+    <p class="stamp" id="stamp">loading…</p>
+
+    <section class="card">
+      <h2>Installation</h2>
+      <div class="rows" id="installRows"></div>
+    </section>
+
+    <section class="card">
+      <h2>Page report</h2>
+      <p class="desc">Diagnose any open tab — this diagnostics page has no content script of its own, so pick the tab you want to inspect.</p>
+      <div class="picker-row">
+        <label class="lbl" for="tabPick">Tab</label>
+        <select id="tabPick"></select>
+      </div>
+      <div class="rows" id="pageRows"></div>
+      <div id="probeWrap" class="probe-wrap">
+        <div class="sub">Hint candidates — every row is a control Lazyfox considered for <span class="kbd">;f</span></div>
+        <div class="table-scroll">
+          <table class="probe" id="probeTable">
+            <thead><tr><th>#</th><th>tag</th><th>role</th><th>name</th><th>href</th><th>cursor</th><th>clickable</th><th>why</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Efficiency &amp; resources</h2>
+      <div class="rows" id="perfRows"></div>
+      <div class="meter">
+        <div class="sub">Frame rate</div>
+        <div class="bar"><div class="fill" id="fpsBar"></div></div>
+        <div class="muted" id="fpsNote"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Page cache</h2>
+      <p class="desc" id="cacheDesc"></p>
+      <div class="rows" id="cacheRows"></div>
+      <div class="cache-controls">
+        <label class="lbl" for="cacheScope">Scope</label>
+        <select id="cacheScope">
+          <option value="global">Everywhere</option>
+          <option value="session">This session</option>
+          <option value="tab">This tab</option>
+        </select>
+        <label class="lbl" for="cacheMode">Mode</label>
+        <select id="cacheMode">
+          <option value="normal">Normal (Firefox default)</option>
+          <option value="fresh">Revalidate every load</option>
+          <option value="off">Use no cached copies at all</option>
+        </select>
+        <button class="ghost" id="cacheApply">Apply</button>
+        <button class="ghost" id="cacheReload">Hard reload this tab</button>
+      </div>
+      <p class="muted" id="cacheNote"></p>
+    </section>
+
+    <p class="footer">Everything here is read live and changes nothing on the page. The cache controls are the only exception, and only when you press Apply.</p>
+  </div>
+
+<script src="diagnostics.js"></script>
+</body>
+</html>

@@ -1,0 +1,180 @@
+// The tab-position chooser: shown only when a digit the user pressed is a
+// prefix of more than one tab number (`;1` with twelve tabs open could mean
+// tab 1, 10, 11 or 12).
+//
+// It is deliberately NOT a search popup. There is nothing to search — the
+// candidate set is a handful of known positions — so a text field would be a
+// lie about what is going on, and it would also swallow the digits that are
+// the only keys this popup has. What it is instead is a keypad: one row per
+// candidate, the digit that continues that number printed beside it, and
+// pressing that digit jumps.
+//
+// The exact match (`;1` and tab 1) has no digit of its own, because `;1` `1`
+// has to mean tab 11. It sorts first, so it is the highlighted row and Enter
+// takes it — which also means the chooser is never a dead end for the number
+// the user actually typed first.
+
+import { esc } from "../dom";
+import { faviconHtml } from "../favicon";
+import type { PopupItem } from "../types";
+import { keyPanel, makeSelector, type PopupCtx } from "./kit";
+import { extendTabPrefix, tabCandidates, tabQuickKey } from "../tabjump";
+
+export function tabChooserPanel(prefix: string): string {
+  return keyPanel(
+    "Tab " + prefix + "\u2026",
+    "no tab " + prefix,
+    "<span class='lf-badge'>0-9</span> continue &middot; " +
+      "<span class='lf-badge'>&uarr;&darr;</span> move &middot; " +
+      "<span class='lf-badge'>Enter</span> go &middot; " +
+      "<span class='lf-badge'>Esc</span> close"
+  );
+}
+
+/**
+ * Opens the chooser for `prefix` in a window of `count` tabs.
+ *
+ * `rows` supplies the tab metadata (title, url, favicon) for the candidate
+ * numbers. It may be shorter than the candidate list — a tab that closed
+ * between the count and the rows simply has no title, and the number still
+ * works, because the number is what the user is choosing.
+ */
+/** One destination a tab can be moved into. */
+export interface SplitTarget {
+  split: number;
+  active: boolean;
+  panes: { title: string; url: string; active: boolean }[];
+}
+
+/**
+ * "Move this tab into WHICH split?"
+ *
+ * A window can hold more than one native split, so `;W m` is a question with
+ * several right answers. It used to pick one silently — the active split, or the
+ * last one the platform mentioned — which is fine until there are two and then
+ * reads as "it moved my tab somewhere I did not pick".
+ *
+ * The panel is the tab-position chooser's shape on purpose: a short, known list
+ * driven by digits, no search field (there is nothing to search for), and Enter
+ * for the highlighted row. The ROWS ARE THE SPLITS, not the tabs inside them —
+ * the tabs in each pane are shown so the choice is recognisable, but the number
+ * beside a row is the split's own number.
+ */
+export function openSplitChooser(
+  ctx: PopupCtx,
+  targets: SplitTarget[],
+  apply: (split: number) => void
+): void {
+  ctx.open(
+    keyPanel(
+      "Move into which split?",
+      "no split to move into",
+      "<span class='lf-badge'>1-9</span> pick a split &middot; " +
+        "<span class='lf-badge'>&uarr;&darr;</span> move &middot; " +
+        "<span class='lf-badge'>Enter</span> go &middot; " +
+        "<span class='lf-badge'>Esc</span> close"
+    ),
+    (root) =>
+      makeSelector<SplitTarget>(ctx, root, {
+        debounceMs: 0,
+        itemClass: "lf-tab",
+        emptyText: "no split to move into",
+        vimNav: true,
+        search: async () => targets,
+        keyOf: (t) => t.split,
+        render: (t) =>
+          "<div class='t'>" +
+          "<span class='lf-marker'>" +
+          t.split +
+          "</span>" +
+          (t.active ? "<span class='dot'></span>" : "") +
+          "<span class='txt'>" +
+          esc(t.panes.map((p) => p.title || p.url || "untitled").join("  \u2502  ")) +
+          "</span></div><div class='s'>" +
+          esc(t.panes.map((p) => p.url).join("  \u2502  ")) +
+          "</div>",
+        onPick: (t) => {
+          ctx.close();
+          apply(t.split);
+        },
+        extraKeys: (e) => {
+          if (e.ctrlKey || e.metaKey || e.altKey) return false;
+          const d = Number(e.key);
+          if (!(d >= 1 && d <= targets.length)) return false;
+          e.preventDefault();
+          ctx.close();
+          apply(d);
+          return true;
+        },
+      })
+  );
+}
+
+export function openTabChooser(
+  ctx: PopupCtx,
+  prefix: string,
+  count: number,
+  rows: PopupItem[],
+  // What to do with the chosen number. Defaults to jumping, which is what
+  // `;1` wants; the split-move passes its own action so the same chooser can
+  // resolve a POSITION for a different purpose. The chooser resolves numbers,
+  // never actions — that keeps one list, one planner, one set of rules.
+  apply?: (n: number) => void
+): void {
+  const act = apply || ((n: number) => ctx.ops.tabJump(n));
+  const byNumber = new Map<number, PopupItem>();
+  for (const r of rows) {
+    if (r.number != null) byNumber.set(r.number, r);
+  }
+  let current = prefix;
+  ctx.open(
+    tabChooserPanel(current),
+    (root) =>
+      makeSelector<number>(ctx, root, {
+        debounceMs: 0,
+        itemClass: "lf-tab",
+        emptyText: "no tab " + current,
+        vimNav: true,
+        // Re-derived from the shared planner on every render, so the list can
+        // never disagree with what a digit press would do.
+        search: async () => tabCandidates(count, current),
+        render: (n) => {
+          const t = byNumber.get(n);
+          const qk = tabQuickKey(n, current);
+          return (
+            "<div class='t'>" +
+            "<span class='lf-marker'>" + n + "</span>" +
+            (qk ? "<span class='lf-badge'>" + qk + "</span>" : "") +
+            (t && t.active ? "<span class='dot'></span>" : "") +
+            "<span class='txt'>" + esc((t && t.title) || "tab " + n) + "</span>" +
+            (t ? faviconHtml(t.favIconUrl) : "") +
+            "</div><div class='s'>" +
+            esc((t && t.url) || "") +
+            "</div>"
+          );
+        },
+        onPick: (n) => {
+          ctx.close();
+          act(n);
+        },
+        extraKeys: (e, sel) => {
+          if (e.ctrlKey || e.metaKey || e.altKey) return false;
+          const next = extendTabPrefix(count, current, e.key);
+          if (!next) return false;
+          e.preventDefault();
+          current = next.prefix;
+          if (next.plan.kind === "jump") {
+            ctx.close();
+            act(next.plan.n);
+            return true;
+          }
+          // Still ambiguous: retitle to the wider prefix and let the search
+          // re-run through the (already debounced-at-zero) refresh.
+          const title = root.querySelector(".lf-title");
+          if (title) title.textContent = "Tab " + current + "\u2026";
+          sel.refresh();
+          return true;
+        },
+      })
+  );
+}

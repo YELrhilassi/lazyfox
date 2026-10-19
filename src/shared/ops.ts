@@ -5,6 +5,15 @@
 // what kills the old chrome/content duplication of popups and actions.
 import type { PopupItem } from "./types";
 
+// The shape both hosts answer `navStack` with: the same one the protocol's
+// navStack carries, so the popup cannot tell (or care) which host replied.
+export interface NavStackReply {
+  canBack: boolean;
+  canForward: boolean;
+  index: number;
+  entries: { url: string; title: string }[];
+}
+
 export interface ActionOps {
   // ---- popup data sources (all async; the selector engine requires Promises) ----
   searchSuggest(q: string): Promise<PopupItem[]>;
@@ -28,9 +37,21 @@ export interface ActionOps {
   reload(): void;
   back(): void;
   forward(): void;
+  // The tab's navigation stack, oldest-first, with the current entry's index.
+  // Read through the HOST rather than the protocol: the chrome helper can read
+  // the browser's real session history, which is exact, while a content script
+  // can only get the background's reconstructed track (see shared/navtrack.ts
+  // for why the privileged API is not an option).
+  navStack(): Promise<NavStackReply | null>;
+  // Walk the stack by `steps` entries: negative is back, positive forward.
+  navGoto(steps: number): void;
   activateTab(id: number): void;
   tabNav(dir: number): void;
   tabJump(n: number): void;
+  // How many real tabs the window holds. Kept apart from listTabs because the
+  // multi-digit tab jump needs only this to decide whether a digit is
+  // ambiguous, and it is asked on every digit press.
+  tabCount(): Promise<number>;
   // Jump to the previously-active tab; pressing it again jumps back (a
   // two-tab toggle like Vim's Ctrl+^).
   alternateTab(): void;
@@ -45,10 +66,16 @@ export interface ActionOps {
   openDownload(key: string): void;
   removeDownload(key: string): void;
   openDownloadLocation(key: string): void;
+  retryDownload(key: string): void;
   dismissDownload(key?: string): void;
   // Open the current page in a stealth (isolated, self-wiping) tab.
   stealthOpen(): void;
   copyUrl(): void;
+  // The current page's address, for `;K e` to pre-fill its editable field.
+  // Resolved through the HOST (the chrome helper reads the window's URI, the
+  // content script reads location) so both contexts answer from the same fact
+  // `copyUrl` copies, and the field can never disagree with what `;K c` gave.
+  pageUrl(): Promise<string>;
   muteTab(): void;
   zen(): void;
   toggleReveal(): void;
@@ -68,6 +95,9 @@ export interface ActionOps {
   openResize(): void;
   // Open the "complete the installation" page (store add-on -> profile patch).
   openSetup(): void;
+  // Open the diagnostics & performance page: live page diagnosis, the
+  // framework-site detection report, efficiency metering and resource use.
+  openDiagnostics(): void;
 
   // ---- sessions (tmux-style) ----
   listSessions(q: string): Promise<PopupItem[]>;
@@ -76,7 +106,9 @@ export interface ActionOps {
   saveSession(name: string): void;
   newSession(name: string): void;
   restoreSession(name: string): void;
-  deleteSession(name: string): void;
+  // Resolves once the deletion has LANDED, so a caller that re-reads the
+  // session list right afterwards cannot race the storage write.
+  deleteSession(name: string): Promise<void>;
   switchSessionByMarker(marker: number): void;
   assignSessionMarker(name: string, marker: number): void;
   // Copy / move a tab (by its index in the source session's saved tabs) into
@@ -88,7 +120,13 @@ export interface ActionOps {
   unsplitTab(): void;
   switchSplitPane(dir: number): void;
   swapSplitPane(dir: number): void;
-  splitAddTabByIndex(n: number): void;
+  // `split` is 1-based among the window's split groups; omitted when there is
+  // only one. See splitTargets for the list to choose from.
+  splitAddTabByIndex(n: number, split?: number): void;
+  /** The window's split groups, in strip order, for a destination chooser. */
+  splitTargets(): Promise<{ split: number; active: boolean; panes: { title: string; url: string; active: boolean }[] }[]>;
+  /** Take this tab out of its split, leaving the rest of the group intact. */
+  pullFromSplit(): void;
   sessionState(): Promise<{
     name: string;
     marker: number;
