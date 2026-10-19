@@ -19,3 +19,22 @@
 # binaries under dist/ (the xpi, the icons) safe from a `text` attribute, which
 # would try to normalize them.
 dist/** -text
+
+# The same rule for the installer's //go:embed staging copy. `npm run check`
+# compares these files byte-for-byte against dist/ ("staged payload is out of
+# date: data/loader/config.js differs from dist/chrome/loader/config.js"), and
+# the tracked loader files here are text: with core.autocrlf=true git wrote them
+# with CRLF while dist — marked -text just above — stayed LF. Same blob, different
+# bytes, so the check failed on a clean checkout with nothing edited, and only a
+# rebuild that rewrote dist as CRLF cleared it. These are build inputs whose bytes
+# are the point, exactly like dist/ itself: never convert them.
+installer/internal/payload/data/** -text
+
+# NOT added here on purpose, and worth knowing before someone tries: payloadHash()
+# also hashes native-host/**/*.{go,mod,sum,json} RAW, so the recorded payload in
+# payload-state.json depends on those files' line endings too. Marking them -text
+# makes a Windows checkout agree with Linux CI — but it INVALIDATES every hash
+# already recorded (the committed state was written with CRLF sources here), so it
+# is only correct together with a rebuild commit that refreshes all six binaries
+# and the state file. A lone attribute change turns six fresh binaries into six
+# stale ones; see docs/RELEASING.md.
