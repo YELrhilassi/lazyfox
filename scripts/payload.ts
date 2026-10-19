@@ -264,13 +264,32 @@ function nativeHostSources(root: string): string[] {
     if (!existsSync(d)) return;
     for (const e of readdirSync(d, { withFileTypes: true })) {
       if (e.name === "lazyfox-host" || e.name === "lazyfox-host.exe") continue;
-      const rel = `${prefix}/${e.name}`;
+      // POSIX labels, always: this string goes into the hash, so a `\` from
+      // path.join on Windows would make the same tree hash differently on Linux.
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
       if (e.isDirectory()) walk(join(d, e.name), rel);
       else if (/\.(go|mod|sum|json)$/.test(e.name)) out.push(`native-host/${rel}`);
     }
   };
   walk(dir, "");
   return out.sort();
+}
+
+/**
+ * Thrown when a file the payload hash covers is not on disk.
+ *
+ * It exists because sha256File() answers "" for an unreadable file: a renamed,
+ * never-built or deleted payload file therefore used to contribute a valid-
+ * looking digest, and two trees both missing the same file compared EQUAL. A
+ * hash of absent bytes is not a weaker answer, it is a wrong one.
+ */
+export class MissingPayloadInputError extends Error {
+  readonly paths: string[];
+  constructor(paths: string[]) {
+    super(`payload input${paths.length === 1 ? "" : "s"} missing: ${paths.join(", ")}`);
+    this.name = "MissingPayloadInputError";
+    this.paths = paths;
+  }
 }
 
 /**
@@ -284,38 +303,79 @@ function nativeHostSources(root: string): string[] {
  * "I rebuilt dist/ and the installer still installed last week's code", and a
  * content hash is the only way to catch it reliably.
  */
+/**
+ * Version tag of the hash inputs. The SET of inputs and the way they are mixed
+ * are part of the hash on purpose: when they change, every previously recorded
+ * value must stop matching rather than silently mean something else.
+ *
+ *   v1 → v2  labels are POSIX on every platform, the native host's source is
+ *            hashed with line endings normalised, and a missing input fails
+ *            instead of hashing as an empty string.
+ */
+const PAYLOAD_HASH_VERSION = "lazyfox-payload-v2";
+
 export function payloadHash(root: string, xpi?: string | null): string {
-  const h = createHash("sha256");
-  h.update("lazyfox-payload-v1\0");
-  hashFiles(
-    h,
-    root,
-    STAGED_CHROME_FILES.map((f) => join("dist", "chrome", f)),
-  );
-  hashFiles(
-    h,
-    root,
-    LOADER_FILES.map((f) => join("dist", "chrome", "loader", f)),
-  );
-  hashFiles(h, root, nativeHostSources(root));
   const addOn = xpi ?? latestUnsignedXpi(root);
+
+  // POSIX relative labels: these strings are hashed, and path.join() produces
+  // `dist\\chrome\\frame.js` on Windows and `dist/chrome/frame.js` on Linux — so
+  // identical bytes used to hash differently per platform. One commit, one hash.
+  const chrome = STAGED_CHROME_FILES.map((f) => `dist/chrome/${f}`);
+  const loader = LOADER_FILES.map((f) => `dist/chrome/loader/${f}`);
+  const host = nativeHostSources(root);
+
+  const missing = [...chrome, ...loader, ...host].filter((rel) => !existsSync(join(root, rel)));
+  if (addOn) {
+    if (!existsSync(addOn)) missing.push(relFromRoot(root, addOn));
+  } else {
+    missing.push("dist/lazyfox2-<version>.xpi");
+  }
+  if (missing.length) throw new MissingPayloadInputError(missing);
+
+  const h = createHash("sha256");
+  h.update(PAYLOAD_HASH_VERSION + "\0");
+  // The chrome layer and the add-on are the bytes that SHIP, so they are hashed
+  // exactly as they are.
+  hashFiles(h, root, chrome);
+  hashFiles(h, root, loader);
+  // The native host's SOURCE only stands in for the binary compiled from it, so
+  // it is hashed with line endings normalised: otherwise this Windows checkout
+  // (CRLF, core.autocrlf=true) and a Linux CI checkout (LF) of the same commit
+  // disagree, and a record written on one can never be verified on the other.
+  hashFiles(h, root, host, true);
   h.update("xpi\0");
-  h.update(addOn ? sha256File(addOn) : "");
+  h.update(sha256File(addOn!));
   h.update("\0");
   return h.digest("hex");
 }
 
-/** Latest UNSIGNED xpi in dist/ (lazyfox2-<ver>.xpi, never a -signed one). */
+/**
+ * Latest UNSIGNED xpi in dist/ (lazyfox2-<major>.<minor>.<patch>.xpi).
+ *
+ * Sorted by version, not by directory order. dist/ legitimately accumulates
+ * several add-ons (one per release) and readdir() order is arbitrary, so the
+ * old "last match wins" answer named a different add-on depending on the file
+ * system — and payloadHash() used it whenever no explicit xpi was given.
+ */
 export function latestUnsignedXpi(root: string): string | null {
-  let xpi: string | null = null;
   const dir = join(root, "dist");
   if (!existsSync(dir)) return null;
+  let best: { file: string; parts: [number, number, number] } | null = null;
   for (const f of readdirSync(dir)) {
-    if (!f.startsWith("lazyfox2-") || !f.endsWith(".xpi")) continue;
-    if (f.includes("-signed.")) continue;
-    xpi = join(dir, f);
+    const m = /^lazyfox2-(\d+)\.(\d+)\.(\d+)\.xpi$/.exec(f);
+    if (!m) continue; // skips -signed, -beta, anything not a plain release archive
+    const parts: [number, number, number] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (!best || newerVersion(parts, best.parts)) best = { file: f, parts };
   }
-  return xpi;
+  return best ? join(dir, best.file) : null;
+}
+
+/** newerVersion reports whether a sorts after b, comparing major, minor, patch. */
+function newerVersion(a: [number, number, number], b: [number, number, number]): boolean {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i]! > b[i]!;
+  }
+  return false;
 }
 
 /* ---------- per-binary state (what each committed binary was built from) ---------- */
@@ -367,7 +427,7 @@ export function writeState(root: string, entry: BinaryState): void {
   }
 }
 
-export type Freshness = "fresh" | "stale" | "unverified" | "missing";
+export type Freshness = "fresh" | "stale" | "swapped" | "unverified" | "missing";
 
 export interface Verdict {
   out: string;
@@ -404,14 +464,38 @@ export function verifyBinaries(root: string): Verdict[] {
     }
     const actual = sha256File(binPath);
     if (actual !== entry.bin) {
-      out.push({ out: name, state: entry, status: "unverified", reason: "binary bytes differ from the recorded build (replaced or partially written)" });
+      // A binary whose bytes are not the recorded ones is not "unverified" — it
+      // is a binary nobody can vouch for, and reporting it in the passing bucket
+      // meant a hand-replaced installer sailed through the gate that exists to
+      // catch exactly that.
+      out.push({
+        out: name,
+        state: entry,
+        status: "swapped",
+        reason: "binary bytes differ from the recorded build (replaced, partially written, or from another checkout)",
+      });
       continue;
     }
     // Recompute against the xpi THIS binary embeds: a release binary
     // legitimately carries an older signed add-on, and that must not be
     // mistaken for a stale chrome layer.
     const xpiPath = join(root, entry.xpi);
-    const expected = payloadHash(root, xpiPath);
+    let expected: string;
+    try {
+      expected = payloadHash(root, xpiPath);
+    } catch (e) {
+      // A payload input that is not on disk cannot be compared. Say which one,
+      // rather than letting the build's absence read as a content change.
+      const what =
+        e instanceof MissingPayloadInputError ? e.paths.join(", ") : e instanceof Error ? e.message : String(e);
+      out.push({
+        out: name,
+        state: entry,
+        status: "unverified",
+        reason: `cannot compute the payload hash (${what}) — run \`npm run build\``,
+      });
+      continue;
+    }
     // The source fingerprint is checked FIRST because it is the cheaper and more
     // damning answer: if the source moved since this binary was compiled, the
     // binary is stale whether or not dist/ happens to have been rebuilt.

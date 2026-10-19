@@ -66,10 +66,11 @@ for (const v of verdicts) {
   const mark =
     v.status === "fresh" ? "ok  " : v.status === "unverified" ? "???? " : "STALE";
   log(`  ${mark} ${v.out.padEnd(34)} ${v.status.padEnd(10)} ${v.reason}`);
-  if (v.status === "stale" || v.status === "missing") {
-    // A stale or missing binary IS a failure, not a note: it is the whole reason
-    // this script exists, and a check that prints a red row and then exits 0
-    // teaches everyone to ignore red rows.
+  if (v.status === "stale" || v.status === "missing" || v.status === "swapped") {
+    // A stale, swapped or missing binary IS a failure, not a note: it is the
+    // whole reason this script exists, and a check that prints a red row and
+    // then exits 0 teaches everyone to ignore red rows. "swapped" belongs here
+    // because bytes that are not the recorded ones cannot be vouched for at all.
     stale.push(v);
     problem(`${v.out} is ${v.status}: ${v.reason}`);
   }
