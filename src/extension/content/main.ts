@@ -6,7 +6,7 @@
 
 import { mergeConfig } from "../../shared/config";
 import { ensureCore } from "../../shared/core";
-import { blurTypingFocus, isTypingEvent, isTypingTarget } from "../../shared/dom";
+import { blurTypingFocus, isTypingEvent, isTypingTarget, typingTargetOf } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { installContentDom } from "./contentdom";
 import { LeaderController, isCancel } from "../../shared/leader";
@@ -40,6 +40,7 @@ import { createContentOps } from "./ops";
 import { createScrollController } from "./scroll";
 import { createScrollKeys } from "./scrollkeys";
 import { createDarkMode } from "./dark";
+import { barVerdict, createVerdictLatch, type BarVerdict } from "./dark/verdict";
 import { createReader } from "./reader";
 import {
   installFrameChild,
@@ -91,6 +92,28 @@ import type { ContentPopupShell } from "./find";
   // first frame: see the note in dark/index.ts on the white flash. The
   // controller reads the config lazily through the closure, so the copy this
   // sees at boot is only ever the not-yet-loaded default.
+  // What the bar has already been told about this page (see dark/verdict.ts).
+  const darkVerdicts = createVerdictLatch();
+  // The verdict this document last published, kept so a presence re-assert can
+  // publish it again. Null until the engine has decided anything: there is no
+  // verdict to re-assert before there is one.
+  let publishedVerdict: BarVerdict | null = null;
+  // THE VERDICT IS RE-ASSERTED WITH PRESENCE, because the bar is a SECOND
+  // SURFACE and a message can be LOST: the helper boots after the first page
+  // does, a relay hop drops, a tab move renumbers the strip the verdict is keyed
+  // by. The latch exists precisely so that a steady page stops repeating itself
+  // (see dark/verdict.ts) — which is why a message that never arrived must not be
+  // the last word. `reportPresence` is already the message for "the helper's copy
+  // of this document may be stale, here is the truth": it goes out at boot, on
+  // focus and on the first key of a burst, throttled to one per 3s. Riding it
+  // means a lost badge heals on the next key the user presses, at one message per
+  // presence report instead of one per pass.
+  function republishDarkVerdict(): void {
+    if (!publishedVerdict) return;
+    darkVerdicts.reset();
+    if (!darkVerdicts.send(publishedVerdict)) return;
+    void send("syncDark", publishedVerdict);
+  }
   const darkMode = createDarkMode({
     doc: document,
     win: window,
@@ -111,12 +134,15 @@ import type { ContentPopupShell } from "./find";
     // paint nothing — "nothing to do, the site did it" is the most useful thing
     // the segment can say, and hiding it would look like the feature had failed.
     report: (s) => {
-      const native = s.engine === "native" || /already dark/i.test(s.reason);
-      void send("syncDark", {
-        on: s.on,
-        mode: s.mode,
-        engine: native ? "native" : s.engine,
-      });
+      // THE VERDICT IS PUBLISHED WHEN IT CHANGES, not when it is re-decided.
+      // This callback runs once per pass, and a pass is not news: the segment
+      // reads `on`, the mode and the engine, and a verdict that has not moved is
+      // the same three values the bar is already showing (see dark/verdict.ts
+      // for the measured reason this latch exists).
+      const verdict = barVerdict(s);
+      publishedVerdict = verdict;
+      if (!darkVerdicts.send(verdict)) return;
+      void send("syncDark", verdict);
     },
   });
   darkMode.early();
@@ -125,6 +151,7 @@ import type { ContentPopupShell } from "./find";
     try {
       void readKey("config", vConfig, {}).then((c) => {
         config = mergeConfig(c);
+        darkVerdicts.reset();
         darkMode.update(config);
       });
     } catch (e) {
@@ -143,6 +170,11 @@ import type { ContentPopupShell } from "./find";
       (changes: { config?: { newValue?: Partial<Config> } }, area: string) => {
         if (area === "local" && changes.config) {
           config = mergeConfig(changes.config.newValue || {});
+          // A config write re-decides every page in every tab at once, and it is
+          // the same event that follows a helper restart: the verdict is
+          // re-asserted rather than assumed to have survived, which is one
+          // message per page and the reason the latch has a reset at all.
+          darkVerdicts.reset();
           // The theme follows the config, the same way the hint characters and
           // the scroll keys do. A settings page that changed the palette must
           // not need a reload to show it.
@@ -369,6 +401,10 @@ import type { ContentPopupShell } from "./find";
     } catch (e) {
       // ignore — an unreadable location simply reports no URL
     }
+    // The dark verdict rides along (see republishDarkVerdict). Only on the way
+    // IN: a document that is leaving describes a tab that is about to have a
+    // different one, and this page's verdict is not the next page's.
+    if (active) republishDarkVerdict();
     return send("syncContent", { active, url: href, doc: docId });
   };
   // THE REPORT IS RE-ASSERTED, NOT ONLY SENT ONCE. See docs/KEYBOARD-FREEZE.md.
@@ -1044,10 +1080,32 @@ import type { ContentPopupShell } from "./find";
         }
         return;
       }
-      br = "typing";
-      if (leader.active) leader.hide();
-      if (leader.hasPending()) leader.cancelPending();
-      return;
+      // THE PARKED-FIELD CLAIM — see the PARKED-FIELD RULE block above. Only
+      // the LEADER key escapes: the user pressing `;` into a box the PAGE
+      // parked them in (YouTube's load-time search autofocus) is a command,
+      // not the start of a search, so the leader takes the keyboard back.
+      // Everything else — and every later key in a touched box — types.
+      if (isParkedFieldLeader(e)) {
+        noteFieldUserType(typingTargetOf(e));
+        // Blur NOW. With the caret still in this box, the very next keydown
+        // would re-enter this guard and disarm the leader the claim arms —
+        // the user's `;` would seem to do nothing at all.
+        try {
+          const ae = document.activeElement as HTMLElement | null;
+          if (ae && typeof ae.blur === "function") ae.blur();
+        } catch (err) {
+          // the box refuses to blur — fall through anyway; a repaint might
+          // release it before the next key (still better than eating the
+          // leader forever)
+        }
+      } else {
+        noteFieldUserType(typingTargetOf(e));
+        if (leader.active) leader.hide();
+        if (leader.hasPending()) leader.cancelPending();
+        return;
+      }
+      // Parked claim: fall through to the leader branch below, which arms the
+      // leader and shows the overlay.
     }
     if (isCancel(e)) {
       // The universal cancel key — Escape, or Ctrl+G for pages that own Escape
@@ -1251,6 +1309,121 @@ import type { ContentPopupShell } from "./find";
       // ignore
     }
   };
+  /* ---- THE PARKED-FIELD RULE ----
+   * YouTube (and half the web) autofocuses its search box on load and parks the
+   * caret there indefinitely. The typing guard below is right for a field the
+   * user is WRITING in — `;` must insert `;` — but it made the leader dead on
+   * exactly the surface that loads with the caret stolen: the user's first `;`
+   * typed into the box, and every retry typed again (“keeps typing ; over and
+   * over”). Ownership of a field follows the USER, not the focus:
+   *
+   *   * a real (trusted) pointer press shortly before the focus landed = the
+   *     user clicked into this box — typing wins, as it always has;
+   *   * any real key typed into it = from that moment the box is theirs;
+   *   * otherwise the caret was placed programmatically, and if the user's
+   *     first key is the LEADER pressed well after the focus landed (seconds,
+   *     not the milliseconds a scripted focus-then-type setup takes), the
+   *     leader claims it: the box is blurred and Lazyfox gets the keys back.
+   *
+   * The blur is load-bearing: with the caret still in the box the next keydown
+   * re-enters the typing guard and disarms the leader just armed. Every other
+   * key in a parked box still types, so a user who wanted to search can search.
+   * Fields inside Lazyfox's own popup hosts never park — a `;s` popup that has
+   * been open a while must still accept typing without a click.
+   */
+  let fieldCaretSince = 0;
+  let fieldCaretTouched = true;
+  let userPointerAt = 0;
+  // Generous enough to cover every scripted focus-then-type flow the suites
+  // (and popup hosts) run through; small enough that a real user pressing a
+  // command key into a load-time autofocus always qualifies.
+  const FIELD_PARK_MS = 700;
+  function noteFieldFocus(t: Element | null): void {
+    try {
+      if (t && isTypingTarget(t)) {
+        fieldCaretTouched = Date.now() - userPointerAt < 1500;
+        fieldCaretSince = Date.now();
+        return;
+      }
+      fieldCaretSince = 0;
+      fieldCaretTouched = true;
+    } catch {
+      fieldCaretTouched = true;
+    }
+  }
+  function noteFieldUserType(t: Element | null): void {
+    try {
+      if (t && isTypingTarget(t)) {
+        fieldCaretTouched = true;
+        fieldCaretSince = 0;
+      }
+    } catch (err) {
+      // a hostile typing target must not break the guard
+    }
+  }
+  function isParkedFieldLeader(e: KeyboardEvent): boolean {
+    if (fieldCaretTouched || !fieldCaretSince) return false;
+    // A pointer press just before the focus landed (or after the boot snapshot
+    // took it) is the user CLICKING into this box — a click blesses it for
+    // typing exactly as the focusin path computes above. Same window for the
+    // same reason.
+    if (userPointerAt && Date.now() - userPointerAt < 1500) return false;
+    if (Date.now() - fieldCaretSince < FIELD_PARK_MS) return false;
+    // Only the LEADER key claims a parked box. Every other char keeps typing.
+    if (e.repeat || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return false;
+    if (e.key !== config.leader) return false;
+    const at = typingTargetOf(e);
+    if (!at || !isTypingTarget(at)) return false;
+    // Lazyfox's own popup hosts never park: their input is the point of the
+    // popup, whatever the wait before the user typed.
+    try {
+      const root = at.getRootNode() as ShadowRoot | null;
+      const host = root && (root as unknown as { host?: HTMLElement }).host;
+      if (host && /^lazyfox/i.test(String(host.id || ""))) return false;
+    } catch (err) {
+      // unreadable root — treat as a page field like before this rule
+    }
+    return true;
+  }
+  try {
+    // The focus gets a timestamp either way, so a field focused at LOAD time
+    // (YouTube's search box) is already far past the park window by the time
+    // the user's first real keypress reaches it.
+    document.addEventListener(
+      "focusin",
+      (ev) => noteFieldFocus((ev as FocusEvent).target as Element | null),
+      true,
+    );
+    // A real pointer press anywhere starts the click-into-a-field ownership
+    // window. Synthetic dispatch (a page clicking for the user) does not.
+    document.addEventListener(
+      "pointerdown",
+      (ev) => {
+        if ((ev as PointerEvent).isTrusted) userPointerAt = Date.now();
+      },
+      true,
+    );
+  } catch (err) {
+    // No document listeners in a torn-down realm — the typing guard backs off
+    // to its previous behavior (fieldCaretTouched stays true).
+  }
+  // THE BOOT SNAPSHOT, and why the focusin listener above is not enough.
+  //
+  // The load-time autofocus (YouTube's search box, and this fixture's) fires
+  // at PARSE time, while this script is still being injected at
+  // document_idle — the focusin listener above did not exist yet, so the
+  // focus that matters never gets a timestamp and the guard sees a field
+  // with none, which is the old eating behavior. Snapshot whatever holds the
+  // caret at boot: the page parked it there without the user, so it is
+  // “parked” exactly as a later focusin would mark it, until a real key or a
+  // recent pointer press proves the user took it.
+  try {
+    noteFieldFocus(document.activeElement as Element | null);
+  } catch (err) {
+    // unreadable document — stay on the safe side (fieldCaretTouched stays
+    // whatever the guard's fallback leaves it)
+  }
+
   window.addEventListener("blur", releaseLostHold, true);
   try {
     document.addEventListener("visibilitychange", () => {

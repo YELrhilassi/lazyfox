@@ -27,6 +27,13 @@ function docURL(doc) {
   }
 }
 var LEADER_WINDOW_MS = 15e3;
+function docURLSafe(doc) {
+  try {
+    return String(doc && doc.URL || "").slice(0, 60);
+  } catch (e) {
+    return "?";
+  }
+}
 function isEditable(el) {
   if (!el) return false;
   try {
@@ -51,6 +58,12 @@ var LazyfoxChild = class extends BaseChild {
     this.leaderUntil = 0;
   }
   actorCreated() {
+    try {
+      Services.console.logStringMessage(
+        "lazyfox actor: child instantiated (" + docURLSafe(this.document) + ")"
+      );
+    } catch (e) {
+    }
     this.installTrustedClick();
     void this.sendQuery("lazyfox-config", null).then((cfg) => {
       if (cfg && typeof cfg.leader === "string" && cfg.leader) this.leaderKey = cfg.leader;
@@ -64,10 +77,13 @@ var LazyfoxChild = class extends BaseChild {
     const cw = this.contentWindow;
     if (!doc || !cw) return;
     try {
-      const utils = cw.windowUtils;
-      if (!utils || typeof utils.sendMouseEvent !== "function") return;
+      doc.documentElement.setAttribute("data-lf-actor", "1");
+      const win = cw;
+      const synthesize = typeof win.synthesizeMouseEvent === "function" ? win.synthesizeMouseEvent : null;
+      const utilsSend = win.windowUtils && typeof win.windowUtils.sendMouseEvent === "function" ? win.windowUtils.sendMouseEvent : null;
+      if (!synthesize && !utilsSend) return;
       const nonce = Math.random().toString(36).slice(2) + "-" + Math.random().toString(36).slice(2);
-      cw.__lazyfoxTrustedClick = nonce;
+      doc.documentElement.setAttribute("data-lf-trusted", nonce);
       const type = "lazyfox-trusted-click:" + nonce;
       const listener = (ev) => {
         const detail = ev.detail;
@@ -77,9 +93,15 @@ var LazyfoxChild = class extends BaseChild {
         if (!Number.isFinite(x) || !Number.isFinite(y)) return;
         if (x < 0 || y < 0 || x > cw.innerWidth || y > cw.innerHeight) return;
         try {
-          utils.sendMouseEvent("mousemove", x, y, 0, 0, 0, false);
-          utils.sendMouseEvent("mousedown", x, y, 0, 1, 0, false);
-          utils.sendMouseEvent("mouseup", x, y, 0, 1, 0, false);
+          if (synthesize) {
+            synthesize.call(cw, "mousemove", x, y, { button: 0, buttons: 0, clickCount: 0 });
+            synthesize.call(cw, "mousedown", x, y, { button: 0, buttons: 1, clickCount: 1 });
+            synthesize.call(cw, "mouseup", x, y, { button: 0, buttons: 0, clickCount: 1 });
+          } else if (utilsSend) {
+            utilsSend.call(win.windowUtils, "mousemove", x, y, 0, 0, 0, false);
+            utilsSend.call(win.windowUtils, "mousedown", x, y, 0, 1, 0, false);
+            utilsSend.call(win.windowUtils, "mouseup", x, y, 0, 1, 0, false);
+          }
         } catch (e) {
         }
       };
