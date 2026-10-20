@@ -42,13 +42,12 @@ import { createChromePageHints } from "./pagehints";
 import type { TypingChannel } from "./typing";
 
 export interface KeyDispatchDeps {
-  // The chrome window, as a parameter rather than the ambient global, so this
-  // module — the whole ownership order below — can be driven in Node with a
-  // fake window. See src/chrome/env.ts.
+  // The window as a parameter, not the ambient global, so this module and the
+  // whole ownership order below can be driven in Node with a fake (env.ts).
   win: ChromeWindow;
   // The seam itself, for collaborators that take it whole (page hints reads
-  // env.services). Passed rather than derived from `win` so the fake env a
-  // test builds is the same object every collaborator sees.
+  // env.services); passed so a test's fake env is the same object every
+  // collaborator sees.
   env: ChromeEnv;
   leader: () => LeaderController | null;
   popup: PopupHost;
@@ -60,33 +59,26 @@ export interface KeyDispatchDeps {
   handleHotkeyCombo: (combo: string) => boolean;
   switchSessionByMarker: (marker: number) => void;
   handleScrollKeys: (win: ChromeWindow, e: { key: string }) => boolean;
-  // The leader-action table's own `f` handler (web-page hints), set by the
-  // composition root after the leader actions are built (breaks the mutual
-  // reference).
+  // Web-page hint action, set by the composition root after the leader
+  // actions are built (breaks the mutual reference).
   runWebHints: () => void;
-  // Called on every fresh leader press AND on every auto-repeat of the leader
-  // key, i.e. on the evidence that the key is still physically down. The
-  // composition root wires it to the hold watchdog (shared/holdrelease.ts),
-  // which stands a hold down once nothing is holding it any more.
+  // Wired to the hold watchdog: repeats are the evidence the key is still
+  // down; the watchdog stands a hold down once nothing is holding it.
   onLeaderHeld?: () => void;
-  // End an outstanding HOLD because the user CANCELLED the gesture (Esc or
-  // Ctrl+G) rather than because the key came up.
-  //
-  // A callback and not something this module does itself: `l.hide()` clears the
-  // overlay, but the host is the party that also OWNS the published claim (the
-  // per-tab hold the background keeps so a hold survives a navigation), and a
-  // hold that ends without publishing its release is a hold the next page
-  // dutifully restores — an armed leader for a key nobody is holding.
+  // End an outstanding HOLD because the user CANCELLED (Esc/Ctrl+G), not
+  // because the key came up. A callback: the host, not this module, owns the
+  // published claim (the per-tab hold that survives navigation), and a hold
+  // that ends unpublished is dutifully restored by the next page — an armed
+  // leader for a key nobody is holding.
   cancelLeaderHold: () => void;
-  // Stop the watchdog when this tab loses focus or changes ownership. The same
-  // host that starts it owns cancellation, because its release may need to be
-  // published across a navigation.
+  // Stop the watchdog when the tab loses focus or changes ownership; its
+  // release may need to be published across a navigation.
   releaseLeaderHoldOnLostFocus: () => void;
 }
 
-// The actor-forwarded key shape (see actor-parent.ts). Those keys can only
-// come from pages the extension's content script cannot reach, so the
-// "web pages belong to the content script" gate must not decline them.
+// The actor-forwarded key shape (actor-parent.ts): those keys can only come
+// from pages the content script cannot reach, so the "web pages belong to the
+// content script" gate must not decline them.
 export interface ActorKey {
   key: string;
   ctrlKey: boolean;
@@ -102,20 +94,14 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
   const leader = () => deps.leader();
 
   // "This tab's document is Lazyfox's own page", asked of the DOCUMENT as well
-  // as of the URL.
-  //
-  // The two halves are not the same question and the difference is reachable:
-  // `isCommandCenterTab` reads currentURI, which during a provisional navigation
-  // is already the URL being loaded while the document on screen is still the
-  // command center. Keyed on the URL alone, every branch below then treated that
-  // tab as a web page — so a key aimed at it (the `#lfc=keys` channel's, or the
-  // actor's) was declined as "the content script owns it" and forwarded to a
-  // document that did not exist yet, while the document that DID exist and was
-  // still answering keys got nothing. See keystate.commandCenterDocumentPresent.
+  // as of the URL: currentURI during a provisional navigation already names
+  // the URL being loaded while the document on screen is still the command
+  // center, and keyed on the URL alone every branch below treated that tab as
+  // a web page — declined, then forwarded to a document that did not exist
+  // yet, while the document still answering got nothing.
   const ccOwnsTab = (): boolean => isCommandCenterTab(win) || commandCenterDocumentPresent(win);
 
-  // `nsIFocusManager.FLAG_NOSCROLL`, read from the host when it is there: focus
-  // without dragging the page to the focused element.
+  // `nsIFocusManager.FLAG_NOSCROLL`: focus without dragging the page.
   const focusFlags = (): number => {
     try {
       const v = deps.env.Ci && deps.env.Ci.nsIFocusManager && deps.env.Ci.nsIFocusManager.FLAG_NOSCROLL;
@@ -137,72 +123,45 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       signalCommandCenterFind(win, l);
       return;
     }
-    // chromeOwnsKeys() is true exactly where the content script does not run
-    // (about:, extension pages) — provide hints locally there.
+    // chromeOwnsKeys() is true exactly where the content script does not run:
+    // provide hints locally there.
     if (chromeOwnsKeys(win)) {
       pageHints.show();
       return;
     }
-    // Web pages: the content script (or the shared popup engine) owns hints.
     deps.runWebHints();
   }
 
-  // The leader key with no modifier on it — the one keystroke that must never
-  // vanish, and the only key the command-center fallback below answers itself.
-  // Written once because all four call sites mean exactly this.
+  // The leader key with no modifier on it — the keystroke that must never
+  // vanish, and the only key the command-center fallback answers itself.
   function isLeaderKeyPress(e: ActorKey): boolean {
     return e.key === deps.leaderKey() && !e.ctrlKey && !e.altKey && !e.metaKey;
   }
 
   // `fromActor` and `noKeyup` are DIFFERENT facts and must not be conflated.
-  //
   // `fromActor` is about OWNERSHIP: the key was forwarded from the content
-  // process for a page that has no content script, so deferring to the page is
-  // not an option. The `#lfc=keys` channel is not an actor in that sense — it
-  // drives the real selection, which may well be a page whose content script
-  // owns its keys, and claiming ownership there would make one keystroke
-  // handled twice.
-  //
-  // `noKeyup` is about the key's LIFECYCLE: nothing will deliver a matching
-  // keyup, so the key must be treated as a tap and never as a hold. Both
-  // synthetic paths need it (the actor bridge and the `#lfc=keys` test
-  // channel), and getting it wrong on either one leaves the leader marked as
-  // PHYSICALLY HELD with nothing left to release it — see armHeldLeader.
-  // THE DISPATCH TRACE, dev-only and read on demand.
-  //
-  // "Press `;o` on a chrome-owned page and nothing happens" has exactly one
-  // honest diagnosis path: which branch consumed the key. Its other answers all
-  // look identical from outside — the leader arms, the overlay lights, the
-  // reply says the helper owns the keys, and no action ran — so a bug report
-  // about it costs an afternoon without this.
-  //
-  // It is a RING IN MEMORY, not a mirror: nothing is written per key except one
-  // array push, no attribute is painted, and the whole thing is compiled out of
-  // release builds (every call site is behind __DEV__, which esbuild folds to
-  // false so the body is tree-shaken). The e2e harness reads it from the chrome
-  // state reply (`keyTrace`), which is the same pull-not-push rule the content
-  // script's dispatch trace follows.
-  // `__DEV__` is a build-time literal (globals.d.ts) and esbuild folds it, so
-  // this constant is `false` in a release build and the trace bodies below are
-  // eliminated. It is read DEFENSIVELY because this module is also driven
-  // directly by the Node checks (scripts/test/keyhold.test.ts), where the
-  // literal does not exist and a bare reference is a ReferenceError.
+  // process for a page that has no content script, so deferring to the page
+  // is not an option — while the `#lfc=keys` channel drives the real
+  // selection, which may have a owning content script, and claiming there
+  // would handle one keystroke twice. `noKeyup` is about LIFECYCLE: nothing
+  // will deliver a matching keyup, so the key must be treated as a tap and
+  // never as a hold (armHeldLeader).
+
+  // THE DISPATCH TRACE, dev-only and read on demand. "Press `;o` and nothing
+  // happens" has exactly one honest diagnosis path: which branch consumed the
+  // key; its other answers all look identical from outside. A RING IN MEMORY
+  // — one array push per key, no attribute writes, compiled out of release
+  // builds (call sites behind __DEV__; esbuild folds the literal). Read from
+  // the chrome state reply (`keyTrace`), pull-not-push like the content
+  // script's trace. The Node checks drive this module without the __DEV__
+  // literal, so it is read defensively.
   const DEV = typeof __DEV__ !== "undefined" && __DEV__;
   const TRACE_LIMIT = 24;
   const trace: Array<Record<string, unknown>> = [];
-  // A MONOTONIC NUMBER PER ENTRY, because the ring is BOUNDED.
-  //
-  // The ring answers "did this key arrive, and which branch took it" only if a
-  // reader can tell a new entry from an old one — and once the ring is full its
-  // LENGTH stops growing, so `after.length > before.length` is false for a key
-  // that arrived and was recorded. That is not hypothetical: the first version of
-  // the developer-surface e2e (content/focus) passed alone and failed inside the
-  // content group for exactly this reason, reporting "the key never reached the
-  // dispatcher" with the key's own entry visible in the failure text.
-  //
-  // The counter is also what makes two reads orderable: "the last entry before"
-  // and "the last entry after" can be compared as numbers instead of guessed at
-  // from content.
+  // A MONOTONIC NUMBER PER ENTRY, because the ring is bounded: once full, its
+  // length stops growing, and `after.length > before.length` is false for a
+  // key that WAS recorded (measured in the content/focus suite). Also what
+  // makes two reads orderable as numbers.
   let traceSeq = 0;
   function noteTrace(entry: Record<string, unknown>): void {
     if (!DEV) return;
@@ -211,36 +170,37 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     if (trace.length > TRACE_LIMIT) trace.shift();
   }
 
-  /** The trace, newest last. Empty in a release build (nothing is recorded). */
+  /** The trace, newest last. Empty in a release build. */
   function dispatchTrace(): Array<Record<string, unknown>> {
     return trace.slice();
   }
 
-  // The branch the current key is in. Assigned at each decision point below and
-  // read once, after the dispatch returns — so the labels cannot change what the
-  // dispatcher does, which is the property that matters for an instrument that
-  // ships inside the key path.
+  // The branch the current key is in; assigned at each decision point and
+  // read once after the dispatch — the instrument cannot change what the
+  // dispatcher does.
   let br = "entry";
 
   /**
-   * Give the SELECTED tab's page its keyboard back — the repair the user performs
-   * with a click — and report what became of the key that asked for it.
+   * Give the SELECTED tab's page its keyboard back — the repair the user
+   * performs with a click — and report what became of the key that asked.
    *
-   * `"consumed"` — the key was the leader key and the repair rode on it: it must
-   * never be spent as a character in a chrome field, and the user's next press
-   * lands in the page and arms the leader there. `"declined"` — the keyboard went
-   * back but this key is not ours (the page may want it now). `"not-needed"` —
-   * the page can already see keys, or the veto applies and nothing was touched.
+   * THREE answers rather than a boolean, because both callers must
+   * distinguish "repaired and this key was spent on it" from "repaired, pass
+   * the key on" from "nothing to do"; the boolean version shipped with the
+   * first and third conflated and silently swallowed a letter on the way to a
+   * page that never asked for it.
    *
-   * THREE ANSWERS RATHER THAN A BOOLEAN, because both callers have to distinguish
-   * "repaired and this key was spent on it" from "repaired, pass the key on" from
-   * "nothing to do" — and the boolean version of this shipped with the first and
-   * third outcomes conflated, which silently swallowed a letter key on the way to
-   * a page that never asked for it.
+   * The veto (user composing in a chrome field, see
+   * chromeFieldHoldsUserText) deliberately never applies to the LEADER KEY:
+   * with the toolbar hidden, a stray character in the invisible URL bar once
+   * vetoed every rescue forever. `;` is the one key a Lazyfox user presses to
+   * say "Lazyfox, now"; the typed text stays in the field. Every OTHER key
+   * keeps the veto — revealing the toolbar and typing an address must work.
    *
-   * The veto is the user COMPOSING in a chrome field (see
-   * chromeFieldHoldsUserText for the measurement that forced the question to be
-   * "did the user type here" rather than "does the field hold text").
+   * STRICT question (`focusIsInSelectedContent`, not the window-independent
+   * variant): at a key, the keyboard is provably in THIS window — the
+   * "another window is active" state is stale, and trusting it declined a key
+   * whose page was not focused until the user clicked.
    */
   function givePageKeyboardBack(e: ActorKey): "consumed" | "declined" | "not-needed" {
     let composingInChrome = false;
@@ -255,20 +215,6 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     } catch {
       composingInChrome = false;
     }
-    // THE LEADER KEY IS NEVER VETOED — the user's decision, taken after the
-    // reproduction that made the veto's shape matter: with the toolbar hidden
-    // (Lazyfox's own CSS) a stray character typed into the invisible URL bar set
-    // `valueIsTyped`, and from then on EVERY rescue was vetoed, on every key,
-    // with nothing on screen to explain it. The veto's job is to protect an
-    // address the user is deliberately writing, and `;` is not the keystroke
-    // anybody writes an address with: it is the one key a Lazyfox user presses to
-    // say "Lazyfox, now", so it wins. The typed text is not destroyed — it stays
-    // in the field — and `;o` is the product's own way to enter an address.
-    //
-    // Every OTHER key keeps the veto, and that half is load-bearing: the toolbar
-    // is a hover overlay, a user who reveals it and clicks the address bar must
-    // be able to type a URL without the first character yanking focus into the
-    // page.
     if (composingInChrome && !isLeaderKeyPress(e)) return "not-needed";
     let fm: any = null;
     try {
@@ -276,18 +222,6 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     } catch {
       fm = null;
     }
-    // ASKED THE STRICT QUESTION, because this function only ever runs at a KEY.
-    //
-    // `selectedContentHasKeyboard` answers YES for a window the focus manager
-    // does not name as the active one — a deliberate safeguard for the TRIGGERS,
-    // which can fire in a window the user is not in. At a key it is the wrong
-    // answer, and it is the freeze in its purest form: a keydown was just
-    // delivered to THIS window's listener (so the user's keyboard is here, and
-    // the manager's "another window is active" — or its null — is stale), the
-    // helper declines the key because "the page owns it", and the page never sees
-    // anything because its document is not focused. Nothing answers until the
-    // user clicks, which is what finally makes the manager agree. See
-    // focusIsInSelectedContent for the two states this asks about instead.
     if (focusIsInSelectedContent(win, fm)) return "not-needed";
     focusSelectedContent(win, fm, focusFlags());
     return isLeaderKeyPress(e) ? "consumed" : "declined";
@@ -309,8 +243,8 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         br: br,
         c: consumed,
         actor: !!fromActor,
-        // Whether the key came with no keyup (a synthetic tap) — the flag that
-        // decides tap-vs-hold, and the one that has bitten before.
+        // `tap`: no keyup will ever come — the flag that decides tap-vs-hold,
+        // and the one that has bitten before.
         tap: !!noKeyup,
         cc: ccOwnsTab(),
         owns: chromeOwnsKeys(win),
@@ -326,59 +260,37 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       return false;
     }
 
-    // A DEVELOPER SURFACE IS NOT CLAIMED — not the key, not the repair, not the
-    // leader (K4; shared/privileged.ts).
-    //
-    // The order matters and it is the whole of the fix: `chromeOwnsKeys` says
-    // false for a devtools document (what it is), which would send the key down
-    // the WEB PAGE rescue — a repair that moves the keyboard into the developer's
-    // console and spends the leader key doing it. Refusing here means "not ours"
-    // and "not touched" are the same answer on the same class of page, whatever
-    // the key was and wherever it came from. It costs one string compare on a
-    // URL, and it is the difference between a rule and a different bug.
+    // A DEVELOPER SURFACE IS NOT CLAIMED — not the key, not the repair, not
+    // the leader. The order IS the fix: `chromeOwnsKeys` says false for
+    // devtools documents, which would send the key down the WEB PAGE rescue,
+    // moving the keyboard into the developer's console and spending the
+    // leader key doing it. "Not ours" and "not touched" are the same answer
+    // here, whatever the key was and wherever it came from.
     if (isDeveloperSurfaceTab(win)) {
       br = "devtools-surface";
       return false;
     }
 
-    // LAZYFOX'S OWN PAGE OWNS ITS OWN KEYS (see keystate.chromeOwnsKeys).
-    //
-    // The command center runs the same key engine a web page's content script
-    // does, so this helper must not claim its keys as well — that is what made a
-    // key run twice while the tab was in-process, and what made `;f` behave
-    // differently from one new tab to the next. Three cases arrive here, and
-    // each has exactly one right answer:
-    //
-    //   * SYNTHETIC (the #lfc=keys channel, or the window actor): the page never
-    //     saw it, so forward it into the page's document and let the page act.
-    //     That is also the only key path a test has, because WebDriver cannot
-    //     focus a moz-extension document at all.
-    //   * REAL, with focus in the chrome UI (the hidden URL bar Firefox parks
-    //     focus in on a fresh tab): the page cannot see it either. The honest
-    //     fix is to put focus back into the page so the NEXT key lands in the
-    //     grid — never to run a binding from this realm while the page believes
-    //     it owns the keyboard.
-    //   * REAL, with focus in the page: the page's own listener already ran. Do
-    //     nothing (returning false leaves the event exactly as the page left
-    //     it).
+    // LAZYFOX'S OWN PAGE OWNS ITS OWN KEYS. The command center runs the same
+    // key engine a content script does; claiming its keys as well made a key
+    // run twice in-process (and differently between new tabs). Three cases:
+    //   * SYNTHETIC (channel/actor): the page never saw it — forward it in;
+    //     the only key path a test has, since WebDriver cannot focus a
+    //     moz-extension document.
+    //   * REAL, focus in the chrome UI (the hidden URL bar on a fresh tab):
+    //     the page cannot see it either — refocus the page so the NEXT key
+    //     lands in the grid, never run a binding from this realm.
+    //   * REAL, focus already in the page: its listener already ran; return
+    //     false and leave the event as the page left it.
     if (ccOwnsTab() && !popup.isOpen()) {
       if (fromActor || noKeyup) {
-        // THE PAGE HAS TO BE ABLE TO ANSWER, and the helper can now tell.
-        //
-        // Forwarding is right — this page runs the same key engine a content
-        // script does — but it was UNCONDITIONAL, and a command-center document
-        // that has not finished loading its script yet (a tab caught mid-
-        // redirect, i.e. a fresh new tab for a moment, or one whose reload is in
-        // flight) has the URL and the static markup and none of the engine.
-        // A key handed to that page was consumed by nobody: pressing `;` there
-        // left the keyboard dead and only a navigation brought it back, which is
-        // the "nothing responds, not even the leader key" report.
-        //
-        // The page declares whether it answers keys (`data-lf-engine`, set where
-        // its listener is installed), so when it does not, the LEADER KEY is
-        // answered here instead of vanishing. Every other key is forwarded
-        // exactly as before — this is a rescue for the one key that has to work
-        // on every tab, not a second opinion about the page's keys.
+        // Forwarding was UNCONDITIONAL and a command-center document that has
+        // not finished loading its script (a fresh tab mid-redirect, a reload
+        // in flight) had none of the engine: the key was answered by nobody
+        // ("nothing responds, not even the leader"). The page declares
+        // `data-lf-engine` where its listener is installed; when it is not up,
+        // THE LEADER KEY is answered here instead of vanishing — a rescue for
+        // the one key that must work on every tab, not a second opinion.
         if (!commandCenterPageReady(win) && isLeaderKeyPress(e)) {
           const l = leader();
           if (l && armHeldLeader(l, e, noKeyup)) {
@@ -386,9 +298,8 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
             return true;
           }
         }
-        // The modifiers travel with it: the page's own typing guard and its
-        // Ctrl/Alt pairs read them, and a forwarded Ctrl+Enter that arrived as
-        // a bare Enter would run the wrong action.
+        // The modifiers travel with it: the page's typing guard and its
+        // Ctrl/Alt pairs read them.
         dispatchToCCPage(win, e.key, e);
         br = "cc-forward";
         return true;
@@ -398,45 +309,26 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         return false;
       }
       if (isLeaderKeyPress(e)) {
-        // The same escalation the tab-select rule uses: an element focus is not
-        // always enough, and the focus manager is the last word (see
-        // commandcenterfocus.focusSelectedContent).
+        // Same escalation as the tab-select rule: element focus is not
+        // always enough; the focus manager is the last word.
         focusCCBody(win, deps.env.services.focus, focusFlags());
       }
       br = "cc-refocus";
       return false;
     }
 
-    // Web pages are the content script's territory (its own leader, popups,
-    // hints and typing guard). If Firefox forwards their keys to this chrome
-    // window listener (some builds do), never consume them here. An
-    // actor-forwarded key is the exception: the actor only speaks for pages
-    // with no content script, so there is no other owner to defer to.
-    //
-    // THE PAGE OWNS THE KEYS ONLY WHILE IT CAN SEE THEM, and this branch used to
-    // assume that it could. A keydown is delivered to the FOCUSED document, so
-    // when focus sits in the browser's own UI — the hidden URL bar Firefox parks
-    // it in, the toolbar a hover reveals, the tab strip, a splitter, or nothing
-    // at all after the window has been away — the page's listener never runs,
-    // and the key declined here is answered by the browser chrome instead: `;`
-    // is typed into the URL bar and Lazyfox looks frozen on a page that is
-    // perfectly healthy, until the user clicks on the page. That click is the
-    // repair, and it is the one repair a keyboard-first browser cannot ask for.
-    //
-    // So the keyboard is GIVEN BACK to the page at the key the user already
-    // pressed, and the LEADER KEY is consumed as part of that repair: it must
-    // never be spent as a character in the URL bar, and the user's next press
-    // lands in the page and arms the page's own leader there. Every other key is
-    // still declined — the same answer this branch has always given, since the
-    // page may well want it once focus is back.
-    //
-    // The one thing that vetoes the repair is the user COMPOSING in a chrome
-    // field: pulling focus out from under a caret the user is writing at would be
-    // worse than the freeze. It is deliberately not "the field has text": the URL
-    // bar shows the PAGE'S OWN ADDRESS on the very state this rescue exists for,
-    // so a text test vetoed every rescue it was written for (measured). Firefox's
-    // own "the user edited this value" flag is what answers it — the whole
-    // argument, with the measurements, is in chromeFieldHoldsUserText.
+    // Web pages are the content script's territory. If Firefox forwards their
+    // keys to this chrome listener (some builds do), never consume them —
+    // except an actor-forwarded key, which by construction has no other
+    // owner. THE PAGE OWNS THE KEYS ONLY WHILE IT CAN SEE THEM: a keydown is
+    // delivered to the FOCUSED document, so when Firefox parks focus in its
+    // own UI (the hidden URL bar, the toolbar, the tab strip, or nothing
+    // after the window has been away) the page's listener never runs — `;`
+    // gets typed into the URL bar and Lazyfox looks frozen on a healthy page,
+    // until the user clicks. That click is the one repair a keyboard-first
+    // browser cannot ask for, so the keyboard is GIVEN BACK at the key the
+    // user already pressed; the LEADER KEY is consumed by that repair and the
+    // next press lands in the page.
     if (!fromActor && !chromeOwnsKeys(win) && !popup.isOpen()) {
       const r = givePageKeyboardBack(e);
       if (r === "consumed") {
@@ -451,39 +343,17 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       return false;
     }
 
-    // THE SAME REPAIR IS OWED WHEN THE HELPER IS THE ONE ANSWERING, and missing
-    // that half is what makes this state look like two different browsers.
-    //
-    // Measured from the field report: `;` "keeps showing" and `;r`, `;s`, `;o`
-    // and `;d` still answer, while `j`/`k`/`d`/`u` — and hints and find with
-    // them — are dead until the page is clicked or reloaded. Those are exactly
-    // the two halves of the ownership split: the helper's own bindings run (it
-    // has the keys) and everything that lives in the page does not, because the
-    // KEYBOARD is not in the page: no key reaches its content script, and the
-    // chrome-side scroll keys cannot move a remote document either (see
-    // scrollkeys.ts). The helper claiming the keys is not the problem — it is
-    // what it does while claiming them without the page able to see a key.
-    //
-    // So the repair runs here too, and the LEADER KEY is the only key allowed to
-    // trigger it. Every other key is legitimate chrome-UI business — the address
-    // the user is typing into, a toolbar control — and the veto below cannot tell
-    // a URL bar holding its own page address from one holding a half-typed URL,
-    // while `usertyping` only appears once they have typed something. The leader
-    // key has no such ambiguity: a user pressing it wants Lazyfox, and the honest
-    // answer when the page cannot see it is to give the page its keyboard back
-    // and let the next press land there.
-    //
-    // ...AND ONLY ON A DOCUMENT THAT CAN OWN THE KEYS AT ALL. That qualifier was
-    // missing, and it cost the first press of every leader chord on every
-    // chrome-owned page: on `moz-extension://…/diagnostics.html` (or any
-    // `about:` document) no content script runs and none ever will, so "giving
-    // the page its keyboard back" hands it to a document with no key engine of
-    // its own — while the LEADER KEY, spent on that repair, never reaches the
-    // leader-arm branch below. `;T` opened the diagnostics page and `;x` then did
-    // nothing: `x` alone is not a binding, and the `;` it needed had already been
-    // consumed by a repair for a page that could not answer a key. Measured by
-    // the long session suite (step 23), which is the only shape that presses a
-    // chord a second time on a freshly opened page.
+    // THE SAME REPAIR IS OWED WHEN THE HELPER IS THE ONE ANSWERING: the field
+    // state is ";R ;S ;O ;D run but j/k/h/d/u are dead until the page is
+    // clicked" — the helper's bindings run while the page sees no key at all.
+    // The LEADER KEY is the only trigger: every other key is legitimate
+    // chrome-UI business, and the veto cannot tell a URL bar showing its own
+    // page address from one holding a half-typed URL. AND ONLY ON A DOCUMENT
+    // THAT CAN OWN THE KEYS AT ALL — the missing qualifier spent the first
+    // press of every leader chord on chrome-owned pages with no content
+    // script (diagnostics, any about:): the repair handed the keyboard to a
+    // document with no key engine while the leader key it spent never armed
+    // anything, so ";T then ;x did nothing" (session step 23 measured it).
     if (
       !fromActor &&
       chromeOwnsKeys(win) &&
@@ -497,17 +367,16 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       }
     }
 
-    // A chrome popup is open: Esc closes it first (before the page/window),
-    // and so does Ctrl+G — the shared predicate, so the chrome popup and the
-    // content-script popup can never disagree about what dismisses them.
+    // A chrome popup is open: Esc closes it first (Ctrl+G too — the shared
+    // predicate, so the chrome popup and the content popup never disagree).
     if (popup.isOpen()) {
       if (isCancel(e)) {
         if (popup.resizeOnKey(e as KeyboardEvent)) {
           br = "popup-resize";
           return true;
         }
-        // Let the popup consume Esc itself (e.g. the sessions popup cancels a
-        // pending copy/move target picker) before closing it.
+        // Let the popup consume Esc itself (the sessions popup cancels a
+        // pending copy/move picker) before closing it.
         if (popup.handleKey(e as KeyboardEvent)) {
           br = "popup-key";
           return true;
@@ -520,11 +389,9 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         br = "popup-resize";
         return true;
       }
-      // Confine the keyboard to the popup. A key whose target lies in the
-      // popup (its input/rows) is left to the popup's own listener; a key
-      // aimed anywhere else must not reach the browser chrome behind the
-      // overlay. Channel-driven keys carry no target and are dispatched
-      // straight to the popup input by the caller — leave them alone.
+      // Confine the keyboard to the popup: a key aimed anywhere else must not
+      // reach the browser chrome behind the overlay. Channel-driven keys
+      // carry no target (the caller dispatches them to the popup input).
       const target = (e as { target?: EventTarget | null }).target;
       if (target == null) {
         br = "popup-chan";
@@ -547,58 +414,37 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     const typingNow = typing.focusedIsTyping(e as KeyboardEvent);
     const typingValue = typing.focusedTypingValue(e as KeyboardEvent);
 
-    // The leader (or a one-shot capture) is armed: the next key is a binding —
-    // but not while the user is typing.
-    //
-    // TYPING WINS. A field that holds TEXT always wins, and so does any field in
-    // the page itself — including an EMPTY one, which is where this used to go
-    // wrong: the empty-field exception rendered the whole page as "keeps the
-    // binding", so arm the leader (one `;`), click into any of about:
-    // preferences' empty inputs, type, and the first character ran a command
-    // instead of appearing in the box. That is exactly "the shortcuts fire while
-    // I am typing in an input field". The browser's own chrome UI keeps its old
-    // behaviour (an empty URL bar is where a sequence continues after a failed
-    // navigation), and the only other exception is one key wide: the LEADER KEY
-    // in an empty field on a Lazyfox-owned page, so `;` still arms without a
-    // click or an Escape first.
     if (l.active || l.hasPending()) {
-      // ONE cancel ends the WHOLE chain.
-      //
-      // A category is a capture AND an armed leader at the same time (the head
-      // arms the capture, the leader stays up behind it), and the capture is
-      // consulted first. So Escape used to be handed to the category's sub-key
-      // table, which has no Escape row: the capture was spent, the leader
-      // stayed armed, and the second Escape is what finally dismissed it.
-      // Escaping a two-key sequence therefore cost two presses, and from the
-      // user's side `;W` then Esc looked like the key did nothing at all.
-      //
-      // The chord and the menu it opened are one user action, so they end in one
-      // keystroke — and Ctrl+G is the same cancel, which is why this uses the
-      // shared predicate rather than testing for Escape alone. Ctrl+G is the
-      // one that works even on pages that bind Escape themselves.
+      // ONE cancel ends the WHOLE chain. A category is a capture AND an
+      // armed leader at once (the head arms the capture), and the capture's
+      // sub-key table has no Escape row — so Escape used to spend the
+      // capture, leave the leader armed, and need a second press. The chord
+      // and its menu are one user action; Ctrl+G is the same cancel and the
+      // one that works on pages that bind Escape.
       if (isCancel(e)) {
         br = "leader-cancel";
         l.cancelPending();
         l.hide();
-        // A cancel ends the HOLD too, not just the overlay. `hide()` clears the
-        // pixels; the host is the one that knows the hold also has to be
-        // published as released, or the next page to load restores a gesture
-        // the user explicitly backed out of.
+        // A cancel ends the HOLD too: hide() clears pixels, but the host
+        // must publish the release or the next page restores a gesture the
+        // user explicitly backed out of.
         deps.cancelLeaderHold();
         return true;
       }
       const chromeUiFocus = isChromeUiFocus(win, typing, e as KeyboardEvent);
       const leaderKeyPress = isLeaderKeyPress(e);
-      // The same page class as the typing guard below: the command center, and
-      // every document no content script can own. Wherever Lazyfox's helper is
-      // the only key engine on the page, an empty field cannot be the reason to
-      // spend the leader key as text.
+      // Same page class as the typing guard below — wherever the helper is
+      // the only key engine, an empty field is not a reason to spend the
+      // leader key as text.
       const emptyLazyfoxField =
         typingValue === "" && (isCommandCenterTab(win) || !contentOwnablePage(win));
-      // "The user is writing something." A field with text, or a field in the
-      // page rather than in the browser's chrome UI.
+      // "The user is writing something": a field with text, or a field in
+      // the page (rather than the browser's chrome UI).
       const typingWins = typingNow && (!chromeUiFocus || typingValue !== "");
       if (typingWins && !(leaderKeyPress && emptyLazyfoxField)) {
+        // TYPING WINS — the reported "shortcuts fire while I am typing in an
+        // input field"; the empty-field exception once rendered whole
+        // about:preferences as "keeps the binding".
         br = "leader-typing";
         if (l.active) l.hide();
         if (l.hasPending()) l.cancelPending();
@@ -610,65 +456,44 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         leaderKeyPress &&
         (emptyLazyfoxField || (chromeUiFocus && typingValue === ""))
       ) {
-        // The leader key in the one field where it is still a chord. Treat it as
-        // a fresh press (re-arm, so holding `;` carries the sequence across) and
-        // consume it — never hand it to an armed capture as if it were a
-        // sub-key, which is what made `;` after `;W` do something arbitrary.
+        // The leader key in the one field where it is still a chord: treat
+        // as a fresh press, never hand an armed capture a typed `;` (which
+        // made `;` after `;W` do something arbitrary).
         if (armHeldLeader(l, e, noKeyup)) {
           br = "leader-rearm";
           return true;
         }
       }
       if (l.hasPending()) {
-        // The capture's answer is honoured: `false` means "this key is not part
-        // of the sequence I am collecting" (`;W m` then a letter, a leading
-        // zero, or anything with Ctrl/Alt/Meta held). It used to be swallowed
-        // here anyway, which is the one thing the handler promises not to do.
+        // The capture's `false` ("not my sequence") is honoured: the key used
+        // to be swallowed here anyway, breaking the handler's own promise.
         br = "leader-pending";
         return l.handlePending(e);
       }
-      // `handleKey` reports whether it CONSUMED the key, and that answer is
-      // honoured. It used to be discarded here and in every other host, which
-      // meant a key the leader declined — a bare modifier press, a chord with
-      // no binding — was swallowed with nothing on screen saying so. The user
-      // pressed it again, because the first press had visibly done nothing.
+      // `handleKey`'s "did I consume it" is honoured too: its decliner — a
+      // bare modifier, a chord with no binding — used to be swallowed with
+      // nothing on screen saying so.
       br = "leader-chord";
       return l.handleKey(e);
     }
 
     // Esc on chrome-owned pages blurs the focused element so the page returns
-    // to a neutral state. NOT consumed: the page also receives Esc. The
-    // command center owns its Esc, and web pages are the content script's.
-    //
-    // A second Ctrl+G branch used to sit just below this one — "back out of an
-    // armed leader without giving up the key" — and it was UNREACHABLE, because
-    // the `l.active || l.hasPending()` block above returns on every path, so by
-    // the time control arrives here `l.active` is false by construction. It read
-    // like the escape hatch while the live one (the `isCancel` check at the top
-    // of that block) sat somewhere else entirely, which is precisely how a
-    // safety net gets "fixed" twice and tested once. Removed.
+    // to neutral. NOT consumed (the page also receives Esc). A second Ctrl+G
+    // branch below this once looked like an escape hatch and was
+    // UNREACHABLE — the armed-leader block returns on every path; removed.
     if (e.key === "Escape") {
       if (!ccOwnsTab()) blurFocusedElement(win);
       br = "escape-blur";
       return false;
     }
 
-    // Typing in an editable: never intercept — the leader key types like any
-    // other. The exceptions are an EMPTY focused field on a Lazyfox-owned
-    // page (so `;` arms the leader without a click or Esc first), and the
-    // browser's own URL bar sitting on a page only Lazyfox can answer (after a
-    // failed navigation Firefox hands focus to the URL bar with the page's own
-    // address in it, and the typing rule would otherwise swallow the leader key
-    // on the very page it is supposed to rescue). Only the leader key is
-    // excepted there.
-    //
-    // "ONLY LAZYFOX CAN ANSWER" USED TO BE SPELLED `isAboutPage` and that is a
-    // SUBSET of it: the diagnostics page, the options page, the relay — every
-    // `moz-extension://` document — is chrome-owned for exactly the same reason
-    // (no content script runs there, so the helper is the only key engine) and
-    // was not covered. On the diagnostics tab the typing rule therefore spent
-    // `;` as a character in the URL bar and the chord never armed, which is the
-    // other half of the session suite's step 23 (see contentOwnablePage).
+    // Typing in an editable: never intercept. Only two exceptions, leader-key
+    // wide: an EMPTY field on a Lazyfox-owned page (`;` arms without a click
+    // or Esc), and the URL bar sitting on a page only Lazyfox can answer.
+    // Note the "only Lazyfox can answer" spelling is contentOwnablePage, NOT
+    // isAboutPage — a SUBSET: every moz-extension:// document (diagnostics,
+    // options, the relay) is chrome-owned for the same reason and was once
+    // missed (the other half of session step 23).
     if (typingNow) {
       if (
         isLeaderKeyPress(e) &&
@@ -684,29 +509,21 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       return false;
     }
 
-    // Ctrl+G IS LAZYFOX'S CHORD, SO IT NEVER REACHES THE BROWSER.
-    //
-    // Escape is deliberately left alone here — the page still gets it, which is
-    // what Escape means on the web — but Ctrl+G has no page meaning at all on a
-    // chrome-owned page, and Firefox's is FIND AGAIN. Falling through to it
-    // opened the native find bar over an about: page or the command center,
-    // which is the reported "sometimes Ctrl+G opens the page's own search":
-    // "sometimes" is exactly the set of pages this helper owns rather than a
-    // content script, and the popup/leader branches above are the ones that
-    // already consumed the chord when something was up.
-    //
-    // It sits AFTER the typing guard on purpose: Ctrl+G while the caret is
-    // somewhere in the browser's own chrome UI (the URL bar on a fresh tab) is
-    // the browser's chord, and stealing it from there would break find-again on
-    // the one surface where nothing of ours is on screen.
+    // Ctrl+G IS LAZYFOX'S CHORD ON CHROME-OWNED PAGES: Firefox's is FIND
+    // AGAIN, and falling through opened the native find bar over an about:
+    // page or the command center ("sometimes Ctrl+G opens the page's own
+    // search"). Escape is deliberately left alone here — the page still gets
+    // it, which is what Escape means on the web. Sits AFTER the typing
+    // guard: Ctrl+G with the caret already in the browser's UI (the URL bar
+    // on a fresh tab) is the browser's find-again.
     if (isCancel(e) && e.key !== "Escape") {
       br = "cancel-chord";
       return true;
     }
 
-    // The command center is Lazyfox's own page. In command mode (input
-    // blurred) the leader key must arm here so the home-screen shortcuts
-    // work; in insert mode the typing check above already let `;` through.
+    // The command center in command mode (input blurred): the leader arms
+    // here so the home-screen shortcuts work; in insert mode the typing
+    // check above already let `;` through.
     const k = e.key;
     if (isLeaderKeyPress(e) && isCommandCenterTab(win)) {
       if (armHeldLeader(l, e, noKeyup)) {
@@ -733,8 +550,8 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
       return false;
     }
 
-    // Vim scroll keys on chrome-owned pages; the command center grid owns its
-    // own j/k/h/l navigation, so it is excluded.
+    // Vim scroll keys on chrome-owned pages; the command center grid owns
+    // its own j/k/h/l navigation, so it is excluded.
     if (!isCommandCenterTab(win) && deps.handleScrollKeys(win, e)) {
       br = "scroll";
       return true;
@@ -752,40 +569,27 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
 
   // Arm the leader for a HELD leader key, and drop auto-repeat.
   //
-  // A key that stays down re-fires keydown at the OS repeat rate. Treating
-  // each of those as a fresh leader press tore down and re-armed the leader
-  // several times a second, so holding the leader to run two actions in a row
-  // destroyed the sequence between them. A repeat carries no new intent, so
-  // it is swallowed here — still consumed, so the character never leaks into
-  // the page or the URL bar.
+  // A key that stays down re-fires keydown at the OS repeat rate; treating
+  // each as a fresh press tore down and re-armed the leader several times a
+  // second, destroying holds-run-two-actions between them. A repeat carries
+  // no intent but IS liveness evidence (the key is provably down — what
+  // tells a hold from an abandoned claim in shared/holdrelease.ts), so it is
+  // swallowed here: consumed, kept as evidence.
   //
-  // A real (non-repeat) press marks the leader as held, so bindings run and
-  // stay armed until the key comes up (see LeaderController.sticky). The
-  // matching keyup lives in main.ts, next to the leader's own construction.
+  // A real press marks the leader STICKY so bindings run and stay armed until
+  // the keyup (main.ts releases it next to the leader's construction).
   //
-  // A key with NO keyup to match is deliberately NOT sticky, and this is the
-  // one place that decision is made. Two callers can produce one: the
-  // content-process actor bridge, and the `#lfc=keys` channel the e2e harness
-  // synthesizes through. Both dispatch a bare keydown; neither can ever deliver
-  // the release. Marking either of them as held leaves the leader stuck
-  // chained FOREVER — the indicator stays lit, every binding leaves the leader
-  // up instead of disarming it, and the next keystroke in that window is
-  // swallowed as a leader key rather than doing what the user asked. That is
-  // not a cosmetic stuck badge: the keyboard goes dead until something else
-  // happens to clear the flag.
+  // `noKeyup` — the actor bridge and the #lfc=keys channel dispatch a bare
+  // keydown and can never deliver the release — deliberately never marks
+  // sticky in the one place that decision is made: a stuck chained leader
+  // lights the indicator forever and swallows the next keystroke in the
+  // window. The `unknown` event shape: a real KeyboardEvent carries `repeat`,
+  // a synthesized ActorKey does not (and is never a repeat).
   function armHeldLeader(
     l: { sticky: boolean; show(): void },
     e: unknown,
     noKeyup?: boolean
   ): boolean {
-    // `unknown` because the two callers are not the same shape: a real DOM
-    // KeyboardEvent carries `repeat`, while a synthesized ActorKey does not
-    // have that field at all (and is never a repeat — see below).
-    // A repeat is DROPPED as intent and KEPT as evidence: it proves the key is
-    // still down, which is the only thing that lets a hold be told apart from a
-    // claim nobody is holding (see shared/holdrelease.ts). Dropping it silently
-    // is what left a held leader armed forever after a release this host never
-    // saw.
     if (!!(e as { repeat?: boolean }).repeat) {
       noteHoldAlive(l);
       if (deps.onLeaderHeld) deps.onLeaderHeld();
