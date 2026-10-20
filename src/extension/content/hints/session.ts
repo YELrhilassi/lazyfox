@@ -20,6 +20,7 @@ import { createHintOverlay } from "./overlay";
 import { createActivator } from "./activate";
 import { targetKey, type HintCandidate } from "./select";
 import { createHintResolve, type HintPager } from "./hintresolve";
+import { sheetOver } from "./probe";
 import { shadowRootOf, walkElements } from "../../../shared/dom";
 import { createCoalescer } from "../../../shared/coalesce";
 import { createMotionWatch, type MotionKind, type MotionWatch } from "./motion";
@@ -371,6 +372,15 @@ export function createLinkHints(
     const vw = window.innerWidth || 0;
     const vh = window.innerHeight || 0;
     if (r.bottom <= 0 || r.right <= 0 || r.top >= vh || r.left >= vw) return false;
+    // A control that a DIALOG or a popup sheet now covers is not a survivor: the
+    // page put a surface on top of it, and keeping the label would draw it over
+    // that surface. (A scrim or a sticky bar is not this — sheetOver is the
+    // question "is a separate surface over it", not "is it obstructed".)
+    try {
+      if (sheetOver(el)) return false;
+    } catch (e) {
+      // A hostile element must not keep a label alive either; fall through.
+    }
     // An undrawn label is a candidate someone else already accounts for; only
     // the placed ones are at stake here.
     if (!it.label) return false;

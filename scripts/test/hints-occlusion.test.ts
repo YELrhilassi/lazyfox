@@ -97,8 +97,16 @@ function el(
 // whole geometry contract a selection run needs.
 (globalThis as unknown as { window: unknown }).window = { innerWidth: 1000, innerHeight: 800 };
 
-function run(candidates: FakeEl[], coveredIds: string[], limit = 80) {
+function run(
+  candidates: FakeEl[],
+  coveredIds: string[],
+  limit = 80,
+  // The ids hidden behind a SEPARATE surface (a dialog, a popup sheet). Default
+  // empty, so every older case keeps its meaning: covered and dimmed.
+  sheetIds: string[] = [],
+) {
   const covered = new Set(coveredIds);
+  const sheets = new Set(sheetIds);
   const pass = createVisibilityPass(
     (node) => (node as unknown as FakeEl)._style as unknown as CSSStyleDeclaration,
   );
@@ -107,6 +115,10 @@ function run(candidates: FakeEl[], coveredIds: string[], limit = 80) {
     limit,
     pass,
     (node) => !covered.has((node as unknown as FakeEl).id),
+    (node) =>
+      sheets.has((node as unknown as FakeEl).id)
+        ? (el("sheet", { tag: "DIALOG" }) as unknown as Element)
+        : null,
   );
 }
 
@@ -200,6 +212,56 @@ describe("a covered control keeps its hint, dimmed", () => {
     assert.equal(r.kept.length, 1);
     assert.equal(r.kept[0]!.el, inner as unknown as Element, "the specific control wins");
     assert.equal(r.kept[0]!.covered, true, "and it carries its own covered flag");
+  });
+});
+
+describe("a control behind another SURFACE is not hinted at all", () => {
+  // The report this pins: "hints leak and show from behind the elements in front
+  // of them". A label lives in the top layer, so a label for a page control
+  // behind an open dialog is painted ON the dialog, pointing at something the
+  // dialog covers. The distinction from the dimmed case above is the surface:
+  // same screen, covered → kept and dimmed; different surface on top → no label.
+  test("a control behind a dialog is dropped and counted, not dimmed", () => {
+    const pageLink = el("page-link");
+    const r = run([pageLink], ["page-link"], 80, ["page-link"]);
+    assert.equal(r.kept.length, 0, "no label is drawn over the dialog");
+    assert.equal(r.behind, 1, "and it is reported as hidden behind a surface");
+    assert.equal(r.covered, 0, "it is not the dimmed case");
+    assert.equal(r.duplicate, 0, "nor a duplicate");
+  });
+
+  test("the dialog's own control keeps its label in the same batch", () => {
+    const pageLink = el("page-link");
+    const dialogButton = el("dialog-button", { x: 400, y: 300, tag: "BUTTON" });
+    const r = run([pageLink, dialogButton], ["page-link"], 80, ["page-link"]);
+    assert.equal(r.kept.length, 1);
+    assert.equal(r.kept[0]!.el, dialogButton as unknown as Element);
+    assert.equal(r.kept[0]!.covered, false, "a control on the surface is not dimmed by it");
+    assert.equal(r.behind, 1);
+  });
+
+  test("a covered control with no separate surface is still kept and dimmed", () => {
+    // The two answers come from different questions, and only the second one
+    // removes a label: a scrim band or a sticky header must not start hiding
+    // controls because a modal exists somewhere else on the page.
+    const coveredLink = el("covered-link");
+    const r = run([coveredLink], ["covered-link"], 80, []);
+    assert.equal(r.kept.length, 1);
+    assert.equal(r.kept[0]!.covered, true);
+    assert.equal(r.behind, 0);
+  });
+
+  test("behind is not counted against the batch cap", () => {
+    // `more` is "in view but the batch is full", so a dropped-by-surface control
+    // must not consume a slot or inflate that number: the message it drives
+    // ("] pages to them") would be false.
+    const a = el("a");
+    const b = el("b", { x: 200 });
+    const behindLink = el("behind-link", { x: 400 });
+    const r = run([a, b, behindLink], ["behind-link"], 2, ["behind-link"]);
+    assert.equal(r.kept.length, 2);
+    assert.equal(r.more, 0);
+    assert.equal(r.behind, 1);
   });
 });
 

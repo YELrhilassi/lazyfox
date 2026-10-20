@@ -7,9 +7,9 @@
       "arch": "amd64",
       "xpi": "dist/lazyfox2-0.5.9.xpi",
       "xpiVersion": "0.5.9",
-      "payload": "dba9ad34552c53ea591b17da06be2fbdd651d016d2053e0563c7e61b8b68ac84",
-      "source": "49d08e2e163bef9e39975a7b18af8fb5589ead135dc9e3925b45e4e83281a60b",
-      "bin": "a2fed642e660f1102d1c31201fbeb86da622dcda8d341b8ef690369080ea14c7"
+      "payload": "df69385d43f67ec372bc813ffbabccd806521afd83e4daaefebe64c9376e8fb8",
+      "source": "05c501ab1c371f8232770624e75a974365a2d35f531a9ab082731286c2583c8c",
+      "bin": "6af73e5e57dfdce03af0e365356a02e70c8f421ba6ad50be45fe971391572945"
     },
     "lazyfox-install-dev-darwin": {
       "out": "lazyfox-install-dev-darwin",
@@ -18,9 +18,9 @@
       "arch": "arm64",
       "xpi": "dist/lazyfox2-0.5.9.xpi",
       "xpiVersion": "0.5.9",
-      "payload": "dba9ad34552c53ea591b17da06be2fbdd651d016d2053e0563c7e61b8b68ac84",
-      "source": "49d08e2e163bef9e39975a7b18af8fb5589ead135dc9e3925b45e4e83281a60b",
-      "bin": "02b8456b2648c5ef7d20667d15ddb5d7719784a19dcc95112efdac018fee13f8"
+      "payload": "df69385d43f67ec372bc813ffbabccd806521afd83e4daaefebe64c9376e8fb8",
+      "source": "05c501ab1c371f8232770624e75a974365a2d35f531a9ab082731286c2583c8c",
+      "bin": "85a8c9996ed1aa0147e592433d87ea0fff8513ee3ba691a9adf94b0064642d3a"
     },
     "lazyfox-install-dev-windows.exe": {
       "out": "lazyfox-install-dev-windows.exe",
@@ -29,9 +29,9 @@
       "arch": "amd64",
       "xpi": "dist/lazyfox2-0.5.9.xpi",
       "xpiVersion": "0.5.9",
-      "payload": "dba9ad34552c53ea591b17da06be2fbdd651d016d2053e0563c7e61b8b68ac84",
-      "source": "49d08e2e163bef9e39975a7b18af8fb5589ead135dc9e3925b45e4e83281a60b",
-      "bin": "975fbf833417b4039ebd175e82769c1a0e41606fad5dd5d976d2e41fed59df3a"
+      "payload": "df69385d43f67ec372bc813ffbabccd806521afd83e4daaefebe64c9376e8fb8",
+      "source": "05c501ab1c371f8232770624e75a974365a2d35f531a9ab082731286c2583c8c",
+      "bin": "d301ca93ab83f7a3d56baf08e56e0bfafbb23e46349e25debb5bd91be6d0bb22"
     },
     "lazyfox-install-linux": {
       "out": "lazyfox-install-linux",
@@ -41,7 +41,7 @@
       "xpi": "dist/lazyfox2-0.5.6-signed.xpi",
       "xpiVersion": "0.5.6",
       "payload": "e3f77873383f1135d10b45998c4d423aa7f6e22a078c102e463cc1a6a4b3ca2d",
-      "source": "49d08e2e163bef9e39975a7b18af8fb5589ead135dc9e3925b45e4e83281a60b",
+      "source": "05c501ab1c371f8232770624e75a974365a2d35f531a9ab082731286c2583c8c",
       "bin": "dc3054771c8164400c6132439cba7ce521275f8a6d67e2bcde22620da1e20e62"
     },
     "lazyfox-install-darwin": {
@@ -52,7 +52,7 @@
       "xpi": "dist/lazyfox2-0.5.6-signed.xpi",
       "xpiVersion": "0.5.6",
       "payload": "e3f77873383f1135d10b45998c4d423aa7f6e22a078c102e463cc1a6a4b3ca2d",
-      "source": "49d08e2e163bef9e39975a7b18af8fb5589ead135dc9e3925b45e4e83281a60b",
+      "source": "05c501ab1c371f8232770624e75a974365a2d35f531a9ab082731286c2583c8c",
       "bin": "eb060666409b565bbf412c64bf23e01f34e8972e42503404628bca2079275bca"
     },
     "lazyfox-install-windows.exe": {
@@ -63,7 +63,7 @@
       "xpi": "dist/lazyfox2-0.5.6-signed.xpi",
       "xpiVersion": "0.5.6",
       "payload": "e3f77873383f1135d10b45998c4d423aa7f6e22a078c102e463cc1a6a4b3ca2d",
-      "source": "49d08e2e163bef9e39975a7b18af8fb5589ead135dc9e3925b45e4e83281a60b",
+      "source": "05c501ab1c371f8232770624e75a974365a2d35f531a9ab082731286c2583c8c",
       "bin": "2b81db5159262cadcaf13dee5e5a1b4ccbf7722161e3d0c191824e1e080990aa"
     }
   },

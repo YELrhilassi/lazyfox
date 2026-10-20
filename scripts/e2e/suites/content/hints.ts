@@ -249,7 +249,74 @@ export async function run(ctx: any): Promise<void> {
     );
     await ctx.press(ctx.tabA, "Escape");
   });
-  // The other half of the report: the hint has to ACT. On the real page the
+  // THE LEAK REPORT: "hints show from behind the elements in front of them".
+  //
+  // A label is drawn in the top layer, above every page stacking context, so a
+  // label for a control BEHIND a dialog is painted ON the dialog. That is a
+  // different case from a covered control on the same surface (the scrim band
+  // above, which stays dimmed and clickable): here a separate surface replaced
+  // the screen, and the control is not part of what the user is looking at.
+  //
+  // Both states live on one page, so the assertion cannot pass by the page
+  // simply having no controls: the closed run proves they ARE hintable.
+  await t("link hints: a dialog's own controls are hinted and the ones behind it are not", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/dialog`);
+    await pageSettled();
+    await beginHints();
+    const before = (await readHints()).map((x) => x.id || x.dataId);
+    for (const id of ["under1", "under2", "opener"])
+      assert(before.indexOf(id) !== -1, "expected a hint for " + id + " with nothing open (got: " + before.join(",") + ")");
+    await ctx.press(ctx.tabA, "Escape");
+    // Open the panel, then hint again: the batch must be the dialog's, only.
+    await evalIn(ctx.tabA, `window.__showDialog(); true`);
+    await ctx.waitExpr(
+      ctx.tabA,
+      `getComputedStyle(document.getElementById("modal")).display`,
+      "block",
+      5000,
+    );
+    await beginHints();
+    const after = (await readHints()).map((x) => x.id || x.dataId);
+    for (const id of ["in1", "in2", "closer"])
+      assert(after.indexOf(id) !== -1, "the dialog's own control must be hinted: " + id + " (got: " + after.join(",") + ")");
+    for (const id of ["under1", "under2", "opener"])
+      assert(after.indexOf(id) === -1, "a control BEHIND the dialog must not be hinted: " + id + " (got: " + after.join(",") + ")");
+    // And it is not enough for the key to be absent: the LABEL must be absent.
+    // A leaked label is the report, and it would show up as a hint row whose
+    // position sits over the page content rather than inside the dialog.
+    const modal = await evalIn(
+      ctx.tabA,
+      `(function(){ var r = document.getElementById("modal").getBoundingClientRect(); return {l:r.left,t:r.top,r:r.right,b:r.bottom}; })()`,
+    );
+    const rows = await readHints();
+    for (const row of rows)
+      assert(
+        row.x >= modal.l - 2 && row.x <= modal.r + 2 && row.y >= modal.t - 2 && row.y <= modal.b + 2,
+        "a hint label is drawn outside the dialog that is in front of the page: " + JSON.stringify(row),
+      );
+    await ctx.press(ctx.tabA, "Escape");
+  });
+  // The same leak, arriving late: the user is already in hints mode and the page
+  // opens a dialog under them. The session sweeps the batch on DOM changes, so
+  // the labels for the covered controls have to go without a new `;f`.
+  await t("link hints: a dialog opened under a live batch takes its labels away", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/dialog`);
+    await pageSettled();
+    await beginHints();
+    const keys = (await readHints()).length;
+    assert(keys >= 3, "the page starts with a batch to lose (got " + keys + ")");
+    await evalIn(ctx.tabA, `window.__showDialog(); true`);
+    const gone = await waitFor(async () => {
+      const ids = (await readHints().catch(() => [])).map((x) => x.id || x.dataId);
+      const leaked = ids.filter((id) => ["under1", "under2", "opener"].indexOf(id) !== -1);
+      return leaked.length === 0 && ids.length > 0 ? ids : null;
+    }, 6000);
+    assert(
+      gone,
+      "after the dialog opened, its own controls keep labels and the ones behind it lose theirs",
+    );
+    await ctx.press(ctx.tabA, "Escape");
+  });
   // thumbnail IS the link to the video, so its key must navigate — a label that
   // appears and then does nothing would be a different bug with the same
   // symptom, and the whole point of the fix is that this target was reachable by

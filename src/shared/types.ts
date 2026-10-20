@@ -404,7 +404,13 @@ export interface PageReport {
      * so this is a subset of `hinted`, not a filter stage. See hints/select.ts.
      */
     covered: number;
-    rejected: { hidden: number; duplicate: number };
+    /**
+     * `behind` counts candidates dropped because a SEPARATE surface (a dialog,
+     * a popup sheet, a full-screen scrim) sits over them. Unlike `covered`,
+     * these are not hinted at all: a label drawn on top of the dialog would be
+     * a hint for something the page is currently hiding.
+     */
+    rejected: { hidden: number; duplicate: number; behind: number };
     /**
      * In view, visible, and left out because the batch was full. `;f` says the
      * number out loud; the diagnostics page shows it so "that row has no key"

@@ -120,7 +120,8 @@ function renderPage(r: PageReport | null, note?: string): void {
         " found · " + r.hints.hinted + " hinted (" + r.hints.covered +
         " dimmed: covered) · rejected: " +
         r.hints.rejected.hidden + " hidden, " +
-        r.hints.rejected.duplicate + " duplicate",
+        r.hints.rejected.duplicate + " duplicate, " +
+        r.hints.rejected.behind + " behind a dialog",
       r.hints.hinted ? "ok" : "warn",
     ],
     [
