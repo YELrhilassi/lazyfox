@@ -11,14 +11,14 @@
 //      frame script, content script, background, command center, options x2,
 //      popup) into dist/.
 //   3. Copy static assets (manifest, HTML pages, icons, chrome css/user.js/
-//      loader) from src/static/ into dist/.
+//      loader) from src/static/ into dist/, normalising text to LF.
 //
 // dist/ is committed to the repo so installers consume prebuilt output and
 // users who clone don't need a Go toolchain to install.
 
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { zipStore } from "./scripts/amo-lib.ts";
@@ -133,13 +133,39 @@ for (const b of BUNDLES) {
 
 /* ---------- 3. static assets ---------- */
 
-cpSync(join(root, "src", "static", "extension"), join(root, "dist", "extension"), {
-  recursive: true,
-});
-cpSync(join(root, "src", "static", "chrome"), join(root, "dist", "chrome"), {
-  recursive: true,
-});
-console.log("[static] src/static/{extension,chrome} -> dist/");
+// Text assets land in dist/ with LF endings, never the checkout's endings.
+//
+// Why this is a correctness rule and not a tidiness one: dist/ is committed
+// build output whose BYTES are hashed by payloadHash() and staged into every
+// installer, and on Windows `core.autocrlf=true` hands this script CRLF sources
+// (measured: src/static/chrome/userChrome.css is LF in the blob and 245 CRLFs
+// in a Windows worktree). A verbatim copy therefore produced CRLF
+// dist/chrome/userChrome.css and dist/chrome/loader/config-prefs.js here and LF
+// in CI, so the two platforms committed different bytes and every recorded
+// installer state described exactly one of them. That is how all six binaries
+// ended up reported stale — on a clean tree, with nothing edited — and it made
+// the state impossible to verify from the other platform.
+const TEXT_ASSET = /\.(css|html?|js|json|md|mjs|svg|txt)$/i;
+
+function copyAssetLf(from: string, to: string): void {
+  if (statSync(from).isDirectory()) {
+    mkdirSync(to, { recursive: true });
+    for (const entry of readdirSync(from)) copyAssetLf(join(from, entry), join(to, entry));
+    return;
+  }
+  mkdirSync(dirname(to), { recursive: true });
+  if (!TEXT_ASSET.test(basename(from))) {
+    cpSync(from, to);
+    return;
+  }
+  // latin1 round-trips every byte, so only the CRLF pairs are rewritten and a
+  // UTF-8 BOM or any non-ASCII content survives untouched.
+  writeFileSync(to, readFileSync(from, "latin1").replace(/\r\n/g, "\n"), "latin1");
+}
+
+copyAssetLf(join(root, "src", "static", "extension"), join(root, "dist", "extension"));
+copyAssetLf(join(root, "src", "static", "chrome"), join(root, "dist", "chrome"));
+console.log("[static] src/static/{extension,chrome} -> dist/ (text normalised to LF)");
 
 /* ---------- 3b. native messaging host ---------- */
 

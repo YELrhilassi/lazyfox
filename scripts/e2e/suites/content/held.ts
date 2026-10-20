@@ -115,15 +115,11 @@ export async function run(ctx: any): Promise<void> {
   // a flag the product sets and not the behaviour itself.
 
   await t("a held leader that ran actions stands down when the key comes up", async () => {
-    // THE REPORTED GESTURE, and the state it left behind: hold `;`, press a key
-    // or two (the user's `;ggggg`), let go — and be LEFT WITH AN ARMED LEADER
-    // and a which-key overlay still holding the keyboard, so the next keys run
-    // as bindings instead of reaching the page. "The which-key and the leader
-    // key stay active and then the actions don't respond accurately."
-    //
-    // A hold that ran something is a FINISHED GESTURE when the key comes up; a
-    // TAP is not, and must stay armed for the chord that follows (the case
-    // below is what proves release did not simply start disarming everything).
+    // THE REPORTED GESTURE: hold `;`, press a key or two (`;ggggg`), let go —
+    // and be left with an armed leader and a which-key overlay holding the
+    // keyboard. A hold that RAN something is a finished gesture when the key
+    // comes up; a TAP is not, and must stay armed (the case below proves
+    // release did not simply start disarming everything).
     //
     // The held keys are digits for the reason the first test spells out:
     // `;1` opens a chooser when the tab count is past nine, so a pair of digits
@@ -152,14 +148,11 @@ export async function run(ctx: any): Promise<void> {
     // under a hold it runs while the leader stays armed — which is the state
     // under test.
     //
-    // ITS EFFECT IS READ OFF THE CHROME HELPER'S MUTE COUNT, not off the tab's
-    // own `muted` flag. An extension-page realm does not expose `tabs.Tab.muted`
-    // (see commandcenter/tabs.ts, which reads the count for exactly this reason),
-    // so `browser.tabs.get(id).muted` is `undefined` before AND after a mute that
-    // worked: the assertion could never pass, and it read as "the hold is broken"
-    // while the hold was doing its job. The count is also the honest observable
-    // for `;m`, which mutes the ACTIVE tab — a fact about the window, not about
-    // whichever tab the harness happens to hold a handle on.
+    // ITS EFFECT IS READ OFF THE CHROME HELPER'S MUTE COUNT, not the tab's own
+    // `muted` flag: an extension-page realm does not expose `tabs.Tab.muted`,
+    // so the flag read as `undefined` before AND after a mute that worked and
+    // the assertion could never pass. The count is also the honest observable
+    // for `;m` — it mutes the ACTIVE tab, a fact about the window.
     const mutedCount = async (): Promise<number | null> => {
       const s = await ctx.chromeState().catch(() => null);
       return s && typeof s.mutedCount === "number" ? s.mutedCount : null;

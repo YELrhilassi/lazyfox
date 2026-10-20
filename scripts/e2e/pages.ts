@@ -117,20 +117,11 @@ export const pages = {
 </body></html>`,
   },
   "/deep": { body: deepBody },
-  // A page whose editable lives inside a CLOSED shadow root — how YouTube's
-  // search box, Reddit's input and most modern component libraries ship a text
-  // field. This is where typing detection breaks: a keydown inside a closed
-  // root is retargeted to the HOST, so `e.target` is a custom element that is
-  // not an INPUT, and anything reading `e.target` decides the user is not
-  // typing and takes the keystroke. The event's composed path still contains
-  // the real <input>, which is the only place the truth survives.
-  // A field inside a CLOSED shadow root, with the inner input FILLING its host.
-// That is how real ones are built (YouTube's search box, Reddit's composer),
-// and it is also the only honest fixture here: the inner input is unreachable
-// from the page, so a test cannot query its box and click it directly. If the
-// input did not fill the host, a click at the host's centre would land on the
-// host's own padding — focus would stay on <body> and the "typing" tests would
-// be measuring a page where nobody is typing at all.
+  // A page whose editable lives inside a CLOSED shadow root (YouTube search,
+  // Reddit composer shape): a keydown inside is retargeted to the HOST, so
+  // e.target is not an INPUT and anything keyed off it takes the keystroke —
+  // only the composed path still knows the truth. The inner input fills its
+  // host so clicking the host's centre must actually focus it.
   "/closedinput": {
     body: `<!DOCTYPE html><html><head><title>CLOSED SHADOW INPUT</title></head><body>
 <closed-field id="cf"></closed-field>
@@ -154,12 +145,10 @@ customElements.define("closed-field", ClosedField);
 </script>
 </body></html>`,
   },
-  // A page whose DOM order deliberately differs from its visual order (Google
-  // reorders SERP blocks with CSS). DOM order: ZETA, ALPHA, BETA, DELTA.
-  // Reading order: ALPHA (top-left), BETA (top-right), DELTA (bottom-left),
-  // ZETA (bottom-right). Walking by flat-text offset bounces bottom-right ->
-  // top-left -> top-right -> bottom-left ("up and down"); the finder must
-  // walk what the user sees instead.
+  // DOM order deliberately differs from visual order (Google reorders SERP
+  // blocks with CSS): ZETA, ALPHA, BETA, DELTA in DOM; ALPHA, BETA, DELTA,
+  // ZETA visually. A flat-text-offset walk bounces up and down; the finder
+  // must walk what the user sees.
   "/reorder": {
     body: `<!DOCTYPE html><html><head><title>Reorder Page</title>
 <style>body{margin:0}.blk{position:absolute;font:14px sans-serif}</style></head>
@@ -170,13 +159,10 @@ customElements.define("closed-field", ClosedField);
 <div id="d" class="blk" style="top:120px;left:20px">MATCH DELTA</div>
 </body></html>`,
   },
-  // A page whose FIELD IS INSIDE AN IFRAME, which is the shape that makes
-  // Lazyfox look dead until the user clicks the page: with `all_frames: false`
-  // the top frame's content script never sees a key typed while a frame holds
-  // focus, and clicking anywhere outside the frame is what puts the keyboard
-  // back into the top document. The inner page records what IT received, so a
-  // test can tell "the key never reached the frame" (harness) from "the frame
-  // got the key and the top document never did" (the bug).
+  // The field lives INSIDE AN IFRAME: with `all_frames: false` the top frame
+  // never sees a key typed while the frame holds focus. The inner page records
+  // what IT received, separating "the key never reached the frame" from "the
+  // frame got it and the top document never did".
   "/frame": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>FRAME</title>
 <style>body{margin:0;font:14px/1.5 system-ui,sans-serif}iframe{display:block;width:420px;height:220px;border:1px solid #999}#below{margin-top:12px}</style>
@@ -187,18 +173,10 @@ customElements.define("closed-field", ClosedField);
 <button id="topbutton">top button</button>
 </body></html>`,
   },
-  // A page whose frames have NO CONTENT SCRIPT of their own — the shape an
-  // inline widget, an ad frame or an editor built from `srcdoc` has.
-  //
-  // `/frame` above covers the OTHER shape: a frame with an http(s) URL, which
-  // `all_frames` reaches. These two are the ones the content script cannot be
-  // injected into without `match_about_blank`, and they are the residual of the
-  // "I have to click the page before Lazyfox responds" report: the key event is
-  // delivered to the frame's document, nothing there listens for it, and the
-  // top frame's listener never runs at all.
-  //
-  // Both frames RECORD what their own document received, so a test can tell the
-  // harness failing to deliver a key at all from the product never seeing one.
+  // Frames with NO CONTENT SCRIPT of their own (a blank iframe, an inline
+  // srcdoc widget). `match_about_blank` cannot be assumed, and the key is
+  // delivered to a document that listens while the top frame's listener never
+  // runs. Both frames record what they received.
   "/framenocontent": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>FRAMENOCONTENT</title>\r\n<style>body{margin:0;font:14px/1.5 system-ui,sans-serif}iframe{display:block;width:420px;height:140px;border:1px solid #999}#below{margin-top:12px}</style>\r\n</head><body>\r\n<p id="above">above the frames</p>\r\n<iframe id="blank"></iframe>\r\n<iframe id="doc" srcdoc="<!DOCTYPE html><body><button id='docbutton'>in the srcdoc frame</button><script>window.__srckey=[];window.addEventListener('keydown',function(e){window.__srckey.push(e.key);},true);</script></body>"></iframe>\r\n<p id="below">below the frames</p>\r\n<button id="topbutton">top button</button>\r\n</body></html>`,
   },
@@ -219,29 +197,16 @@ customElements.define("closed-field", ClosedField);
   "/target1": { body: `<!DOCTYPE html><title>TARGET ONE</title><h1>Target One</h1><a href="/">back</a>` },
   "/target2": { body: `<!DOCTYPE html><title>TARGET TWO</title><h1>Target Two</h1><a href="/">back</a>` },
   "/hello": { body: `<!DOCTYPE html><title>HELLO PAGE</title><h1>Hello</h1>` },
-  // The page the `;x` / `;v` undo pair works on.
-  //
-  // It exists so the REOPENED tab has a URL nothing else navigates to, and that
-  // is not cosmetic. The harness addresses a web-page tab by matching its exact
-  // URL against the tab strip (a page has no extension realm to ask for its own
-  // tab id), so a reopen landing on the same URL as the page the rest of the
-  // suite uses leaves the window holding two indistinguishable tabs — measured,
-  // not hypothetical: the sweep's fail-safe rule deliberately does not close a
-  // tab whose URL equals the handle's when the handle could not be pinned to an
-  // id, so the duplicate survived to the end of the group and every later test
-  // that asked that page a question failed on a window that had two of them
-  // ("contentCall(hintSnapshot): no tab id for http://…/ — its URL matched 2
-  // row(s) of the tab strip", and the status bar of the SELECTED tab, which was
-  // the other one). A dedicated URL is the fix: the undo pair is what is under
-  // test, and the page it names is incidental to it.
+  // The page the `;x` / `;v` undo pair works on. A DEDICATED URL on purpose:
+  // the harness addresses a web tab by exact URL, and a reopen landing on the
+  // suite's usual URLs leaves two indistinguishable tabs whose matched rows
+  // make every later contentCall ambiguous.
   "/reopen": {
     body: `<!DOCTYPE html><title>REOPEN ME</title><h1>Reopen me</h1><a href="/">back</a>`,
   },
-  // A per-test scratch page. Tests that assert "this tab is gone from the
-  // strip" must identify THEIR OWN tab: a shared URL like /target2 is also
-  // opened by the ;h and ;1/;9 tests, so "no /target2 tab remains" silently
-  // became a test about whichever test ran last. Each caller appends a unique
-  // query string, which is part of the tab URL and therefore unambiguous.
+  // Per-test scratch page. Tests asserting "this tab is gone" must use a
+  // UNIQUE URL: a shared one makes the assertion about whichever test ran
+  // last. Callers append a unique query string.
   "/scratch": {
     body: `<!DOCTYPE html><title>SCRATCH PAGE</title><h1>Scratch</h1><a href="/">back</a>`,
   },
@@ -364,13 +329,8 @@ html,body{margin:0}
     headers: { "X-Frame-Options": "DENY" },
     body: `<!DOCTYPE html><title>FRAMED PAGE</title><h1 id="marker">Framed content</h1>`,
   },
-  // A page whose ONLY controls are inside a visible frame. Hints are
-  // top-frame-only by policy (`all_frames: false`), so this page is the one
-  // where "nothing to hint" and "I do not look there" produce the same silence
-  // unless the product says which it is — which is the whole point of the
-  // fixture, and the report it stands in for ("link hints doesn't launch
-  // everywhere"). The inner link is deliberately real: a frame with nothing in
-  // it would pass a test that only checked the toast was absent.
+  // The inner link is deliberately real: a frame containing nothing would pass
+  // a test that only checks the toast is absent.
   "/framedhints": {
     body:
       `<!DOCTYPE html><title>FRAMED HINTS</title>\n` +
@@ -641,6 +601,9 @@ html,body{margin:0}
      but the user must at least be TOLD that the page ignored the click. */
   #deaf { display:block; width:120px; height:34px; margin-top:14px; background:#333;
           color:#eee; border:0; font:13px system-ui,sans-serif; cursor:pointer; }
+  /* A control OUTSIDE the player's box (see the body): the synthetic route. */
+  #plain { display:block; width:120px; height:34px; margin-top:14px; background:#333;
+           color:#eee; border:0; font:13px system-ui,sans-serif; cursor:pointer; }
   /* A second, genuinely decorative media wrapper with nothing inside it: it must
      STILL be hintable (that is what the media exemption is for). */
   #lonely { width:120px; height:70px; margin-top:18px; cursor:pointer; background:#222; }
@@ -662,6 +625,18 @@ html,body{margin:0}
     <button id="skipad" data-id="skipad" onclick="document.title='SKIPPED'">Skip ad <span data-id="skipad-inner">now</span></button>
   </div>
   <button id="deaf" data-id="deaf">Ignore me</button>
+  <!-- A control nothing reaches: no handler at all, so it ignores even a
+       genuinely trusted press. This is the shape the "reported, not silent"
+       feedback is measured against now that the privileged press works —
+       before the actor existed in the harness, the DEAF control (which only
+       refuses UNtrusted clicks) was that shape, because no real press could
+       ever reach it. -->
+  <button id="stone" data-id="stone" style="display:block;width:120px;height:34px;margin-top:14px;background:#333;color:#eee;border:0;font:13px system-ui,sans-serif;cursor:pointer">No listener at all</button>
+  <!-- OUTSIDE the player's box: the boundary of the real-press rule. A control
+       here keeps the ordinary synthetic sequence (escalate.pressForReal asks
+       about the PLAYER's overlay, not about buttons in general), so this is what
+       the event-state assertions are measured on. -->
+  <button id="plain" data-id="plain">Plain control</button>
 
   <div id="lonely" data-id="lonely"><img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='70'%3E%3Crect width='120' height='70' fill='%23222'/%3E%3C/svg%3E"></div>
 </main>
@@ -673,7 +648,7 @@ html,body{margin:0}
   // to tell a trust problem apart from a press-state problem.
   window.__clicks = [];
   (function () {
-    var b = document.getElementById("skipad");
+    var b = document.getElementById("plain");
     ["pointerover","mouseover","pointermove","pointerdown","mousedown","pointerup","mouseup","click"].forEach(function (t) {
       b.addEventListener(t, function (e) {
         window.__clicks.push({
@@ -769,28 +744,15 @@ html,body{margin:0}
 </main>
 </body></html>`,
   },
-  // THE THIRD FIELD REPORT, reproduced: a YouTube video card and the ad
-  // player's "Skip" button, in the markup the report carried.
-  //
-  // This page exists because the fixtures that came before it were the ENGINE's
-  // idea of YouTube rather than the page's: `/uitest` has a thumbnail link whose
-  // content is one image and `/playerlike` has a skip button that is a plain
-  // button. The report carried real markup, and the differences are exactly the
-  // ones that decide whether a target is offered at all — `aria-hidden="true"`,
-  // `tabindex="-1"`, `rel="null"`, content that is ONLY an image plus overlay
-  // divs, a player whose overlay layer is `pointer-events:none` with the
-  // control re-enabling it, and a Skip button that does not exist when hints are
-  // built (an ad appears mid-session).
-  //
-  // It also carries the two things the same report needed to be MEASURABLE:
-  //   * a heartbeat (window.__beats / __maxGap), because "the hints got stuck
-  //     and unresponsive, they don't do anything, even exiting" is a main-thread
-  //     claim and the only honest test of it is the page's own timer still
-  //     ticking;
-  //   * a churn switch (window.__churn), which replaces every card the way a
-  //     virtual-DOM framework does — new nodes, same controls — because that is
-  //     the situation that used to make the hint engine collect the document
-  //     per item per frame.
+  // THE THIRD FIELD REPORT, reproduced with the markup from the report itself
+  // (engine-idealized fixtures had missed what decides hintability: aria-hidden
+  //, tabindex=-1, rel=null, image-only cards, pointer-events:none overlay with
+  // the control re-enabling itself, a Skip button that appears mid-session).
+  // Also carries the two things a main-thread claim needs to be MEASURABLE:
+  //   * window.__beats / __maxGap — the page's own timer still ticking is the
+  //     honest answer to "did the hints freeze the page";
+  //   * window.__churn — replaces every card like a virtual-DOM framework,
+  //     the situation that used to make the engine collect per item per frame.
   "/ytcard": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>YTCARD</title>
 <style>
@@ -935,14 +897,11 @@ html,body{margin:0}
   }
   replaceCards();
 
-  // WASH OUT, and leave it that way. This is the state a lazy feed, an ad slot or
-  // a virtual list leaves behind for a few hundred milliseconds: the nodes under
-  // the labels are GONE and nothing has replaced them. It is the direct
-  // reproduction of "some of the hint got disappeared after showing up" — badges
-  // on screen, controls not — and it is also the state in which the engine's
-  // re-resolution finds NOTHING: no live node for the item, and not even a
-  // same-destination neighbour near the dead one's last position, because every
-  // card is detached.
+  // WASH OUT and leave it that way: nodes under the labels are GONE and
+  // nothing has replaced them yet — the state a lazy feed / ad slot / virtual
+  // list leaves for a few hundred ms ("some of the hints disappeared after
+  // showing up"), and one where re-resolution finds no live node and no
+  // same-destination neighbour.
   window.__washOutCards = function () {
     var host = document.getElementById("cards");
     var before = host.childElementCount;
@@ -955,20 +914,10 @@ html,body{margin:0}
     return host.childElementCount;
   };
 
-  // CHURN: the re-render, WITH THE GAP a real one has.
-  //
-  // The previous version removed and rebuilt the cards in ONE task, and that is
-  // exactly why this fixture could not fail on the bug it exists to catch: by the
-  // time any measurement pass ran, the replacements were already in the pool at
-  // the same coordinates, so the engine's re-resolution matched them by
-  // destination and position and never had to do anything expensive. The claim
-  // "hints freeze a re-rendering page" was therefore untestable here — the
-  // fixture had removed the window the bug lives in.
-  //
-  // A framework list that washes out and re-hydrates on a LATER task (a virtual
-  // list's placeholder, an ad overlay rebuilding itself, a lazy route) leaves
-  // that window open for a fifth of a second at a time, over and over, which is
-  // what a live feed does to the nodes under live hint labels.
+  // CHURN: the re-render, WITH THE GAP a real one has. Removing and rebuilding
+  // in ONE task made this bug untestable — the replacements were already in the
+  // pool at the same coordinates before any pass ran. Real wash-out/re-hydrate
+  // cycles (virtual lists, ad overlays) leave the window open ~180ms at a time;
   var __returnTimer = null;
   window.__churn = function (on) {
     if (on) {
@@ -1035,14 +984,108 @@ html,body{margin:0}
 </script>
 </body></html>`,
   },
-  // A TEXT FIELD page, for the keys that get you OUT of one.
+  // THE AD PLAYER: the exact widget shape a video site's "Skip ad" control has,
+  // and the one the synthetic press cannot satisfy.
   //
-  // Escape is contested: this page binds it to close its own dialog (with a form
-  // in it), which is exactly the accident a user hits when all they wanted was to
-  // leave a field. So the page records Escape presses and whether its dialog is
-  // still up, and the suite asserts the two cancel keys do DIFFERENT things:
-  // Escape still reaches the page and keeps the caret, the cancel chord leaves
-  // the field and tells the page nothing.
+  // Measured on youtube.com (2026-10-20): `button.ytp-skip-ad-button` sits inside
+  // `#movie_player`, its href-less <button> lights up a PRESSED CLASS on any
+  // pointerdown — trusted or not — and the action itself (the ad going away) is
+  // gated on `event.isTrusted`. The page also mutates continuously while the ad
+  // plays (a progress bar, a countdown), so the page-level half of the verdict is
+  // never silent on a player.
+  //
+  // That combination is what the engine gets wrong, and it is why this fixture is
+  // here rather than an idealized one: a cosmetic flip on the TARGET satisfies the
+  // escalation trigger (`targetSignal`), so the privileged retry never fires, and
+  // the press is reported as a success while nothing happened. The /ytcard ad does
+  // not model it (its button acts on the untrusted click), so nothing in the suite
+  // did either.
+  "/adplayer": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>ADPLAYER</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:#0f0f0f; color:#eee; }
+  main { padding:14px; }
+  #movie_player { position:relative; width:640px; height:360px; background:#000; overflow:hidden; }
+  #movie_player video { display:block; width:100%; height:100%; background:#111; }
+  .ytp-ad-player-overlay { position:absolute; inset:0; pointer-events:none; z-index:3; }
+  .ytp-skip-ad { position:absolute; right:12px; bottom:66px; pointer-events:auto; z-index:4; }
+  .ytp-skip-ad-button { display:flex; align-items:center; gap:6px; padding:8px 14px; border:0;
+    border-radius:4px; background:#fff; color:#111; font:600 13px system-ui,sans-serif; cursor:pointer; }
+  /* The pressed state the real widget enters on ANY press, before it decides
+     whether the press counts. Cosmetic: it changes nothing about the ad. */
+  .ytp-skip-ad-button--clicked { transform:scale(.97); background:#eee; }
+  #adstate { position:absolute; left:8px; top:8px; z-index:5; font:12px system-ui,sans-serif;
+    background:rgba(0,0,0,.6); padding:2px 6px; border-radius:4px; }
+  #ticker { padding:10px 14px; color:#888; font-size:12px; }
+  #title-link { display:block; margin:10px 14px; color:#8ab4f8; }
+</style></head>
+<body>
+<main>
+  <div id="movie_player" class="html5-video-player ad-showing">
+    <video id="vid" muted playsinline></video>
+    <div id="adslot" class="ytp-ad-player-overlay">
+      <div id="adstate">ad playing</div>
+      <div class="ytp-skip-ad" id="skip-ad:1">
+        <button class="ytp-skip-ad-button" id="skip-button:2" data-id="skip-ad">Skip ad</button>
+      </div>
+      <!-- A player TOGGLE, drawn in the same overlay: the control that proves
+           the real press is sent ONCE. A second press would flip it back, so
+           "aria-pressed went true" is only true of a single press. -->
+      <div class="ytp-skip-ad" id="mute-slot:4" style="right:auto;left:12px;bottom:66px">
+        <button class="ytp-skip-ad-button" id="mute-button:3" data-id="mute" aria-pressed="false">Mute</button>
+      </div>
+    </div>
+  </div>
+  <a id="title-link" href="#elsewhere" data-id="title-link">A link outside the player</a>
+  <div id="ticker">0</div>
+</main>
+<script>
+  window.__skipSeen = [];
+  var btn = document.getElementById("skip-button:2");
+  var player = document.getElementById("movie_player");
+  var state = document.getElementById("adstate");
+  // The cosmetic flip: the real control shows a pressed state for any press.
+  ["pointerdown", "mousedown"].forEach(function (t) {
+    btn.addEventListener(t, function () {
+      btn.classList.add("ytp-skip-ad-button--clicked");
+      window.__skipSeen.push({ type: t, trusted: false });
+    });
+  });
+  // The action: gated on trust, like YouTube's. The ad only goes away for a
+  // genuine press.
+  btn.addEventListener("click", function (e) {
+    window.__skipSeen.push({ type: "click", trusted: !!e.isTrusted });
+    if (!e.isTrusted) return;
+    player.classList.remove("ad-showing");
+    state.textContent = "ad skipped";
+    document.title = "AD-SKIPPED";
+  });
+  // A player mutates continuously while an ad plays: a progress line and a
+  // clock. This is the page-level half of the verdict, never silent here.
+  var n = 0;
+  setInterval(function () {
+    n++;
+    document.getElementById("ticker").textContent = String(n);
+  }, 60);
+  // A TOGGLE: every click flips it. A route that presses twice leaves it back
+  // where it started, which is what this one is here to catch.
+  var mute = document.getElementById("mute-button:3");
+  window.__mutePresses = 0;
+  mute.addEventListener("click", function () {
+    window.__mutePresses++;
+    mute.setAttribute("aria-pressed", mute.getAttribute("aria-pressed") === "true" ? "false" : "true");
+  });
+  window.__adOn = function () { return player.classList.contains("ad-showing"); };
+  window.__skipClass = function () { return btn.className; };
+</script>
+</body></html>`,
+  },
+  // A TEXT FIELD page, for the keys that get you OUT of one. Escape is
+  // contested: the page binds it to close its own dialog (with a form), the
+  // exact accident a user hits leaving a field. The page records what it heard,
+  // so the suite can assert the two cancel keys do DIFFERENT things — the
+  // first Escape leaves the field silently, the second is the page's.
   "/field": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>FIELD</title>
 <style>
@@ -1110,10 +1153,90 @@ html,body{margin:0}
 </script>
 </body></html>`,
   },
-  // A page that NEVER goes quiet, with a control that only answers a TRUSTED
-  // click. This is the shape the privileged retry exists for and the shape that
-  // used to make it unreachable: the page-level signal answered "the page updated
-  // itself" for a control that had done nothing, so the retry never ran.
+  // YouTube's load shape: the search box takes focus the moment the page
+  // paints, BEFORE the content script arrives, and stays parked. The park rule
+  // keys off the real focusin the page itself fires — a scripted focus during
+  // the tests is NOT the same thing.
+  "/autofocus": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>AUTOFOCUS</title>
+<style>
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:#0b0b0f; color:#eee; }
+  main { padding:16px; max-width:640px; }
+  #yt-search { display:block; width:420px; padding:8px; border-radius:20px;
+               border:1px solid #444; background:#15151c; }
+  #plain { display:block; width:320px; padding:8px; margin-top:14px; }
+</style></head>
+<body>
+<main>
+  <input id="yt-search" data-id="yt-search" placeholder="Search" autocomplete="off">
+  <input id="plain" data-id="plain" placeholder="manual focus here">
+  <a id="link1" href="/target1">a link</a>
+</main>
+<script>
+  // Run at parse time — before any content script at document_idle can see it,
+  // exactly like YouTube's own autofocus. window.__parkedSince records when
+  // it happened so a test can prove the caret was parked LONG before the
+  // leader press it makes.
+  document.getElementById("yt-search").focus();
+  window.__parkedSince = Date.now();
+</script>
+</body></html>`,
+  },
+  // The WhatsApp Web shape that had no keys: avatar + title/preview +
+  // timestamp + extra action columns, no role, cursor:pointer, and whole
+  // last-message text painted as one ellipsized line. The old leaf bounds (≤3
+  // children, ≤120 chars) removed exactly the rows with long messages.
+  "/chatrows": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>CHATROWS</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.4 system-ui,sans-serif; background:#111; color:#eee; }
+  #list { width:360px; }
+  .row { display:flex; align-items:center; gap:8px; width:360px; height:72px;
+         cursor:pointer; border-bottom:1px solid #333; padding:0 8px; }
+  .avatar { width:48px; height:48px; border-radius:50%; background:#345; flex:0 0 auto; }
+  .col { flex:1 1 auto; min-width:0; }
+  .title { font-weight:600; }
+  .preview { color:#aaa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .meta { color:#888; font-size:12px; }
+</style></head>
+<body>
+<div id="list" role="list">
+  <div class="row" id="row-short" data-id="row-short">
+    <div class="avatar"></div>
+    <div class="col"><div class="title">Ada</div><div class="preview">See you at six</div></div>
+    <div class="meta">18:02</div>
+  </div>
+  <div class="row" id="row-long" data-id="row-long">
+    <div class="avatar"></div>
+    <div class="col"><div class="title">Grace</div><div class="preview" id="row-long-preview"></div></div>
+    <div class="meta">17:41</div>
+  </div>
+  <div class="row" id="row-many" data-id="row-many">
+    <div class="avatar"></div>
+    <div class="col"><div class="title">Linus</div><div class="preview">ok</div></div>
+    <div class="meta">17:02</div>
+    <div class="meta">pinned</div>
+    <div class="meta">muted</div>
+    <div class="meta">unread</div>
+    <div class="meta">starred</div>
+    <div class="meta">archived</div>
+  </div>
+</div>
+<script>
+  // The row's text is long; the row is one line tall. This is the case the old
+  // text bound removed, so it is written here rather than left to a fixture
+  // coincidence.
+  document.getElementById("row-long-preview").textContent =
+    "the long message that makes this row different from its neighbours ".repeat(4);
+</script>
+</body></html>`,
+  },
+
+  // A page that NEVER goes quiet, plus a control that answers only a TRUSTED
+  // click. This is the shape the privileged retry exists for and used to miss:
+  // the page-level signal answered "the page updated itself" for a control that
+  // had done nothing, so the retry never ran.
   "/busy": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>BUSY</title>
 <style>
@@ -1143,6 +1266,67 @@ html,body{margin:0}
   document.getElementById("gated").addEventListener("click", function (e) {
     if (e.isTrusted) document.title = "GATED-OK";
   });
+</script>
+</body></html>`,
+  },
+  // THE TRUNCATION SHAPE. A re-collect walks the document on a wall-time budget
+  // (12ms) and a node cap (MAX_SCAN), and its EXPENSIVE tier — cursor:pointer
+  // controls and media surfaces — is what expires first. A control that only the
+  // expensive tier can collect (a bare <video> big enough to be a media surface)
+  // therefore disappears from every refreshed pool once something walks-slow
+  // before it in the DOM. The live sweep measured exactly this on github.com
+  // mid-load: the video was hinted at `;f`, still on screen a few seconds later,
+  // and its label was gone. This fixture makes the same shape deterministic:
+  // first pass cheap (so the video IS labelled), then a cursor:pointer wall
+  // inserted BEFORE the video in document order — each wall node pays the
+  // expensive per-node cursor probe, so every refreshed walk exhausts its
+  // budget inside the wall, truncates, and drops the video from the pool. What
+  // the session must then NOT do is swap the batch and tear the label down;
+  // see session.ts mergeWithSurvivors.
+  "/truncrefresh": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>TRUNCREFRESH</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; color:#111; background:#fff; }
+  main { padding:24px; }
+  main a { display:block; margin:14px 0; }
+  .bulkrow { cursor:pointer; width:400px; height:1px; padding:0; font-size:8px; }
+  /* A media surface in its own right: big enough for the AREA rule (see
+     selectors.ts MEDIA_SURFACE_MIN_*), so it is hintable with no text, no role
+     and no cursor of its own — and hintable ONLY through the expensive tier. */
+  #bigvideo { position:fixed; right:20px; bottom:20px; width:500px; height:260px; background:#222; }
+</style></head>
+<body>
+<main>
+  <a href="#w1" data-id="keep1">Keep one</a>
+  <a href="#w2" data-id="keep2">Keep two</a>
+  <a href="#w3" data-id="keep3">Keep three</a>
+  <a href="#w4" data-id="keep4">Keep four</a>
+  <main id="vwrap">
+    <video id="bigvideo" data-id="bigvideo" muted></video>
+  </main>
+</main>
+<script>
+  // Inserted BEFORE the video in document order. Every refreshed collect after
+  // this one pays a cursor probe per wall node before it can reach the video,
+  // so the refreshed walks exhaust their budget inside the wall and truncate.
+  window.__bulkUp = function () {
+    if (document.getElementById("bulkwall")) return 0;
+    var wall = document.createElement("div");
+    wall.id = "bulkwall";
+    wall.style.cssText = "position:absolute;left:0;top:5000px;width:400px;height:760px;overflow:hidden";
+    var frag = document.createDocumentFragment();
+    var N = 3000; // past the 12ms walk budget on any box that has to do real work
+    for (var i = 0; i < N; i++) {
+      var d = document.createElement("div");
+      d.className = "bulkrow";
+      d.textContent = "row " + i;
+      frag.appendChild(d);
+    }
+    wall.appendChild(frag);
+    document.getElementById("vwrap").parentNode.insertBefore(wall, document.getElementById("vwrap"));
+    return N;
+  };
 </script>
 </body></html>`,
   },
@@ -1718,6 +1902,184 @@ the scorer is built to drop, which is why it is here in the fixture rather than
 left out of it.</p>
 </section>
 <footer>FOOTER_CHROME</footer>
+</body></html>`,
+  },
+
+  // ---- carousel-shaped discovery: custom-element controls late in a huge DOM
+  //
+  // The real pages this mirrors: a Reddit post's image carousel and an X photo
+  // viewer each draw their previous/next arrows inside custom elements whose
+  // real buttons live in SHADOW DOM (Reddit's <shreddit-gallery-carousel> is a
+  // Lit component whose shadow root holds its controls), and a feed page puts
+  // TENS OF THOUSANDS of light-DOM nodes before them in traversal order.
+  //
+  // Two things could lose those buttons, and both were true at once: the
+  // per-root HINTABLE_SELECTOR query cannot see into a shadow root, so the
+  // buttons only exist if the discovery walk reaches their HOSTS — and the
+  // walk used to stop at its wall-time budget (or its node cap), both of which
+  // a feed-sized DOM exhausts long before the tail. The fixture is that tail:
+  // 17 000 collapsed light-DOM nodes (a feed's offscreen rows), then the two
+  // carousel hosts at the very end, fixed to the screen so “late in the walk”
+  // is not confused with “off screen”.
+  //
+  // Each host opens a CLOSED shadow root and fills it with a real button that
+  // fills the host's box, so the page realm can see the HOSTS (data-id-owner)
+  // but never the buttons — the same asymmetry a real component library has.
+  "/carousel": {
+    body:
+      "<!DOCTYPE html><html><head><title>Carousel Page</title></head><body>" +
+      // The two hosts, first in the SOURCE order they occupy on screen (fixed
+      // positioning keeps them visible regardless of where they sit in the
+      // document) — but LAST in traversal order, which is what the walk sees.
+      "<lf-carousel-prev id='caro-prev' data-id-owner='carousel-prev' style='position:fixed;top:60px;left:8px;width:90px;height:36px;display:block'></lf-carousel-prev>" +
+      "<lf-carousel-next id='caro-next' data-id-owner='carousel-next' style='position:fixed;top:60px;left:110px;width:90px;height:36px;display:block'></lf-carousel-next>" +
+      // A feed-sized run of collapsed rows BEFORE the hosts in document
+      // order: what the discovery walk must survive to reach them.
+      "<div id='feed'>" + "<div class='row' style='display:none'></div>".repeat(17000) + "</div>" +
+      // A <p> after the feed, so at least one ordinary hint exists near the top
+      // and the batch is not empty at ;f time.
+      "<p style='height:60vh'><a id='plain-link' href='/target1'>a plain link</a></p>" +
+      "<script>" +
+      "customElements.define('lf-carousel-prev', class extends HTMLElement {" +
+      " connectedCallback() {" +
+      "  var sh = this.attachShadow({mode:'closed'});" +
+      "  var b = document.createElement('button');" +
+      "  b.textContent = 'Prev'; b.setAttribute('aria-label','Previous');" +
+      "  b.style.cssText = 'width:100%;height:100%';" +
+      "  b.addEventListener('click', function(){ document.title='CAROUSEL-PREV'; });" +
+      "  sh.appendChild(b);" +
+      " }" +
+      " innerBounds() { return this.getBoundingClientRect(); }" +
+      "});" +
+      "customElements.define('lf-carousel-next', class extends HTMLElement {" +
+      " connectedCallback() {" +
+      "  var sh = this.attachShadow({mode:'closed'});" +
+      "  var b = document.createElement('button');" +
+      "  b.textContent = 'Next'; b.setAttribute('aria-label','Next');" +
+      "  b.style.cssText = 'width:100%;height:100%';" +
+      "  b.addEventListener('click', function(){ document.title='CAROUSEL-NEXT'; });" +
+      "  sh.appendChild(b);" +
+      " }" +
+      " innerBounds() { return this.getBoundingClientRect(); }" +
+      "});" +
+      "</sc" + "ript></body></html>",
+  },
+
+  // ---- YouTube-skip-shaped: a control that is PRESENT but not presentable
+  //
+  // The documented modern structure (button.ytp-skip-ad-button inside the ad
+  // module) shows the button in the DOM while its ancestor is display:none:
+  // the skip control is inserted (or already present) BEFORE it is clickable,
+  // and becomes presentable by an ATTRIBUTE change at the five-second mark —
+  // a class flip, never a childList insertion. A childList observer stays
+  // silent through that; the pool built by ;f before that moment rejected the
+  // button because its box was empty, and with no mutation to announce the
+  // change the pool stays wrong for the whole session.
+  //
+  // The fixture inserts the fully-built button hidden in a display:none slot, opens
+  // hints over it, and reveals it 3 s later by removing the style attribute —
+  // attribute-only, exactly the shape nothing observes. The hint must appear
+  // (timer-driven pool refresh) and the key must click it.
+  "/adskip": {
+    body:
+      "<!DOCTYPE html><html><head><title>Skip Page</title></head><body>" +
+      "<a id='watch-link' data-id='watch-link' href='/target1'>a watch link</a>" +
+      "<div id='mock-player' style='position:relative;width:640px;height:360px;background:#111'>" +
+      // The ad slot: present from load, display:none for the first 3 s, then
+      // un-hidden by an attribute change only. No childList event fires then.
+      "<div id='ad-slot' style='display:none'>" +
+      "<button id='skip-ad' data-id='skip-ad' style='position:absolute;left:430px;top:280px;width:130px;height:44px' onclick=\"document.title='AD-SKIPPED'\">Skip</button>" +
+      "</div></div>" +
+      "<div style='height:60vh'></div>" +
+      "<script>setTimeout(function(){ document.getElementById('ad-slot').removeAttribute('style'); }, 3000);</scr" + "ipt>" +
+      "</body></html>",
+  },
+
+  // ---- the trusted-press measurement
+  //
+  // The one control shape the synthetic sequence can never satisfy: a click
+  // handler that reads event.isTrusted and refuses anything scripted — the
+  // reported behaviour of YouTube's skip control. The fixture RECORDS every
+  // pointer event it is offered (type, isTrusted, buttons, coordinates), so a
+  // failing test can name the step that broke instead of guessing:
+  //
+  //   no entries at all      the privileged press never fired (no actor)
+  //   entries, trusted:false the events came from the synthetic sequence only
+  //   trusted:true          the real windowUtils press landed — and if the
+  //                          title did not change, the press went to the
+  //                          wrong point, which the recorded coordinates say
+  "/trustgate": {
+    body:
+      "<!DOCTYPE html><html><head><title>TrustGate</title>" +
+      "<style>body{margin:0;font:14px system-ui,sans-serif}" +
+      "#gate{position:fixed;top:80px;left:40px;width:200px;height:46px}" +
+      "</style></head><body>" +
+      "<a id='plain-link' data-id='plain-link' href='/target1'>an ordinary link</a>" +
+      "<button id='gate' data-id='gate'>trusted press only</button>" +
+      "<script>" +
+      "var g = document.getElementById('gate');" +
+      "window.__gate = [];" +
+      "['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function (t) {" +
+      "  g.addEventListener(t, function (e) {" +
+      "    window.__gate.push({type:e.type, trusted:e.isTrusted, buttons:e.buttons, x:e.clientX|0, y:e.clientY|0});" +
+      "    if (window.__gate.length > 80) window.__gate.shift();" +
+      "  });" +
+      "});" +
+      "g.addEventListener('click', function (e) { document.title = e.isTrusted ? 'GATE-OPEN' : 'GATE-SWALLOWED'; });" +
+      "</scr" + "ipt></body></html>",
+  },
+  // A page with a surface ON TOP OF ITSELF: the ordinary "you have a dialog open"
+  // shape — a full-viewport scrim plus a fixed panel over the content. It exists
+  // for the hint-leak report: a hint label lives in the top layer, so a label for
+  // a control BEHIND the dialog is drawn over the dialog. Two states on one page
+  // (closed and open) so a test can prove the controls are hintable in the first
+  // place, and that they are not while the panel is up. Every control carries
+  // data-id so the harness can name which element got a key.
+  "/dialog": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>DIALOG</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.6 system-ui,sans-serif; background:#0b0b0f; color:#eee; }
+  main { padding:16px; }
+  .row { display:block; width:240px; height:30px; margin:10px 0; padding:4px 8px;
+         background:#23232b; color:#eee; border:1px solid #444; cursor:pointer; }
+  #scrim { position:fixed; inset:0; background:rgba(0,0,0,.62); display:none; z-index:900; }
+  #scrim.on { display:block; }
+  #modal { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+           width:340px; height:230px; padding:14px; background:#16161c;
+           border:1px solid #555; display:none; z-index:901; }
+  #modal.on { display:block; }
+</style></head>
+<body>
+<main>
+  <a href="#under1" class="row" data-id="under1">page one</a>
+  <a href="#under2" class="row" data-id="under2">page two</a>
+  <button id="opener" data-id="opener" class="row">Open settings</button>
+  <div id="scrim"></div>
+  <div id="modal" role="dialog" aria-modal="true" aria-label="Settings">
+    <a href="#in1" class="row" data-id="in1">dialog one</a>
+    <a href="#in2" class="row" data-id="in2">dialog two</a>
+    <button id="closer" data-id="closer" class="row">Close</button>
+  </div>
+</main>
+<script>
+  // Opened by code, the way a page opens it after a click, so both states are
+  // reachable on one URL. The dialog's own controls are only in the DOM always
+  // (display:none until opened), which is also the common framework shape.
+  function show() {
+    document.getElementById("scrim").className = "on";
+    document.getElementById("modal").className = "on";
+  }
+  function hide() {
+    document.getElementById("scrim").className = "";
+    document.getElementById("modal").className = "";
+  }
+  document.getElementById("opener").addEventListener("click", show);
+  document.getElementById("closer").addEventListener("click", hide);
+  window.__showDialog = show;
+  window.__hideDialog = hide;
+</script>
+</main>
 </body></html>`,
   },
 };

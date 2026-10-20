@@ -1,32 +1,17 @@
 // "I have to click the page before Lazyfox responds."
 //
-// THE REPORT, and why it is a different bug from everything in stuck.ts.
+// The opposite shape from stuck.ts (where NOBODY owns the keyboard and the
+// fix is presence): here the page HAS a content script, but Firefox parks
+// keyboard focus in its own chrome UI (the tab strip as a tab closes, the
+// hidden URL bar on a fresh tab) in the middle of Lazyfox's own tab actions —
+// ;x, ;v, ;n, ;t, ;1-;9 — and a document without focus receives no keydown
+// at all. The user's own repair is a click.
 //
-// stuck.ts covers pages where NOBODY owns the keyboard: a navigation that has
-// not committed, an error page, about:config. There the fix is presence — the
-// chrome helper answers because no content script exists.
-//
-// This file covers the opposite shape, and it is the one a daily user hits: the
-// page DOES have a content script, the keyboard is simply not in it any more.
-// Firefox parks keyboard focus in its own chrome UI (the tab strip as a tab
-// closes, the hidden URL bar on a fresh tab) in the middle of Lazyfox's own tab
-// actions — `;x`, `;v`, `;n`, `;t`, `;1`-`;9` — and a document that does not
-// have focus receives no keydown at all. From the user's side Lazyfox has
-// stopped responding, and the repair they discovered is to click the page: a
-// click is the only thing in that state that puts the keyboard back.
-//
-// WHY THIS IS ASSERTED ON `document.hasFocus()` RATHER THAN ON A KEY.
-//
-// The key assertion is also made (the `;` after the close must arm the page's
-// leader) but it cannot carry the diagnosis on its own: the BiDi harness
-// delivers key events to a browsing context directly, so a key can land in a
-// document that has no keyboard focus at all — the very state under test. An
-// assertion that passes in the broken state is an assertion about the harness.
-// `document.hasFocus()` is the page's own answer to "is the keyboard here", and
-// it is exactly the fact the user's click changes: it fails when the bug is
-// present and passes when it is fixed. Both are asserted, and the failure text
-// carries the whole page state so a reader never has to guess which way it
-// went.
+// Both halves are asserted, and hasFocus() is the one that can carry the
+// diagnosis: the BiDi harness delivers key events straight to a browsing
+// context, so a key assertion can pass in exactly the broken state under
+// test. document.hasFocus() fails with the bug and passes when fixed.
+// Failure text carries the whole page state.
 import { contextsOf, createTab, evalIn, getTree, keyTap, sleep, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 
@@ -248,15 +233,10 @@ export async function run(ctx: any): Promise<void> {
   });
 
   await t("a key typed while an iframe has focus still reaches the leader", async () => {
-    // THE OTHER HALF OF "IT STOPPED RESPONDING".
-    //
-    // A frame is a different document: key events for a field inside one are
-    // delivered to THAT document, and the top frame's listener never runs. With
-    // the content script injected only into the top frame, every Lazyfox key is
-    // dead while a frame holds focus — and the repair the user discovers is to
-    // click the page, which moves the keyboard out of the frame. That is the
-    // report this test is written from, and it is the one shape of it that a
-    // sandbox CAN reproduce deterministically.
+    // THE OTHER HALF OF "IT STOPPED RESPONDING": a frame is a different
+    // document, so with the content script injected only into the top frame
+    // every Lazyfox key is dead while a frame holds focus. The user's own
+    // repair — a click — is what moves the keyboard out.
     await ctx.collapseWindow();
     ctx.tabA = await createTab();
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/frame`);
@@ -300,16 +280,12 @@ export async function run(ctx: any): Promise<void> {
       "harness: the leader must be disarmed before this press (state " + focused + ")"
     );
 
-    // THE DELIVERY WITNESS FIRST, and it is a key Lazyfox does NOT claim.
-    //
-    // Nothing else can prove WHERE the harness delivered the key: a claimed key
-    // is swallowed in the frame before the frame's own page can record it, so
-    // "the frame saw nothing" is what success looks like. `q` is not the
-    // leader, not a scroll key and not captured, so it travels untouched — the
-    // frame's page records it (proving the key really went into the frame and
-    // not to the top document) and the top document's leader stays dark
-    // (proving a frame does not hand up keys Lazyfox does not own, which is the
-    // rule that keeps an embedded app's own shortcuts).
+    // THE DELIVERY WITNESS FIRST, and it is a key Lazyfox does NOT claim. A
+    // claimed key is swallowed in the frame before the frame's page records
+    // it, so an unclaimed `q` is the witness: the frame records it (the key
+    // went into the frame, not the top document) and the leader stays dark (a
+    // frame does not hand up keys Lazyfox does not own — embedded apps keep
+    // their shortcuts).
     await ctx.press(ctx.tabA, "q");
     const passthrough = await waitFor(async () => {
       const raw = await evalIn(
@@ -817,17 +793,11 @@ export async function run(ctx: any): Promise<void> {
     // THE FIELD REPORT IN ITS OWN WORDS: "it stops responding until I move the
     // mouse over the window and click on a spot on the page". The page is alive
     // and its content script owns the keys; the KEYBOARD is in the browser's own
-    // UI, so the page's listener never runs — and the key the helper declines on
-    // the grounds that "the page owns it" is answered by the browser chrome
-    // instead. The click is the repair the user discovers; a keyboard-first
-    // browser cannot ask for one.
-    //
-    // The keyboard is put in the browser's own UI the way this harness can
-    // (ctx.chromeBlur): the state a user leaves behind by moving to the top of the
-    // window and clicking there once the toolbar has revealed itself. Ctrl+L is
-    // NOT available and that is a product fact rather than a harness one — Lazyfox
-    // hides the URL bar, so the browser's own chord focuses nothing there
-    // (measured: the key landed in the page and the toolbar stayed hidden).
+    // UI, so the page's listener never runs and the key the helper declines
+    // ("the page owns it") is answered by the browser chrome instead. The
+    // keyboard is put there via ctx.chromeBlur — the toolbar state a user
+    // leaves behind. Ctrl+L is NOT available, and that is a product fact (the
+    // URL bar is hidden, so the browser's chord focuses nothing there).
     await ctx.collapseWindow();
     ctx.tabA = await createTab();
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/hello`);
@@ -882,17 +852,12 @@ export async function run(ctx: any): Promise<void> {
   });
 
   await t("a page whose keys the HELPER answers gets its keyboard back too", async () => {
-    // THE OTHER HALF OF THE SAME FIELD REPORT, and the half this suite could not
-    // reach before it had an entry to the state: the user's own split — `;` and
-    // the helper's chords keep working (`;r`, `;s`, `;o`, `;d`) while everything
-    // that lives in the page (j/k/d/u scrolling, hints, find) is dead until they
-    // click or reload.
-    //
-    // That split IS the ownership split: the helper is the one answering, and the
-    // page never sees a key. The state is produced the only way it can be — the
-    // presence record is dropped (ctx.chromeForget, see
-    // keystate.dropPresenceForSelectedTab) and the keyboard is parked in the
-    // browser's own UI, which is where the mouse leaves it.
+    // THE OTHER HALF OF THE SAME FIELD REPORT: the user's own split — `;` and
+    // the helper's chords (`;r`, `;s`, `;o`, `;d`) keep working while everything
+    // that lives in the page (j/k/d/u, hints, find) is dead until a click or
+    // reload. That split IS the ownership split: the helper answers, the page
+    // never sees a key. Produced by dropping the presence record
+    // (ctx.chromeForget) and parking the keyboard in the browser's own UI.
     await ctx.collapseWindow();
     ctx.tabA = await createTab();
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/hello`);

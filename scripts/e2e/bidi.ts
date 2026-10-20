@@ -1,33 +1,15 @@
 // WebDriver BiDi driver for the Lazyfox e2e tier.
-//
-// Zero npm dependencies — Node 24's global WebSocket carries the BiDi
-// protocol. This file is the ONLY place that speaks the raw protocol; every
-// suite above it talks to typed helpers.
-//
-// WHAT CHANGED FROM THE PREVIOUS DRIVER, and why each one is here:
-//
-//   1. Every call takes an AbortSignal. The old driver could not stop a hung
-//      command, so a stalled test held its browsing context until the 180s
-//      timeout and the NEXT test ran against whatever it left behind. One
-//      failure became ten. Here a timeout aborts in-flight commands and the
-//      fixture disposes, so the damage is bounded to the one test.
-//
-//   2. `until()` replaced `waitFor()`. `waitFor` resolved only on a TRUTHY
-//      value, so `0`, `false` and `""` were unreachable and ~10 call sites had
-//      grown workarounds like `return n <= 2 ? "settled" : null`. `until`
-//      takes an explicit matcher; the trap is now impossible to walk into
-//      because the default is "not null/undefined", not "truthy".
-//
-//   3. `attempt()` is separated from hard calls. The old suite had 158
-//      `.catch(() => null)`, which collapses "the protocol threw", "the
-//      context is dead" and "the product returned null" into one indistinguishable
-//      value — and then reports a timeout that reads like a product bug.
-//      `attempt()` records what failed so the timeout message can say which of
-//      the three it was.
-//
-//   4. Failure messages carry the call site. Same idea as the old callerSite()
-//      stack walk, kept because it is good, but computed here rather than in a
-//      helper so every wait names the suite line that asked for it.
+// Zero npm dependencies — Node 24's global WebSocket carries the protocol;
+// this is the only place that speaks it raw, suites talk to typed helpers.
+// Conventions that keep failures diagnosable (all four were learned the hard
+// way — do not "simplify" them away):
+//   1. Every call takes an AbortSignal: a hung command used to hold the
+//      context until a 180s timeout, so one failure became ten.
+//   2. `until()` uses an explicit matcher, defaulting to not-null — a truthy
+//      default made 0/false/"" unreachable and spawned workarounds.
+//   3. `attempt()` records which of protocol-threw / context-dead / product
+//      returned null produced the timeout, instead of collapsing them.
+//   4. Failure messages carry the suite call site that asked for the wait.
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
@@ -734,7 +716,36 @@ export async function makeProfile(): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), "lazyfox-e2e-"));
   const chromeDir = join(dir, "chrome");
   mkdirSync(chromeDir, { recursive: true });
-  for (const f of ["userChrome.css", "userChrome.uc.js", "frame.js", "corebootstrap.js"]) {
+  // TEMPORARY loader boot-trace switch: when LAZYFOX_JS_DIAG is set, drop a
+  // sentinel file the loader looks for. The trace is also gated on an env var,
+  // but geckodriver's child-environment handling has already eaten one round
+  // of this measurement silently, so the file — a place config.js resolves
+  // through the SAME directory service it uses for everything else — is the
+  // switch that cannot be lost.
+  if (process.env.LAZYFOX_JS_DIAG) {
+    writeFileSync(join(chromeDir, "loader-diag.enable"), "1");
+  }
+  // The full shipped set, in the exact shape a real install writes it. The
+  // four UI files used to be all this copied, and the difference is MATERIAL: the
+  // "Lazyfox" JS window actor is built from the OTHER three — actor-boot.js
+  // plus the two .sys.mjs modules the install-dir config.js imports
+  // ("resource://lazyfox/lazyfox-child.sys.mjs" etc., which substitute to
+  // this directory). Without them the actor preflight fails and the trusted
+  // click path (activate.ts trustedClick → actor-child windowUtils) is
+  // silently absent from every harness run, which is how the two tests that
+  // assert "no actor is listening" were once true and stayed true without
+  // anyone noticing the environment was missing a shipped component. The
+  // files are copied conditional — a build that has not produced them yet
+  // must not break every other suite — but check-dist enforces they exist.
+  for (const f of [
+    "userChrome.css",
+    "userChrome.uc.js",
+    "frame.js",
+    "corebootstrap.js",
+    "actor-boot.js",
+    "lazyfox-child.sys.mjs",
+    "lazyfox-parent.sys.mjs",
+  ]) {
     const src = join(ROOT, "dist/chrome", f);
     if (existsSync(src)) writeFileSync(join(chromeDir, f), readFileSync(src));
   }

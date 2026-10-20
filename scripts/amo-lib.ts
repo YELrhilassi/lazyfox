@@ -326,6 +326,24 @@ export function xpiVersion(buf: Buffer): string {
   return manifest.version;
 }
 
+/**
+ * compareVersions orders dotted numeric versions, so 0.5.10 sorts AFTER 0.5.9.
+ *
+ * It exists because "pick the newest") kept being written as `.sort()` over file
+ * names, where "lazyfox2-0.5.10-signed.xpi" sorts BEFORE
+ * "lazyfox2-0.5.9-signed.xpi". That silently selects the older add-on — the
+ * wrong-build bug every installer record exists to prevent.
+ */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
 export function isSignedXpi(buf: Buffer): boolean {
   try {
     const names = zipNames(buf);
@@ -333,6 +351,54 @@ export function isSignedXpi(buf: Buffer): boolean {
   } catch {
     return false;
   }
+}
+
+// ---- what AMO says the published bytes are ----
+
+/**
+ * The fingerprint AMO publishes for a signed file: a `sha256:` prefixed hash and
+ * a size, describing the bytes `downloadSigned` fetches from `file.url`.
+ *
+ * It is the one claim that ties a local artifact to the reviewed upload, so the
+ * release compares the xpi it is about to publish against it (see
+ * `signedXpiCheck` in scripts/ship-checks.ts). Verified on 0.5.9: the hash AMO
+ * reported, the file it served, and the xpi committed on master were the same
+ * bytes — 5923525 bytes of `sha256:2acccbb6…`.
+ */
+export interface AmoFileFingerprint {
+  hash?: string | null;
+  size?: number | null;
+}
+
+/**
+ * normalizeAmoHash turns AMO's `sha256:<hex>` into the bare lowercase hex that a
+ * locally computed digest can be compared against, and returns null when there is
+ * nothing comparable — no hash at all, or an algorithm this code cannot compute
+ * (a `sha512:` prefix, say). Null means "cannot prove", which callers must report
+ * rather than treat as agreement.
+ */
+export function normalizeAmoHash(hash: string | null | undefined): string | null {
+  if (!hash) return null;
+  const value = hash.trim().toLowerCase().replace(/^sha256:/, "");
+  return /^[0-9a-f]{64}$/.test(value) ? value : null;
+}
+
+/**
+ * The fingerprint fields from a `/versions/<v>/` response (or a `versions[]`
+ * entry), which is untrusted JSON: an index signature because AMO's objects carry
+ * more fields than these (id, status, url, permissions — see the 0.5.9 response),
+ * and each value is type-checked rather than asserted, so a missing or oddly typed
+ * field becomes null — "cannot prove" — instead of a truthy string that is not a
+ * hash.
+ */
+export function fingerprintOf(
+  file: { hash?: unknown; size?: unknown; [key: string]: unknown } | null | undefined
+): AmoFileFingerprint | null {
+  if (!file) return null;
+  return {
+    hash: typeof file.hash === "string" ? file.hash : null,
+    size: typeof file.size === "number" && Number.isFinite(file.size) ? file.size : null,
+  };
 }
 
 // ---- AMO submit + signed-file download ----

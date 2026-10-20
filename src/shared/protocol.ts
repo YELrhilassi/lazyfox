@@ -20,10 +20,9 @@ export interface BgApi {
   searchSuggest: { req: { q: string }; res: { entries: PopupItem[] } };
   urlSuggest: { req: { q: string }; res: { entries: PopupItem[] } };
   tabs: { req: Record<string, never>; res: { tabs: TabInfo[] } };
-  // How many real tabs the window holds. Separate from `tabs` because the
-  // multi-digit tab jump needs only the count, and it is on the hot path: a
-  // digit press must not pay for every tab's title, url and favicon to learn
-  // whether `;1` is ambiguous.
+  // Separate from `tabs`: the multi-digit tab jump needs only the count and
+  // is on the hot path — a digit press must not pay for every tab's title,
+  // url and favicon to learn whether `;1` is ambiguous.
   tabCount: { req: Record<string, never>; res: { count: number } };
   activateTab: { req: { id: number }; res: { ok: boolean } };
   activateTabAt: { req: { index?: number; last?: boolean }; res: { ok: boolean; title?: string } };
@@ -42,8 +41,8 @@ export interface BgApi {
   reload: { req: Record<string, never>; res: { ok: boolean } };
   back: { req: Record<string, never>; res: { ok: boolean; atRoot?: boolean } };
   forward: { req: Record<string, never>; res: { ok: boolean; atEnd?: boolean } };
-  // The active tab's navigation stack: entries oldest-first (current
-  // included), canBack/canForward for the "at root / at end" indications.
+  // Active tab's navigation stack: entries oldest-first (current included),
+  // canBack/canForward for the "at root / at end" indications.
   navStack: { req: Record<string, never>; res: { canBack: boolean; canForward: boolean; index: number; entries: { url: string; title: string }[] } };
   // Jump to a position in the navigation stack (0-based, oldest = 0).
   navGoto: { req: { index: number }; res: { ok: boolean } };
@@ -64,35 +63,25 @@ export interface BgApi {
   removeDownload: { req: { id: string }; res: { ok: boolean } };
   openDownloadLocation: { req: { id: string }; res: { ok: boolean } };
   retryDownload: { req: { id: string }; res: { ok: boolean; error?: string; resumed?: boolean } };
-  // Dismiss the download notification(s) shown on the status bar.
-  //
-  // The BAR belongs to the chrome helper, so this cannot be done from where the
-  // key is pressed: a `;D` on a web page or on the command center runs the
-  // page's own ops surface, which has no bar to clear. The background relays it
-  // to the helper (see ChromeApi["dismissDownload"]). Before that relay existed
-  // the action was a documented no-op in the content ops, so the key was bound
-  // in the menu, consumed, and did nothing — on every surface except the one
-  // where the chrome helper happened to own the keyboard.
+  // Relayed to the chrome helper (ChromeApi["dismissDownload"]): the bar is
+  // the helper's, so `;D` on a page that has no bar used to be a documented
+  // no-op — bound, consumed, and doing nothing.
   dismissDownload: { req: Record<string, never>; res: { ok: boolean } };
   stealthOpen: { req: Record<string, never>; res: { ok: boolean; error?: string } };
   openSetup: { req: Record<string, never>; res: { ok: boolean } };
-  // Open the diagnostics & performance page (the "special page": live page
-  // diagnosis, framework-site detection report, efficiency metering).
+  // The diagnostics & performance page (live page diagnosis, framework
+  // detection report, efficiency metering).
   openDiagnostics: { req: Record<string, never>; res: { ok: boolean } };
-  // Live page report from a tab's content script. With no tabId it reports the
-  // active tab (or the last real page tab, since the diagnostics page is
-  // itself an extension tab); pass a tabId to diagnose any specific tab. null
-  // means the tab has no content script at all (about:/error pages, restricted
-  // domains, extension pages) — which is itself the diagnostic answer.
+  // Live page report. No tabId = the active tab (or the last real page tab,
+  // since the diagnostics page is itself an extension tab); null report =
+  // the tab has no content script at all — itself a diagnostic answer.
   pageReport: { req: { tabId?: number }; res: { report: PageReport | null; tabId: number | null } };
-  // Every tab in the current window the diagnostics page can target, in strip
-  // order, so the page can offer a tab picker.
+  // Every tab in the window the diagnostics page can target, strip order.
   diagnoseTabs: { req: Record<string, never>; res: { tabs: { id: number; title: string; url: string; active: boolean }[] } };
-  // Page-cache policy: the diagnostics page reads the current policy here and
-  // changes it through cacheSet. See CacheState for what each scope can do.
+  // Page-cache policy: read here, changed through cacheSet (see CacheState).
   cacheState: { req: Record<string, never>; res: CacheState };
   cacheSet: { req: { scope: CacheScope; mode: CacheMode }; res: { ok: boolean; state?: CacheState; error?: string } };
-  // Reload the active tab bypassing its HTTP cache (Firefox's "hard reload").
+  // Hard reload of the active tab (bypasses the HTTP cache).
   hardReload: { req: Record<string, never>; res: { ok: boolean } };
   quit: { req: Record<string, never>; res: { ok: boolean } };
   zen: { req: Record<string, never>; res: { zen: boolean } };
@@ -106,118 +95,81 @@ export interface BgApi {
       nativeHost: string | null;
       nativeProtocol: string | null;
       chromeHelper: string | null;
-      /**
-       * Whether the chrome helper can see the Lazyfox window actor, as
-       * "ok" / "missing", or null when the helper has never announced and so
-       * has never been asked. Distinct from chromeHelper being null (the
-       * helper is not installed at all): the helper can be installed and
-       * still not reach the content process, and that is exactly the case
-       * that presents as "keys do nothing on this page".
-       */
+      /** Whether the helper can see the window actor ("ok"/"missing"), or null while it has never announced. Distinct from chromeHelper === null: installed but not reaching the content process is exactly the "keys do nothing on this page" case. */
       bridge: "ok" | "missing" | null;
     };
   };
   zoom: { req: { delta: number; factor?: number }; res: { factor?: number } };
+  // Screenshot: forward to the chrome helper, whose Firefox Screenshots
+  // module owns the native region picker and capture. Reply means "asked".
+  screenshot: { req: { shot: string }; res: { ok: boolean; note?: string } };
   setConfig: { req: { config: Config }; res: { ok: boolean } };
   toggleWhichKey: { req: Record<string, never>; res: { whichKey: boolean } };
   syncTyping: { req: { typing: boolean }; res: { ok: boolean } };
-  // Content script -> background: the content-script leader armed/disarmed.
-  // The background relays it to the chrome helper (whose window-level status
-  // bar shows the pulsing LEADER chevron on web pages, where the content
-  // script owns the leader key and the chrome helper's own leader never
-  // arms).
-  //
-  // `prefix`/`expect` ride along for the same reason the relay exists at all:
-  // the bar has to be able to say WHICH key comes next, and on a web page the
-  // only party that knows is the content script. Sending a bare boolean left
-  // the indicator pinned to "something is armed" for the whole sequence.
+  // Content-script leader arm/disarm, relayed to the helper's bar (the only
+  // leader indicator on web pages). One readout value, NOT three fields: a
+  // wire shape the sender can half-fill showed a chord with no expectation
+  // in a live browser only.
   syncLeader: {
-    // The leader readout as ONE value, not three fields. A wire shape of
-    // `{active, prefix, expect}` lets a sender fill two halves and drop the
-    // third, and the bar then shows a chord with no expectation (or the
-    // reverse) — a silent half-truth that only shows up in a live browser.
     req: { signal: LeaderSignal };
     res: { ok: boolean };
   };
-  // "A Lazyfox content script is running in this tab", pushed at boot and torn
-  // down on pagehide. This exists because the chrome helper cannot work the
-  // question out for itself: `selectedBrowser.contentDocument` is null for
-  // every out-of-process tab, so reading the page's `data-lf-content` beacon
-  // from the parent ALWAYS fails, and ownership silently fell back to "the URL
-  // looks like a web page, so nobody has it". That is the dead keyboard the
-  // whole presence model was written to prevent — it just moved from the URL
-  // test to the DOM test. The tab's own script is the only thing that can
-  // answer, so it answers.
+  // "A content script is running in this tab", boot-pushed / pagehide-
+  // retracted. It exists because the helper cannot look it up itself
+  // (contentDocument is null for every OOP tab) — dead-keyboard prevention.
+  // `hold` rides back: a just-booted script asks "is the leader key still
+  // physically down?" and only the background can answer for a document it
+  // has never seen.
   syncContent: {
-    // `hold` rides back on the reply: a content script that has just booted
-    // asks "is the leader key still physically down?", and the background is
-    // the only party that can answer for a document this one has never seen.
     req: { active: boolean; url: string; doc?: string };
     res: { ok: boolean; hold?: boolean; holdAt?: number; holdDoc?: string; holdGeneration?: number };
   };
-  // The HELD leader key, as a per-tab fact rather than per-document state.
-  //
-  // The hold used to live in the content script that set it, which made it
-  // invisible to the document that came next — and the document that comes
-  // next is exactly what the hold is FOR. Holding `;` and pressing `x` closes
-  // a tab; the tab that takes focus runs a brand-new content script whose
-  // `sticky` is false, so the second `x` went to the page as a literal
-  // character and the chain died on precisely the actions worth repeating
-  // (close, back, forward). Same for `;g`/`;l`, which navigate.
-  //
-  // Stored as a tab session value, like syncTyping, because that is the one
-  // store that survives the content script being torn down and rebuilt.
+  // The HELD leader key, a per-tab fact: the hold used to live in the script
+  // that set it, so hold `;` + `x` (close tab) left the next script with
+  // sticky === false and the second `x` typed a literal character — exactly
+  // on the actions worth chaining (close/back/forward, `;g`/`;l`). A tab
+  // session value, the one store that outlives the script.
   syncHold: { req: { hold: boolean; generation: number; doc: string }; res: { ok: boolean; error?: string } };
-  // Content script -> background: live find-in-page state (1-based current
-  // match, 0 = nothing walked to yet; total matches). The background relays it
-  // to the chrome helper so its window-level status bar shows the find count
-  // on web pages (where the content script owns the find widget).
+  // Find-in-page state (1-based current, total), relayed to the helper's bar.
   syncFind: { req: { cur: number; count: number }; res: { ok: boolean } };
-  // The content script's dark-mode verdict for THIS tab, relayed to the chrome
-  // helper's status bar. `mode` is auto|dark|light (an empty/off mode clears the
-  // segment) and `engine` is native|dynamic|filter, which is what lets the bar
-  // tell "the site's own theme" apart from one we recoloured.
+  // The dark verdict for THIS tab: mode is auto|dark|light (empty/off clears
+  // the segment), engine native|dynamic|filter — what lets the bar tell "the
+  // site's own theme" apart from one we recoloured.
   syncDark: { req: { on: boolean; mode: string; engine: string }; res: { ok: boolean } };
   sessionList: { req: Record<string, never>; res: { sessions: Session[] } };
   sessionSave: { req: { name: string }; res: { ok: boolean; session?: Session } };
   sessionNew: { req: { name: string }; res: { ok: boolean; note?: string } };
   sessionRestore: { req: { name: string }; res: { ok: boolean } };
-  // `note` because deleteSession ANSWERS with a reason ("no such session") —
-  // the caller toasts the outcome, and an outcome it cannot read is an outcome
-  // it cannot report. See the relay-side declaration for the ordering half.
+  // `note`: deleteSession ANSWERS with a reason ("no such session"); an
+  // outcome the caller cannot read is an outcome it cannot toast.
   sessionDelete: { req: { name: string }; res: { ok: boolean; note?: string } };
   sessionSwitchByMarker: { req: { marker: number }; res: { ok: boolean; name?: string } };
   sessionAssignMarker: { req: { name: string; marker: number }; res: { ok: boolean; note?: string } };
   sessionTabCopy: { req: { from: string; index: number; to: string }; res: { ok: boolean; note?: string } };
   sessionTabMove: { req: { from: string; index: number; to: string }; res: { ok: boolean; note?: string } };
-  // The chrome helper's report that the pane layout moved (split created,
-  // dissolved, pane added/removed). No payload: the groups are re-derived from
-  // `browser.tabs`' own `splitViewId` when the snapshot is written, so a
-  // payload could only disagree with the thing it describes.
+  // No payload: the groups are re-derived from `browser.tabs`' own
+  // `splitViewId` when the snapshot is written, so a payload could only
+  // disagree with the thing it describes.
   layoutChanged: { req: Record<string, never>; res: null };
   sessionSplit: { req: { orientation: "horizontal" | "vertical" }; res: { ok: boolean; note?: string } };
   sessionUnsplit: { req: Record<string, never>; res: { ok: boolean; note?: string } };
   sessionSwitchPane: { req: { dir: number }; res: { ok: boolean; note?: string } };
   sessionSwapPane: { req: { dir: number }; res: { ok: boolean; note?: string } };
-  // `split` is 1-based among the window's split groups in strip order, and is
-  // omitted when there is only one to choose from. A window can hold several
-  // native splits at once, so "move this tab into the split" is a question with
-  // more than one answer — see sessionSplitTargets for the list to ask with.
+  // `split` is 1-based among the window's split groups in strip order,
+  // omitted when there is only one — several native splits can coexist, so
+  // "move this tab into the split" is a question with multiple answers.
   sessionSplitAddTabByIndex: { req: { index: number; split?: number }; res: { ok: boolean; note?: string } };
-  // The splits in this window, in strip order, with the panes inside each one.
-  // This is the list the `;W m` chooser draws: the tabs already carry
-  // `splitViewId`, so the extension can group them without asking the chrome
-  // helper for anything, and the order of the groups follows the strip the user
-  // is looking at.
+  // The splits in this window, strip order. The `;W m` chooser draws this:
+  // tabs carry `splitViewId`, so the extension groups them without asking
+  // the chrome helper for anything.
   sessionSplitTargets: {
     req: Record<string, never>;
     res: {
       splits: { split: number; active: boolean; panes: { title: string; url: string; active: boolean }[] }[];
     };
   };
-  // Take the SELECTED tab out of its split without taking the split apart
-  // around the other pane. Different from sessionUnsplit: that dissolves the
-  // group, this leaves the rest of it exactly as it is.
+  // Take the SELECTED tab out of its split, leaving the rest of the group
+  // intact — unlike sessionUnsplit, which dissolves the whole group.
   sessionPullFromSplit: { req: Record<string, never>; res: { ok: boolean; note?: string } };
   splitPanelTabs: {
     req: Record<string, never>;
@@ -229,8 +181,7 @@ export interface BgApi {
         title: string;
         active: boolean;
         inSplit: boolean;
-        // The tab's own icon, so the pane's list reads like the tab strip
-        // instead of like an id dump. Empty when the tab has none.
+        // The tab's own icon, so the pane list reads like the tab strip.
         favIconUrl?: string;
       }[];
     };
@@ -262,10 +213,9 @@ export type BgAction = {
 
 export type BgResult<K extends keyof BgApi> = BgApi[K]["res"];
 
-// Typed send() used by the content script, command center, popup and options.
-// Returns null when the background is unreachable or rejects. The data argument
-// is optional exactly for the no-request actions, so `send("tabs")` is legal
-// while `send("activateTab")` without data is a compile error.
+// Typed send(). Returns null when the background is unreachable or rejects.
+// The data argument is optional exactly for the no-request actions:
+// send("tabs") is legal, send("activateTab") without data is a compile error.
 type ReqOf<K extends keyof BgApi> = BgApi[K]["req"];
 type HasReq<K extends keyof BgApi> = [ReqOf<K>] extends [Record<string, never>] ? false : true;
 
@@ -283,40 +233,38 @@ export async function send<K extends keyof BgApi>(
 }
 
 // ---------------------------------------------------------------------------
-// The relay channel's contract (chrome helper <-> background).
+// The relay channel's contract (chrome helper <-> background): a SECOND bus
+// from BgApi, once untyped (`requestBg(action: string)` + a 30-branch string
+// matcher in the background). A typo then was a silent runtime no-op, not a
+// compile error — measured: `openDiagnostics` was sent and handled by
+// nobody, so `;T` did nothing unless the CONTENT script owned the keypress.
 //
-// This is a SECOND, separate message bus from BgApi above, and it used to have
-// no types at all: `requestBg(action: string, arg?: string)` and a background
-// `handleRelayReq(action: string, arg: any)` that string-matched its way down a
-// 30-branch if-chain. Nothing checked that the two ends agreed, so a typo was a
-// silent no-op at runtime rather than a compile error — and that is not
-// hypothetical: `openDiagnostics` was sent by the chrome side and handled by
-// nobody, so `;T` did nothing unless the CONTENT script happened to own the
-// keypress.
-//
-// The table below is the fix. Every relay action has a declared request and
-// response, so:
-//   - `bg("openDiagnostics")` compiles only if that action exists
-//   - `bg("restoreClosedTab", key)` only accepts a string
-//   - the background's handler table must cover every action, because
-//     `RelayHandlers` is built from `satisfies Record<keyof RelayApi, ...>`
-//
-// Args are structured values, not packed strings. The wire already
-// JSON-encodes replies and commands; requests were the last stringly-typed
-// direction, which is what forced the U+0001 separator hack in
-// assignSessionMarker/sessionTabCopy. Those are gone.
+// Every relay action now declares its request and response, `RelayHandlers`
+// is built with `satisfies Record<keyof RelayApi, ...>` so the background
+// must cover every action, and args are structured values, not packed
+// strings — the U+0001 separator hack in assignSessionMarker/sessionTabCopy
+// is gone.
+// ---------------------------------------------------------------------------
 export interface RelayApi {
-  // The chrome helper's announce. It carries the helper's version, the active
-  // profile's display name and raw directory leaf, and whether the
-  // content-process bridge came up. Sent on a timer until it is ACKNOWLEDGED,
-  // because a fire-and-forget request can only prove it was queued.
+  // The helper's announce: version, active profile display name and raw
+  // directory leaf, whether the content-process bridge came up. Retried on a
+  // timer until ACKNOWLEDGED — a fire-and-forget request only proves queued.
   alive: {
-    req: { version: string; profileName?: string; profileDir?: string; bridge?: "1" | "0" };
+    req: {
+      version: string;
+      profileName?: string;
+      profileDir?: string;
+      bridge?: "1" | "0";
+      // The loader's console lines (Services.console, "lazyfox"-tagged),
+      // relayed on the one channel that provably works and filed in storage:
+      // the browser console is an observer nobody watches, and the snapshot
+      // channel dies in exactly the situations the lines exist for.
+      errs?: string[];
+    };
     res: { ok: true };
   };
-  // Flip the "press the key to reach the chrome layer" preference. The helper
-  // flips its own cached copy; the background flips storage so every other
-  // context agrees.
+  // Flip the "press the key to reach the chrome layer" preference on both
+  // copies: the helper flips its cache, the background flips storage.
   toggleWhichKey: { req: Record<string, never>; res: null };
   // Ask the active tab's content script to start hinting / focus its first
   // field. Best-effort: a tab with no content script is a normal outcome.
@@ -326,46 +274,37 @@ export interface RelayApi {
   openSetup: { req: Record<string, never>; res: null };
   openDiagnostics: { req: Record<string, never>; res: null };
   quit: { req: Record<string, never>; res: null };
-  // Open a new container window. The result comes back so the helper can toast
-  // a failure instead of swallowing it.
+  // Open a new container window; the result comes back so the helper can
+  // toast a failure instead of swallowing it.
   stealthOpen: { req: Record<string, never>; res: { ok: boolean; error?: string } };
   // Read-only pulls for the chrome-side UI.
   sessionState: { req: Record<string, never>; res: RelaySessionState };
   sessionTabs: { req: { name: string }; res: PopupItem[] };
   recentlyClosed: { req: Record<string, never>; res: PopupItem[] };
   reopenTab: { req: Record<string, never>; res: { ok: boolean } };
-  // Session + tab mutations. Each is fire-and-forget; the helper refreshes the
-  // status bar itself once the action has landed.
+  // Session + tab mutations; the helper refreshes the status bar itself.
   saveSession: { req: { name: string }; res: null };
   newSession: { req: { name: string }; res: null };
   restoreSession: { req: { name: string }; res: null };
-  // deleteSession ANSWERS, unlike its siblings, because a deletion has to be
-  // observable before anything re-reads the list. The sessions popup used to
-  // fire the delete and immediately re-fetch, and the re-fetch could land
-  // before the storage write did — so `x x` left the deleted session sitting
-  // in the list, which reads as "the delete did nothing". A reply the caller
-  // can await is the only ordering guarantee that does not rest on a timer.
+  // deleteSession ANSWERS, unlike its siblings: a deletion must be
+  // observable before anything re-reads the list — the popup's refetch once
+  // landed before the storage write, so `x x` left the deleted session
+  // sitting in the list. An awaited reply is the only ordering guarantee
+  // that does not rest on a timer.
   deleteSession: { req: { name: string }; res: { ok: boolean; note?: string } };
   switchSessionByMarker: { req: { marker: number }; res: null };
   assignSessionMarker: { req: { name: string; marker: number }; res: null };
-  // These two answer with a human-readable `note` on failure ("no such tab",
-  // "same session", ...) and the chrome side toasts it. They used to be
-  // fire-and-forget, which meant a copy into a session that did not exist
-  // looked exactly like one that worked.
+  // Answer with a human-readable `note` on failure; fire-and-forget once
+  // made a copy into a nonexistent session look exactly like a successful
+  // one.
   sessionTabCopy: { req: { from: string; index: number; to: string }; res: { ok: boolean; note?: string } };
   sessionTabMove: { req: { from: string; index: number; to: string }; res: { ok: boolean; note?: string } };
-  // THE SPLIT LAYOUT CHANGED, and nothing else will say so.
-  //
-  // A native split does not touch the tab list: the same tabs are still there,
-  // they are just paired. So no `tabs.*` event fires, and the session autosave —
-  // which is driven entirely by those events — never re-measured. The saved
-  // `splits` string therefore stayed at whatever the last tab change saw, and a
-  // restart brought the tabs back without their pairings: the layout was lost
-  // because nobody had ever written it down. The helper is the only side that
-  // knows a split appeared or dissolved, so it says so here.
-  //
-  // Fire-and-forget like the other mutations: the reply would only tell the
-  // helper what it already knows.
+  // THE SPLIT LAYOUT CHANGED, and nothing else will say so: a native split
+  // does not touch the tab list (same tabs, re-paired), no `tabs.*` event
+  // fires, and the tab-event-driven autosave never re-measured — a restart
+  // brought tabs back without their pairings. The helper is the only side
+  // that knows, so it says so here. Fire-and-forget: the reply would only
+  // tell the helper what it already knows.
   layoutChanged: { req: Record<string, never>; res: null };
   // Tab strip / history actions the helper cannot do itself (they need the
   // background's storage view and its filtered reopen).
@@ -377,9 +316,9 @@ export interface RelayApi {
 }
 
 // The session summary the chrome status bar renders. Structurally the same
-// payload as BgApi["sessionState"], minus the extension-only fields — declared
-// separately because the two travel over different buses and the chrome side
-// never sees the extension's copy.
+// payload as BgApi["sessionState"], minus the extension-only fields —
+// declared separately because the two travel over different buses and the
+// chrome side never sees the extension's copy.
 export interface RelaySessionState {
   name: string;
   marker: number;
@@ -399,9 +338,9 @@ export type RelayAction = keyof RelayApi;
 export type RelayReq<K extends RelayAction> = RelayApi[K]["req"];
 export type RelayRes<K extends RelayAction> = RelayApi[K]["res"];
 
-// Background -> chrome pushes, typed the same way. These are the actions
-// handleCmd dispatches, and the reason a status-bar update could not be
-// type-checked against what the status bar actually accepts.
+// Background -> chrome pushes, typed the same way — what handleCmd
+// dispatches, so a status-bar update finally type-checks against what the
+// status bar accepts.
 export interface ChromeApi {
   splitTab: { req: Record<string, never>; res: void };
   unsplit: { req: Record<string, never>; res: void };
@@ -412,29 +351,29 @@ export interface ChromeApi {
   // selected group); nothing else changes.
   pullFromSplit: { req: Record<string, never>; res: void };
   // Session restore finished opening tabs: re-create the native split
-  // groupings. 1-based positions over the SAVED tab list.
-  // `expect` is the number of real tabs the restore produced. The chrome side
-  // waits for the strip to hold exactly that many before pairing, because a
-  // tab's element appears in the parent process a tick or two after
-  // `tabs.create` resolves — pairing early pairs the tabs being torn down.
+  // groupings, 1-based positions over the SAVED tab list. `expect` is the
+  // number of real tabs the restore produced: a tab's element appears in the
+  // parent process a tick or two after `tabs.create` resolves, and pairing
+  // early pairs the tabs being torn down.
   restoreSplits: { req: { groups: number[][]; expect?: number }; res: void };
   sessionState: { req: RelaySessionState; res: void };
-  // Clear the bar's download notification(s). Pushed (not requested) because the
-  // page that pressed `;D` has nothing left to do once the bar is told.
+  // Clear the bar's download notification(s) — pushed, because the page
+  // that pressed `;D` has nothing left to do once the bar is told.
   dismissDownload: { req: Record<string, never>; res: void };
   leaderState: {
-    // index + the same one-value signal; see BgApi["syncLeader"].
     req: { index: number; signal: LeaderSignal };
     res: void;
   };
-  // `doc` is the reporting document's own nonce. The URL rides along to describe
-  // the page, but it cannot IDENTIFY the document: a single-page navigation
-  // rewrites the URL without replacing the document, so a URL-keyed record goes
-  // stale on the first pushState and presence silently expires. See
-  // keystate.noteContentPresent.
+  // `doc` is the reporting document's own nonce. The URL rides along to
+  // DESCRIBE the page but cannot IDENTIFY the document: an SPA navigation
+  // rewrites the URL without replacing the document, so a URL-keyed record
+  // goes stale on the first pushState (keystate.noteContentPresent).
   contentState: { req: { index: number; active: boolean; url: string; doc?: string }; res: void };
   findState: { req: { index: number; count: number; cur: number }; res: void };
   darkState: { req: { index: number; on: boolean; mode: string; engine: string }; res: void };
+  // Firefox's native Screenshots for the selected tab (see screenshots.ts):
+  // shot is "full" | "visible".
+  screenshot: { req: { shot: string }; res: void };
   cacheGlobal: { req: { mode: CacheMode }; res: void };
   cachePolicy: { req: { mode: CacheMode; tabIds: number[] }; res: void };
 }
@@ -442,7 +381,6 @@ export interface ChromeApi {
 export type ChromeAction = keyof ChromeApi;
 export type ChromeReq<K extends ChromeAction> = ChromeApi[K]["req"];
 
-// The argument a request carries on the wire. Actions that declare no request
-// are sent with an empty object, so the encoder never has to special-case
-// "no argument" — the shape is uniform and total.
+// The argument a request carries on the wire. No-request actions are sent
+// with an empty object, so the encoder never special-cases "no argument".
 export type RelayArg = { [K in RelayAction]: RelayReq<K> }[RelayAction];

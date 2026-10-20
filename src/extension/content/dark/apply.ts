@@ -1,35 +1,21 @@
 // The dark engine's DOM shell: measure the page, generate selectors, inject one
-// sheet.
+// sheet. Everything decidable without the DOM lives in color.ts / detect.ts /
+// theme.ts and is unit-tested.
 //
-// Everything decidable without the DOM lives in color.ts / detect.ts / theme.ts
-// and is unit-tested. What is left here is the part that cannot be: reading
-// computed styles, generating a selector for an element, and putting a <style>
-// in the document.
+// COST MODEL (this runs on every page, on the thread the user's keystrokes
+// ride): one chunked pass with a hard element budget (MAX_SCAN), two
+// computed-style reads per candidate only, and later passes rate-limited and
+// capped (RESAMPLE_MIN_MS / MAX_RESAMPLES) — a mapping that chases a mutating
+// page forever is a permanent tax on it.
 //
-// THE COST MODEL, because this runs on every page the user opens and the page's
-// main thread is where their keystrokes are dispatched:
-//
-//   * one pass, chunked, with a hard element budget (MAX_SCAN). A chunk is
-//     finished on a `setTimeout(0)` boundary so the walk can never become a
-//     single long task on a big page;
-//   * two computed-style reads per candidate and one rectangle read, on
-//     candidates only — an element with no area, or one of ours, is skipped
-//     before any of that;
-//   * later passes are throttled and capped (RESAMPLE_MIN_MS / MAX_RESAMPLES).
-//     A page that re-renders continuously gets a *new* mapping at most every
-//     RESAMPLE_MIN_MS and then stops being re-mapped at all, because a mapping
-//     that chases a page forever is a permanent tax on it. The cap is a
-//     deliberate trade: a page mutated 40 times keeps the mapping it had.
-//
-// WHAT IS NOT HERE: no stylesheet parsing, no per-element inline style writes,
-// no `filter` on anything but <html> in filter mode. Inline writes were
-// considered and rejected — a page that re-renders (every framework) overwrites
-// the `style` attribute, so the mapping would silently decay; a stylesheet keyed
-// by selector survives a re-render that keeps the element's identity, which is
-// what a re-render usually does.
+// NO per-element inline style writes, deliberately rejected: every framework
+// re-render overwrites the `style` attribute and the mapping silently decays,
+// while a stylesheet keyed by selector survives a re-render. No `filter` on
+// anything but <html> in filter mode.
 
 import { parseColor } from "./color";
 import type { PageSample } from "./detect";
+import { scanWindow } from "./scan";
 
 export interface ColorResolver {
   /** The colour `css` renders as, in the engine's own syntax, or null. */
@@ -37,26 +23,16 @@ export interface ColorResolver {
 }
 
 /**
- * THE BROWSER'S OWN ANSWER, for a colour this module cannot read itself.
+ * THE BROWSER'S OWN ANSWER for a colour `parseColor` cannot read (`oklch()`,
+ * `lab()`, `color-mix()` — Tailwind v4, Radix). One 1x1 canvas: assign as
+ * `fillStyle`, read the PIXEL back. A refusal is detected, not guessed: if the
+ * value is not a colour, `fillStyle` keeps its seed — so two different seeds,
+ * and a result equal to the first seed is re-checked against the second.
  *
- * A computed colour is whatever the page wrote, and since 2024 that is often
- * `oklch()`, `lab()` or `color-mix()` — Tailwind v4, Radix, and most design
- * systems. `parseColor` understands the common ones (see the syntax block in
- * color.ts), and this is the net under it: one 1x1 canvas, the colour assigned
- * as `fillStyle`, and the PIXEL read back. Whatever the browser can paint, this
- * resolves, exactly and without a matrix of magic constants — and if the value
- * is not a colour at all, `fillStyle` keeps the seed it was set to, which is how
- * a refusal is detected rather than guessed at (two different seeds, so a
- * candidate that happens to equal the first one is not mistaken for a refusal).
- *
- * MEASURED on tailwindcss.com, before this existed: the page's own dark theme
- * resolves to `lab(27.1134 -0.956401 -12.3224)` and `oklab(1 0 5.96e-8 / 0.1)`,
- * every one of which parsed as "nothing", so 115 text elements sat on surfaces
- * the engine had refused to paint and the page read as LIGHT to the detector —
- * the engine then painted a native dark site on top of its own theme.
- *
- * Cached per colour string for the life of the document: a page has a few dozen
- * distinct values, not one per element.
+ * Measured before this existed: tailwindcss.com's own dark theme resolves to
+ * `lab(...)`/`oklab(...)` values that parsed as "nothing", so the engine
+ * painted a native dark site as if it were light. Cached per colour string —
+ * a page has a few dozen distinct values, not one per element.
  */
 export function createColorResolver(doc: Document): ColorResolver {
   const cache = new Map<string, string | null>();
@@ -102,17 +78,9 @@ export function createColorResolver(doc: Document): ColorResolver {
   };
 }
 
-/**
- * A `background-image` with every unreadable colour function resolved.
- *
- * A gradient's stops are colours, and a modern one is written in the same
- * syntaxes as any other colour: `linear-gradient(oklch(1 0 0), oklch(.9 0 0))`
- * used to survive untouched because the stop-rewriting regex in theme.ts only
- * knows `rgb()`/`hsl()`. The whole value is not resolvable through a canvas
- * (it is an image, not a colour), so each function is resolved on its own and
- * substituted; a value that still contains an unreadable function is left as it
- * is, which is the same behaviour as before rather than a broken gradient.
- */
+/** Resolve unreadable colour functions inside a gradient value, one function
+ * at a time (the whole value is an image, not a colour). Unresolvable stops
+ * are left as-is rather than breaking the gradient. */
 function resolveInImage(image: string, resolve: ColorResolver): string {
   const css = String(image || "");
   if (!css || css.indexOf("url(") >= 0) return css;
@@ -148,84 +116,39 @@ const SIDES = ["top", "right", "bottom", "left"] as const;
 /** Our own hosts, by id prefix: never sampled, never mapped. */
 const OUR_ID_PREFIX = "lazyfox-";
 
-// HOW MANY ELEMENTS ONE PASS WALKS.
-//
-// This is a WINDOW, not a ceiling, and it used to be a ceiling in effect: the
-// walk started at the top of the document every time and stopped here, so a page
-// with more elements than this was painted only as far as the budget reached.
-// MEASURED on en.wikipedia.org/wiki/Firefox: 14 051 elements, 4 000 sampled, and
-// the article below the fold kept its own white panels with our mapped-light ink
-// on them — 991 unreadable text elements, and the report "issues with content".
-//
-// The walk therefore CONTINUES from where it stopped (see `cursor` in
-// createDarkApplier), and what it has measured so far is what the sheet is built
-// from, so a big page is painted progressively and completely instead of
-// partially and forever.
+// WINDOW, not ceiling: the walk CONTINUES from where it stopped (the `cursor`
+// in createDarkApplier), so a big page is painted progressively and completely
+// — a hard stop once left 991 text elements unreadable below the fold on
+// Wikipedia's Firefox article.
 const MAX_SCAN = 4000;
 const CHUNK = 250;
-// The smallest element worth a rule.
-//
-// This was 900 (≈30×30) and the number was the report "some text is not
-// readable": a sudoku digit, a badge, a timestamp, a menu label, a table's
-// corner cell — most of the TEXT in a real interface — is smaller than that and
-// was therefore never sampled. Their own colours were never mapped, so a `#111`
-// label stayed `#111` on a cell that had just been painted near-black.
-//
-// Lowering it costs no DOM work — the sampler already reads every candidate's
-// computed style and rectangle, and only the area check was throwing them away
-// — so the only price is a longer sheet. 24px² keeps the genuinely invisible
-// specks (a 1px spacer, an empty dot) out.
+// The smallest element worth a rule. Was 900 (≈30×30): most of the TEXT in a
+// real interface (a menu label, a badge, a table corner cell) is smaller, was
+// never sampled, and stayed `#111` on a cell we painted near-black. Lowering
+// it costs no extra DOM work — the sampler reads style+rect regardless; only
+// the area check was discarding them. 24px² still skips invisible specks.
 const MIN_AREA = 24;
-// WHICH ELEMENTS' PSEUDO-ELEMENT LAYERS ARE MEASURED.
-//
-// A `::before`/`::after` is where a site puts its VEILS: a card's frosted
-// overlay, a photo's white wash, the sheet that dims a game board. None of them is
-// an element, so none of them was ever sampled — and a light veil over a mapped
-// dark surface is the report "some gray overlay on some elements", verbatim.
-//
-// The gate is AREA because that is what makes a layer worth a rule and what keeps
-// the cost bounded: two extra computed-style reads per element above this size,
-// which on a very dense page is a few hundred elements rather than fourteen
-// thousand. A 24px dot's `::before` is not a veil.
-//
-// 2500 was measured too high on bbc.com/news, where a navigation item paints
-// `::before{content:"";position:absolute;background:rgb(230,232,234)}` — a light
-// bar on a menu that is a dark panel once the page is themed, i.e. one more
-// "gray overlay on some elements". The gate now starts where a menu item does.
+// Where a site puts its VEILS: ::before/::after are not elements, so they were
+// never sampled, and a light veil over a mapped dark surface is the report
+// "some gray overlay on some elements" verbatim. Area-gated to bound cost (a
+// 24px dot's ::before is not a veil); 1200 measured where a menu item starts.
 const PSEUDO_LAYERS = ["::before", "::after"] as const;
 const PSEUDO_MIN_AREA = 1200;
 const RESAMPLE_MIN_MS = 400;
-// The burst allowance, and — this is the part that was missing — what happens
-// after it.
-//
-// It used to be a hard stop: after 24 mutations the page kept whatever mapping it
-// had, for the rest of its life. That is exactly wrong for the pages people
-// actually use, because a state switch (a route change, opening a panel, loading
-// a second page of results) is a mutation BURST that lands minutes after the
-// first one, and the elements it creates were never in the sheet. The verdict the
-// user reported was "it doesn't render dark elements properly" — a mapping frozen
-// at whatever the page looked like when it first loaded.
-//
-// So the budget is a RATE LIMIT, not a lifetime cap: a burst is cheap and
-// immediate, and after the burst a page still earns a re-measure every
-// RESAMPLE_SLOW_MS while it keeps changing. A page that mutates forever still
-// costs at most one scan per few seconds, which is the same order as the scroll
-// work it is already doing.
+// A RATE LIMIT, not a lifetime cap: a hard stop at 24 mutations froze pages at
+// whatever they looked like on load — a route change / panel open / second
+// page of results is a burst minutes later, and its elements were never in the
+// sheet. A burst is cheap; after it a changing page still earns a re-measure
+// every RESAMPLE_SLOW_MS.
 const MAX_RESAMPLES = 24;
 const RESAMPLE_SLOW_MS = 2500;
 const STYLE_ID = "lazyfox-dark";
 
 export interface SampleOptions {
-  /**
-   * Measure in ONE task instead of yielding every CHUNK elements.
-   *
-   * Only the first pass after the placeholder paint asks for this, and the reason
-   * is the flash rather than speed: the placeholder sheet is removed before the
-   * measurement (it would otherwise be measured as the page's own colour), so
-   * every yield between the removal and the new sheet is a frame the user sees
-   * the undarkened page. A synchronous walk makes that window one task instead of
-   * sixteen timeouts.
-   */
+  /** Measure in ONE task instead of yielding every CHUNK elements. Only the
+   * first pass after the placeholder paint asks for it: the placeholder sheet
+   * is removed before measuring, so every yield in that window is a frame the
+   * user sees the undarkened page. */
   sync?: boolean;
 }
 
@@ -240,67 +163,37 @@ export interface DarkApplier {
   setScheme(scheme: "dark" | "light" | null): void;
   /** Everything this applier put in the document. */
   clear(): void;
-  /**
-   * Drop the record of the page's ORIGINAL colours, so the next pass measures
-   * what is on screen now rather than what was there when this applier first
-   * looked.
-   *
-   * Only correct while NO sheet of ours is installed — the record is what keeps
-   * a re-measure from reading our own paint back as the page's. It exists for
-   * the one question that is about the page's CURRENT palette: "if I ask this
-   * site for its own dark theme, does it have one?"
-   */
+  /** Drop the record of the page's ORIGINAL colours, so the next pass measures
+   * what is on screen. Only correct while NO sheet of ours is installed; used
+   * to ask the page for its own dark theme. */
   forget(): void;
   /** Whether a sheet is currently installed. */
   active(): boolean;
-  /**
-   * Elements the walk has not reached yet.
-   *
-   * Zero for a page that fits in one window. A page that does not (Wikipedia,
-   * a long feed, a spreadsheet) is painted in slices, and this is how the
-   * controller knows to ask for the next one without waiting for a mutation
-   * that a settled page will never produce.
-   */
+  /** Elements the walk has not reached yet (zero once the document is
+   * covered): how the controller asks for the next slice of a long page
+   * without waiting for a mutation a settled page never produces. */
   pending(): number;
-  /**
-   * The `class` attributes of a bounded sample of the page's elements.
-   *
-   * Exists for one question — "is this page styled with a known utility
-   * framework?" (see tailwind.ts) — and it is a separate walk from `sample()` on
-   * purpose: the answer is about the page's vocabulary, not about any element's
-   * colours, and a page may be detected as Tailwind before the palette engine
-   * has anything to paint. Cheap: one attribute read per element, capped.
-   */
+  /** The `class` attributes of a bounded sample of the page's elements —
+   * answers "is this page a known utility framework?" (tailwind.ts). A
+   * separate walk on purpose: it is about the page's vocabulary, not colours,
+   * and detection can fire before anything is painted. */
   classTokens(limit?: number): string[];
 }
 
 /**
- * The CSS selector that reaches one element, or "" when there is none worth
- * emitting.
- *
- * Three shapes, in order of preference: an id (exact, short); the tag plus its
- * classes (survives re-render, the common case); and — only for elements with
- * neither — an `:nth-of-type` path, which is exact but ugly and long. A bare tag
- * name is never emitted: `div` would match half the page and the last rule would
- * win, which is how a remap produces a page with one element's colours applied
- * to a hundred others.
+ * The CSS selector that reaches one element, or "" when none is worth emitting:
+ * an id, else tag+classes (survives re-render), else an exact `:nth-of-type`
+ * path for elements with neither. A bare tag name is NEVER emitted — `div`
+ * matches half the page and the last rule wins, smearing one element's colours
+ * across a hundred others.
  */
 const SAFE_ID = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
-/**
- * Whether `sel` reaches `el` and NOTHING ELSE.
- *
- * This is the property the whole mapping rests on. A selector that also
- * matches a sibling with different colours paints that sibling with this
- * element's colours: a mis-coloured panel on a page that uses one class for
- * many cards, and — because the same rule carries `color` — text that becomes
- * the background. On a real site (a search results page, a news front page)
- * class names are shared far more often than they are unique, which is why
- * "artifacts" cluster on exactly those pages.
- *
- * A selector that cannot be made unique is not emitted at all: not painting an
- * element is a missing improvement, painting the wrong one is an artifact.
- */
+/** Whether `sel` reaches `el` and NOTHING ELSE — the property the mapping
+ * rests on. Siblings share class names far more often than not, and a rule
+ * that carries `color` onto a different background paints text into the
+ * background. Not emitting an element is a missing improvement; painting the
+ * wrong one is an artifact. */
 function onlyMatches(el: Element, sel: string): boolean {
   try {
     const doc = el.ownerDocument;
@@ -312,14 +205,9 @@ function onlyMatches(el: Element, sel: string): boolean {
   }
 }
 
-/**
- * An exact path from the root (or from the nearest ancestor with an id).
- *
- * Tags and `:nth-of-type` only. It matches this element and nothing else, which
- * is what makes it usable as a SOLO selector, but it is also a POSITION: insert
- * a sibling and the same path names a different element. `stablePathFor` below
- * is the one written into the sheet.
- */
+/** Exact positional path from the root (or nearest id ancestor); reaches this
+ * element and nothing else, but is a POSITION — `stablePathFor` is the one
+ * written into the sheet. */
 function pathFor(el: Element): string {
   const parts: string[] = [];
   let node: Element | null = el;
@@ -355,16 +243,10 @@ function classesOf(node: Element): string[] {
   }
 }
 
-/**
- * A path whose every step names the element's CLASSES, not just its position.
- *
- * This is the selector a disagreeing group's members are painted with, so it
- * has to survive a re-render: `div:nth-of-type(3) > p:nth-of-type(2)` survives
- * nothing, while `div.card > p.lede` still names the same thing after the page
- * inserts a sibling above it. `:nth-of-type` is added only where the tag alone
- * would be ambiguous, and `onlyMatches` still has the last word — a path that
- * does not reach exactly one element is never used.
- */
+/** A path naming CLASSES at every step, so it survives a re-render (`div.card
+ * > p.lede` names the same thing after a sibling is inserted; a positional
+ * path does not). `:nth-of-type` only where the tag alone is ambiguous, and
+ * onlyMatches still has the last word. */
 function stablePathFor(el: Element): string {
   const parts: string[] = [];
   let node: Element | null = el;
@@ -412,27 +294,20 @@ export function selectorsFor(el: Element): ElementSelectors {
   const classOk = !!classSel && onlyMatches(el, classSel);
   const path = pathFor(el);
   const pathOk = !!path && onlyMatches(el, path);
-  // THE SOLO SELECTOR. A unique class is already one; otherwise the stable path
-  // is asked first (it survives a re-render) and the positional path is the
-  // fallback for an element whose classes repeat down the tree.
+  // A unique class is already a solo selector; otherwise prefer the stable
+  // path (survives re-render) and fall back to the positional path for an
+  // element whose classes repeat down the tree.
   let solo = "";
   if (classOk) solo = classSel;
   else {
     const stable = stablePathFor(el);
     solo = stable && onlyMatches(el, stable) ? stable : pathOk ? path : "";
   }
-  // A SHARED SELECTOR IS NOT A REASON TO PAINT NOTHING.
-  //
-  // Requiring uniqueness was the fix for "one rule painted a hundred siblings" —
-  // a real artifact — but as a FILTER it threw away most of every real site:
-  // measured on merriam-webster.com, 826 text elements got mapped while the
-  // white panels they sit on (a class shared by their siblings) were skipped, so
-  // the page became light text on an unpainted white panel. That is the report
-  // "some text is not readable" and, on a grid, "a gray overlay hides it".
-  //
-  // The name is kept, and `entriesFor` in theme.ts decides from every element
-  // that wears it: one rule when they agree, one rule per element (against the
-  // solo selector) when they do not.
+  // A SHARED SELECTOR IS NOT A REASON TO PAINT NOTHING. Requiring uniqueness
+  // as a filter left 826 mapped text elements on unpainted white panels
+  // (merriam-webster.com) — "some text is not readable". So the name is kept:
+  // `entriesFor` in theme.ts decides from every element that wears it — one
+  // rule when they agree, one per element against the solo selector when not.
   const shared = classOk ? classSel : pathOk ? path : classSel || path;
   return { shared, solo };
 }
@@ -441,21 +316,11 @@ export function selectorFor(el: Element): string {
   return selectorsFor(el).shared;
 }
 
-/**
- * The pixels behind a transparent root — which is NOT always white.
- *
- * A page that paints only `body` leaves `html` transparent, and what shows
- * through is the UA canvas: white in a light scheme, near-black in a dark one.
- * Reporting white regardless is how a page whose own dark theme is already on
- * screen measures as "light page", gets recoloured on top of its own theme, and
- * produces the report "it doesn't render dark elements properly" — the site's
- * dark panels are re-mapped as if they were its light ones.
- *
- * `color-scheme` is what decides it, and it is a fact about the page rather than
- * a guess: `dark` alone forces the dark canvas, `light dark` follows the OS, and
- * anything without `dark` is a light canvas. This is read from the page as it is
- * BEFORE any sheet of ours is installed (see `backdrop` in createDarkApplier).
- */
+// The pixels behind a transparent root, which is NOT always white: `color`
+// -scheme` decides (dark alone ⇒ dark canvas; `light dark` ⇒ follows the OS).
+// Reporting white regardless made an already-dark page measure as light and get
+// recoloured on top of its own theme. Read from the page BEFORE any sheet of
+// ours is installed.
 function rootBackdrop(doc: Document, win: Window): string {
   const LIGHT = "rgb(255, 255, 255)";
   try {
@@ -494,22 +359,20 @@ function resolvedBackground(
   const alpha = alphaOf(own);
   let out = own;
   if (alpha <= 0) {
-    // Fully transparent: the colour the user actually sees is an ANCESTOR's —
-    // and at the root, the browser's own canvas.
+    // Fully transparent: what the user sees is an ANCESTOR's, or the canvas at
+    // the root.
     const parent = el.parentElement;
     out = parent ? resolvedBackground(parent, read, cache, backdrop) : backdrop();
   }
-  // A PARTIAL alpha is left exactly as it is. Compositing it against the
-  // ancestor would invent a colour the page never asked for, and the entry
-  // builder skips anything that is not opaque — so the element keeps its own
-  // appearance instead of getting a fabricated one.
+  // PARTIAL alpha left as-is: compositing would invent a colour the page never
+  // asked for, and the entry builder skips non-opaque anyway.
   cache.set(el, out);
   return out;
 }
 
 function alphaOf(css: string): number {
-  // The parsed value first: a `lab(… / 0.5)` is translucent, and reading only
-  // the rgb syntax made every modern translucent colour look opaque.
+  // Parsed value first: only reading rgb syntax made every modern (lab etc.)
+  // translucent colour look opaque.
   const parsed = parseColor(css);
   if (parsed) return parsed.a;
   const m = /rgba?\(([^)]*)\)/.exec(css || "");
@@ -523,27 +386,22 @@ function alphaOf(css: string): number {
 
 export function createDarkApplier(doc: Document, win: Window): DarkApplier {
   let style: HTMLStyleElement | null = null;
-  // The sheet we last WROTE, which is not the same thing as the sheet we last
-  // COMPUTED. Re-writing `textContent` with the bytes it already holds is not a
-  // no-op in a browser: it is a style invalidation and a repaint of the whole
-  // document, and — because the observer watches the subtree — a mutation that
-  // buys the next measurement. Two identical passes in a row therefore used to
-  // feed each other forever, which is the reported "it flashes dark and light".
-  // A write that changes nothing now changes nothing.
+  // The sheet last WROTE, not the one last COMPUTED. Re-writing identical bytes
+  // is not a no-op in a browser: it invalidates styles, repaints the document,
+  // and — the observer watching the subtree — buys the next measurement. Two
+  // identical passes in a row used to feed each other forever ("it flashes
+  // dark and light"). A write that changes nothing now changes nothing.
   let writtenCss = "";
 
-  // The colour behind a transparent root, measured ONCE on the page as it is —
-  // before our sheet exists — and kept. Re-reading it later would just measure
-  // our own `color-scheme: dark`, which would turn every page we had painted into
-  // a page that "is already dark". `forget()` drops it along with the originals,
-  // because both answer the same question: what did the page look like before us?
+  // The colour behind a transparent root, measured ONCE as the page is before
+  // our sheet exists and kept: re-reading later would just measure our own
+  // `color-scheme: dark`, declaring every painted page "already dark".
   let backdrop: string | null = null;
 
-  // THE BROWSER'S OWN CONVERSION, for a colour this module cannot read: see
-  // createColorResolver. Everything the sampler records goes through `colour`,
-  // so a page written in `oklch()`/`lab()` is a page this engine can measure —
-  // and a page whose own dark theme is written in them is recognised as DARK
-  // instead of being painted over as if it were light.
+  // The browser's own conversion for colours parseColor cannot read (see
+  // createColorResolver); everything the sampler records goes through `colour`,
+  // so an oklch/lab page is measurable — and its own dark theme recognised as
+  // DARK instead of painted over as light.
   const resolveColor = createColorResolver(doc);
   const colour = (raw: string): string => {
     const v = String(raw || "").trim();
@@ -556,36 +414,19 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
     return backdrop;
   };
 
-  // THE PAGE'S OWN COLOURS, per selector — and the only colours this module is
-  // ever allowed to decide from.
+  // THE PAGE'S OWN COLOURS, and the only colours this module is allowed to
+  // decide from. Every later pass runs with OUR SHEET INSTALLED, so reading an
+  // element back is a measurement of ourselves: a light page read back dark
+  // stands the whole feature down, and double-mapped colours drift. So a
+  // resample re-measures GEOMETRY only; the colour of a recorded element is
+  // never re-read (the same rule Dark Reader follows). Residual: an element
+  // painted by a rule generated from ANOTHER element reads our colour back the
+  // first time it is seen — one element of one class, cheaper than re-measuring
+  // with the sheet suspended (a visible flash on every resample).
   //
-  // The first read of an element is the page's colour; every later pass runs with
-  // THIS ENGINE'S SHEET INSTALLED, so the same element now computes to whatever
-  // the mapping painted it. Reading that back is not a measurement of the page, it
-  // is a measurement of ourselves, and both failure modes are ugly and were
-  // observed in a real browser (the e2e theme suite): a light page read back dark
-  // is decided as "the page is already dark" and stands the whole feature down,
-  // and a colour fed through the mapping twice drifts away from the palette it
-  // was mapped from.
-  //
-  // So a resample re-measures GEOMETRY and reaches elements the first pass could
-  // not have seen; it does not re-read the colour of anything it has already
-  // recorded. This is the same rule Dark Reader's own engine follows (it keeps
-  // the original computed values per element and never reads a modified one).
-  //
-  // The residual, named: an element that is painted by a rule generated from
-  // ANOTHER element (a `.card` rule mapping twenty cards, one of which was
-  // sampled) and is seen for the first time after we painted reads our colour
-  // back. It is one element of one class, it can only ever affect that class's
-  // rule, and paying for it with a measurement taken with our sheet suspended is
-  // a worse trade (that is a visible flash of the undarkened page on every
-  // resample).
-  //
-  // KEYED BY ELEMENT, not by selector. It used to be a Map keyed by the
-  // selector, which meant the FIRST element to wear a class donated its colours
-  // to every other element with the same class: one white card made twenty
-  // tinted ones measure as white, and the rule built from that painted them
-  // wrong. An element's own colour is a property of the element.
+  // KEYED BY ELEMENT, not by selector: selector-keying let the first element
+  // wearing a class donate its colours to every other — one white card made
+  // twenty tinted ones measure as white, and the rule built from that failed.
   let originals = new WeakMap<
     Element,
     {
@@ -597,24 +438,20 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
     }
   >();
 
-  // THE WALK IS A CURSOR OVER THE WHOLE DOCUMENT, and this is everything it has
-  // measured so far — the sheet is built from the union, not from one slice of
-  // it. Elements that have left the document are dropped on the next pass, so a
-  // single-page app that replaces its view does not accumulate the old one.
+  // The walk is a cursor over the whole document, and this is everything
+  // measured so far — the sheet is built from the union, not one slice.
   let cursor = 0;
   let documentElements = 0;
-  // Elements the cursor has walked since the last wrap. It counts every element
-  // it PASSED, not every element it kept: a page half full of `display:none`
-  // chrome still has to reach the end of the walk, and "pending" must fall to
-  // zero when it does or the controller would ask forever.
+  // Elements WALKED since the last wrap, not elements kept: hidden chrome still
+  // has to be walked to the end, and `pending` must fall to zero when it is or
+  // the controller asks forever.
   let passed = 0;
   const measured = new Map<Element, PageSample>();
   // THE LAYERS, keyed by the element that owns them and rebuilt whenever that
   // element is walked again (a `::before` exists only while its element does).
   const measuredLayers = new Map<Element, PageSample[]>();
-  // The page's ORIGINAL layer colours, for the same reason as `originals`: a
-  // second pass runs with our sheet installed and would otherwise read our own
-  // paint back as the page's veil.
+  // The page's ORIGINAL layer colours, for the same reason as `originals`:
+  // later passes run with our sheet installed.
   let layerOriginals = new WeakMap<Element, Partial<Record<(typeof PSEUDO_LAYERS)[number], { ownBg?: string; image?: string }>>>();
 
   const setSheet = (css: string): void => {
@@ -630,11 +467,10 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       }
       return;
     }
-    // `isConnected` is part of the question, not a detail: a page that replaces
-    // its <head> (a framework re-render, a full document swap in an SPA) takes
-    // our <style> with it, and returning on the cached bytes then leaves the
-    // page undarkened for the REST OF ITS LIFE — the report "I have to reload
-    // the page to see the content again". A detached sheet is not installed.
+    // `isConnected` is part of the question: a page that replaces its <head>
+    // takes our <style> with it, and returning on cached bytes then leaves the
+    // page undarkened for the rest of its life. A detached sheet is not
+    // installed.
     let live = false;
     try {
       live = !!style && style.isConnected;
@@ -673,12 +509,10 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
   const sample = async (opts: SampleOptions = {}): Promise<PageSample[]> => {
     const samples: PageSample[] = [];
     const bgCache = new Map<Element, string>();
-    // One selector per element PER PASS. `selectorFor` is not free (classList, an
-    // nth-of-type walk) and the colour resolution below consults it for every
-    // ancestor it walks through, so it is computed once and shared. Per pass
-    // rather than kept across passes on purpose: a page that toggles a class
-    // changes the selector, and a stale one would key `originals` to an element
-    // that no longer matches it.
+    // One selector per element PER PASS: `selectorFor` is not free and the
+    // resolution below consults it per ancestor. Not kept across passes — a
+    // page that toggles a class changes its selector, and a stale one would
+    // key `originals` to an element that no longer matches it.
     // The viewport, for the panel/backdrop question (see `share`).
     let viewport = 1;
     try {
@@ -711,25 +545,22 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
     try {
       const all = doc.querySelectorAll("*");
       documentElements = all.length;
-      const from = documentElements ? cursor % documentElements : 0;
-      window = Array.prototype.slice.call(all, from, from + MAX_SCAN);
-      cursor = from + window.length;
-      passed = cursor;
-      if (cursor >= documentElements) {
-        cursor = 0;
-        passed = 0;
-      }
+      // THE SLICE ARITHMETIC LIVES OUTSIDE THIS FILE (scan.ts), and `passed` is
+      // the number it exists for: the controller reads `pending()` after every
+      // pass to decide whether the document still has unreached elements. A wrap
+      // that reported the whole document as still pending is what made every page
+      // walk for ever (see the note there).
+      const slice = scanWindow(documentElements, cursor, MAX_SCAN);
+      window = Array.prototype.slice.call(all, slice.from, slice.from + slice.take);
+      cursor = slice.cursor;
+      passed = slice.passed;
     } catch {
       return Array.from(measured.values());
     }
-    // The recorded colour FIRST, the live one only when there is no record: see
-    // `originals`. Consulted by `resolvedBackground` too, so a transparent
-    // element resolves against the colour its ancestor HAD rather than the one
-    // this engine painted on it.
-    // The element's OWN colour, recorded once. Note that the record is the own
-    // colour and NOT the resolved one: resolution is a per-pass walk (see
-    // `resolvedBackground`), while "did this element paint anything?" is a
-    // property of the element that must survive re-renders.
+    // Recorded colour FIRST, live only with no record: see `originals`. The
+    // record is the OWN colour, not the resolved one — resolution is a per-pass
+    // walk (resolvedBackground), while "did this element paint anything" is a
+    // property of the element that survives re-renders.
     const read = (el: Element): string => {
       const known = originals.get(el);
       if (known && known.ownBg) return known.ownBg;
@@ -766,16 +597,13 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
         area = 0;
       }
       if (area < MIN_AREA) continue;
-      // A `url()` is a picture and is never ours to move. Anything else in
-      // `background-image` is a GRADIENT — a surface — and its stops are mapped
-      // (see mapGradient). Reading it here, once, is what keeps a gradient from
-      // being re-read after we have painted a mapped copy of it over the page.
+      // A `url()` is a picture and never ours to move; anything else is a
+      // gradient — a surface — whose stops are mapped. Read once here so a
+      // gradient is not re-read after we paint a mapped copy over the page.
       const imageRaw = resolveInImage(cs.getPropertyValue("background-image") || "", resolveColor);
       const hasBgImage = imageRaw.indexOf("url(") >= 0;
-      // READ ONLY FOR THE ELEMENTS THAT PAINT ONE, because that is the only case
-      // the answer changes a decision (see `hasContent` in detect.ts). One text
-      // walk of an image-bearing subtree is cheap next to the two style reads the
-      // element has already cost.
+      // textContent/size read only for image-bearing elements: that is the only
+      // case the answer changes a decision (hasContent in detect.ts).
       let hasContent: boolean | undefined;
       let bgCovers: boolean | undefined;
       if (hasBgImage) {
@@ -793,11 +621,9 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       }
       const gradientOf = (v: string | undefined): string | undefined =>
         v && v !== "none" && v.indexOf("url(") < 0 ? v : undefined;
-      // EVERY PAINTED SIDE, in one pass over the four widths and colours. A
-      // `border-bottom: 1px solid` row separator has no top width at all, so a
-      // top-only read found no border and left a light hairline on a dark page;
-      // and a ring written on three sides (`border: 4px solid rgba(255,255,255,.5)`
-      // minus one) came back as three untouchable light edges.
+      // EVERY PAINTED SIDE, not just top: a `border-bottom: 1px solid` row
+      // separator has no top width at all, and a ring minus one side came back
+      // as three untouchable light edges.
       const paintedSides: Array<{ side: "top" | "right" | "bottom" | "left"; color: string }> = [];
       for (const side of SIDES) {
         const w = parseFloat(cs.getPropertyValue("border-" + side + "-width") || "0") || 0;
@@ -850,9 +676,8 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       };
       samples.push(one);
       measured.set(el, one);
-      // THE LAYERS THIS ELEMENT PAINTS, measured once and then read from the
-      // record (see `layerOriginals`). Only a layer that paints a background at
-      // all becomes a sample; the rest would be rules saying nothing.
+      // THE LAYERS this element paints, measured once then read from
+      // `layerOriginals`. Only a layer painting something becomes a sample.
       if (area >= PSEUDO_MIN_AREA) {
         const kept: PageSample[] = [];
         const knownLayers = layerOriginals.get(el);
@@ -901,9 +726,8 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
         else measuredLayers.delete(el);
       }
     }
-    // THE UNION, not this pass's slice: the sheet describes the page as measured
-    // so far, and an element measured two passes ago is still on the page. The
-    // layers come with it, keyed by the element whose selector reaches them.
+    // THE UNION, not this pass's slice: an element measured two passes ago is
+    // still on the page. Layers come with it.
     const all: PageSample[] = Array.from(measured.values());
     for (const layers of measuredLayers.values()) for (const layer of layers) all.push(layer);
     return all;
@@ -921,14 +745,13 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       layerOriginals = new WeakMap();
       measuredLayers.clear();
     },
+    // Zero once the document has been covered (see scan.ts).
     pending: () => Math.max(0, documentElements - passed),
     clear: () => {
       setSheet("");
       setScheme(null);
-      // `originals` is deliberately NOT cleared. It is a record of what the page
-      // looks like, not of what we painted, and the page does not change because
-      // the user pressed a key. The next pass therefore still decides from the
-      // page's own palette — which is what makes a toggle back ON idempotent.
+      // `originals` deliberately NOT cleared: it records the page, not our
+      // paint, so a toggle back ON decides from the page's palette (idempotent).
     },
     /** Whether a sheet is INSTALLED — a detached <style> is not installed. */
     active: () => {
@@ -955,17 +778,10 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
   };
 }
 
-/**
- * A rate-limited resample gate.
- *
- * Returns a function to call on every mutation; it decides whether the page has
- * earned another measurement. The rate limit exists because the alternative is a
- * page that mutates at 60Hz dragging a 4000-element style scan behind it.
- *
- * `reset()` is for a NEW PAGE STATE rather than a new mutation: a same-document
- * navigation (SPA route change) is a different page as far as the palette is
- * concerned, and it must not inherit the previous one's exhausted burst.
- */
+/** Rate-limited resample gate, called on every mutation — the alternative is
+ * a page mutating at 60Hz dragging a 4000-element style scan behind it.
+ * `reset()` is for a NEW PAGE STATE (an SPA route change), not a mutation: it
+ * must not inherit the previous page's exhausted burst. */
 export interface ResampleGate {
   (): boolean;
   reset(): void;
@@ -973,15 +789,13 @@ export interface ResampleGate {
 
 export function createResampleGate(now: () => number): ResampleGate {
   let samples = 0;
-  // -Infinity rather than 0: "never measured" is not a timestamp, and starting
-  // the clock at zero means the FIRST call is refused whenever the clock is
-  // younger than the interval (a monotonic clock, or `Date.now()` at the epoch).
-  // The first pass is the one that has to happen.
+  // -Infinity: "never measured" is not a timestamp, and starting at 0 refuses
+  // the FIRST call on any clock younger than the interval.
   let last = -Infinity;
   const gate = () => {
     const t = now();
-    // In the burst: the ordinary calm-down interval. Out of it: the slow one,
-    // which a page that keeps changing keeps earning.
+    // In the burst: the calm-down interval. Out of it: the slow one, which a
+    // page that keeps changing keeps earning.
     const wait = samples < MAX_RESAMPLES ? RESAMPLE_MIN_MS : RESAMPLE_SLOW_MS;
     if (t - last < wait) return false;
     last = t;
@@ -1004,17 +818,10 @@ export interface MutationLike {
   removedNodes?: ArrayLike<unknown>;
 }
 
-/**
- * Whether a mutation batch is OUR OWN write and nothing else.
- *
- * The observer watches `childList` on the whole subtree, so the act of installing
- * the sheet (`<style>` appended, then its text replaced on every pass) is itself a
- * mutation. Treating that as page activity is the other half of the feedback
- * loop: every sheet write bought another measurement, and on a page with any
- * motion at all the two took turns for as long as the tab was open. A batch that
- * only touches the applier's own `<style>` node is the applier's business, not
- * the page's.
- */
+/** Whether a mutation batch is OUR OWN write and nothing else. The sheet
+ * install itself is a mutation the observer sees; counting it as page activity
+ * is the other half of the measurement feedback loop (writes bought
+ * measurements to the end of the tab). */
 export function touchesOnlyOwnStyle(records: MutationLike[], own: unknown): boolean {
   if (!own || !records.length) return false;
   for (const r of records) {

@@ -18,7 +18,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isSignedXpi, xpiVersion } from "./amo-lib.ts";
+import { compareVersions, isSignedXpi, xpiVersion } from "./amo-lib.ts";
 import { buildInstallerSet, type InstallerTarget } from "./installer-build.ts";
 import { HOST, TARGETS, isNativeTarget } from "./payload.ts";
 
@@ -39,6 +39,10 @@ function pickSignedXpi(): string {
   const current = join(distDir, `lazyfox2-${version}.xpi`);
   if (existsSync(current) && isSignedXpi(readFileSync(current))) return current;
 
+  // Highest VERSION, not highest file name. Sorting the names puts "0.5.10"
+  // before "0.5.9", so the stable installer would silently embed the older
+  // add-on — a wrong-build bug of exactly the kind installer/bin exists to
+  // prevent, hidden behind a perfectly successful build.
   const signed = readdirSync(distDir)
     .filter((n) => /^lazyfox2-.*\.xpi$/.test(n))
     .map((n) => join(distDir, n))
@@ -49,8 +53,9 @@ function pickSignedXpi(): string {
         return false;
       }
     })
-    .sort();
-  if (signed.length) return signed[signed.length - 1]!;
+    .map((p) => ({ p, v: xpiVersion(readFileSync(p)) }))
+    .sort((a, b) => compareVersions(a.v, b.v));
+  if (signed.length) return signed[signed.length - 1]!.p;
 
   console.error(
     `build-release-installers: no signed xpi for version ${version}, and no committed signed xpi in dist/.\n` +

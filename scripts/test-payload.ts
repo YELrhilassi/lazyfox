@@ -14,12 +14,14 @@
 import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { zipStore } from "./amo-lib.ts";
 import {
   LOADER_FILES,
+  MissingPayloadInputError,
   STAGED_CHROME_FILES,
+  latestUnsignedXpi,
   payloadHash,
   sha256File,
   sourceHash,
@@ -113,6 +115,53 @@ try {
   writeFileSync(xpi, "xpi-bytes");
 
   ok("restoring every input restores the payload hash", payloadHash(tmp, xpi) === base);
+
+  // PLATFORM INDEPENDENCE. The native host's source is hashed as a stand-in for
+  // the binary compiled from it, so a CRLF checkout of it is not a payload
+  // change. This repo develops on Windows (core.autocrlf=true) and gates on
+  // Linux: before this, every record written on one platform was "stale" on the
+  // other, which is exactly the red gate everyone learns to ignore.
+  writeFileSync(join(tmp, "native-host", "main.go"), "package main\r\n");
+  ok("a CRLF checkout of the native host does not change the payload hash", payloadHash(tmp, xpi) === base);
+  writeFileSync(join(tmp, "native-host", "main.go"), "package main\n");
+
+  // ...but the bytes that SHIP are hashed exactly. A chrome file that differs
+  // only in line endings is a different payload, because it is different bytes
+  // installed into the profile.
+  writeFileSync(join(tmp, "dist", "chrome", "frame.js"), "chrome:frame.js\r\n");
+  ok("CRLF in a shipped chrome file DOES change the payload hash", payloadHash(tmp, xpi) !== base);
+  writeFileSync(join(tmp, "dist", "chrome", "frame.js"), "chrome:frame.js\n");
+  ok("restoring the shipped bytes restores the payload hash", payloadHash(tmp, xpi) === base);
+
+  // A hash over absent bytes is a wrong answer, not a weak one: sha256File()
+  // answers "" for an unreadable file, so a deleted or renamed payload file used
+  // to hash exactly like an empty one and two trees missing the same file
+  // compared equal.
+  const frameBytes = readFileSync(join(tmp, "dist", "chrome", "frame.js"));
+  rmSync(join(tmp, "dist", "chrome", "frame.js"));
+  assert.throws(
+    () => payloadHash(tmp, xpi),
+    (e: unknown) =>
+      e instanceof MissingPayloadInputError && e.paths.includes("dist/chrome/frame.js"),
+    "a missing payload input must raise, naming the file",
+  );
+  writeFileSync(join(tmp, "dist", "chrome", "frame.js"), frameBytes);
+  ok("restoring the missing input restores the payload hash", payloadHash(tmp, xpi) === base);
+
+  // The default add-on must not depend on readdir() order: dist/ accumulates one
+  // xpi per release, and "the last one listed" is a different file per platform.
+  writeFileSync(join(tmp, "dist", "lazyfox2-9.10.0.xpi"), "v9.10");
+  writeFileSync(join(tmp, "dist", "lazyfox2-10.0.0.xpi"), "v10");
+  ok(
+    "the newest unsigned add-on wins by version, not by directory order",
+    basename(latestUnsignedXpi(tmp) ?? "") === "lazyfox2-10.0.0.xpi",
+  );
+  ok(
+    "a signed add-on is never chosen as the default",
+    !basename(latestUnsignedXpi(tmp) ?? "").includes("-signed"),
+  );
+  rmSync(join(tmp, "dist", "lazyfox2-9.10.0.xpi"));
+  rmSync(join(tmp, "dist", "lazyfox2-10.0.0.xpi"));
 
   // Source fingerprint: independent of dist/, and sensitive to the Go core and
   // the native host (both feed the artifacts) but not to test files.
@@ -233,10 +282,12 @@ try {
   ok("the reason names the source", v[0]!.reason.includes("source changed"));
   writeFileSync(join(tmp, "src", "extension", "hints.ts"), "export const x = 1;\n");
 
-  // 3d. Swapped bytes are caught even when the payload still matches.
+  // 3d. Swapped bytes are caught even when the payload still matches — and they
+  // are a FAILURE ("swapped"), not an "unverified" row that passes the gate.
   writeFileSync(binPath, "somebody-replaced-this");
   v = verifyBinaries(tmp);
-  ok("a replaced binary is not reported fresh", v[0]!.status !== "fresh");
+  ok("a replaced binary is reported as swapped", v[0]!.status === "swapped");
+  ok("the reason says the bytes differ from the record", v[0]!.reason.includes("bytes differ"));
   writeFileSync(binPath, "binary-bytes");
 
   // 3e. A release binary carrying an older SIGNED add-on is judged against the

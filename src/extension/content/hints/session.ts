@@ -1,19 +1,9 @@
 // The session: one `;f` press, from collecting candidates to handling keys.
-//
-// This used to be 886 lines of closure holding everything at once — the key
-// pool, the label DOM, the click machinery, the visibility predicates and the
-// diagnostics report — so no part of it could be read, changed or tested on its
-// own. Only the genuinely session-scoped state stayed; everything else moved
-// next door:
-//
-//   selectors.ts  what counts as hintable, and the limits
-//   probe.ts      is this element visible / reachable, and what is it called
-//   collect.ts    walking the page (and open shadow roots) for candidates
-//   select.ts     which candidates get a label
-//   overlay.ts    the label DOM, and where each badge goes
-//   activate.ts   clicking a target, and whether the page reacted
-//   life.ts       what counts as "the page did something"
-//   diagnose.ts   the "why isn't this hinted" report
+// Only session-scoped state lives here; the rest lives next door:
+//   selectors.ts  what counts as hintable       select.ts   which candidates get a label
+//   probe.ts     visibility + naming            overlay.ts  label DOM and placement
+//   collect.ts   page walk for candidates       activate.ts clicking/focusing + verdict
+//   life.ts      "the page did something"       diagnose.ts the "why isn't this hinted" report
 import { core } from "../../../shared/core";
 import { toast } from "../../../shared/overlay";
 import type { HintActivation } from "../../../shared/types";
@@ -22,6 +12,7 @@ import {
   DOM_RESYNC_MAX_WAIT,
   MAX_HINTS,
   PAGE_GUARD,
+  POOL_RESYNC_MS,
   RESYNC_DELAY,
   type HintItem,
 } from "./selectors";
@@ -29,9 +20,7 @@ import { createHintOverlay } from "./overlay";
 import { createActivator } from "./activate";
 import { targetKey, type HintCandidate } from "./select";
 import { createHintResolve, type HintPager } from "./hintresolve";
-// NOTE: collection is reached through `resolve.refreshPool()` rather than by
-// calling `collectHintables` here, so the pool and the visibility pass it is
-// selected with are always built together.
+import { sheetOver } from "./probe";
 import { shadowRootOf, walkElements } from "../../../shared/dom";
 import { createCoalescer } from "../../../shared/coalesce";
 import { createMotionWatch, type MotionKind, type MotionWatch } from "./motion";
@@ -48,26 +37,20 @@ import { createFrameCoalescer, nextMeasurementDelay, FAST_EPISODE_MS } from "./f
 
 export interface LinkHints {
   readonly active: boolean;
-  // True between the `;f` keypress and the moment the batch is on screen.
-  // start() is async, so this window is real and can be long on a heavy page.
-  // Hosts MUST gate their cancel paths on `active || starting`: gating on
-  // `active` alone drops the cancel and lets the batch appear after the user
-  // has already pressed Escape.
+  // True between the `;f` keypress and the batch being on screen (start() is
+  // async). Cancel paths MUST gate on `active || starting`: gating on `active`
+  // alone drops the Escape that arrives in that window.
   readonly starting: boolean;
   start(): Promise<void>;
   handleKey(e: KeyboardEvent): boolean;
   exit(): void;
-  // What the last activation did (see HintActivation), for the diagnostics page.
-  // null when nothing has been activated in this page yet.
+  // What the last activation did (HintActivation), for the diagnostics page.
   lastActivation(): HintActivation | null;
-  // Whether the enter-affordance badge is up, and what it says. The badge only
-  // appears in the one state a user cannot otherwise detect (an ambiguous typed
-  // prefix), so it is part of the same self-report the diagnostics page reads.
+  // Whether the enter-affordance badge is up (an ambiguous typed prefix).
   enterBadge(): { shown: boolean; glyph: string };
-  // Explicitly requested geometry for e2e/diagnostics. The live animation sweep
-  // never serializes or publishes this data.
-  // `held` rows are labels whose control is momentarily gone (a wash-out, a
-  // re-render) and which are still drawn — see overlay.snapshot.
+  // Explicitly requested geometry for e2e/diagnostics — never published live.
+  // `held` rows: labels whose control is momentarily gone but still drawn
+  // (overlay.snapshot).
   snapshot(): {
     positions: Array<{ key: string; x: number; y: number; held?: boolean }>;
     boxes: Array<{ key: string; l: number; t: number; r: number; b: number; held?: boolean }>;
@@ -82,13 +65,10 @@ export function createLinkHints(
 ): LinkHints {
   let active = false;
   let pool: Element[] = []; // every hintable element, in document order
-  // Which live element does this label belong to, NOW? Split into
-  // hintresolve.ts because it is the only part of link hints with no state of
-  // its own: give it the pool and it gives back elements, which the key
-  // assignment, the render loop and the activator all need answered the same
-  // way. `setPool` exists because resolving may find the pool stale and
-  // refresh it - which is a mutation of the session's own state, so the
-  // session keeps ownership and the module asks.
+  // Which live element does this label belong to, NOW? Split out into
+  // hintresolve.ts: it is the only stateless part (pool in, elements out) but
+  // resolving may refresh the pool — a session-state mutation, so the session
+  // keeps ownership via setPool.
   const resolve = createHintResolve({
     pool: () => pool,
     setPool: (next) => { pool = next; },
@@ -96,27 +76,19 @@ export function createLinkHints(
     scroll: getScroll,
   });
   let items: HintItem[] = []; // currently hinted items (viewport subset)
-  // A prefix-free key sequence generated once per hint session. Keys are drawn
-  // from it for the whole session and are NEVER reshuffled by a re-hint, so a
-  // control that appears later (an ad's "Skip" button) or is recreated by the
-  // framework inherits/keeps its key rather than invalidating what the user is
-  // typing. Sized past MAX_HINTS so batch churn never runs the pool dry.
+  // A prefix-free key sequence generated once per session, drawn from for the
+  // whole session and NEVER reshuffled by a re-hint: a control appearing later
+  // (an ad's Skip button) or re-created by a framework keeps its key instead
+  // of invalidating what the user is typing.
   let keyPool: string[] = [];
   let typed = "";
-  // Incremented on every start()/exit(); async continuations (core.makeHints)
-  // capture it and bail if a newer session took over (e.g. ESC during the
-  // await) so stale state never repopulates after exit.
+  // Incremented on every start()/exit(); async continuations capture it and
+  // bail when a newer session takes over (ESC during an await).
   let session = 0;
-  // True between the `;f` keypress and the moment the batch is actually built.
-  // `start()` is async — it walks the whole document and then awaits the core
-  // for the key pool — so for a noticeable window on a heavy page the session
-  // exists but `active` is still false. Escape during that window used to do
-  // nothing at all (the hosts only called exit() once `active` was true), and
-  // because nothing bumped `session`, the start completed anyway: the batch
-  // appeared AFTER the user had already pressed Escape to cancel it. That is
-  // the "hints get stuck and Escape does not work" report — the cancel arrived
-  // first and was silently dropped, and the layer that survived it ignored the
-  // next Escape for a whole frame of layout work.
+  // True until the batch is actually built. `start()` is async, and Escape in
+  // that window used to be dropped: nothing bumped `session`, so the batch
+  // appeared AFTER the user had cancelled it — the "hints get stuck, Escape
+  // does not work" report.
   let starting = false;
   // Re-anchoring state.
   //   anchorFrames — the one-pass-per-frame coalescer (frames.ts). A motion
@@ -140,40 +112,29 @@ export function createLinkHints(
   let resyncAt = 0;
   // A re-hint triggered by scrolling is in flight.
   let syncing = false;
-  // The DOM changed while hints are active (a control appeared, e.g. a video
-  // player's "Skip ad" button after hints were already built). Debounced so a
-  // burst of mutations produces one re-hint once things settle. Without this
-  // the batch was frozen at `;f` time and a late-appearing control had no hint,
-  // or a hint whose key did nothing.
+  // The DOM changed while hints are active (a late control needs a hint).
+  // Debounced: a mutation burst produces one re-hint once things settle.
   let domDirty = false;
   let domResyncAt = 0;
   let domSyncFirst = 0;
+  // Deadline for the slow, mutation-independent pool refresh.
+  let poolResyncAt = 0;
   let domObserver: MutationObserver | null = null;
   let shadowObservers: MutationObserver[] = [];
   /** The once-per-`;f` "the page finished loading" re-hint (see watchDom). */
   let loadHook: (() => void) | null = null;
   let observeRoots: ((root: ParentNode, depth: number) => void) | null = null;
   let observedHintRoots = new WeakSet<ShadowRoot>();
-  // How often the full-document walk that FINDS shadow roots may run. Half a
-  // second is the difference between "a root created during a re-render is
-  // observed almost immediately" and "the walk is the reason the page janks".
-  // A root's own observer only schedules the SAME debounced re-hint the document
-  // observer already scheduled (DOM_RESYNC_DELAY), so discovery being late by
-  // up to 500ms costs the user nothing at all.
+  // A root's own observer schedules the same debounced re-hint the
+  // document observer already scheduled, so late discovery costs nothing.
   const ROOTS_DISCOVERY_MS = 500;
-  // How many elements one discovery pass may visit, per walked root. A root
-  // found within the budget has its own observer from then on, and a root beyond
-  // it is found by the NEXT pass (the walk starts from the document every time),
-  // so the budget delays discovery instead of losing it.
+  // Per-root element budget for one discovery pass; a root beyond it is found
+  // by the NEXT pass (delays discovery instead of losing it).
   const SHADOW_WALK_BUDGET = 4000;
 
-  // Shadow-root discovery is COALESCED, and the rule is the shared one
-  // (shared/coalesce.ts). It has to be: the walk it wraps is
-  // `querySelectorAll("*")` over the whole document, and it ran inside the
-  // mutation callback — i.e. once per mutation batch, on a page that is
-  // re-rendering, which is the one situation hints are open on a live page. The
-  // scroll controller has the same rule for the same reason, which is why it is
-  // a module rather than two sets of variables.
+  // COALESCED shadow-root discovery — the walk is querySelectorAll("*") over
+  // the whole document and used to run once per mutation batch. Same rule as
+  // the scroll controller, which is why it is shared/coalesce.ts.
   const rootDiscovery = createCoalescer({
     everyMs: ROOTS_DISCOVERY_MS,
     // Read through the variable, not captured: unwatchDom() nulls it.
@@ -250,20 +211,12 @@ export function createLinkHints(
     }
     if (session !== mySession) return; // exited (ESC) during the await
     starting = false;
-    // HINTS NEVER MOVE THE PAGE.
-    //
-    // This used to scroll down until links came into view — up to PAGE_GUARD = 8
-    // viewports, each iteration re-running the whole selection pass over the
-    // collected pool (a `getBoundingClientRect` plus the probe checks per
-    // candidate; see selectHintables). Three separate problems in one loop: the
-    // page jumped under the user's hands at the moment they asked for hints, the
-    // work was unbounded enough to stall the main thread on a heavy document,
-    // and the scroll was invisible in the sense that mattered — by the time the
-    // labels appeared the reader had lost the place they were reading.
-    //
-    // The honest answer for "nothing here is hintable" is to say so. Paging
-    // toward other links is what `]` / `[` are for, and those are asked for.
-    const vis = resolve.viewportItems();
+    // HINTS NEVER MOVE THE PAGE. An old loop scrolled up to PAGE_GUARD
+    // viewports hunting links, jumping the page under the user's hands and
+    // stalling heavy documents. "Nothing here is hintable" is said outright;
+    // `]` / `[` page toward other links.
+    const sel = resolve.viewportItems();
+    const vis = sel.kept;
     if (!vis.length) {
       toast("no hints in view \u2014 ] for the next batch");
       return;
@@ -272,10 +225,23 @@ export function createLinkHints(
     overlay.mount();
     watchDom();
     watchMotion();
+    // First timer refresh is owed this long after the batch was built. Never
+    // zeroed earlier: a page already mutating keeps this pushed out by the
+    // mutation path, which zeroed it below.
+    poolResyncAt = performance.now() + POOL_RESYNC_MS;
     ensureTick();
     await assign(vis);
     if (session !== mySession) return; // exited (ESC) during the await
     if (!items.length) exit();
+    // THE CAP IS STATED, NOT SILENT. If more controls were in view than the
+    // batch has labels for, the user is told both numbers and the way to the
+    // rest — before this, a dense page simply "had no hints" for rows that were
+    // plainly there, and nothing on screen explained why (see select.ts).
+    if (sel.more > 0) {
+      toast(
+        items.length + " hints \u2014 " + sel.more + " more in view, ] for the next batch"
+      );
+    }
   }
 
   // The shortest key in the pool that this batch has not taken yet. Scanning
@@ -290,29 +256,17 @@ export function createLinkHints(
   }
 
   // Re-hint a batch of elements. Keys are STABLE for the whole session: an
-  // element that was already hinted keeps its key, and when the framework
-  // REPLACES a node (a virtual-DOM re-render — YouTube's ad overlay, a React
-  // list, a Polymer component rebuilding itself) the replacement inherits the
-  // key of the control it took over, matched by screen position and
-  // destination. Only genuinely new controls get a fresh key.
-  //
-  // This is what stops a churning framework page from being unusable: the old
-  // code re-keyed the whole batch on every change, so the key the user had just
-  // read could be gone (or mean a different control) by the time they typed it,
-  // and a late control like an ad's "Skip" button arrived with a key that no
-  // longer described it.
+  // already-hinted element keeps its key, and a framework-replaced node
+  // (virtual-DOM re-render) inherits the key of the control it took over,
+  // matched by destination or screen position. Re-keying the whole batch on
+  // every change made the key the user just read go stale on churning pages.
   async function assign(list: HintCandidate[]): Promise<void> {
     if (!list.length) return;
     const chosen = list.slice(0, MAX_HINTS);
     const prev = items;
-    // Identical batch: keep everything (including a half-typed prefix).
-    //
-    // The covered flags are refreshed even on this path. Identity is what makes a
-    // batch "the same", but coverage is a fact about the PAGE — a scrim that
-    // fades out, a sticky header that appears — and the elements are the same
-    // ones, so returning without touching the flags would leave a dimmed label
-    // over a control nothing covers any more (and vice versa) until something
-    // else changed the batch. It costs one comparison per item and one render.
+    // Identical batch: keep everything, including the half-typed prefix. The
+    // covered flags are still refreshed — coverage is a fact about the PAGE,
+    // not the batch identity (a scrim fades, a sticky header appears).
     if (
       prev.length === chosen.length &&
       chosen.every((c, i) => prev[i] && prev[i]!.el === c.el)
@@ -398,16 +352,111 @@ export function createLinkHints(
     render();
   }
 
-  // When the viewport has moved and settled, move the hints to the batch that
-  // is now on screen: scrolling to a new section should show ITS links, not the
-  // hidden labels of the section left behind. While a prefix is being typed the
-  // set is left alone (re-hinting would discard the partial input), and when
-  // nothing hintable is in view at all (a blank spacer, a hero image) the
-  // current batch is kept so its labels still track a page that shifts under
-  // them.
+  // A hintable that is still on screen right NOW, judged by what the page
+  // itself says: connected, sized, inside the viewport, and not display:none /
+  // visibility:hidden / opacity:0 / content-visibility:hidden (checkVisibility
+  // answers all of those in one call where it exists, as in hints/visibility.ts).
+  // This is deliberately NOT the full `fullyVisible` visibility pass — the point
+  // here is the cheap page-side floor a survivor must clear, not a second answer
+  // on what deserves a label.
+  function stillShowable(it: HintItem): boolean {
+    const el = it.el;
+    if (!el || !el.isConnected) return false;
+    let r: DOMRect | null = null;
+    try {
+      r = el.getBoundingClientRect();
+    } catch (e) {
+      return false;
+    }
+    if (!r || r.width <= 0 || r.height <= 0) return false;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    if (r.bottom <= 0 || r.right <= 0 || r.top >= vh || r.left >= vw) return false;
+    // A control that a DIALOG or a popup sheet now covers is not a survivor: the
+    // page put a surface on top of it, and keeping the label would draw it over
+    // that surface. (A scrim or a sticky bar is not this — sheetOver is the
+    // question "is a separate surface over it", not "is it obstructed".)
+    try {
+      if (sheetOver(el)) return false;
+    } catch (e) {
+      // A hostile element must not keep a label alive either; fall through.
+    }
+    // An undrawn label is a candidate someone else already accounts for; only
+    // the placed ones are at stake here.
+    if (!it.label) return false;
+    const cv = el as Element & { checkVisibility?: (opts?: object) => boolean };
+    if (typeof cv.checkVisibility === "function") {
+      try {
+        return !!cv.checkVisibility({
+          checkOpacity: true,
+          checkVisibilityCSS: true,
+          contentVisibilityAuto: true,
+        });
+      } catch (e) {
+        // fall through to the computed-style floor
+      }
+    }
+    try {
+      const cs = getComputedStyle(el);
+      return (
+        cs.display !== "none" &&
+        cs.visibility !== "hidden" &&
+        cs.visibility !== "collapse" &&
+        cs.opacity !== "0"
+      );
+    } catch (e) {
+      return true;
+    }
+  }
+
+  // A passive refresh (the debounced re-collect after a mutation, the timer
+  // refresh, the settled-scroll resync) must be CONSERVATIVE about what it
+  // already shows: a re-collection walks the document on a wall-time budget and
+  // comes back TRUNCATED on a page that is still loading (collect.ts reports
+  // it; the live sweep measured it — github.com mid-load, a `<video>` late in
+  // the DOM lost from the pool and its label with it, while the element itself
+  // had not moved, still visible and pointer-alive). Truncation loses only the
+  // EXPENSIVE tier — cursor-pointer controls and media surfaces — which is
+  // exactly the reporting the user's case A made: labels drawn at `;f` that
+  // vanish a few seconds later with nothing wrong on the page.
+  //
+  // So the fresh viewport subset is merged with the currently PLACED items that
+  // still clear the page-side floor above. A control that the page genuinely
+  // removed, hid, shrank to nothing or scrolled away is dropped with it (the
+  // floor answers those); a control the refresh merely failed to see keeps its
+  // label and its key, exactly as a re-render keeps them via the inherited-key
+  // paths in assign(). Selection order stays document order, so the first
+  // controls on the page keep the short keys in a merged batch.
+  function mergeWithSurvivors(vis: HintCandidate[]): HintCandidate[] {
+    const survivors = items.filter(stillShowable);
+    if (!survivors.length) return vis;
+    const freshSet = new Set(vis.map((c) => c.el));
+    const extra = survivors
+      .filter((it) => !freshSet.has(it.el))
+      .map((it) => ({ el: it.el, covered: it.covered }));
+    if (!extra.length) return vis;
+    const all = [...extra, ...vis];
+    try {
+      all.sort((a, b) => {
+        const pos = a.el.compareDocumentPosition(b.el);
+        if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+        if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+        return 0;
+      });
+    } catch (e) {
+      // An order that cannot be computed (a detached node) is left as-is:
+      // assign() matches by identity and position either way.
+    }
+    return all;
+  }
+
+  // When the viewport has moved and settled, swap in the batch now on screen.
+  // While a prefix is typed the set is left alone (a re-hint discards input),
+  // and with nothing hintable in view the current batch is kept so labels can
+  // still track pages that shift under them.
   function syncViewport(): void {
     if (!active || typed !== "" || syncing) return;
-    const vis = resolve.viewportItems();
+    const vis = mergeWithSurvivors(resolve.viewportItems().kept);
     if (!vis.length) return;
     if (vis.length === items.length && vis.every((c, i) => items[i] && items[i]!.el === c.el)) {
       return;
@@ -453,6 +502,9 @@ export function createLinkHints(
           domSyncFirst = now;
         }
         domResyncAt = Math.min(now + DOM_RESYNC_DELAY, domSyncFirst + DOM_RESYNC_MAX_WAIT);
+        // The timer refresh is subsumed by a real mutation: whatever the
+        // debounced re-collect turns up, the timer did not need to run first.
+        poolResyncAt = 0;
         // The net may be sitting at a coarser delay than the re-hint now owes
         // (it is a still page, so SAFETY_MS); arm it for the shorter wait so an
         // inserted control gets its key from the mutation that announced it.
@@ -475,25 +527,13 @@ export function createLinkHints(
         rootDiscovery.request();
       });
       domObserver.observe(document.documentElement, { childList: true, subtree: true });
-      // A PAGE THAT FINISHES LOADING GETS ONE MORE PASS, and it is not the same
-      // event as a mutation.
-      //
-      // The report: hints opened on a page that is still loading, labels drawn,
-      // and then "some of them disappear after they load so I can't use hints on
-      // those items — although some similar elements to those seem to show".
-      // The items that lose their label are the ones the collection rejected
-      // when it ran: a card whose box was still zero-height because its image
-      // had not loaded, a widget a script reveals at `load`, a block the page's
-      // own font was still about to size. A mutation normally schedules the
-      // re-collect that fixes them, and that is why most of them come back —
-      // but a page settling often mutates BEFORE the state that made the element
-      // hintable, so the last re-collect can leave the layer permanently short
-      // of labels on exactly the elements the user is looking at.
-      //
-      // `load` is the page's own statement that it is finished, so it earns one
-      // more pass, coalesced like every other re-hint on this path (one extra
-      // collect per `;f`, not one per image). A page that was ALREADY complete
-      // when hints opened arms nothing at all.
+      // A PAGE THAT FINISHES LOADING GETS ONE MORE PASS — `load` is the page's
+      // own statement that it is finished, and it must not be confused with a
+      // mutation: elements rejected while their boxes were zero or hidden only
+      // become hintable at `load`, and the page often mutates BEFORE that, so
+      // the last re-collect can permanently short-change exactly the elements
+      // in view. Coalesced like every re-hint (one extra collect per `;f`, not
+      // one per image). An already-complete page arms nothing.
       if (document.readyState !== "complete" && !loadHook) {
         loadHook = () => {
           loadHook = null;
@@ -507,12 +547,9 @@ export function createLinkHints(
       // and framework replacements inside open/closed components also refresh.
       observeRoots = (root: ParentNode, depth: number): void => {
         if (depth >= 6) return;
-        // A LAZY, BUDGETED walk (shared/dom.ts walkElements). The old loop built
-        // an array of every element in the subtree before applying MAX_SCAN to
-        // its length, so the cap bounded the loop and not the allocation — a
-        // five-figure-element array per coalesced tick on a large page, for a
-        // walk that stops at the budget anyway. Each root is walked with its own
-        // budget, so a huge light DOM cannot starve the roots nested in it.
+        // A LAZY, BUDGETED walk (shared/dom.ts walkElements): the cap bounds
+        // the loop AND the allocation, and each root gets its own budget so a
+        // huge light DOM cannot starve roots nested inside it.
         walkElements(root, SHADOW_WALK_BUDGET, (el) => {
           const shadow = shadowRootOf(el);
           if (!shadow || observedHintRoots.has(shadow)) return;
@@ -565,6 +602,7 @@ export function createLinkHints(
     domDirty = false;
     domResyncAt = 0;
     domSyncFirst = 0;
+    poolResyncAt = 0;
   }
 
   // ONE measurement pass: re-anchor every label, then run any owed re-hint.
@@ -586,6 +624,23 @@ export function createLinkHints(
       domDirty = false;
       domResyncAt = 0;
       pool = resolve.refreshPool();
+      // A refresh just happened; the timer's next one is owed this long after
+      // it, not after the batch was built.
+      poolResyncAt = now + POOL_RESYNC_MS;
+      syncViewport();
+    }
+    // The dormant state a control can be in when the user opens hints: present
+    // in the DOM, rejected by both collections because its box is empty (a
+    // display:none slot, a player hiding its Skip button until the skip window
+    // opens). It becomes presentable by changing an ATTRIBUTE — a class, an
+    // inline style — which the childList observer above deliberately does not
+    // watch, and which nothing else here announces. The mutation path is the
+    // fast channel; this is the slow catch-all that keeps a pool built during
+    // one of those dormant windows from being wrong for the rest of the
+    // session. One budgeted collect per interval; an identical batch is kept.
+    if (poolResyncAt && now >= poolResyncAt) {
+      poolResyncAt = now + POOL_RESYNC_MS;
+      pool = resolve.refreshPool();
       syncViewport();
     }
   }
@@ -602,12 +657,18 @@ export function createLinkHints(
   // the earliest owed work winning over a coarser safety rate — is frames.ts,
   // where it is tested as a function rather than read off a timer.
   function tickDelay(now: number): number {
+    // The EARLIEST owed work wins (frames.ts rule): a due mutation resync and a
+    // due timer resync are the same kind of due — whoever is closer is what the
+    // net must wait for, and a pending one is not a reason to delay the other.
+    const domDue = domDirty ? domResyncAt : 0;
+    const due = domDue && poolResyncAt ? Math.min(domDue, poolResyncAt) : domDue || poolResyncAt;
     return nextMeasurementDelay({
       now: now,
       moving: !!motion && motion.moving(),
       episodeUntil: episodeUntil,
       resyncAt: resyncAt,
-      domResyncAt: domDirty ? domResyncAt : 0,
+      domResyncAt: domDue,
+      poolResyncAt: due,
     });
   }
 
@@ -678,7 +739,7 @@ export function createLinkHints(
   function page(dir: number): void {
     for (let i = 0; i < PAGE_GUARD; i++) {
       const step = resolve.pageScroll(dir);
-      const vis = resolve.viewportItems();
+      const vis = resolve.viewportItems().kept;
       if (vis.length) {
         void assign(vis);
         return;
@@ -691,44 +752,27 @@ export function createLinkHints(
   // Draw the labels for the current batch and typed prefix. The one place the
   // session talks to the overlay.
   //
-  // needEnter is the state the user cannot otherwise see: the next character
-  // will not activate anything, and Enter is the only way to take the first
-  // match. It has to be derived from EXACTLY the condition typeChar() uses to
-  // decide not to activate, or the badge promises an Enter that does nothing.
-  //
-  // That condition is subtler than "typed is not a complete key". typeChar
-  // activates on an exact match only when nothing else starts with it, so an
-  // exact match with a longer key extending it is still ambiguous — the user
-  // typed "a", one link is "a" and another is "ad", and neither fires until
-  // they commit. So: ambiguous means at least one match is longer than `typed`
-  // AND there is more than one candidate to choose between.
-  // Draw the labels, then decide the badge — in that order, because the badge
-  // describes the batch that was just placed: it is up when the typed prefix
-  // still matches more than one of the hints the user can actually SEE, so a
-  // further character is needed and the first match can only be committed with
-  // Enter. `overlay.shownKeys()` is the same predicate typeChar() consults, and
-  // it is owned by the placement code, which is the only code that knows whether
-  // a label is on screen.
+  // The enter badge is the state the user cannot see: the next character will
+  // not activate anything and Enter is the only way to take the first match.
+  // Ambiguous means at least one SHOWN match is longer than the prefix AND
+  // there is more than one to choose between ("a" boxed with "ad" — neither
+  // fires until they commit). So render first and decide the badge second:
+  // `shownKeys()` is the same predicate typeChar() consults, owned by the
+  // placement code that knows what is on screen.
   function render(): boolean {
     const moved = overlay.render(items, typed, resolve.resolve).moved;
     const matches = items.filter(isUsable);
     const longer = matches.some((i) => i.key.length > typed.length);
-    // The typed.length guard is not redundant: an empty prefix matches
-    // everything, so without it the badge would be up from the moment ;f
-    // starts — telling the user to press Enter to choose, when they have not
-    // narrowed anything yet and any character is the right next move.
+    // typed.length is not redundant: an empty prefix matches everything, so
+    // without it the badge would be up from the moment ;f starts.
     overlay.setEnterBadge(typed.length > 0 && longer && matches.length > 1);
     return moved;
   }
 
-  // THE visibility predicate. A hint is usable when its label is on screen, and
-  // the overlay's placement is the only thing that decides that (it is where the
-  // viewport test and the collision walk live). The session used to answer the
-  // question independently, with its own rect test — and because the two answers
-  // could differ, a hint the overlay had HIDDEN (dragged out of the viewport, or
-  // dropped for overlapping another badge) still had a typeable key: pressing it
-  // fired at a link the user could not see. Asking the overlay removes the
-  // second opinion rather than trying to keep the two in step.
+  // THE visibility predicate: a hint is usable only when its label is on
+  // screen. Overlay placement is the sole judge (viewport test + collision
+  // walk live there); a second rect test here diverged, letting a key fire at
+  // a link the user could not see.
   function isUsable(it: HintItem): boolean {
     return it.key.indexOf(typed) === 0 && overlay.shownKeys().has(it.key);
   }
@@ -737,29 +781,13 @@ export function createLinkHints(
     const nt = typed + c;
     const matches = items.filter((i) => i.key.indexOf(nt) === 0 && overlay.shownKeys().has(i.key));
     if (!matches.length) {
-      // A KEY THAT NAMES NOTHING VISIBLE IS ANNOUNCED, NOT SWALLOWED.
-      //
-      // This returned in silence, and `handleKey` had already decided the key
-      // was ours (it returns true for every character in the hint alphabet), so
-      // the keystroke was consumed with nothing happening anywhere and nothing
-      // said. Every further attempt looked exactly the same, which is the
-      // reported "the hints got stuck and unresponsive, they don't do anything":
-      // the layer was up, the keys went into it, and it answered none of them.
-      // A nameable miss is learnable; a silent one is indistinguishable from a
-      // freeze. (Same rule the leader's own miss report follows.)
-      //
-      // The two causes are also worth telling apart, because the response
-      // differs: a hint whose LABEL the placement pass could not put on screen
-      // exists and is one ] away; a prefix that names no hint at all is just a
-      // key that is not a hint key.
-      //
-      // The wording says HIDDEN and not "off screen", because the placement pass
-      // has two reasons to withhold a label — the element scrolled out of the
-      // viewport, or every one of its anchor positions collided with a badge
-      // already placed (a dense nav row or comment actions row) — and the second
-      // is exactly the report "some of the hints disappeared after showing up".
-      // Claiming "off screen" for a control the user can see, right there, was
-      // the kind of wrong explanation that makes the next report harder.
+      // A KEY THAT NAMES NOTHING VISIBLE IS ANNOUNCED, NOT SWALLOWED. The key
+      // was already claimed by the alphabet, so silence meant a consumed
+      // keystroke that did nothing — "the hints got stuck". The two miss
+      // causes get different messages (same rule as the leader's miss report):
+      // a key whose label the placement pass withheld (viewport OR full badge
+      // collision — saying "off screen" is exactly the wrong explanation for a
+      // control the user can see) versus a key that is simply not a hint.
       const hidden = items.find((i) => i.key.indexOf(nt) === 0);
       toast(
         hidden
@@ -777,40 +805,37 @@ export function createLinkHints(
       return;
     }
     typed = nt;
-    // No scrolling here on purpose. Scrolling a candidate into view (or
-    // re-hinting) on a keystroke used to yank the page and destroy the user's
-    // scroll position; off-screen candidates are simply not matched above.
+    // No scrolling on purpose: off-screen candidates are simply not matched
+    // above, and yanking the page on a keystroke destroyed scroll position.
     render();
   }
 
   function handleKey(e: KeyboardEvent): boolean {
     const chars = hintChars();
-    // A LAYER WITH NOTHING USABLE ON SCREEN MUST NOT KEEP THE KEYBOARD.
-    //
-    // The batch and the session can disagree in the one direction that matters:
-    // if no label is placed (the placement pass hid them all, the page moved the
-    // batch off screen), `typeChar` finds no match and every hint letter is
-    // swallowed for nothing — the layer looks up, answers nothing, and the keys
-    // it eats are the ones the user needs to get out, including the leader.
-    // Tearing the dead layer down and DECLINING the key hands it straight back
-    // to the host, where the leader and the scroll keys still work: the reported
-    // "hints are stuck, unresponsive, and the leader does nothing" cannot
-    // survive this. Safe at `;f` time because `assign()` runs synchronously
-    // before control returns to the event loop, so a keydown can never be
-    // processed against a batch that has not been assigned yet.
-    if (!items.length || overlay.shownKeys().size === 0) {
+    // A LAYER WITH NOTHING USABLE ON SCREEN MUST NOT KEEP THE KEYBOARD: a key
+    // it eats is one the user needs to get out (the leader included). Tear it
+    // down and DECLINE the key back to the host — "hints are stuck and the
+    // leader does nothing" cannot survive this. Safe at `;f` time because
+    // assign() runs synchronously before the event loop resumes.
+    if (!items.length) {
       exit();
       return false;
     }
-    // A MODIFIED keystroke is never a hint key.
-    //
-    // The hint alphabet is plain letters (`asdfjklgh` by default) and this
-    // matched on `e.key` alone, so `Ctrl+G` WAS the letter `g`: the universal
-    // cancel — the one keystroke that is supposed to back out of anything — was
-    // typed into the hint layer instead, and with a single candidate left on
-    // screen the letter `g` ACTIVATES A LINK. The user asked to cancel and got a
-    // navigation. Declining hands the key back to the host, which owns the
-    // cancel and which lets the page keep its own chords (Ctrl+K and friends).
+    if (overlay.shownKeys().size === 0) {
+      // A LAYER THAT LOOKS DEAD IS NOT A DEAD LAYER: heal it first. An empty
+      // shownKeys() can be one bad frame (a re-render parking the rows for a
+      // frame); tearing down on the next key turned it into "the hints just
+      // disappeared". Re-anchor synchronously, then re-collect; decline the
+      // key either way so the host still gets it.
+      render();
+      if (overlay.shownKeys().size === 0) {
+        syncViewport();
+        return false;
+      }
+    }
+    // A MODIFIED keystroke is never a hint key: matching on e.key alone made
+    // Ctrl+G activate a single remaining link instead of cancelling. Declining
+    // hands the key to the host, which owns the cancel and the page's chords.
     if (e.ctrlKey || e.altKey || e.metaKey) return false;
     if (e.key === "Escape") {
       exit();

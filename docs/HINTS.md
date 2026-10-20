@@ -84,25 +84,34 @@ So there are two distinct problems, and they need different fixes:
 | 2 | The event *state* was malformed, so press-state machines never fired | **FIXED** — see 2.5 |
 
 **The fix for #1 is a privileged input path, not a cleverer synthetic
-event** — and it is now implemented; see 2.6. There is exactly one way to produce a genuinely trusted
-click from inside the browser: `nsIDOMWindowUtils.sendMouseEvent` in the
-content process. The window actor already runs there with `Services` and
-`windowUtils` available (see `src/chrome/actor-child.ts`, which uses
-`windowUtils` to dispatch trusted *keys*), so the plumbing exists — the
-`sendMouseEvent` call for clicks does not.
+event** — and it is implemented, in-process, over the "Lazyfox" window
+actor. There is exactly one way to produce a genuinely trusted click from
+inside the browser, and the actor runs in the one process that can: the
+content script dispatches a `CustomEvent` carrying a per-document random
+nonce (mounted on `<html data-lf-trusted>` by the child actor during its
+first keystroke-driven instantiation, and kept mounted by the chrome helper
+starting with Firefox 159, see `src/chrome/actor-child.ts` and
+`src/chrome/bridgemount.ts`); the actor answers with a move → down → up
+sequence from the window's own synthesizer.
 
-`actor-child.ts` currently carries an **orphaned comment block** describing
-exactly that missing function: it documents a move → down → up → click
-sequence and then ends with no function under it, left over from the
-trusted-press removal. Treat it as the design note for the fix and not as
-working code.
+Note the API change in Firefox 159: `nsIDOMWindowUtils.sendMouseEvent` is
+gone ("windowUtils present, sendMouseEvent=undefined", measured on
+Developer Edition 159.0). The synthesizer lives on the window now —
+`window.synthesizeMouseEvent`, ChromeOnly — and the actor prefers it while
+keeping the old `windowUtils.sendMouseEvent` for older Firefox.
+Registration must also carry `safeForUntrustedWebProcess: true`: since that
+cycle Gecko refuses to instantiate a window actor in any web/file content
+process without it, which is what produced
+"Window protocol 'Lazyfox' doesn't match remote type 'web'" and kept the
+whole bridge dark.
 
-The wiring would be: hints → background → relay port → chrome helper → actor →
-`windowUtils.sendMouseEvent`. That is four hops and a real latency budget, so
-it should be a **fallback**, not the default: try the cheap synthetic path
-first, and escalate only when the activation watcher reports that the page did
-not react. The watcher already exists for exactly that purpose, so the
-escalation trigger is already in place.
+The escalation trigger is the activation watcher: the synthetic path fires
+first (it is free and in-process), and the privileged press is attempted
+only when the target itself gave no sign of life — one retry, never a loop,
+never a link (`canEscalate`, see escalate.ts). Focus on the pressed button
+itself is not a sign of life: Gecko focuses any pressed control on
+mousedown, so a trust-gated button lands "focused but otherwise silent" and
+must still be escalated.
 
 The trusted press was aimed at exactly this button, on the theory that it
 refuses untrusted events. That theory was never tested — and 2.0 above shows it
@@ -218,6 +227,9 @@ UI-heavy home page those are the header, the sidebar and the first rows. Anythin
 below the fold of the *DOM* — a player's controls, a card further down — never
 gets a label, and the only way to reach it is `]` paging, which is itself
 blind. There is no "N more" signal.
+
+**Fixed in §15.3**: the batch is now ranked by what is on screen when it does not
+fit, and `;f` says how many were left out and how to reach them.
 
 `collectHintables()` also stops after `MAX_SCAN = 14000` nodes in document
 order, so on a very large page the sweep can end before it reaches the player.
@@ -730,28 +742,45 @@ down and that the NEXT keystroke arms the leader — so the fix cannot regress i
 
 ## 9. The second field report (2026-10-11): Escape's job, and four ways the keyboard went quiet
 
-### 9.1 Escape is the master cancel again; Ctrl+G is the one that keeps quiet
+### 9.1 Escape is a ladder, one rung per press; Ctrl+G is the one that keeps quiet
 
 §8.2 made the caret in a field outrank Escape entirely, on the reasoning that
 leaving an edit in progress is the accident Escape must not cause. That was the
 wrong trade in daily use: Escape is the key every user already reaches for, so
 "it does nothing here" reads as broken, not as safe.
 
-The rule is now one sentence per key:
+§9.1 then made Escape do *everything* in one keystroke — clear every Lazyfox
+surface, put the caret down, **and** let the page act — which turned out to be the
+other half of the same mistake, and it took a user of the released build to name
+it: *"esc sometimes is used by the website to do actions like close menus or
+modal or windows, i still need the esc to be step by step cleanup … we might
+still want the window or the modal to be showing as it might have a form that we
+are filling"*. A dialog with a half-filled form closed on the press that only
+meant "get me out of this box", and Ctrl+G — the key that exists precisely to
+avoid that — was the only way to leave a field without losing the form.
 
-* **Escape does everything.** Every Lazyfox surface stands down — hints, leader,
-  capture, scroll target — *and* the caret leaves the field, and the key is
-  **not** consumed, so a page that binds Escape still acts on it. One key, the
-  master cancel, nothing to remember.
-* **Ctrl+G does the same and consumes the keystroke**, so a page with its own
-  Escape binding — the dialog with a form in it — sees nothing and keeps its UI.
-  It exists for exactly that choice, so it is now the *only* difference between
-  the two keys.
+The rule is now one rung per press:
 
-Pinned by `content/field › Escape is the master cancel: the page still sees it
-and the caret leaves the field` (page-side counters: one Escape seen, dialog
-gone, `activeElement` no longer the field) next to the Ctrl+G case, which must
-see zero Escapes and a dialog still up.
+* **An Escape that changed something on screen is Lazyfox's, and is consumed.**
+  The caret leaving a field counts as a change; so does a hint layer, the leader,
+  an armed capture, reader mode or a cycled scroll region being cleaned up. The
+  page's own handler does not also run in that keystroke, so the modal, menu or
+  panel the user is working in stays exactly as it was.
+* **An Escape that changed nothing is the page's.** With nothing of Lazyfox's on
+  screen and no field focused, the press is passed through untouched — which is
+  how a menu, a dialog or a fullscreen video closes at all. It is the *second*
+  press in the common case, and that is the point: one key, two rungs, nothing to
+  remember, and nothing destroyed that the user did not ask to destroy.
+* **Ctrl+G does the same cleanup and is always consumed**, so a page with its own
+  Escape binding — the dialog with a form in it — sees nothing at all. It stays
+  the one-key answer when the page must never hear about it.
+
+Pinned by `content/field › Escape is a ladder: the caret leaves first, the page's
+own action second` (page-side counters: zero Escapes and a dialog still up after
+the first press, one Escape and a closed dialog after the second), by
+`content/field › Escape with nothing to clean is the page's, first press` (the
+other end of the ladder: consume-when-it-cleaned must not become consume-always),
+and next to the Ctrl+G case, which must see zero Escapes and a dialog still up.
 
 ### 9.2 The command center let an armed leader outrank the caret
 
@@ -1296,12 +1325,429 @@ missing key and a duplicated key are both a failure, and neither can be excused 
   it does not break in eight cycles on a fixture page, with each cycle's two
   states asserted. A page that is re-rendering under the layer is a different
   fixture (`/ytcard`, `/busy`) and those tests are unchanged.
-* Escape is still deliberately NOT consumed on a web page (§9.1), so its first
-  press can be answered by the page and by Lazyfox at once. Nothing here changes
-  that trade.
+* Escape is consumed on a web page only when it cleaned something (§9.1, §14.3),
+  so "did the page also see it" now depends on whether Lazyfox had anything on
+  screen. §13.4's eight `;f` → Esc cycles change accordingly: each cycle's Esc
+  lands on a live hint layer, so it is consumed and never reaches the page.
 * §13.1 changed WHERE paging scrolls, not how far (`PAGE_FACTOR` is unchanged at
   0.8 viewports) and not the keymap. It follows the controller's existing target
   rule, which includes "the scrollable region under the pointer", so hovering a
   sidebar and pressing Tab pages the sidebar — exactly as `j`/`d` already do. That
   consistency is the point (one answer to "which region do the keys move"), and it
   is stated here because it is a consequence a user can notice.
+
+## 14. The sixth field report (2026-10-18): the rows that never got a key, and Escape's ladder
+
+The report, from the released build on WhatsApp Web:
+
+> "hints don't show for all the important elements, they might show for some but
+> not the rest of similar items, or even when they show they might disappear for
+> some reason … esc sometimes is used by the website to do actions like close
+> menus or modal or windows, i still need the esc to be step by step cleanup"
+
+Three faults, each named by the report and each findable in this repo without the
+site: a discovery bound that is a fact about hand-written markup, a teardown that
+fires on one bad frame, and Escape doing two rungs of work in one press.
+
+### 14.1 The rows that never got a key: the bounds were about markup, not meaning
+
+`leafClickable` is the rule that turns a bare `cursor:pointer` div — no `<a>`, no
+`<button>`, no ARIA role, which is how modern web apps build their lists — into a
+hintable control. It required **at most 3 element children** and **at most 120
+characters of text**.
+
+Both are properties of how a framework happens to nest its markup. A WhatsApp chat
+row is an avatar wrapper, a title/preview column, a timestamp column and an
+actions column: four children, rejected by the first rule. Its `textContent` is the
+**whole last message** while the row paints one ellipsized line, so a row whose last
+message was long was rejected by the second. The two rules combined removed exactly
+the rows that looked like their neighbours in every way a user can see — which is
+what "some of these are hinted and the rest are not" means, and why it was never a
+missing feature: those rows were never candidates.
+
+The rules are now about the element's meaning and its SIZE:
+
+* up to `LEAF_MAX_CHILDREN` (8) children. The check that actually keeps containers
+  out is the hintable-descendant test directly above it — a wrapper around real
+  controls was already excluded there, so the child count was doing nothing but
+  rejecting row-shaped controls.
+* long text only counts as "this is a container" when the BOX is big: over
+  `LEAF_TEXT_SOFT_MAX` (120) the element's area is compared against
+  `LEAF_MAX_AREA` (15% of the viewport), and over `LEAF_TEXT_HARD_MAX` (400) it is
+  a container regardless. The reading pane the rule was written for cannot be
+  small; a row cannot be big.
+
+Pinned by `scripts/test/hints-collect.test.ts` (the row shape, every length up to
+the hard bound, the generous child bound, and the four cases the bounds must keep
+out) and end-to-end by `content/rows › a row whose last message is long is a row
+too, not a container`, whose fixture (`/chatrows`) is written in the reported shape
+rather than in a convenient one.
+
+### 14.2 The layer that disappeared: one bad frame tore the session down
+
+"Even when they show they might disappear" is a single line of code, and it was
+written for a good reason that does not hold on a churning app:
+
+```ts
+if (!items.length || overlay.shownKeys().size === 0) { exit(); return false; }
+```
+
+`shownKeys()` is empty whenever the placement pass could not put a label on screen
+— the page re-rendered under the batch, a virtual list parked its rows for a frame,
+a dialog re-mounted itself. That is a normal frame on a chat or mail app. The old
+rule turned it into "the hints are gone" on the next keypress: the session
+**destroyed itself** rather than acknowledging that it had lost its anchors.
+
+The session now heals first and declines the key instead of exiting: re-anchor
+synchronously (`render()`), and if there is still nothing placed, re-collect against
+the DOM as it is now (`syncViewport()`) and hand the keystroke back to the host. A
+layer with no labels therefore still answers the next `;f`, and it can no longer eat
+a key it cannot answer with — which was the other half of the old rule's intent.
+
+There is no e2e test for this yet: the honest fixture is a page that re-renders
+under a live layer, and `/busy` plus `/ytcard` cover the re-render paths that exist.
+It is called out here rather than implied by silence.
+
+### 14.3 Escape's ladder
+
+§9.1 rewritten: consume the press when it cleaned something, pass it through when
+it did not. The first Escape leaves the field and the page hears nothing (the modal
+with the half-filled form stays); the second closes the modal. Ctrl+G is unchanged
+— same cleanup, always consumed.
+
+### 14.4 What is NOT claimed here
+
+* Nothing in this section was measured on WhatsApp Web itself. The site is
+  authenticated, and its DOM was not available to the harness: what is modeled is
+  the SHAPE the report describes (row controls with several columns and a long
+  ellipsized preview), which is what the discovery rules can actually be wrong
+  about.
+* The 14.1 bounds are heuristics and are stated as such. They are wider than they
+  were, so a page can now collect a few candidates it previously dropped; the
+  nesting and overlap passes in `select.ts` still suppress duplicates, and the
+  `MAX_HINTS` cap is unchanged, so the visible failure mode of "too wide" is more
+  labels on a page with many row-shaped controls, not a flood.
+* 14.2 is a change of failure mode, not a proof that nothing disappears: a layer
+  whose batch is genuinely gone (every element removed from the document) still
+  ends, now through the re-collect rather than through a keypress.
+* AppleScript/BiDi suites were not run for this change (geckodriver and a display
+  are needed); the unit tests and both typechecks were.
+
+## 15. The seventh field report (2026-10-20): "I still lose some of the hints"
+
+The report, again from a dense app page:
+
+> "i still loose some of the hints — it's [not] fully deterministic and smart
+> about the hints detections"
+
+"Lose some hints" had three separate causes in the engine, and "not fully
+
+deterministic" was a fourth. None of them was a missing selector: every control
+in question was a candidate, and three of the four were *supposed* to get a
+label.
+
+### 15.1 A label that could not find a free anchor was hidden, and a hidden label is an unusable key
+
+`overlay.reposition` attaches a label at one of six anchors around its control
+(the corners, then just above). If every anchor overlapped a label already
+placed, the badge was HIDDEN — deliberately, to avoid a staircase of staggered
+chips on dense pages.
+
+The cost of that decision was invisible in the code and obvious on a page: the
+label is the ONLY thing that makes a key typeable (`shownKeys()` is the session's
+visibility predicate — a key whose label is hidden is not typeable), so hiding a
+label to keep the page tidy silently removed the control's hint. On a comment
+thread, an icon toolbar or a row of card footers — controls a few pixels apart —
+that was many controls per screenful. `]` did not recover them either: paging
+re-batched the same viewport and hit the same collisions.
+
+The search now continues over a FIXED, ORDERED lattice of small offsets around
+the control (nearest ring first: 4, 9, 15, 22, 30, 40px, eight compass points
+each), and a label is placed at the first free one. The lattice is deterministic
+by construction — no layout feedback, no randomness, the same order on every
+machine — and bounded (48 candidates). To afford those candidates, the collision
+question is answered by a 24px spatial grid instead of a linear scan of every
+placed label; `scripts/test/hints-labels.test.ts` checks the grid against the
+linear scan as an oracle on a dense random layout, and pins the lattice's order
+and reach. A label is now hidden only when its control has no free pixels within
+40px of it at all.
+
+### 15.2 The overlap rule dropped the control the pointer could actually press
+
+`select.ts` collapses candidates that sit almost entirely inside an earlier one
+(an overlay link and its copy, an absolutely-positioned duplicate). The rule is
+right for copies and wrong for a very common framework shape: a card's overlay
+link covers the whole card, and the row's own buttons are painted on top of it as
+SIBLINGS (so `contains()` is false and the nesting rule never sees them). The
+link came first in document order, so it won the slot and the button was counted
+as a duplicate — even when the link was covered and the button was the only thing
+clickable on that card.
+
+The rule now has a tie-breaker: **a reachable candidate replaces a covered one**,
+in place, so the surviving control keeps the early slot (and therefore a short
+key). Two reachable candidates on one area are still one hint — coverage decides
+the tie, it does not defeat the duplicate rule. Pinned in
+`scripts/test/hints-occlusion.test.ts` (both directions).
+
+### 15.3 The 80-cap was first-come in document order, and it was silent
+
+`selectHintables` kept the first `MAX_HINTS` (80) candidates in document order
+and said nothing about the rest. On a dense page that is the header and the
+sidebar taking the keys while the rows in the middle of the screen get none — and
+the user has no way to learn that the rest are one `]` away. This was already on
+the books as P1 ("make the 80-cap fair and visible", §3); the field report is
+what made it a bug rather than a nice-to-have.
+
+Two changes:
+
+* **Ranking.** When there are more candidates than labels, the batch is ranked by
+  `rankScore`: a fully-visible control outranks a partially-clipped one, and
+  within each band the nearer the viewport centre wins. Geometry only, with the
+  stable sort's document order as the final tie-break, so the ranking is
+  deterministic; a page with room for everything is NOT reordered (document
+  order still gives the first link the shortest key). The pass scans a bounded
+  window past the cap (`BATCH_SCAN_FACTOR = 2`) so the ranking has something to
+  choose between without making the duplicate scan — and the five hit tests each
+  candidate pays for its occlusion answer — grow with the page.
+* **It is said out loud.** `;f` now toasts `80 hints — 34 more in view, ] for the
+  next batch` when the cap bound, and the diagnostics page grew a "Beyond the
+  cap" row plus the numbers behind it. The count is what the scanned window saw,
+  which is stated rather than implied.
+
+### 15.4 Collection was bounded by a clock, so the candidate set was a function of the machine
+
+The expensive tier (computed style / rect / media probes) ran under
+`COLLECT_BUDGET_MS = 12`. That made the boundary move: the same page could hint a
+row on one press and lose it on the next, and a slower machine lost a different
+tail than a faster one. A hint engine that reports "some of these are hinted and
+the rest are not" cannot also be the only unbounded thing on the page.
+
+The budget is now the NUMBER OF NODES PROBED (`COLLECT_PROBES = 6000`), so a
+given page stops at the same node on every machine; the clock survives only as a
+250ms emergency stop for pathological per-node cost, and when it fires
+`truncatedBy: "time"` says so (as do `"probes"`, `"deferred"` and `"scan"` for
+the other bounds) instead of letting a timing accident look like a budget.
+
+While the budget was being rewritten it also became **viewport-first**: nodes
+inside the viewport (plus one viewport of margin) are probed during the walk, and
+nodes outside it are deferred to a second phase that runs with whatever budget is
+left. Labels can only exist for what is on screen, so probing in document order
+was spending the budget on a header nobody was looking at and starving the rows
+in view. The cheap tier — per-root selector queries and shadow-root discovery —
+always runs to `MAX_SCAN` regardless of the probe budget, which is what keeps a
+late custom element's controls findable.
+
+Pinned by `scripts/test/hints-collect-budget.test.ts`: the probe count, the same
+candidate set on repeated runs, off-screen rows not taking the budget from the
+rows in view, the margin, the off-screen tail filling in afterwards, and the
+cheap tier surviving a spent budget.
+
+### 15.5 What is NOT claimed here
+
+* The ranking changes which controls win the cap; it cannot make 81 controls fit
+  80 labels. The honest answer to a page with two hundred in-view controls is
+  still `]` paging, now with a count on screen and labels on the ones nearest the
+  middle of the screen.
+* The probe budget makes the boundary deterministic, not absent: a document whose
+  expensive tier needs more than 6000 probes still truncates, at the same node
+  every time, and says so in the diagnostics page. Probing the whole document
+  would mean an unbounded `;f` on the pages this exists for.
+* The collision lattice keeps a label within ~57px of its control (the corner of
+  the outermost ring). A page with no free pixels in that radius still hides the
+  label; nothing can place a chip where the page has no gap.
+* Measured, not only reasoned: `npm run e2e:hints` (the real browser, the
+  `/uitest` dense grid included) is **41/41**, and the dense-grid test now
+  asserts the cap toast end-to-end — `80 hints — N more in view, ] for the next
+  batch` — as well as the unique-position property the fallback placement must
+  keep. The unit tier is **1273/1273** and all four typechecks pass.
+* The toast's count is what the ranked scan saw, not a census of every element
+  outside the window: on a page with hundreds of controls it is a lower bound,
+  and the docs say so rather than implying 80 + N is everything.
+* The probe budget's 250ms emergency stop is deliberately generous and should
+  never bind on a normal page; if it does, `truncatedBy` says `time` in the
+  diagnostics page rather than the page quietly showing fewer hints.
+
+## 16. The eighth field report (2026-10-20): the Skip ad button stopped skipping in the dev build
+
+The report: *"regression in the youtube skip ad button — it works in the stable
+version from the add-on store, but our local dev nightly is not working with the
+new stuff."* Pressing the hint's key on a live ad left the labels **gone**, the
+ad **still playing**, and **nothing said** — so the layer had committed to an
+activation and the engine believed it had worked.
+
+### 16.1 What the widget actually does
+
+Measured on youtube.com (2026-10-20), not assumed:
+
+```
+button.ytp-skip-ad-button   id="skip-button:N"   inside #movie_player
+  box 85x36, drawn over the <video> (the player is 640x360 in a small window)
+  opacity 0 while the countdown runs, 1 when it is skippable
+  pointerdown  → adds ytp-skip-ad-button--clicked   (ANY press, trusted or not)
+  click        → skips the ad ONLY when event.isTrusted
+```
+
+Two independent facts, both true of every ad-capable player, and together they
+break the verdict the privileged retry was hanging on:
+
+* the site's own player mutates continuously (progress, clock, overlays), so the
+  **page**-level half of the verdict is never silent there;
+* the control lights up a **pressed state for any press**, so the **target**-level
+  half is never silent either — `targetSignal` answers `"its class changed"`.
+
+`activate.ts` decides the retry from the target's signal (`own`), and takes it as
+success. The synthetic press is refused by the site, the cosmetic flip is read as
+"it worked", the privileged press — the only route that reaches a trust-gated
+widget, and the reason the whole actor chain exists — is never sent, and no toast
+appears because the verdict says success. Labels gone, ad still playing, silence.
+
+§2.6 fixed exactly this accident for the PAGE half ("a player mutates
+continuously"). It survived for a year one level down, on the half nobody had
+questioned: the target's own signal is only evidence when nothing but our press
+could have produced it.
+
+### 16.2 The rule: one real press for a player's own overlay
+
+`escalate.ts` gains `pressForReal(el)` — `canEscalate(el)` **and**
+`insideMediaSurface(el)`, geometry, not identity: the control's box sits inside
+the box of a player-sized `video`/`[role=video]` (≥160×90). A player's overlay
+controls are siblings of the video, not descendants, so `closest("video")` is
+useless there; what the user sees is a control drawn ON the video, and that is
+what is asked.
+
+For that narrow class the **route is chosen up front** instead of inferred from
+the aftermath: the actor presses the control once, exactly where a mouse would,
+and the synthetic sequence is neither sent first nor after. Consequences worth
+stating:
+
+* **Nothing can be activated twice.** That is the hazard that keeps links out of
+  this path (`canEscalate`) and the reason a real press is not also sent for a
+  toggle: a second press on Mute flips it back. Pinned end-to-end by
+  `content/hints › a player toggle in the same overlay is pressed exactly once`
+  (fixture `/adplayer`, `#mute-button:3` counts its own clicks and asserts one).
+* **The fallback is the old behaviour.** No privileged channel (standalone, no
+  chrome helper, a page whose actor is not mounted) means `trustedClick()` returns
+  false and the synthetic sequence runs, exactly as before.
+* **Controls outside the player's box are untouched** — the synthetic-first order
+  is right there, where a class flip IS evidence. Pinned by
+  `content/hints › the page receives a trusted, well-formed click`, whose subject
+  moved from the player's `#skipad` to `#plain` for exactly this reason.
+
+This is NOT the path that was removed in §2.6 and the difference is the one that
+mattered then: the old one fired an unverifiable request into the background and
+treated *posting it* as success, so the content script never clicked and the hint
+became a dead key wherever the privilege did not act. This one is chosen only
+after the channel answers, and the synthetic press still runs when it does not.
+
+### 16.3 What is verified, and what is not
+
+* `content/hints › the ad's Skip control is pressed for real, not just given a
+  pressed class` (fixture `/adplayer`, built from the measured DOM above: video
+  surface, overlay `pointer-events:auto` slot, `skip-button:N` id, pressed class on
+  every press, action gated on isTrusted, a 60ms mutation heartbeat). With the old
+  code it fails at "the ad must go away"; with the fix it passes and the page
+  records a trusted click.
+* Unit tier: `insideMediaSurface`/`pressForReal` — over the video, just below it, a
+  link (refused), a thumbnail-sized video (refused), an empty box (refused), a page
+  that refuses the query (ordinary route), and a player-sized video itself (real
+  press: a press on the video is a play/pause, which is what the user asked for).
+* NOT measured: a live ad end-to-end by this engine. YouTube's ad serving was
+  capped for the machine during the session (one skippable ad reached the browser
+  and was measured for its DOM; the rest were 6-second bumpers or no ad at all), so
+  the fixture is what the suite holds. The claim is the measured shape, not the
+  claim that YouTube in every region uses it.
+* NOT covered by the rule: a player that draws its controls OUTSIDE its video's box
+  (a detached control bar, a full-width bottom strip below the video). Those keep
+  the synthetic-first route; if one ever reports this failure, the answer is to
+  widen `insideMediaSurface`, not to lower `canEscalate`.
+
+## 17. The eighth field report (2026-10-20): hints that leaked out from behind an overlay
+
+> "some hints leak and show from behind the elements that are in front of them.
+> like if there is a popup or a overlay i see hints that are behind it"
+
+This one is not a missing label, it is a label in the wrong place. The hint
+labels live in a host appended to `documentElement` with `position:fixed` and
+`z-index:2147483647` — the top layer, above every page stacking context by
+construction (that is what makes them readable over sticky headers and video
+players, §11). The consequence was never stated: a label for a control the page
+has just COVERED WITH A DIALOG is painted on top of that dialog, pointing at
+something the dialog is hiding.
+
+§2.3 is where the older confusion lives. Occlusion was made a label state rather
+than a veto — a covered control keeps its key and its label goes dimmed — and
+that is still right for the case it was written for: a sticky bar, a scrim band, a
+player's control bar. The control is on the SAME surface the user is looking at,
+the label says "this one is here, something is painted over it", and the key
+works because activation clicks the ELEMENT, not the point under the label.
+
+A dialog is not that. It is a **separate surface**: the page replaced the screen,
+and the controls behind it are not part of what the user is looking at. Two
+different questions were being answered by one answer.
+
+### 17.1 The rule: `sheetOver()` — a separate surface, decided by geometry
+
+`probe.ts` gains `sheetOver(el)`: the surface hiding this control when it is
+hidden BEHIND one, or null when it is merely obstructed.
+
+* **Reachability first.** A control the pointer can still hit is not behind
+  anything, whatever is on the page.
+* **What the pointer sees.** `deepHit` at the control's centre (shadow roots
+  pierced, same door as collection), then the panel that node belongs to, walked
+  up to 12 composed ancestors.
+* **A panel is another surface** when it is POSITIONED (fixed/absolute/sticky, so
+  not in the page's flow), it actually covers the control's box, and it either
+  covers a quarter of the viewport or is a dialog/popover/modal by tag or role.
+  The control's own container is excluded by `contains`, which is what keeps a
+  fixed app shell (`position:fixed; inset:0` around the whole page) from reading
+  as a modal over its own content.
+* **Bounded and non-throwing**: one hit test, at most twelve ancestor steps,
+  computed style and rect only for positioned nodes, every read wrapped. A
+  hostile element answers "no" and keeps the ordinary dimmed label.
+
+Every threshold is a judgement, and they are written here rather than implied: a
+quarter of the viewport is what separates a dialog, a modal sheet, a lightbox and
+a product popup from a sticky header, a toast, a badge and the small scrim band
+the fixtures use. `sheetOver` is injectable into `selectHintables`, so the POLICY
+is pinned in `scripts/test/hints-occlusion.test.ts` without painting a modal in a
+browser, and the geometry is pinned end-to-end by the fixture below.
+
+### 17.2 Where it is enforced — twice, on purpose
+
+* **At selection** (`select.ts`): a candidate that fails `reachable()` and whose
+  cover is a sheet is dropped and counted as `behind`. Not `hidden` (it is
+  visible) and not `covered` (that word means dimmed). It does not take a batch
+  slot, so it cannot inflate `more` and make the "`]` for the next batch" toast
+  lie. The diagnostics page grew the number ("rejected: … N behind a dialog") and
+  its probe table names the tag that is over the control.
+* **On the sweep** (`session.ts`): the user is already in hints mode and the page
+  opens a dialog under them. A pass re-anchors the batch on DOM changes, and a
+  label whose control is now behind a sheet no longer counts as a survivor — it
+  is dropped, its key is released, and the dialog's own controls (hinted as their
+  own surface, since the pointer can reach them) keep theirs.
+
+So the leak is closed for both directions: the batch built over a dialog, and the
+batch that a dialog arrives under. Pinned by
+`content/hints › a dialog's own controls are hinted and the ones behind it are
+not` (fixture `/dialog`: a full-viewport scrim plus a fixed panel, both states
+reachable on one URL) and `content/hints › a dialog opened under a live batch
+takes its labels away`. The first asserts WHICH elements got keys — the page's
+three controls are hintable with the panel closed and gone when it is open, while
+the dialog's three are hinted — and then that every remaining label's position is
+inside the dialog's box, because a leaked label is the report and a missing key
+alone would not reproduce it. The second is the same page with hints already up.
+
+### 17.3 What is NOT claimed here
+
+* A full-viewport SCRIM with no dialog (an interstitial "are you sure") reads as a
+  surface too, and hides the hints behind it. That is deliberate: nothing behind
+  it can be pressed, and the label would sit on the scrim. A small scrim band does
+  not, and those controls stay dimmed and clickable (§2.3 unchanged).
+* A dialog that renders its controls as a shadow-DOM or iframe sibling outside the
+  panel is judged by the same geometry as everything else: if the control is
+  reachable, it is hinted; if the panel covers it, it is not.
+* The dimmed state is still reachable for what it was for. Nothing about this
+  change makes a sticky header, a cookie band or a player's control bar drop a
+  control — `content/hints › a visible aria-hidden link is hinted; hidden, inert
+  and pointer-dead ones are not` keeps asserting `covered-link` is hinted AND
+  dimmed AND that its key still activates it.
