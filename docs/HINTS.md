@@ -228,6 +228,9 @@ below the fold of the *DOM* — a player's controls, a card further down — nev
 gets a label, and the only way to reach it is `]` paging, which is itself
 blind. There is no "N more" signal.
 
+**Fixed in §15.3**: the batch is now ranked by what is on screen when it does not
+fit, and `;f` says how many were left out and how to reach them.
+
 `collectHintables()` also stops after `MAX_SCAN = 14000` nodes in document
 order, so on a very large page the sweep can end before it reaches the player.
 
@@ -1429,3 +1432,231 @@ with the half-filled form stays); the second closes the modal. Ctrl+G is unchang
   ends, now through the re-collect rather than through a keypress.
 * AppleScript/BiDi suites were not run for this change (geckodriver and a display
   are needed); the unit tests and both typechecks were.
+
+## 15. The seventh field report (2026-10-20): "I still lose some of the hints"
+
+The report, again from a dense app page:
+
+> "i still loose some of the hints — it's [not] fully deterministic and smart
+> about the hints detections"
+
+"Lose some hints" had three separate causes in the engine, and "not fully
+
+deterministic" was a fourth. None of them was a missing selector: every control
+in question was a candidate, and three of the four were *supposed* to get a
+label.
+
+### 15.1 A label that could not find a free anchor was hidden, and a hidden label is an unusable key
+
+`overlay.reposition` attaches a label at one of six anchors around its control
+(the corners, then just above). If every anchor overlapped a label already
+placed, the badge was HIDDEN — deliberately, to avoid a staircase of staggered
+chips on dense pages.
+
+The cost of that decision was invisible in the code and obvious on a page: the
+label is the ONLY thing that makes a key typeable (`shownKeys()` is the session's
+visibility predicate — a key whose label is hidden is not typeable), so hiding a
+label to keep the page tidy silently removed the control's hint. On a comment
+thread, an icon toolbar or a row of card footers — controls a few pixels apart —
+that was many controls per screenful. `]` did not recover them either: paging
+re-batched the same viewport and hit the same collisions.
+
+The search now continues over a FIXED, ORDERED lattice of small offsets around
+the control (nearest ring first: 4, 9, 15, 22, 30, 40px, eight compass points
+each), and a label is placed at the first free one. The lattice is deterministic
+by construction — no layout feedback, no randomness, the same order on every
+machine — and bounded (48 candidates). To afford those candidates, the collision
+question is answered by a 24px spatial grid instead of a linear scan of every
+placed label; `scripts/test/hints-labels.test.ts` checks the grid against the
+linear scan as an oracle on a dense random layout, and pins the lattice's order
+and reach. A label is now hidden only when its control has no free pixels within
+40px of it at all.
+
+### 15.2 The overlap rule dropped the control the pointer could actually press
+
+`select.ts` collapses candidates that sit almost entirely inside an earlier one
+(an overlay link and its copy, an absolutely-positioned duplicate). The rule is
+right for copies and wrong for a very common framework shape: a card's overlay
+link covers the whole card, and the row's own buttons are painted on top of it as
+SIBLINGS (so `contains()` is false and the nesting rule never sees them). The
+link came first in document order, so it won the slot and the button was counted
+as a duplicate — even when the link was covered and the button was the only thing
+clickable on that card.
+
+The rule now has a tie-breaker: **a reachable candidate replaces a covered one**,
+in place, so the surviving control keeps the early slot (and therefore a short
+key). Two reachable candidates on one area are still one hint — coverage decides
+the tie, it does not defeat the duplicate rule. Pinned in
+`scripts/test/hints-occlusion.test.ts` (both directions).
+
+### 15.3 The 80-cap was first-come in document order, and it was silent
+
+`selectHintables` kept the first `MAX_HINTS` (80) candidates in document order
+and said nothing about the rest. On a dense page that is the header and the
+sidebar taking the keys while the rows in the middle of the screen get none — and
+the user has no way to learn that the rest are one `]` away. This was already on
+the books as P1 ("make the 80-cap fair and visible", §3); the field report is
+what made it a bug rather than a nice-to-have.
+
+Two changes:
+
+* **Ranking.** When there are more candidates than labels, the batch is ranked by
+  `rankScore`: a fully-visible control outranks a partially-clipped one, and
+  within each band the nearer the viewport centre wins. Geometry only, with the
+  stable sort's document order as the final tie-break, so the ranking is
+  deterministic; a page with room for everything is NOT reordered (document
+  order still gives the first link the shortest key). The pass scans a bounded
+  window past the cap (`BATCH_SCAN_FACTOR = 2`) so the ranking has something to
+  choose between without making the duplicate scan — and the five hit tests each
+  candidate pays for its occlusion answer — grow with the page.
+* **It is said out loud.** `;f` now toasts `80 hints — 34 more in view, ] for the
+  next batch` when the cap bound, and the diagnostics page grew a "Beyond the
+  cap" row plus the numbers behind it. The count is what the scanned window saw,
+  which is stated rather than implied.
+
+### 15.4 Collection was bounded by a clock, so the candidate set was a function of the machine
+
+The expensive tier (computed style / rect / media probes) ran under
+`COLLECT_BUDGET_MS = 12`. That made the boundary move: the same page could hint a
+row on one press and lose it on the next, and a slower machine lost a different
+tail than a faster one. A hint engine that reports "some of these are hinted and
+the rest are not" cannot also be the only unbounded thing on the page.
+
+The budget is now the NUMBER OF NODES PROBED (`COLLECT_PROBES = 6000`), so a
+given page stops at the same node on every machine; the clock survives only as a
+250ms emergency stop for pathological per-node cost, and when it fires
+`truncatedBy: "time"` says so (as do `"probes"`, `"deferred"` and `"scan"` for
+the other bounds) instead of letting a timing accident look like a budget.
+
+While the budget was being rewritten it also became **viewport-first**: nodes
+inside the viewport (plus one viewport of margin) are probed during the walk, and
+nodes outside it are deferred to a second phase that runs with whatever budget is
+left. Labels can only exist for what is on screen, so probing in document order
+was spending the budget on a header nobody was looking at and starving the rows
+in view. The cheap tier — per-root selector queries and shadow-root discovery —
+always runs to `MAX_SCAN` regardless of the probe budget, which is what keeps a
+late custom element's controls findable.
+
+Pinned by `scripts/test/hints-collect-budget.test.ts`: the probe count, the same
+candidate set on repeated runs, off-screen rows not taking the budget from the
+rows in view, the margin, the off-screen tail filling in afterwards, and the
+cheap tier surviving a spent budget.
+
+### 15.5 What is NOT claimed here
+
+* The ranking changes which controls win the cap; it cannot make 81 controls fit
+  80 labels. The honest answer to a page with two hundred in-view controls is
+  still `]` paging, now with a count on screen and labels on the ones nearest the
+  middle of the screen.
+* The probe budget makes the boundary deterministic, not absent: a document whose
+  expensive tier needs more than 6000 probes still truncates, at the same node
+  every time, and says so in the diagnostics page. Probing the whole document
+  would mean an unbounded `;f` on the pages this exists for.
+* The collision lattice keeps a label within ~57px of its control (the corner of
+  the outermost ring). A page with no free pixels in that radius still hides the
+  label; nothing can place a chip where the page has no gap.
+* Measured, not only reasoned: `npm run e2e:hints` (the real browser, the
+  `/uitest` dense grid included) is **41/41**, and the dense-grid test now
+  asserts the cap toast end-to-end — `80 hints — N more in view, ] for the next
+  batch` — as well as the unique-position property the fallback placement must
+  keep. The unit tier is **1273/1273** and all four typechecks pass.
+* The toast's count is what the ranked scan saw, not a census of every element
+  outside the window: on a page with hundreds of controls it is a lower bound,
+  and the docs say so rather than implying 80 + N is everything.
+* The probe budget's 250ms emergency stop is deliberately generous and should
+  never bind on a normal page; if it does, `truncatedBy` says `time` in the
+  diagnostics page rather than the page quietly showing fewer hints.
+
+## 16. The eighth field report (2026-10-20): the Skip ad button stopped skipping in the dev build
+
+The report: *"regression in the youtube skip ad button — it works in the stable
+version from the add-on store, but our local dev nightly is not working with the
+new stuff."* Pressing the hint's key on a live ad left the labels **gone**, the
+ad **still playing**, and **nothing said** — so the layer had committed to an
+activation and the engine believed it had worked.
+
+### 16.1 What the widget actually does
+
+Measured on youtube.com (2026-10-20), not assumed:
+
+```
+button.ytp-skip-ad-button   id="skip-button:N"   inside #movie_player
+  box 85x36, drawn over the <video> (the player is 640x360 in a small window)
+  opacity 0 while the countdown runs, 1 when it is skippable
+  pointerdown  → adds ytp-skip-ad-button--clicked   (ANY press, trusted or not)
+  click        → skips the ad ONLY when event.isTrusted
+```
+
+Two independent facts, both true of every ad-capable player, and together they
+break the verdict the privileged retry was hanging on:
+
+* the site's own player mutates continuously (progress, clock, overlays), so the
+  **page**-level half of the verdict is never silent there;
+* the control lights up a **pressed state for any press**, so the **target**-level
+  half is never silent either — `targetSignal` answers `"its class changed"`.
+
+`activate.ts` decides the retry from the target's signal (`own`), and takes it as
+success. The synthetic press is refused by the site, the cosmetic flip is read as
+"it worked", the privileged press — the only route that reaches a trust-gated
+widget, and the reason the whole actor chain exists — is never sent, and no toast
+appears because the verdict says success. Labels gone, ad still playing, silence.
+
+§2.6 fixed exactly this accident for the PAGE half ("a player mutates
+continuously"). It survived for a year one level down, on the half nobody had
+questioned: the target's own signal is only evidence when nothing but our press
+could have produced it.
+
+### 16.2 The rule: one real press for a player's own overlay
+
+`escalate.ts` gains `pressForReal(el)` — `canEscalate(el)` **and**
+`insideMediaSurface(el)`, geometry, not identity: the control's box sits inside
+the box of a player-sized `video`/`[role=video]` (≥160×90). A player's overlay
+controls are siblings of the video, not descendants, so `closest("video")` is
+useless there; what the user sees is a control drawn ON the video, and that is
+what is asked.
+
+For that narrow class the **route is chosen up front** instead of inferred from
+the aftermath: the actor presses the control once, exactly where a mouse would,
+and the synthetic sequence is neither sent first nor after. Consequences worth
+stating:
+
+* **Nothing can be activated twice.** That is the hazard that keeps links out of
+  this path (`canEscalate`) and the reason a real press is not also sent for a
+  toggle: a second press on Mute flips it back. Pinned end-to-end by
+  `content/hints › a player toggle in the same overlay is pressed exactly once`
+  (fixture `/adplayer`, `#mute-button:3` counts its own clicks and asserts one).
+* **The fallback is the old behaviour.** No privileged channel (standalone, no
+  chrome helper, a page whose actor is not mounted) means `trustedClick()` returns
+  false and the synthetic sequence runs, exactly as before.
+* **Controls outside the player's box are untouched** — the synthetic-first order
+  is right there, where a class flip IS evidence. Pinned by
+  `content/hints › the page receives a trusted, well-formed click`, whose subject
+  moved from the player's `#skipad` to `#plain` for exactly this reason.
+
+This is NOT the path that was removed in §2.6 and the difference is the one that
+mattered then: the old one fired an unverifiable request into the background and
+treated *posting it* as success, so the content script never clicked and the hint
+became a dead key wherever the privilege did not act. This one is chosen only
+after the channel answers, and the synthetic press still runs when it does not.
+
+### 16.3 What is verified, and what is not
+
+* `content/hints › the ad's Skip control is pressed for real, not just given a
+  pressed class` (fixture `/adplayer`, built from the measured DOM above: video
+  surface, overlay `pointer-events:auto` slot, `skip-button:N` id, pressed class on
+  every press, action gated on isTrusted, a 60ms mutation heartbeat). With the old
+  code it fails at "the ad must go away"; with the fix it passes and the page
+  records a trusted click.
+* Unit tier: `insideMediaSurface`/`pressForReal` — over the video, just below it, a
+  link (refused), a thumbnail-sized video (refused), an empty box (refused), a page
+  that refuses the query (ordinary route), and a player-sized video itself (real
+  press: a press on the video is a play/pause, which is what the user asked for).
+* NOT measured: a live ad end-to-end by this engine. YouTube's ad serving was
+  capped for the machine during the session (one skippable ad reached the browser
+  and was measured for its DOM; the rest were 6-second bumpers or no ad at all), so
+  the fixture is what the suite holds. The claim is the measured shape, not the
+  claim that YouTube in every region uses it.
+* NOT covered by the rule: a player that draws its controls OUTSIDE its video's box
+  (a detached control bar, a full-width bottom strip below the video). Those keep
+  the synthetic-first route; if one ever reports this failure, the answer is to
+  widen `insideMediaSurface`, not to lower `canEscalate`.

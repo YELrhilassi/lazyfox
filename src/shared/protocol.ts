@@ -100,6 +100,9 @@ export interface BgApi {
     };
   };
   zoom: { req: { delta: number; factor?: number }; res: { factor?: number } };
+  // Screenshot: forward to the chrome helper, whose Firefox Screenshots
+  // module owns the native region picker and capture. Reply means "asked".
+  screenshot: { req: { shot: string }; res: { ok: boolean; note?: string } };
   setConfig: { req: { config: Config }; res: { ok: boolean } };
   toggleWhichKey: { req: Record<string, never>; res: { whichKey: boolean } };
   syncTyping: { req: { typing: boolean }; res: { ok: boolean } };
@@ -368,6 +371,9 @@ export interface ChromeApi {
   contentState: { req: { index: number; active: boolean; url: string; doc?: string }; res: void };
   findState: { req: { index: number; count: number; cur: number }; res: void };
   darkState: { req: { index: number; on: boolean; mode: string; engine: string }; res: void };
+  // Firefox's native Screenshots for the selected tab (see screenshots.ts):
+  // shot is "full" | "visible".
+  screenshot: { req: { shot: string }; res: void };
   cacheGlobal: { req: { mode: CacheMode }; res: void };
   cachePolicy: { req: { mode: CacheMode; tabIds: number[] }; res: void };
 }

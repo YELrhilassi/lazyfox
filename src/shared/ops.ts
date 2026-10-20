@@ -82,6 +82,11 @@ export interface ActionOps {
   toggleWhichKey(): void;
   // ;Q: persist the current window into its session, then quit Firefox.
   quit(): void;
+  // Screenshot: Firefox's NATIVE Screenshots surface (region picker, preview,
+  // copy/download) behind one Lazyfox entry point — `;C f` full page, `;C v`
+  // visible area. Rendered by the chrome helper; the extension hosts route it
+  // there over the relay.
+  screenshot(shot: "full" | "visible"): void;
   focusFirstInput(): void;
   startHints(): void;
   openTarget(which: string): void;

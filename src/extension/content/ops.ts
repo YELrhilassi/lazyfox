@@ -24,6 +24,11 @@ export interface ContentOpsDeps {
   config: () => Config;
   startHints(): void;
   focusFirstInput(): void;
+  // The confirmed config write (content/configwrite.ts): ack, retry, then a
+  // direct storage write. Ops-level toggles used to go fire-and-forget, so a
+  // background that did not answer silently dropped the change — the same
+  // non-persistence the dark toggles had.
+  writeConfig?(next: Config): void;
   // Live find-in-page state for the status bar: called on every count/walk
   // change with { cur (1-based, 0 = nothing walked to yet), count }, and
   // with null when the find widget closes. The host feeds its own status bar
@@ -229,10 +234,18 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     toggleReveal: () => {
       const c = deps.config();
       c.hoverReveal = !c.hoverReveal;
-      void send("setConfig", { config: c });
+      if (deps.writeConfig) deps.writeConfig(c);
+      else void send("setConfig", { config: c });
       toast("toolbar reveal: " + (c.hoverReveal ? "on" : "off"));
     },
     focusFirstInput: () => deps.focusFirstInput(),
+    // Screenshot = the chrome helper's native Firefox Screenshots UI. A
+    // content script has no privileged surface to draw it on, so the request
+    // rides content -> background -> relay -> helper (the dismissDownload
+    // shape); the answer only means "the helper was asked".
+    screenshot: (shot) => {
+      void send("screenshot", { shot });
+    },
     pageUrl: async () => {
       try {
         return location.href;

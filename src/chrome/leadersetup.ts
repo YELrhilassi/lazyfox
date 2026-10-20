@@ -75,6 +75,7 @@ export function createChromeLeader(deps: LeaderSetupDeps): ChromeLeader {
   leaderActions["darkCycleGlobal"] = () => toast("dark mode defaults: see settings");
   leaderActions["darkEngineToggle"] = () => toast("dark engine: web pages only");
   leaderActions["darkResetSite"] = () => toast("dark mode: web pages only");
+  leaderActions["darkCyclePalette"] = () => toast("color schemes: change them in settings");
 
   const leader = new LeaderController(
     (action) => {

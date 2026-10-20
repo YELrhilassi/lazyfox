@@ -67,6 +67,15 @@ export function pushDarkStateToChrome(
   requestChrome("darkState", { index, on, mode, engine });
 }
 
+// Relay a screenshot request to the chrome helper: Firefox's native
+// Screenshots UI is privileged chrome, so the helper drives it for whichever
+// tab asked (content -> background -> here -> helper). Same shape as the
+// download dismissal above: the push is the whole job, the caller's reply
+// only ever meant "the helper was asked".
+export function pushScreenshotToChrome(shot: "full" | "visible"): void {
+  requestChrome("screenshot", { shot });
+}
+
 // Tell the chrome helper to clear its download notification(s).
 //
 // `;D` is a leader binding like any other, so it runs in whichever host owns

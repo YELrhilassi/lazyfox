@@ -214,7 +214,8 @@ export function createLinkHints(
     // viewports hunting links, jumping the page under the user's hands and
     // stalling heavy documents. "Nothing here is hintable" is said outright;
     // `]` / `[` page toward other links.
-    const vis = resolve.viewportItems();
+    const sel = resolve.viewportItems();
+    const vis = sel.kept;
     if (!vis.length) {
       toast("no hints in view \u2014 ] for the next batch");
       return;
@@ -231,6 +232,15 @@ export function createLinkHints(
     await assign(vis);
     if (session !== mySession) return; // exited (ESC) during the await
     if (!items.length) exit();
+    // THE CAP IS STATED, NOT SILENT. If more controls were in view than the
+    // batch has labels for, the user is told both numbers and the way to the
+    // rest — before this, a dense page simply "had no hints" for rows that were
+    // plainly there, and nothing on screen explained why (see select.ts).
+    if (sel.more > 0) {
+      toast(
+        items.length + " hints \u2014 " + sel.more + " more in view, ] for the next batch"
+      );
+    }
   }
 
   // The shortest key in the pool that this batch has not taken yet. Scanning
@@ -341,13 +351,102 @@ export function createLinkHints(
     render();
   }
 
+  // A hintable that is still on screen right NOW, judged by what the page
+  // itself says: connected, sized, inside the viewport, and not display:none /
+  // visibility:hidden / opacity:0 / content-visibility:hidden (checkVisibility
+  // answers all of those in one call where it exists, as in hints/visibility.ts).
+  // This is deliberately NOT the full `fullyVisible` visibility pass — the point
+  // here is the cheap page-side floor a survivor must clear, not a second answer
+  // on what deserves a label.
+  function stillShowable(it: HintItem): boolean {
+    const el = it.el;
+    if (!el || !el.isConnected) return false;
+    let r: DOMRect | null = null;
+    try {
+      r = el.getBoundingClientRect();
+    } catch (e) {
+      return false;
+    }
+    if (!r || r.width <= 0 || r.height <= 0) return false;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    if (r.bottom <= 0 || r.right <= 0 || r.top >= vh || r.left >= vw) return false;
+    // An undrawn label is a candidate someone else already accounts for; only
+    // the placed ones are at stake here.
+    if (!it.label) return false;
+    const cv = el as Element & { checkVisibility?: (opts?: object) => boolean };
+    if (typeof cv.checkVisibility === "function") {
+      try {
+        return !!cv.checkVisibility({
+          checkOpacity: true,
+          checkVisibilityCSS: true,
+          contentVisibilityAuto: true,
+        });
+      } catch (e) {
+        // fall through to the computed-style floor
+      }
+    }
+    try {
+      const cs = getComputedStyle(el);
+      return (
+        cs.display !== "none" &&
+        cs.visibility !== "hidden" &&
+        cs.visibility !== "collapse" &&
+        cs.opacity !== "0"
+      );
+    } catch (e) {
+      return true;
+    }
+  }
+
+  // A passive refresh (the debounced re-collect after a mutation, the timer
+  // refresh, the settled-scroll resync) must be CONSERVATIVE about what it
+  // already shows: a re-collection walks the document on a wall-time budget and
+  // comes back TRUNCATED on a page that is still loading (collect.ts reports
+  // it; the live sweep measured it — github.com mid-load, a `<video>` late in
+  // the DOM lost from the pool and its label with it, while the element itself
+  // had not moved, still visible and pointer-alive). Truncation loses only the
+  // EXPENSIVE tier — cursor-pointer controls and media surfaces — which is
+  // exactly the reporting the user's case A made: labels drawn at `;f` that
+  // vanish a few seconds later with nothing wrong on the page.
+  //
+  // So the fresh viewport subset is merged with the currently PLACED items that
+  // still clear the page-side floor above. A control that the page genuinely
+  // removed, hid, shrank to nothing or scrolled away is dropped with it (the
+  // floor answers those); a control the refresh merely failed to see keeps its
+  // label and its key, exactly as a re-render keeps them via the inherited-key
+  // paths in assign(). Selection order stays document order, so the first
+  // controls on the page keep the short keys in a merged batch.
+  function mergeWithSurvivors(vis: HintCandidate[]): HintCandidate[] {
+    const survivors = items.filter(stillShowable);
+    if (!survivors.length) return vis;
+    const freshSet = new Set(vis.map((c) => c.el));
+    const extra = survivors
+      .filter((it) => !freshSet.has(it.el))
+      .map((it) => ({ el: it.el, covered: it.covered }));
+    if (!extra.length) return vis;
+    const all = [...extra, ...vis];
+    try {
+      all.sort((a, b) => {
+        const pos = a.el.compareDocumentPosition(b.el);
+        if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+        if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+        return 0;
+      });
+    } catch (e) {
+      // An order that cannot be computed (a detached node) is left as-is:
+      // assign() matches by identity and position either way.
+    }
+    return all;
+  }
+
   // When the viewport has moved and settled, swap in the batch now on screen.
   // While a prefix is typed the set is left alone (a re-hint discards input),
   // and with nothing hintable in view the current batch is kept so labels can
   // still track pages that shift under them.
   function syncViewport(): void {
     if (!active || typed !== "" || syncing) return;
-    const vis = resolve.viewportItems();
+    const vis = mergeWithSurvivors(resolve.viewportItems().kept);
     if (!vis.length) return;
     if (vis.length === items.length && vis.every((c, i) => items[i] && items[i]!.el === c.el)) {
       return;
@@ -630,7 +729,7 @@ export function createLinkHints(
   function page(dir: number): void {
     for (let i = 0; i < PAGE_GUARD; i++) {
       const step = resolve.pageScroll(dir);
-      const vis = resolve.viewportItems();
+      const vis = resolve.viewportItems().kept;
       if (vis.length) {
         void assign(vis);
         return;

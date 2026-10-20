@@ -29,6 +29,7 @@ import {
   type DarkRule,
 } from "../../../shared/dark-rules";
 import type { Config, SiteRule } from "../../../shared/types";
+import { nextPalette } from "../../../shared/darkpalettes";
 import { createDarkApplier, createResampleGate, DARK_STYLE_ID, touchesOnlyOwnStyle } from "./apply";
 import {
   analyze,
@@ -68,6 +69,8 @@ export interface DarkController {
   cycleGlobal(): void;
   /** `;Y e` — cycle the engine for this site. */
   toggleEngine(): void;
+  /** `;Y p` — the next color scheme: writes the three poles at once. */
+  cyclePalette(): void;
   /** `;Y x` — drop this site's rules. */
   resetSite(): void;
   state(): DarkState;
@@ -935,6 +938,26 @@ export function createDarkMode(deps: DarkDeps): DarkController {
       const sites = (config.dark.sites || []).filter((r) => r.match !== host);
       deps.toast(sites.length === (config.dark.sites || []).length ? "dark mode: no rules for " + host : "dark mode: rules for " + host + " cleared");
       write({ ...config, dark: { ...config.dark, sites } });
+    },
+
+    cyclePalette(): void {
+      // THE PICKER, not a second palette store (shared/darkpalettes.ts): the
+      // next preset WRITES the three poles, exactly as choosing it in settings
+      // does, so the engine's single source of truth stays what it always was
+      // and the toast says the NAME the user just landed on.
+      const config = deps.getConfig();
+      const palette = nextPalette(config.dark.palette);
+      deps.toast("color scheme: " + palette.name);
+      write({
+        ...config,
+        dark: {
+          ...config.dark,
+          palette: palette.id,
+          background: palette.bg,
+          foreground: palette.fg,
+          accent: palette.accent,
+        },
+      });
     },
 
     state: () => ({ ...state }),
