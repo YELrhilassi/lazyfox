@@ -117,20 +117,11 @@ export const pages = {
 </body></html>`,
   },
   "/deep": { body: deepBody },
-  // A page whose editable lives inside a CLOSED shadow root — how YouTube's
-  // search box, Reddit's input and most modern component libraries ship a text
-  // field. This is where typing detection breaks: a keydown inside a closed
-  // root is retargeted to the HOST, so `e.target` is a custom element that is
-  // not an INPUT, and anything reading `e.target` decides the user is not
-  // typing and takes the keystroke. The event's composed path still contains
-  // the real <input>, which is the only place the truth survives.
-  // A field inside a CLOSED shadow root, with the inner input FILLING its host.
-// That is how real ones are built (YouTube's search box, Reddit's composer),
-// and it is also the only honest fixture here: the inner input is unreachable
-// from the page, so a test cannot query its box and click it directly. If the
-// input did not fill the host, a click at the host's centre would land on the
-// host's own padding — focus would stay on <body> and the "typing" tests would
-// be measuring a page where nobody is typing at all.
+  // A page whose editable lives inside a CLOSED shadow root (YouTube search,
+  // Reddit composer shape): a keydown inside is retargeted to the HOST, so
+  // e.target is not an INPUT and anything keyed off it takes the keystroke —
+  // only the composed path still knows the truth. The inner input fills its
+  // host so clicking the host's centre must actually focus it.
   "/closedinput": {
     body: `<!DOCTYPE html><html><head><title>CLOSED SHADOW INPUT</title></head><body>
 <closed-field id="cf"></closed-field>
@@ -154,12 +145,10 @@ customElements.define("closed-field", ClosedField);
 </script>
 </body></html>`,
   },
-  // A page whose DOM order deliberately differs from its visual order (Google
-  // reorders SERP blocks with CSS). DOM order: ZETA, ALPHA, BETA, DELTA.
-  // Reading order: ALPHA (top-left), BETA (top-right), DELTA (bottom-left),
-  // ZETA (bottom-right). Walking by flat-text offset bounces bottom-right ->
-  // top-left -> top-right -> bottom-left ("up and down"); the finder must
-  // walk what the user sees instead.
+  // DOM order deliberately differs from visual order (Google reorders SERP
+  // blocks with CSS): ZETA, ALPHA, BETA, DELTA in DOM; ALPHA, BETA, DELTA,
+  // ZETA visually. A flat-text-offset walk bounces up and down; the finder
+  // must walk what the user sees.
   "/reorder": {
     body: `<!DOCTYPE html><html><head><title>Reorder Page</title>
 <style>body{margin:0}.blk{position:absolute;font:14px sans-serif}</style></head>
@@ -170,13 +159,10 @@ customElements.define("closed-field", ClosedField);
 <div id="d" class="blk" style="top:120px;left:20px">MATCH DELTA</div>
 </body></html>`,
   },
-  // A page whose FIELD IS INSIDE AN IFRAME, which is the shape that makes
-  // Lazyfox look dead until the user clicks the page: with `all_frames: false`
-  // the top frame's content script never sees a key typed while a frame holds
-  // focus, and clicking anywhere outside the frame is what puts the keyboard
-  // back into the top document. The inner page records what IT received, so a
-  // test can tell "the key never reached the frame" (harness) from "the frame
-  // got the key and the top document never did" (the bug).
+  // The field lives INSIDE AN IFRAME: with `all_frames: false` the top frame
+  // never sees a key typed while the frame holds focus. The inner page records
+  // what IT received, separating "the key never reached the frame" from "the
+  // frame got it and the top document never did".
   "/frame": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>FRAME</title>
 <style>body{margin:0;font:14px/1.5 system-ui,sans-serif}iframe{display:block;width:420px;height:220px;border:1px solid #999}#below{margin-top:12px}</style>
@@ -187,18 +173,10 @@ customElements.define("closed-field", ClosedField);
 <button id="topbutton">top button</button>
 </body></html>`,
   },
-  // A page whose frames have NO CONTENT SCRIPT of their own — the shape an
-  // inline widget, an ad frame or an editor built from `srcdoc` has.
-  //
-  // `/frame` above covers the OTHER shape: a frame with an http(s) URL, which
-  // `all_frames` reaches. These two are the ones the content script cannot be
-  // injected into without `match_about_blank`, and they are the residual of the
-  // "I have to click the page before Lazyfox responds" report: the key event is
-  // delivered to the frame's document, nothing there listens for it, and the
-  // top frame's listener never runs at all.
-  //
-  // Both frames RECORD what their own document received, so a test can tell the
-  // harness failing to deliver a key at all from the product never seeing one.
+  // Frames with NO CONTENT SCRIPT of their own (a blank iframe, an inline
+  // srcdoc widget). `match_about_blank` cannot be assumed, and the key is
+  // delivered to a document that listens while the top frame's listener never
+  // runs. Both frames record what they received.
   "/framenocontent": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>FRAMENOCONTENT</title>\r\n<style>body{margin:0;font:14px/1.5 system-ui,sans-serif}iframe{display:block;width:420px;height:140px;border:1px solid #999}#below{margin-top:12px}</style>\r\n</head><body>\r\n<p id="above">above the frames</p>\r\n<iframe id="blank"></iframe>\r\n<iframe id="doc" srcdoc="<!DOCTYPE html><body><button id='docbutton'>in the srcdoc frame</button><script>window.__srckey=[];window.addEventListener('keydown',function(e){window.__srckey.push(e.key);},true);</script></body>"></iframe>\r\n<p id="below">below the frames</p>\r\n<button id="topbutton">top button</button>\r\n</body></html>`,
   },
@@ -219,29 +197,16 @@ customElements.define("closed-field", ClosedField);
   "/target1": { body: `<!DOCTYPE html><title>TARGET ONE</title><h1>Target One</h1><a href="/">back</a>` },
   "/target2": { body: `<!DOCTYPE html><title>TARGET TWO</title><h1>Target Two</h1><a href="/">back</a>` },
   "/hello": { body: `<!DOCTYPE html><title>HELLO PAGE</title><h1>Hello</h1>` },
-  // The page the `;x` / `;v` undo pair works on.
-  //
-  // It exists so the REOPENED tab has a URL nothing else navigates to, and that
-  // is not cosmetic. The harness addresses a web-page tab by matching its exact
-  // URL against the tab strip (a page has no extension realm to ask for its own
-  // tab id), so a reopen landing on the same URL as the page the rest of the
-  // suite uses leaves the window holding two indistinguishable tabs — measured,
-  // not hypothetical: the sweep's fail-safe rule deliberately does not close a
-  // tab whose URL equals the handle's when the handle could not be pinned to an
-  // id, so the duplicate survived to the end of the group and every later test
-  // that asked that page a question failed on a window that had two of them
-  // ("contentCall(hintSnapshot): no tab id for http://…/ — its URL matched 2
-  // row(s) of the tab strip", and the status bar of the SELECTED tab, which was
-  // the other one). A dedicated URL is the fix: the undo pair is what is under
-  // test, and the page it names is incidental to it.
+  // The page the `;x` / `;v` undo pair works on. A DEDICATED URL on purpose:
+  // the harness addresses a web tab by exact URL, and a reopen landing on the
+  // suite's usual URLs leaves two indistinguishable tabs whose matched rows
+  // make every later contentCall ambiguous.
   "/reopen": {
     body: `<!DOCTYPE html><title>REOPEN ME</title><h1>Reopen me</h1><a href="/">back</a>`,
   },
-  // A per-test scratch page. Tests that assert "this tab is gone from the
-  // strip" must identify THEIR OWN tab: a shared URL like /target2 is also
-  // opened by the ;h and ;1/;9 tests, so "no /target2 tab remains" silently
-  // became a test about whichever test ran last. Each caller appends a unique
-  // query string, which is part of the tab URL and therefore unambiguous.
+  // Per-test scratch page. Tests asserting "this tab is gone" must use a
+  // UNIQUE URL: a shared one makes the assertion about whichever test ran
+  // last. Callers append a unique query string.
   "/scratch": {
     body: `<!DOCTYPE html><title>SCRATCH PAGE</title><h1>Scratch</h1><a href="/">back</a>`,
   },
@@ -364,13 +329,8 @@ html,body{margin:0}
     headers: { "X-Frame-Options": "DENY" },
     body: `<!DOCTYPE html><title>FRAMED PAGE</title><h1 id="marker">Framed content</h1>`,
   },
-  // A page whose ONLY controls are inside a visible frame. Hints are
-  // top-frame-only by policy (`all_frames: false`), so this page is the one
-  // where "nothing to hint" and "I do not look there" produce the same silence
-  // unless the product says which it is — which is the whole point of the
-  // fixture, and the report it stands in for ("link hints doesn't launch
-  // everywhere"). The inner link is deliberately real: a frame with nothing in
-  // it would pass a test that only checked the toast was absent.
+  // The inner link is deliberately real: a frame containing nothing would pass
+  // a test that only checks the toast is absent.
   "/framedhints": {
     body:
       `<!DOCTYPE html><title>FRAMED HINTS</title>\n` +
@@ -776,28 +736,15 @@ html,body{margin:0}
 </main>
 </body></html>`,
   },
-  // THE THIRD FIELD REPORT, reproduced: a YouTube video card and the ad
-  // player's "Skip" button, in the markup the report carried.
-  //
-  // This page exists because the fixtures that came before it were the ENGINE's
-  // idea of YouTube rather than the page's: `/uitest` has a thumbnail link whose
-  // content is one image and `/playerlike` has a skip button that is a plain
-  // button. The report carried real markup, and the differences are exactly the
-  // ones that decide whether a target is offered at all — `aria-hidden="true"`,
-  // `tabindex="-1"`, `rel="null"`, content that is ONLY an image plus overlay
-  // divs, a player whose overlay layer is `pointer-events:none` with the
-  // control re-enabling it, and a Skip button that does not exist when hints are
-  // built (an ad appears mid-session).
-  //
-  // It also carries the two things the same report needed to be MEASURABLE:
-  //   * a heartbeat (window.__beats / __maxGap), because "the hints got stuck
-  //     and unresponsive, they don't do anything, even exiting" is a main-thread
-  //     claim and the only honest test of it is the page's own timer still
-  //     ticking;
-  //   * a churn switch (window.__churn), which replaces every card the way a
-  //     virtual-DOM framework does — new nodes, same controls — because that is
-  //     the situation that used to make the hint engine collect the document
-  //     per item per frame.
+  // THE THIRD FIELD REPORT, reproduced with the markup from the report itself
+  // (engine-idealized fixtures had missed what decides hintability: aria-hidden
+  //, tabindex=-1, rel=null, image-only cards, pointer-events:none overlay with
+  // the control re-enabling itself, a Skip button that appears mid-session).
+  // Also carries the two things a main-thread claim needs to be MEASURABLE:
+  //   * window.__beats / __maxGap — the page's own timer still ticking is the
+  //     honest answer to "did the hints freeze the page";
+  //   * window.__churn — replaces every card like a virtual-DOM framework,
+  //     the situation that used to make the engine collect per item per frame.
   "/ytcard": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>YTCARD</title>
 <style>
@@ -942,14 +889,11 @@ html,body{margin:0}
   }
   replaceCards();
 
-  // WASH OUT, and leave it that way. This is the state a lazy feed, an ad slot or
-  // a virtual list leaves behind for a few hundred milliseconds: the nodes under
-  // the labels are GONE and nothing has replaced them. It is the direct
-  // reproduction of "some of the hint got disappeared after showing up" — badges
-  // on screen, controls not — and it is also the state in which the engine's
-  // re-resolution finds NOTHING: no live node for the item, and not even a
-  // same-destination neighbour near the dead one's last position, because every
-  // card is detached.
+  // WASH OUT and leave it that way: nodes under the labels are GONE and
+  // nothing has replaced them yet — the state a lazy feed / ad slot / virtual
+  // list leaves for a few hundred ms ("some of the hints disappeared after
+  // showing up"), and one where re-resolution finds no live node and no
+  // same-destination neighbour.
   window.__washOutCards = function () {
     var host = document.getElementById("cards");
     var before = host.childElementCount;
@@ -962,20 +906,10 @@ html,body{margin:0}
     return host.childElementCount;
   };
 
-  // CHURN: the re-render, WITH THE GAP a real one has.
-  //
-  // The previous version removed and rebuilt the cards in ONE task, and that is
-  // exactly why this fixture could not fail on the bug it exists to catch: by the
-  // time any measurement pass ran, the replacements were already in the pool at
-  // the same coordinates, so the engine's re-resolution matched them by
-  // destination and position and never had to do anything expensive. The claim
-  // "hints freeze a re-rendering page" was therefore untestable here — the
-  // fixture had removed the window the bug lives in.
-  //
-  // A framework list that washes out and re-hydrates on a LATER task (a virtual
-  // list's placeholder, an ad overlay rebuilding itself, a lazy route) leaves
-  // that window open for a fifth of a second at a time, over and over, which is
-  // what a live feed does to the nodes under live hint labels.
+  // CHURN: the re-render, WITH THE GAP a real one has. Removing and rebuilding
+  // in ONE task made this bug untestable — the replacements were already in the
+  // pool at the same coordinates before any pass ran. Real wash-out/re-hydrate
+  // cycles (virtual lists, ad overlays) leave the window open ~180ms at a time;
   var __returnTimer = null;
   window.__churn = function (on) {
     if (on) {
@@ -1042,16 +976,11 @@ html,body{margin:0}
 </script>
 </body></html>`,
   },
-  // A TEXT FIELD page, for the keys that get you OUT of one.
-  //
-  // Escape is contested: this page binds it to close its own dialog (with a form
-  // in it), which is exactly the accident a user hits when all they wanted was to
-  // leave a field. So the page records Escape presses and whether its dialog is
-  // still up, and the suite asserts the two cancel keys do DIFFERENT things:
-  // Escape is a ladder here: the first press leaves the field and the page hears
-  // nothing (its dialog, with a form in it, stays up); the second press, with
-  // nothing of Lazyfox's left and no field focused, is the page's. The cancel
-  // chord does the first half and always tells the page nothing.
+  // A TEXT FIELD page, for the keys that get you OUT of one. Escape is
+  // contested: the page binds it to close its own dialog (with a form), the
+  // exact accident a user hits leaving a field. The page records what it heard,
+  // so the suite can assert the two cancel keys do DIFFERENT things — the
+  // first Escape leaves the field silently, the second is the page's.
   "/field": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>FIELD</title>
 <style>
@@ -1120,12 +1049,9 @@ html,body{margin:0}
 </body></html>`,
   },
   // YouTube's load shape: the search box takes focus the moment the page
-  // paints, BEFORE the content script arrives, and nobody ever types into it.
-  // The parked-field rule needs a page where the caret is parked
-  // programmatically and stays parked — a scripted element.focus() during the
-  // tests is NOT the same thing, because the suite focus helper touches focus
-  // as a user action and the park rule keys off the real focusin the page
-  // itself fires.
+  // paints, BEFORE the content script arrives, and stays parked. The park rule
+  // keys off the real focusin the page itself fires — a scripted focus during
+  // the tests is NOT the same thing.
   "/autofocus": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>AUTOFOCUS</title>
 <style>
@@ -1151,15 +1077,10 @@ html,body{margin:0}
 </script>
 </body></html>`,
   },
-  // Chat-shaped rows: the WhatsApp Web shape that had no keys.
-  //
-  // Each row is an avatar wrapper, a title/preview column, a timestamp and (on
-  // the third one) extra action columns — four to eight element children, no
-  // role, no aria-label, `cursor:pointer`, and a textContent that carries the
-  // WHOLE last message while the row paints one ellipsized line. The old leaf
-  // bounds (at most 3 children, at most 120 characters) removed exactly the rows
-  // whose last message was long, which reads to a user as "hints show for some of
-  // these and not the rest of the identical ones".
+  // The WhatsApp Web shape that had no keys: avatar + title/preview +
+  // timestamp + extra action columns, no role, cursor:pointer, and whole
+  // last-message text painted as one ellipsized line. The old leaf bounds (≤3
+  // children, ≤120 chars) removed exactly the rows with long messages.
   "/chatrows": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>CHATROWS</title>
 <style>
@@ -1207,10 +1128,10 @@ html,body{margin:0}
 </body></html>`,
   },
 
-  // A page that NEVER goes quiet, with a control that only answers a TRUSTED
-  // click. This is the shape the privileged retry exists for and the shape that
-  // used to make it unreachable: the page-level signal answered "the page updated
-  // itself" for a control that had done nothing, so the retry never ran.
+  // A page that NEVER goes quiet, plus a control that answers only a TRUSTED
+  // click. This is the shape the privileged retry exists for and used to miss:
+  // the page-level signal answered "the page updated itself" for a control that
+  // had done nothing, so the retry never ran.
   "/busy": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>BUSY</title>
 <style>
