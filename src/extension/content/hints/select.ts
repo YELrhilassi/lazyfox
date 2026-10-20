@@ -21,7 +21,7 @@
 // So a covered control is KEPT and FLAGGED. The flag reaches the overlay, which
 // draws that label dimmed, and it is in the hint snapshot so a test can assert
 // the state instead of inferring it from a missing key.
-import { hintVisible, inViewport, reachable } from "./probe";
+import { hintVisible, inViewport, reachable, sheetOver } from "./probe";
 import { createVisibilityPass, type VisibilityPass } from "./visibility";
 import { isMediaSurface, specificity } from "./collect";
 import { BATCH_SCAN_FACTOR } from "./selectors";
@@ -43,6 +43,14 @@ export interface SelectResult {
   /** Kept, and flagged as covered. Not a rejection count any more. */
   covered: number;
   duplicate: number;
+  /**
+   * Fully hidden behind a SEPARATE surface (a dialog, a popup sheet, a modal),
+   * and therefore not hinted at all — see hints/probe.ts sheetOver. This is not
+   * the dimmed case: a dimmed label is a statement about the same surface ("the
+   * control is here, something is painted over it"), while a label for a control
+   * behind a dialog would be drawn on top of the dialog.
+   */
+  behind: number;
   /**
    * In view, visible, and left out because the batch was full — the number the
    * session says out loud ("N more in view — ] for the next batch"). It is the
@@ -127,7 +135,11 @@ export function selectHintables(
   // The occlusion answer, injectable for the same reason the pass is: the claim
   // here is a POLICY (covered is kept and flagged), and a policy should be
   // testable without a browser to paint a scrim in. Defaults to the real probe.
-  reach: (el: Element) => boolean = reachable
+  reach: (el: Element) => boolean = reachable,
+  // The "is it behind a separate surface" answer, injectable for the same reason
+  // the reach probe is: the rule is a policy, and a policy should be testable
+  // without painting a modal in a browser. Defaults to the real geometry.
+  sheet: (el: Element) => Element | null = sheetOver
 ): SelectResult {
   const vis = pass || createVisibilityPass();
   const cap = Math.max(1, Math.floor(limit) || 1);
@@ -141,6 +153,7 @@ export function selectHintables(
   let hidden = 0;
   let covered = 0;
   let duplicate = 0;
+  let behind = 0;
   // A covered control must not outrank a clickable one that overlaps it: the
   // point of the label is to be pressed, and the earlier candidate is only a
   // duplicate because of where the page happened to put it. Replacing in place
@@ -153,9 +166,20 @@ export function selectHintables(
       hidden++;
       continue;
     }
-    // Covered is a LABEL STATE, not a rejection (see the note at the top).
+    // Covered is a LABEL STATE, not a rejection (see the note at the top) — with
+    // one exception: a control hidden behind another SURFACE (a dialog, a popup
+    // sheet). There the label would be painted on top of the surface the user is
+    // looking at, and the key would fire at something that surfaces is covering,
+    // so it is not a hint at all. The distinction lives in probe.sheetOver and is
+    // made on geometry, not on the page's identity.
     const isCovered = !reach(el);
-    if (isCovered) covered++;
+    if (isCovered) {
+      if (sheet(el)) {
+        behind++;
+        continue;
+      }
+      covered++;
+    }
     const r = el.getBoundingClientRect();
     const key = targetKey(el);
     let dup = false;
@@ -240,6 +264,7 @@ export function selectHintables(
     hidden: hidden,
     covered: covered,
     duplicate: duplicate,
+    behind: behind,
     more: more,
   };
 }

@@ -17,6 +17,10 @@
 // What stays here is the rest of the probe: hit-testing, names and geometry.
 import { shadowRootOf } from "../../../shared/dom";
 import { SHADOW_DEPTH } from "./selectors";
+// The composed parent is what a click's retargeting follows: a dialog inside a
+// shadow root must still be walked out of, or a page that renders its modal in a
+// closed root would read as "nothing on top".
+import { composedParentOf } from "./visibility";
 export {
   basicVisible,
   hintVisible,
@@ -116,6 +120,145 @@ export function reachable(el: Element): boolean {
     if (hit && (hit === el || el.contains(hit) || hit.contains(el))) return true;
   }
   return false;
+}
+
+// THE SHARE OF THE VIEWPORT A PANEL MUST COVER to count as a surface of its own
+// rather than as an obstruction over this one. A quarter: a dialog, a modal
+// sheet, a lightbox and a product popup all clear it; a sticky header, a badge,
+// a toast and the scrim band the fixtures use do not.
+const SHEET_AREA = 0.25;
+// How far up the composed chain a cover is followed. Deep enough for
+// panel → backdrop → portal wrapper, short enough to stay a handful of reads.
+const SHEET_WALK = 12;
+
+// Is a node one of the surfaces that REPLACES the screen — a dialog, a popup, a
+// sheet — rather than an obstruction painted over the page?
+function asSheet(node: Element, el: Element, vw: number, vh: number): boolean {
+  // The control's own container is not what is on top of it. This is the clause
+  // that keeps a fixed app shell (position:fixed; inset:0, holding the whole
+  // page) from reading as a modal over its own content.
+  try {
+    if (node === el || node.contains(el)) return false;
+  } catch (e) {
+    return false;
+  }
+  // The document's own roots are the page, not a surface on it. This is not just
+  // correctness: it is the end of every walk that found no sheet, so it saves a
+  // computed-style read per call on the passes that run during a scroll.
+  try {
+    const doc = node.ownerDocument;
+    if (doc && (node === doc.body || node === doc.documentElement)) return false;
+  } catch (e) {
+    return false;
+  }
+  let semantic = false;
+  try {
+    semantic = node.matches(
+      "dialog, [popover], [role='dialog'], [role='alertdialog'], [aria-modal='true']",
+    );
+  } catch (e) {
+    semantic = false;
+  }
+  let r: DOMRect | null = null;
+  try {
+    const cs = getComputedStyle(node);
+    const positioned = cs.position === "fixed" || cs.position === "absolute" || cs.position === "sticky";
+    // A plain static container is the page, whatever its size.
+    if (!positioned && !semantic) return false;
+    r = node.getBoundingClientRect();
+  } catch (e) {
+    return false;
+  }
+  if (!r || r.width <= 0 || r.height <= 0) return false;
+  // IT MUST ACTUALLY COVER THE CONTROL. A panel somewhere else on the screen is
+  // not the thing over this control (the hit test said the centre is covered by
+  // something inside this node, but only the geometry says the node owns it).
+  let er: DOMRect | null = null;
+  try {
+    er = el.getBoundingClientRect();
+  } catch (e) {
+    return false;
+  }
+  if (!er) return false;
+  if (
+    r.left > er.left + 1 ||
+    r.top > er.top + 1 ||
+    r.right < er.right - 1 ||
+    r.bottom < er.bottom - 1
+  ) {
+    return false;
+  }
+  if (semantic) return true;
+  return r.width * r.height >= SHEET_AREA * vw * vh;
+}
+
+/**
+ * The surface hiding this control, when it is hidden BEHIND one — a dialog, a
+ * popup, a modal sheet — or null when the control is simply obstructed.
+ *
+ * Why the distinction is not cosmetic: a hint label is drawn in the top layer,
+ * above the page's own stacking contexts, at the control's own corner. Over a
+ * scrim or a sticky bar that is informative (the dimmed label says "there is a
+ * control here, something is painted over it"). Over a DIALOG it is a lie in
+ * both directions — the label is drawn on top of the dialog the user is looking
+ * at, and the key would fire at a control the dialog is covering. That is the
+ * report: "hints leak and show from behind the elements in front of them".
+ *
+ * The question is answered from what the pointer sees: `reachable()` first (a
+ * control the pointer can still reach is on the same surface by definition),
+ * then the element on top of it, then the panel that element belongs to. A
+ * panel qualifies as another surface when it is POSITIONED (fixed/absolute/
+ * sticky — it is not in the page's flow) and covers the control and either
+ * covers a quarter of the viewport or is a dialog/popover/modal by role or tag.
+ *
+ * Bounded and non-throwing: one hit test, at most twelve composed ancestors,
+ * computed styles and rects only for positioned nodes, and every read wrapped —
+ * a hostile element answers "no" and keeps the ordinary dimmed label.
+ */
+export function sheetOver(el: Element): Element | null {
+  try {
+    // A control the pointer can still reach is not behind anything.
+    if (reachable(el)) return null;
+  } catch (e) {
+    return null;
+  }
+  let vw = 0;
+  let vh = 0;
+  try {
+    vw = window.innerWidth || 0;
+    vh = window.innerHeight || 0;
+  } catch (e) {
+    return null;
+  }
+  if (vw <= 0 || vh <= 0) return null;
+  let cx = 0;
+  let cy = 0;
+  try {
+    const er = el.getBoundingClientRect();
+    cx = Math.min(Math.max(er.left + er.width / 2, 0), vw - 1);
+    cy = Math.min(Math.max(er.top + er.height / 2, 0), vh - 1);
+  } catch (e) {
+    return null;
+  }
+  const hit = deepHit(cx, cy);
+  if (!hit) return null;
+  try {
+    if (hit === el || el.contains(hit) || hit.contains(el)) return null;
+  } catch (e) {
+    return null;
+  }
+  let node: Element | null = hit;
+  for (let i = 0; node && i < SHEET_WALK; i++) {
+    if (asSheet(node, el, vw, vh)) return node;
+    let next: Element | null = null;
+    try {
+      next = composedParentOf(node) as Element | null;
+    } catch (e) {
+      next = null;
+    }
+    node = next;
+  }
+  return null;
 }
 
 // A short, human-readable name for an element, for the diagnostics table.

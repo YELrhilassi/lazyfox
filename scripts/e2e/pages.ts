@@ -2028,4 +2028,58 @@ left out of it.</p>
       "g.addEventListener('click', function (e) { document.title = e.isTrusted ? 'GATE-OPEN' : 'GATE-SWALLOWED'; });" +
       "</scr" + "ipt></body></html>",
   },
+  // A page with a surface ON TOP OF ITSELF: the ordinary "you have a dialog open"
+  // shape — a full-viewport scrim plus a fixed panel over the content. It exists
+  // for the hint-leak report: a hint label lives in the top layer, so a label for
+  // a control BEHIND the dialog is drawn over the dialog. Two states on one page
+  // (closed and open) so a test can prove the controls are hintable in the first
+  // place, and that they are not while the panel is up. Every control carries
+  // data-id so the harness can name which element got a key.
+  "/dialog": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>DIALOG</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.6 system-ui,sans-serif; background:#0b0b0f; color:#eee; }
+  main { padding:16px; }
+  .row { display:block; width:240px; height:30px; margin:10px 0; padding:4px 8px;
+         background:#23232b; color:#eee; border:1px solid #444; cursor:pointer; }
+  #scrim { position:fixed; inset:0; background:rgba(0,0,0,.62); display:none; z-index:900; }
+  #scrim.on { display:block; }
+  #modal { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+           width:340px; height:230px; padding:14px; background:#16161c;
+           border:1px solid #555; display:none; z-index:901; }
+  #modal.on { display:block; }
+</style></head>
+<body>
+<main>
+  <a href="#under1" class="row" data-id="under1">page one</a>
+  <a href="#under2" class="row" data-id="under2">page two</a>
+  <button id="opener" data-id="opener" class="row">Open settings</button>
+  <div id="scrim"></div>
+  <div id="modal" role="dialog" aria-modal="true" aria-label="Settings">
+    <a href="#in1" class="row" data-id="in1">dialog one</a>
+    <a href="#in2" class="row" data-id="in2">dialog two</a>
+    <button id="closer" data-id="closer" class="row">Close</button>
+  </div>
+</main>
+<script>
+  // Opened by code, the way a page opens it after a click, so both states are
+  // reachable on one URL. The dialog's own controls are only in the DOM always
+  // (display:none until opened), which is also the common framework shape.
+  function show() {
+    document.getElementById("scrim").className = "on";
+    document.getElementById("modal").className = "on";
+  }
+  function hide() {
+    document.getElementById("scrim").className = "";
+    document.getElementById("modal").className = "";
+  }
+  document.getElementById("opener").addEventListener("click", show);
+  document.getElementById("closer").addEventListener("click", hide);
+  window.__showDialog = show;
+  window.__hideDialog = hide;
+</script>
+</main>
+</body></html>`,
+  },
 };

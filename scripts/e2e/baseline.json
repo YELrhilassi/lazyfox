@@ -1567,8 +1567,8 @@
   "content/field › Ctrl+G leaves a field without telling the page to close its dialog": {
     "status": "pass",
     "group": "content",
-    "runs": 10,
-    "passes": 10
+    "runs": 11,
+    "passes": 11
   },
   "content/field › a hint on a field inside a closed shadow root focuses it and reports success": {
     "status": "pass",
@@ -2111,6 +2111,18 @@
     "passes": 1
   },
   "content/hints › link hints: a player toggle in the same overlay is pressed exactly once": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: a dialog's own controls are hinted and the ones behind it are not": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: a dialog opened under a live batch takes its labels away": {
     "status": "pass",
     "group": "content",
     "runs": 1,
