@@ -254,8 +254,8 @@
   "content/core › Esc during hints clears state so the next ;f re-hints everything": {
     "status": "pass",
     "group": "content",
-    "runs": 10,
-    "passes": 10
+    "runs": 11,
+    "passes": 11
   },
   "content/setup › setup page: the installed state and uninstall help appear only on a confirmed chrome signal": {
     "status": "fail",
@@ -278,8 +278,8 @@
   "content/scroll › scroll: ;F cycles the page's scroll regions and Esc returns to the document": {
     "status": "pass",
     "group": "content",
-    "runs": 10,
-    "passes": 10
+    "runs": 11,
+    "passes": 11
   },
   "content/scroll › page cache: the global switch applies, is reported, and narrow scopes refuse honestly": {
     "status": "pass",
@@ -290,110 +290,110 @@
   "content/hints › link hints: ;f then hint key activates the link": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 17
+    "runs": 20,
+    "passes": 19
   },
   "content/hints › link hints: hints track a page that shifts under them": {
     "status": "pass",
     "group": "content",
-    "runs": 13,
-    "passes": 13
+    "runs": 15,
+    "passes": 15
   },
   "content/hints › link hints: ] pages down to links below the fold": {
     "status": "pass",
     "group": "content",
-    "runs": 13,
-    "passes": 13
+    "runs": 15,
+    "passes": 15
   },
   "content/hints › link hints: a control inside a clickable media container wins the hint": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 18
+    "runs": 20,
+    "passes": 20
   },
   "content/hints › link hints: a click the page ignores is reported, not silent": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 17
+    "runs": 20,
+    "passes": 19
   },
   "content/hints › link hints: the actor's trusted click produces a trusted event": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 18
+    "runs": 20,
+    "passes": 20
   },
   "content/hints › link hints: the control inside the media container really activates": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 17
+    "runs": 20,
+    "passes": 19
   },
   "content/hints › link hints: the page receives a trusted, well-formed click": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 18
+    "runs": 20,
+    "passes": 20
   },
   "content/hints › link hints: a control that tracks press state still activates": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 17
+    "runs": 20,
+    "passes": 19
   },
   "content/hints › link hints: an ambiguous prefix shows an enter badge, and it clears": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 17
+    "runs": 20,
+    "passes": 19
   },
   "content/hints › link hints: nested targets collapse and labels never overlap": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 18
+    "runs": 20,
+    "passes": 20
   },
   "content/hints › link hints: activating never scrolls the page (button and input)": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 18
+    "runs": 20,
+    "passes": 20
   },
   "content/hints › link hints: scrolling to a new section re-hints its links": {
     "status": "pass",
     "group": "content",
-    "runs": 19,
-    "passes": 18
+    "runs": 21,
+    "passes": 20
   },
   "content/hints › link hints: a dense grid yields unique, capped hints": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 18
+    "runs": 20,
+    "passes": 20
   },
   "content/hints › link hints: clickable image and video thumbnails are hinted and click": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 18
+    "runs": 20,
+    "passes": 20
   },
   "content/hints › link hints: a control inserted after ;f gets a working hint": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 18
+    "runs": 20,
+    "passes": 20
   },
   "content/hints › link hints: a framework re-render keeps the same key and still clicks": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 18
+    "runs": 20,
+    "passes": 20
   },
   "content/hints › link hints: a late control does not reshuffle existing keys": {
     "status": "pass",
     "group": "content",
-    "runs": 18,
-    "passes": 18
+    "runs": 20,
+    "passes": 20
   },
   "content/popups › ;s search popup: type query, Enter searches": {
     "status": "pass",
@@ -584,8 +584,8 @@
   "content/sequences › ;G opens the navigation-stack popup and Esc closes it": {
     "status": "pass",
     "group": "content",
-    "runs": 11,
-    "passes": 11
+    "runs": 12,
+    "passes": 12
   },
   "content/sequences › ;L opens the navigation-stack popup too (both entry keys)": {
     "status": "pass",
@@ -632,8 +632,8 @@
   "content/multidigit › Escape backs out of the chooser without moving": {
     "status": "pass",
     "group": "content",
-    "runs": 11,
-    "passes": 10
+    "runs": 12,
+    "passes": 11
   },
   "content/multidigit › ;9 in a twelve-tab window is still a plain jump": {
     "status": "pass",
@@ -1105,8 +1105,8 @@
   "content/links › ;K e cancels on Escape without navigating": {
     "status": "pass",
     "group": "content",
-    "runs": 10,
-    "passes": 10
+    "runs": 11,
+    "passes": 11
   },
   "content/links › ;K e commits the address it was opened with": {
     "status": "pass",
@@ -1513,26 +1513,26 @@
   "content/hints › link hints: a page whose controls are all in a frame says WHY, and stays off": {
     "status": "pass",
     "group": "content",
-    "runs": 16,
-    "passes": 16
+    "runs": 18,
+    "passes": 18
   },
   "content/hints › link hints: controls inside open and closed shadow roots are hinted and click": {
     "status": "pass",
     "group": "content",
-    "runs": 15,
-    "passes": 15
+    "runs": 17,
+    "passes": 17
   },
   "content/hints › link hints: Ctrl+G cancels the batch instead of typing the letter g": {
     "status": "pass",
     "group": "content",
-    "runs": 14,
-    "passes": 14
+    "runs": 16,
+    "passes": 16
   },
   "content/hints › link hints: a capture that declines a key does not swallow it": {
     "status": "pass",
     "group": "content",
-    "runs": 13,
-    "passes": 13
+    "runs": 15,
+    "passes": 15
   },
   "content/ownership › a tab opened next to a reporting tab does not inherit its answer": {
     "status": "fail",
@@ -1567,50 +1567,50 @@
   "content/field › Ctrl+G leaves a field without telling the page to close its dialog": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 11,
+    "passes": 11
   },
   "content/field › a hint on a field inside a closed shadow root focuses it and reports success": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 10,
+    "passes": 10
   },
   "content/field › ;i focuses the composer, not the first small field": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 10,
+    "passes": 10
   },
   "content/field › a large video surface is hinted, and its key reaches the player": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 10,
+    "passes": 10
   },
   "content/field › a busy page still attempts the privileged press for a trust-gated control": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 11,
+    "passes": 10
   },
   "content/field › a control that reacts is not re-pressed through the privileged path": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 11,
+    "passes": 11
   },
   "content/field › the leader key is never blocked by a hint layer": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/field › Escape dismisses a hint layer and the keys come back": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 10,
+    "passes": 10
   },
   "content/field › Escape is the master cancel: the page still sees it and the caret leaves the field": {
     "status": "pass",
@@ -1633,86 +1633,86 @@
   "content/hints › link hints: a thumbnail link's key navigates like any other link": {
     "status": "pass",
     "group": "content",
+    "runs": 13,
+    "passes": 13
+  },
+  "content/hints › link hints: an inert ancestor hides a control inside a closed shadow root": {
+    "status": "pass",
+    "group": "content",
+    "runs": 12,
+    "passes": 12
+  },
+  "content/hints › link hints: a hint key that names nothing says so instead of going quiet": {
+    "status": "pass",
+    "group": "content",
     "runs": 11,
     "passes": 11
   },
-  "content/hints › link hints: an inert ancestor hides a control inside a closed shadow root": {
+  "content/hints › link hints: a YouTube-shaped thumbnail link is hinted and its key navigates": {
     "status": "pass",
     "group": "content",
     "runs": 10,
     "passes": 10
   },
-  "content/hints › link hints: a hint key that names nothing says so instead of going quiet": {
+  "content/hints › link hints: the ad's Skip button appears mid-session and its key skips the ad": {
+    "status": "pass",
+    "group": "content",
+    "runs": 10,
+    "passes": 10
+  },
+  "content/hints › link hints: a re-rendering page stays hinted and stays responsive": {
+    "status": "pass",
+    "group": "content",
+    "runs": 10,
+    "passes": 10
+  },
+  "content/hints › link hints: a badge whose control is washed out stays on screen and keeps its key": {
     "status": "pass",
     "group": "content",
     "runs": 9,
     "passes": 9
   },
-  "content/hints › link hints: a YouTube-shaped thumbnail link is hinted and its key navigates": {
-    "status": "pass",
-    "group": "content",
-    "runs": 8,
-    "passes": 8
-  },
-  "content/hints › link hints: the ad's Skip button appears mid-session and its key skips the ad": {
-    "status": "pass",
-    "group": "content",
-    "runs": 8,
-    "passes": 8
-  },
-  "content/hints › link hints: a re-rendering page stays hinted and stays responsive": {
-    "status": "pass",
-    "group": "content",
-    "runs": 8,
-    "passes": 8
-  },
-  "content/hints › link hints: a badge whose control is washed out stays on screen and keeps its key": {
-    "status": "pass",
-    "group": "content",
-    "runs": 7,
-    "passes": 7
-  },
   "content/hints › link hints: focus moving into a frame tears the layer down instead of trapping the keyboard": {
     "status": "pass",
     "group": "content",
-    "runs": 7,
-    "passes": 7
+    "runs": 9,
+    "passes": 9
   },
   "content/hints › link hints: a popup, a cancelled session and a second session in a row": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 10,
+    "passes": 10
   },
   "content/hints › link hints: two sessions in a row, the first cancelled, both read keys": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 10,
+    "passes": 10
   },
   "content/hints › link hints: Tab pages to the next batch and the layer still activates": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 10,
+    "passes": 10
   },
   "content/hints › link hints: ;f and Esc in a row, eight times, every session draws and reads keys": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 11,
+    "passes": 11
   },
   "content/hints › link hints: paging moves the pane the user is looking at, never the window": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 10,
+    "passes": 10
   },
   "content/field › a chain of overlays leaves the next sentence typed into a field intact": {
     "status": "pass",
     "group": "content",
-    "runs": 6,
-    "passes": 6
+    "runs": 7,
+    "passes": 7
   },
   "content/toplayer › a page that transforms <html> cannot move the hint labels off their links": {
     "status": "pass",
@@ -1837,8 +1837,8 @@
   "content/sequences › a category ACTION leaves no capture behind: ONE Escape ends the gesture": {
     "status": "pass",
     "group": "content",
-    "runs": 4,
-    "passes": 4
+    "runs": 5,
+    "passes": 5
   },
   "content/sequences › a category ACTION clears the mirror by itself, with NO key afterwards": {
     "status": "pass",
@@ -1855,56 +1855,56 @@
   "content/theme › a light page is darkened on load, and the page's colours go through the configured theme": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/theme › a page that already ships a dark theme is left alone": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/theme › ;Y d turns the theme off for this site and back on, and writes the per-site rule": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/theme › ;Y e switches to the filter engine on this site, and the root really carries the inversion": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/theme › ;Y x clears this site's rules and hands the page back to the global default": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/theme › ;R opens the article, and the article is what the scroll keys move": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/theme › Escape leaves the article and gives the page back": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 10,
+    "passes": 10
   },
   "content/theme › reader mode on a page that transforms the root still fills the viewport": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/theme › the article is real document text, so find works inside the reader": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/ownership › the report window opens on a real navigation and is spent by the page's own report": {
     "status": "pass",
@@ -1933,14 +1933,14 @@
   "content/theme › a page that ships its own dark theme is asked for it, not recoloured": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 6,
+    "passes": 6
   },
   "content/theme › a page that switches state keeps its theme, and the new view is themed too": {
     "status": "pass",
     "group": "content",
-    "runs": 5,
-    "passes": 5
+    "runs": 6,
+    "passes": 6
   },
   "sessions/sessions › sessions: ;W h split-pane switch is a no-op without a split": {
     "status": "pass",
@@ -1969,44 +1969,44 @@
   "content/theme › a settled page stops being repainted (no self-triggered resample loop)": {
     "status": "pass",
     "group": "content",
-    "runs": 4,
-    "passes": 4
+    "runs": 5,
+    "passes": 5
   },
   "content/theme › a page that keeps changing keeps ONE theme": {
     "status": "pass",
     "group": "content",
-    "runs": 4,
-    "passes": 4
+    "runs": 5,
+    "passes": 5
   },
   "content/theme › a site with its own theme really goes light when the site is turned off": {
+    "status": "pass",
+    "group": "content",
+    "runs": 5,
+    "passes": 5
+  },
+  "content/theme › a site-shaped page stays readable, and no surface is left paper-white": {
     "status": "pass",
     "group": "content",
     "runs": 4,
     "passes": 4
   },
-  "content/theme › a site-shaped page stays readable, and no surface is left paper-white": {
+  "content/theme › a theme declared after the first paint is still found, and used": {
     "status": "pass",
     "group": "content",
     "runs": 3,
     "passes": 3
   },
-  "content/theme › a theme declared after the first paint is still found, and used": {
+  "content/theme › dark surfaces stay dark, gradients are mapped, and the UA scheme follows": {
     "status": "pass",
     "group": "content",
     "runs": 2,
     "passes": 2
   },
-  "content/theme › dark surfaces stay dark, gradients are mapped, and the UA scheme follows": {
-    "status": "pass",
-    "group": "content",
-    "runs": 1,
-    "passes": 1
-  },
   "content/hints › link hints: a visible aria-hidden link is hinted; hidden, inert and pointer-dead ones are not": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 3,
+    "passes": 3
   },
   "content/setup › the home page's install row opens the setup page with a GitHub Releases installer download": {
     "status": "pass",
@@ -2017,6 +2017,114 @@
   "commandcenter/tabs › the home page's install row opens the setup page in the current tab": {
     "status": "pass",
     "group": "commandcenter",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/theme › a themed page settles: the walk stops and the verdict is published once": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
+  },
+  "content/hints › link hints: carousel prev/next in closed shadow roots late in a feed-sized DOM are hinted and click": {
+    "status": "pass",
+    "group": "content",
+    "runs": 3,
+    "passes": 3
+  },
+  "content/hints › link hints: a Skip button hidden in the ad slot until the skip window opens still gets a key (attribute-only reveal)": {
+    "status": "pass",
+    "group": "content",
+    "runs": 3,
+    "passes": 3
+  },
+  "content/hints › link hints: a trust-gated control is activated by the privileged real press": {
+    "status": "pass",
+    "group": "content",
+    "runs": 3,
+    "passes": 2
+  },
+  "content/hints › link hints: the privileged press reaches a trust-gated control with genuinely trusted events": {
+    "status": "pass",
+    "group": "content",
+    "runs": 3,
+    "passes": 2
+  },
+  "content/typing › a load-time autofocus gives the leader back on the first ;": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/typing › a claim-parked box answers a real click with typing again": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/typing › a fresh page-parked focus still types ';' inside the park window": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/field › Escape is a ladder: the caret leaves first, the page's own action second": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
+  },
+  "content/field › Escape with nothing to clean is the page's, first press": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
+  },
+  "content/core › Esc is a ladder: it blurs the focused input, and the page gets the next press": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: a truncated re-collect must not take a label the page is still showing": {
+    "status": "pass",
+    "group": "content",
+    "runs": 4,
+    "passes": 3
+  },
+  "content/theme › a transparent layer over a grid stays transparent, and the numbers stay readable": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/theme › every rule the engine emits paints exactly one element": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: the ad's Skip control is pressed for real, not just given a pressed class": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: a player toggle in the same overlay is pressed exactly once": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: a dialog's own controls are hinted and the ones behind it are not": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: a dialog opened under a live batch takes its labels away": {
+    "status": "pass",
+    "group": "content",
     "runs": 1,
     "passes": 1
   }

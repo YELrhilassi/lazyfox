@@ -183,6 +183,31 @@ export const MEDIA_SURFACE_MIN_AREA = 0.12;
 export const MEDIA_SURFACE_MIN_W = 160;
 export const MEDIA_SURFACE_MIN_H = 90;
 
+// The bounds a bare `cursor:pointer` control has to stay inside to count as a
+// LEAF rather than a container (see leafClickable in collect.ts).
+//
+// They are shaped by the failure they replace, not by taste. The old rules were
+// "at most 3 element children" and "at most 120 characters of text", and both are
+// properties of how a framework happens to nest its markup rather than of what
+// the element does. On WhatsApp Web a chat row is an avatar wrapper, a title/
+// preview column, a timestamp column and an actions column — four children — and
+// its textContent carries the FULL last message, which is routinely longer than
+// 120 characters while the row itself is one ellipsized line. So rows with a long
+// message got no key while their neighbours did: "hints show for some of these
+// but not the rest", with nothing wrong with the page.
+//
+// Children are now bounded generously, and length only counts as a container
+// signal when the BOX is big: a tall/wrapping block with hundreds of characters
+// is a reading container (the thing the rule was written to keep out), while a
+// short row carrying a long string is a control.
+export const LEAF_MAX_CHILDREN = 8;
+/** Characters after which an element's size is consulted before it is trusted. */
+export const LEAF_TEXT_SOFT_MAX = 120;
+/** Characters that are a container whatever the box is. */
+export const LEAF_TEXT_HARD_MAX = 400;
+/** Fraction of the viewport above which a long-text element is a container. */
+export const LEAF_MAX_AREA = 0.15;
+
 // Cap per viewport. With the default 9 hint chars this keeps every key at one
 // or two characters (9 + 81 = 90 > 80), so labels never sprawl.
 export const MAX_HINTS = 80;
@@ -195,10 +220,98 @@ export const PAGE_GUARD = 8;
 // UIs (YouTube's Polymer/Lit components, Reddit's faceplate-*) nest custom
 // elements several deep, so a shallow walk missed real controls.
 export const SHADOW_DEPTH = 6;
-// Bound the cursor:pointer sweep on very large framework DOMs. A watch page
-// carries thousands of light-DOM nodes, so the old 6000 cap could stop before
-// reaching the player controls.
-export const MAX_SCAN = 14000;
+// How many elements of one root (document or shadow root) the discovery walk
+// may visit.
+//
+// This used to bound the cursor:pointer sweep alone (and before that, a walk
+// whose every node was expensive), which is why it was 14000: a watch page
+// carries thousands of light-DOM nodes, and the old 6000 cap could stop before
+// reaching the player controls. The walk is TIERED now (see collect.ts): the
+// cheap tier — shadow-root discovery, the thing that lets a selector query run
+// inside a custom element's tree — runs for every visited node up to this cap,
+// while the expensive tier (computed-style reads, rect reads) is bounded by the
+// wall-time budget and simply goes quiet past it.
+//
+// So the cap's job has changed: with the expensive tier budget-bound, this cap
+// only binds on pages where even the cheap tier has not finished. It must be
+// large enough that a framework app's full light DOM is inside it — on a page
+// bigger than the cap, the custom elements near the end of the document (the
+// post-carousel nav at the bottom of a feed, the player widget) would never be
+// discovered, no matter how cheap discovering them became. The value is the
+// size of a genuinely heavy app document (a social feed or a watch page in the
+// tens of thousands of elements), not a guess at jank: per-node cheap-tier work
+// is one property read, so 3× the old cap costs single-digit milliseconds of
+// discovery on a page that would previously have been truncated at 14000.
+export const MAX_SCAN = 42000;
+
+// THE EXPENSIVE TIER'S BUDGET IS A COUNT, NOT A CLOCK.
+//
+// This used to be `COLLECT_BUDGET_MS = 12`: the discovery walk probed a node
+// (computed style, rect, media test) until twelve milliseconds had passed and
+// then went quiet for the rest of the pass. That made the candidate set a
+// function of how busy the machine was — the same page could hint a row on one
+// press and lose it on the next, and a slower machine lost a different tail than
+// a faster one. "Some of these are hinted and the rest are not" was half a
+// reporting bug and half this: the boundary moved.
+//
+// So the budget is now the number of nodes probed. On a given page the pass
+// stops at the same node every time, on every machine, which is what makes the
+// hints deterministic. The wall clock survives only as an emergency stop (see
+// COLLECT_HARD_MS) for a page whose per-node cost is pathological, and when it
+// trips it is REPORTED as such rather than silently reducing the set.
+export const COLLECT_PROBES = 6000;
+/**
+ * The emergency wall-clock stop. It is not the budget: at ~2µs per probe the
+ * count above spends ~12ms, and this only binds on a page whose nodes are
+ * orders of magnitude more expensive than that (or on a machine under enough
+ * load that twelve milliseconds has become a hundred).
+ */
+export const COLLECT_HARD_MS = 250;
+// How far OUTSIDE the viewport still counts as "what the user is looking at",
+// as a fraction of the viewport on each side. Nodes inside this window are
+// probed first (see collect.ts): the user can only be told about a control they
+// can see, so the budget must never be spent on a control two screens away
+// before the ones on screen have been looked at.
+export const COLLECT_VIEWPORT_MARGIN = 1;
+// Off-screen nodes remembered for the second phase of one collect. The list is
+// bounded so a huge document cannot turn the walk into an allocation, and the
+// number actually probed is bounded by COLLECT_PROBES.
+export const COLLECT_DEFERRED_MAX = 8000;
+
+// How far past its own cap the selection pass may scan before it ranks.
+//
+// The cap is a room limit (MAX_HINTS labels), and the batch used to be the FIRST
+// N candidates in document order — so on a dense page the header and the sidebar
+// took the keys and the rows in the middle of the screen got none, with no way
+// to know. Scanning a multiple of the cap lets the pass choose the controls
+// nearest what is on screen instead.
+//
+// TWICE, not more, and for a cost reason rather than a taste one: every scanned
+// candidate pays the dedupe comparison against the kept set AND up to five hit
+// tests for its occlusion answer (hints/probe.ts reachable). A viewport holds on
+// the order of a hundred controls, so 2× the cap covers the screen without
+// doubling the occlusion work again; the batch is 80 labels here, not a census.
+export const BATCH_SCAN_FACTOR = 2;
+
+// How often, while hints are OPEN, the pool is rebuilt for the page's own good.
+//
+// The normal pool refresh is mutation-driven: a control that is INSERTED (or
+// replaced) while hints are open schedules one, clearing DOM_RESYNC_DELAY.
+// But a control can become presentable without any childList change at all:
+// the player that gates its own Skip button behind a class flip at the five-
+// second mark, a slot that was display:none when the button was inserted, a
+// panel that reveals itself by removing a class. For such a control the
+// mutation observer stays silent forever, and the pool that `;f` built — which
+// rejected the button because its rect was empty at collect time — is missing
+// it for the whole session. That is the "there is a Skip button right there
+// and no hint ever appears for it" report.
+//
+// This interval is the catch-all for every "changed without announcing it"
+// shape: one budgeted collect pass (see COLLECT_PROBES) per interval, and
+// only while hints are open. It costs one pass per 2 seconds on the worst page
+// and nothing at all on any page where the batch has not changed, because an
+// identical batch is detected and kept.
+export const POOL_RESYNC_MS = 2000;
 // After the viewport has moved, wait this long for scrolling to settle before
 // re-hinting the newly visible batch (keeps mid-scroll churn down).
 export const RESYNC_DELAY = 150;

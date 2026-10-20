@@ -382,20 +382,12 @@ export async function run(ctx: any): Promise<void> {
 
   await t("a page that sends headers then stalls still answers the leader key", async () => {
     const tab = await freshTab(`${ctx.base}/stall`);
-    // THE SAME TWO-ATTEMPT DISCIPLINE THE `/hang` CASE USES, for the same reason:
-    // this is a PENDING NAVIGATION, and the synthetic `#lfc=keys` channel is
-    // documented to sometimes deliver NOTHING during one — no error, no reply loss,
-    // a keydown that arrives in no realm. The full account is on "a page that never
-    // responds" above; what it was measured as here is a KEYBOARD THAT IS NOT DEAD:
-    // the failure text below says so itself (nothing armed in either realm, the
-    // page's dispatch trace empty, the document running our content script under
-    // its own `data-lf-content`), which is the harness's shape, not the product's.
-    // One press was all this case had, so one drop read as a regression.
-    //
-    // What must NOT be retried is a key the document RECEIVED and declined: the
-    // page's own capture-phase recorder proves arrival, and arrival with no arm is
-    // the product bug this case exists to catch — it fails on that attempt rather
-    // than asking again.
+    // THE SAME TWO-ATTEMPT DISCIPLINE THE `/hang` CASE USES (see its full
+    // account above): the synthetic key channel sometimes delivers nothing
+    // during a PENDING navigation, and one press was all this case had, so one
+    // drop read as a regression. What is retried is only a key NO realm saw;
+    // a key the document RECEIVED and declined fails immediately — that is
+    // the product bug this case exists to catch.
     let served: any = null;
     let seen: string | null = null;
     for (let attempt = 1; attempt <= 2 && !served; attempt++) {

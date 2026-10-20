@@ -3,7 +3,7 @@
 // It re-runs the ordinary collection and the ordinary viewport pass with
 // counters attached, so what it reports is exactly what `;f` would do — not a
 // second implementation that drifts. Nothing here clicks anything.
-import { rectCenter, reachable, shortName, deepHit, inViewport, hintVisible } from "./probe";
+import { rectCenter, reachable, shortName, deepHit, inViewport, hintVisible, sheetOver } from "./probe";
 import { collectHintables, type CollectStats } from "./collect";
 import { selectHintables } from "./select";
 import { createVisibilityPass } from "./visibility";
@@ -18,11 +18,30 @@ export interface HintDiagnosticsSnapshot {
    * a state of the batch, not a rejection — the key still fires.
    */
   covered: number;
-  rejected: { hidden: number; duplicate: number };
+  rejected: { hidden: number; duplicate: number; behind: number };
+  /**
+   * In view, visible, and left out because the batch was full. `;f` says this
+   * number out loud; the page shows it so "why is that row not hinted" has an
+   * answer that is not a guess.
+   */
+  more: number;
+  /**
+   * The expensive tier did not finish the document. The SELECTOR matches are
+   * complete; what may be missing from this run is a control only the
+   * cursor:pointer / media-surface tier would have found. `truncatedBy` says
+   * which bound was hit: `probes` is the deterministic node budget, `time` the
+   * emergency wall-clock stop, `deferred` an over-full off-screen list, `scan`
+   * the cheap tier's MAX_SCAN. See hints/collect.ts.
+   */
+  truncated: boolean;
+  truncatedBy: "probes" | "time" | "deferred" | "scan" | null;
   shadowRoots: number;
   pointerControls: number;
   /** Candidates that qualified only as a large media surface (a player's video). */
   mediaSurfaces: number;
+  /** Nodes the expensive tier probed, and the budget it was given. */
+  probed: number;
+  probeCap: number;
   probes: HintProbe[];
 }
 
@@ -36,8 +55,12 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     pointerControls: 0,
     mediaSurfaces: 0,
     truncated: false,
+    truncatedBy: null,
     visited: 0,
     budgetMs: 0,
+    probes: 0,
+    probeCap: 0,
+    deferred: 0,
   };
   // ONE pass for both halves, so the report describes the run the live flow
   // makes (same caches, same order, same costs).
@@ -62,9 +85,17 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     const center = rectCenter(el);
     const hit = vis ? deepHit(center[0], center[1]) : null;
     const reach = vis && reachable(el);
+    // Covered by a SEPARATE surface (a dialog, a popup sheet): the label is not
+    // drawn at all, because it would be drawn on top of that surface.
+    const sheet = reach ? null : sheetOver(el);
     let reason: string;
     if (!vis) reason = "outside the viewport (page to it with ])";
     else if (reach) reason = "clickable here";
+    else if (sheet)
+      reason =
+        "behind " +
+        String(sheet.tagName || "?").toLowerCase() +
+        " (a dialog or overlay) \u2014 not hinted";
     else
       reason =
         "covered by " +
@@ -85,10 +116,15 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     candidates: pool.length,
     hinted: sel.kept.length,
     covered: sel.covered,
-    rejected: { hidden: sel.hidden, duplicate: sel.duplicate },
+    rejected: { hidden: sel.hidden, duplicate: sel.duplicate, behind: sel.behind },
+    more: sel.more,
+    truncated: stats.truncated,
+    truncatedBy: stats.truncatedBy,
     shadowRoots: stats.shadowRoots,
     pointerControls: stats.pointerControls,
     mediaSurfaces: stats.mediaSurfaces,
+    probed: stats.probes,
+    probeCap: stats.probeCap,
     probes: probes,
   };
 }

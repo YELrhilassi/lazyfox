@@ -18,7 +18,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { api, downloadSigned, isSignedXpi, xpiVersion } from "./amo-lib.ts";
+import { api, downloadSigned, isSignedXpi, normalizeAmoHash, xpiVersion } from "./amo-lib.ts";
+import { sha256File } from "./payload.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -74,16 +75,25 @@ try {
   }
   // Find the version detail for the exact target version.
   let fileId: string | null = null;
-  const versions: { version: string; file?: { id?: string } }[] = res.json?.versions || [];
+  // What AMO says the published file IS, captured from whichever response names
+  // the file id, so the bytes downloaded below can be checked against it.
+  let fileHash: string | null = null;
+  const versions: { version: string; file?: { id?: string; hash?: string } }[] = res.json?.versions || [];
   const target = versions.find((v) => v.version === version);
   if (target?.file?.id) {
     fileId = target.file.id;
+    fileHash = target.file.hash ?? null;
   }
-  if (!fileId) {
-    // Fall back to the precise version endpoint.
+  // BOTH fields, from the endpoint that has them. The add-on list is not
+  // guaranteed to carry the fingerprint per version, and "the list gave me an id
+  // but no hash" must not quietly mean "the byte check did not run" — which is
+  // exactly what a guard-gated-on-a-missing-field does. Asking the version
+  // endpoint costs one request and makes the check unconditional.
+  if (!fileId || !fileHash) {
     const vres = await api(`/addons/addon/${g}/versions/${encodeURIComponent(version)}/`);
     const v = vres.json || {};
-    fileId = v?.file?.id || v?.file_id;
+    fileId = fileId ?? v?.file?.id ?? v?.file_id ?? null;
+    fileHash = fileHash ?? v?.file?.hash ?? null;
   }
   if (!fileId) {
     throw new Error(`no file id for version ${version}; AMO may be still reviewing/signing it`);
@@ -96,6 +106,20 @@ try {
   if (!isSignedXpi(buf)) throw new Error("downloaded file is not a signed xpi");
   const dlVer = xpiVersion(buf);
   if (dlVer !== version) throw new Error(`signed version mismatch: ${dlVer} != ${version}`);
+  // AND IT MUST BE THE BYTES AMO PUBLISHED, not merely a signed xpi of the right
+  // version. This is the moment the artifact enters the repository, so it is the
+  // cheapest place to catch a wrong file: a stale `-signed.xpi` reuse path is the
+  // one branch that skips this check, because it exists precisely for the case
+  // where there is no network or no credentials — the release, which always has
+  // both, re-proves the artifact against AMO's hash before publishing (see
+  // signedXpiCheck in scripts/ship-checks.ts).
+  const expected = normalizeAmoHash(fileHash);
+  if (expected && sha256File(tmp) !== expected) {
+    throw new Error(
+      `the downloaded file is not what AMO published for ${version}: ` +
+        `sha256 ${sha256File(tmp)} != ${expected}. The package was not written; retry.`
+    );
+  }
   fs.renameSync(tmp, signedOut);
   fs.copyFileSync(signedOut, out);
   console.log(`[sync] wrote ${path.basename(signedOut)} and ${path.basename(out)} (version ${version})`);

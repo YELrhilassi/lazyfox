@@ -129,8 +129,15 @@ describe("every test directory is owned by a tsconfig", () => {
     // being typechecked at all, which is how a suite drifts out of the build.
     // So: every exclusion must be named in the config's own comment block.
     const text = readFileSync(join(ROOT, "tsconfig.scripts.json"), "utf8");
+    // READ IT AS JSONC, which is what it is. The exclusion list carries each
+    // entry's reason as a comment on the line above it — the documentation this
+    // test exists to REQUIRE, and the thing that made a plain JSON.parse throw
+    // the moment an exclusion was documented where it is declared instead of in
+    // the header block. Strip the line comments first; the slice below then
+    // reads the same list the typechecker does.
+    const jsonc = text.replace(/^\s*\/\/.*$/gm, "");
     const excluded: string[] = JSON.parse(
-      text.slice(text.indexOf("["), text.indexOf("]", text.indexOf("[")) + 1).replace(/,(\s*])/, "$1"),
+      jsonc.slice(jsonc.indexOf("["), jsonc.indexOf("]", jsonc.indexOf("[")) + 1).replace(/,(\s*])/, "$1"),
     );
     for (const file of excluded) {
       assert.ok(

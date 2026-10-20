@@ -9,6 +9,9 @@
 //
 //   1. Preconditions: clean tree, on a non-master dev branch, AMO creds present,
 //      the version in dist/extension/manifest.json is already submitted&signed.
+//   1b. Pushes the dev branch that is about to be merged, BEFORE anything is
+//      merged or tagged: a merge commit names both parents, and master must not
+//      reference a commit that exists only on this machine.
 //   2. Fetches, checks out master, and merges the dev branch into it with
 //      `-X theirs` so ALL conflicts (source AND generated dist/installers)
 //      resolve in the dev branch's favor — master is just "dev source, signed".
@@ -29,9 +32,13 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnv } from "./amo-lib.ts";
+import { fingerprintOf, loadEnv, normalizeAmoHash } from "./amo-lib.ts";
+import { sha256File } from "./payload.ts";
 import { gatherWorkflowChanges, ghOauthScopes, pushScopeVerdict } from "./release-auth.ts";
+import { devBranchPushCheck, signedXpiCheck } from "./ship-checks.ts";
+import { gitOutput } from "./ship-git.ts";
 import { mergeDevBranch } from "./ship-merge.ts";
+import { createGitHubRelease } from "./ship-release.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -180,7 +187,30 @@ if (res.status !== 200 || !fileId) {
     "Wait for AMO review to sign the submitted version (see AMO dashboard), then re-run `npm run ship`."
   );
 }
+// What AMO says the published bytes ARE, kept for step 6: the release proves the
+// artifact it ships is that file, not merely a signed xpi of this version.
+const amoFile = fingerprintOf(res.json?.file);
 console.log(`[ship] version ${version} is signed on AMO (file ${fileId}).`);
+
+// 2b. Push the branch this release is about to merge, before anything is merged,
+//     built or tagged. A merge commit names BOTH parents, so a master pushed
+//     while the dev branch was still local-only would reference a commit nobody
+//     else can resolve — a history that reads as corrupt to anyone who clones,
+//     bisects or builds it. Asking with a dry run first is what makes a refusal
+//     cheap: a remote that moved on stops the release with NOTHING done, rather
+//     than after master has been rewritten. The rule itself is in
+//     scripts/ship-checks.ts, and the rehearsal reports the same verdict.
+{
+  const verdict = devBranchPushCheck(
+    gitOutput(["push", "--dry-run", "--porcelain", remote, devBranch], root),
+    devBranch
+  );
+  if (verdict.level === "fail") fail(verdict.detail, verdict.fix);
+  if (verdict.level === "warn") console.warn(`\n⚠️  ${verdict.detail}`);
+  else console.log(`[ship] ${verdict.detail}.`);
+  console.log(`[ship] pushing \`${devBranch}\` (master's merge commit will name it as a parent)…`);
+  shout("git", ["push", remote, devBranch]);
+}
 
 // 3. Everything up to here was read-only. Now fetch and switch to master.
 shout("git", ["fetch", remote]);
@@ -224,13 +254,28 @@ shout(process.execPath, [path.join(__dirname, "release-build.ts")]);
 console.log("\n[ship] verifying release artifacts…");
 shout("node", [path.join(__dirname, "check-dist.ts")]);
 shout("node", [path.join(__dirname, "test-installer.ts")]);
+//    The xpi check is no longer "does it look signed": the artifact must be the
+//    exact file AMO published, byte for byte. Anything else — a stale -signed.xpi
+//    from an earlier attempt, a hand-edited dist, an unsigned build left in its
+//    place — is an add-on AMO never reviewed, and `signedXpiCheck` is what says so.
 const { isSignedXpi, xpiVersion } = await import("./amo-lib.ts");
 {
+  const canonical = path.join(root, "dist", `lazyfox2-${version}.xpi`);
   try {
-    const buf = fs.readFileSync(path.join(root, "dist", `lazyfox2-${version}.xpi`));
-    if (!isSignedXpi(buf) || xpiVersion(buf) !== version) {
-      fail(`dist/lazyfox2-${version}.xpi is not a signed xpi for ${version}`);
-    }
+    const buf = fs.readFileSync(canonical);
+    const signed = isSignedXpi(buf);
+    const verdict = signedXpiCheck({
+      version,
+      signed,
+      xpiVersion: signed ? xpiVersion(buf) : null,
+      localHash: sha256File(canonical),
+      localSize: buf.length,
+      amoHash: normalizeAmoHash(amoFile?.hash),
+      amoSize: amoFile?.size ?? null,
+    });
+    if (verdict.level === "fail") fail(verdict.detail, verdict.fix);
+    if (verdict.level === "warn") console.warn(`\n⚠️  ${verdict.detail}\n   → ${verdict.fix ?? "unverified"}`);
+    else console.log(`[ship] ${verdict.detail}.`);
   } catch (e) {
     fail(`could not verify the signed xpi: ${e instanceof Error ? e.message : e}`);
   }
@@ -249,23 +294,21 @@ shout("git", ["push", remote, "master"]);
 shout("git", ["push", remote, tag]);
 
 // 8. GitHub Release with the installers + signed xpi.
-const signedXpi = path.join(root, "dist", `lazyfox2-${version}-signed.xpi`);
-if (!fs.existsSync(signedXpi)) fail(`signed xpi not found after build: ${signedXpi}`);
-console.log(`\n[ship] creating GitHub Release ${tag}…`);
-const assets = [
-  path.join(root, "installer", "bin", "lazyfox-install-linux"),
-  path.join(root, "installer", "bin", "lazyfox-install-darwin"),
-  path.join(root, "installer", "bin", "lazyfox-install-windows.exe"),
-  // The one-line installers. They download the binaries above and run them, so
-  // they must be published alongside — and they are uploaded under their base
-  // names, giving the stable one-liners:
-  //   curl -fsSL …/releases/latest/download/install.sh | sh
-  //   irm …/releases/latest/download/install.ps1 | iex
-  path.join(root, "installer", "scripts", "install.sh"),
-  path.join(root, "installer", "scripts", "install.ps1"),
-  signedXpi,
-].join(" ");
-shout("gh", ["release", "create", tag, "--title", `Lazyfox ${tag}`, "--notes", "Signed release for stable Firefox", ...assets.split(" ")]);
+//    The asset list is built and passed as an ARRAY in scripts/ship-release.ts.
+//    It used to be assembled here with `.join(" ")` and handed over as
+//    `...assets.split(" ")`, which re-tokenizes every path on a space — and this
+//    checkout lives in `Documents\Default Project\`. gh got half a path, failed,
+//    and left master and the tag pushed with no release page (v0.5.9 hit exactly
+//    that). The same function finishes a release whose page failed, which is why
+//    the fix line below can promise it.
+try {
+  createGitHubRelease({ root, version, tag });
+} catch (e) {
+  fail(
+    `the GitHub Release could not be created: ${e instanceof Error ? e.message : e}`,
+    `master AND the tag ${tag} are already pushed. Finish the release page with \`npm run ship:release\` once the cause is fixed.`
+  );
+}
 
 // 9. Back to the dev branch.
 shout("git", ["checkout", devBranch]);

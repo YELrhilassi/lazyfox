@@ -1,6 +1,6 @@
 {
   "name": "lazyfox",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "private": true,
   "description": "Keyboard-first, UI-free Firefox. Leader-key navigation, paginated which-key overlay, centered search, tab switcher and link hints.",
   "type": "module",
@@ -13,6 +13,7 @@
     "gen:icons": "node scripts/gen-icons.ts",
     "ship": "node scripts/ship.ts",
     "ship:nightly": "node scripts/ship-nightly.ts",
+    "ship:release": "node scripts/ship-release.ts",
     "bump": "node scripts/bump-version.ts",
     "submit": "node scripts/submit.ts",
     "listing": "node scripts/amo-listing.ts",

@@ -27,7 +27,15 @@
 //     and SAYS SO in the stats. Truncation is stated rather than silent — the
 //     same rule the chrome-side hint engine follows for its ninth link.
 import {
+  COLLECT_DEFERRED_MAX,
+  COLLECT_HARD_MS,
+  COLLECT_PROBES,
+  COLLECT_VIEWPORT_MARGIN,
   HINTABLE_SELECTOR,
+  LEAF_MAX_AREA,
+  LEAF_MAX_CHILDREN,
+  LEAF_TEXT_HARD_MAX,
+  LEAF_TEXT_SOFT_MAX,
   MAX_SCAN,
   MEDIA_SELECTOR,
   MEDIA_SURFACE_MIN_AREA,
@@ -38,6 +46,17 @@ import {
 } from "./selectors";
 import { createVisibilityPass, type VisibilityPass } from "./visibility";
 import { shadowRootOf, walkElements } from "../../../shared/dom";
+
+// The viewport's area, or 0 where there is no window (the unit tests drive this
+// module with plain fakes, and a hostile frame must not turn a predicate into a
+// throw).
+function viewportArea(): number {
+  try {
+    return (window.innerWidth || 0) * (window.innerHeight || 0);
+  } catch (e) {
+    return 0;
+  }
+}
 
 export function isOrHasMedia(el: Element): boolean {
   try {
@@ -53,7 +72,15 @@ export function isOrHasMedia(el: Element): boolean {
 // container: few element children, short text, and no hintable descendant. The
 // computed-style read is gated behind those cheap checks so a huge page does
 // not pay for it on every node.
-export function leafClickable(el: Element, pass?: VisibilityPass): boolean {
+// `rect`, when the caller already measured the node, is the same box the probe
+// would have read itself: collection reads it once for the viewport window and
+// hands it on, which is what keeps the tier affordable enough to be deterministic
+// (see COLLECT_PROBES in selectors.ts).
+export function leafClickable(
+  el: Element,
+  pass?: VisibilityPass,
+  rect?: DOMRect | null
+): boolean {
   if (el === document.body || el === document.documentElement) return false;
   let children = 0;
   try {
@@ -61,16 +88,35 @@ export function leafClickable(el: Element, pass?: VisibilityPass): boolean {
   } catch (e) {
     return false;
   }
-  if (children > 3) return false;
+  // A control, not a container. The old bound was 3, which is a fact about a
+  // hand-written <button>, not about the row-shaped controls frameworks build:
+  // WhatsApp's chat row is avatar + title/preview + timestamp + actions, and the
+  // fourth child alone made it un-hintable while its neighbours qualified. The
+  // check that actually keeps containers out is the hintable-descendant test just
+  // below (a wrapper around real controls is already excluded by it).
+  if (children > LEAF_MAX_CHILDREN) return false;
   try {
     if (el.querySelector(HINTABLE_SELECTOR)) return false;
   } catch (e) {
     return false;
   }
-  const r = el.getBoundingClientRect();
+  const r = rect || el.getBoundingClientRect();
   if (r.width < 6 || r.height < 6) return false;
+  // LONG TEXT IS ONLY A CONTAINER SIGNAL WHEN THE BOX IS BIG.
+  //
+  // `textContent` is the whole subtree's text, including anything the page
+  // ellipsizes. A chat row showing one truncated line reports the entire last
+  // message, so a 120-character cap silently removed exactly the rows whose last
+  // message happened to be long — the reported "some of these are hinted and the
+  // rest are not", on rows that are identical in every way that matters. Size is
+  // the honest discriminator: the tall block this rule was written for cannot be
+  // small, and a row cannot be big.
   const text = (el.textContent || "").trim();
-  if (text.length > 120) return false;
+  if (text.length > LEAF_TEXT_SOFT_MAX) {
+    if (text.length > LEAF_TEXT_HARD_MAX) return false;
+    const area = r.width * r.height;
+    if (viewportArea() > 0 && area > viewportArea() * LEAF_MAX_AREA) return false;
+  }
   // A bare cursor:pointer node with no text, no aria-label/title and no role is
   // almost always decorative chrome (icon wrappers, scrims, layout spacers).
   // Hinting those was a large part of the "hints everywhere" flood on framework
@@ -133,14 +179,27 @@ export interface CollectStats {
   /** Candidates that qualified only as a large media surface (see isLargeMediaSurface). */
   mediaSurfaces: number;
   /**
-   * The per-node discovery walk hit the time budget (or MAX_SCAN) before the
-   * document was exhausted. The selector matches are still complete; what may be
-   * missing is a control that only the cursor:pointer pass would have found.
+   * Some candidate was never probed, so the cursor:pointer / media-surface tier
+   * is incomplete. The selector matches are still complete (the cheap tier and
+   * the shadow recursion always run); `truncatedBy` says which bound was hit and
+   * `probes`/`probeCap` say by how much.
    */
   truncated: boolean;
-  /** Nodes the discovery walk visited, and the budget it was given. */
+  /**
+   * What stopped the expensive tier: `probes` is the normal, deterministic
+   * budget; `time` is the emergency wall-clock stop (see COLLECT_HARD_MS) and
+   * means this particular set may differ from another machine's; `deferred`
+   * means more off-screen nodes were queued than the list may hold.
+   */
+  truncatedBy: "probes" | "time" | "deferred" | "scan" | null;
+  /** Nodes the discovery walk visited, and the emergency stop it was given. */
   visited: number;
   budgetMs: number;
+  /** Nodes the expensive tier actually probed, and the budget it was given. */
+  probes: number;
+  probeCap: number;
+  /** Off-screen nodes held for the second phase (see COLLECT_DEFERRED_MAX). */
+  deferred: number;
 }
 
 // Elements that are hintable ONLY because they wrap media (see the
@@ -164,10 +223,10 @@ export const mediaSurfaces = new WeakSet<Element>();
 
 // Is this element a media surface big enough to be a primary part of the screen?
 // The thresholds live in selectors.ts with the rest of the engine's limits.
-export function isLargeMediaSurface(el: Element): boolean {
+export function isLargeMediaSurface(el: Element, rect?: DOMRect | null): boolean {
   try {
     if (!el.matches(MEDIA_SURFACE_SELECTOR)) return false;
-    const r = el.getBoundingClientRect();
+    const r = rect || el.getBoundingClientRect();
     if (r.width < MEDIA_SURFACE_MIN_W || r.height < MEDIA_SURFACE_MIN_H) return false;
     const vw = window.innerWidth || 0;
     const vh = window.innerHeight || 0;
@@ -230,18 +289,23 @@ export function specificity(el: Element): number {
   return named ? 2 : 1;
 }
 
-/**
- * The default per-node discovery budget, in milliseconds.
- *
- * This is the pass that runs inside the keystroke that opened hints, so it is
- * bounded by WALL TIME rather than by node count: a hundred thousand nodes of
- * flat markup and a hundred thousand nodes of nested custom elements are not the
- * same cost, and the previous cap (MAX_SCAN) could not tell them apart. 12ms is
- * about one frame at 80Hz — enough for every document measured in the suite
- * (the largest fixture is a few thousand nodes) and short enough that no single
- * hint pass can own the main thread.
- */
-export const COLLECT_BUDGET_MS = 12;
+// THE TWO BOUNDS ON THE EXPENSIVE TIER, and why the primary one is a count.
+//
+// It used to be a single wall-clock budget (`COLLECT_BUDGET_MS = 12`): the walk
+// probed nodes until twelve milliseconds had passed, then went quiet. That made
+// the candidate set a function of the machine — the same page could hint a row
+// on one press and lose it on the next, and a slower machine lost a different
+// tail than a faster one. The budget is now the NUMBER OF NODES PROBED
+// (`COLLECT_PROBES`), so a given page stops at the same node every time; the
+// clock survives only as the emergency stop (`COLLECT_HARD_MS`), and when it
+// trips the stats say `truncatedBy: "time"` rather than pretending that was the
+// budget.
+//
+// The second bound is the VIEWPORT WINDOW. Probing is spent on what the user can
+// see first (plus one viewport of margin), and only then on the off-screen tail,
+// so the controls the labels can actually reach are never the ones a long
+// document starves. See COLLECT_PROBES and COLLECT_VIEWPORT_MARGIN in
+// selectors.ts.
 
 function nowMs(): number {
   try {
@@ -263,20 +327,133 @@ function nowMs(): number {
  * visibility answers about the same document; given none, one is created here
  * (which is the same cost as before this was cacheable, and leaves nothing
  * behind).
+ *
+ * THE WALK IS TIERED, AND THE EXPENSIVE TIER IS ORDERED BY WHAT IS ON SCREEN.
+ *
+ * Every node pays the cheap tier: shadow-root discovery and (per root) one
+ * HINTABLE_SELECTOR query. Those are what make a custom element's controls
+ * findable at all, they cost almost nothing, and they always finish — a spent
+ * budget has never meant "the walk is over" since the tiering landed.
+ *
+ * The expensive tier is the two probes that need real reads: is this a large
+ * media surface, is this a bare `cursor:pointer` control. Its bound is the
+ * NUMBER OF NODES PROBED, not a wall clock (see COLLECT_PROBES), because a clock
+ * makes the candidate set depend on the machine: the same page hinted a row on
+ * one press and lost it on the next. On a given page this pass stops at the same
+ * node, on every machine, every time.
+ *
+ * And it spends that budget in VIEWPORT ORDER: nodes inside the viewport (plus
+ * one viewport of margin) are probed during the walk, and nodes outside it are
+ * deferred to a second phase that runs only with the budget the viewport did not
+ * need. Labels can only exist for controls the user can see, so document order
+ * was the wrong order to starve — that is how a header nobody was looking at
+ * took the keys from the rows on screen.
+ *
+ * `truncated`/`truncatedBy` report which bound was hit when the tier did not
+ * finish: the probe count (normal), the wall-clock emergency (reported, never
+ * the budget), an over-full deferral list, or MAX_SCAN on the cheap tier. An
+ * identical page therefore produces an identical candidate set, and a pass that
+ * is incomplete says so instead of quietly returning less.
  */
 export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): Element[] {
   const vis = pass || createVisibilityPass();
   const out: Element[] = [];
   const seen = new Set<Element>();
-  const budgetMs = stats ? stats.budgetMs || COLLECT_BUDGET_MS : COLLECT_BUDGET_MS;
-  const deadline = nowMs() + budgetMs;
+  const probeCap = stats ? stats.probeCap || COLLECT_PROBES : COLLECT_PROBES;
+  const hardMs = stats ? stats.budgetMs || COLLECT_HARD_MS : COLLECT_HARD_MS;
+  const hardDeadline = nowMs() + hardMs;
   let visited = 0;
+  let probes = 0;
   let truncated = false;
+  let truncatedBy: CollectStats["truncatedBy"] = null;
+  // The expensive tier is done. The cheap tier — the per-root selector query and
+  // shadow-root discovery — keeps running: it is what makes a late custom
+  // element's controls findable at all, and it costs one property read per node.
+  let expired = false;
+  // The cheap tier stopped too, which only the wall-clock EMERGENCY may do: a
+  // spent probe budget must not take shadow discovery down with it, because that
+  // is how a custom element late in the document lost its controls entirely.
+  let halt = false;
+  // Off-screen nodes, held for the second phase of this same pass.
+  const deferred: Element[] = [];
+  let vw = 0;
+  let vh = 0;
+  try {
+    vw = window.innerWidth || 0;
+    vh = window.innerHeight || 0;
+  } catch (e) {
+    vw = 0;
+    vh = 0;
+  }
 
   function add(el: Element): void {
     if (seen.has(el) || !vis.visible(el)) return;
     seen.add(el);
     out.push(el);
+  }
+
+  // Record the first reason the expensive tier stopped. Later stops are the
+  // consequence of the first (the cap is reached, then every later node is
+  // refused) and must not overwrite it.
+  function stop(why: "probes" | "time" | "deferred" | "scan"): void {
+    if (!truncated) {
+      truncated = true;
+      truncatedBy = why;
+    }
+    // Only the probe count and the emergency stop end the expensive tier. A full
+    // deferral list or a root that hit MAX_SCAN means SOME nodes were not seen;
+    // it is not a reason to stop probing the nodes the walk still reaches.
+    if (why === "probes" || why === "time") expired = true;
+    if (why === "time") halt = true;
+  }
+
+  // One probe: the two questions only an expensive read can answer — "is this a
+  // large media surface" and "is this a bare cursor:pointer control". `rect` is
+  // the box the window test above already measured, so a probe never reads the
+  // layout twice.
+  function probe(el: Element, rect: DOMRect | null): void {
+    if (seen.has(el)) return;
+    if (probes >= probeCap) {
+      stop("probes");
+      return;
+    }
+    probes++;
+    // Added BEFORE the cursor:pointer test so the two can never both claim one
+    // element (the order also decides which tag an element wears when it
+    // qualifies as both).
+    if (isLargeMediaSurface(el, rect)) {
+      if (stats) stats.mediaSurfaces++;
+      mediaSurfaces.add(el);
+      add(el);
+    }
+    if (!seen.has(el) && leafClickable(el, vis, rect)) {
+      if (stats) stats.pointerControls++;
+      // leafClickable's media exemption is what makes an unlabelled wrapper
+      // hintable at all; record that this candidate qualified on that basis so
+      // the nesting pass can prefer a real control inside it.
+      if (isMediaOnlyWrapper(el)) weakHintables.add(el);
+      add(el);
+    }
+  }
+
+  // Inside the viewport (plus one viewport of margin): the controls the user can
+  // be looking at. Without a measurable viewport — the unit fakes — everything is
+  // in the window, which is the behaviour those callers were written against.
+  function inWindow(r: DOMRect): boolean {
+    if (vw <= 0 || vh <= 0) return true;
+    const mx = vw * COLLECT_VIEWPORT_MARGIN;
+    const my = vh * COLLECT_VIEWPORT_MARGIN;
+    return r.bottom > -my && r.top < vh + my && r.right > -mx && r.left < vw + mx;
+  }
+
+  // The rect the gate and the probes share, or null when the node refuses one
+  // (a hostile getter must not end the pass).
+  function rectOf(el: Element): DOMRect | null {
+    try {
+      return el.getBoundingClientRect();
+    } catch (e) {
+      return null;
+    }
   }
 
   function walk(root: ParentNode, depth: number): void {
@@ -292,21 +469,32 @@ export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): E
       nodes = [];
     }
     for (const el of nodes) add(el);
-    if (depth >= SHADOW_DEPTH || truncated) return;
+    // NOTE: depth is the only gate left on this branch. `truncated` used to be
+    // one too, and it is exactly the failure this structure exists to remove: a
+    // page whose budget ran out before the walk reached this root used to
+    // return here BEFORE the root's selector query could run, so the buttons
+    // inside the root were lost entirely. Depth is the gate that remains;
+    // truncation is the expensive tier's condition, and it must not silence a
+    // query that costs nothing.
+    if (depth >= SHADOW_DEPTH) return;
     // NOTE: the shadow recursion below happens INSIDE the discovery walk, not
     // after it, because that is the order the engine has always produced: a
     // custom element's inner controls are appended where the host appears, so a
     // host's controls keep the position of the host in the key order.
     // The discovery walk: shadow roots (which the selector query cannot see) and
-    // the cursor:pointer pass. Lazily walked, so MAX_SCAN bounds the WORK rather
-    // than the allocation.
+    // the cursor:pointer pass. Lazily walked, so MAX_SCAN bounds the loop rather
+    // than the allocation. The walk is tiered: the probe budget (a COUNT — see
+    // COLLECT_PROBES) bounds the expensive work, this cap bounds the cheap
+    // discovery so a huge light DOM cannot crowd out a late custom element.
     const result = walkElements(root, MAX_SCAN, (el) => {
-      // Checked every 256 nodes: one clock read per 256 nodes is free next to
-      // the per-node work, and stopping MID-root is the whole point of a budget.
-      if (visited > 0 && (visited & 255) === 0 && nowMs() > deadline) {
-        truncated = true;
-        return false;
+      // The emergency stop, checked every 1024 nodes. It is the only wall-clock
+      // decision left in the pass and it exists for a page whose per-node cost is
+      // pathological; when it fires the stats say so (truncatedBy: "time") rather
+      // than letting the clock quietly pass for the budget.
+      if (!halt && visited > 0 && (visited & 1023) === 0 && nowMs() > hardDeadline) {
+        stop("time");
       }
+      if (halt) return false;
       visited++;
       // CLOSED ROOTS COUNT, and they are the majority of the ones that matter.
       //
@@ -318,43 +506,66 @@ export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): E
       // extension's own door and answers correctly there, while hints claimed
       // there was nothing to hint. Same door, same walk, one place it was
       // forgotten.
+      //
+      // The recursion is the CHEAP tier, above the budget: it is what makes
+      // `walk(sr, depth + 1)` — and therefore the root's own selector query —
+      // run even after the probes are spent.
       const sr = shadowRootOf(el);
       if (sr) {
         if (stats) stats.shadowRoots++;
         walk(sr, depth + 1);
       }
-      // A large media surface, which nothing else collects: no text, no role,
-      // no cursor:pointer. Added BEFORE the cursor:pointer test so the two can
-      // never both claim one element (seen is checked, but the order also decides
-      // which tag an element ends up wearing when it qualifies as both).
-      if (!seen.has(el) && isLargeMediaSurface(el)) {
-        if (stats) stats.mediaSurfaces++;
-        mediaSurfaces.add(el);
-        add(el);
+      if (expired || seen.has(el)) return;
+      // THE VIEWPORT GATE. A control two screens away is worth a probe only
+      // after everything the user can see has had one: labels can only exist for
+      // what is on screen, so spending the budget in document order is how the
+      // rows in view lost their keys to a header nobody was looking at. Nodes
+      // outside the window are remembered for phase 2, in document order, and
+      // probed with whatever budget the viewport did not need.
+      const r = rectOf(el);
+      if (r && !inWindow(r)) {
+        if (deferred.length < COLLECT_DEFERRED_MAX) deferred.push(el);
+        else stop("deferred");
+        return;
       }
-      // The cursor:pointer pass, on the same walk (one DOM traversal).
-      if (!seen.has(el) && leafClickable(el, vis)) {
-        if (stats) stats.pointerControls++;
-        // leafClickable's media exemption is what makes an unlabelled wrapper
-        // hintable at all; record that this candidate qualified on that basis
-        // so the nesting pass can prefer a real control inside it.
-        if (isMediaOnlyWrapper(el)) weakHintables.add(el);
-        add(el);
-      }
+      probe(el, r);
     });
-    if (result.truncated) truncated = true;
+    // MAX_SCAN: the cheap tier itself did not reach the end of this root. The
+    // selector matches above are what this root had; anything inside an
+    // undiscovered shadow root is lost, which is a different bound from the
+    // probe budget and is reported as such.
+    if (result.truncated) stop("scan");
   }
 
   if (stats) {
     stats.truncated = false;
+    stats.truncatedBy = null;
     stats.visited = 0;
-    stats.budgetMs = budgetMs;
+    stats.budgetMs = hardMs;
+    stats.probes = 0;
+    stats.probeCap = probeCap;
+    stats.deferred = 0;
     stats.mediaSurfaces = 0;
+    stats.pointerControls = 0;
+    stats.shadowRoots = 0;
   }
   walk(document, 0);
+  // ---- phase 2: the off-screen tail ---------------------------------------
+  // Probed only with the budget the viewport did not spend, and in document
+  // order. This is what keeps the pool useful for scrolling: a control that was
+  // below the fold at `;f` time is usually already in it, so scrolling to it does
+  // not have to wait for the next re-collect.
+  for (let i = 0; i < deferred.length && !expired; i++) {
+    const el = deferred[i]!;
+    if (seen.has(el)) continue;
+    probe(el, rectOf(el));
+  }
   if (stats) {
     stats.truncated = truncated;
+    stats.truncatedBy = truncatedBy;
     stats.visited = visited;
+    stats.probes = probes;
+    stats.deferred = deferred.length;
   }
   return out;
 }

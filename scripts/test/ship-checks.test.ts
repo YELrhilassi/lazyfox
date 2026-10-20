@@ -14,10 +14,12 @@ import {
   amoSignatureCheck,
   blocks,
   branchCheck,
+  devBranchPushCheck,
   ghCheck,
   manifestCheck,
   pushCredentialCheck,
   renderReport,
+  signedXpiCheck,
   tagRefs,
   treeCheck,
 } from "../ship-checks.ts";
@@ -140,6 +142,77 @@ describe("the already-released check", () => {
   });
 });
 
+// The three shapes below are the real `git push --dry-run --porcelain` output,
+// captured from this repository (the "To <url>" and "Done" lines included — they
+// are on the same stream and must not be mistaken for refs).
+const PUSH_NOISE = "To https://github.com/YELrhilassi/lazyfox.git";
+
+describe("the dev branch push check", () => {
+  test("up to date passes, and the url line is not read as a ref", () => {
+    const c = devBranchPushCheck(
+      [PUSH_NOISE, "=\trefs/heads/dev-nightly:refs/heads/dev-nightly\t[up to date]", "Done"].join("\n"),
+      "dev-nightly"
+    );
+    assert.equal(c.level, "ok");
+    assert.match(c.detail, /dev-nightly \[up to date\]/);
+    assert.doesNotMatch(c.detail, /github\.com/);
+  });
+
+  test("a fast-forward passes", () => {
+    const c = devBranchPushCheck(
+      [PUSH_NOISE, " \trefs/heads/dev-nightly:refs/heads/dev-nightly\t[fast-forward]", "Done"].join("\n"),
+      "dev-nightly"
+    );
+    assert.equal(c.level, "ok");
+    assert.match(c.detail, /fast-forward/);
+  });
+
+  test("a first-ever push of the branch passes", () => {
+    const c = devBranchPushCheck(`*\trefs/heads/dev-nightly:refs/heads/dev-nightly\t[new branch]`, "dev-nightly");
+    assert.equal(c.level, "ok");
+  });
+
+  test("a rejection fails, names the ref and quotes git's reason", () => {
+    // The real shape: git reports this on STDOUT and exits 1, which is why the
+    // reader in ship-git.ts keeps stdout on a failed command.
+    const c = devBranchPushCheck(
+      [PUSH_NOISE, "!\t8da8048:refs/heads/dev-nightly\t[rejected] (non-fast-forward)", "Done"].join("\n"),
+      "dev-nightly"
+    );
+    assert.equal(c.level, "fail");
+    assert.match(c.detail, /dev-nightly/);
+    assert.match(c.detail, /non-fast-forward/);
+    assert.match(c.fix ?? "", /merge \(or rebase\)/);
+  });
+
+  test("a rejection is caught even without the ! flag", () => {
+    const c = devBranchPushCheck(" \trefs/heads/dev-nightly:refs/heads/dev-nightly\t[rejected] (fetch first)", "dev-nightly");
+    assert.equal(c.level, "fail");
+    assert.match(c.detail, /fetch first/);
+  });
+
+  test("one rejected ref is enough, even beside a healthy one", () => {
+    const c = devBranchPushCheck(
+      [" \trefs/heads/other:refs/heads/other\t[fast-forward]", "!\trefs/heads/dev-nightly:refs/heads/dev-nightly\t[rejected] (stale info)"].join(
+        "\n"
+      ),
+      "dev-nightly"
+    );
+    assert.equal(c.level, "fail");
+  });
+
+  test("no status line is a warning, not a pass", () => {
+    // "we could not ask" must never read as "the push is fine"; the release warns
+    // and still attempts the push, whose failure is then loud.
+    assert.equal(devBranchPushCheck("", "dev-nightly").level, "warn");
+    assert.equal(devBranchPushCheck(PUSH_NOISE + "\nDone", "dev-nightly").level, "warn");
+  });
+
+  test("a warning does not block a release", () => {
+    assert.equal(blocks([devBranchPushCheck("", "dev-nightly")]), false);
+  });
+});
+
 describe("the AMO signature check", () => {
   test("a signed file passes and names the file", () => {
     const c = amoSignatureCheck(200, 5137409, "0.5.9", "public");
@@ -169,6 +242,80 @@ describe("the AMO signature check", () => {
   test("a file id with a non-200 status is not treated as signed", () => {
     // Defensive: the id is only meaningful on a 200 response.
     assert.equal(amoSignatureCheck(500, 123, "0.5.9").level, "fail");
+  });
+});
+
+// A realistic pair: the sha256 AMO published for the 0.5.9 file, and a file that
+// is not it.
+const AMO_HASH = "2acccbb6772c0a6f1569d6a6f80853c81721329b971bbca1492c83d229bc6410";
+const OTHER_HASH = "402671d8bb195f47aaa1b0bb3f0ad24ba5b1bb1c58f0d0d8b2f0d0a3ba1b0a55";
+
+const signedXpi = (over: Partial<Parameters<typeof signedXpiCheck>[0]> = {}) =>
+  signedXpiCheck({
+    version: "0.5.9",
+    signed: true,
+    xpiVersion: "0.5.9",
+    localHash: AMO_HASH,
+    localSize: 5923525,
+    amoHash: AMO_HASH,
+    amoSize: 5923525,
+    ...over,
+  });
+
+describe("the signed xpi check", () => {
+  test("the published bytes pass, and the hash is named as evidence", () => {
+    const c = signedXpi();
+    assert.equal(c.level, "ok");
+    assert.match(c.detail, /byte-identical/);
+    assert.match(c.detail, new RegExp(AMO_HASH.slice(0, 12)));
+  });
+
+  test("an unsigned file never passes, whatever else agrees", () => {
+    const c = signedXpi({ signed: false, xpiVersion: null });
+    assert.equal(c.level, "fail");
+    assert.match(c.fix ?? "", /npm run sync/);
+  });
+
+  test("a signed xpi of the wrong version fails and names both versions", () => {
+    const c = signedXpi({ xpiVersion: "0.5.8" });
+    assert.equal(c.level, "fail");
+    assert.match(c.detail, /0\.5\.8/);
+    assert.match(c.detail, /0\.5\.9/);
+  });
+
+  test("a lookalike — signed, right version, different bytes — FAILS", () => {
+    // The whole point: this file passes every "is it signed?" test and is not
+    // what AMO reviewed. It must not reach a release page.
+    const c = signedXpi({ localHash: OTHER_HASH });
+    assert.equal(c.level, "fail");
+    assert.match(c.detail, new RegExp(AMO_HASH));
+    assert.match(c.detail, new RegExp(OTHER_HASH));
+    assert.match(c.fix ?? "", /sync-signed-xpi\.ts --force/);
+  });
+
+  test("hash comparison is case-insensitive, so a caller need not normalize", () => {
+    assert.equal(signedXpi({ amoHash: AMO_HASH.toUpperCase() }).level, "ok");
+    assert.equal(signedXpi({ localHash: AMO_HASH.toUpperCase() }).level, "ok");
+  });
+
+  test("a size that disagrees fails even without a hash to compare", () => {
+    const c = signedXpi({ amoHash: null, amoSize: 5923599 });
+    assert.equal(c.level, "fail");
+    assert.match(c.detail, /5923599/);
+  });
+
+  test("size agreement alone is reported as unproven, not as a pass", () => {
+    const c = signedXpi({ amoHash: null });
+    assert.equal(c.level, "warn");
+    assert.match(c.detail, /unproven/);
+    assert.equal(blocks([c]), false, "a warning must not stop a release, but it is never silent");
+  });
+
+  test("no fingerprint at all says exactly what could not be proven", () => {
+    const c = signedXpi({ amoHash: null, amoSize: null });
+    assert.equal(c.level, "warn");
+    assert.match(c.detail, /no fingerprint/);
+    assert.equal(blocks([c]), false);
   });
 });
 
