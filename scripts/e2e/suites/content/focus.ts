@@ -1,32 +1,17 @@
 // "I have to click the page before Lazyfox responds."
 //
-// THE REPORT, and why it is a different bug from everything in stuck.ts.
+// The opposite shape from stuck.ts (where NOBODY owns the keyboard and the
+// fix is presence): here the page HAS a content script, but Firefox parks
+// keyboard focus in its own chrome UI (the tab strip as a tab closes, the
+// hidden URL bar on a fresh tab) in the middle of Lazyfox's own tab actions —
+// ;x, ;v, ;n, ;t, ;1-;9 — and a document without focus receives no keydown
+// at all. The user's own repair is a click.
 //
-// stuck.ts covers pages where NOBODY owns the keyboard: a navigation that has
-// not committed, an error page, about:config. There the fix is presence — the
-// chrome helper answers because no content script exists.
-//
-// This file covers the opposite shape, and it is the one a daily user hits: the
-// page DOES have a content script, the keyboard is simply not in it any more.
-// Firefox parks keyboard focus in its own chrome UI (the tab strip as a tab
-// closes, the hidden URL bar on a fresh tab) in the middle of Lazyfox's own tab
-// actions — `;x`, `;v`, `;n`, `;t`, `;1`-`;9` — and a document that does not
-// have focus receives no keydown at all. From the user's side Lazyfox has
-// stopped responding, and the repair they discovered is to click the page: a
-// click is the only thing in that state that puts the keyboard back.
-//
-// WHY THIS IS ASSERTED ON `document.hasFocus()` RATHER THAN ON A KEY.
-//
-// The key assertion is also made (the `;` after the close must arm the page's
-// leader) but it cannot carry the diagnosis on its own: the BiDi harness
-// delivers key events to a browsing context directly, so a key can land in a
-// document that has no keyboard focus at all — the very state under test. An
-// assertion that passes in the broken state is an assertion about the harness.
-// `document.hasFocus()` is the page's own answer to "is the keyboard here", and
-// it is exactly the fact the user's click changes: it fails when the bug is
-// present and passes when it is fixed. Both are asserted, and the failure text
-// carries the whole page state so a reader never has to guess which way it
-// went.
+// Both halves are asserted, and hasFocus() is the one that can carry the
+// diagnosis: the BiDi harness delivers key events straight to a browsing
+// context, so a key assertion can pass in exactly the broken state under
+// test. document.hasFocus() fails with the bug and passes when fixed.
+// Failure text carries the whole page state.
 import { contextsOf, createTab, evalIn, getTree, keyTap, sleep, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 
