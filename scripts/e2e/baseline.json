@@ -254,8 +254,8 @@
   "content/core › Esc during hints clears state so the next ;f re-hints everything": {
     "status": "pass",
     "group": "content",
-    "runs": 10,
-    "passes": 10
+    "runs": 11,
+    "passes": 11
   },
   "content/setup › setup page: the installed state and uninstall help appear only on a confirmed chrome signal": {
     "status": "fail",
@@ -278,8 +278,8 @@
   "content/scroll › scroll: ;F cycles the page's scroll regions and Esc returns to the document": {
     "status": "pass",
     "group": "content",
-    "runs": 10,
-    "passes": 10
+    "runs": 11,
+    "passes": 11
   },
   "content/scroll › page cache: the global switch applies, is reported, and narrow scopes refuse honestly": {
     "status": "pass",
@@ -584,8 +584,8 @@
   "content/sequences › ;G opens the navigation-stack popup and Esc closes it": {
     "status": "pass",
     "group": "content",
-    "runs": 11,
-    "passes": 11
+    "runs": 12,
+    "passes": 12
   },
   "content/sequences › ;L opens the navigation-stack popup too (both entry keys)": {
     "status": "pass",
@@ -632,8 +632,8 @@
   "content/multidigit › Escape backs out of the chooser without moving": {
     "status": "pass",
     "group": "content",
-    "runs": 11,
-    "passes": 10
+    "runs": 12,
+    "passes": 11
   },
   "content/multidigit › ;9 in a twelve-tab window is still a plain jump": {
     "status": "pass",
@@ -1105,8 +1105,8 @@
   "content/links › ;K e cancels on Escape without navigating": {
     "status": "pass",
     "group": "content",
-    "runs": 10,
-    "passes": 10
+    "runs": 11,
+    "passes": 11
   },
   "content/links › ;K e commits the address it was opened with": {
     "status": "pass",
@@ -1609,8 +1609,8 @@
   "content/field › Escape dismisses a hint layer and the keys come back": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 10,
+    "passes": 10
   },
   "content/field › Escape is the master cancel: the page still sees it and the caret leaves the field": {
     "status": "pass",
@@ -1699,8 +1699,8 @@
   "content/hints › link hints: ;f and Esc in a row, eight times, every session draws and reads keys": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/hints › link hints: paging moves the pane the user is looking at, never the window": {
     "status": "pass",
@@ -1837,8 +1837,8 @@
   "content/sequences › a category ACTION leaves no capture behind: ONE Escape ends the gesture": {
     "status": "pass",
     "group": "content",
-    "runs": 4,
-    "passes": 4
+    "runs": 5,
+    "passes": 5
   },
   "content/sequences › a category ACTION clears the mirror by itself, with NO key afterwards": {
     "status": "pass",
@@ -1891,8 +1891,8 @@
   "content/theme › Escape leaves the article and gives the page back": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/theme › reader mode on a page that transforms the root still fills the viewport": {
     "status": "pass",
@@ -2071,10 +2071,16 @@
   "content/field › Escape is a ladder: the caret leaves first, the page's own action second": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "content/field › Escape with nothing to clean is the page's, first press": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
+  },
+  "content/core › Esc is a ladder: it blurs the focused input, and the page gets the next press": {
     "status": "pass",
     "group": "content",
     "runs": 1,

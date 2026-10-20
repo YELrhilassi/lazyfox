@@ -1,22 +1,14 @@
 // Theme suite: dark mode and reader mode, asserted on what the page actually
 // RENDERS in a real Firefox.
 //
-// The plan for this slice named the missing e2e suite as its largest gap, and the
-// reason is structural rather than tidiness: everything decidable without a DOM is
-// already unit-tested (`dark/color.ts`, `dark/theme.ts`, `dark-rules.ts`,
-// `reader/extract.ts` — 116 cases), and BOTH features are otherwise "paint": a
-// stylesheet the page's own computed colours go through, and an overlay that has to
-// become the thing the scroll keys move. Neither can be proven by a unit test, and
-// a claim about them that is only ever stated in a doc is a claim nobody has
-// checked. Writing this file is what turned two of those claims into a check —
-// `j`/`k` did not move the article at all (the scroller was inside a CLOSED shadow
-// root, invisible to the region scan), and the host was never promoted to the top
-// layer even though READER.md said it was.
+// Both features are "paint" — a stylesheet built from computed colours, and an
+// overlay that the scroll keys must move — so unit tests cannot prove them; this
+// file is what verified `j`/`k` did not move the article (the scroller sits in a
+// CLOSED shadow root) and that the reader host is top-layer-promoted.
 //
-// Everything is asserted through the product's own mirrors on <html>
-// (`data-lf-dark*`, `data-lf-scheme`, `data-lf-reader*`), which exist precisely so
-// that a shadow-root-internal state is legible from outside — plus the one thing a
-// mirror cannot fake, `getComputedStyle` on the page's own elements.
+// Assertions go through the product's own <html> mirrors (`data-lf-dark*`,
+// `data-lf-scheme`, `data-lf-reader*`), which exist so shadow-internal state is
+// legible from outside, plus getComputedStyle on the page's own elements.
 import { evalIn, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 
@@ -28,11 +20,9 @@ export async function run(ctx: any): Promise<void> {
 
   // --- the mirrors -------------------------------------------------------
 
-  // A MISSING ATTRIBUTE IS `null`, and it has to be spelled that way: the wire
-  // serialises a JS `null` as nothing at all, so a raw
-  // `getAttribute(...)` read comes back as `undefined` and an assertion written
-  // against `null` is an assertion that can never pass. Reading through
-  // `String(...)` makes the "absent" case one comparable value.
+  // A MISSING ATTRIBUTE MUST BE READ AS "" and re-nulled on the harness side:
+  // the wire serialises JS null as nothing at all, so an assertion written
+  // against null can otherwise never pass.
   const attr = async (name: string): Promise<string | null> => {
     const v = await evalIn(
       ctx.tabA,
@@ -139,12 +129,10 @@ export async function run(ctx: any): Promise<void> {
   // write) and then stand down, leaving the site's own theme on screen.
   await t("a page that ships its own dark theme is asked for it, not recoloured", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/nativetheme-light`);
-    // The fixture is light on arrival, but the engine's ask is allowed to land
-    // before this line reads it (it is the thing under test, and it is one write
-    // at config time). So the evidence that the ASK flipped the page — rather
-    // than our sheet recolouring it — is the colour that comes out: #0f1115 is
-    // the fixture's own dark canvas, while the shipped theme's background is
-    // #16161e and a remapped white canvas would come out as exactly that.
+    // The ask may land before this line reads it; the evidence the ASK flipped
+    // the page rather than our sheet is the colour that comes out: #0f1115 is
+    // the fixture's own dark canvas, our shipped theme's background is #16161e,
+    // and a remapped white canvas would come out as exactly that.
     const off = await waitAttr("data-lf-dark", "off");
     assert(
       off !== null,
@@ -168,11 +156,10 @@ export async function run(ctx: any): Promise<void> {
     assert(String(scheme).indexOf("dark") >= 0, "the page was asked for dark, got " + scheme);
   });
 
-  // THE LATE DECLARATION. The question "does this site have its own dark theme?"
-  // has to be asked AFTER the head is parsed, because that is when a real site's
-  // `color-scheme` exists — at `document_start` the answer is always "nothing
-  // declared". The fixture makes that deterministic: its declaration lands in its
-  // own DOMContentLoaded handler, after the engine's.
+  // THE LATE DECLARATION. "Does this site have its own dark theme?" must be
+  // asked after the head parses — at document_start the answer is always
+  // "nothing declared". The fixture declares in its own DOMContentLoaded
+  // handler, after the engine's.
   await t("a theme declared after the first paint is still found, and used", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/lateTheme`);
     const engine = await waitAttr("data-lf-dark-engine", "native", 12000);
@@ -190,12 +177,9 @@ export async function run(ctx: any): Promise<void> {
     assert(!sheet, "no stylesheet of ours is left on a native page");
   });
 
-  // THE STATE SWITCH. A single-page app throws its view away and renders a new
-  // one; for a few frames there is no surface at all, and the new view's colours
-  // were never sampled. The report: "it breaks when I switch state and shows
-  // blank dark overlay, it doesn't render dark elements properly".
-  //
-  // Both halves are asserted here: the theme is never given up during the
+  // THE STATE SWITCH. An SPA throws its view away and renders a new one; for a
+  // few frames there is no surface at all ("it breaks when I switch state and
+  // shows blank dark overlay"). Both halves asserted: the theme survives the
   // teardown (no filter takeover of a blank document), and the colour that only
   // exists AFTER the switch is themed too.
   await t("a page that switches state keeps its theme, and the new view is themed too", async () => {
@@ -270,7 +254,7 @@ export async function run(ctx: any): Promise<void> {
            if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) < 0.5) continue;
            const r = el.getBoundingClientRect();
            const bg = parse(cs.backgroundColor);
-           // A large surface that is still paper-white on a dark page.
+           // A large surface still paper-white on a dark page.
            if (bg && bg.a >= 0.5 && r.width * r.height > 40000 && lum(bg) > 0.85 && !isMedia(el)) white++;
            const own = Array.from(el.childNodes).some((n) => n.nodeType === 3 && n.textContent.trim());
            if (!own) continue;
@@ -320,17 +304,10 @@ export async function run(ctx: any): Promise<void> {
     await ctx.leaderSeq(ctx.tabA, ["Y", "x"]);
   });
 
-  // THE COLOURS, MEASURED. "The colour that it picks is awful to look at" is the
-  // report this answers, and the assertions are properties of the mapping rather
-  // than of one palette:
-  //
-  //   * a DARK surface on a light page (a navy header with white text) must not
-  //     come back pale — a dark mode that turns every dark element light is a
-  //     dark mode that looks inverted;
-  //   * a gradient is a surface, so its stops must be mapped too, or a pale hero
-  //     stays a pale rectangle in the middle of a dark page;
-  //   * the UA's own furniture (scrollbars, form controls) has to be dark, which
-  //     only `color-scheme` can do.
+  // THE COLOURS, MEASURED — assertions as properties of the mapping, not one
+  // palette: a DARK surface on a light page must not come back pale (that is
+  // inversion); gradient stops must be mapped (a pale hero stays a pale
+  // rectangle otherwise); UA furniture goes dark only via color-scheme.
   await t("dark surfaces stay dark, gradients are mapped, and the UA scheme follows", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/sitelike`);
     assert((await waitAttr("data-lf-dark", "on")) !== null, "the page is darkened");
@@ -423,12 +400,11 @@ export async function run(ctx: any): Promise<void> {
     );
   });
 
-  // THE OVERLAY. "The grid is completely hidden by some sort of gray overlay" is
-  // the shape a puzzle/canvas board has: the board paints itself, and a
-  // transparent, absolutely-positioned layer above it takes the pointer events.
-  // The layer paints NOTHING, and after theming it must still paint nothing —
-  // the engine used to resolve its transparent colour against the canvas and
-  // paint that back on top of the very board it was letting show through.
+  // THE OVERLAY. A puzzle/canvas board paints itself, and a transparent,
+  // absolutely-positioned layer above it takes the pointer events. That layer
+  // paints NOTHING and must still paint nothing after theming — the engine
+  // used to resolve its transparent colour against the canvas and paint it
+  // back over the very board it was letting show through.
   await t("a transparent layer over a grid stays transparent, and the numbers stay readable", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/grid`);
     assert((await waitAttr("data-lf-dark", "on")) !== null, "the grid page is darkened");
@@ -488,10 +464,9 @@ export async function run(ctx: any): Promise<void> {
   });
 
   // THE SHARED-CLASS ARTIFACT. Real pages give many elements the same classes
-  // and different colours; a rule keyed on a selector that matches several of
-  // them paints them all with one element's colours. Every selector the engine
-  // emits must therefore reach exactly the element it was measured on — and a
-  // selector that cannot is not emitted at all.
+  // and different colours, so a shared selector painting them all with one
+  // element's colours is the artifact. Every emitted selector must reach exactly
+  // the element measured — and one that cannot is not emitted at all.
   await t("every rule the engine emits paints exactly one element", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/sitelike`);
     assert((await waitAttr("data-lf-dark", "on")) !== null, "the page is darkened");
@@ -527,13 +502,10 @@ export async function run(ctx: any): Promise<void> {
     assert(Array.isArray(bad) && bad.length === 0, "selectors that do not reach exactly one element: " + JSON.stringify(bad));
   });
 
-  // THE FLICKER. The engine re-measures on mutations, and its own sheet write is a
-  // mutation in the subtree it watches: every pass used to buy the next one, so a
-  // settled page was repainted about every 400ms for the life of the tab. That is
-  // what "it flashes dark and light" looked like. Counted from the PAGE side, by a
-  // mutation observer on the engine's own <style>, because that is the only place
-  // the write is visible — a mirror would say the same thing no matter how often
-  // the sheet was rewritten with identical bytes.
+  // THE FLICKER. The engine's sheet write is itself a mutation in the subtree
+  // it watches: every pass used to buy the next one, repainting a settled page
+  // every ~400ms ("it flashes dark and light"). Counted by a mutation observer
+  // on the engine's own <style>, the only place the write is visible.
   await t("a settled page stops being repainted (no self-triggered resample loop)", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/light`);
     assert((await waitAttr("data-lf-dark", "on")) !== null, "the page is darkened first");
@@ -559,13 +531,11 @@ export async function run(ctx: any): Promise<void> {
     assert((await attr("data-lf-dark")) === "on", "the page is still darkened");
   });
 
-  // THE FLIP-FLOP. A page that keeps mutating earns another measurement every
-  // RESAMPLE_MIN_MS, and each measurement used to rebuild the whole palette from
-  // a page that was now partly painted by us: the canvas reading drifted, the
-  // theme followed it, and the page moved between two dark shades (or, when the
-  // drift crossed the already-dark threshold, between dark and light). The
-  // palette is now built from the measurement the LIVE theme was built from, so a
-  // resample can only add entries — never move the canvas everyone is looking at.
+  // THE FLIP-FLOP. Each resample used to rebuild the palette from a page now
+  // partly painted by us; the canvas reading drifted and the page moved between
+  // two dark shades (or dark and light across the already-dark threshold). The
+  // palette now builds from the measurement the LIVE theme was made from, so a
+  // resample only adds entries — the canvas never moves.
   await t("a page that keeps changing keeps ONE theme", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/light`);
     assert((await waitAttr("data-lf-dark", "on")) !== null, "the page is darkened first");

@@ -550,15 +550,32 @@ import { createFieldPark } from "./parkrule";
     // Blur whatever holds focus. A FIELD goes through the deep helper: a
     // field in a closed shadow root reports its HOST as activeElement, and
     // blurring the host leaves the caret exactly where it was.
+    //
+    // A BLUR RUNG COUNTS AS A RUNG ONLY WHEN THE BLUR TOOK. This is the
+    // "Escape never reaches my page's dialog" bug: a dialog whose focus
+    // trap re-grabs its element the instant it is blurred made every Esc
+    // press blur-and-refocus, and each press still returned "cleaned" —
+    // consumed, the page heard nothing, the dialog never closed, forever.
+    // Eagerly counting the blur is how that eat-in-loop was hidden: the
+    // ladder's rule is that a RUNG is a state change the user can see, and
+    // a refused blur changed nothing. So: consumed only when the typing
+    // target is actually gone (field rung), or activeElement has fallen
+    // back to body/documentElement (generic rung).
     if (isTypingTarget(document.activeElement)) {
-      blurTypingFocus();
-      return true;
+      return blurTypingFocus();
     }
     const ae = document.activeElement;
     if (ae && ae !== document.body && ae !== document.documentElement) {
       try {
         (ae as HTMLElement).blur();
-        cleaned = true;
+      } catch (err) {
+        // ignore
+      }
+      try {
+        const after = document.activeElement;
+        if (!after || after === document.body || after === document.documentElement) {
+          cleaned = true;
+        }
       } catch (err) {
         // ignore
       }
@@ -580,8 +597,7 @@ import { createFieldPark } from "./parkrule";
         pop: currentPopup ? 1 : 0,
         hnt: hints.active || hints.starting ? 1 : 0,
         pg: leader.hasPending() ? 1 : 0,
-        ar: armedNow(),
-        // Overwritten by noteKey, which always runs for this keydown.
+        ar: armedNow(),          // Overwritten by noteKey, which always runs for this keydown.
         pg2: 0,
         ar2: 0,
         at: Date.now() - bootAt,

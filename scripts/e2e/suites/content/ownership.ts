@@ -25,15 +25,10 @@
 // under test is the helper's answer after that, not who asked for it.
 //
 // WHY EVERY ANSWER HERE IS WAITED FOR, NOT SAMPLED. Two latencies sit between
-// "the page booted its script" and "the helper knows": the report is pushed
-// content -> background -> relay -> chrome, and the answer is read back through
-// a separate state query. A test that reads once asserts a race — the same test
-// passed and failed on consecutive runs while the product was unchanged. So each
-// check polls until the product's answer is the expected one, and the assertion
-// then reports the answer that PERSISTED. A wrong answer is not a race: it stays
-// wrong (nothing else re-reports for these tabs, and no subsequent event
-// corrects a record that was filed against the wrong tab), which is what makes
-// polling the expected value a falsifier rather than a flake absorber.
+// "the page booted its script" and "the helper knows" (the pushed report, and
+// the separate state read-back); a single read asserts a race. Each check polls
+// until the answer is the expected one — and a WRONG answer stays wrong (these
+// tabs never re-report), so polling is a falsifier, not a flake absorber.
 import { createTab, evalIn, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 
@@ -403,26 +398,14 @@ export async function run(ctx: any): Promise<void> {
 
   await t("the report window opens on a real navigation and is spent by the page's own report", async () => {
     // THE FIELD REPORT, MEASURED RATHER THAN JUDGED. After a cross-document
-    // navigation the helper arms an expectation window (`keystate.expectContentIn`)
-    // and declines the keys inside it, because the page's content script is already
-    // there and its presence report simply has not landed yet. `CONTENT_EXPECT_MS`
-    // (1500) was a JUDGEMENT when it was written — longer than an ordinary report,
-    // shorter than a user's patience — and the chrome state channel publishes the
-    // readout that turns it into a number (`expect`, from
-    // `keystate.contentExpectation`): `gapMs` is how long the last window stood
-    // before the page's own report closed it, and `gapSamples` says how much to
-    // trust that.
-    //
-    // Three claims, in the order the window makes them. The page really does close
-    // it (so the deferred keys go to the realm that owns them rather than to
-    // nobody) — asked of two documents, because the report can be lost on the way
-    // and a lost report is not the window's fault. The window really does OPEN on a
-    // real navigation, which is what makes "a key was declined" a decidable state
-    // from outside. And the readout really does carry the gap it measured, which is
-    // the number `CONTENT_EXPECT_MS` is supposed to be set from. What is NOT claimed
-    // is that the report always fits INSIDE the window: measured samples of 210ms,
-    // 3043ms and 3277ms are recorded in docs/tasks/2026-10-15-MANUAL-TEST-REPORTS.md,
-    // together with what a report later than the window costs.
+    // navigation the helper arms an expectation window and declines the keys
+    // inside it until the page's presence report lands. Three claims, in the
+    // order the window makes them: the page really does close it (two documents
+    // — the report can be lost on the way); it really does OPEN on a real
+    // navigation; and the readout carries the measured gap, which is the number
+    // CONTENT_EXPECT_MS is supposed to be set from. NOT claimed: that the
+    // report always fits inside the window (measured 210ms/3043ms/3277ms
+    // samples in docs/tasks/2026-10-15-MANUAL-TEST-REPORTS.md).
     await ctx.collapseWindow();
     const a = await createTab();
     await ctx.gotoPage(a, HOME);
@@ -473,26 +456,17 @@ export async function run(ctx: any): Promise<void> {
         JSON.stringify(await ctx.chromeStateHandle().then((st: any) => st.raw && st.raw.expect).catch(() => null))
     );
 
-    // SPENT, WHICH IS A DIFFERENT STATE FROM EXPIRED, and the readout tells them
-    // apart: a window closed by the page's own report is DELETED (`ageMs` -1), one
-    // that ran out is left standing with an age past its own length. Asserting the
-    // first is what makes this case about the report instead of about a timer.
+    // SPENT, WHICH IS A DIFFERENT STATE FROM EXPIRED: a window closed by the
+    // page's own report is DELETED (`ageMs` -1); one that ran out stands with an
+    // age past its length.
     //
-    // BUT IT IS ASKED TWICE, and the miss is recorded rather than hidden. Measured
-    // on a full content-group run: the window opened and then EXPIRED with nothing
-    // spending it inside 8s, while the same session's readout reported `gapSamples:
-    // 77` at a last sample of 439ms — the transport is not slow, the report is
-    // GONE. That is §5.6's class (content → background → relay tab → helper, where a
-    // relay tab that is not ready or a URL slot overwritten by the next report makes
-    // the message vanish without the sender ever knowing), and it is the same defect
-    // as the field report's "I have to do it twice". A second document in the same
-    // session is therefore a legitimate second ask, and this case records it as a
-    // repair so the number of lost boot reports is visible in every run instead of
-    // being read once and forgotten.
-    //
-    // What is NOT retried is the product's claim: a document whose window stood open
-    // in front of it and whose report never came is exactly the bug `CONTENT_EXPECT_MS`
-    // exists for. If BOTH documents fail to spend their window, this case fails.
+    // BUT IT IS ASKED TWICE, and the miss is recorded rather than hidden:
+    // measured on a full content-group run, the window expired unspent while
+    // the readout showed gapSamples: 77 at 439ms — the transport was not slow,
+    // the report was GONE (§5.6's class). The second document is therefore a
+    // legitimate second ask, recorded as a repair so lost boot reports stay
+    // visible. What is NOT retried is the product's claim: if BOTH documents
+    // fail to spend their window, this case fails.
     const readExpect = () =>
       ctx.chromeStateHandle().then((st: any) => (st.raw && st.raw.expect) || null).catch(() => null);
     let spent: any = null;
