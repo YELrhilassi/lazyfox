@@ -13,6 +13,7 @@ import {
   mergeHotkeys,
 } from "../shared/config";
 import { corpusStats, parseFixList } from "../shared/dark-rules";
+import { paletteById, paletteOptions } from "../shared/darkpalettes";
 import { readKey, writeKey, vConfig, vStringMap } from "./store";
 import { core } from "../shared/core";
 import { favicon } from "../shared/dom";
@@ -48,6 +49,7 @@ import type {
 
   const darkMode = document.getElementById("darkMode") as HTMLSelectElement;
   const darkEngine = document.getElementById("darkEngine") as HTMLSelectElement;
+  const darkPalette = document.getElementById("darkPalette") as HTMLSelectElement;
   const darkBackground = document.getElementById("darkBackground") as HTMLInputElement;
   const darkForeground = document.getElementById("darkForeground") as HTMLInputElement;
   const darkAccent = document.getElementById("darkAccent") as HTMLInputElement;
@@ -150,6 +152,7 @@ import type {
 
   function darkFromForm(): DarkConfig {
     return {
+      palette: darkPalette.value,
       mode: MODES.indexOf(darkMode.value as DarkMode) >= 0 ? (darkMode.value as DarkMode) : DARK_DEFAULTS.mode,
       engine: ENGINES.indexOf(darkEngine.value as DarkEngine) >= 0 ? (darkEngine.value as DarkEngine) : DARK_DEFAULTS.engine,
       background: darkBackground.value || DARK_DEFAULTS.background,
@@ -201,6 +204,7 @@ import type {
 
   function loadDarkForm(dark: DarkConfig, reader: ReaderConfig): void {
     darkMode.value = dark.mode;
+    darkPalette.value = paletteById(dark.palette).id;
     darkEngine.value = dark.engine;
     darkBackground.value = dark.background;
     darkForeground.value = dark.foreground;
@@ -221,6 +225,22 @@ import type {
     readerFont.value = reader.font;
     readerImages.checked = reader.images !== false;
   }
+
+  // The scheme picker: filling the three pole inputs is all it does — they
+  // remain the engine's only source of truth, and a tweak after choosing is
+  // simply customization of that scheme (shared/darkpalettes.ts).
+  for (const opt of paletteOptions()) {
+    const el = document.createElement("option");
+    el.value = opt.id;
+    el.textContent = opt.name;
+    darkPalette.appendChild(el);
+  }
+  darkPalette.addEventListener("change", () => {
+    const p = paletteById(darkPalette.value);
+    darkBackground.value = p.bg;
+    darkForeground.value = p.fg;
+    darkAccent.value = p.accent;
+  });
 
   darkAddSite.addEventListener("click", () => {
     renderSiteRow({ match: "" });

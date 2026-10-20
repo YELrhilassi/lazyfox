@@ -2,9 +2,22 @@
 
 One theme, two engines, four policies, and a per-site rule list you can edit.
 The keys are `;Y d` (this site on/off), `;Y g` (the default), `;Y e` (engine for
-this site) and `;Y x` (clear this site's rules); the settings page has the same
-things as fields, which is the point — nothing about the theme is reachable only
-from the keyboard, and nothing about it is reachable only from the mouse.
+this site), `;Y p` (the color-scheme preset) and `;Y x` (clear this site's
+rules); the settings page has the same things as fields, which is the point —
+nothing about the theme is reachable only from the keyboard, and nothing about
+it is reachable only from the mouse.
+
+## Color schemes
+
+The palette — canvas, text, link — is owned by one source of truth,
+`src/shared/darkpalettes.ts`: a pinned table of named schemes, each with the
+three colours it writes. The settings page's **Color scheme** picker and the
+`;Y p` cycle both simply write the chosen scheme's three values into the
+colour fields and publish them; nothing keeps a second palette store, so a
+scheme you picked and then tweaked *is* your current colours, and nothing
+resets it behind your back. `;Y p` cycles the presets in their listed order
+and the status segment mirrors the scheme's name while the picker reflects the
+same id.
 
 ## The problem this is shaped around
 

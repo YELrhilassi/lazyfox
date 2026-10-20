@@ -7,7 +7,7 @@
 // expects, which is why the interesting case here is a CLOSED shadow root —
 // where `e.target` is the host custom element rather than the input, so every
 // `isTypingTarget(e.target)` says "not typing".
-import { createTab, evalIn, navigate, clickPage, sleep } from "../../bidi.ts";
+import { createTab, evalIn, navigate, clickPage, sleep, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 
 export const TAGS: string[] = ["typing", "newfeatures"];
@@ -151,4 +151,87 @@ export async function run(ctx: any): Promise<void> {
     await ctx.press(ctx.tabA, "z");
     assert(await fieldValue(ctx.tabA, "#armed") === "z", "the first character typed after focusing reached the field");
   });
+
+  // THE PARKED-FIELD CASE — the reported bug verbatim: "when you open YouTube
+  // the search bar input is focused, so the leader goes to that and it keeps
+  // typing ; over and over". The page autofocuses its search box at parse
+  // time, BEFORE the content script boots, so no focusin will ever mark it:
+  // the boot snapshot must. A user who has not touched anything yet presses
+  // `;` SECONDS later and every press typed into the box, the leader never
+  // arming on the site's most-used surface.
+  await t("a load-time autofocus gives the leader back on the first ;", async () => {
+    ctx.tabA = await createTab();
+    await navigate(ctx.tabA, `${ctx.base}/autofocus`, "complete");
+    await ctx.activateTab(ctx.tabA);
+    // The fixture is what it claims: the box is focused ALREADY, and the
+    // content script booted with it focused (data-lf-content arrives while
+    // the caret is parked — wait for the boot, so the press cannot run before
+    // the content script is listening).
+    const parked = await waitFor(async () => {
+      const s = await evalIn(
+        ctx.tabA,
+        `JSON.stringify({ act: document.activeElement && document.activeElement.id, boot: document.documentElement.getAttribute("data-lf-content") })`,
+      ).catch(() => null);
+      const st = s && JSON.parse(String(s));
+      return st && st.act === "yt-search" && st.boot === "1" ? true : null;
+    }, 8000).catch(() => null);
+    assert(parked, "the page parked the caret in its search box and the content script booted");
+    // Wait out the park window and any race between boot and snapshot; the
+    // user reading the page for a second before pressing ; is the shape.
+    await sleep(900);
+    const before = await tabCount();
+    await ctx.press(ctx.tabA, ";");
+    const armed = await ctx.tryArm(ctx.tabA, 2500).then(() => true).catch(() => false);
+    assert(armed, "the FIRST ';' in a load-parked box armed the leader");
+    assert(await fieldValue(ctx.tabA, "#yt-search") === "", " ';' did not type into the parked box (got " + JSON.stringify(await fieldValue(ctx.tabA, "#yt-search")) + ")");
+    assert(await tabCount() === before, "the parked ';' ran nothing else");
+  });
+
+  await t("a claim-parked box answers a real click with typing again", async () => {
+    // The other half of the rule, and the reason the claim must BLUR: with the
+    // caret still in the box every later key re-enters the guard, and the
+    // user who wanted to search after all could never type. A real pointer
+    // press into the box is the user taking it back; ';' then inserts ';' as
+    // in any other field.
+    ctx.tabA = await createTab();
+    await navigate(ctx.tabA, `${ctx.base}/autofocus`, "complete");
+    await ctx.activateTab(ctx.tabA);
+    await sleep(900); // past the park window, content script booted
+    await ctx.press(ctx.tabA, ";");
+    const armed = await ctx.tryArm(ctx.tabA, 2500).then(() => true).catch(() => false);
+    assert(armed, "setup: the parked ';' armed the leader");
+    // Escape clears the armed leader (the caret is already out of the box,
+    // so the field branch of the guard does not run).
+    await ctx.press(ctx.tabA, "Escape");
+    const cleared = await ctx.isLeaderArmed(ctx.tabA).then((v: boolean) => !v).catch(() => true);
+    assert(cleared, "Escape disarmed the leader after the claim (got " + JSON.stringify(await ctx.isLeaderArmed(ctx.tabA).catch(() => "unreadable")) + ")");
+    // Click into the box like a user, then ';' must TYPE again.
+    const box = await evalIn(ctx.tabA, `(() => { const r = document.getElementById("yt-search").getBoundingClientRect();
+       return { x: r.left + r.width/2, y: r.top + r.height/2 }; })()`).catch(() => null);
+    assert(box, "the autoplay search box has a box to click");
+    await clickPage(ctx.tabA, box.x, box.y);
+    await ctx.press(ctx.tabA, ";");
+    assert(await fieldValue(ctx.tabA, "#yt-search") === ";", "after a click the box types ';' again, got " + JSON.stringify(await fieldValue(ctx.tabA, "#yt-search")));
+  });
+
+  await t("a fresh page-parked focus still types ';' inside the park window", async () => {
+    // The boundary the claim must respect: a field the user focused AND
+    // starts typing in immediately (the scripted focus WOULD claim otherwise —
+    // it is programmatic too) is theirs. This is the regression guard for
+    // over-eager claiming, so it presses ';' within the window.
+    ctx.tabA = await createTab();
+    await navigate(ctx.tabA, `${ctx.base}/autofocus`, "complete");
+    await ctx.activateTab(ctx.tabA);
+    // REPLACE the parked element's focus with a fresh scripted focus NOW, so
+    // the park timestamp restarts at this eval and the press lands inside the
+    // window whatever the navigation already cost.
+    await evalIn(ctx.tabA, `(() => { document.getElementById("yt-search").focus(); return document.activeElement.id; })()`);
+    await ctx.press(ctx.tabA, ";");
+    await sleep(400);
+    const v = await fieldValue(ctx.tabA, "#yt-search");
+    assert(v === ";", "';' typed inside the park window, got " + JSON.stringify(v));
+    const still = await ctx.isLeaderArmed(ctx.tabA).catch(() => false);
+    assert(!still, "and no leader was armed behind it");
+  });
 }
+

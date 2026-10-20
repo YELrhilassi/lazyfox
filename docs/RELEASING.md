@@ -85,18 +85,33 @@ problem:
    skips the check for a credential git pushes with that `gh` does not report.
 2. **Signed?** Read-only AMO API check that the version's signed xpi exists. If
    AMO is still reviewing, it stops here — you have not touched git yet.
-3. **Merge:** fast-forwards master, then merges your dev branch into master with
+3. **Push the branch being merged:** pushes your dev branch FIRST, before
+   anything is merged or tagged. The commit master is about to gain is a merge,
+   so it names both parents — a master referencing a commit that exists only on
+   this machine is a history nobody else can resolve. A dry run asks the remote
+   first, so a branch that has moved on since your checkout stops the release
+   here, with nothing merged, built or tagged, and a fix that is a merge away.
+4. **Merge:** fast-forwards master, then merges your dev branch into master with
    `-X theirs`. That resolves **every** conflict — source *and* generated
-   `dist/`/installers — in your dev branch's favor. Master becomes "latest dev
-   source, exactly", with no manual conflict resolution ever.
-4. **Build release:** syncs the AMO-**signed** xpi for that version, rebuilds the
+   `dist/`/installers — in your dev branch's favor. `scripts/ship-merge.ts` also
+   settles the two shapes a merge strategy cannot resolve on its own (conflicting
+   binary files, and modify/delete) by the same rule, so master becomes "latest
+   dev source, exactly" with no manual conflict resolution ever.
+5. **Build release:** syncs the AMO-**signed** xpi for that version, rebuilds the
    release-mode `dist/` bundles, and rebuilds the release installers
    (`installer/bin/lazyfox-install-{linux,darwin,windows.exe}`).
-5. **Verify:** `check-dist`, installer tests, and confirms the committed xpi is
-   signed and the right version.
-6. **Commit + tag + push:** commits on master, tags `v<version>`, pushes master
-   and the tag.
-7. **GitHub Release:** creates the public release via `gh` with the three
+6. **Verify:** `check-dist`, installer tests, and that the xpi is not merely signed
+   but **byte-identical to what AMO published**. The check compares the sha256 AMO
+   reports for the signed file against the artifact about to be uploaded, so a
+   locally built lookalike — a stale `-signed.xpi`, a hand-edited `dist/`, an
+   unsigned build left in its place — cannot reach a release page. The same
+   comparison runs when `sync-signed-xpi.ts` downloads the file (the moment it
+   enters the repository), and the release upload refuses a `-signed.xpi` that is
+   not the file that passed the check.
+7. **Commit + tag + push:** commits on master, tags `v<version>`, pushes master
+   and the tag. The dev branch itself went up in step 3, so both parents of the
+   merge commit are on the remote.
+8. **GitHub Release:** creates the public release via `gh` with the three
    installers and the signed xpi as assets.
 
 Nothing — not CI, not a workflow — writes back, tags, or publishes. Every write
@@ -183,7 +198,37 @@ profile if the user's own cannot be used. See `docs/INSTALLER-ANALYSIS.md`.
 | `npm run dev-install` / `dev-install:clean` | Daily dev | Build + install the unsigned build into a fresh Nightly/Dev profile. |
 | `npm run submit` | Publish a version to AMO | Uploads the unsigned build as a listed version + rebuilds dev installers. |
 | `npm run ship` | **Release** (after AMO signs) | Merge to master, sync signed xpi, rebuild release installers, tag, push, GitHub Release. |
+| `npm run ship -- --rehearse` | **Before** `npm run ship` | Run every guard, the AMO signing check, the master merge and the release build in a scratch worktree; publishes nothing. |
+| `npm run ship:release` | Recovery | Re-create the GitHub Release page for the current version, when master and the tag are already pushed. |
 | `npm run ship:nightly` | **Dev channel refresh** (any time) | (Re)publish the rolling `nightly` prerelease with the dev installers + unsigned xpi. No AMO, no master. |
 | `npm run ci` | Before pushing | Run the local CI (compile + unit suite). |
 | `npm test` / `npm run verify` | Quick check | Unit suite / typecheck+suite. |
 | `npm run clean` | Free-space/rebuild | Remove regenerable build products. |
+
+## Rehearsing a release
+
+`npm run ship` is deliberately all-or-nothing: it merges the dev branch into
+master and rebuilds every artifact before it can discover that something is
+wrong, and by then the expensive state exists. `npm run ship -- --rehearse` runs
+the same release against a scratch `git worktree` and prints one table — every
+guard, the AMO signature check, the master merge, the release build, the artifact
+checks — then a verdict.
+
+It never checks out master in your checkout, commits, tags, pushes or creates a
+release; the merge commit and the rebuilt artifacts live only in the scratch
+worktree, which is removed when the run ends (including on failure). It proves
+that rather than promising it: HEAD and the working tree are compared before and
+after, and a difference is reported as a bug in the rehearsal.
+
+The checks live in `scripts/ship-checks.ts` and the merge in
+`scripts/ship-merge.ts` — the same code the real release runs, because a
+rehearsal with its own copy of a rule can disagree with the thing it rehearses.
+That merge is worth knowing about: `-X theirs` resolves conflicting *hunks*, and
+this repository also produces binary and modify/delete conflicts (master tracked
+`build/native-host/lazyfox-host`, which the dev branch deleted), which the
+strategy option cannot settle. `ship-merge.ts` applies the same policy to what is
+left and completes the merge commit.
+
+If the GitHub Release page fails after master and the tag are already pushed,
+`npm run ship` cannot finish it (it would stop at "already tagged");
+`npm run ship:release` creates just that page from the same asset list.

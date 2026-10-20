@@ -5,7 +5,13 @@ import * as core from "./core.ts";
 import * as setup from "./setup.ts";
 import * as scroll from "./scroll.ts";
 import * as hints from "./hints.ts";
+// Live-site hint probe, gated on LF_LIVE_SITES / LF_LIVE_URLS (off hermetically).
+import * as livehints from "./livehints.ts";
 import * as links from "./links.ts";
+// Chat-shaped rows: the coverage half of link hints (which controls get a key at
+// all). After links, because it drives the same layer and closes it on the way
+// out.
+import * as rows from "./rows.ts";
 import * as typing from "./typing.ts";
 import * as field from "./field.ts";
 import * as popups from "./popups.ts";
@@ -30,9 +36,11 @@ export async function run(ctx: any): Promise<void> {
   await setup.run(ctx);
   await scroll.run(ctx);
   await hints.run(ctx);
+  await livehints.run(ctx);
   // After hints: the link tests drive the hint layer, and they leave a dead
   // editor behind if one fails, which the next test would trip over.
   await links.run(ctx);
+  await rows.run(ctx);
   // Typing safety next: it is a guard against Lazyfox stealing keystrokes, so
   // it must run before anything that leaves an armed leader behind.
   await typing.run(ctx);

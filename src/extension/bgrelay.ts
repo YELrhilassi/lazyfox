@@ -70,6 +70,12 @@ export const relayHandlers: {
     if (req.profileName) void writeKey("lfProfileName", req.profileName);
     if (req.profileDir) void writeKey("lfProfileDir", req.profileDir);
     if (req.bridge !== undefined) void writeKey("lfBridge", req.bridge);
+    // The loader's console lines came over the announce too; file them so the
+    // options Components panel and the diagnostics can show why a feature is
+    // absent instead of implying there were no errors. Stored as one string:
+    // an array of lines joined with "\n" reads naturally everywhere it is
+    // rendered.
+    if (req.errs && req.errs.length) void writeKey("lfLoaderErrs", req.errs.join("\n"));
     return { ok: true };
   },
   // The helper flipped its own cached copy; flip storage to match so content

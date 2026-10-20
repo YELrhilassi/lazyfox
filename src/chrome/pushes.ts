@@ -29,6 +29,8 @@ export interface PushDeps {
   // Clears the bar's download notification(s). A page that pressed `;D` asks
   // for this over the relay: it owns its own keyboard, but the bar is here.
   dismissDownloads(): void;
+  // Firefox's native Screenshots for the selected tab (`;C f` / `;C v`).
+  takeScreenshot(shot: "full" | "visible"): void;
 }
 
 export type PushDispatcher = (action: string, arg: unknown) => void;
@@ -72,6 +74,10 @@ export function createPushDispatcher(deps: PushDeps): PushDispatcher {
       findState: (req) => {
         if (req.index >= 0) deps.status.setContentFind(req.index, req.count || 0, req.cur || 0);
       },
+      // Firefox's native Screenshots, driven for whichever tab asked. The
+      // page cannot draw this surface itself; the helper is the only side
+      // with the module in reach (see screenshots.ts).
+      screenshot: (req) => deps.takeScreenshot(req.shot === "visible" ? "visible" : "full"),
       // The content script's dark-mode verdict for this tab. Cached per index
       // like find, so a background tab's theme cannot relabel the page the user
       // is looking at — and cleared when the content reports mode off.

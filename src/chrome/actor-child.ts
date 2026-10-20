@@ -28,6 +28,15 @@
 
 import { isDeveloperSurface } from "../shared/privileged";
 
+// TEMPORARY instantiation trace: `Services` is a GLOBAL in system modules
+// (actor-parent.ts already relies on that), and Services.console.logStringMessage
+// from a content process reaches the parent console — the process-boot failure
+// used to arrive exactly that way. So an absent line in the captured loader
+// errors is a DECISION — the actor was never instantiated — rather than a
+// stamping failure. This stays in only until the trusted-click chain is proven
+// end to end.
+declare const Services: { console: { logStringMessage(s: string): void } };
+
 // The vim scroll keys plus the leader/Escape we forward. `g` doubles for `gg`.
 const SCROLL_KEYS = "jkdugG";
 
@@ -47,12 +56,27 @@ function docURL(doc: Document): string {
 // cross-process state push.
 const LEADER_WINDOW_MS = 15000;
 
-/** The slice of nsIDOMWindowUtils this module uses. Present only for
- *  system-principal code, which is why it is reached through a cast rather
- *  than declared on Window globally: a global declaration would make the
- *  compiler think page content can reach it too, which is exactly the
- *  confusion worth avoiding in the file that grants that power. */
-interface TrustedMouseUtils {
+/** The trusted-mouse surface of the content window and windowUtils. Fx159
+ *  removed nsIDOMWindowUtils.sendMouseEvent entirely (the measured symptom:
+ *  `windowUtils present, sendMouseEvent=undefined`) and replaced it with the
+ *  window's own ChromeOnly method window.synthesizeMouseEvent — same gesture
+ *  semantics (a mousedown/mouseup pair derives the click), same view-relative
+ *  CSS-pixel coordinates, fewer arguments, an options dictionary and a
+ *  preventDefault return. Both spellings are kept: current Firefox answers the
+ *  window method, older Firefox answers the windowUtils one. */
+interface TrustedMouseSurface {
+  synthesizeMouseEvent(
+    type: string,
+    offsetX: number,
+    offsetY: number,
+    data?: {
+      button?: number;
+      buttons?: number;
+      clickCount?: number;
+      modifiers?: number;
+    },
+    options?: Record<string, unknown>,
+  ): boolean;
   sendMouseEvent(
     type: string,
     x: number,
@@ -62,6 +86,14 @@ interface TrustedMouseUtils {
     modifiers: number,
     widgetTarget: boolean,
   ): void;
+}
+
+function docURLSafe(doc: Document | null | undefined): string {
+  try {
+    return String(doc && doc.URL || "").slice(0, 60);
+  } catch (e) {
+    return "?";
+  }
 }
 
 function isEditable(el: Element | null): boolean {
@@ -94,6 +126,15 @@ export class LazyfoxChild extends BaseChild {
   private leaderUntil = 0;
 
   actorCreated(): void {
+    try {
+      Services.console.logStringMessage(
+        "lazyfox actor: child instantiated (" +
+          docURLSafe(this.document) +
+          ")",
+      );
+    } catch (e) {
+      // ignore
+    }
     this.installTrustedClick();
     // Ask the parent for the configured leader key. The first key after this
     // may still use the default (";"), which is what virtually every config
@@ -114,17 +155,59 @@ export class LazyfoxChild extends BaseChild {
     const cw = this.contentWindow;
     if (!doc || !cw) return;
     try {
-      // windowUtils is only exposed to system-principal code, which is exactly
-      // what a JS window actor is. If it is missing, the whole path is
-      // unavailable and the content script's probe will find no listener.
-      const utils = (cw as unknown as { windowUtils?: TrustedMouseUtils }).windowUtils;
-      if (!utils || typeof utils.sendMouseEvent !== "function") return;
+      // THE MARKER FIRST: `data-lf-actor` must answer "did this actor
+      // instantiate at all" even when the trusted-mouse surface is
+      // unavailable. It used to be set after the guard below, which made an
+      // absent marker ambiguous between "the actor never instantiated" and
+      // "the actor instantiated without a mouse synthesizer" — two diagnoses
+      // with opposite fixes, and the diagnostic suite could not tell them
+      // apart.
+      doc.documentElement.setAttribute("data-lf-actor", "1");
+
+      // Fx159 threw "Window protocol 'Lazyfox' doesn't match remote type
+      // 'web'" at any un-flagged actor in a web process AND removed
+      // utils.sendMouseEvent. Both are handled here: the registration sets
+      // safeForUntrustedWebProcess (chrome/loader/config.js), and the
+      // dispatch prefers window.synthesizeMouseEvent with the old
+      // windowUtils.sendMouseEvent as the pre-159 fallback.
+      const win = cw as unknown as {
+        synthesizeMouseEvent?: TrustedMouseSurface["synthesizeMouseEvent"];
+        windowUtils?: { sendMouseEvent?: TrustedMouseSurface["sendMouseEvent"] };
+      };
+      const synthesize = typeof win.synthesizeMouseEvent === "function" ? win.synthesizeMouseEvent : null;
+      const utilsSend =
+        win.windowUtils && typeof win.windowUtils.sendMouseEvent === "function"
+          ? win.windowUtils.sendMouseEvent
+          : null;
+      if (!synthesize && !utilsSend) return;
 
       // A fresh random token per document. Obfuscation, not authentication —
       // the page can read this — but it is enough to stop a page that ships a
       // fixed payload aimed at a fixed event name.
-      const nonce = Math.random().toString(36).slice(2) + "-" + Math.random().toString(36).slice(2);
-      (cw as unknown as Record<string, unknown>).__lazyfoxTrustedClick = nonce;
+      //
+      // THE TOKEN TRAVELS AS A DOM ATTRIBUTE, not as a window property. It
+      // used to be set as `window.__lazyfoxTrustedClick`, and that measurably
+      // does not work: reading the property back from the content-script realm
+      // — and from the page realm — answers undefined on a live Firefox, so
+      // trustedClick() always returned false and the escalation path silently
+      // did not exist. A property set from system code onto a content global
+      // lands in a realm neither side reliably sees. The DOM is the boundary
+      // that DOES work in both directions — data-lf-content is read by this
+      // actor and set by the content script, the attribute survives every
+      // realm — so `<html data-lf-trusted>` is the channel, the same rule the
+      // rest of the ownership features already follow. It is page-visible;
+      // that is no worse than the expando was intended to be (obfuscation,
+      // never authentication — see the security note below).
+      //
+      // The marker `data-lf-actor` answers a question this path never could
+      // before: did the actor instantiate AT ALL. Absent attribute and absent
+      // marker = the actor is not running (registration failed — see
+      // loader config.js, whose console output the chrome state snapshot
+      // carries under lfConsole). Marker present but no token = the specific
+      // handshake step failed.
+      const nonce =
+        Math.random().toString(36).slice(2) + "-" + Math.random().toString(36).slice(2);
+      doc.documentElement.setAttribute("data-lf-trusted", nonce);
 
       const type = "lazyfox-trusted-click:" + nonce;
       const listener = (ev: Event): void => {
@@ -142,9 +225,20 @@ export class LazyfoxChild extends BaseChild {
           // widgets track the pointer before accepting a press; the release
           // last because that is what produces the click. Gecko derives the
           // click from this pair, so there is deliberately no click here.
-          utils.sendMouseEvent("mousemove", x, y, 0, 0, 0, false);
-          utils.sendMouseEvent("mousedown", x, y, 0, 1, 0, false);
-          utils.sendMouseEvent("mouseup", x, y, 0, 1, 0, false);
+          if (synthesize) {
+            // Button identity explicit: move carries `buttons: 0` (a moving
+            // pressed pointer would turn a hover into a drag), press and
+            // release the primary button's 1/0 by hand — the dictionary only
+            // derives `buttons` when it is not given, and a derived value
+            // behind our back is exactly the ambiguity the gate watches for.
+            synthesize.call(cw, "mousemove", x, y, { button: 0, buttons: 0, clickCount: 0 });
+            synthesize.call(cw, "mousedown", x, y, { button: 0, buttons: 1, clickCount: 1 });
+            synthesize.call(cw, "mouseup", x, y, { button: 0, buttons: 0, clickCount: 1 });
+          } else if (utilsSend) {
+            utilsSend.call(win.windowUtils, "mousemove", x, y, 0, 0, 0, false);
+            utilsSend.call(win.windowUtils, "mousedown", x, y, 0, 1, 0, false);
+            utilsSend.call(win.windowUtils, "mouseup", x, y, 0, 1, 0, false);
+          }
         } catch (e) {
           // the page went away mid-click — nothing to do
         }
@@ -153,16 +247,14 @@ export class LazyfoxChild extends BaseChild {
       // swallow the request before it reaches the window.
       cw.addEventListener(type, listener as EventListener, true);
     } catch (e) {
-      // No windowUtils, no listener, no trusted clicks. The content script
-      // falls back to the synthetic path it already had.
+      // No trusted-mouse surface, no listener, no trusted clicks. The content
+      // script falls back to the synthetic path it already had.
     }
   }
 
   handleEvent(event: Event): void {
     if (event.type !== "keydown") return;
     const e = event as KeyboardEvent;
-    // Already handled upstream (the chrome helper's capture listener runs
-    // first on in-process pages) — never act twice.
     if (e.defaultPrevented || e.isComposing) return;
     // Top-level frames only: one decision point per tab.
     try {

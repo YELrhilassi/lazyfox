@@ -15,7 +15,20 @@
       <p class="sub">Changes apply immediately. The <span class="kbd">;</span> leader opens the which-key overlay — Tab / Shift+Tab flips pages, arrows select, or press a binding's key.</p>
     </header>
 
-    <div class="card">
+    <div class="layout">
+      <nav class="nav" id="settingsNav" aria-label="Settings sections">
+        <span class="nav-cap">Settings</span>
+        <a href="#sec-general" data-sec="sec-general">General</a>
+        <a href="#sec-apps" data-sec="sec-apps">Quick launch</a>
+        <a href="#sec-sessions" data-sec="sec-sessions">Sessions &amp; bar</a>
+        <a href="#sec-dark" data-sec="sec-dark">Dark mode</a>
+        <a href="#sec-reader" data-sec="sec-reader">Reader mode</a>
+        <a href="#sec-chrome" data-sec="sec-chrome">Firefox chrome</a>
+        <a href="#sec-components" data-sec="sec-components">Components</a>
+      </nav>
+
+      <div class="content">
+    <div class="card" id="sec-general">
       <h2>General</h2>
       <div class="desc">Leader key, link hints, and core key behaviour.</div>
       <div class="field"><label class="lbl" for="leader">Leader key</label>
@@ -28,7 +41,7 @@
       <div class="field"><label class="r"><input type="checkbox" id="whichKey"> Show the which-key overlay when the leader key is pressed</label></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="sec-apps">
       <h2>Quick-launch</h2>
       <div class="desc">Web apps shown as tiles on the command-center home grid. Toggle each on or off; edit the
       name / URL or add your own. The favicon is pulled live from each site.</div>
@@ -36,7 +49,7 @@
       <button class="add-app" id="addApp">+ Add web app</button>
     </div>
 
-    <div class="card">
+    <div class="card" id="sec-sessions">
       <h2>Sessions</h2>
       <div class="desc"><span class="kbd">;p</span> save &amp; switch named sets, <span class="kbd">;'</span> + 1-9 jump to a marker, <span class="kbd">;|</span> split, <span class="kbd">;{</span>/<span class="kbd">;}</span> swap panes, <span class="kbd">;\</span> close the split view.</div>
       <div class="field"><label class="r"><input type="checkbox" id="statusBar"> Show the status bar (session &middot; tabs &middot; session list &middot; mode)</label></div>
@@ -48,13 +61,15 @@
       <div class="field"><label class="r"><input type="checkbox" id="autoRestore"> Restore the last session on startup</label></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="sec-dark">
       <h2>Dark mode</h2>
       <div class="desc">Applies to web pages. <span class="kbd">;Y d</span> toggles the site you are on,
       <span class="kbd">;Y g</span> cycles the default, <span class="kbd">;Y e</span> switches the engine for one site,
-      <span class="kbd">;Y x</span> clears that site's rules. The engine measures each page before painting it:
+      <span class="kbd">;Y x</span> clears that site's rules, and <span class="kbd">;Y p</span> cycles the color
+      scheme. The engine measures each page before painting it:
       a page that is already dark is left alone, and a page whose colours it cannot read is inverted rather than
-      half-mapped. Details in <span class="kbd">docs/DARK-MODE.md</span>.</div>
+      half-mapped. Color schemes come from <span class="kbd">shared/darkpalettes</span>; the picker below writes the
+      three colours it names, and every tweak after that is yours. Details in <span class="kbd">docs/DARK-MODE.md</span>.</div>
       <div class="field"><label class="lbl" for="darkMode">Default</label>
         <select id="darkMode">
           <option value="auto">Auto — darken only the pages that are light</option>
@@ -68,6 +83,9 @@
           <option value="dynamic">Dynamic — remap the page's own colours</option>
           <option value="filter">Filter — invert the page, counter-invert media</option>
         </select></div>
+      <div class="field"><label class="lbl" for="darkPalette">Color scheme</label>
+        <select id="darkPalette"></select>
+        <div class="hint">A scheme fills the three colours below; tweak them freely after picking.</div></div>
       <div class="field"><label class="lbl">Colours</label>
         <div class="swatch-row">
           <label>Canvas <input type="color" id="darkBackground"></label>
@@ -107,7 +125,7 @@
         <div class="hint" id="darkExchangeStatus"></div></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="sec-reader">
       <h2>Reader mode</h2>
       <div class="desc"><span class="kbd">;R</span> extracts the article on the page you are on and shows it in place
       of everything else. Links, find, the yank modes and the scroll keys all keep working inside it, and
@@ -130,7 +148,7 @@
       <div class="field"><label class="r"><input type="checkbox" id="readerImages"> Keep the article's images</label></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="sec-chrome">
       <h2>Firefox chrome</h2>
       <div class="desc">Handled by <span class="kbd">chrome/userChrome.uc.js</span> (installed by the Lazyfox
       installer). These hotkeys open Firefox's built-in pages and work even on <span class="kbd">about:</span> /
@@ -146,7 +164,7 @@
       <span id="chStatus"></span>
     </div>
 
-    <div class="card">
+    <div class="card" id="sec-components">
       <h2>Components</h2>
       <div class="desc">Each Lazyfox piece versions independently: the extension, the Go wasm core, the native
       messaging host, and the chrome helper installed by the installer.</div>
@@ -155,6 +173,9 @@
       <div class="kv"><span class="lbl">Native host</span><span class="val" id="cHost">n/a</span></div>
       <div class="kv"><span class="lbl">Chrome helper</span><span class="val" id="cChrome">n/a</span></div>
     </div>
+
+      </div><!-- /.content -->
+    </div><!-- /.layout -->
 
     <div class="actions">
       <button id="save">Save</button>

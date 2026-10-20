@@ -25,7 +25,47 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { applyEnvFile, envFilePath } from "../amo-lib.ts";
+import { applyEnvFile, envFilePath, fingerprintOf, normalizeAmoHash } from "../amo-lib.ts";
+
+// The fingerprint AMO publishes for a signed file is what the release compares its
+// own artifact against (see signedXpiCheck in ship-checks.ts), so the parsing of
+// it is worth pinning: the prefix is AMO's, the case is AMO's, and anything this
+// code cannot compute must come back as null — "cannot prove" — rather than as a
+// string that would be compared against a sha256 and fail for the wrong reason.
+describe("AMO's file fingerprint", () => {
+  const HEX = "2acccbb6772c0a6f1569d6a6f80853c81721329b971bbca1492c83d229bc6410";
+
+  test("the sha256: prefix and the case are stripped", () => {
+    assert.equal(normalizeAmoHash(`sha256:${HEX}`), HEX);
+    assert.equal(normalizeAmoHash(`SHA256:${HEX.toUpperCase()}`), HEX);
+    assert.equal(normalizeAmoHash(`  sha256:${HEX}  `), HEX);
+  });
+
+  test("an algorithm this code cannot compute is not a comparable hash", () => {
+    // A sha512 the release cannot check must not be compared as if it were a
+    // sha256: that would fail every release for a reason nobody could act on.
+    assert.equal(normalizeAmoHash("sha512:" + HEX), null);
+    assert.equal(normalizeAmoHash("sha256:not-hex"), null);
+    assert.equal(normalizeAmoHash("sha256:" + HEX.slice(0, 32)), null);
+  });
+
+  test("no hash is null, never an empty string", () => {
+    assert.equal(normalizeAmoHash(null), null);
+    assert.equal(normalizeAmoHash(undefined), null);
+    assert.equal(normalizeAmoHash(""), null);
+  });
+
+  test("fingerprintOf reads what the version endpoint publishes", () => {
+    const file = { id: 5137409, hash: `sha256:${HEX}`, size: 5923525 };
+    assert.deepEqual(fingerprintOf(file), { hash: `sha256:${HEX}`, size: 5923525 });
+  });
+
+  test("absent fields stay null rather than becoming zero or empty", () => {
+    assert.deepEqual(fingerprintOf({ id: 1 }), { hash: null, size: null });
+    assert.equal(fingerprintOf(null), null);
+    assert.equal(fingerprintOf(undefined), null);
+  });
+});
 
 // `resolve` normalizes away the trailing separator `fileURLToPath` leaves on a
 // directory URL, so this string can be compared with `dirname` output.

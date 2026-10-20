@@ -36,7 +36,14 @@ no `Enter`, nothing to memorize.
 - **Stealth tabs** — isolated tabs that wipe their cookies and storage when
   they close. YouTube in a stealth tab won't know your account.
 - **A status bar** — current session, place in the tab list, session pills,
-  live download progress. It steps aside during fullscreen video.
+  live download progress, and whether the dark engine is covering this site.
+  It steps aside during fullscreen video.
+- **Dark mode & reader** — the dark engine measures each page before painting
+  it (a page that is already dark is left alone), with named color schemes,
+  per-site rules and Dark Reader-format fixes; `;R` reads the article of any
+  page in place, inside the dark theme when the page is darkned. Both are
+  documented in **[docs/DARK-MODE.md](docs/DARK-MODE.md)** and
+  **[docs/READER.md](docs/READER.md)**.
 - **Zen mode** — true fullscreen: the page fills the screen and the toolbar
   never peeks in.
 
@@ -159,6 +166,8 @@ gatekeeper. The action runs the moment you press its key; `Esc` just cancels.
 | `; W` | **window & layout** category — see below |
 | `; d` / `; h` / `; b` | downloads / history / bookmarks |
 | `; /` | find in page — search, walk, copy (`y`) or yank (`Y`) |
+| `; R` | reader mode — the article on this page, in place of everything else (`Esc` leaves) |
+| `; C` | **screenshot** category — see below |
 | `; i` | focus the first input on the page |
 | `; Z` | **zoom** category — `;Z i` in, `;Z o` out, `;Z r` reset |
 | `; D` | dismiss the download notification |
@@ -191,6 +200,10 @@ affordance, and your next keystroke picks the action:
 | `; W z` | zen mode (fullscreen) |
 | `; W e` | toolbar reveal on hover |
 | `; Z i` / `; Z o` / `; Z r` | zoom in / out / reset |
+| `; C f` / `; C v` | screenshot: full page (Firefox's native picker) / visible area |
+| `; Y d` / `; Y g` | dark mode for this site (toggle) / the default (`auto → dark → light → off`) |
+| `; Y e` / `; Y x` | dark engine for this site (`auto → dynamic → filter`) / clear this site's rules |
+| `; Y p` | dark color scheme: next preset |
 
 The sub-keys are, with three deliberate exceptions, the key the action
 already had — `;W |` used to be `;|`, so the hand does not relearn anything.
@@ -296,6 +309,12 @@ opens — no mouse, no tabbing.
 - `]` / `[` (or `Tab` / `Shift+Tab`) page to the next / previous batch;
   typing a prefix whose link is below the fold scrolls it into view first.
 - Hints cover buttons and custom widgets too, not just `<a>` tags.
+- Labels are placed deterministically: on a dense page a label that cannot sit
+  on its control's corner moves a few pixels rather than disappearing, so a
+  control you can see always has a key. When there are more controls in view
+  than the batch holds, `;f` says so (`80 hints — 34 more in view, ] for the
+  next batch`) instead of going quiet, and the controls nearest the middle of
+  the screen are the ones that get keys.
 
 <p align="center">
   <img src="docs/img/hints.png" width="880">
@@ -412,11 +431,25 @@ inside a stealth tab.
 
 ### Settings
 
-The settings page changes the leader key, the hint characters, whether
-`j`/`k` scrolling is on, whether URL / history opens go to a new or the same
-tab, and whether the status bar and the last-session restore run. Keys work
-there too: `j`/`k` scroll, `;` opens the leader, `Esc` returns to the command
-center.
+The settings page is a two-pane layout: a section list on the left (General,
+Quick launch, Sessions & bar, Dark mode, Reader mode, Firefox chrome,
+Components) that follows the scroll, and the settings cards on the right.
+It changes the leader key, the hint characters, whether `j`/`k` scrolling is
+on, whether URL / history opens go to a new or the same tab, and whether the
+status bar and the last-session restore run — plus the **dark mode engine and
+color scheme** (a preset fills the canvas/text/link colours, which you can then
+tweak freely, with per-site rules and Dark Reader-format fixes) and the
+**reader mode typography**. Nothing is saved until you press **Save**. Keys
+work there too: `j`/`k` scroll, `;` opens the leader, `Esc` returns to the
+command center.
+
+### Screenshots
+
+`; C` hands you Firefox's native screenshot picker with a straightened UI
+story: `; C f` opens the full-page picker (Firefox already owns "select a
+region"), `; C v` captures the visible area, and previewing, copying and
+downloading happen inside Firefox's own flow — Lazyfox adds the shortcuts, not
+a second capture pipeline.
 
 ## A note on limits
 

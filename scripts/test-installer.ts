@@ -13,6 +13,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from
 import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { compareVersions, isSignedXpi, xpiVersion } from "./amo-lib.ts";
 import { ensureFrontend } from "./installer-build.ts";
 import { STAGED_CHROME_FILES } from "./payload.ts";
 
@@ -46,11 +47,25 @@ if (existsSync(join(root, "dist", "chrome")) || existsSync(join(root, "dist", "e
         // The exact-version xpi may still be pending AMO review; fall back to
         // the most recent committed xpi so the embed/test still uses a valid,
         // stable-Firefox-compatible signed add-on.
+        // Newest by VERSION (0.5.10 after 0.5.9), and only a genuinely signed
+        // archive: a stable Firefox refuses an unsigned one, and the fixture
+        // this stages must be the same file the stable installers embed.
         const dir = join(root, "dist");
         const candidates = existsSync(dir)
-          ? readdirSync(dir).filter((n) => /^lazyfox2-.*\.xpi$/.test(n)).sort()
+          ? readdirSync(dir)
+              .filter((n) => /^lazyfox2-.*\.xpi$/.test(n))
+              .map((n) => ({ n, p: join(dir, n) }))
+              .filter(({ p }) => {
+                try {
+                  return isSignedXpi(readFileSync(p));
+                } catch {
+                  return false;
+                }
+              })
+              .map((c) => ({ ...c, v: xpiVersion(readFileSync(c.p)) }))
+              .sort((a, b) => compareVersions(a.v, b.v))
           : [];
-        src = candidates.length ? join(dir, candidates[candidates.length - 1]!) : src;
+        src = candidates.length ? candidates[candidates.length - 1]!.p : src;
       }
       if (existsSync(src)) {
         rmSync(extDst, { recursive: true, force: true });

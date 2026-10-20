@@ -120,11 +120,25 @@ function renderPage(r: PageReport | null, note?: string): void {
         " found · " + r.hints.hinted + " hinted (" + r.hints.covered +
         " dimmed: covered) · rejected: " +
         r.hints.rejected.hidden + " hidden, " +
-        r.hints.rejected.duplicate + " duplicate",
+        r.hints.rejected.duplicate + " duplicate, " +
+        r.hints.rejected.behind + " behind a dialog",
       r.hints.hinted ? "ok" : "warn",
+    ],
+    [
+      "Beyond the cap",
+      r.hints.more
+        ? r.hints.more + " more in view — the batch is full, `]` pages to them"
+        : "nothing in view is left out",
+      r.hints.more ? "warn" : "ok",
     ],
     ["Shadow roots pierced", String(r.hints.shadowRoots), r.hints.shadowRoots ? "ok" : ""],
     ["Pointer-only controls", String(r.hints.pointerControls), r.hints.pointerControls ? "warn" : ""],
+    [
+      "Expensive tier",
+      r.hints.probed + "/" + r.hints.probeCap + " nodes probed" +
+        (r.hints.truncated ? " — stopped by " + (r.hints.truncatedBy || "the budget") : " — document covered"),
+      r.hints.truncated ? "warn" : "ok",
+    ],
   ]);
 
   probeWrap.style.display = r.hints.probes.length ? "" : "none";

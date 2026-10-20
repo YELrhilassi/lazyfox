@@ -323,12 +323,14 @@ on a named page before and after — a rewrite of `collectHintables` accepted on
 reasoning alone is how the §12.1 class of defect gets introduced in the first
 place.
 
-§4.4 is closed for `Ctrl+G` (audit §17) and open only in the one place it is a
-decision rather than a defect: `Escape` is deliberately not consumed on a web
-page so a site can close its own banner, which means its first press can be
-answered by the page and by Lazyfox at once. Changing that trades one bug class
-for another (a page that binds Escape would stop working), so it needs a fixture
-where the two answers are distinguishable — not a re-ordering.
+§4.4 is closed for `Ctrl+G` (audit §17) and — as of the sixth field report —
+closed for `Escape` too, by the ladder in HINTS.md §9.1/§14.3: an Escape that
+cleaned something (a field left, a hint layer or the leader dismissed, reader mode
+closed) is consumed and the page hears nothing; an Escape with nothing to clean is
+passed through untouched, which is how a site closes its own banner. The trade this
+paragraph used to call unresolvable is now a fixture that distinguishes the two
+answers — `content/field` and `content/core` both assert the first press does NOT
+reach the page and the second does.
 
 The item that still has no test anywhere near it is §9.2: a stale presence record
 makes `chromeOwnsSurfaces` answer "the helper owns it" for a page that owns its

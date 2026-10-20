@@ -174,30 +174,61 @@ export async function run(ctx: any): Promise<void> {
   );
 
   await t(
-    "Escape is the master cancel: the page still sees it and the caret leaves the field",
+    "Escape is a ladder: the caret leaves first, the page's own action second",
     async () => {
-      // ESCAPE DOES EVERYTHING, AND STILL LETS THE PAGE ACT.
+      // ONE PRESS, ONE RUNG.
       //
-      // It is the key every site, every popup and every muscle memory already
-      // expects, so it also does the whole of what the cancel chord does:
-      // overlays cleared, caret out of the field. It is deliberately NOT
-      // consumed, which is the one difference from Ctrl+G — a page that binds
-      // Escape (this fixture's dialog, a cookie wall, a player) still gets it,
-      // and that is the trade the user asked for: Ctrl+G is the key to reach for
-      // when the page's own UI must survive.
+      // Escape used to do both halves in a single keystroke: the caret left the
+      // field AND the page's own handler ran, so a dialog holding a form the
+      // user was filling in closed on the press that only meant "get me out of
+      // this box". The ladder is the fix, and both halves are asserted here:
+      // the first press leaves the field and the page hears nothing; the second
+      // press, with nothing of Lazyfox's left and no field focused, IS the
+      // page's and closes the dialog.
       await ctx.gotoPage(ctx.tabA, `${ctx.base}/field`);
       await settled();
       await focusField();
       await ctx.press(ctx.tabA, "Escape");
-      const st = await fieldState();
-      assert(st.escapes === 1, "Escape must reach the page (saw " + st.escapes + ")");
-      assert(st.dialogUp === false, "the page's own Escape action must run");
+      const first = await fieldState();
       assert(
-        st.active !== "field",
-        "Escape must ALSO leave the field — it is the master cancel (active: " +
-          st.active +
-          ")"
+        first.active !== "field",
+        "the first Escape must leave the field (active: " + first.active + ")"
       );
+      assert(
+        first.escapes === 0,
+        "the first Escape must NOT reach the page — its dialog would close under the form (saw " +
+          first.escapes +
+          " escapes)"
+      );
+      assert(
+        first.dialogUp === true,
+        "the site's dialog — with its form — must still be standing after the first Escape"
+      );
+      await ctx.press(ctx.tabA, "Escape");
+      const second = await fieldState();
+      assert(
+        second.escapes === 1,
+        "the second Escape must reach the page (saw " + second.escapes + ")"
+      );
+      assert(second.dialogUp === false, "the page's own Escape action must run on the second press");
+    }
+  );
+
+  await t(
+    "Escape with nothing to clean is the page's, first press",
+    async () => {
+      // The other end of the ladder, on a page where the caret is nowhere near a
+      // field and no Lazyfox surface is up: the very first press must go through
+      // untouched. Without this, "consume Escape when it cleaned something"
+      // could be satisfied by consuming it always, which would make every site's
+      // own Escape binding unreachable.
+      await ctx.gotoPage(ctx.tabA, `${ctx.base}/field`);
+      await settled();
+      await evalIn(ctx.tabA, `document.getElementById("field").blur(); true`);
+      await ctx.press(ctx.tabA, "Escape");
+      const st = await fieldState();
+      assert(st.escapes === 1, "the page must receive the Escape (saw " + st.escapes + ")");
+      assert(st.dialogUp === false, "the page's own Escape action must run");
     }
   );
 
@@ -284,10 +315,12 @@ export async function run(ctx: any): Promise<void> {
     "a busy page still attempts the privileged press for a trust-gated control",
     async () => {
       // The player shape: the page never goes quiet, so "the page updated itself"
-      // said nothing about the control. The old trigger was total silence, which
-      // meant the privileged retry never ran here — the exact page it was
-      // written for. The stub listener stands in for the window actor: it
-      // records that the content script ASKED for a privileged press.
+      // said nothing about the control — its own state is the trigger, and it
+      // must fire even here. #gated on /busy answers only event.isTrusted, so
+      // what the escalation produces decides how this reads: with the window
+      // actor present (the harness carries it now — see makeProfile), the
+      // trusted press really fires and the control really acts. Absent would
+      // mean the trigger never fired — which is the bug this test exists for.
       await ctx.gotoPage(ctx.tabA, `${ctx.base}/busy`);
       await settled();
       const first = await evalIn(ctx.tabA, `document.getElementById("ticker").textContent`);
@@ -298,18 +331,22 @@ export async function run(ctx: any): Promise<void> {
       await ctx.leaderPress(ctx.tabA, "f");
       await hintsOn();
       await activate("gated");
-      // The report is the honest observable here: BiDi runs WITHOUT the chrome
-      // layer, so `trustedRetry: false` means the trigger DID fire and no
-      // privileged path was available. Absent would mean the trigger never
-      // fired — which is the bug this test exists for.
+      // The escalation fires a real press one watch window after the click,
+      // so the title lands a moment later than a normal activation.
+      await ctx.waitExpr(ctx.tabA, `document.title`, "GATED-OK", 6000);
+      assert(
+        (await evalIn(ctx.tabA, `document.title`)) === "GATED-OK",
+        "a trust-gated control on a busy page must still be really pressed"
+      );
       const rep = await waitFor(async () => {
         const r = await reportFor("/busy");
         return r && r.act ? r : null;
       }, 6000).catch(() => null);
       assert(rep && rep.act, "the page report must carry the activation");
       assert(
-        rep.act.trustedRetry === false,
-        "a silent target on a busy page must still trigger the privileged retry: " +
+        rep.act.trustedRetry === true,
+        "a silent target on a busy page must still trigger the privileged retry, " +
+          "and with the actor listening it must be ATTEMPTED: " +
           JSON.stringify(rep.act)
       );
       assert(

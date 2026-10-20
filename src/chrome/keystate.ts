@@ -2,7 +2,7 @@
 // under the cursor decides who owns the keys.
 //
 //   - chromeOwnsKeys: true on the helper's own pages (command center, about:,
-//     extension URLs) and on any page whose content script has not arrived —
+//     extension URLs) and on any page whose content script has not arrived;
 //     false for web content, where the content script owns the
 //     leader/popups/hints and the helper must stay hands-off even if Firefox
 //     forwards content keys up to the chrome window.
@@ -11,102 +11,51 @@
 //   - isChromeUiFocus: focus is in the browser's OWN chrome UI (the URL bar,
 //     the find bar) rather than in page content — the only way an element that
 //     is a genuine typing target has the chrome document as its ownerDocument.
+//
+// PRESENCE IS PUSHED, NEVER LOOKED UP. `selectedBrowser.contentDocument` is
+// null for every out-of-process tab, so the obvious beacon read silently
+// answers "no content script" — precisely the dead keyboard (mid-load, error
+// pages, restored sessions). The tab's own content script stamps itself at
+// document_start and pushes (content -> background -> here), carrying the URL,
+// so a stale answer is discarded the moment the tab navigates: a presence
+// signal that survives navigation is a presence signal that eventually lies.
 import { isDeveloperSurface } from "../shared/privileged";
 import type { TypingChannel } from "./typing";
 import type { ChromeWindow } from "./env";
 
-// ---------------------------------------------------------------------------
-// noteContentPresent — why presence is PUSHED rather than looked up
-//
-// The obvious implementation reads a beacon off the page:
-//
-//     selectedBrowser.contentDocument.documentElement.dataset.lfContent
-//
-// That code always fails, and silently, which is worse than not having it.
-// `contentDocument` is null for every OUT-OF-PROCESS tab — which is every
-// remote (Fission) page — so the read throws or returns nothing, the helper
-// concludes "no content script here", and ownership falls back to judging the
-// URL. That is precisely the dead keyboard this whole model exists to prevent:
-// while a page loads, nobody owns the keys; on a DNS failure, the error page
-// inherits it; and because session restore reopens the same tab, relaunching
-// reproduced it every time.
-//
-// So the tab's own content script reports in instead. It stamps its beacon at
-// document_start and pushes to the background, which relays here keyed by tab.
-// The push carries the URL the script saw, so a stale answer is discarded the
-// moment the tab navigates anywhere else rather than being trusted until the
-// next reload — a presence signal that survives navigation is a presence
-// signal that eventually lies.
-// ---------------------------------------------------------------------------
-
 /**
  * One tab's presence record.
  *
- * `url` describes the document; `doc` IDENTIFIES it. The distinction is the fix
- * for a bug that made presence expire on ordinary use: the record used to be
- * identified by its URL, and a single-page navigation changes the URL while
- * keeping the document. `history.pushState` fires no `pagehide` and no
- * `pageshow`, so nothing re-announced, the recorded URL stopped matching the
- * tab's currentURI, and `contentScriptPresent` answered "no content script" for
- * the rest of that document's life — on every SPA (GitHub, YouTube, Reddit,
- * ChatGPT). It cut both ways: the retraction guard dropped a legitimate
- * `pagehide` from the same document for the same reason, so the entry could not
- * be cleared either.
- *
- * A per-document nonce is what the tab can honestly assert. It is generated once
- * per document, sent with every report, and compared only against the record it
- * created: the same document always matches, a replacement document never does.
+ * `url` describes the document; `doc` IDENTIFIES it. The record used to be
+ * identified by URL only, and a single-page navigation changes the URL while
+ * keeping the document — `pushState` fires no pagehide/pageshow, so on every
+ * SPA the recorded URL stopped matching and `contentScriptPresent` answered
+ * "absent" for the rest of the document's life (and the retraction guard
+ * dropped the document's legitimate pagehide by the same test). A per-
+ * document nonce, generated once, matches only the record it created. The
+ * `epoch` field (see resetContentPresence) keeps old records unreadable.
  */
 type ContentRecord = {
   url: string;
   doc: string;
-  /** The presence generation this record was written in (see resetContentPresence). */
   epoch: number;
 };
 
-// ---------------------------------------------------------------------------
-// KEYED BY THE TAB, not by its position in the strip
-//
-// This used to be a `Map<number, ContentEntry>` indexed by RAW tab-strip index,
-// and the index was a lie the moment the strip changed shape. Only `TabClose`
-// was compensated, by DELETING every record at or after the closed index — which
-// is lossy in one direction (every live document above the close lost its
-// answer, so the helper claimed keys it should have deferred on until the page
-// happened to re-report) and, worse, it was the only compensation there was:
-//
-//   * a tab INSERTED before a reporting tab shifted every later record one slot
-//     up. Firefox inserts a new tab after the current one, so this is `Cmd+T`,
-//     and the record of a live web page is then attributed to the new tab —
-//     typically `about:newtab`/`about:blank`, which has no content script and
-//     never will, so nothing ever corrects it. The helper deferred on a page it
-//     owned: a DEAD KEYBOARD on the tab the user just opened, permanently.
-//
-//   * a tab MOVE (drag, and every split-view operation) is a permutation, not a
-//     shift: nothing can be re-keyed from the event, because `TabMove` carries
-//     only the destination. The record stayed where it was and described a tab
-//     that had left, in either direction — a dead keyboard on the neighbour, or
-//     the helper claiming the keys on the page that moved.
-//
-// A record is a fact a DOCUMENT asserted about ITSELF, so it is kept on the tab
-// that document lives in. A reorder then moves the fact with the tab, because
-// the tab element is the same object before and after — `gBrowser.tabs` is
-// reordered in place — and a closed tab's record dies with the element instead
-// of needing to be forgotten. There is nothing left to compensate for, so
-// `forgetContentFrom` is gone rather than extended to two more events.
-// ---------------------------------------------------------------------------
+// KEYED BY THE TAB ELEMENT, not the strip position. Raw strip indexes were a
+// lie the moment the strip changed shape: an INSERT (Firefox inserts after the
+// current tab) shifted later records onto pages that had not reported —
+// typically about:newtab, which never would — and a MOVE (drag, split view)
+// is a permutation nothing can re-key from. A record is a fact a document
+// asserted about itself, so it lives on the tab element that document lives
+// in: reorders move the fact with the tab, and a closed tab's record dies
+// with the element. `forgetContentFrom` was just compensation for the old
+// keying and is gone.
 const contentPresent = new WeakMap<object, ContentRecord>();
 
 /** Bumped by resetContentPresence so old records cannot be read again. */
 let presenceEpoch = 0;
 
-/**
- * The URL a tab is showing, read the way this file's callers already read one.
- *
- * A real tab element keeps its URL on `linkedBrowser` — the tab object is the
- * strip's, not the document's — while the fixtures used by the unit tests build
- * a tab that IS the browser. Trying the browser first and falling back to the
- * tab covers both without the tests having to model Firefox internals.
- */
+/** A real tab keeps its URL on `linkedBrowser`; the one-tab test fixtures build a tab that IS the browser. */
 function urlOfTab(tab: any): string {
   try {
     const b = tab && tab.linkedBrowser ? tab.linkedBrowser : tab;
@@ -116,7 +65,6 @@ function urlOfTab(tab: any): string {
     return "";
   }
 }
-
 
 /** The selected tab element, or null when it cannot be read (mid-collapse). */
 function selectedTabOf(win: ChromeWindow): object | null {
@@ -131,35 +79,15 @@ function selectedTabOf(win: ChromeWindow): object | null {
 /**
  * Which tab a presence report is ABOUT, from the coordinates it arrived with.
  *
- * The report crosses content -> background -> relay tab -> here, so the index it
- * carries was computed by the browser in another process some time ago. The
- * index is tried FIRST and wins whenever it agrees with the reported URL, which
- * is every ordinary delivery; the URL is the repair for a strip that changed
- * hands while the report was in flight, because the tab that is *showing* the
- * reported document is the tab the document is in.
- *
- * Returns null when no tab can be named at all — a report that cannot say which
- * tab it is about is not used. That is the safe direction: an unplaceable report
- * leaves the helper owning the keys, and the leader key answers from there.
- *
- * AND THE REPAIR MUST BE UNIQUE, which is not a refinement — it is the fix for a
- * wrong placement that a full-suite run produced. Two tabs showing the SAME URL
- * cannot be told apart by URL, and the repair used to pick the FIRST match. That
- * is not an edge case in this product: every command center tab is the same URL
- * (`commandcenter.html`), and the command center opens one per `;n` — so a strip
- * with four home tabs gives four identical candidates, and a report whose index
- * had gone stale was recorded on whichever of them came first. The record then
- * outlived the document that made it: that tab answered "a content script is
- * here" for a document that was never in it, so when it later navigated to a
- * page with no content script of its own (a Firefox HTTP error page) the helper
- * declined the keys and the tab answered nothing — `;` included, which is the
- * report this whole model exists to prevent.
- *
- * So the URL repair is taken ONLY when it names exactly one tab, and when it
- * cannot, the index is trusted only if it agrees with the reported URL. A report
- * that can name no single tab is dropped rather than guessed at: dropping it
- * leaves the helper owning the keys, which answers the leader key, while a wrong
- * placement leaves a tab silently dead.
+ * The index travels content -> background -> relay tab -> here, computed
+ * elsewhere some time ago, so it is tried first and wins whenever it agrees
+ * with the reported URL. The URL is the repair for a strip that changed hands
+ * in flight — but ONLY when it names exactly one tab: every command center
+ * tab shares one URL, and a stale-index report recorded on the FIRST of four
+ * home tabs then outlived its document and made a later error page dead (`;`
+ * included). Two URL matches = worthless identity = null. Dropping is always
+ * the safe direction: the helper keeps the keys and answers the leader; a
+ * wrong placement leaves a tab silently dead.
  */
 export function presenceTabFor(win: ChromeWindow, index: number, url: string): object | null {
   try {
@@ -176,9 +104,6 @@ export function presenceTabFor(win: ChromeWindow, index: number, url: string): o
     for (let i = 0; i < n; i++) {
       const t = tabs[i];
       if (!t || urlOfTab(t) !== wanted) continue;
-      // A SECOND match makes the URL worthless as an identity: the two tabs are
-      // indistinguishable from here, and recording the fact on the wrong one is
-      // worse than not recording it at all.
       if (found) return null;
       found = t;
     }
@@ -188,13 +113,7 @@ export function presenceTabFor(win: ChromeWindow, index: number, url: string): o
   }
 }
 
-/**
- * The tab element holding a record for `doc`, or null when none does.
- *
- * A document's nonce identifies the document itself, so this is the one lookup
- * that stays true while the strip, the URL and even the tab's own page change
- * under a report in flight.
- */
+/** The tab element holding a record for `doc`, or null: the one lookup that stays true while strip, URL and page change under a report in flight. */
 export function tabHoldingDoc(win: ChromeWindow, doc: string): object | null {
   const id = String(doc || "");
   if (!id) return null;
@@ -216,22 +135,13 @@ export function tabHoldingDoc(win: ChromeWindow, doc: string): object | null {
 /**
  * Which tab a presence REPORT is about, announcements and retractions alike.
  *
- * THE SAME DOCUMENT MUST ALWAYS RESOLVE TO THE SAME TAB, and placement by
- * index+URL alone could not promise that: the two halves of one document's life
- * are reported at different moments, and between them the tab navigates. So a
- * `pagehide` arriving after the tab had moved on was placed on whatever tab was
- * showing the reported URL — usually none, or the command-center probe — while
- * the record it was supposed to retract stayed on the tab that had actually
- * reported. That is a record NOTHING can retract, and its consequence is the
- * dead keyboard this module exists to prevent, on the page the user had just
- * been sent to with a dead link: measured, `;o` (and every other leader key) did
- * nothing on a Firefox HTTP error page, because the helper believed the command
- * center that had preceded it was still there.
- *
- * A report carrying a document nonce therefore goes to the tab that already
- * holds that document's record, and only falls back to index+URL placement when
- * no record exists yet (the announcement) — which is exactly when there is
- * nothing to find and the URL repair is the right rule.
+ * A report carrying a document nonce goes to the tab that already holds that
+ * document's record, and only falls back to index+URL when there is nothing
+ * to find (the announcement). Otherwise a `pagehide` arriving after the tab
+ * moved on was placed by URL — usually nowhere, or the command-center probe —
+ * leaving a record NOTHING can retract (measured: `;o` dead on a Firefox HTTP
+ * error page because the command center that preceded it was still recorded
+ * as present).
  */
 export function presenceTabForReport(
   win: ChromeWindow,
@@ -249,22 +159,12 @@ export function noteContentPresent(
   doc?: string
 ): void {
   if (!tab) return;
-  // A DOCUMENT ANSWERED, SO THE TAB IS NO LONGER "WAITING FOR ONE".
-  //
-  // This is the common end of the expectation window below: the page reports in
-  // one message round trip after `document_start`, so the window is normally
-  // open for a few tens of milliseconds rather than for its whole length. A
-  // RETRACTION does not end it (a `pagehide` says a document is leaving, not
-  // that the tab is answering) — the navigation notification that follows is
-  // what re-arms it.
+  // A document ANSWERING closes the expectation window early (a retraction
+  // does not — pagehide says a page is leaving, not that this tab answers;
+  // the navigation notification after it re-arms). The measured gap between
+  // arming and the page's report is the number CONTENT_EXPECT_MS is to be set
+  // from; published via contentExpectation.
   if (active) {
-    // HOW LONG THE WINDOW ACTUALLY LASTED, which is the number the window's own
-    // length is supposed to be set from. `CONTENT_EXPECT_MS` is a judgement
-    // (1500ms) until it is read against a real session, and this is the read: the
-    // arming is a navigation notification and the end is the page's own report,
-    // so the difference is the transport's latency for a boot report — the thing
-    // §5.6 of docs/KEYBOARD-OWNERSHIP.md says is an assumption. Published through
-    // `contentExpectation` (the chrome state channel).
     const at = contentExpected.get(tab);
     if (typeof at === "number") {
       lastGapMs = Math.max(0, Date.now() - at);
@@ -274,30 +174,14 @@ export function noteContentPresent(
   }
   const id = String(doc || "");
   if (!active) {
-    // ONLY THE DOCUMENT THAT OWNS THE RECORDED ANSWER MAY RETRACT IT.
-    //
-    // A retraction is sent by `pagehide`, which fires on the document that is
-    // LEAVING — and the document that is ARRIVING announces itself around the
-    // same moment, from a different process. The two reports are therefore
-    // ordered by luck, and a late "out" from the page the user just left used
-    // to delete the entry belonging to the page that had already replaced it.
-    // Nothing re-announces after that, so the helper went on believing a web
-    // page had no content script: it claimed the keys AND painted its own
-    // which-key overlay on top of the page's, which is exactly the "commands
-    // collide, then get confused" a user sees — and only sometimes, because it
-    // depends on which process won the race.
-    //
-    // The URL is the document's identity here, and both halves of the report
-    // already carry one (reportPresence sends `location.href` on the way in AND
-    // on the way out). So a retraction whose URL is not the one on record is by
-    // definition about a different document and is dropped. An unreadable URL
-    // ("") still retracts: a report that cannot say who it is must not be the
-    // reason a dead tab looks alive.
+    // ONLY THE DOCUMENT THAT OWNS THE RECORDED ANSWER MAY RETRACT IT: the
+    // leaving and arriving documents race, and a late "out" used to delete
+    // the entry of the document that had already replaced it — after which
+    // nothing re-announces, the helper claims the keys AND paints its overlay
+    // on top of the page's ("commands collide, then get confused"). Reports
+    // carry their identity, so a retraction about a different document is
+    // dropped; an unreadable URL still retracts.
     const hit = contentPresent.get(tab);
-    // A retraction carrying a document id is only allowed to clear the record
-    // that document created. A retraction without one is judged by URL, which is
-    // the older, weaker rule — kept because a host that cannot identify itself
-    // must still not be the reason a dead tab looks alive.
     if (!hit) return;
     if (hit.doc && id && hit.doc !== id) return;
     if (hit.doc && !id && url && hit.url !== url) return;
@@ -309,70 +193,37 @@ export function noteContentPresent(
 }
 
 /**
- * Forget every recorded presence. Used when a window is torn down/rebuilt.
+ * Forget every recorded presence (window torn down/rebuilt).
  *
- * The map is keyed by tab element and is a WeakMap, so it cannot be iterated or
- * cleared; a record from before the reset is simply not readable afterwards.
- * That is the same effect, without a second structure to keep in step.
+ * The WeakMap cannot be iterated or cleared; a record from before the reset
+ * is simply not readable afterwards — same effect, no second structure.
  */
 export function resetContentPresence(): void {
   presenceEpoch++;
 }
 
-// ---------------------------------------------------------------------------
-// A RECORD MUST NOT OUTLIVE ITS DOCUMENT, even when no `pagehide` arrives
-// ---------------------------------------------------------------------------
-//
-// Everything above relies on the document that announced itself retracting the
-// announcement. That is the whole of the honesty the model has, and it has one
-// hole: a content process that dies (a crash, an OOM kill, a debugger detaching)
-// never sends anything at all. The record then describes a document that no
-// longer exists — and it is not self-correcting, because a replacement document
-// only ever REPLACES a record, it never removes one. If that replacement has no
-// content script of its own (a PDF viewer, a page the extension is not injected
-// into, anything on a restricted domain), nothing ever reports for that tab
-// again, so `chromeOwnsKeys` answers "not mine" forever and the tab answers no
-// keys at all: `;`, the leader, hints, popups. That is the shape of the worst
-// report the audit carried, "nothing responds, not even the leader".
-//
-// The signal that closes it is the browser's own statement that a document was
-// REPLACED, which the chrome helper is already told: `onLocationChange` carries
-// `LOCATION_CHANGE_SAME_DOCUMENT`, set for the in-page navigations
-// (`pushState`, `replaceState`, a hash change) that keep the document and
-// cleared for a real navigation. So a cross-document location change on a tab
-// is proof that the announced document is gone, and the record is dropped
-// there — the one place the distinction the whole file turns on is handed to us
-// rather than inferred from a URL.
-//
-// Why this does not re-open the bug the URL comparison caused: an in-page
-// navigation is EXACTLY the case the flag marks as the same document, so the
-// record survives it untouched (that is checked, in both the unit checks and
-// end to end — the e2e case is what proves this Firefox build really delivers
-// the flag for `pushState`, on the real remote-browser path). And dropping
-// early is the safe direction: the arriving document re-announces itself at
-// `document_start`, while between the two the helper owns the keys and answers
-// the leader key itself (the §18.3 rescue), which is the same window a fresh
-// tab has always been in.
-
-/**
- * `nsIWebProgressListener.LOCATION_CHANGE_SAME_DOCUMENT`.
- *
- * Spelled as a literal here only as the fallback for a host that cannot reach
- * `Ci` (the Node checks); the real path reads the interface constant, so a
- * Firefox that ever moves it is followed rather than overruled. The value is
- * part of the frozen flag block (`nsIWebProgressListener.idl`), not an
- * internal: `LOCATION_CHANGE_SAME_DOCUMENT = 0x00000040`.
- */
+// A RECORD MUST NOT OUTLIVE ITS DOCUMENT, even when no `pagehide` arrives: a
+// content process that dies (crash, OOM, detached debugger) sends nothing.
+// The record then describes a document that is gone, and a REPLACEMENT that
+// has no content script of its own (PDF viewer, restricted origin) never
+// reports — so the tab answers no keys at all ("nothing responds, not even
+// the leader"). The closing signal is Firefox's own statement that a document
+// was REPLACED: `onLocationChange` sets `LOCATION_CHANGE_SAME_DOCUMENT`
+// exactly for the in-page navigations (pushState/replaceState/hash) that keep
+// the document — so a cross-document change on the tab drops the record, the
+// one place this distinction is handed to us rather than inferred from a URL.
+// Dropping early is safe: the arriving document re-announces at
+// document_start, and in between the helper owns the keys (same as a fresh
+// tab).
 export const LOCATION_CHANGE_SAME_DOCUMENT = 0x00000040;
 
 /**
- * Drop the record belonging to a tab, because the document that made it is gone.
+ * Drop the record belonging to a tab because its document is gone.
  *
- * Takes the BROWSER rather than the tab because that is what a progress
- * notification names, and `gBrowser.getTabForBrowser` is the one supported way
- * back to the strip element — the same element `noteContentPresent` keys on.
- * An unreadable browser (a torn-down tab mid-collapse) is nothing to forget,
- * never an error: this runs on every navigation in every tab.
+ * Takes the BROWSER, because that is what a progress notification names;
+ * `gBrowser.getTabForBrowser` is the one supported way back to the same
+ * element `noteContentPresent` keys on. An unreadable browser is nothing to
+ * forget — this runs on every navigation in every tab.
  */
 export function forgetContentOfBrowser(win: ChromeWindow, browser: unknown): void {
   try {
@@ -386,19 +237,14 @@ export function forgetContentOfBrowser(win: ChromeWindow, browser: unknown): voi
 }
 
 /**
- * Dev/verification only: drop the SELECTED tab's presence record, and report what
- * it was.
+ * Dev/verification only: drop the SELECTED tab's presence record and report
+ * what it was.
  *
- * The state the field report describes — the helper answering a live page's keys
- * because its record went missing (docs/KEYBOARD-FREEZE.md) — cannot be produced
- * from outside the product: presence is written by the page's own script, and no
- * test input can retract it without replacing the document, which would make the
- * test about a different page than the one it was testing. Dropping the record is
- * exactly the state, and doing it from a debug hook is honest about which layer
- * is under test: the OWNERSHIP DECISION, not the reporting that feeds it.
- *
- * The URL comes back with the answer because "there was no record" and "there was
- * one and it named another page" are different failures of the same assertion.
+ * The state it produces — the helper answering a live page's keys because the
+ * record vanished — cannot be made from outside the product: no test input
+ * retracts presence without replacing the document. The URL comes back
+ * because "there was no record" and "there was one and it named another page"
+ * are different failures of the same assertion.
  */
 export function dropPresenceForSelectedTab(win: ChromeWindow): { had: boolean; url: string } {
   let had = false;
@@ -419,13 +265,9 @@ export function dropPresenceForSelectedTab(win: ChromeWindow): { had: boolean; u
 }
 
 /**
- * React to a location change: keep the record for an in-page navigation, drop it
- * for a real one.
- *
- * The decision lives here rather than in the listener so that it can be
- * exercised without a browser — the listener's own job is then one call with the
- * flags it was handed, and `ci` is the interface constants when the host has
- * them.
+ * React to a location change: keep the record for an in-page navigation, drop
+ * it for a real one. The decision lives here so it can be exercised without a
+ * browser; `ci` carries the interface constants when the host has them.
  */
 export function noteLocationChange(
   win: ChromeWindow,
@@ -439,120 +281,85 @@ export function noteLocationChange(
       : LOCATION_CHANGE_SAME_DOCUMENT;
   if (Number(flags) & bit) return;
   forgetContentOfBrowser(win, browser);
-  // ...and the tab is now EXPECTED to answer for itself shortly. Dropping the
-  // record alone is what made the helper claim the keys for the first second of
-  // every page: see contentScriptExpected.
+  // Dropping the record alone made the helper claim the keys for the first
+  // second of every page — arming the expectation window is the other half.
   expectContentIn(win, browser);
 }
 
 /**
  * How long a freshly navigated tab is given to say it has a content script.
  *
- * The window is a BOUND, not a delay: it normally closes the moment the page's
- * own report lands (one message round trip after `document_start`), and a page
- * that never reports at all — a PDF viewer, an error page, an origin the user
- * restricted — is back to today's answer (the helper claims the keys) when this
- * much time has passed. 1500ms is chosen to be longer than an ordinary report
- * AND shorter than the patience of a user pressing a key on a page that just
- * appeared; it is a starting point measured against a real session, not a
- * constant with a proof.
+ * A BOUND, not a delay: it normally closes when the page's own report lands
+ * (one round trip after document_start); a page that never reports is back to
+ * the old answer (the helper claims the keys) after this long. 1500ms is
+ * longer than an ordinary report and shorter than a user's patience — a
+ * starting point measured against a real session, and the measured gap is
+ * published (contentExpectation.gapMs) so the constant can be set from data.
  */
 export const CONTENT_EXPECT_MS = 1500;
 
 /**
- * The tabs a content script is expected in, and since when — `tab -> Date.now()`.
- *
- * Keyed by the TAB, like the presence record itself and for the same reason: a
- * record of which tab the expectation belongs to cannot be confused by a strip
- * that reorders, and it dies with the tab.
+ * The tabs a content script is expected in, and since when — keyed by the TAB
+ * like the presence records, and for the same reason: it cannot be confused by
+ * a strip that reorders, and it dies with the tab.
  */
 const contentExpected = new WeakMap<object, number>();
 
-// The document Firefox says is IN the tab, for the tab the last arming question
-// was asked about — published by `contentExpectation` as `expect.doc`.
-//
-// It is a readout, not state: `firefoxErrorDocument` is what the decision reads,
-// and this only records what it read so a failure report can name it. The two
-// differ on exactly the pages that matter — an error page's URL is the address
-// the user asked for, while the DOCUMENT is Firefox's own substitute — which is
-// why the readout had to exist to make that visible at all.
+// The document Firefox says is IN the tab when the last expectation question
+// was asked. A readout, not state: an error page's URL is the address the user
+// asked for while the DOCUMENT is Firefox's own substitute, and only this
+// readout makes the difference visible in a failure report.
 let lastExpectDoc = "";
 
-/**
- * The URI of the document that is ALREADY IN the browser, when the browser will
- * say. Empty when it will not (a fixture, a torn-down element, an older host).
- */
+/** The URI of the document already IN the browser, when it will say so. */
 function documentUriOf(browser: unknown): string {
   const b = browser as any;
   try {
     const u = b && b.documentURI;
     if (u) return String(u.spec || u);
   } catch (e) {
-    // fall through to the contentDocument read below
+    // fall through to the contentDocument read
   }
   try {
     const d = b && b.contentDocument;
     if (d && d.documentURI) return String(d.documentURI);
   } catch (e) {
-    // A browser that cannot report its document answers "" — see the caller.
+    // a browser that cannot report its document answers ""
   }
   return "";
 }
 
 /**
- * Is this URI one of FIREFOX'S OWN SUBSTITUTE DOCUMENTS for a page that failed
- * to load — the document that is already here, and that no content script can
- * ever be injected into?
+ * Is this URI one of FIREFOX'S OWN SUBSTITUTE DOCUMENTS for a failed load —
+ * the document already here, into which no content script can ever inject?
  *
- * WHY THIS IS NOT JUST `contentOwnableUrl`. On a failed load the tab's URL stays
- * the address the user asked for (`http://host/path`), so the URL test says
- * "injectable" and arms the window — while the document actually loaded is
- * `about:neterror`, which no content script can run in. The user is then on a
- * page whose only key engine is the helper, and the helper spends the first
- * 1500ms declining keys: the dead keyboard this module exists to prevent, on the
- * pages that need the rescue most. Measured in a real browser: the e2e stuck
- * suite (nine error pages, one press each) failed on 502 and 504 with "the
- * leader key was never consumed", and passed on the pages whose load was slow
- * enough for the press to land after the window.
+ * On a failed load the tab's URL stays the requested `http://...`, so the URL
+ * test says "injectable" and arms the window, while the document actually
+ * loaded is `about:neterror`. The user is then on a page whose only key engine
+ * is the helper, which spends the first 1500ms declining keys — measured in
+ * the e2e stuck suite (502 and 504 failed with "the leader key was never
+ * consumed"; slow pages passed).
  */
 export function firefoxErrorDocument(uri: string): boolean {
   return /^about:(neterror|certerror|blocked|tabcrashed|netinterrupt|nssfailure)/i.test(uri || "");
 }
 
-// The last window that closed because the page reported, and how many have -
-// the sample behind the number `contentExpectation` publishes. Written only by
-// `noteContentPresent`, which is the only thing that closes a window early.
+// The sample behind the numbers `contentExpectation` publishes: the last
+// window that closed because the page reported, and how many have.
 let lastGapMs = -1;
 let gapSamples = 0;
 
 /**
  * Record that a freshly navigated tab is about to answer for its own keys.
  *
- * WHY THIS EXISTS. Presence is PUSHED by the page (see the module header), so
- * there is always a gap after a navigation in which the helper has no record for
- * the new document: the tab has the URL, the markup and a live content script,
- * and the helper can see none of it. In that gap `chromeOwnsKeys` answered
- * "mine", and the user paid for it with the first keystroke of every page —
- * `;` armed the CHROME leader, the page's own overlay never appeared ("the
- * leader gets cleared out"), the follow-up binding was answered by a realm that
- * has no page to act on ("the action gets absorbed"), and the second press
- * worked only because the first one had a side effect: a key that reaches the
- * page re-asserts its presence. The field report is "I have to press it twice,
- * or wait a second until Lazyfox is warm on that page".
- *
- * WHAT IS ARMED, AND WHAT IS NOT. Only the class of document the manifest
- * actually injects into (`contentOwnableUrl`: http(s)/file) and NOT the command
- * center, which runs its own engine, reports its own presence and already has a
- * key rescue of its own (see keysdispatch's `cc-rescue`). `about:` and
- * `moz-extension://` documents are untouched: no content script can ever arrive
- * there, so "expected" would be a lie and the helper would spend the window
- * declining keys on the pages where it is the only key engine — the dead
- * keyboard this whole module exists to prevent.
- *
- * It is armed only by a cross-document navigation. A tab that simply has no
- * record (a background restart that ate the push, a window this helper has just
- * attached to) keeps today's answer, because turning "no record" into "nobody
- * owns this tab" is the freeze, not the fix.
+ * Without it every navigation had a gap in which `chromeOwnsKeys` answered
+ * "mine": `;` armed the CHROME leader ("the leader gets cleared out", "the
+ * action gets absorbed", "I have to press it twice"). Only the document
+ * classes the manifest actually injects into get a window — NOT `about:`,
+ * `moz-extension://` or the command center (its own engine, its own rescue),
+ * where "expected" would be a lie and the dead keyboard this module prevents.
+ * Armed ONLY by a cross-document navigation: turning a mere missing record
+ * into "nobody owns this tab" is the freeze, not the fix.
  */
 export function expectContentIn(
   win: ChromeWindow,
@@ -566,23 +373,14 @@ export function expectContentIn(
     if (!tab) return;
     const b = browser as { currentURI?: { spec?: string } };
     let spec = b && b.currentURI ? String(b.currentURI.spec || "") : "";
-    // The browser first, because that is what the notification names — then the
-    // tab it belongs to, for a host whose browser cannot report its own URI (a
-    // torn-down element, and the one-tab fixtures the checks build). This is the
-    // same order `urlOfTab` already reads a tab in.
     if (!spec) spec = urlOfTab(tab);
     if (isCommandCenterUrl(spec) || !contentOwnableUrl(spec)) {
-      // A document nobody can own the keys of. Any expectation left from an
-      // earlier navigation in this tab is dropped rather than left to expire: it
-      // would be an answer about a document that is gone.
       contentExpected.delete(tab);
       return;
     }
-    // AND THE DOCUMENT THAT IS ALREADY THERE DECIDES TOO, when it can be read:
-    // Firefox's own error page keeps the requested http URL in `currentURI`
-    // while the document in the tab is `about:neterror`, so the URL test above
-    // arms a window on a page where nothing will ever report. See
-    // `firefoxErrorDocument` — that is the case the e2e error pages measure.
+    // The document ALREADY THERE decides too: Firefox's own error page keeps
+    // the requested http URL in `currentURI` while the document in the tab is
+    // `about:neterror` — the case the e2e error pages measure.
     const doc = documentUriOf(browser);
     lastExpectDoc = doc;
     if (doc && firefoxErrorDocument(doc)) {
@@ -591,28 +389,17 @@ export function expectContentIn(
     }
     contentExpected.set(tab, typeof now === "number" ? now : Date.now());
   } catch (e) {
-    // A strip that cannot name the tab arms nothing, which is the behaviour
-    // that existed before this function did.
+    // A strip that cannot name the tab arms nothing.
   }
 }
 
 /**
- * What the expectation window is doing for the SELECTED tab — the readout that
- * turns the window from an invisible judgement into a number.
- *
- * WHY IT IS PUBLISHED AT ALL. The window is the one piece of ownership state
- * that is neither a record (someone said so) nor a URL class (decidable from the
- * strip): it is a TIMER, and a timer that quietly declines a keystroke looks
- * exactly like a dead keyboard from outside. Two of the e2e suite's cases are
- * decided by it — "a page the extension cannot run on is the helper's" and the
- * seven HTTP error pages — and when one of them fails, "nothing armed" is the
- * same sentence whether the window swallowed the key or the dispatch never
- * happened. `open`/`ageMs`/`leftMs` name the first, and `gapMs` names how long an
- * ordinary report takes, which is what the length of the window should be set
- * from rather than guessed at.
- *
- * `gapMs` is -1 until a report has closed a window in this session, and
- * `gapSamples` says how much to trust it.
+ * What the expectation window is doing for the SELECTED tab: the readout that
+ * turns the window from an invisible judgement into a number. A timer that
+ * quietly declines a keystroke looks exactly like a dead keyboard from
+ * outside, and "nothing armed" is the same sentence in every failure without
+ * it — `open`/`ageMs`/`leftMs` name the window, `gapMs` names how long an
+ * ordinary report takes (what the window's length should be set from).
  */
 export function contentExpectation(
   win: ChromeWindow,
@@ -631,23 +418,17 @@ export function contentExpectation(
       open = ageMs < CONTENT_EXPECT_MS;
     }
   } catch (e) {
-    // An unreadable strip answers "no window", which is what the latch itself
-    // answers in the same state.
+    // "no window", matching the latch's own answer in the same state
   }
   return { open, ageMs, leftMs, gapMs: lastGapMs, gapSamples, doc: lastExpectDoc };
 }
 
 /**
- * Is the SELECTED tab's document one a content script is expected in, and has it
- * not arrived yet?
- *
- * Read by `chromeOwnsKeys`, which answers FALSE while this is true — i.e. the
- * helper declines the key and the page's own listener answers it, which is the
- * whole point: the page IS there (its script runs at `document_start`), it has
- * simply not said so yet.
- *
- * `now` is a parameter so the window and its expiry can be driven without
- * waiting in the checks; production callers omit it.
+ * Is the SELECTED tab's document one a content script is expected in and that
+ * has not arrived yet? Read by `chromeOwnsKeys` (which answers FALSE then):
+ * the page IS there — its script runs at document_start — it has simply not
+ * said so yet. `now` is a parameter so the checks can drive expiry without
+ * waiting; production callers omit it.
  */
 export function contentScriptExpected(win: ChromeWindow, now?: number): boolean {
   try {
@@ -660,9 +441,8 @@ export function contentScriptExpected(win: ChromeWindow, now?: number): boolean 
   }
 }
 
-// Is this URL the command center page? The one LAZYFOX-OWNED document that runs
-// a full key engine of its own — its own leader, its own popups, its own typing
-// guard, all from the shared modules a web page's content script uses.
+// The one LAZYFOX-OWNED document that runs a full key engine of its own —
+// its own leader, popups and typing guard, from the same shared modules.
 export function isCommandCenterUrl(spec: string): boolean {
   return String(spec || "").indexOf("commandcenter.html") !== -1;
 }
@@ -679,28 +459,17 @@ export function isCommandCenterTab(win: ChromeWindow): boolean {
 }
 
 /**
- * Whether the document the SELECTED tab is DISPLAYING is Lazyfox's own command
- * center — asked of the document, not of the tab's URL.
+ * Is the document the SELECTED tab is DISPLAYING the command center — asked
+ * of the document, not the tab's URL.
  *
- * `isCommandCenterTab` reads `currentURI`, and during a PROVISIONAL navigation
- * (`currentURI` changes before any document exists for it — the window the whole
- * stuck-page suite exists for) that is already the URL being loaded while the
- * document on screen is still the previous one. So on a command-center tab that
- * is navigating away, the URL says "a web page" while the page the user is
- * looking at, and typing into, is still the command center. Every decision keyed
- * on the URL then takes the wrong branch: `chromeOwnsKeys` answers "the content
- * script owns this tab" (the command center reported presence like any other
- * script), so the helper declines the key — and the key is handed to nobody.
- * The document that was still on screen, still focused, still running its own
- * leader, never saw it.
- *
- * Presence is exactly that document's own statement that it is alive, and the
- * record carries the URL the script saw, so the two halves of this question have
- * one answer: a tab whose reporting document names the command center. It is
- * retracted by the same `pagehide` rules as presence, and it is stored on the
- * tab rather than at a strip position, so it cannot outlive the document it
- * describes NOR be read for a tab that merely took its slot — and once the new
- * document commits and reports, this answers NO for it.
+ * `currentURI` already names the URL being loaded during a PROVISIONAL
+ * navigation, while the document on screen (and typing into) is still the
+ * previous one. Keyed on the URL, every decision on a command-center tab
+ * navigating away took the wrong branch: the helper deferred to the reported
+ * web page and the key was handed to nobody. The reported document's own
+ * presence record carries the URL the script saw, so this answers YES only
+ * while that document is the one reporting — retracted by the same pagehide
+ * rules, stored on the tab, and answered NO once the new document commits.
  */
 export function commandCenterDocumentPresent(win: ChromeWindow): boolean {
   const tab = selectedTabOf(win);
@@ -708,39 +477,31 @@ export function commandCenterDocumentPresent(win: ChromeWindow): boolean {
   return !!hit && hit.epoch === presenceEpoch && isCommandCenterUrl(hit.url);
 }
 
-
 /**
- * Whether the selected tab's document carries a Lazyfox content script.
+ * Does the selected tab's document carry a Lazyfox content script?
  *
- * Answered from what the tab itself reported, never by inspecting it: see
- * noteContentPresent for why the inspection is impossible. The record is looked
- * up ON THE SELECTED TAB, which is what makes the answer about the tab the user
- * is looking at: a record can no longer be read for a tab that merely took the
- * reporting tab's slot in the strip.
+ * Answered from what the tab reported, never by inspecting it (see the module
+ * header). Read ON THE SELECTED TAB so the answer is about the tab the user
+ * is looking at, not whatever took a reporting tab's old slot.
  *
  * `browser` stays in the signature for the one record that cannot identify
- * itself (a host that reported no document nonce), where the URL is the only
- * identity there is.
+ * its document (no nonce reported) — there the URL is the only identity.
  */
 export function contentScriptPresent(browser: unknown, win?: ChromeWindow): boolean {
   try {
     const tab = win ? selectedTabOf(win) : null;
     const hit = tab ? contentPresent.get(tab) : undefined;
     if (!hit || hit.epoch !== presenceEpoch) return false;
-    // A record that identifies its document is AUTHORITATIVE — the document that
-    // created it retracts it on pagehide — and the URL is deliberately NOT
-    // compared. Comparing it was the bug: an in-page navigation rewrites the URL
-    // without replacing the document, so the comparison declared a live content
-    // script absent (and with it, ownership of the keys, the hints and the
-    // surfaces) from the first pushState onwards. The recorded document can only
-    // be replaced by another report, which the next document sends on boot.
+    // A record that identifies its document is AUTHORITATIVE and the URL is
+    // deliberately NOT compared: an in-page navigation rewrites the URL
+    // without replacing the document, and comparing declared a live content
+    // script absent from the first pushState onwards (the ownership, hints
+    // and surfaces all went with it). The record can only be replaced by
+    // another report, which the next document sends on boot.
     if (hit.doc) return true;
-    // A record from a host that cannot identify its document: fall back to the
-    // URL check, which is all the identity there is.
     const b = browser as { currentURI?: { spec?: string } };
     const spec = b && b.currentURI ? String(b.currentURI.spec || "") : "";
-    // An empty reported URL means the script could not report one, which is not
-    // evidence of presence.
+    // An empty reported URL is not evidence of presence.
     return !!hit.url && !!spec && hit.url === spec;
   } catch {
     return false;
@@ -750,17 +511,11 @@ export function contentScriptPresent(browser: unknown, win?: ChromeWindow): bool
 /**
  * Every live presence record this window holds, as `{ i, u, d }`.
  *
- * Dev/verification only, and it exists because a WRONG answer out of this module
- * is otherwise indistinguishable from a missing one. "The helper claimed the
- * keys on a live page" has exactly two causes — a record that was never placed
- * on that tab, or one that was placed on a neighbour — and no other field of the
- * `#lfc=state` reply can tell them apart; the assertion just says the answer
- * stayed wrong for nine seconds.
- *
- * `i` is the tab's strip index AT THE MOMENT OF THE READ, deliberately, so a
- * record that is a slot (or a tab) away from where it belongs is visible as
- * exactly that. `u` is the URL the record names and `d` its document nonce
- * (empty only for a host that reported none).
+ * Dev/verification only: "the helper claimed the keys on a live page" has
+ * exactly two causes — a record never placed on that tab, or one placed on a
+ * neighbour — and no other field of the #lfc=state reply tells them apart.
+ * `i` is the strip index AT THE MOMENT OF THE READ, so a record that is a
+ * slot away from where it belongs is visible as exactly that.
  */
 export function presenceSnapshot(win: ChromeWindow): Array<{ i: number; u: string; d: string }> {
   const out: Array<{ i: number; u: string; d: string }> = [];
@@ -773,8 +528,7 @@ export function presenceSnapshot(win: ChromeWindow): Array<{ i: number; u: strin
       const rec = t ? contentPresent.get(t) : undefined;
       if (!rec || rec.epoch !== presenceEpoch) continue;
       out.push({ i, u: String(rec.url || ""), d: String(rec.doc || "") });
-      // Bounded like every other list in the reply: a window with more records
-      // than this has a different problem, and a status reply is not a dump.
+      // A status reply is not a dump.
       if (out.length >= 12) break;
     }
   } catch (e) {
@@ -790,44 +544,26 @@ export function chromeOwnsKeys(win: ChromeWindow): boolean {
     if (!u) return true;
     const s = u.spec || "";
     // A web URL is the content script's territory ONLY once that script has
-    // actually arrived. Judging by URL alone left a dead zone that made the
-    // whole browser feel broken: from the moment a navigation starts until the
-    // content script is injected, currentURI is already the target https:// URL
-    // while no content script exists. The chrome helper deferred, nothing else
-    // answered, and every Lazyfox key was dead — for as long as the site took
-    // to send its first byte. On a slow or hanging host that is forever, and
-    // because session restore reopens the same tab it survived a relaunch.
+    // arrived. Judging by URL alone left a dead zone from navigation start to
+    // script injection (and Firefox's own error pages inherited it before
+    // about:neterror was ever currentURI).
     //
-    // The same window covers failures: while a DNS/connection error is being
-    // resolved the tab still reports the requested URL, so Firefox's own
-    // "Server Not Found" page inherited the same dead zone before about:
-    // neterror ever became currentURI.
     // THE COMMAND CENTER IS DEFERRED TO EXACTLY LIKE A WEB PAGE, and for the
-    // same reason. It is Lazyfox's own document, but it runs the same key
-    // engine a content script does — its own leader, its own popups, its own
-    // typing guard, the same shared binding table — and it reports presence the
-    // same way (`syncContent`, from the page itself, see commandcenter.ts).
+    // same reason: it runs the same key engine and reports presence the same
+    // way. This helper claiming its keys AS WELL made `;f` on the home page
+    // "work sometimes" — handled twice while the tab was in-process, not at
+    // all while out-of-process, depending only on which process the tab
+    // landed in.
     //
-    // This helper claiming its keys AS WELL is what made `;f` on the home page
-    // "work sometimes": the page's own capture listener runs first (it is
-    // inside the document) and then this window-level one ran the same binding
-    // a second time — but only while Firefox had the tab IN-PROCESS, because an
-    // out-of-process tab's keys never reach the chrome window at all. So the
-    // same keystroke was either handled twice or not at all, depending on which
-    // process the tab happened to land in.
-    // A DEVELOPER SURFACE IS NOBODY OF OURS, and that answer has to come before
-    // the URL classes below rather than out of them: devtools documents answer
-    // "not content-ownable", so the old rule claimed them. Their keys are the
-    // developer's (K4, and the user's own report — "Lazyfox does a keyboard grab
-    // on Firefox's developer tools"), so the helper says no. See
-    // shared/privileged.ts for the class and why it is a module.
+    // A DEVELOPER SURFACE IS NOBODY OF OURS, answered ahead of the URL
+    // classes: devtools documents answer "not content-ownable", so the old
+    // rule claimed them ("a keyboard grab on Firefox's devtools").
     if (isDeveloperSurface(s)) return false;
     if (!contentOwnableUrl(s)) return true;
     if (contentScriptPresent(b, win)) return false;
-    // ...AND A DOCUMENT IS EXPECTED HERE THAT HAS NOT SAID SO YET. Same answer,
-    // opposite reason: the page exists and owns these keys, it just has not
-    // reported in. Claiming them for the length of that gap is what cost the
-    // first keystroke of every navigation (see contentScriptExpected).
+    // AND a document is expected here that has not said so yet: the page
+    // exists and owns these keys, it just has not reported in. Claiming them
+    // for the gap is what cost the first keystroke of every navigation.
     return !contentScriptExpected(win);
   } catch {
     return true;
@@ -837,16 +573,11 @@ export function chromeOwnsKeys(win: ChromeWindow): boolean {
 /**
  * Is the tab in front a Firefox developer surface?
  *
- * The same question as `isDeveloperSurface`, asked of this window. It is asked by
- * the key dispatcher and not only by the ownership latch, because the latch alone
- * is not enough to keep hands off: `chromeOwnsKeys` answering false routes a key
- * into the WEB PAGE rescue, which would move the keyboard into devtools and spend
- * the leader key doing it. "Not ours" has to mean "not touched", so the
- * dispatcher refuses first and this is the predicate it refuses with.
- *
- * An unreadable or empty URL answers NO (see the note on the predicate), so a
- * window whose strip cannot be read keeps the behaviour it had before devtools
- * surfaces were named.
+ * The dispatcher asks this and not only the ownership latch, because
+ * `chromeOwnsKeys === false` routes a key into the WEB PAGE rescue, which
+ * would move the keyboard into devtools and spend the leader key doing it.
+ * "Not ours" has to mean "not touched". An unreadable strip answers NO,
+ * keeping the pre-devtools behaviour.
  */
 export function isDeveloperSurfaceTab(win: ChromeWindow): boolean {
   try {
@@ -861,18 +592,11 @@ export function isDeveloperSurfaceTab(win: ChromeWindow): boolean {
 /**
  * Can the document at this URL be owned by ITS OWN script?
  *
- * The three classes Lazyfox's content script is actually injected into (see the
- * manifest's `matches`), plus the command center, which runs the same key engine
- * and reports presence the same way. Everything else — `about:` in all its
- * forms (`about:blank`, `about:devtools-toolbox`, `about:debugging`, Firefox's
- * own error pages), `moz-extension://` (the diagnostics page, options, the
- * relay), a `view-source:` wrapper — is answered by the chrome helper AND
- * CANNOT BE ANSWERED BY ANYONE ELSE: no content script runs there, so there is
- * no page-side leader for a key to belong to.
- *
- * That is a different question from "who owns the keys right now", and it is the
- * one the leader-key rescue has to ask before it spends the key. See
- * contentOwnablePage for the measurement that forced it.
+ * The three classes the manifest injects into, plus the command center. All
+ * else (`about:` in every form, `moz-extension://`, `view-source:`) is
+ * answered by the helper AND BY NOBODY ELSE: no content script runs there.
+ * A different question from "who owns the keys right now" — see
+ * contentOwnablePage for the measurement that forced the split.
  */
 export function contentOwnableUrl(spec: string): boolean {
   const s = String(spec || "");
@@ -882,24 +606,16 @@ export function contentOwnableUrl(spec: string): boolean {
 }
 
 /**
- * The same question, asked of the tab in front.
- *
- * EXPORTED FOR THE RESCUE, and the measurement is a session: on
- * `moz-extension://…/diagnostics.html` — a document with no content script and
- * therefore helper-owned keys — pressing `;` made the helper run the WEB PAGE
- * rescue, which moved the keyboard into the page and CONSUMED the leader key.
- * The chord after it (`;x`) then did nothing at all: `x` is not a binding on its
- * own, and the leader it was meant to follow had been spent on a repair for a
- * page that has no leader to hand the keys to. Every leader chord on every
- * chrome-owned page (`about:`, the diagnostics page, options) was dead the first
- * time it was pressed, and only the first time — which is exactly the shape of
+ * The same question, asked of the tab in front, exported for the leader-key
+ * RESCUE: on `moz-extension://.../diagnostics.html` pressing `;` made the
+ * helper run the web-page rescue, which moved the keyboard into a page with
+ * no leader to hand keys to and CONSUMED the leader — so every leader chord
+ * on every chrome-owned page was dead the first press, exactly the shape of
  * "it works if I press it again".
  *
- * An unreadable or empty URL answers YES, deliberately: this predicate exists to
- * REMOVE a repair, so it may only do so for a document class positively known to
- * be one no content script can own. An unknown URL keeps the behaviour that
- * existed before this predicate did, which is the only answer that cannot turn a
- * guessed classification into the freeze the repair was written for.
+ * An unreadable or empty URL answers YES, deliberately: this predicate only
+ * REMOVES a repair, so it may do so only for a class positively known to be
+ * un-ownable. Unknown keeps the old behaviour.
  */
 export function contentOwnablePage(win: ChromeWindow): boolean {
   try {
@@ -915,28 +631,18 @@ export function contentOwnablePage(win: ChromeWindow): boolean {
 }
 
 /**
- * Whether the chrome helper may paint ANY of its own surfaces right now: the
- * which-key overlay, its popups, the resize box.
- *
- * This exists as its own predicate rather than as callers reusing
- * `chromeOwnsKeys` because the question it answers is different in kind. Key
- * dispatch asks "who handles this keypress"; painting asks "whose overlay is
- * the user allowed to be on screen". The two USED to answer the same thing, and
- * that is what produced two which-key overlays at once: the chrome helper's
- * overlay is a persistent host that only loses its `on` class on hide(), so
- * arming the leader on a chrome-owned page and then switching to a web page
- * left it lit forever while the content script painted its own over it — a
- * permanent ghost behind a working overlay.
- *
- * So ownership gates BOTH, and standing down is an explicit act rather than a
- * side effect of the next keypress: a surface you no longer own must be gone
- * now, not whenever the user next happens to type.
+ * May the helper paint ANY of its own surfaces (which-key, popups, the resize
+ * box)? Its own predicate because the question differs in kind: dispatch asks
+ * who handles this keypress; painting asks whose overlay may be on screen.
+ * They used to be one answer, which produced TWO which-key overlays: the
+ * helper's host keeps its `on` class until hide(), so arming on a chrome-owned
+ * page and switching to a web page left a permanent ghost behind the content
+ * script's overlay. Standing down is an explicit act, not a side effect of the
+ * next keypress.
  */
 export function chromeOwnsSurfaces(win: ChromeWindow): boolean {
   return chromeOwnsKeys(win);
 }
-
-
 
 export function isAboutPage(win: ChromeWindow): boolean {
   try {
@@ -954,4 +660,4 @@ export function isChromeUiFocus(win: ChromeWindow, typing: TypingChannel, e: Key
   } catch {
     return false;
   }
-}
+}

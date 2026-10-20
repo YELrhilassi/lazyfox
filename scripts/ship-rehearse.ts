@@ -31,12 +31,15 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { api, isSignedXpi, xpiVersion } from "./amo-lib.ts";
+import { api, fingerprintOf, isSignedXpi, normalizeAmoHash, xpiVersion, type AmoFileFingerprint } from "./amo-lib.ts";
+import { sha256File } from "./payload.ts";
 import { gatherWorkflowChanges, ghOauthScopes, pushScopeVerdict } from "./release-auth.ts";
+import { gitOutput } from "./ship-git.ts";
 import { mergeDevBranch } from "./ship-merge.ts";
 import {
   alreadyReleasedCheck,
   amoCredentialsCheck,
+  devBranchPushCheck,
   amoSignatureCheck,
   blocks,
   branchCheck,
@@ -46,6 +49,7 @@ import {
   ok,
   pushCredentialCheck,
   renderReport,
+  signedXpiCheck,
   skip,
   tagRefs,
   treeCheck,
@@ -177,6 +181,12 @@ export async function rehearse(opts: RehearseOptions): Promise<number> {
     );
   }
 
+  // Would the remote accept the branch this release will merge? ship pushes it
+  // BEFORE the merge (a merge commit names both parents), so a remote that has
+  // moved on is a release-stopper worth knowing about now rather than after the
+  // build. Read-only: `--dry-run` contacts the remote and changes nothing.
+  checks.push(devBranchPushCheck(gitOutput(["push", "--dry-run", "--porcelain", remote, devBranch], root), devBranch));
+
   // The push-credential guard, on the same inputs ship uses.
   try {
     const pushUrl = git(["remote", "get-url", "--push", remote], root);
@@ -195,10 +205,14 @@ export async function rehearse(opts: RehearseOptions): Promise<number> {
 
   // The AMO gate: for a listed version, `file.id` exists only after review.
   let signedFileId: string | number | null = null;
+  let amoFingerprint: AmoFileFingerprint | null = null;
   if (version) {
     try {
       const res = await api(`/addons/addon/${encodeURIComponent(GUID)}/versions/${encodeURIComponent(version)}/`);
       signedFileId = res.json?.file?.id ?? res.json?.file_id ?? null;
+      // What AMO says the published bytes are — the claim the built xpi is
+      // checked against below, so the rehearsal proves byte-identity too.
+      amoFingerprint = fingerprintOf(res.json?.file);
       checks.push(amoSignatureCheck(res.status, signedFileId, version, res.json?.file?.status));
       if (res.json?.reviewed) console.log(`[rehearse] AMO reviewed ${version} at ${res.json.reviewed}.`);
     } catch (e) {
@@ -321,13 +335,24 @@ export async function rehearse(opts: RehearseOptions): Promise<number> {
             : fail("release artifacts", "scripts/check-dist.ts failed in the scratch worktree")
         );
 
+        // Not "is it a signed xpi of the right version" but "is it the file AMO
+        // published" — the same check ship runs, so a release cannot carry a
+        // locally built lookalike that merely passes the version test.
         try {
-          const buf = fs.readFileSync(path.join(tree, "dist", `lazyfox2-${version}.xpi`));
-          if (isSignedXpi(buf) && xpiVersion(buf) === version) {
-            checks.push(ok("signed xpi", `dist/lazyfox2-${version}.xpi is signed and stamped ${version}`));
-          } else {
-            checks.push(fail("signed xpi", `dist/lazyfox2-${version}.xpi is ${isSignedXpi(buf) ? `version ${xpiVersion(buf)}` : "unsigned"}`));
-          }
+          const built = path.join(tree, "dist", `lazyfox2-${version}.xpi`);
+          const buf = fs.readFileSync(built);
+          const signed = isSignedXpi(buf);
+          checks.push(
+            signedXpiCheck({
+              version,
+              signed,
+              xpiVersion: signed ? xpiVersion(buf) : null,
+              localHash: sha256File(built),
+              localSize: buf.length,
+              amoHash: normalizeAmoHash(amoFingerprint?.hash),
+              amoSize: amoFingerprint?.size ?? null,
+            })
+          );
         } catch (e) {
           checks.push(fail("signed xpi", `could not read it: ${reason(e)}`));
         }
