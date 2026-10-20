@@ -1660,3 +1660,94 @@ after the channel answers, and the synthetic press still runs when it does not.
   (a detached control bar, a full-width bottom strip below the video). Those keep
   the synthetic-first route; if one ever reports this failure, the answer is to
   widen `insideMediaSurface`, not to lower `canEscalate`.
+
+## 17. The eighth field report (2026-10-20): hints that leaked out from behind an overlay
+
+> "some hints leak and show from behind the elements that are in front of them.
+> like if there is a popup or a overlay i see hints that are behind it"
+
+This one is not a missing label, it is a label in the wrong place. The hint
+labels live in a host appended to `documentElement` with `position:fixed` and
+`z-index:2147483647` — the top layer, above every page stacking context by
+construction (that is what makes them readable over sticky headers and video
+players, §11). The consequence was never stated: a label for a control the page
+has just COVERED WITH A DIALOG is painted on top of that dialog, pointing at
+something the dialog is hiding.
+
+§2.3 is where the older confusion lives. Occlusion was made a label state rather
+than a veto — a covered control keeps its key and its label goes dimmed — and
+that is still right for the case it was written for: a sticky bar, a scrim band, a
+player's control bar. The control is on the SAME surface the user is looking at,
+the label says "this one is here, something is painted over it", and the key
+works because activation clicks the ELEMENT, not the point under the label.
+
+A dialog is not that. It is a **separate surface**: the page replaced the screen,
+and the controls behind it are not part of what the user is looking at. Two
+different questions were being answered by one answer.
+
+### 17.1 The rule: `sheetOver()` — a separate surface, decided by geometry
+
+`probe.ts` gains `sheetOver(el)`: the surface hiding this control when it is
+hidden BEHIND one, or null when it is merely obstructed.
+
+* **Reachability first.** A control the pointer can still hit is not behind
+  anything, whatever is on the page.
+* **What the pointer sees.** `deepHit` at the control's centre (shadow roots
+  pierced, same door as collection), then the panel that node belongs to, walked
+  up to 12 composed ancestors.
+* **A panel is another surface** when it is POSITIONED (fixed/absolute/sticky, so
+  not in the page's flow), it actually covers the control's box, and it either
+  covers a quarter of the viewport or is a dialog/popover/modal by tag or role.
+  The control's own container is excluded by `contains`, which is what keeps a
+  fixed app shell (`position:fixed; inset:0` around the whole page) from reading
+  as a modal over its own content.
+* **Bounded and non-throwing**: one hit test, at most twelve ancestor steps,
+  computed style and rect only for positioned nodes, every read wrapped. A
+  hostile element answers "no" and keeps the ordinary dimmed label.
+
+Every threshold is a judgement, and they are written here rather than implied: a
+quarter of the viewport is what separates a dialog, a modal sheet, a lightbox and
+a product popup from a sticky header, a toast, a badge and the small scrim band
+the fixtures use. `sheetOver` is injectable into `selectHintables`, so the POLICY
+is pinned in `scripts/test/hints-occlusion.test.ts` without painting a modal in a
+browser, and the geometry is pinned end-to-end by the fixture below.
+
+### 17.2 Where it is enforced — twice, on purpose
+
+* **At selection** (`select.ts`): a candidate that fails `reachable()` and whose
+  cover is a sheet is dropped and counted as `behind`. Not `hidden` (it is
+  visible) and not `covered` (that word means dimmed). It does not take a batch
+  slot, so it cannot inflate `more` and make the "`]` for the next batch" toast
+  lie. The diagnostics page grew the number ("rejected: … N behind a dialog") and
+  its probe table names the tag that is over the control.
+* **On the sweep** (`session.ts`): the user is already in hints mode and the page
+  opens a dialog under them. A pass re-anchors the batch on DOM changes, and a
+  label whose control is now behind a sheet no longer counts as a survivor — it
+  is dropped, its key is released, and the dialog's own controls (hinted as their
+  own surface, since the pointer can reach them) keep theirs.
+
+So the leak is closed for both directions: the batch built over a dialog, and the
+batch that a dialog arrives under. Pinned by
+`content/hints › a dialog's own controls are hinted and the ones behind it are
+not` (fixture `/dialog`: a full-viewport scrim plus a fixed panel, both states
+reachable on one URL) and `content/hints › a dialog opened under a live batch
+takes its labels away`. The first asserts WHICH elements got keys — the page's
+three controls are hintable with the panel closed and gone when it is open, while
+the dialog's three are hinted — and then that every remaining label's position is
+inside the dialog's box, because a leaked label is the report and a missing key
+alone would not reproduce it. The second is the same page with hints already up.
+
+### 17.3 What is NOT claimed here
+
+* A full-viewport SCRIM with no dialog (an interstitial "are you sure") reads as a
+  surface too, and hides the hints behind it. That is deliberate: nothing behind
+  it can be pressed, and the label would sit on the scrim. A small scrim band does
+  not, and those controls stay dimmed and clickable (§2.3 unchanged).
+* A dialog that renders its controls as a shadow-DOM or iframe sibling outside the
+  panel is judged by the same geometry as everything else: if the control is
+  reachable, it is hinted; if the panel covers it, it is not.
+* The dimmed state is still reachable for what it was for. Nothing about this
+  change makes a sticky header, a cookie band or a player's control bar drop a
+  control — `content/hints › a visible aria-hidden link is hinted; hidden, inert
+  and pointer-dead ones are not` keeps asserting `covered-link` is hinted AND
+  dimmed AND that its key still activates it.

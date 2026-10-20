@@ -3,7 +3,7 @@
 // It re-runs the ordinary collection and the ordinary viewport pass with
 // counters attached, so what it reports is exactly what `;f` would do — not a
 // second implementation that drifts. Nothing here clicks anything.
-import { rectCenter, reachable, shortName, deepHit, inViewport, hintVisible } from "./probe";
+import { rectCenter, reachable, shortName, deepHit, inViewport, hintVisible, sheetOver } from "./probe";
 import { collectHintables, type CollectStats } from "./collect";
 import { selectHintables } from "./select";
 import { createVisibilityPass } from "./visibility";
@@ -18,7 +18,7 @@ export interface HintDiagnosticsSnapshot {
    * a state of the batch, not a rejection — the key still fires.
    */
   covered: number;
-  rejected: { hidden: number; duplicate: number };
+  rejected: { hidden: number; duplicate: number; behind: number };
   /**
    * In view, visible, and left out because the batch was full. `;f` says this
    * number out loud; the page shows it so "why is that row not hinted" has an
@@ -85,9 +85,17 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     const center = rectCenter(el);
     const hit = vis ? deepHit(center[0], center[1]) : null;
     const reach = vis && reachable(el);
+    // Covered by a SEPARATE surface (a dialog, a popup sheet): the label is not
+    // drawn at all, because it would be drawn on top of that surface.
+    const sheet = reach ? null : sheetOver(el);
     let reason: string;
     if (!vis) reason = "outside the viewport (page to it with ])";
     else if (reach) reason = "clickable here";
+    else if (sheet)
+      reason =
+        "behind " +
+        String(sheet.tagName || "?").toLowerCase() +
+        " (a dialog or overlay) \u2014 not hinted";
     else
       reason =
         "covered by " +
@@ -108,7 +116,7 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     candidates: pool.length,
     hinted: sel.kept.length,
     covered: sel.covered,
-    rejected: { hidden: sel.hidden, duplicate: sel.duplicate },
+    rejected: { hidden: sel.hidden, duplicate: sel.duplicate, behind: sel.behind },
     more: sel.more,
     truncated: stats.truncated,
     truncatedBy: stats.truncatedBy,
