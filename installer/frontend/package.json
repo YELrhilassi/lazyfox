@@ -1,7 +1,7 @@
 {
   "name": "lazyfox-installer-ui",
   "private": true,
-  "version": "0.5.9",
+  "version": "0.5.10",
   "type": "module",
   "description": "The Lazyfox installer window: React + Vite + Tailwind, embedded in the Go binary and hosted by Wails.",
   "scripts": {
