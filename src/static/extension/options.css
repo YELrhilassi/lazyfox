@@ -1,6 +1,16 @@
-/* Lazyfox settings (options) page. Same design tokens and font stack as the
-   command center and setup pages; monospace only for key caps and raw
-   component values. */
+/* Lazyfox settings (options) page — two-pane layout: a sticky section nav on
+   the left, the settings cards on the right. Same design tokens and font
+   stack as the command center; monospace only for key caps and raw values.
+
+   The HTML structure the layout depends on (all ids are the JS contract and
+   must not change):
+     .wrap
+       header.head
+       .layout
+         nav#settingsNav.nav        — anchor links, .active follows the scroll
+         .content                   — the section cards
+       .actions (sticky save bar)
+     p.foot */
 
 :root {
   --bg: #0e1116; --bg2: #161922; --bg3: #1d2130; --panel: #1a1e2a;
@@ -8,13 +18,14 @@
   --green: #8fbf5e; --red: #e07a7a; --border: #262b3d; --border2: #343b54; --sel: #2b3150;
 }
 * { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 body {
   margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  padding: 32px 22px 60px;
+  padding: 32px 22px 96px;
 }
-.wrap { max-width: 760px; margin: 0 auto; }
-.head { margin-bottom: 20px; position: relative; }
+.wrap { max-width: 980px; margin: 0 auto; }
+.head { margin-bottom: 24px; position: relative; }
 .logo { height: 48px; overflow: hidden; margin-bottom: 12px; }
 .logo img { height: 100%; width: auto; object-fit: contain; }
 .head h1 { font-size: 20px; margin: 0 0 3px; color: var(--fg); font-weight: 680; }
@@ -23,10 +34,43 @@ body {
   border: 1px solid var(--border2); border-radius: 7px; padding: 6px 12px; background: var(--bg2);
 }
 .back:hover { border-color: var(--accent); color: var(--accent); }
-.sub { color: var(--muted); font-size: 12px; max-width: 660px; line-height: 1.6; margin: 0 0 24px; }
+.sub { color: var(--muted); font-size: 12px; max-width: 700px; line-height: 1.6; margin: 0; }
+
+/* ---- the two panes ------------------------------------------------------ */
+.layout { display: flex; gap: 26px; align-items: flex-start; }
+.nav {
+  flex: none; width: 168px; position: sticky; top: 16px;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg2);
+}
+.nav-cap {
+  font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--muted); padding: 2px 10px 8px; font-weight: 700;
+}
+.nav a {
+  color: var(--sub); text-decoration: none; font-size: 13px; line-height: 1.4;
+  padding: 6px 10px; border-radius: 7px; border: 1px solid transparent; outline: none;
+}
+.nav a:hover { color: var(--fg); background: var(--bg3); }
+.nav a.active { color: var(--accent); background: var(--sel); }
+.content { flex: 1; min-width: 0; }
+
+/* Narrow window: the nav becomes a horizontal chip row on top. */
+@media (max-width: 780px) {
+  .layout { flex-direction: column; gap: 14px; }
+  .nav {
+    position: sticky; top: 0; z-index: 5; width: auto; flex-direction: row; flex-wrap: wrap;
+    gap: 4px; padding: 6px;
+  }
+  .nav-cap { display: none; }
+  .nav a { padding: 5px 9px; font-size: 12px; }
+}
+
+/* ---- cards -------------------------------------------------------------- */
 .card {
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   padding: 20px 22px; margin-bottom: 18px;
+  scroll-margin-top: 24px;
 }
 .card h2 {
   font-size: 11px; margin: 0 0 4px; color: var(--accent); letter-spacing: .07em; text-transform: uppercase;
@@ -35,12 +79,14 @@ body {
 .card > h2 + .desc { margin-top: 6px; }
 .card .desc { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 2px 0 16px; }
 .field { margin-bottom: 14px; }
+.field:last-child { margin-bottom: 0; }
 .field label.r { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: var(--sub); cursor: pointer; }
 .field label.r input { margin-top: 3px; accent-color: var(--accent); width: 15px; height: 15px; }
 .field label.lbl { display: block; font-size: 12px; color: var(--sub); margin-bottom: 6px; }
 input[type="text"], select {
   padding: 8px 12px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border2);
   border-radius: 7px; font-family: inherit; font-size: 13px; outline: none; width: 260px;
+  transition: border-color .12s ease;
 }
 input[type="text"]:focus, select:focus { border-color: var(--accent); }
 .kbd {
@@ -52,17 +98,25 @@ input[type="text"]:focus, select:focus { border-color: var(--accent); }
 .kv .lbl { color: var(--sub); }
 .kv .val { color: var(--fg); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
 .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
-.actions { display: flex; align-items: center; gap: 14px; margin-top: 4px; }
+/* ---- the save bar -------------------------------------------------------- */
+.actions {
+  display: flex; align-items: center; gap: 14px; margin-top: 4px;
+  position: sticky; bottom: 0; z-index: 4;
+  padding: 16px 0 12px;
+  background: var(--bg);
+}
 #save {
   padding: 10px 26px; background: var(--accent); color: #0b0e18;
   border: none; border-radius: 7px; font-family: inherit; font-size: 13px; font-weight: 650; cursor: pointer;
+  box-shadow: 0 4px 18px rgba(109, 143, 219, .25);
 }
 #save:hover { filter: brightness(1.07); }
+#save:focus-visible { outline: 2px solid var(--sub); outline-offset: 2px; }
 #status { color: var(--green); font-size: 12px; }
 #chStatus { color: var(--green); font-size: 12px; }
 .foot { margin-top: 20px; color: var(--muted); font-size: 12px; line-height: 1.8; }
 
-/* Quick-launch apps editor */
+/* ---- quick-launch apps editor ------------------------------------------- */
 .app-row {
   display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--border);
   border-radius: 8px; margin-bottom: 8px; background: var(--bg2);
@@ -80,7 +134,7 @@ input[type="text"]:focus, select:focus { border-color: var(--accent); }
 }
 .app-row .rm:hover { color: var(--red); }
 
-/* Dark mode + reader mode cards: raw text fields and the per-site rule rows.
+/* ---- dark mode + reader mode fields --------------------------------------
    A rule corpus is pasted text, so the textarea is the one input on this page
    that is monospace by meaning rather than for a key cap. */
 textarea {

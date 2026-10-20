@@ -236,7 +236,7 @@ func TestSessionBindings(t *testing.T) {
 	}
 }
 
-// TestCategoryBindings pins the category heads (`;W`, `;Z`, `;K`, `;Y`). A
+// TestCategoryBindings pins the category heads (`;W`, `;Z`, `;K`, `;Y`, `;C`). A
 // category head is not a binding on its own — it arms a capture for a sub-key —
 // so what matters is that the label NAMES the sub-keys: the overlay is where the
 // layout is learned, and a row reading only "Window & layout" would advertise a
@@ -252,9 +252,14 @@ func TestCategoryBindings(t *testing.T) {
 		"Z": {"i", "o", "r"},
 		"K": {"c", "e"},
 		// Reading & theme. `d` is the per-site toggle (the frequent one), `g` the
-		// global default, `e` the engine escape hatch and `x` the undo — see the
-		// comment on the row for why the family is a category and not four keys.
-		"Y": {"d", "g", "e", "x"},
+		// global default, `e` the engine escape hatch, `x` the undo and `p` the
+		// color-scheme preset cycle — see the comment on the row for why the
+		// family is a category and not five keys.
+		"Y": {"d", "g", "e", "x", "p"},
+		// Screenshot. Two leaves, not three: Firefox's native picker already
+		// owns "select a region" (`;C f` arms it for a full page), and the
+		// preview/copy/download flow below that is the browser's own.
+		"C": {"f", "v"},
 	}
 	found := map[string][]string{}
 	for _, r := range Keymap {

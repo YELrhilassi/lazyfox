@@ -13,6 +13,7 @@ import { LeaderController, isCancel } from "../../shared/leader";
 import { idleSignal, type LeaderSignal } from "../../shared/leadersignal";
 import { specToText } from "../../shared/keymap";
 import { createThrottle } from "../../shared/throttle";
+import { createConfigWriter } from "./configwrite";
 import {
   cancelHold,
   createHoldWatchdog,
@@ -32,7 +33,7 @@ import {
 import { mirror, mirrorFlag } from "../../shared/observability";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../../shared/popups";
 import { send } from "../../shared/protocol";
-import { readKey, vConfig } from "../store";
+import { readKey, writeKey, vConfig } from "../store";
 import type { Config } from "../../shared/types";
 import { collectPageReport } from "./diagnostics";
 import { createLinkHints, focusFirstInput } from "./hints";
@@ -93,17 +94,31 @@ import { createFieldPark } from "./parkrule";
     if (!darkVerdicts.send(publishedVerdict)) return;
     void send("syncDark", publishedVerdict);
   }
+
+  // THE DARK WRITE, MADE RELIABLE (configwrite.ts). A `;Y` toggle used to send
+  // its config write fire-and-forget, so a background that did not answer in
+  // time silently dropped the change and the next launch came back
+  // unconfigured — the reported "I have to set it every time I launch". The
+  // writer asks DID IT LAND: ack, one retry, then a direct storage write from
+  // this context, and a toast only when even storage refuses.
+  const writeConfig = createConfigWriter({
+    messageWrite: (cfg) => send("setConfig", { config: cfg }),
+    directWrite: (cfg) => writeKey("config", cfg),
+    onFailed: () =>
+      toast("config change could not be saved — storage is not answering"),
+  });
   const darkMode = createDarkMode({
     doc: document,
     win: window,
     url: () => location.href,
     getConfig: () => config,
     setConfig: (next) => {
-      // Optimistic locally, then through the background: the background
-      // caches config, and writing storage behind its back lets the copies
-      // disagree (docs/FINDINGS.md).
+      // Optimistic locally, then confirmed through the background: the
+      // background caches config, and writing storage behind its back lets the
+      // copies disagree (docs/FINDINGS.md). The writer carries the ack/retry/revert
+      // contract above so a dropped reply can no longer be a dropped setting.
       config = next;
-      void send("setConfig", { config: next });
+      void writeConfig(next);
     },
     toast,
     // "Already dark" pages report `native` even though we paint nothing —
@@ -225,6 +240,10 @@ import { createFieldPark } from "./parkrule";
       void hints.start();
     },
     focusFirstInput: focusFirstInput,
+    // The confirmed config write (ack / retry / direct storage), shared with
+    // the dark toggles: an ops-level toggle must survive a background that
+    // did not answer in time, exactly like a `;Y` write.
+    writeConfig: (next) => void writeConfig(next),
     // Find count relayed to the chrome helper's bar — content -> background
     // -> helper, same path as the dark verdict. count -1 = widget closed.
     setFindState: (s) => {
@@ -287,16 +306,22 @@ import { createFieldPark } from "./parkrule";
   // document had no script for the rest of its life.
   const docId =
     String(Date.now()) + "-" + Math.random().toString(36).slice(2, 10);
-  const reportPresence = (active: boolean) => {
+  const reportPresence = (active: boolean, republishDark = false) => {
     let href = "";
     try {
       href = location.href;
     } catch (e) {
       // ignore — an unreadable location simply reports no URL
     }
-    // The dark verdict rides along on the way IN only: a leaving document
-    // does not describe the next page's verdict.
-    if (active) republishDarkVerdict();
+    // The dark verdict rides ONLY on the arrivals that DISPLACE the surface
+    // the helper's bar describes: boot, pageshow (bfcache restore), a helper
+    // restart. The periodic re-assert below used to force one too — every
+    // answered key reset the latch and re-sent a verdict nobody changed, so
+    // the relay slot filled with darkState pushes and the bar's repaints
+    // arrived late and in bursts: the reported "the dark-mode indicator keeps
+    // flashing sometimes". An unchanged verdict needs no message; a new page
+    // always boots with a fresh one.
+    if (active && republishDark) republishDarkVerdict();
     return send("syncContent", { active, url: href, doc: docId });
   };
   // The report is RE-ASSERTED, not sent once (docs/KEYBOARD-FREEZE.md): a
@@ -312,7 +337,7 @@ import { createFieldPark } from "./parkrule";
   const reassertPresence = (): void => {
     if (!presenceThrottle.allow()) return;
     try {
-      void Promise.resolve(reportPresence(true))
+      void Promise.resolve(reportPresence(true, false))
         .then((res: { ok?: boolean } | null | undefined) => {
           if (!res || res.ok === false) presenceThrottle.reset();
         })
@@ -378,7 +403,10 @@ import { createFieldPark } from "./parkrule";
   let holdInitInFlight: Promise<void> | null = null;
   const initializeHoldFromPresence = (): Promise<void> => {
     if (holdInitInFlight) return holdInitInFlight;
-    holdInitInFlight = reportPresence(true)
+    // Boot/pageshow arrival: the verdict rides along, so a bfcache restore or
+    // a helper restart re-shows the right dark segment without waiting for a
+    // verdict change.
+    holdInitInFlight = reportPresence(true, true)
       .then(async (r) => {
         // A failed startup message must not disable persistence; pageshow
         // retries the handshake if the background restarted.
@@ -452,6 +480,8 @@ import { createFieldPark } from "./parkrule";
   leaderActions["darkCycleGlobal"] = () => darkMode.cycleGlobal();
   leaderActions["darkEngineToggle"] = () => darkMode.toggleEngine();
   leaderActions["darkResetSite"] = () => darkMode.resetSite();
+  // ;Y p — the color-scheme picker, on the same write path as the rest.
+  leaderActions["darkCyclePalette"] = () => darkMode.cyclePalette();
 
   /* ==================== scroll keys ==================== */
 

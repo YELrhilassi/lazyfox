@@ -284,6 +284,16 @@
     "scripts/test/startup-resume.test.ts",
     "scripts/test/session-autosave.test.ts",
     "scripts/test/hints-occlusion.test.ts",
+    // hints-collect-budget and hints-labels are the same shape as the hints
+    // files above: they drive collect.ts and overlay.ts — DOM-typed modules
+    // (Element, window, document, DOMRect) — with synthetic elements, and both
+    // modules are typechecked by tsconfig.json, which owns the browser tree.
+    // Listed rather than left out silently because they pin the rules behind
+    // the newest field report: that collection stops at the same node on every
+    // machine, and that a visible control's label may not be lost to a
+    // collision.
+    "scripts/test/hints-collect-budget.test.ts",
+    "scripts/test/hints-labels.test.ts",
     "scripts/test/home-grid-keys.test.ts"
   ],
   "compilerOptions": {

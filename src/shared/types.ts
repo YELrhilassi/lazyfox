@@ -58,6 +58,13 @@ export interface DarkConfig {
   sepia: number;
   grayscale: number;
   /**
+   * The color scheme preset in force, by id (`shared/darkpalettes.ts`). A
+   * picker rather than a second source of truth: choosing one writes the
+   * three poles below, and a user who then tweaks one colour is customizing
+   * their scheme. Unknown ids fall back to the table's first entry.
+   */
+  palette: string;
+  /**
    * The per-site fix corpus, in Dark Reader's plain-text format, as EDITABLE
    * TEXT. It ships populated (shared/dark-fixes.ts) and a user may paste in a
    * list written for that project, because the parser reads its format.
@@ -398,6 +405,25 @@ export interface PageReport {
      */
     covered: number;
     rejected: { hidden: number; duplicate: number };
+    /**
+     * In view, visible, and left out because the batch was full. `;f` says the
+     * number out loud; the diagnostics page shows it so "that row has no key"
+     * has an answer (the cap, and `]` reaches it) instead of a guess.
+     */
+    more: number;
+    /**
+     * The expensive tier did not finish the document. The selector matches are
+     * complete, but the cursor:pointer and media-surface tier went silent
+     * partway — so a missing label may simply be a missing candidate. The bound
+     * is `truncatedBy`: `probes` is the deterministic node budget (the normal
+     * case on a huge page), `time` the emergency wall-clock stop, `deferred` an
+     * over-full off-screen list, `scan` the cheap tier's MAX_SCAN.
+     */
+    truncated: boolean;
+    truncatedBy: "probes" | "time" | "deferred" | "scan" | null;
+    /** Nodes the expensive tier probed, and the deterministic budget it had. */
+    probed: number;
+    probeCap: number;
     probes: HintProbe[];
     shadowRoots: number;
     pointerControls: number;

@@ -5,6 +5,7 @@ import type { ChromeHotkeys, Config, DarkConfig, QuickApp, ReaderConfig } from "
 // compares the stored config against the product's own merge, and a runtime
 // import that resolves only under esbuild makes `npm run e2e` die at startup.
 import { SHIPPED_FIXES } from "./dark-fixes.ts";
+import { DEFAULT_PALETTE } from "./darkpalettes.ts";
 
 // Factory for the default quick-launch apps. The full desktop set (Spotify,
 // YouTube, X, GitHub, Reddit, Gmail, Netflix) is enabled by default so the
@@ -34,6 +35,7 @@ export function defaultApps(): QuickApp[] {
 const DARK_DEFAULTS: DarkConfig = {
   mode: "auto",
   engine: "auto",
+  palette: DEFAULT_PALETTE,
   background: "#16161e",
   foreground: "#c0caf5",
   accent: "#7aa2f7",

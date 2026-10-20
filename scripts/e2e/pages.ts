@@ -601,6 +601,9 @@ html,body{margin:0}
      but the user must at least be TOLD that the page ignored the click. */
   #deaf { display:block; width:120px; height:34px; margin-top:14px; background:#333;
           color:#eee; border:0; font:13px system-ui,sans-serif; cursor:pointer; }
+  /* A control OUTSIDE the player's box (see the body): the synthetic route. */
+  #plain { display:block; width:120px; height:34px; margin-top:14px; background:#333;
+           color:#eee; border:0; font:13px system-ui,sans-serif; cursor:pointer; }
   /* A second, genuinely decorative media wrapper with nothing inside it: it must
      STILL be hintable (that is what the media exemption is for). */
   #lonely { width:120px; height:70px; margin-top:18px; cursor:pointer; background:#222; }
@@ -629,6 +632,11 @@ html,body{margin:0}
        refuses UNtrusted clicks) was that shape, because no real press could
        ever reach it. -->
   <button id="stone" data-id="stone" style="display:block;width:120px;height:34px;margin-top:14px;background:#333;color:#eee;border:0;font:13px system-ui,sans-serif;cursor:pointer">No listener at all</button>
+  <!-- OUTSIDE the player's box: the boundary of the real-press rule. A control
+       here keeps the ordinary synthetic sequence (escalate.pressForReal asks
+       about the PLAYER's overlay, not about buttons in general), so this is what
+       the event-state assertions are measured on. -->
+  <button id="plain" data-id="plain">Plain control</button>
 
   <div id="lonely" data-id="lonely"><img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='70'%3E%3Crect width='120' height='70' fill='%23222'/%3E%3C/svg%3E"></div>
 </main>
@@ -640,7 +648,7 @@ html,body{margin:0}
   // to tell a trust problem apart from a press-state problem.
   window.__clicks = [];
   (function () {
-    var b = document.getElementById("skipad");
+    var b = document.getElementById("plain");
     ["pointerover","mouseover","pointermove","pointerdown","mousedown","pointerup","mouseup","click"].forEach(function (t) {
       b.addEventListener(t, function (e) {
         window.__clicks.push({
@@ -976,6 +984,103 @@ html,body{margin:0}
 </script>
 </body></html>`,
   },
+  // THE AD PLAYER: the exact widget shape a video site's "Skip ad" control has,
+  // and the one the synthetic press cannot satisfy.
+  //
+  // Measured on youtube.com (2026-10-20): `button.ytp-skip-ad-button` sits inside
+  // `#movie_player`, its href-less <button> lights up a PRESSED CLASS on any
+  // pointerdown — trusted or not — and the action itself (the ad going away) is
+  // gated on `event.isTrusted`. The page also mutates continuously while the ad
+  // plays (a progress bar, a countdown), so the page-level half of the verdict is
+  // never silent on a player.
+  //
+  // That combination is what the engine gets wrong, and it is why this fixture is
+  // here rather than an idealized one: a cosmetic flip on the TARGET satisfies the
+  // escalation trigger (`targetSignal`), so the privileged retry never fires, and
+  // the press is reported as a success while nothing happened. The /ytcard ad does
+  // not model it (its button acts on the untrusted click), so nothing in the suite
+  // did either.
+  "/adplayer": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>ADPLAYER</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:#0f0f0f; color:#eee; }
+  main { padding:14px; }
+  #movie_player { position:relative; width:640px; height:360px; background:#000; overflow:hidden; }
+  #movie_player video { display:block; width:100%; height:100%; background:#111; }
+  .ytp-ad-player-overlay { position:absolute; inset:0; pointer-events:none; z-index:3; }
+  .ytp-skip-ad { position:absolute; right:12px; bottom:66px; pointer-events:auto; z-index:4; }
+  .ytp-skip-ad-button { display:flex; align-items:center; gap:6px; padding:8px 14px; border:0;
+    border-radius:4px; background:#fff; color:#111; font:600 13px system-ui,sans-serif; cursor:pointer; }
+  /* The pressed state the real widget enters on ANY press, before it decides
+     whether the press counts. Cosmetic: it changes nothing about the ad. */
+  .ytp-skip-ad-button--clicked { transform:scale(.97); background:#eee; }
+  #adstate { position:absolute; left:8px; top:8px; z-index:5; font:12px system-ui,sans-serif;
+    background:rgba(0,0,0,.6); padding:2px 6px; border-radius:4px; }
+  #ticker { padding:10px 14px; color:#888; font-size:12px; }
+  #title-link { display:block; margin:10px 14px; color:#8ab4f8; }
+</style></head>
+<body>
+<main>
+  <div id="movie_player" class="html5-video-player ad-showing">
+    <video id="vid" muted playsinline></video>
+    <div id="adslot" class="ytp-ad-player-overlay">
+      <div id="adstate">ad playing</div>
+      <div class="ytp-skip-ad" id="skip-ad:1">
+        <button class="ytp-skip-ad-button" id="skip-button:2" data-id="skip-ad">Skip ad</button>
+      </div>
+      <!-- A player TOGGLE, drawn in the same overlay: the control that proves
+           the real press is sent ONCE. A second press would flip it back, so
+           "aria-pressed went true" is only true of a single press. -->
+      <div class="ytp-skip-ad" id="mute-slot:4" style="right:auto;left:12px;bottom:66px">
+        <button class="ytp-skip-ad-button" id="mute-button:3" data-id="mute" aria-pressed="false">Mute</button>
+      </div>
+    </div>
+  </div>
+  <a id="title-link" href="#elsewhere" data-id="title-link">A link outside the player</a>
+  <div id="ticker">0</div>
+</main>
+<script>
+  window.__skipSeen = [];
+  var btn = document.getElementById("skip-button:2");
+  var player = document.getElementById("movie_player");
+  var state = document.getElementById("adstate");
+  // The cosmetic flip: the real control shows a pressed state for any press.
+  ["pointerdown", "mousedown"].forEach(function (t) {
+    btn.addEventListener(t, function () {
+      btn.classList.add("ytp-skip-ad-button--clicked");
+      window.__skipSeen.push({ type: t, trusted: false });
+    });
+  });
+  // The action: gated on trust, like YouTube's. The ad only goes away for a
+  // genuine press.
+  btn.addEventListener("click", function (e) {
+    window.__skipSeen.push({ type: "click", trusted: !!e.isTrusted });
+    if (!e.isTrusted) return;
+    player.classList.remove("ad-showing");
+    state.textContent = "ad skipped";
+    document.title = "AD-SKIPPED";
+  });
+  // A player mutates continuously while an ad plays: a progress line and a
+  // clock. This is the page-level half of the verdict, never silent here.
+  var n = 0;
+  setInterval(function () {
+    n++;
+    document.getElementById("ticker").textContent = String(n);
+  }, 60);
+  // A TOGGLE: every click flips it. A route that presses twice leaves it back
+  // where it started, which is what this one is here to catch.
+  var mute = document.getElementById("mute-button:3");
+  window.__mutePresses = 0;
+  mute.addEventListener("click", function () {
+    window.__mutePresses++;
+    mute.setAttribute("aria-pressed", mute.getAttribute("aria-pressed") === "true" ? "false" : "true");
+  });
+  window.__adOn = function () { return player.classList.contains("ad-showing"); };
+  window.__skipClass = function () { return btn.className; };
+</script>
+</body></html>`,
+  },
   // A TEXT FIELD page, for the keys that get you OUT of one. Escape is
   // contested: the page binds it to close its own dialog (with a form), the
   // exact accident a user hits leaving a field. The page records what it heard,
@@ -1161,6 +1266,67 @@ html,body{margin:0}
   document.getElementById("gated").addEventListener("click", function (e) {
     if (e.isTrusted) document.title = "GATED-OK";
   });
+</script>
+</body></html>`,
+  },
+  // THE TRUNCATION SHAPE. A re-collect walks the document on a wall-time budget
+  // (12ms) and a node cap (MAX_SCAN), and its EXPENSIVE tier — cursor:pointer
+  // controls and media surfaces — is what expires first. A control that only the
+  // expensive tier can collect (a bare <video> big enough to be a media surface)
+  // therefore disappears from every refreshed pool once something walks-slow
+  // before it in the DOM. The live sweep measured exactly this on github.com
+  // mid-load: the video was hinted at `;f`, still on screen a few seconds later,
+  // and its label was gone. This fixture makes the same shape deterministic:
+  // first pass cheap (so the video IS labelled), then a cursor:pointer wall
+  // inserted BEFORE the video in document order — each wall node pays the
+  // expensive per-node cursor probe, so every refreshed walk exhausts its
+  // budget inside the wall, truncates, and drops the video from the pool. What
+  // the session must then NOT do is swap the batch and tear the label down;
+  // see session.ts mergeWithSurvivors.
+  "/truncrefresh": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>TRUNCREFRESH</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; color:#111; background:#fff; }
+  main { padding:24px; }
+  main a { display:block; margin:14px 0; }
+  .bulkrow { cursor:pointer; width:400px; height:1px; padding:0; font-size:8px; }
+  /* A media surface in its own right: big enough for the AREA rule (see
+     selectors.ts MEDIA_SURFACE_MIN_*), so it is hintable with no text, no role
+     and no cursor of its own — and hintable ONLY through the expensive tier. */
+  #bigvideo { position:fixed; right:20px; bottom:20px; width:500px; height:260px; background:#222; }
+</style></head>
+<body>
+<main>
+  <a href="#w1" data-id="keep1">Keep one</a>
+  <a href="#w2" data-id="keep2">Keep two</a>
+  <a href="#w3" data-id="keep3">Keep three</a>
+  <a href="#w4" data-id="keep4">Keep four</a>
+  <main id="vwrap">
+    <video id="bigvideo" data-id="bigvideo" muted></video>
+  </main>
+</main>
+<script>
+  // Inserted BEFORE the video in document order. Every refreshed collect after
+  // this one pays a cursor probe per wall node before it can reach the video,
+  // so the refreshed walks exhaust their budget inside the wall and truncate.
+  window.__bulkUp = function () {
+    if (document.getElementById("bulkwall")) return 0;
+    var wall = document.createElement("div");
+    wall.id = "bulkwall";
+    wall.style.cssText = "position:absolute;left:0;top:5000px;width:400px;height:760px;overflow:hidden";
+    var frag = document.createDocumentFragment();
+    var N = 3000; // past the 12ms walk budget on any box that has to do real work
+    for (var i = 0; i < N; i++) {
+      var d = document.createElement("div");
+      d.className = "bulkrow";
+      d.textContent = "row " + i;
+      frag.appendChild(d);
+    }
+    wall.appendChild(frag);
+    document.getElementById("vwrap").parentNode.insertBefore(wall, document.getElementById("vwrap"));
+    return N;
+  };
 </script>
 </body></html>`,
   },

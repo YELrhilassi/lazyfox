@@ -19,10 +19,29 @@ export interface HintDiagnosticsSnapshot {
    */
   covered: number;
   rejected: { hidden: number; duplicate: number };
+  /**
+   * In view, visible, and left out because the batch was full. `;f` says this
+   * number out loud; the page shows it so "why is that row not hinted" has an
+   * answer that is not a guess.
+   */
+  more: number;
+  /**
+   * The expensive tier did not finish the document. The SELECTOR matches are
+   * complete; what may be missing from this run is a control only the
+   * cursor:pointer / media-surface tier would have found. `truncatedBy` says
+   * which bound was hit: `probes` is the deterministic node budget, `time` the
+   * emergency wall-clock stop, `deferred` an over-full off-screen list, `scan`
+   * the cheap tier's MAX_SCAN. See hints/collect.ts.
+   */
+  truncated: boolean;
+  truncatedBy: "probes" | "time" | "deferred" | "scan" | null;
   shadowRoots: number;
   pointerControls: number;
   /** Candidates that qualified only as a large media surface (a player's video). */
   mediaSurfaces: number;
+  /** Nodes the expensive tier probed, and the budget it was given. */
+  probed: number;
+  probeCap: number;
   probes: HintProbe[];
 }
 
@@ -36,8 +55,12 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     pointerControls: 0,
     mediaSurfaces: 0,
     truncated: false,
+    truncatedBy: null,
     visited: 0,
     budgetMs: 0,
+    probes: 0,
+    probeCap: 0,
+    deferred: 0,
   };
   // ONE pass for both halves, so the report describes the run the live flow
   // makes (same caches, same order, same costs).
@@ -86,9 +109,14 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     hinted: sel.kept.length,
     covered: sel.covered,
     rejected: { hidden: sel.hidden, duplicate: sel.duplicate },
+    more: sel.more,
+    truncated: stats.truncated,
+    truncatedBy: stats.truncatedBy,
     shadowRoots: stats.shadowRoots,
     pointerControls: stats.pointerControls,
     mediaSurfaces: stats.mediaSurfaces,
+    probed: stats.probes,
+    probeCap: stats.probeCap,
     probes: probes,
   };
 }
