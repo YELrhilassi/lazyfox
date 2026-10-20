@@ -1,29 +1,22 @@
 // Detecting what the page ALREADY looks like, from its rendered colours.
 //
-// Pure: it takes samples and returns a judgement. The sampling — reading
-// computed styles, measuring rectangles, resolving transparent backgrounds
-// against ancestors — is the DOM shell in apply.ts; this module is the decision,
-// and it is the decision that decides whether the feature feels smart or
-// broken.
+// Pure: it takes samples and returns a judgement. The sampling (computed
+// styles, rectangles, alpha resolution against ancestors) is apply.ts's DOM
+// shell; this is the decision — and the decision that decides whether the
+// feature feels smart or broken.
 //
-// WHY NOT `color-scheme`, A META TAG, OR THE MEDIA QUERY. All three are about
-// what a page SAYS, not what it is showing: `color-scheme: light dark` means the
-// site supports both, `prefers-color-scheme: dark` is a fact about the USER's
-// operating system, and a `<meta name="color-scheme">` is a declaration the page
-// is free to ignore. Darkening a site that is already rendering dark is the most
-// common way a dark-mode extension looks broken, so the verdict comes from the
-// pixels the user is looking at (as reported by the style system) and nothing
-// else. `prefers-color-scheme` is used for exactly one thing, in the boot path:
-// choosing which colour to paint BEFORE this analysis can run (see index.ts).
-//
-// The classic false positives are handled explicitly:
-//   * a dark header or a video hero does not make a page dark — every surface is
-//     weighted by its on-screen AREA, and the most-covered surface wins;
-//   * a transparent body is not black (or white) — the sampler resolves alpha
-//     against the ancestors and hands over an opaque colour, or nothing at all;
-//   * a page whose content is inside an image or a canvas is out of reach — the
-//     sample carries `media`, and a media-dominated page reads as low coverage,
-//     which is the engine's signal to stop remapping and invert instead.
+// WHY NOT `color-scheme`, A META TAG, OR THE MEDIA QUERY: all three are about
+// what a page SAYS, not what it shows. `prefers-color-scheme` is a fact about
+// the user's OS. Darkening an already-dark site is the most common way a
+// dark-mode extension looks broken, so the verdict comes from the pixels the
+// user is looking at and nothing else (prefers-color-scheme is used only in
+// the boot path to pick the first frame's colour — index.ts). Classics:
+//   * a dark header or video hero decides nothing — surfaces are weighted by
+//     on-screen AREA;
+//   * a transparent body is neither black nor white — the sampler resolves
+//     alpha against ancestors or yields nothing;
+//   * a page of images/canvas is out of reach — `media`-dominated pages read
+//     low coverage, the engine's signal to invert instead of remap.
 
 import {
   colorKey,
@@ -37,116 +30,46 @@ import {
 
 /** One visible element, as the sampler measured it. */
 export interface PageSample {
-  /** A CSS selector that reaches this element (see selectorFor in apply.ts). */
   selector: string;
   /**
-   * A selector that reaches THIS element and nothing else, or "" when there is
-   * none.
-   *
-   * `selector` is a NAME — a class the element shares with its siblings — and a
-   * name can only carry one decision. When the elements that share it disagree
-   * (one white card, one transparent one) the honest answer is one rule per
-   * element, and this is the selector that rule is written against. It is also
-   * how a page stops being half-painted: the previous answer was to drop the
-   * disagreeing group, which left light text on a still-white panel.
+   * A selector reaching THIS element and nothing else ("": none). `selector`
+   * is a name shared with siblings, and a name carries one decision — where
+   * the sharers disagree (one white card, one transparent), the honest answer
+   * is a rule per element. Also how a page stops being half-painted: the old
+   * answer dropped the whole disagreeing group, leaving light text on a
+   * still-white panel.
    */
   solo?: string;
   /**
-   * The element's share of the viewport (area / viewport area), 0..1+.
-   *
-   * One question needs it: whether this surface is a PANEL or a BACKDROP. A
-   * card the size of a corner may be lifted to a visible panel; a mid-grey
-   * square covering half the screen may not — that is the sudoku board, and
-   * lifting it as far as a panel goes is the report "harsh colors". See
-   * `mapSurface` in color.ts, which is the only consumer.
+   * Share of the viewport (0..1+): whether this surface is a PANEL or a
+   * BACKDROP. A corner-sized card may lift; a mid-grey half-screen square
+   * may not (the sudoku board — the "harsh colors" report). mapSurface in
+   * color.ts is the only consumer.
    */
   share?: number;
   tag: string;
-  /** Computed background-color. Alpha is resolved against ancestors by the
-   *  sampler, so this is opaque unless the chain behind it was too. */
+  /** Computed background-color; alpha resolved against ancestors (opaque unless the chain behind is too). */
   bg: string;
-  /**
-   * The element's OWN `background-color`, alpha and all — the resolved `bg`
-   * above is for reading the PAGE, this one is for painting it.
-   *
-   * The difference is the reported "gray overlay hiding the grid": a wrapper
-   * with `background-color: transparent` resolves to the canvas behind it, and
-   * painting that resolved colour back onto the wrapper turns a transparent
-   * layer into an opaque one. On a normal page that is invisible (same colour);
-   * over a grid, a photograph or a canvas drawn by a SIBLING it covers the
-   * content completely. Only an element that paints its own colour may be
-   * painted.
-   */
+  /** The element's OWN background-color, alpha and all. `bg` is for reading the page; this is for PAINTING it: painting a resolved alpha adds an opaque layer over a grid or a sibling-drawn canvas ("gray overlay hiding the grid"). */
   ownBg?: string;
   /** Computed color. */
   fg: string;
-  /**
-   * Computed border-top-color, when the element actually has a border.
-   *
-   * The sampler fills `borders` with every painted SIDE; this stays as the
-   * single-colour form that a hand-built sample (and the unit tests) use, and is
-   * read as the top side.
-   */
+  /** Legacy single-colour border (the top side) for hand-built samples. */
   border?: string;
-  /**
-   * Every border SIDE the element actually paints, with its own colour.
-   *
-   * The engine used to read `border-top-color` and write `border-color`, which
-   * is wrong in both directions: a card with only a `border-bottom` hairline was
-   * never sampled at all (its top width is 0, so there was no "it has a border"
-   * to detect) and a card with a coloured left accent had the accent repainted
-   * from the top side's colour. Measured on merriam-webster.com, a hero ringed by
-   * `border: 4px solid rgba(255,255,255,.5)` kept all three of its light sides.
-   */
+  /** Every painted border SIDE, each with its own colour. Reading only the top used to miss a bottom-only hairline entirely and repainted a coloured left accent from the top side's colour (merriam-webster hero kept all three light sides of `border: 4px solid rgba(255,255,255,.5)`). */
   borders?: Array<{ side: "top" | "right" | "bottom" | "left"; color: string }>;
-  /** On-screen area in CSS px². Zero-area samples are dropped by the sampler. */
   area: number;
-  /** The element paints a background image, so its background is not ours to move. */
+  /** Paints a background image, so its background is not ours to move. */
   hasBgImage: boolean;
-  /**
-   * Whether anything other than the image lives inside this element — text or
-   * child elements. Recorded only for elements that paint a background image,
-   * because that is the one question it answers: a `url()` is a photograph and
-   * its surface is the page's business — EXCEPT when the element carries
-   * content. See `entryFor` in theme.ts: a sortable table header is
-   * `background: #eaecf0 url(<sort arrow>)` with a label in it, and a lazy-load
-   * container is a placeholder colour with the photo and its overlay inside.
-   */
+  /** Does anything but the image live inside (text/children)? Only asked of bg-image elements: a sort header is `#eaecf0 url(arrow)` WITH a label; a lazy-load placeholder holds the photo and its overlay. */
   hasContent?: boolean;
-  /**
-   * Whether the background image is sized to COVER the element.
-   *
-   * The third answer to the same question (see `hasContent`), and it is the one
-   * that settles the two shapes content cannot: a lazy-load placeholder
-   * (`#d7d5d5` under an `image-set()` photo at `background-size: cover`) is a
-   * light box that the photo hides completely, so painting under it is free; a
-   * transparent logo (`background: #fff url(mark.png) no-repeat`, size `auto`) is
-   * artwork drawn ON its backdrop, and darkening under it erases the mark. Only
-   * `cover` and `100% 100%` count — anything else can leave the colour showing.
-   */
+  /** Whether the background image is sized to COVER the element — settles the two shapes content cannot: a cover placeholder hides behind the photo completely (painting under it is free); a small transparent logo is artwork ON its backdrop (darkening erases the mark). Only `cover` and `100% 100%` count. */
   bgCovers?: boolean;
-  /**
-   * The computed `background-image` when it is a GRADIENT rather than a picture.
-   *
-   * A gradient is a surface: its colour stops are mapped like any other
-   * background colour, which is what stops a page's pale hero wash from staying
-   * pale on a dark page. A value carrying `url()` never reaches here — that is
-   * `hasBgImage`, and it is left alone.
-   */
+  /** Computed background-image when it is a GRADIENT: a surface whose stops are mapped like any other background colour (otherwise a pale hero wash stays pale). A `url()` value never lands here. */
   bgImage?: string;
   /** img/video/canvas/iframe/object/embed/picture/svg — never recoloured. */
   media: boolean;
-  /**
-   * Set when this sample is a PSEUDO-ELEMENT LAYER (`::before` / `::after`) of
-   * the element its selectors reach, rather than the element itself.
-   *
-   * A layer is a surface and nothing else: it has no text of its own (its
-   * `color` is inherited and already decided by the element), so only its
-   * background is ours to move. This is the shape behind the report "some gray
-   * overlay on some elements" — a card that paints `::before{content:"";
-   * inset:0; background:rgba(255,255,255,.7)}` as a veil keeps that veil light on
-   * a dark page, and it is invisible to a sampler that only reads elements.
-   */
+  /** A PSEUDO-ELEMENT LAYER (::before/::after) of the element the selectors reach: no text of its own, so only its background is ours to move — the white veil a card paints over itself keeps a page half-light if only elements are sampled. */
   pseudo?: "::before" | "::after";
 }
 
@@ -155,19 +78,10 @@ export interface Analysis {
   text: Rgba;
   canvasKey: string;
   textKey: string;
-  /** The canvas is dark enough that darkening it again would be a mistake. */
+  /** Dark enough that darkening again would be a mistake. */
   pageDark: boolean;
-  /**
-   * How much of the sampled area the three most-used surface colours explain.
-   *
-   * This is the engine's confidence signal, and it is a MEASUREMENT rather than a
-   * heuristic about the site: a page built from a handful of flat surfaces reads
-   * high (the mapping will reach nearly everything the user can see), while a
-   * page that is mostly photographs, gradients or canvas reads low (the mapping
-   * will leave holes, and a uniform inversion will not).
-   */
+  /** How much of the sampled area the top-3 surface colours explain — the engine's confidence, as a measurement: flat pages read high (remap reaches everything); photograph/canvas pages read low (remap leaves holes; inversion does not). */
   coverage: number;
-  /** Whether any sample had a usable surface at all. */
   sampled: boolean;
   distinct: number;
 }
@@ -175,37 +89,28 @@ export interface Analysis {
 const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 1 };
 const BLACK: Rgba = { r: 0, g: 0, b: 0, a: 1 };
 
-// There is deliberately no tolerance constant here. "The same surface" is
-// decided by `colorKey`, which quantises each channel to 16 levels — so #ffffff
-// and #fefefe are already one surface, and a #f5f5f5 card is a separate one, at
-// the same granularity the stylesheet keys its rules by. A second, differently
-// sized tolerance for one of the two uses would make the ranking and the sheet
+// Deliberately no tolerance constant: "the same surface" is colorKey's
+// qántisation to 16 levels — #ffffff and #fefefe are already one surface, at
+// the same granularity the rule sheet keys by, so ranking and sheet cannot
 // disagree about what a surface is.
 
 function opaque(c: Rgba | null): c is Rgba {
   return !!c && c.a >= OPAQUE_ENOUGH;
 }
 
-/**
- * Analyse the samples. Never throws, never returns null: a page with nothing
- * usable in it is decided as "light page" (which is what the overwhelming
- * majority of pages are) rather than left undecided.
- */
+/** Analyse the samples. Never throws, never null: an unusable page is decided "light" (what most pages are). */
 export function analyze(samples: PageSample[]): Analysis {
-  // A PSEUDO LAYER IS NOT A SURFACE THE USER READS TEXT ON, so it must not vote
-  // on the page's canvas: its area is its element's, and a full-page veil would
-  // otherwise hand the canvas to whatever colour the veil happens to be.
+  // A pseudo layer is not a surface text sits on; its area is its element's,
+  // and letting it vote would hand the canvas to a full-page veil's colour.
   const usable = samples.filter((s) => s.area > 0 && !s.media && !s.pseudo);
   const surfaces = new Map<string, { color: Rgba; area: number }>();
   let totalArea = 0;
   for (const s of usable) {
-    // Every visible element counts towards the area we are judged on…
+    // Everything visible counts towards the area we are judged on...
     totalArea += s.area;
-    // …but an element painting a background IMAGE is not a surface whose colour
-    // we can map: the engine will leave it alone, so counting it as "explained"
-    // would report confidence we do not have. This is what makes a page built
-    // out of photographs and gradient panels read as low coverage and get the
-    // filter engine instead of a half-finished remap.
+    // ...but a bg-IMAGE element is not a mappable surface; counting it as
+    // explained would report confidence we do not have (this is what makes a
+    // page of photographs read low and get the filter engine).
     if (s.hasBgImage) continue;
     const c = parseColor(s.bg);
     if (!opaque(c)) continue;
@@ -230,10 +135,10 @@ export function analyze(samples: PageSample[]): Analysis {
   const [canvasKey, canvasEntry] = ranked[0]!;
   const canvas = canvasEntry.color;
 
-  // The text pole: the colour with the most AREA among elements that actually
-  // sit on the canvas and are far enough from it to be readable. Requiring the
-  // contrast is what stops a large pale panel's own border colour from being
-  // mistaken for the page's text.
+  // Text pole: the colour with the most AREA among elements actually ON the
+  // canvas (contrast > 1.25 to it) and readable against it (> 1.8) — the
+  // contrast gate is what stops a pale panel's own border from becoming "the
+  // page's text".
   const textArea = new Map<string, { color: Rgba; area: number }>();
   for (const s of usable) {
     const bg = parseColor(s.bg);
@@ -268,16 +173,11 @@ export type ThemeDirection = "darken" | "lighten";
 
 export interface ApplyDecision {
   on: boolean;
-  /** Why, in a phrase fit for a toast or the trace. Never empty. */
+  /** Why, fit for a toast or the trace. Never empty. */
   reason: string;
 }
 
-/**
- * Whether to apply at all. The whole point of this function is the
- * already-dark-page case, so it is a named rule rather than an `if` in the boot
- * path: darken a dark page and the site's own carefully-built theme is destroyed,
- * which is the single most common complaint about dark-mode extensions.
- */
+/** Whether to apply at all: the already-dark-page case as a named rule, not an `if` in the boot path — darkening a dark page destroys its theme, the most-complained-about dark-mode failure. */
 export function shouldApply(
   direction: ThemeDirection,
   analysis: Analysis,
@@ -295,51 +195,28 @@ export function shouldApply(
 }
 
 /**
- * Which engine to run.
+ * Does the page SAY it can render dark, though showing light right now?
  *
- * `auto` is where the "smart" lives, and it is one measured rule: remap the
- * page's own palette when the palette explains most of what is on screen, and
- * invert the whole page when it does not. Both are correct engines; they fail in
- * opposite directions (the remap leaves holes where it cannot see a colour, the
- * inversion gets every pixel but turns photographs into negatives), so the
- * choice belongs to the page rather than to a guess about the site.
- */
-/**
- * Does the page SAY it can render dark, even though it is showing light right
- * now?
- *
- * This is the half of "use the site's own theme" that the pixel measurement
- * cannot see. A page whose canvas is white because the OS is light may still
- * ship a complete dark theme behind `color-scheme: light dark` (`light-dark()`,
- * `@media (prefers-color-scheme: dark)`, `:root[data-theme]`). Asking the site
- * for THAT theme is strictly better than recolouring its light one: the site's
- * dark theme is what its authors designed, down to every accent and border.
- *
- * The signals are the ones that are FACTS about the page rather than guesses:
- * the computed `color-scheme` (the declaration that makes UA widgets and
- * `light-dark()` follow the scheme) and a `<meta name="color-scheme">` that names
- * dark. `prefers-color-scheme` is deliberately NOT consulted — that is a fact
- * about the user's OS, not about the site, and treating the two as the same thing
- * is how a dark-mode extension darkens pages that were already fine.
+ * The half of "use the site's own theme" pixels cannot see: a white canvas
+ * because the OS is light may still ship a full dark theme behind
+ * `color-scheme: light dark`. Signals are FACTS about the page — the computed
+ * `color-scheme` (drives UA widgets and `light-dark()`) and a `<meta
+ * name="color-scheme">` naming dark. `prefers-color-scheme` is deliberately
+ * NOT consulted: an OS fact, and conflating the two is how dark-mode
+ * extensions darken pages that were fine.
  */
 export function declaresDarkSupport(colorScheme: string | null | undefined, metaColorScheme?: string | null): boolean {
   const value = String(colorScheme || "").toLowerCase();
-  if (/\bdark\b/.test(value)) {
-    // `only dark` is dark support with no light variant: the page is dark already
-    // or will be once it paints, and remapping it would fight the site.
-    return true;
-  }
+  if (/\bdark\b/.test(value)) return true;
   const meta = String(metaColorScheme || "").toLowerCase();
   return /\bdark\b/.test(meta);
 }
 
 /**
- * The verdict on a page that MIGHT have its own dark theme.
- *
- * `awaiting` is the only non-obvious state: the page declared support, the
- * caller asked it for dark, and the re-measure has not happened yet. The caller
- * sets `color-scheme: dark`, re-samples, and asks again with the new analysis —
- * so this function is called twice and the second answer is the real one.
+ * The verdict on a page that MIGHT have its own dark theme. `awaiting` is the
+ * only non-obvious state: support declared, caller asked for dark, re-measure
+ * pending — the caller sets `color-scheme: dark`, re-samples, asks again, and
+ * the second answer is the real one.
  */
 export interface NativeDarkDecision {
   /** Take the page's own theme: no sheet, no remap, nothing to undo. */
@@ -361,23 +238,27 @@ export function nativeDarkVerdict(
   return { native: false, reason: "the page declares a dark theme; asking for it" };
 }
 
+/**
+ * Which engine to run.
+ *
+ * `auto` is one measured rule: remap when the palette explains most of the
+ * screen, invert when it does not. Both engines are correct and fail in
+ * opposite directions (remap leaves holes; inversion gets every pixel but
+ * turns photographs negative), so the choice belongs to the page.
+ *
+ * HYSTERESIS because coverage is re-measured per pass and the engines paint
+ * in opposite ways — a drifting page would remap one pass and invert the
+ * next, a whole-page flash on any page with a lazy panel. The band is wide
+ * on purpose: switching is a rare, decisive event, not a per-pass vote.
+ */
 export function chooseEngine(
   engine: "auto" | "dynamic" | "filter",
   analysis: Analysis,
   previous?: "dynamic" | "filter" | "native" | "auto" | null
 ): "dynamic" | "filter" {
   if (engine !== "auto") return engine;
-  // A page with no usable samples cannot be remapped at all.
   if (!analysis.sampled) return "filter";
-  // HYSTERESIS, because the coverage figure is re-measured on every pass and the
-  // two engines paint the page in opposite ways. A page whose coverage drifts
-  // across a single threshold would be remapped on one pass and inverted on the
-  // next — a whole-page flash each time, on any page with an ad slot or a lazy
-  // panel that changes size. The band is wide on purpose: switching is a rare,
-  // decisive event (a page that turned out to be mostly photographs, or one that
-  // turned out to be flat after all), not a per-pass vote.
   if (previous === "dynamic") return analysis.coverage >= 0.35 ? "dynamic" : "filter";
   if (previous === "filter") return analysis.coverage >= 0.6 ? "dynamic" : "filter";
   return analysis.coverage >= 0.5 ? "dynamic" : "filter";
 }
-
