@@ -312,6 +312,8 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     // ---- `;W` Window & layout ----
     resizeWindow: () => ctx.ops.openResize(),
     zen: () => ctx.ops.zen(),
+    screenshotFullPage: () => ctx.ops.screenshot("full"),
+    screenshotVisible: () => ctx.ops.screenshot("visible"),
     toggleReveal: () => ctx.ops.toggleReveal(),
     splitTab: () => ctx.ops.splitTab("horizontal"),
     // PANES ARE ADDRESSED, NOT CYCLED. `h` / `l` name the pane (left, right)
@@ -400,4 +402,8 @@ export const HOST_ACTIONS = [
   "darkCycleGlobal",
   "darkEngineToggle",
   "darkResetSite",
+  // `;Y p` — the color-scheme picker lives on the dark controller like the
+  // rest of the theme family, so it is a page-surface action in exactly the
+  // same sense.
+  "darkCyclePalette",
 ];

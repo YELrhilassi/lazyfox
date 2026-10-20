@@ -698,6 +698,9 @@ split,
     setContentPresent: (index, active, url, doc) =>
       noteContentPresent(presenceTabForReport(win, index, url, doc), active, url, doc),
     dismissDownloads: () => void chromeOps.dismissDownload(),
+    // Firefox's native Screenshots (`;C f` / `;C v`), driven by ops, reached
+    // from a page over the pushes.
+    takeScreenshot: (shot) => void chromeOps.screenshot(shot),
     cfg,
     debug,
     cache,

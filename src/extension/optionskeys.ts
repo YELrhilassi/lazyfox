@@ -126,6 +126,40 @@ import { windowStep } from "../shared/resize";
     });
   }
 
+  // Section nav scroll-spy: highlight the card whose heading is at/above the
+  // top of the viewport. An IntersectionObserver would need per-card callbacks
+  // to derive order; rAF-throttled scroll reads are simpler and this page only
+  // has a handful of sections.
+  (function () {
+    const navLinks = Array.from(
+      document.querySelectorAll("#settingsNav a[data-sec]")
+    ) as HTMLElement[];
+    if (!navLinks.length) return;
+    const targets = navLinks.map((a) => document.getElementById(a.dataset.sec!));
+    if (targets.some((t) => !t)) return;
+    const sections = targets as HTMLElement[];
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      // The last section whose top is above the fold; the first card wins
+      // when none qualify (page top).
+      let current = 0;
+      sections.forEach((section, i) => {
+        if (section.getBoundingClientRect().top <= 120) current = i;
+      });
+      for (let i = 0; i < navLinks.length; i++) {
+        const link = navLinks[i];
+        if (link) link.classList.toggle("active", i === current);
+      }
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(update);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    update();
+  })();
+
   window.addEventListener(
     "keydown",
     (e) => {

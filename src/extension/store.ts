@@ -291,7 +291,7 @@ function vDarkConfig(raw: unknown): DarkConfig | undefined {
   if (mode) out.mode = mode;
   const engine = vDarkEngine(raw.engine);
   if (engine) out.engine = engine;
-  for (const field of ["background", "foreground", "accent", "fixes", "userCss"]) {
+  for (const field of ["background", "foreground", "accent", "fixes", "userCss", "palette"]) {
     const v = vString(raw[field]);
     if (v !== undefined) out[field] = v;
   }

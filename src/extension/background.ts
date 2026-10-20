@@ -23,6 +23,7 @@ import { createDiagnosticsHandlers } from "./handlers/diagnostics";
 import { createDownloadHandlers } from "./handlers/downloads";
 import { createHistoryHandlers } from "./handlers/history";
 import { createSearchHandlers } from "./handlers/search";
+import { createScreenshotHandlers } from "./handlers/screenshot";
 import { createSessionHandlers } from "./handlers/sessions";
 import { createSplitHandlers } from "./handlers/split";
 import { createSyncHandlers } from "./handlers/sync";
@@ -65,6 +66,7 @@ const handlers = {
   ...createSearchHandlers({ openUrl, openPage, openUI }),
   ...createHistoryHandlers(),
   ...createDownloadHandlers(),
+  ...createScreenshotHandlers(),
   ...createWindowHandlers(),
   ...createSessionHandlers({
     saveSession: (name: string) => saveSession(name),

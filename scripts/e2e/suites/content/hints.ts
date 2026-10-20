@@ -371,6 +371,69 @@ export async function run(ctx: any): Promise<void> {
     );
     await ctx.press(ctx.tabA, "Escape");
   });
+  // THE AD'S SKIP CONTROL, in the shape the site actually has (pages.ts
+  // /adplayer, measured on youtube.com): the button flips a PRESSED CLASS for any
+  // press at all, and only the ad going away is gated on a trusted one, on a page
+  // that is mutating continuously. Both halves of the verdict are satisfied by the
+  // cosmetic flip and the player's own clock, so the privileged retry never fired
+  // and the press was reported as a success while the ad kept playing.
+  await t("link hints: the ad's Skip control is pressed for real, not just given a pressed class", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/adplayer`);
+    await pageSettled();
+    await beginHints();
+    // The control is addressed by its ID, because that is what the real widget
+    // carries (`skip-button:2`) and what the label maps to.
+    const rows = await readHints();
+    assert(
+      rows.some((x) => (x.id || x.dataId) === "skip-button:2" || (x.id || x.dataId) === "skip-ad"),
+      "the Skip control must be hinted (got: " + rows.map((x) => x.id || x.dataId).join(",") + ")"
+    );
+    assert(
+      (await evalIn(ctx.tabA, `window.__adOn()`)) === true,
+      "the fixture must start with the ad playing"
+    );
+    await activateHint((rows.find((x) => (x.id || x.dataId) === "skip-button:2" || (x.id || x.dataId) === "skip-ad") || {}).id || "skip-ad", async () => {
+      await ctx.waitExpr(ctx.tabA, `document.title`, "AD-SKIPPED", 6000);
+    });
+    assert(
+      (await evalIn(ctx.tabA, `document.title`)) === "AD-SKIPPED",
+      "one press on the Skip hint must skip the ad: the control acts only on a " +
+        "trusted press, and it flips a cosmetic class on every press so the " +
+        "target's own signal is not evidence"
+    );
+    const seen = JSON.parse(String(await evalIn(ctx.tabA, `JSON.stringify(window.__skipSeen || [])`)));
+    assert(
+      (seen || []).some((e: { trusted: boolean }) => e.trusted === true),
+      "the page must be offered a genuine press, not only the synthetic sequence: " + JSON.stringify(seen)
+    );
+    await ctx.press(ctx.tabA, "Escape").catch(() => {});
+  });
+  // AND ONCE, which is the hazard the real press trades against: a toggle in the
+  // player's overlay must end up flipped, not flipped twice back to where it was.
+  await t("link hints: a player toggle in the same overlay is pressed exactly once", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/adplayer`);
+    await pageSettled();
+    await beginHints();
+    const rows = await readHints();
+    const mute = rows.find((x) => (x.id || x.dataId) === "mute-button:3" || (x.id || x.dataId) === "mute");
+    assert(mute, "the player's own toggle must be hinted (got: " + rows.map((x) => x.id || x.dataId).join(",") + ")");
+    await activateHint(mute.id || "mute", async () => {
+      await waitFor(async () =>
+        (await evalIn(ctx.tabA, `document.getElementById("mute-button:3").getAttribute("aria-pressed")`)) === "true"
+          ? true
+          : null, 4000);
+    });
+    const presses = Number(await evalIn(ctx.tabA, `window.__mutePresses`));
+    assert(
+      presses === 1,
+      "one hint press must be one press on the control (got " + presses + "): the real press replaces the synthetic one, it is not added to it"
+    );
+    assert(
+      (await evalIn(ctx.tabA, `document.getElementById("mute-button:3").getAttribute("aria-pressed")`)) === "true",
+      "a toggle must end up flipped, not flipped twice"
+    );
+    await ctx.press(ctx.tabA, "Escape").catch(() => {});
+  });
   // The negative branch, in the same environment: a control NO press reaches
   // (#stone has no listener at all, so even a genuinely trusted press does
   // nothing) is still reported to the user rather than swallowed in silence.
@@ -497,11 +560,17 @@ export async function run(ctx: any): Promise<void> {
   // mousedown/click sharing an event.target — a fix differs completely
   // between a trust problem (needs a privileged path) and a press-state
   // problem (needs correct event state).
+  //
+  // MEASURED ON A CONTROL OUTSIDE THE PLAYER'S BOX (#plain), because that is
+  // where the synthetic sequence is still the route. Inside the player's video
+  // box the press is a real one by policy (escalate.pressForReal), which is the
+  // /adplayer test's subject and would make the trust fact below unobservable —
+  // exactly the mistake this test exists to avoid making about the product.
   await t("link hints: the page receives a trusted, well-formed click", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/playerlike`);
     await pageSettled();
     await beginHints();
-    await activateHint("skipad");
+    await activateHint("plain");
     // Wait for the full pointer sequence to land on the page instead of
     // sleeping: the fixture records every event into window.__clicks.
     const seen = await waitFor(async () => {
@@ -795,7 +864,17 @@ export async function run(ctx: any): Promise<void> {
       `(function(){ const r = document.getElementById("tinygrid").getBoundingClientRect(); window.scrollBy(0, Math.round(r.top - 60)); return window.scrollY; })()`
     );
     await pageSettled();
+    // The grid is 100 buttons and most of them are in view, so this is also the
+    // page where the batch cap binds: `;f` must SAY so instead of silently
+    // leaving the rest without keys. Start listening before the press, because
+    // the toast lives for about a second and `beginHints` waits for the batch.
+    const capToast = ctx.waitToast(ctx.tabA, /more in view/, 8000).catch(() => "");
     await beginHints();
+    const said = await capToast;
+    assert(
+      /^80 hints \u2014 \d+ more in view, ] for the next batch$/.test(said),
+      "the cap is reported with both numbers, got: " + JSON.stringify(said)
+    );
     const m = await readHints();
     assert(m.length > 0 && m.length <= 80, "hint count is capped at 80, got " + m.length);
     const positions = {};
@@ -1715,6 +1794,84 @@ export async function run(ctx: any): Promise<void> {
         after,
         "the batch must come back with the keys it had before the wash-out: " +
           (await readHints()).map((h) => (h.dataId || h.id) + "=" + h.key).join(",")
+      );
+      await ctx.press(ctx.tabA, "Escape");
+    }
+  );
+
+  // A TRUNCATED RE-COLLECT MUST NOT TAKE A LABEL THE PAGE IS STILL SHOWING.
+  // The live sweep measured the reported case A on github.com pressed mid-load:
+  // a `<video>` that only the expensive collection tier can collect was hinted
+  // at `;f`, still on screen seconds later, and its label was gone. The reason
+  // was the REFRESH, not the page: every re-collect walks on a wall-time budget
+  // and a node cap, and once something walk-slow sits before the video in the
+  // DOM the pool drops it — and the old viewport swap adopted that partial pool
+  // wholesale, tearing the label off a control the page had never moved, hidden
+  // or removed.
+  //
+  // /truncrefresh makes the shape deterministic: the video is hinted while the
+  // document is cheap, then a 46k-node cursor:pointer wall is inserted BEFORE it
+  // in document order — beyond the walk's own MAX_SCAN cap — so every refreshed
+  // pool is truncated before it can reach the video. What must still hold: the
+  // label, its key, and the rest of the batch.
+  await t(
+    "link hints: a truncated re-collect must not take a label the page is still showing",
+    async () => {
+      await ctx.gotoPage(ctx.tabA, `${ctx.base}/truncrefresh`);
+      await pageSettled();
+      await beginHints();
+      const first = await readHints();
+      const video0 = first.find((x) => (x.id || x.dataId) === "bigvideo");
+      assert(
+        video0,
+        "the video is hinted before the wall exists (got: " +
+          first.map((x) => x.id || x.dataId).join(",") + ")"
+      );
+      const keys0 = new Map(first.map((x) => [x.id || x.dataId, x.key]));
+
+      // The wall goes in; the page does not move the video (it is fixed) and
+      // does not hide it — the only thing that changed is that the REFRESH has
+      // to walk 46k nodes to reach it.
+      const inserted = await evalIn(ctx.tabA, `window.__bulkUp()`);
+      assert(inserted === 3000, "the fixture inserted its wall (got " + inserted + ")");
+
+      // The first re-batch window: DOM_RESYNC_DELAY is 300ms with a 1s cap.
+      await new Promise((r) => setTimeout(r, 1250));
+      const rows1 = await readHints();
+      const video1 = rows1.find((x) => (x.id || x.dataId) === "bigvideo");
+      assert(
+        video1 && video1.key === video0!.key,
+        "the video's label survived the first truncated re-collect, under the key it had " +
+          "(got: " + rows1.map((x) => (x.id || x.dataId) + "=" + x.key).join(",") + ", key was " + video0!.key + ")"
+      );
+
+      // ...and the SECOND refresh (POOL_RESYNC_MS window): a truncation is not
+      // a one-frame accident, so it must hold across every refresh, not just
+      // the first.
+      await new Promise((r) => setTimeout(r, 2200));
+      const rows2 = await readHints();
+      const video2 = rows2.find((x) => (x.id || x.dataId) === "bigvideo");
+      assert(
+        video2 && video2.key === video0!.key,
+        "the video's label survived the pool-resync window too " +
+          "(got: " + rows2.map((x) => (x.id || x.dataId) + "=" + x.key).join(",") + ")"
+      );
+      // The rest of the batch was never reshuffled by the merge: the same hints
+      // under the same keys, which is what a refresh owes the user who read
+      // them.
+      let reshuffled = 0;
+      for (const row of rows2) {
+        const id = row.id || row.dataId;
+        if (!id || id === "bigvideo") continue;
+        const k = keys0.get(id);
+        if (k && k !== row.key) reshuffled++;
+      }
+      assert(reshuffled === 0, "the existing hints never changed key (" + reshuffled + " did)");
+      // And the layer stays up and typeable: a batch that survives must still be
+      // a batch, not a frozen shell.
+      assert(
+        (await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`)) === "1",
+        "the hint layer must still be armed after the truncated refreshes"
       );
       await ctx.press(ctx.tabA, "Escape");
     }

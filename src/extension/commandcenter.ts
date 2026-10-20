@@ -213,6 +213,7 @@ import type { ContentPopupShell } from "./content/find";
   leaderActions["darkCycleGlobal"] = () => toast("dark mode defaults: change them in settings");
   leaderActions["darkEngineToggle"] = () => toast("dark engine: web pages only");
   leaderActions["darkResetSite"] = () => toast("dark mode: web pages only");
+  leaderActions["darkCyclePalette"] = () => toast("color schemes: change them in settings");
   // The home page is a PAGE: it runs the same key engine a web page does, from
   // the same keymap and the same action table. There is no second keymap here
   // to keep in step, which is what "the home page uses its own shortcuts" used

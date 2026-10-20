@@ -19,6 +19,7 @@ import { core } from "../shared/core";
 import type { ActionOps } from "../shared/ops";
 import type { Config, PopupItem, SessionSummaryItem } from "../shared/types";
 import type { ChromeCfg } from "./config";
+import { takeScreenshot, type ScreenshotShot } from "./screenshots";
 import type { RelayAction, RelayReq, RelayRes } from "../shared/protocol";
 import type { ChromeEnv } from "./env";
 import type { Primitives } from "./ops/primitives";
@@ -225,6 +226,10 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     toggleReveal: () => ui.toggleReveal(),
     toggleWhichKey: () => ui.toggleWhichKey(),
     quit: () => ui.quit(),
+    // Firefox's NATIVE Screenshots surface (`;C f` full page, `;C v` visible
+    // area): the region picker, preview and copy/download flow are the
+    // browser's own; this is purely the keyboard door in front of them.
+    screenshot: (shot) => takeScreenshot(env, shot as ScreenshotShot),
     focusFirstInput: () => ui.focusFirstInput(),
     startHints: () => ui.startHints(),
     openTarget: (which: string) => {

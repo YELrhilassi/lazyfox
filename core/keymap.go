@@ -216,6 +216,23 @@ var Keymap = []KeymapRow{
 	{Spec: "d", Key: "d", Action: "downloads", Label: "Downloads", Group: "Open"},
 	{Spec: "i", Key: "i", Action: "focusFirstInput", Label: "Focus first input", Group: "Open"},
 
+	// ---- Screenshot ----
+	//
+	// One head, two leaves, and NOT three (Firefox's native picker already
+	// owns "select a region": `TakeFullPageScreenshot` arms it). The leaves
+	// are the two entry points the native UI distinguishes — everything else
+	// (preview, copy vs download) is done in its own flow, which Lazyfox must
+	// not re-invent. The head sits with the Open group because it captures
+	// what is on screen, the way `;o`/`;s` open what is typed.
+	{
+		Spec: "shift+c", Key: "C", Action: "category", Label: "Screenshot", Group: "Open",
+		Cat: "Screenshot", CatLabel: "Screenshot",
+		CatKeys: []CatKey{
+			{Spec: "f", Key: "f", Action: "screenshotFullPage", Label: "Full page (native picker)"},
+			{Spec: "v", Key: "v", Action: "screenshotVisible", Label: "Visible area"},
+		},
+	},
+
 	// ---- Tools ----
 	{Spec: "f", Key: "f", Action: "startHints", Label: "Link hints", Group: "Tools"},
 	{Spec: "shift+t", Key: "T", Action: "diagnostics", Label: "Diagnostics & performance", Group: "Tools"},
@@ -253,6 +270,11 @@ var Keymap = []KeymapRow{
 			{Spec: "g", Key: "g", Action: "darkCycleGlobal", Label: "Dark mode default: auto → dark → light → off"},
 			{Spec: "e", Key: "e", Action: "darkEngineToggle", Label: "Dark engine for this site: auto → dynamic → filter"},
 			{Spec: "x", Key: "x", Action: "darkResetSite", Label: "Clear this site's rules"},
+			// `p`, for palette: the color-scheme presets (shared/darkpalettes.ts)
+		// under the same family the mode and engine live in. Cycling is the
+		// keyboard shape of picking a scheme in settings; both write the three
+		// poles, one source of truth.
+			{Spec: "p", Key: "p", Action: "darkCyclePalette", Label: "Color scheme: next preset"},
 		},
 	},
 

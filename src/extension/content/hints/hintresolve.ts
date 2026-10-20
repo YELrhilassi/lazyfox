@@ -13,7 +13,7 @@
 // activator all need answered the same way.
 
 import { collectHintables } from "./collect";
-import { selectHintables, targetKey, type HintCandidate } from "./select";
+import { selectHintables, targetKey, type SelectResult } from "./select";
 import { deepHit } from "./probe";
 import { createVisibilityPass, type VisibilityPass } from "./visibility";
 import { HINTABLE_SELECTOR, MAX_HINTS, PAGE_FACTOR, type HintItem } from "./selectors";
@@ -61,11 +61,14 @@ export interface HintResolveDeps {
 
 export interface HintResolve {
   /**
-   * The hintable elements currently in the viewport, each with the occlusion
-   * answer the batch was built from — a covered control is INCLUDED and flagged
-   * (its label is dimmed), never dropped. See hints/select.ts.
+   * The batch the viewport earns right now: the kept candidates (each with the
+   * occlusion answer its label is drawn with — a covered control is INCLUDED and
+   * flagged, never dropped) plus the counters, including `more`: in view and
+   * visible, but left out because the batch was full. Returned as the whole
+   * result rather than just the array because "how many did not fit" is part of
+   * the answer and the session says it out loud.
    */
-  viewportItems(): HintCandidate[];
+  viewportItems(): SelectResult;
   /**
    * Rebuild the pool from the live document, with a fresh visibility pass.
    *
@@ -123,8 +126,8 @@ export function createHintResolve(deps: HintResolveDeps): HintResolve {
   // The currently-hintable elements: everything in `pool` that is in the
   // viewport, CSS-visible and not a nested/duplicate target. A covered control
   // is in this list too, carrying the flag its label is drawn with.
-  function viewportItems(): HintCandidate[] {
-    return selectHintables(deps.pool(), deps.maxHints ?? MAX_HINTS, pass).kept;
+  function viewportItems(): SelectResult {
+    return selectHintables(deps.pool(), deps.maxHints ?? MAX_HINTS, pass);
   }
 
   // Paging (`]`, `[`, Tab) moves the region the user is LOOKING AT and reports

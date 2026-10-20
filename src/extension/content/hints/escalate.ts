@@ -20,6 +20,18 @@
 // only after the target's own state has been watched and found unchanged (see
 // life.targetSignal) — the guard rail here is about not repeating an action that
 // already happened, not about limiting how often the privileged path is used.
+//
+// AND ONE NARROW CLASS GETS THE REAL PRESS FIRST (pressForReal, below): a
+// control drawn inside a player's own video box. There the site's widget filters
+// on isTrusted AND flips a pressed class for any press, so "the target reacted"
+// is not evidence — the retry could never be reached there, which is exactly the
+// "Skip ad does nothing" report.
+import {
+  MEDIA_SURFACE_MIN_H,
+  MEDIA_SURFACE_MIN_W,
+  MEDIA_SURFACE_SELECTOR,
+} from "./selectors";
+
 export function canEscalate(el: Element): boolean {
   try {
     const tag = String(el.tagName || "").toUpperCase();
@@ -30,4 +42,80 @@ export function canEscalate(el: Element): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * Is this control drawn INSIDE a large media surface — i.e. is it one of a
+ * player's own overlay controls?
+ *
+ * Geometry, not ancestry: a player lays its controls over the video as
+ * SIBLINGS of it (#movie_player > video + .ytp-chrome-bottom), so
+ * `closest("video")` answers nothing on the pages this is for. The question is
+ * "does this control's box sit within the box of a video big enough to be the
+ * player", which is what the user sees.
+ *
+ * Bounded and tolerant by construction: at most a handful of media elements are
+ * queried, the read is wrapped, and an element that refuses a rect answers "no"
+ * (the caller then keeps the ordinary synthetic press).
+ */
+export function insideMediaSurface(el: Element): boolean {
+  try {
+    const r = el.getBoundingClientRect();
+    if (!(r.width > 0 && r.height > 0)) return false;
+    const doc = el.ownerDocument as Document | null;
+    if (!doc || typeof doc.querySelectorAll !== "function") return false;
+    const media = doc.querySelectorAll(MEDIA_SURFACE_SELECTOR);
+    for (let i = 0; i < media.length; i++) {
+      const m = media[i]!;
+      const mr = m.getBoundingClientRect();
+      if (mr.width < MEDIA_SURFACE_MIN_W || mr.height < MEDIA_SURFACE_MIN_H) continue;
+      // A margin of a couple of pixels, because a player's overlay is often laid
+      // out against the player's edge rather than strictly inside the video's.
+      if (
+        r.left >= mr.left - 2 &&
+        r.right <= mr.right + 2 &&
+        r.top >= mr.top - 2 &&
+        r.bottom <= mr.bottom + 2
+      ) {
+        return true;
+      }
+    }
+  } catch (e) {
+    // A hostile element (or a document that refuses the query) must not open the
+    // privileged path.
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Should this control be pressed FOR REAL as its one and only activation?
+ *
+ * The privileged press exists for widgets that filter on `event.isTrusted`, and
+ * the family that does so in practice is a video player's own overlay: YouTube's
+ * "Skip ad" is the canonical one, every ad-capable player has an equivalent, and
+ * they all share a second property that matters more here — they light up a
+ * PRESSED state (a class, an animation) for ANY press, trusted or not, before
+ * deciding whether the press counts.
+ *
+ * That cosmetic flip is what made the retry unreachable after the target/page
+ * split (see this module's header): `targetSignal` reads it as "its class
+ * changed", the verdict calls the press a success, and the privileged retry — the
+ * only route that reaches the widget — never fires. Measured on a player-shaped
+ * fixture (`/adplayer`, built from the real markup): label drawn, key pressed,
+ * labels gone, ad still playing, nothing said. That is the report.
+ *
+ * So the ROUTE is chosen up front for this narrow class instead of being
+ * inferred from the aftermath: one real press, exactly where a mouse would press
+ * the control the user chose. The synthetic sequence is not sent first and is not
+ * sent after, so nothing can be activated twice — the double-navigation hazard
+ * that keeps links out of this path is excluded by canEscalate, and a second
+ * press on a player toggle (mute, play/pause) would otherwise undo the first.
+ *
+ * Everything else keeps the old order — synthetic first, privileged retry only
+ * when the target proves silent — because that order is cheaper and is right on
+ * ordinary pages, where a class flip is real evidence.
+ */
+export function pressForReal(el: Element): boolean {
+  return canEscalate(el) && insideMediaSurface(el);
 }

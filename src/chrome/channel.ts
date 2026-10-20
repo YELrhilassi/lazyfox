@@ -66,6 +66,9 @@ export interface ChannelDeps {
   // Clear the bar's download notification(s) at a page's request (`;D` runs in
   // the page's own leader, but the bar is this side's).
   dismissDownloads(): void;
+  // Firefox's native Screenshots for the selected tab, at a page's request
+  // (`;C f` / `;C v` on any page whose keyboard an extension surface owns).
+  takeScreenshot(shot: "full" | "visible"): void;
   cfg: ChromeCfg;
   debug: DebugHandlers;
   // Per-tab / per-session page-cache enforcement (the global scope is owned by

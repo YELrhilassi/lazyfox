@@ -111,6 +111,82 @@ export interface HintOverlay {
   setEnterBadge(on: boolean): void;
 }
 
+// ---- collision geometry -----------------------------------------------------
+//
+// Labels are small (one or two characters) and dense pages put controls a few
+// pixels apart, so "does this candidate box overlap one already placed" is asked
+// forty or more times per label, twenty times a second, while a page moves. A
+// flat scan of every placed box made that quadratic and was the reason a
+// collision could only ever HIDE a label. The grid makes the same question
+// constant-ish, which is what pays for the fallback placement below.
+interface Box {
+  l: number;
+  t: number;
+  r: number;
+  b: number;
+}
+
+const GRID_CELL = 24;
+
+// Exported for its own test: the claim is "the same answer as a linear scan, at
+// a cost that lets every label try 48 fallback positions", and a claim about
+// both correctness and cost should be checkable without a browser.
+export function boxGrid(cell: number) {
+  const cells = new Map<number, Box[]>();
+  const key = (cx: number, cy: number): number => cx * 4096 + cy;
+  function eachCell(box: Box, fn: (k: number) => void): void {
+    const x0 = Math.max(0, Math.floor(box.l / cell));
+    const x1 = Math.max(0, Math.floor(box.r / cell));
+    const y0 = Math.max(0, Math.floor(box.t / cell));
+    const y1 = Math.max(0, Math.floor(box.b / cell));
+    for (let cx = x0; cx <= x1; cx++) for (let cy = y0; cy <= y1; cy++) fn(key(cx, cy));
+  }
+  return {
+    add(box: Box): void {
+      eachCell(box, (k) => {
+        const list = cells.get(k);
+        if (list) list.push(box);
+        else cells.set(k, [box]);
+      });
+    },
+    hits(c: Box): boolean {
+      let hit = false;
+      // The same 1px inflation the previous linear scan used: labels a hair
+      // apart read as touching, and a touching pair is what the eye sees.
+      eachCell(c, (k) => {
+        const list = cells.get(k);
+        if (!list) return;
+        for (const p of list) {
+          if (c.l < p.r + 1 && c.r > p.l - 1 && c.t < p.b + 1 && c.b > p.t - 1) {
+            hit = true;
+            return;
+          }
+        }
+      });
+      return hit;
+    },
+  };
+}
+
+// THE FALLBACK LATTICE. The six anchors around a control are where a label looks
+// like it belongs; when all six are taken by other labels, the label used to be
+// HIDDEN — and a hidden label is an unusable key, so on a dense page (a comment
+// thread, an icon toolbar, a row of card footers) a control the user can plainly
+// see had no hint at all, and `]` re-batched the same colliding viewport.
+//
+// So the search continues over a FIXED, ORDERED set of small offsets around the
+// control's top-left: nearest ring first, clockwise. Deterministic (no layout
+// feedback, no randomness, same order on every machine), close enough that the
+// chip still reads as belonging to its control, and bounded — at most 48 extra
+// candidates, each answered by the grid rather than a scan.
+const NUDGE_DIRS: ReadonlyArray<readonly [number, number]> = [
+  [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1],
+];
+export const NUDGE_RINGS: readonly number[] = [4, 9, 15, 22, 30, 40];
+export const NUDGES: ReadonlyArray<readonly [number, number]> = NUDGE_RINGS.flatMap((d) =>
+  NUDGE_DIRS.map(([ux, uy]) => [ux * d, uy * d] as const)
+);
+
 export function createHintOverlay(): HintOverlay {
   let host: (HTMLElement & { _box: HTMLElement; _enter: HTMLElement }) | null = null;
   // The keys whose labels the last placement put on screen. See HintRender:
@@ -388,7 +464,8 @@ export function createHintOverlay(): HintOverlay {
     // The held labels are reserved FIRST: they are still on screen, so the
     // collision walk has to know about their pixels or a re-placed label could
     // be drawn on top of one.
-    const placed: Array<{ l: number; t: number; r: number; b: number }> = held.map((hd) => hd.box);
+    const grid = boxGrid(GRID_CELL);
+    for (const hd of held) grid.add(hd.box);
     // The label the Enter badge belongs beside. It is the FIRST row that got a
     // label, because that is literally the row Enter takes: `handleKey` commits
     // `found[0]`, the first matching on-screen item in document order. Marking
@@ -416,10 +493,12 @@ export function createHintOverlay(): HintOverlay {
       // Attach the badge to its element at a small, CONSISTENT set of anchors
       // (the element's own top-left first, then the other corners, then just
       // above) and take the first that does not overlap a badge already placed.
-      // If every anchor collides, the badge is HIDDEN rather than nudged into a
-      // staircase — a wall of staggered labels is what made dense pages
-      // unreadable, and a hidden hint is not a permanent loss because ] paging
-      // re-batches the viewport.
+      //
+      // WHEN EVERY ANCHOR IS TAKEN the search continues over the nudge lattice
+      // (see NUDGES): a label a few pixels off is still a label on the right
+      // control, and losing it hides the control's key entirely. Only a label
+      // that cannot be placed anywhere near its control is hidden — and that is
+      // a control with no free pixels at all.
       const gap = 2;
       const anchors: Array<[number, number]> = [
         [x, y],
@@ -432,19 +511,19 @@ export function createHintOverlay(): HintOverlay {
       let bx = x;
       let by = y;
       let free = false;
-      for (const anchor of anchors) {
-        const ax = Math.max(0, Math.min(anchor[0], Math.max(0, vw - lw)));
-        const ay = Math.max(0, Math.min(anchor[1], Math.max(0, vh - lh)));
+      for (let i = 0; i < anchors.length + NUDGES.length; i++) {
+        const spot: [number, number] =
+          i < anchors.length
+            ? anchors[i]!
+            : [x + NUDGES[i - anchors.length]![0], y + NUDGES[i - anchors.length]![1]];
+        const ax = Math.max(0, Math.min(spot[0], Math.max(0, vw - lw)));
+        const ay = Math.max(0, Math.min(spot[1], Math.max(0, vh - lh)));
         const cand = { l: ax, t: ay, r: ax + lw, b: ay + lh };
-        const hit = placed.some(
-          (p) => cand.l < p.r + 1 && cand.r > p.l - 1 && cand.t < p.b + 1 && cand.b > p.t - 1
-        );
-        if (!hit) {
-          bx = ax;
-          by = ay;
-          free = true;
-          break;
-        }
+        if (grid.hits(cand)) continue;
+        bx = ax;
+        by = ay;
+        free = true;
+        break;
       }
       if (!free) {
         if (label.style.display !== "none") {
@@ -464,7 +543,7 @@ export function createHintOverlay(): HintOverlay {
       // typeable. "Every keyable hint is on screen; every visible key is
       // typeable" is then true by construction rather than by agreement.
       shown.add(it.key);
-      placed.push(box);
+      grid.add(box);
       boxes.push({
         key: it.key,
         l: Math.round(bx),

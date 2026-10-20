@@ -13,7 +13,7 @@
 import { toast } from "../../../shared/overlay";
 import { editableRootOf, focusLandedOn } from "../../../shared/dom";
 import { deepHit, describeTarget } from "./probe";
-import { canEscalate } from "./escalate";
+import { canEscalate, pressForReal } from "./escalate";
 import {
   ESCALATION_WATCH_MS,
   LIFE_TICKS_MS,
@@ -36,6 +36,8 @@ export interface Activator {
 
 export function createActivator(): Activator {
   let lastAct: HintActivation | null = null;
+  // The narrow class that gets a real press instead of the synthetic sequence:
+  // a control drawn inside a player's own video box. See escalate.pressForReal.
 
   // Fire the full pointer + mouse sequence, then a native `.click()`.
   //
@@ -157,11 +159,20 @@ export function createActivator(): Activator {
 
   // Ask the window actor to synthesise a REAL click at these coordinates.
   //
-  // This is the escalation path, and it is deliberately the second attempt
-  // rather than the first: the synthetic sequence above is free, instant and in
-  // process, and it handles the overwhelming majority of controls. Only when
-  // the watcher can prove the TARGET did nothing does this get tried, because it
-  // costs a privileged path and is the one route a page could try to abuse.
+  // For ordinary pages this is the escalation path, and it is deliberately the
+  // second attempt rather than the first: the synthetic sequence above is free,
+  // instant and in process, and it handles the overwhelming majority of
+  // controls. Only when the watcher can prove the TARGET did nothing does this
+  // get tried, because it costs a privileged path and is the one route a page
+  // could try to abuse.
+  //
+  // THE EXCEPTION IS A PLAYER'S OWN OVERLAY (escalate.pressForReal), and it is
+  // not a reordering of the same logic: there the widget filters on isTrusted
+  // AND flips a pressed class for any press, so the "did the target react"
+  // question can never answer "no" — the second attempt was unreachable, which
+  // is why "Skip ad" stopped working. For that narrow class this press is the
+  // ONLY press (never an addition to the synthetic one), so nothing is
+  // double-activated.
   //
   // Returns false when the actor is not listening — on any page without the
   // chrome layer installed, and on every page when Lazyfox is running
@@ -205,7 +216,15 @@ export function createActivator(): Activator {
   // one navigation signal, which together cover essentially every real
   // response (a re-render, a class/ARIA toggle, a value change, a focus move, a
   // route change). It mutates nothing and never blocks the next keystroke.
-  function watchForLife(el: Element, before: LifeSnapshot, desc: string): void {
+  function watchForLife(
+    el: Element,
+    before: LifeSnapshot,
+    desc: string,
+    // The press that just happened WAS the real one (see pressForReal): its effect
+    // is not observable from this realm at dispatch time, so the verdict is read
+    // one window later and no further press is attempted.
+    pressedForReal = false,
+  ): void {
     const timers: number[] = [];
     let done = false;
     // Record a verdict once and release everything this watch held.
@@ -231,6 +250,42 @@ export function createActivator(): Activator {
       });
     };
     const decide = (): void => {
+      // THE REAL PRESS, ALREADY SENT. Nothing to escalate to and nothing to
+      // infer from the target's own cosmetic flip — the question is only whether
+      // the page moved in the window after the press.
+      if (pressedForReal) {
+        // THE BASELINE IS THE MOMENT BEFORE THE PRESS, not the end of the first
+        // watch window: a player acts fast, and a title or route change that
+        // landed inside those 320ms would otherwise be missed and reported as
+        // "still no response". The verdict is permissive on purpose here too —
+        // the press was a genuine one, so any change counts as its result.
+        timers.push(
+          window.setTimeout(() => {
+            if (done) return;
+            const own2 = targetSignal(el, before);
+            const page2 = pageSignal(el, before);
+            if (own2 || page2) {
+              settle({
+                target: desc,
+                signal: own2 || page2,
+                watchedMs: LIFE_WATCH_MS + ESCALATION_WATCH_MS,
+                ignored: false,
+                trustedRetry: true,
+              });
+              return;
+            }
+            settle({
+              target: desc,
+              signal: "",
+              watchedMs: LIFE_WATCH_MS + ESCALATION_WATCH_MS,
+              ignored: true,
+              trustedRetry: true,
+            });
+            toast("still no response from " + desc);
+          }, ESCALATION_WATCH_MS) as unknown as number,
+        );
+        return;
+      }
       // THE VERDICT, and the ORDER of the two questions is the whole fix.
       //
       // The target's own state is asked FIRST, the page's permissive signals
@@ -405,8 +460,13 @@ export function createActivator(): Activator {
           // activity is deliberately NOT a fast finish any more: it is the
           // verdict's fallback, and finishing on it early is what made a busy
           // page skip the privileged retry entirely.
+          //
+          // AND NOT AT ALL WHEN WE PRESSED FOR REAL: on a player's overlay the
+          // "reaction" is the pressed class the widget adds for ANY press, so
+          // short-circuiting on it answers "it worked" before the real press has
+          // had a chance to act — the same accident one level down.
           const own = targetSignal(el, before);
-          if (own) finish(own);
+          if (own && !pressedForReal) finish(own);
           else if (ms >= LIFE_WATCH_MS) decide();
         }, ms) as unknown as number,
       );
@@ -476,28 +536,47 @@ export function createActivator(): Activator {
       focusAndReport(el);
       return;
     }
-    // Activation is the synthetic sequence in emulateClick, and nothing else.
-    //
-    // There WAS a "trusted press" path here: ask the chrome side to press at
-    // this element's center through windowUtils, so the click would carry
-    // isTrusted === true. It was removed because it made hints worse, not
-    // better — see docs/HINTS.md. The short version: the background could only
-    // report that it had POSTED the request, never that the press happened, so
-    // the content script treated "a relay port exists" as success and skipped
-    // its own click. On every page where the privileged side did not act, the
-    // hint became a dead key.
     // Start counting BEFORE the snapshot, so the "mutations since" baseline is
     // the moment before the click, not the moment the watch began.
     startLifeCounting();
     const before = snapshotLife(el);
     const desc = describeTarget(el);
-    try {
-      emulateClick(el);
-    } catch (e) {
-      stopLifeCounting();
-      throw e;
+    // WHICH PRESS, decided up front, and exactly one of them is sent.
+    //
+    // The old rule was "synthetic first, privileged retry only if the target
+    // stays silent", and it is right for ordinary pages. It cannot work for a
+    // player's own overlay: that widget filters on isTrusted (so the synthetic
+    // press can only be refused) and it flips a pressed class for any press (so
+    // the target never looks silent). The retry was therefore unreachable at the
+    // one place it was built for, and the press was reported as a success while
+    // the ad kept playing. `pressForReal` names that class narrowly; here we
+    // simply take its route, with the synthetic sequence as the fallback for
+    // installs where no privileged channel exists (standalone, no chrome helper).
+    //
+    // WHAT MAKES THIS DIFFERENT FROM THE OLD REMOVED PATH: that one fired an
+    // unverifiable request into the background AND treated its posting as
+    // success, so the content script never clicked at all and the hint became a
+    // dead key wherever the privileged side did not act. This one is taken only
+    // when the channel answers, and the synthetic sequence still runs when it
+    // does not.
+    let pressedForReal = false;
+    if (pressForReal(el)) {
+      try {
+        const r = el.getBoundingClientRect();
+        pressedForReal = trustedClick(r.left + r.width / 2, r.top + r.height / 2);
+      } catch (e) {
+        pressedForReal = false;
+      }
     }
-    watchForLife(el, before, desc);
+    if (!pressedForReal) {
+      try {
+        emulateClick(el);
+      } catch (e) {
+        stopLifeCounting();
+        throw e;
+      }
+    }
+    watchForLife(el, before, desc, pressedForReal);
   }
 
   return { activate, lastActivation: () => lastAct };
