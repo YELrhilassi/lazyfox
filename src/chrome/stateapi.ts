@@ -1,55 +1,24 @@
-// The chrome state contract, versioned.
-//
-// WHY THIS FILE. `#lfc=state` is how the e2e harness sees chrome at all, and
-// until now it was an unversioned JSON blob assembled inline in a 200-line
-// handler. Unversioned means two things, both of which have already cost time:
-// a field that disappears is indistinguishable from a field that is null, and a
-// harness that reads `state.realTabs` has no way to notice the product changed
-// what it means. The version is the whole point — a reader that does not
-// recognise `v` is told so rather than handed a blob it will misread.
-//
-// The state is also assembled HERE rather than in the handler, so there is one
-// answer to "what is chrome's state?" and the handler is a transport. That is
-// what makes the contract assertable in Node: a test drives `read()` against a
-// fake env and asserts the shape, with no browser and no wire.
-
+// The chrome state contract, versioned. `#lfc=state` is how the e2e harness
+// sees chrome: an unversioned blob cost real time already (a missing field is
+// indistinguishable from a null one), so the reader must recognise `v` or
+// refuse the reply. Assembly lives here, not in the handler — one answer to
+// "what is chrome's state?", assertable in Node against a fake env.
 import type { ChromeEnv } from "./env";
 
-/**
- * The live-state accessors the snapshot needs, declared HERE rather than
- * imported from `./debug`.
- *
- * Declaring them locally is not duplication for its own sake: the e2e project
- * imports this module for the contract alone, and it is typechecked without the
- * DOM lib. An `import type { DebugState } from "./debug"` would drag debug.ts —
- * and through it `shared/overlay.ts` and `chrome/config.ts` — into a project
- * that cannot type them, so a contract that must be readable from Node would
- * only be readable from the browser. The shapes are structural, so
- * `DebugState` satisfies this without either side importing the other.
- */
-/**
- * The relay tab and the LOST-COMMAND COUNTER — what the background sent, what
- * arrived, and which hop ate the difference (docs/KEYBOARD-OWNERSHIP.md 5.6).
- *
- * The counter exists because a presence report travels four fire-and-forget
- * hops (content -> background -> relay page -> helper) and its loss is SILENT:
- * the helper simply keeps owning a live page's keys, so the user's first
- * keystroke is answered by nobody. `recv`/`gaps` make that a number a premise
- * can assert on — `relay.gaps === 0` after a page boots — and `lastGap` names
- * the hop:
- *
- *   `relayLost` > 0         the relay PAGE discarded those commands (its own
- *                           outbound buffer, on its TTL or its 64-command cap)
- *   `neverReachedRelay` > 0 the background never handed them over at all
- *
- * `relayResetSeen` is the honesty flag: a NEW relay tab starts its discard
- * counter at zero, and the attribution of the first gap after that restart is
- * the weaker one.
- *
- * The rest (`ready`, `relayTabs`, `allTabs`, `windowLive`, `urlSlot`, `pending`,
- * `awaiting`) is the relay's own liveness readout, older than the counter and
- * unchanged by it.
- */
+// The e2e project imports this module for the contract alone, typechecked
+// without the DOM lib — importing `./debug` would drag debug.ts (and through it
+// shared/overlay.ts and chrome/config.ts) into a project that cannot type them.
+// The shapes are structural, so DebugState satisfies these without either side
+// importing the other.
+
+// The relay tab and the LOST-COMMAND COUNTER (docs/KEYBOARD-OWNERSHIP.md 5.6).
+// A presence report travels four fire-and-forget hops and its loss is silent:
+// the helper keeps owning a live page's keys. `gaps`/`lastGap` make that a
+// number and name the hop — `relayLost` = the relay PAGE discarded them (TTL or
+// 64-command cap), `lostBeforeRelay` = the background never handed them over.
+// `relayResetSeen` is the honesty flag: a new relay tab restarts at zero, so
+// the first gap after that restart is the weaker attribution. The rest is the
+// relay's liveness readout.
 export interface ChromeStateRelayV1 {
   ready: boolean;
   /** Commands dispatched with a stamp. */
@@ -102,7 +71,7 @@ export interface ChromeStateSource {
   isFullscreen(): boolean;
   activeSplitView(): any;
   realTabs(): any[];
-  /** The relay's liveness AND the lost-command counter — see ChromeStateRelayV1. */
+  /** The relay's liveness and the lost-command counter — see ChromeStateRelayV1. */
   relay(): ChromeStateRelayV1;
 }
 
@@ -111,7 +80,7 @@ export const CHROME_STATE_VERSION = 1;
 
 /** One row of the product's own tab numbering, as published by `realTabs`. */
 export interface ChromeStateTabV1 {
-  /** 1-based, the number the user types. See `chromeOwnsKeys` in keystate.ts. */
+  /** 1-based, the number the user types. */
   n: number;
   /** URL tail, query stripped, moz-extension rewritten to `ext:`. */
   u: string;
@@ -138,33 +107,22 @@ export interface ChromeStatePopupV1 {
   panels: Array<{ title: string; hasInput: boolean; status: string }>;
   items: string[];
   selIdx: number[];
-  /**
-   * The current value of every popup input, in document order.
-   *
-   * Added because "the filter did not apply" and "the keys never reached the
-   * input" are indistinguishable from `items` alone, and they are the two
-   * halves of the question every popup test eventually has to answer. The
-   * chrome popup re-creates its `<input>` (Firefox's HTML parser drops form
-   * controls in the privileged document), so this also says whether the field
-   * being typed into is the one the popup built.
-   */
+  // Every popup input's value, in document order. "The filter did not apply"
+  // and "the keys never reached the input" are indistinguishable from `items`
+  // alone; the chrome popup re-creates its <input>, so this also says whether
+  // the field being typed into is the one the popup built.
   inputValues: string[];
 }
 
-/**
- * Where the browser's OWN keyboard focus is.
- *
- * Added to the readout because "who owns the keys" and "who has the KEYBOARD"
- * are two different questions, and only the second one explains the report
- * these tests exist for: the page is alive, the helper defers to it, and no key
- * arrives — because focus is parked in the browser's own UI. The page can answer
- * that for a content-process document (`document.hasFocus()`); an
- * extension-process page — the command center — cannot answer it at all, so the
- * browser's focus manager is asked, from the realm that owns the keyboard.
- *
- * No decision reads this. It exists so a failure can say WHY the keys went
- * nowhere instead of reporting the absence of an effect.
- */
+// Where the browser's OWN keyboard focus is. "Who owns the keys" and "who has
+// the KEYBOARD" are different questions, and only the second explains the
+// report this readout exists for: the page is alive, the helper defers to it,
+// and no key arrives — because focus sits in the browser's own UI. The fields
+// below `focused` answer "why is `focused` null": another window has the
+// keyboard, or the selected document is out-of-process. Measured on the
+// command center after a tab switch: `focused: null` with `chromeActive:
+// "browser"` and `pageHasFocus: true` — trusting `focused` alone would call a
+// working page dead. No decision reads any of this.
 export interface ChromeStateFocusV1 {
   /** The window is the OS-active one (`Services.focus.activeWindow === win`). */
   activeWindow: boolean;
@@ -172,27 +130,7 @@ export interface ChromeStateFocusV1 {
   focused: string | null;
   /** That element is the SELECTED tab's content (its <browser>, or inside it). */
   inSelectedContent: boolean;
-  //
-  // THE FIELDS BELOW ANSWER "WHY IS `focused` NULL", which is the shape the
-  // reported freeze has and the shape that cannot be diagnosed from `focused`
-  // alone. A keyboard that exists nowhere is one of:
-  //   * another window has it (`focusedWindow`), so nothing here can take it;
-  //   * the page's document is out-of-process (`remote`) and cannot be reached
-  //     from here at all, so "has the keyboard" is the browser element's
-  //     question and not the page's;
-  //   * the selected tab's docshell is not the active one (`docShellActive`),
-  //     which is worth having beside the rest rather than instead of it: it was
-  //     false in BOTH measured shapes of a page that legitimately had the
-  //     keyboard (an in-process command center and a remote web page), so it is
-  //     a fact about the tab, not a verdict about the keyboard.
-  // `chromeActive` (what the chrome document itself thinks is focused) and
-  // `pageHasFocus` (the selected page's own answer, or null when it cannot be
-  // asked) are what turn the zero into a diagnosis. Measured on the command
-  // center, after a tab switch: `focused: null` with `chromeActive: "browser"`
-  // and `pageHasFocus: true` — the focus manager has no element to name while
-  // the document itself answers that it has the keyboard, so a reader that
-  // trusted `focused` alone would call a working page dead.
-  /** The selected tab's document runs in another process (`isRemoteBrowser`). */
+  /** The selected tab's document runs in another process. */
   remote: boolean;
   /** The selected tab's docshell is the active one (`docShell.isActive`). */
   docShellActive: boolean;
@@ -204,75 +142,37 @@ export interface ChromeStateFocusV1 {
   pageHasFocus: boolean | null;
 }
 
-/**
- * The keyboard decision, as the facts it is made from (K5; M6).
- *
- * This is the one field that answers the field report directly, and it exists
- * because every OTHER field of this reply can be right while the user's keyboard
- * is dead. "Lazyfox stopped answering and started again when I clicked" is a
- * statement about the AGREEMENT of two facts that the reply published
- * separately:
- *
- *   * `owns` — does the chrome helper answer this page's keys (`chromeOwnsKeys`,
- *     also at the top level), and
- *   * `inPage` — is the keyboard in the selected page's content at all.
- *
- * When those disagree, keys silently do nothing: every keydown is delivered to
- * the FOCUSED document and nowhere else, so a page that owns the keys but does
- * not have the keyboard never sees one, and a helper that owns them but cannot
- * reach the page's document cannot run the ones that live there. The user's own
- * split — `;` and `;r`/`;s`/`;o` working while `j`/`k`/`d`/`u`, hints and find
- * are dead — is exactly one of those two cells, and no other field told them
- * apart. docs/KEYBOARD-OWNERSHIP.md §1 is the table.
- *
- * The remaining fields are the reasons the repair is not run, which is the other
- * half of the same report: a rescue that is vetoed every time, invisibly, for the
- * life of the window looks identical to a rescue that was never wired up.
- */
+// The keyboard decision, as the facts it is made from. Every other field of
+// this reply can be right while the user's keyboard is dead: keys are delivered
+// to the FOCUSED document and nowhere else, so `owns` true with `inPage` false
+// means every key silently does nothing — `;` and `;r` working while
+// `j`/`k`/hints/find are dead (docs/KEYBOARD-OWNERSHIP.md §1 is the table).
+// `veto` is the other half of the same report: a repair vetoed every time,
+// invisibly, looks identical to one that was never wired up.
 export interface ChromeStateKeyboardV1 {
   /** The chrome helper answers this page's keys (`keystate.chromeOwnsKeys`). */
   owns: boolean;
-  /**
-   * The keyboard is in the SELECTED page's content — the strict question
-   * (`commandcenterfocus.focusIsInSelectedContent`), which is the one the
-   * repair's own gate asks, so this field and the decision can never disagree.
-   */
+  /** The keyboard is in the SELECTED page's content — the same gate the repair asks. */
   inPage: boolean;
-  /**
-   * The selected tab is a Firefox developer surface (`shared/privileged.ts`),
-   * where Lazyfox neither claims a key nor runs a repair. Named separately
-   * because "nothing happened" on devtools is CORRECT behaviour, while the same
-   * silence on a web page is the defect this whole file is about.
-   */
+  /** Selected tab is a Firefox dev surface: no claim, no repair — CORRECT silence. */
   devtools: boolean;
-  /**
-   * The browser-UI field the caret is in, if any — what a veto would be FOR.
-   * `active` is the field's identity (`tag#id`), `onScreen` whether the user
-   * could see it, `hasUserText` whether it holds text the user typed (the
-   * question, not "does it hold text": see chromefield.ts for why the URL bar
-   * showing the page's own address must answer no).
-   */
+  // The browser-UI field the caret is in, if any — what a veto would be FOR.
+  // `hasUserText` is "holds text the user typed" (not "holds text": the URL bar
+  // showing the page's own address must answer no — see chromefield.ts).
   chromeField: { active: string | null; onScreen: boolean; hasUserText: boolean };
-  /**
-   * A repair asked for by a PLAIN key would be refused right now.
-   *
-   * The leader key is never vetoed (that is the user's decision, taken after the
-   * reported reproduction — see keysdispatch.givePageKeyboardBack), so a `true`
-   * here means "the next letter key will not fix this state", not "the rescue is
-   * broken": `;` still is. A `true` with `owns !== inPage` is the reported
-   * freeze with its reason attached.
-   */
+  // A repair asked for by a PLAIN key would be refused right now. The leader
+  // key is never vetoed, so `true` here means "the next letter key will not fix
+  // this state", not "the rescue is broken". With owns !== inPage, this is the
+  // reported freeze with its reason attached.
   veto: boolean;
 }
 
 export interface ChromeStateV1 {
   /** The reply's contract version. Always present. */
   v: number;
-  /**
-   * Whether the snapshot completed. `ok: false` means the fields below are
-   * partial or absent — a reader must check this before trusting anything.
-   * `error` carries the reason when it is false.
-   */
+  // Whether the snapshot completed. `ok: false` means the fields below are
+  // partial or absent — check this before trusting anything; `error` carries
+  // the reason.
   ok: boolean;
   error?: string;
 
@@ -300,69 +200,31 @@ export interface ChromeStateV1 {
   selUrl: string;
   /** Where the keyboard actually is — see ChromeStateFocusV1. */
   focus: ChromeStateFocusV1 | { error: string };
-  /**
-   * The keyboard decision (`owns` vs `inPage`) and the reasons a repair would
-   * not run — see ChromeStateKeyboardV1. The instrument the freeze report needed.
-   */
+  /** The keyboard decision and the reasons a repair would not run. */
   keyboard: ChromeStateKeyboardV1 | { error: string };
-  /**
-   * The leader's own table and what it is holding back because of it.
-   *
-   * Both halves exist because "the leader is armed and nothing ran" and "the
-   * leader is armed and its keymap never loaded" look identical from every
-   * other field — and they have different fixes (a binding bug versus a core
-   * that never booted), so the reply has to name which one it is.
-   */
+  // "Armed and nothing ran" versus "armed and the keymap never loaded" look
+  // identical from every other field, and have different fixes.
   keymap: { ready: boolean; buffered: number };
-  /**
-   * The last keystrokes the helper's dispatcher saw, newest last, each with the
-   * branch it took (`br`) and whether it was consumed (`c`).
-   *
-   * Dev-only: a release build records nothing and the list is empty. It exists
-   * because "the key did nothing" and "the key never arrived" are opposite
-   * diagnoses with opposite fixes, and no other field of this reply can tell
-   * them apart.
-   */
+  // Last keystrokes the dispatcher saw, newest last, with branch (`br`) and
+  // consumed (`c`). Dev-only: a release build records nothing. Separates "the
+  // key did nothing" from "the key never arrived".
   keyTrace: Array<Record<string, unknown>>;
-  /**
-   * The NAVIGATION-SCOPED EXPECTATION WINDOW, and how long the last one lasted.
-   *
-   * A key declined by this window is indistinguishable from a key nobody
-   * answered — the same sentence as a dead keyboard — so a failure report has to
-   * be able to name it. `open` with an `ageMs` that fits inside the window means
-   * "the helper handed that key to a document that had not reported yet"; `open`
-   * false means the window is not the explanation and the reader should look
-   * elsewhere.
-   *
-   * `gapMs` is the measurement the window's LENGTH should be set from: the arming
-   * is a navigation notification and the close is the page's own boot report, so
-   * the difference is that report's latency through content → background → relay
-   * → helper. -1 means no window has closed early in this session; `gapSamples`
-   * says how many did.
-   *
-   * `doc` is the document Firefox reported IN the tab when the last arming
-   * question was asked — which is not the same as the tab's URL on the pages where
-   * the distinction matters: a failed load keeps the requested `http(s)` address
-   * while the document is `about:neterror`, and that document can never report, so
-   * the window must not be armed for it (`firefoxErrorDocument`). Naming it here
-   * is what makes "nothing armed" decidable from a failure report alone.
-   */
+  // The NAVIGATION-SCOPED EXPECTATION WINDOW. A declined key is
+  // indistinguishable from an unanswered one, so a failure report names the
+  // window: `open` + `ageMs` inside the window = the key was handed to a
+  // document that had not reported yet. `gapMs` is the window's latency
+  // measurement (arming is a navigation notice, closing is the page's boot
+  // report); -1 = no window closed early this session. `doc` is the document
+  // Firefox reported in the tab when the last arming question was asked — not
+  // always the tab's URL (`about:neterror` keeps the requested address and can
+  // never report, so the window must not be armed for it).
   expect:
     | { open: boolean; ageMs: number; leftMs: number; gapMs: number; gapSamples: number; doc: string }
     | { error: string };
-  /**
-   * The documents that have TOLD this helper they are alive, one row per tab.
-   *
-   * `i` is the tab's strip index at the moment of the read, `u` the URL the
-   * record names (`ext:`-shortened, like `strip`) and `d` its document nonce.
-   *
-   * It answers the one question `chromeOwnsKeys` cannot explain about itself:
-   * ownership is decided by looking for a record ON THE SELECTED TAB, so a wrong
-   * answer means either that no record was ever placed for that tab or that one
-   * was placed on a neighbour — and from outside, "the helper claimed the keys
-   * on a live page" looks identical either way. Two causes, opposite fixes
-   * (placement versus reporting), and this is the field that separates them.
-   */
+  // Documents that have TOLD the helper they are alive, one row per tab.
+  // Separates "no record was ever placed for this tab" from "one was placed on
+  // a neighbour" — two causes of the same misread of chromeOwnsKeys, with
+  // opposite fixes (placement versus reporting).
   presence: Array<{ i: number; u: string; d: string }>;
 
   // --- tabs -------------------------------------------------------------------
@@ -387,45 +249,27 @@ export interface ChromeStateV1 {
   nativeSplit: any;
 }
 
-/** What the reader needs — the same two things the debug handler had. */
 export interface StateReaderDeps {
   env: ChromeEnv;
   getState(): ChromeStateSource;
 }
 
 export interface StateReader {
-  /**
-   * Assemble one snapshot.
-   *
-   * Does NOT throw. Two kinds of failure, reported differently on purpose:
-   *
-   *   * a FIELD that cannot be read (a torn-down tab, a bar that is gone) is a
-   *     degradation — the snapshot completes, the field is listed in
-   *     `degraded`, and `ok` stays true.
-   *   * a SOURCE that cannot answer AT ALL (the chrome helper is not there) is
-   *     not a degradation — the whole read becomes `ok: false` with the error.
-   *
-   * The second is deliberately fatal rather than filled with a default. These
-   * accessors are the product's own verdicts — `chromeOwnsKeys` above all, the
-   * gate on every key decision — and a snapshot that defaulted them to `false`
-   * would read as "nothing is open, nothing owns the keys": a broken helper
-   * would look exactly like a working one. Refusing to answer is the only
-   * honest option, and the caller checks `ok`.
-   */
+  // Assemble one snapshot; never throws. A FIELD that cannot be read is a
+  // degradation (snapshot completes, listed in `degraded`, `ok` stays true); a
+  // SOURCE that cannot answer at all makes the whole read `ok: false`. The
+  // ownership verdicts are deliberately fatal, not defaulted: `chromeOwnsKeys`
+  // gates every key decision, and defaulting it to false would read a broken
+  // helper as a healthy idle one.
   read(): ChromeStateV1;
   /** The version this build speaks. The handler stamps it into every reply. */
   version: number;
 }
 
-/**
- * Build the reader the `#lfc=state` handler answers with.
- *
- * Every field is computed defensively, exactly as the inline handler computed
- * it: a torn-down tab must not turn a state read into a failed read. What is
- * NEW here is that the failure is *reported* rather than smuggled — a handler
- * that threw answered `{error}` with no version, and the harness read it as a
- * state with every field missing.
- */
+// Every field is computed defensively, as the inline handler did: a torn-down
+// tab must not turn a state read into a failed read. The improvement is that
+// the failure is reported, not smuggled — the old handler answered `{error}`
+// with no version, which the harness read as a state with every field missing.
 export function createStateReader(deps: StateReaderDeps): StateReader {
   const env = deps.env;
   const doc = env.document as any;
@@ -434,15 +278,9 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
   const failed: { unreadable?: string[] } = {};
 
   function read(): ChromeStateV1 {
-    // The contract is that `read()` never throws: a snapshot that could not be
-    // taken is reported as `ok: false`, which the consumer refuses. The work
-    // itself is in readUnsafe(), which is allowed to throw.
     try {
       return readUnsafe();
     } catch (e) {
-      // Carry the detail across the boundary: "the snapshot failed" without
-      // naming what could not be read leaves the reader guessing, which is the
-      // situation this whole contract exists to end.
       const unreadable = failed.unreadable || [];
       const error =
         String(e) + (unreadable.length ? ` (unreadable: ${unreadable.join(", ")})` : "");
@@ -455,19 +293,13 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
     try {
       st = deps.getState();
     } catch (e) {
-      // The chrome helper itself is unreachable. There is no honest snapshot to
-      // give, so say so rather than answering with an empty one.
+      // The chrome helper itself is unreachable: no honest empty snapshot.
       return { v: CHROME_STATE_VERSION, ok: false, error: String(e) } as ChromeStateV1;
     }
     const partial: any = { v: CHROME_STATE_VERSION, ok: true };
 
-    // The product's own verdicts, read through a hard failure.
-    //
-    // These are deliberately NOT degradable. `chromeOwnsKeys` is the gate on
-    // every key decision, and a snapshot that defaulted it to false would read
-    // as "chrome owns nothing here" — a dead helper indistinguishable from a
-    // healthy idle one. If any of them cannot answer, the reply is marked
-    // failed, and the consumer refuses it (see ChromeStateHandle).
+    // The ownership verdicts — the product's own decision gates — are not
+    // degradable: see StateReader for why a default would lie.
     const verdict = <T>(name: string, fn: () => T): T => {
       try {
         return fn();
@@ -484,9 +316,8 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
       try {
         return fn();
       } catch (e) {
-        // A field that cannot be read is recorded and the snapshot keeps going:
-        // the whole reply is worth more than any one field, and `ok` stays true
-        // because the snapshot DID complete.
+        // One dead field keeps the rest of the snapshot: the whole reply is
+        // worth more than any one field, and the read DID complete.
         partial.degraded = partial.degraded || [];
         partial.degraded.push({ field: name, error: String(e) });
         return fallback;
@@ -508,12 +339,10 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
       "<error>"
     );
     partial.relay = step("relay", () => st.relay(), null);
-    // The loader's own failure channel. config.js and the window actor report
-    // through Services.console.logStringMessage, and until now those messages
-    // went to the ONLY observer a console hospital can see: the browser
-    // console, which nobody is watching when a feature silently fails. The
-    // snapshot carries the lazyfox lines ("lazyfox actor preflight failed" …)
-    // so a missing capability reads as a diagnostic, not as silence.
+    // The loader's own failure channel: config.js and the window actor report
+    // via Services.console.logStringMessage, which only the browser console
+    // shows — nobody watches it when a feature silently fails. Carrying the
+    // lazyfox lines here turns a missing capability into a diagnostic.
     partial.lfConsole = step(
       "lfConsole",
       () => {
@@ -535,16 +364,13 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
     partial.popup = step("popup", () => {
       const panels = Array.from(doc.querySelectorAll(".lf-panel")) as any[];
       const items = (p: any) => Array.from(p.querySelectorAll(".lf-item")) as any[];
-      // Read across the WHOLE document, not per panel: a popup input can be
-      // re-created outside its panel, and a stale input left in the document
-      // is exactly the thing a test needs to see.
+      // Across the WHOLE document, not per panel: a popup input can be
+      // re-created outside its panel.
       const inputs = Array.from(doc.querySelectorAll(".lf-input")) as any[];
       return {
         current: st.hasPopup(),
-        // Counted from the leader controller's own mirror, NOT from `.wk.on`:
-        // the overlay host attaches a CLOSED shadow root, so a querySelectorAll
-        // from here cannot see inside it and always answered 0 — an instrument
-        // that could not see the thing it existed to detect.
+        // From the document attribute, not `.wk.on`: the overlay host has a
+        // CLOSED shadow root we cannot see into (it always answered 0).
         wkOn: doc.documentElement.getAttribute("data-lf-whichkey") === "1" ? 1 : 0,
         rootInputs: doc.querySelectorAll(".lf-popup .lf-input").length,
         panels: panels.map((p) => ({
@@ -585,15 +411,9 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
     partial.leaderPending = verdict("leaderPending", () => st.leaderPending());
     partial.lastAction = verdict("lastAction", () => st.lastAction());
     partial.lastMoveDebug = verdict("lastMoveDebug", () => st.lastMoveDebug());
-    // A field that cannot be read keeps the rest of the snapshot: it degrades
-    // rather than failing the reply, unlike the ownership verdicts above.
-    partial.keymap = step("keymap", () => st.keymap(), {
-      ready: false,
-      buffered: -1,
-    } as any);
+    partial.keymap = step("keymap", () => st.keymap(), { ready: false, buffered: -1 } as any);
     partial.keyTrace = step("keyTrace", () => st.keyTrace(), [] as any);
-    // Shortened the way `strip` is, so a reader can compare a presence row with
-    // a strip row without knowing the extension's UUID.
+    // Shortened the way `strip` is, so a presence row compares with a strip row.
     partial.presence = step(
       "presence",
       () =>
@@ -604,18 +424,12 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
         })),
       [] as any,
     );
-    // The timer, next to the two facts it is decided from (`presence`, and the
-    // URL class `selUrl` names): see ChromeStateV1.expect.
     partial.expect = step("expect", () => st.expectation(), { error: "expectation unavailable" } as any);
     partial.selUrl = step("selUrl", () => {
       const u = win.gBrowser.selectedBrowser && win.gBrowser.selectedBrowser.currentURI;
       return u ? String(u.spec) : "?";
     }, "err");
     partial.focus = step("focus", () => st.focus(), { error: "focus unavailable" } as any);
-    // The decision, next to the facts it is made from — see
-    // ChromeStateKeyboardV1. Degradable rather than fatal, like `focus`: it is
-    // read only by diagnostics and by a test asking why a key did nothing, and
-    // a reply worth more than any one field.
     partial.keyboard = step("keyboard", () => st.keyboard(), { error: "keyboard unavailable" } as any);
 
     // --- tabs ----------------------------------------------------------------
@@ -628,18 +442,15 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
     }, 0);
 
     // The product's OWN numbering, published rather than re-derived by the
-    // harness. The harness used to rebuild this list from the strip and got it
-    // subtly wrong (it counted the relay tab the product skips), so a correctly
-    // typed digit named the wrong tab and the failure surfaced as "the split did
-    // not form" — pointing at the feature instead of at the test. There is
-    // exactly one numbering and it is here.
+    // harness (which counted the relay tab the product skips, so a correctly
+    // typed digit named the wrong tab). One numbering, one answer.
     partial.realTabs = step("realTabs", () =>
       st.realTabs().map((t: any, i: number) => {
         let spec = "";
         try {
           spec = t.linkedBrowser && t.linkedBrowser.currentURI ? t.linkedBrowser.currentURI.spec : "";
         } catch (e) {
-          // torn down mid-enumeration
+          // a tab can be torn down mid-enumeration
         }
         return {
           n: i + 1,
@@ -686,6 +497,18 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
     partial.nativeSplit = step("nativeSplit", () => {
       const sv = st.activeSplitView();
       const sel = win.gBrowser.selectedTab;
+      const protoNames: string[] | null = (() => {
+        if (!sv) return null;
+        const names: string[] = [];
+        let p = Object.getPrototypeOf(sv);
+        let depth = 0;
+        while (p && depth < 4) {
+          for (const n of Object.getOwnPropertyNames(p)) names.push(n);
+          p = Object.getPrototypeOf(p);
+          depth++;
+        }
+        return names.slice(0, 60);
+      })();
       return {
         fn: typeof win.gBrowser.addTabSplitView,
         pref: env.services.prefs.getBoolPref("browser.tabs.splitView.enabled", false),
@@ -693,19 +516,7 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
         selHasSplitview: sel ? !!sel.splitview : false,
         selUrl: sel && sel.linkedBrowser && sel.linkedBrowser.currentURI ? sel.linkedBrowser.currentURI.spec : null,
         svMethods: sv ? Object.getOwnPropertyNames(sv).filter((n) => n !== "tabs" && n !== "splitViewId").slice(0, 40) : null,
-        svProto: sv
-          ? (() => {
-              const names: string[] = [];
-              let p = Object.getPrototypeOf(sv);
-              let depth = 0;
-              while (p && depth < 4) {
-                for (const n of Object.getOwnPropertyNames(p)) names.push(n);
-                p = Object.getPrototypeOf(p);
-                depth++;
-              }
-              return names.slice(0, 60);
-            })()
-          : null,
+        svProto: protoNames,
         addTabsType: sv ? typeof sv.addTabs : "no-sv",
         unsplitTabsType: sv ? typeof sv.unsplitTabs : "no-sv",
         reverseTabsType: sv ? typeof sv.reverseTabs : "no-sv",

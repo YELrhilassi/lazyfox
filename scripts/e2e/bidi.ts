@@ -1,33 +1,15 @@
 // WebDriver BiDi driver for the Lazyfox e2e tier.
-//
-// Zero npm dependencies — Node 24's global WebSocket carries the BiDi
-// protocol. This file is the ONLY place that speaks the raw protocol; every
-// suite above it talks to typed helpers.
-//
-// WHAT CHANGED FROM THE PREVIOUS DRIVER, and why each one is here:
-//
-//   1. Every call takes an AbortSignal. The old driver could not stop a hung
-//      command, so a stalled test held its browsing context until the 180s
-//      timeout and the NEXT test ran against whatever it left behind. One
-//      failure became ten. Here a timeout aborts in-flight commands and the
-//      fixture disposes, so the damage is bounded to the one test.
-//
-//   2. `until()` replaced `waitFor()`. `waitFor` resolved only on a TRUTHY
-//      value, so `0`, `false` and `""` were unreachable and ~10 call sites had
-//      grown workarounds like `return n <= 2 ? "settled" : null`. `until`
-//      takes an explicit matcher; the trap is now impossible to walk into
-//      because the default is "not null/undefined", not "truthy".
-//
-//   3. `attempt()` is separated from hard calls. The old suite had 158
-//      `.catch(() => null)`, which collapses "the protocol threw", "the
-//      context is dead" and "the product returned null" into one indistinguishable
-//      value — and then reports a timeout that reads like a product bug.
-//      `attempt()` records what failed so the timeout message can say which of
-//      the three it was.
-//
-//   4. Failure messages carry the call site. Same idea as the old callerSite()
-//      stack walk, kept because it is good, but computed here rather than in a
-//      helper so every wait names the suite line that asked for it.
+// Zero npm dependencies — Node 24's global WebSocket carries the protocol;
+// this is the only place that speaks it raw, suites talk to typed helpers.
+// Conventions that keep failures diagnosable (all four were learned the hard
+// way — do not "simplify" them away):
+//   1. Every call takes an AbortSignal: a hung command used to hold the
+//      context until a 180s timeout, so one failure became ten.
+//   2. `until()` uses an explicit matcher, defaulting to not-null — a truthy
+//      default made 0/false/"" unreachable and spawned workarounds.
+//   3. `attempt()` records which of protocol-threw / context-dead / product
+//      returned null produced the timeout, instead of collapsing them.
+//   4. Failure messages carry the suite call site that asked for the wait.
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
