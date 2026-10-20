@@ -220,10 +220,49 @@ export const PAGE_GUARD = 8;
 // UIs (YouTube's Polymer/Lit components, Reddit's faceplate-*) nest custom
 // elements several deep, so a shallow walk missed real controls.
 export const SHADOW_DEPTH = 6;
-// Bound the cursor:pointer sweep on very large framework DOMs. A watch page
-// carries thousands of light-DOM nodes, so the old 6000 cap could stop before
-// reaching the player controls.
-export const MAX_SCAN = 14000;
+// How many elements of one root (document or shadow root) the discovery walk
+// may visit.
+//
+// This used to bound the cursor:pointer sweep alone (and before that, a walk
+// whose every node was expensive), which is why it was 14000: a watch page
+// carries thousands of light-DOM nodes, and the old 6000 cap could stop before
+// reaching the player controls. The walk is TIERED now (see collect.ts): the
+// cheap tier — shadow-root discovery, the thing that lets a selector query run
+// inside a custom element's tree — runs for every visited node up to this cap,
+// while the expensive tier (computed-style reads, rect reads) is bounded by the
+// wall-time budget and simply goes quiet past it.
+//
+// So the cap's job has changed: with the expensive tier budget-bound, this cap
+// only binds on pages where even the cheap tier has not finished. It must be
+// large enough that a framework app's full light DOM is inside it — on a page
+// bigger than the cap, the custom elements near the end of the document (the
+// post-carousel nav at the bottom of a feed, the player widget) would never be
+// discovered, no matter how cheap discovering them became. The value is the
+// size of a genuinely heavy app document (a social feed or a watch page in the
+// tens of thousands of elements), not a guess at jank: per-node cheap-tier work
+// is one property read, so 3× the old cap costs single-digit milliseconds of
+// discovery on a page that would previously have been truncated at 14000.
+export const MAX_SCAN = 42000;
+
+// How often, while hints are OPEN, the pool is rebuilt for the page's own good.
+//
+// The normal pool refresh is mutation-driven: a control that is INSERTED (or
+// replaced) while hints are open schedules one, clearing DOM_RESYNC_DELAY.
+// But a control can become presentable without any childList change at all:
+// the player that gates its own Skip button behind a class flip at the five-
+// second mark, a slot that was display:none when the button was inserted, a
+// panel that reveals itself by removing a class. For such a control the
+// mutation observer stays silent forever, and the pool that `;f` built — which
+// rejected the button because its rect was empty at collect time — is missing
+// it for the whole session. That is the "there is a Skip button right there
+// and no hint ever appears for it" report.
+//
+// This interval is the catch-all for every "changed without announcing it"
+// shape: one budgeted collect pass (see COLLECT_BUDGET_MS) per interval, and
+// only while hints are open. It costs one pass per 2 seconds on the worst page
+// and nothing at all on any page where the batch has not changed, because an
+// identical batch is detected and kept.
+export const POOL_RESYNC_MS = 2000;
 // After the viewport has moved, wait this long for scrolling to settle before
 // re-hinting the newly visible batch (keeps mid-scroll churn down).
 export const RESYNC_DELAY = 150;

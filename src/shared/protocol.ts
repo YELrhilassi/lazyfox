@@ -311,7 +311,19 @@ export interface RelayApi {
   // content-process bridge came up. Sent on a timer until it is ACKNOWLEDGED,
   // because a fire-and-forget request can only prove it was queued.
   alive: {
-    req: { version: string; profileName?: string; profileDir?: string; bridge?: "1" | "0" };
+    req: {
+      version: string;
+      profileName?: string;
+      profileDir?: string;
+      bridge?: "1" | "0";
+      // The loader's console lines (Services.console, "lazyfox"-tagged),
+      // relayed on the one channel that provably works. The browser console is
+      // an observer nobody watches, and the #lfc= snapshot channel dies in
+      // exactly the situations the lines exist for — so the announce carries
+      // them, and the background files them in storage where diagnostics can
+      // read them.
+      errs?: string[];
+    };
     res: { ok: true };
   };
   // Flip the "press the key to reach the chrome layer" preference. The helper

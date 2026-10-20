@@ -84,25 +84,34 @@ So there are two distinct problems, and they need different fixes:
 | 2 | The event *state* was malformed, so press-state machines never fired | **FIXED** — see 2.5 |
 
 **The fix for #1 is a privileged input path, not a cleverer synthetic
-event** — and it is now implemented; see 2.6. There is exactly one way to produce a genuinely trusted
-click from inside the browser: `nsIDOMWindowUtils.sendMouseEvent` in the
-content process. The window actor already runs there with `Services` and
-`windowUtils` available (see `src/chrome/actor-child.ts`, which uses
-`windowUtils` to dispatch trusted *keys*), so the plumbing exists — the
-`sendMouseEvent` call for clicks does not.
+event** — and it is implemented, in-process, over the "Lazyfox" window
+actor. There is exactly one way to produce a genuinely trusted click from
+inside the browser, and the actor runs in the one process that can: the
+content script dispatches a `CustomEvent` carrying a per-document random
+nonce (mounted on `<html data-lf-trusted>` by the child actor during its
+first keystroke-driven instantiation, and kept mounted by the chrome helper
+starting with Firefox 159, see `src/chrome/actor-child.ts` and
+`src/chrome/bridgemount.ts`); the actor answers with a move → down → up
+sequence from the window's own synthesizer.
 
-`actor-child.ts` currently carries an **orphaned comment block** describing
-exactly that missing function: it documents a move → down → up → click
-sequence and then ends with no function under it, left over from the
-trusted-press removal. Treat it as the design note for the fix and not as
-working code.
+Note the API change in Firefox 159: `nsIDOMWindowUtils.sendMouseEvent` is
+gone ("windowUtils present, sendMouseEvent=undefined", measured on
+Developer Edition 159.0). The synthesizer lives on the window now —
+`window.synthesizeMouseEvent`, ChromeOnly — and the actor prefers it while
+keeping the old `windowUtils.sendMouseEvent` for older Firefox.
+Registration must also carry `safeForUntrustedWebProcess: true`: since that
+cycle Gecko refuses to instantiate a window actor in any web/file content
+process without it, which is what produced
+"Window protocol 'Lazyfox' doesn't match remote type 'web'" and kept the
+whole bridge dark.
 
-The wiring would be: hints → background → relay port → chrome helper → actor →
-`windowUtils.sendMouseEvent`. That is four hops and a real latency budget, so
-it should be a **fallback**, not the default: try the cheap synthetic path
-first, and escalate only when the activation watcher reports that the page did
-not react. The watcher already exists for exactly that purpose, so the
-escalation trigger is already in place.
+The escalation trigger is the activation watcher: the synthetic path fires
+first (it is free and in-process), and the privileged press is attempted
+only when the target itself gave no sign of life — one retry, never a loop,
+never a link (`canEscalate`, see escalate.ts). Focus on the pressed button
+itself is not a sign of life: Gecko focuses any pressed control on
+mousedown, so a trust-gated button lands "focused but otherwise silent" and
+must still be escalated.
 
 The trusted press was aimed at exactly this button, on the theory that it
 refuses untrusted events. That theory was never tested — and 2.0 above shows it

@@ -662,6 +662,13 @@ html,body{margin:0}
     <button id="skipad" data-id="skipad" onclick="document.title='SKIPPED'">Skip ad <span data-id="skipad-inner">now</span></button>
   </div>
   <button id="deaf" data-id="deaf">Ignore me</button>
+  <!-- A control nothing reaches: no handler at all, so it ignores even a
+       genuinely trusted press. This is the shape the "reported, not silent"
+       feedback is measured against now that the privileged press works —
+       before the actor existed in the harness, the DEAF control (which only
+       refuses UNtrusted clicks) was that shape, because no real press could
+       ever reach it. -->
+  <button id="stone" data-id="stone" style="display:block;width:120px;height:34px;margin-top:14px;background:#333;color:#eee;border:0;font:13px system-ui,sans-serif;cursor:pointer">No listener at all</button>
 
   <div id="lonely" data-id="lonely"><img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='70'%3E%3Crect width='120' height='70' fill='%23222'/%3E%3C/svg%3E"></div>
 </main>
@@ -1109,6 +1116,38 @@ html,body{margin:0}
     }
   }
   customElements.define("closed-field", ClosedField);
+</script>
+</body></html>`,
+  },
+  // YouTube's load shape: the search box takes focus the moment the page
+  // paints, BEFORE the content script arrives, and nobody ever types into it.
+  // The parked-field rule needs a page where the caret is parked
+  // programmatically and stays parked — a scripted element.focus() during the
+  // tests is NOT the same thing, because the suite focus helper touches focus
+  // as a user action and the park rule keys off the real focusin the page
+  // itself fires.
+  "/autofocus": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>AUTOFOCUS</title>
+<style>
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:#0b0b0f; color:#eee; }
+  main { padding:16px; max-width:640px; }
+  #yt-search { display:block; width:420px; padding:8px; border-radius:20px;
+               border:1px solid #444; background:#15151c; }
+  #plain { display:block; width:320px; padding:8px; margin-top:14px; }
+</style></head>
+<body>
+<main>
+  <input id="yt-search" data-id="yt-search" placeholder="Search" autocomplete="off">
+  <input id="plain" data-id="plain" placeholder="manual focus here">
+  <a id="link1" href="/target1">a link</a>
+</main>
+<script>
+  // Run at parse time — before any content script at document_idle can see it,
+  // exactly like YouTube's own autofocus. window.__parkedSince records when
+  // it happened so a test can prove the caret was parked LONG before the
+  // leader press it makes.
+  document.getElementById("yt-search").focus();
+  window.__parkedSince = Date.now();
 </script>
 </body></html>`,
   },
@@ -1777,5 +1816,129 @@ left out of it.</p>
 </section>
 <footer>FOOTER_CHROME</footer>
 </body></html>`,
+  },
+
+  // ---- carousel-shaped discovery: custom-element controls late in a huge DOM
+  //
+  // The real pages this mirrors: a Reddit post's image carousel and an X photo
+  // viewer each draw their previous/next arrows inside custom elements whose
+  // real buttons live in SHADOW DOM (Reddit's <shreddit-gallery-carousel> is a
+  // Lit component whose shadow root holds its controls), and a feed page puts
+  // TENS OF THOUSANDS of light-DOM nodes before them in traversal order.
+  //
+  // Two things could lose those buttons, and both were true at once: the
+  // per-root HINTABLE_SELECTOR query cannot see into a shadow root, so the
+  // buttons only exist if the discovery walk reaches their HOSTS — and the
+  // walk used to stop at its wall-time budget (or its node cap), both of which
+  // a feed-sized DOM exhausts long before the tail. The fixture is that tail:
+  // 17 000 collapsed light-DOM nodes (a feed's offscreen rows), then the two
+  // carousel hosts at the very end, fixed to the screen so “late in the walk”
+  // is not confused with “off screen”.
+  //
+  // Each host opens a CLOSED shadow root and fills it with a real button that
+  // fills the host's box, so the page realm can see the HOSTS (data-id-owner)
+  // but never the buttons — the same asymmetry a real component library has.
+  "/carousel": {
+    body:
+      "<!DOCTYPE html><html><head><title>Carousel Page</title></head><body>" +
+      // The two hosts, first in the SOURCE order they occupy on screen (fixed
+      // positioning keeps them visible regardless of where they sit in the
+      // document) — but LAST in traversal order, which is what the walk sees.
+      "<lf-carousel-prev id='caro-prev' data-id-owner='carousel-prev' style='position:fixed;top:60px;left:8px;width:90px;height:36px;display:block'></lf-carousel-prev>" +
+      "<lf-carousel-next id='caro-next' data-id-owner='carousel-next' style='position:fixed;top:60px;left:110px;width:90px;height:36px;display:block'></lf-carousel-next>" +
+      // A feed-sized run of collapsed rows BEFORE the hosts in document
+      // order: what the discovery walk must survive to reach them.
+      "<div id='feed'>" + "<div class='row' style='display:none'></div>".repeat(17000) + "</div>" +
+      // A <p> after the feed, so at least one ordinary hint exists near the top
+      // and the batch is not empty at ;f time.
+      "<p style='height:60vh'><a id='plain-link' href='/target1'>a plain link</a></p>" +
+      "<script>" +
+      "customElements.define('lf-carousel-prev', class extends HTMLElement {" +
+      " connectedCallback() {" +
+      "  var sh = this.attachShadow({mode:'closed'});" +
+      "  var b = document.createElement('button');" +
+      "  b.textContent = 'Prev'; b.setAttribute('aria-label','Previous');" +
+      "  b.style.cssText = 'width:100%;height:100%';" +
+      "  b.addEventListener('click', function(){ document.title='CAROUSEL-PREV'; });" +
+      "  sh.appendChild(b);" +
+      " }" +
+      " innerBounds() { return this.getBoundingClientRect(); }" +
+      "});" +
+      "customElements.define('lf-carousel-next', class extends HTMLElement {" +
+      " connectedCallback() {" +
+      "  var sh = this.attachShadow({mode:'closed'});" +
+      "  var b = document.createElement('button');" +
+      "  b.textContent = 'Next'; b.setAttribute('aria-label','Next');" +
+      "  b.style.cssText = 'width:100%;height:100%';" +
+      "  b.addEventListener('click', function(){ document.title='CAROUSEL-NEXT'; });" +
+      "  sh.appendChild(b);" +
+      " }" +
+      " innerBounds() { return this.getBoundingClientRect(); }" +
+      "});" +
+      "</sc" + "ript></body></html>",
+  },
+
+  // ---- YouTube-skip-shaped: a control that is PRESENT but not presentable
+  //
+  // The documented modern structure (button.ytp-skip-ad-button inside the ad
+  // module) shows the button in the DOM while its ancestor is display:none:
+  // the skip control is inserted (or already present) BEFORE it is clickable,
+  // and becomes presentable by an ATTRIBUTE change at the five-second mark —
+  // a class flip, never a childList insertion. A childList observer stays
+  // silent through that; the pool built by ;f before that moment rejected the
+  // button because its box was empty, and with no mutation to announce the
+  // change the pool stays wrong for the whole session.
+  //
+  // The fixture inserts the fully-built button hidden in a display:none slot, opens
+  // hints over it, and reveals it 3 s later by removing the style attribute —
+  // attribute-only, exactly the shape nothing observes. The hint must appear
+  // (timer-driven pool refresh) and the key must click it.
+  "/adskip": {
+    body:
+      "<!DOCTYPE html><html><head><title>Skip Page</title></head><body>" +
+      "<a id='watch-link' data-id='watch-link' href='/target1'>a watch link</a>" +
+      "<div id='mock-player' style='position:relative;width:640px;height:360px;background:#111'>" +
+      // The ad slot: present from load, display:none for the first 3 s, then
+      // un-hidden by an attribute change only. No childList event fires then.
+      "<div id='ad-slot' style='display:none'>" +
+      "<button id='skip-ad' data-id='skip-ad' style='position:absolute;left:430px;top:280px;width:130px;height:44px' onclick=\"document.title='AD-SKIPPED'\">Skip</button>" +
+      "</div></div>" +
+      "<div style='height:60vh'></div>" +
+      "<script>setTimeout(function(){ document.getElementById('ad-slot').removeAttribute('style'); }, 3000);</scr" + "ipt>" +
+      "</body></html>",
+  },
+
+  // ---- the trusted-press measurement
+  //
+  // The one control shape the synthetic sequence can never satisfy: a click
+  // handler that reads event.isTrusted and refuses anything scripted — the
+  // reported behaviour of YouTube's skip control. The fixture RECORDS every
+  // pointer event it is offered (type, isTrusted, buttons, coordinates), so a
+  // failing test can name the step that broke instead of guessing:
+  //
+  //   no entries at all      the privileged press never fired (no actor)
+  //   entries, trusted:false the events came from the synthetic sequence only
+  //   trusted:true          the real windowUtils press landed — and if the
+  //                          title did not change, the press went to the
+  //                          wrong point, which the recorded coordinates say
+  "/trustgate": {
+    body:
+      "<!DOCTYPE html><html><head><title>TrustGate</title>" +
+      "<style>body{margin:0;font:14px system-ui,sans-serif}" +
+      "#gate{position:fixed;top:80px;left:40px;width:200px;height:46px}" +
+      "</style></head><body>" +
+      "<a id='plain-link' data-id='plain-link' href='/target1'>an ordinary link</a>" +
+      "<button id='gate' data-id='gate'>trusted press only</button>" +
+      "<script>" +
+      "var g = document.getElementById('gate');" +
+      "window.__gate = [];" +
+      "['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function (t) {" +
+      "  g.addEventListener(t, function (e) {" +
+      "    window.__gate.push({type:e.type, trusted:e.isTrusted, buttons:e.buttons, x:e.clientX|0, y:e.clientY|0});" +
+      "    if (window.__gate.length > 80) window.__gate.shift();" +
+      "  });" +
+      "});" +
+      "g.addEventListener('click', function (e) { document.title = e.isTrusted ? 'GATE-OPEN' : 'GATE-SWALLOWED'; });" +
+      "</scr" + "ipt></body></html>",
   },
 };

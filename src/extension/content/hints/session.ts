@@ -22,6 +22,7 @@ import {
   DOM_RESYNC_MAX_WAIT,
   MAX_HINTS,
   PAGE_GUARD,
+  POOL_RESYNC_MS,
   RESYNC_DELAY,
   type HintItem,
 } from "./selectors";
@@ -148,6 +149,8 @@ export function createLinkHints(
   let domDirty = false;
   let domResyncAt = 0;
   let domSyncFirst = 0;
+  // Deadline for the slow, mutation-independent pool refresh.
+  let poolResyncAt = 0;
   let domObserver: MutationObserver | null = null;
   let shadowObservers: MutationObserver[] = [];
   /** The once-per-`;f` "the page finished loading" re-hint (see watchDom). */
@@ -272,6 +275,10 @@ export function createLinkHints(
     overlay.mount();
     watchDom();
     watchMotion();
+    // First timer refresh is owed this long after the batch was built. Never
+    // zeroed earlier: a page already mutating keeps this pushed out by the
+    // mutation path, which zeroed it below.
+    poolResyncAt = performance.now() + POOL_RESYNC_MS;
     ensureTick();
     await assign(vis);
     if (session !== mySession) return; // exited (ESC) during the await
@@ -453,6 +460,9 @@ export function createLinkHints(
           domSyncFirst = now;
         }
         domResyncAt = Math.min(now + DOM_RESYNC_DELAY, domSyncFirst + DOM_RESYNC_MAX_WAIT);
+        // The timer refresh is subsumed by a real mutation: whatever the
+        // debounced re-collect turns up, the timer did not need to run first.
+        poolResyncAt = 0;
         // The net may be sitting at a coarser delay than the re-hint now owes
         // (it is a still page, so SAFETY_MS); arm it for the shorter wait so an
         // inserted control gets its key from the mutation that announced it.
@@ -565,6 +575,7 @@ export function createLinkHints(
     domDirty = false;
     domResyncAt = 0;
     domSyncFirst = 0;
+    poolResyncAt = 0;
   }
 
   // ONE measurement pass: re-anchor every label, then run any owed re-hint.
@@ -586,6 +597,23 @@ export function createLinkHints(
       domDirty = false;
       domResyncAt = 0;
       pool = resolve.refreshPool();
+      // A refresh just happened; the timer's next one is owed this long after
+      // it, not after the batch was built.
+      poolResyncAt = now + POOL_RESYNC_MS;
+      syncViewport();
+    }
+    // The dormant state a control can be in when the user opens hints: present
+    // in the DOM, rejected by both collections because its box is empty (a
+    // display:none slot, a player hiding its Skip button until the skip window
+    // opens). It becomes presentable by changing an ATTRIBUTE — a class, an
+    // inline style — which the childList observer above deliberately does not
+    // watch, and which nothing else here announces. The mutation path is the
+    // fast channel; this is the slow catch-all that keeps a pool built during
+    // one of those dormant windows from being wrong for the rest of the
+    // session. One budgeted collect per interval; an identical batch is kept.
+    if (poolResyncAt && now >= poolResyncAt) {
+      poolResyncAt = now + POOL_RESYNC_MS;
+      pool = resolve.refreshPool();
       syncViewport();
     }
   }
@@ -602,12 +630,18 @@ export function createLinkHints(
   // the earliest owed work winning over a coarser safety rate — is frames.ts,
   // where it is tested as a function rather than read off a timer.
   function tickDelay(now: number): number {
+    // The EARLIEST owed work wins (frames.ts rule): a due mutation resync and a
+    // due timer resync are the same kind of due — whoever is closer is what the
+    // net must wait for, and a pending one is not a reason to delay the other.
+    const domDue = domDirty ? domResyncAt : 0;
+    const due = domDue && poolResyncAt ? Math.min(domDue, poolResyncAt) : domDue || poolResyncAt;
     return nextMeasurementDelay({
       now: now,
       moving: !!motion && motion.moving(),
       episodeUntil: episodeUntil,
       resyncAt: resyncAt,
-      domResyncAt: domDirty ? domResyncAt : 0,
+      domResyncAt: domDue,
+      poolResyncAt: due,
     });
   }
 

@@ -45,6 +45,7 @@ import { createDebug, type DebugHandlers } from "./debug";
 import { createChromeEnv } from "./env";
 import { installWinListeners } from "./winlisteners";
 import { installActorBridge } from "./actorbridge";
+import { installBridgeMount } from "./bridgemount";
 import { installWinSync } from "./winsync";
 import { createChromeKeyDown } from "./keysdispatch";
 import {
@@ -667,7 +668,7 @@ import { createTypingChannel } from "./typing";
   /* ===================== alive announce ===================== */
 
   const profile = detectProfile(env);
-  const alive = createAliveAnnounce(win, () => channel, profile);
+  const alive = createAliveAnnounce(env, win, () => channel, profile);
 
   /* ===================== cache control ===================== */
 
@@ -825,4 +826,8 @@ split,
     leader: () => leader,
     keyboard,
   });
+
+  // The trusted-click channel (see bridgemount.ts for why it has to be
+  // mounted from here rather than left to page keystrokes).
+  installBridgeMount(env, win);
 })();

@@ -14,6 +14,16 @@ function lfLog(msg) {
   } catch (x) {}
 }
 
+// Boot-stage trace for the loader itself. Writes to the SAME console the
+// failure reports use (Services.console), so one capture path shows both:
+// the announce pipeline files these lines into extension storage, where the
+// diagnostics read them. An earlier version wrote files instead — and its own
+// writes failed silently, which is the failure mode this code exists to end.
+var lfDiag = function (msg) {
+  lfLog("lazyfox loader: " + msg);
+};
+lfDiag("loader booted (config.js ran)");
+
 // resource://lazyfox/ -> <profile>/chrome, so the actor modules (and the frame
 // script) can be referenced by a stable URL. Substitutions are per process;
 // the content-process copy is installed by actor-boot.js below.
@@ -22,8 +32,10 @@ try {
     .getProtocolHandler("resource")
     .QueryInterface(Ci.nsISubstitutingProtocolHandler);
   lfRes.setSubstitution("lazyfox", Services.io.newFileURI(Services.dirsvc.get("UChrm", Ci.nsIFile)));
+  lfDiag("resource://lazyfox mapped to UChrm");
 } catch (e) {
   lfLog("lazyfox resource mapping: " + e);
+  lfDiag("resource mapping FAILED: " + e);
 }
 
 function lfLoad(win) {
@@ -36,13 +48,20 @@ function lfLoad(win) {
     // loadSubScript; the explicit allowUnsafeURL opt-in keeps the profile's
     // chrome/ scripts loadable on both old and new Firefox (older versions
     // simply ignore the unknown option).
-    Services.scriptloader.loadSubScriptWithOptions(ucUrl, {
-      target: win,
-      allowUnsafeURL: true,
-    });
-    win.__lazyfoxLoaded = true;
+    try {
+      lfDiag("userChrome.uc.js loading into a browser window");
+      Services.scriptloader.loadSubScriptWithOptions(ucUrl, {
+        target: win,
+        allowUnsafeURL: true,
+      });
+      win.__lazyfoxLoaded = true;
+      lfDiag("userChrome.uc.js loaded OK");
+    } catch (e) {
+      lfLog("lazyfox userChrome.uc.js: " + e);
+      lfDiag("userChrome.uc.js load FAILED: " + e);
+    }
   } catch (e) {
-    lfLog("lazyfox userChrome.uc.js: " + e);
+    // per-window; the inner catch already reported
   }
 }
 
@@ -67,61 +86,111 @@ function lfLoad(win) {
   // process, which is why the URL may be a resource:// one of ours.
   try {
     Services.ppmm.loadProcessScript("resource://lazyfox/actor-boot.js", true);
+    lfDiag("actor-boot.js loaded into process manager");
   } catch (e) {
     lfLog("lazyfox process boot load: " + e);
+    lfDiag("actor-boot.js load FAILED: " + e);
+    return;
   }
 
-  // Pre-flight: prove the modules are importable and export the classes the
-  // actor manager looks for (LazyfoxChild / LazyfoxParent) BEFORE registering.
-  // A registration whose module cannot load would otherwise fail on every key
-  // press in every process.
-  var childURI = "resource://lazyfox/lazyfox-child.sys.mjs";
+  // WHERE THE MODULES LIVE, measured rather than assumed:
+  //
+  //   * directory svc: UChrm resolves ONLY in the parent — every content
+  //     process throws NS_ERROR_FAILURE there (lazyfox process boot: ...) and
+  //     the substitution was never made, so a resource:// registered module
+  //     could never load where the child actor runs.
+  //   * file: URIs: Firefox REFUSES to import a .sys.mjs from them —
+  //     "System modules must be loaded from a trusted scheme" — so the
+  //     "self-describing registration" the file: scheme was chosen for dies in
+  //     the preflight below, before registration is attempted, and the actor
+  //     is absent ON EVERY INSTALL (visible in lfLoaderErrs).
+  //
+  // The bridge that makes resource://lazyfox/ resolvable in content processes:
+  // sharedData. config.js runs in the parent, resolves the directory URI,
+  // and stores the URI STRING in the process manager's sharedData — which
+  // Gecko propagates into every content process (including ones spawned
+  // later). The boot script (actor-boot.js) reads it back through
+  // Services.cpmm.sharedData and sets the substitution from a plain string —
+  // NO dirsvc, NO file:// import. The registered URI is then resource://, a
+  // trusted scheme on both sides.
+  var DIR_URI = "";
+  try {
+    DIR_URI = Services.io.newFileURI(Services.dirsvc.get("UChrm", Ci.nsIFile)).spec;
+    if (DIR_URI.charAt(DIR_URI.length - 1) !== "/") DIR_URI += "/";
+    // The string propagates to every content process; the boot script turns
+    // it back into a substitution. Set BEFORE loadProcessScript so the first
+    // run of the boot script already sees it.
+    try {
+      Services.ppmm.sharedData.set("lazyfox-dir", DIR_URI);
+    } catch (e2) {
+      lfDiag("sharedData distribute failed: " + e2);
+    }
+  } catch (e) {
+    lfLog("lazyfox actor dir resolve failed: " + e);
+    lfDiag("dir resolve FAILED: " + e);
+  }
+  var childURI  = "resource://lazyfox/lazyfox-child.sys.mjs";
   var parentURI = "resource://lazyfox/lazyfox-parent.sys.mjs";
   try {
-    var childMod = ChromeUtils.importESModule(childURI);
-    var parentMod = ChromeUtils.importESModule(parentURI);
-    if (typeof childMod.LazyfoxChild !== "function" || typeof parentMod.LazyfoxParent !== "function") {
-      throw new Error("actor modules did not export the expected classes");
+    // The preflight imports the URI that will actually be REGISTERED.
+    if (typeof ChromeUtils.importESModule === "function") {
+      var childMod = ChromeUtils.importESModule(childURI);
+      var parentMod = ChromeUtils.importESModule(parentURI);
+      if (typeof childMod.LazyfoxChild !== "function" || typeof parentMod.LazyfoxParent !== "function") {
+        throw new Error("actor modules did not export the expected classes");
+      }
+      lfDiag("preflight OK: child=" + childURI + " parent=" + parentURI);
+    } else {
+      ChromeUtils.importModule(childURI); // legacy path
+      lfDiag("preflight (importModule legacy) OK: child=" + childURI);
     }
   } catch (e) {
     lfLog("lazyfox actor preflight failed: " + e);
+    lfDiag("preflight FAILED: " + e);
     return;
   }
 
-  // Newer Firefox names the option esModuleURI; older releases only understand
-  // moduleURI. Register with whichever this browser accepts.
-  var options = {
-    child: { events: { keydown: {} } },
-    parent: {},
-    allFrames: false,
-  };
-  options.child.esModuleURI = childURI;
-  options.child.moduleURI = childURI;
-  options.parent.esModuleURI = parentURI;
-  options.parent.moduleURI = parentURI;
-  try {
-    ChromeUtils.registerWindowActor("Lazyfox", options);
-    return;
-  } catch (e) {
-    lfLog("lazyfox actor register (combined): " + e);
-  }
-  // Retry without the keys the browser rejected, one family at a time.
-  try {
-    ChromeUtils.registerWindowActor("Lazyfox", {
-      child: { esModuleURI: childURI, events: { keydown: {} } },
-      parent: { esModuleURI: parentURI },
-      allFrames: false,
-    });
-  } catch (e2) {
+  // esModuleURI is the modern option, moduleURI the older spelling; try the
+  // pair first, then the single-name forms, per the platform's acceptance.
+  var attempts = [
+    { kind: "combined", opt: makeOpt("both") },
+    { kind: "esModuleURI", opt: makeOpt("es") },
+    { kind: "moduleURI", opt: makeOpt("mod") },
+  ];
+  for (var i = 0; i < attempts.length; i++) {
     try {
-      ChromeUtils.registerWindowActor("Lazyfox", {
-        child: { moduleURI: childURI, events: { keydown: {} } },
-        parent: { moduleURI: parentURI },
-        allFrames: false,
-      });
-    } catch (e3) {
-      lfLog("lazyfox actor register failed: " + e3);
+      ChromeUtils.registerWindowActor("Lazyfox", attempts[i].opt());
+      lfDiag("registered (" + attempts[i].kind + ")");
+      return;
+    } catch (e) {
+      lfLog("lazyfox actor register (" + attempts[i].kind + "): " + e);
+      lfDiag("register " + attempts[i].kind + " FAILED: " + e);
     }
+  }
+  
+  function makeOpt(kind) {
+    return function () {
+      // wantUntrusted is what makes the harness — and any fake keydown a page
+    // scripts — able to mount this actor: with the default (false) the
+    // protocol's keydown listener ignores untrusted events, and a page whose
+    // only keystrokes are synthetic sits with data-lf-actor set but no trusted
+    // channel for an entire session. Instantiation alone is harmless; every
+    // decision in handleEvent is per-event and stays deliberately strict.
+    var child = { events: { keydown: { wantUntrusted: true } } };
+      var parent = {};
+      if (kind === "both") { child.esModuleURI = childURI; child.moduleURI = childURI; parent.esModuleURI = parentURI; parent.moduleURI = parentURI; }
+      else if (kind === "es") { child.esModuleURI = childURI; parent.esModuleURI = parentURI; }
+      else { child.moduleURI = childURI; parent.moduleURI = parentURI; }
+      // safeForUntrustedWebProcess MUST be true: since Firefox 159 the actor
+      // instantiation check refuses every web/file content process for actors
+      // that do not set it (dom.jsipc.check_safeForUntrustedWebProcess), and
+      // the refusal surfaces as the remote-type error that kept this whole
+      // bridge dark: "Window protocol 'Lazyfox' doesn't match remote type
+      // 'web'". This bridge IS built for web content — it only listens for
+      // keydown and pings the page with trusted clicks — so the opt-in is what
+      // the flag exists for. Older Firefox ignores the unknown key.
+      return { child: child, parent: parent, allFrames: false, safeForUntrustedWebProcess: true };
+    };
   }
 })();
 

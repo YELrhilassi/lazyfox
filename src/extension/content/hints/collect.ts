@@ -297,6 +297,20 @@ function nowMs(): number {
  * visibility answers about the same document; given none, one is created here
  * (which is the same cost as before this was cacheable, and leaves nothing
  * behind).
+ *
+ * THE WALK IS TIERED. The walk used to be one cost class: every node paid the
+ * deadline-check, then (the expensive part) the media-surface and cursor:pointer
+ * probes, and the deadline STOPPED the walk when it expired. On a page big
+ * enough that the deadline was the binding limit — a heavy feed, a watch page,
+ * the kind of page that carries a carousel — that stop took three things with
+ * it: the cursor pass, the shadow-host discovery AND the shadow recursion.
+ * Discovery is nearly free (one property read per node); the actual work is the
+ * style and rect reads. So once the budget is spent the expensive tier goes
+ * quiet and the walk CONTINUES, discovery-only, to MAX_SCAN: a real control
+ * whose host was late in the tree is still found and still named by its root's
+ * own HINTABLE_SELECTOR query, while only the cursor:pointer candidates beyond
+ * the deadline are lost. `truncated` (see CollectStats) now reports exactly
+ * that, and never reports discovery as lost when it was only the cursor pass.
  */
 export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): Element[] {
   const vis = pass || createVisibilityPass();
@@ -306,6 +320,10 @@ export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): E
   const deadline = nowMs() + budgetMs;
   let visited = 0;
   let truncated = false;
+  // Set once, first time a 256-node clock check finds the budget spent. The
+  // expensive tier reads it; the cheap tier outlives it, so “the budget is
+  // over” must not also mean “the walk is over”.
+  let expired = false;
 
   function add(el: Element): void {
     if (seen.has(el) || !vis.visible(el)) return;
@@ -326,20 +344,32 @@ export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): E
       nodes = [];
     }
     for (const el of nodes) add(el);
-    if (depth >= SHADOW_DEPTH || truncated) return;
+    // NOTE: depth is the only gate left on this branch. `truncated` used to be
+    // one too, and it is exactly the failure this structure exists to remove: a
+    // page whose budget ran out before the walk reached this root used to
+    // return here BEFORE the root's selector query could run, so the buttons
+    // inside the root were lost entirely. Depth is the gate that remains;
+    // truncation is the expensive tier's condition, and it must not silence a
+    // query that costs nothing.
+    if (depth >= SHADOW_DEPTH) return;
     // NOTE: the shadow recursion below happens INSIDE the discovery walk, not
     // after it, because that is the order the engine has always produced: a
     // custom element's inner controls are appended where the host appears, so a
     // host's controls keep the position of the host in the key order.
     // The discovery walk: shadow roots (which the selector query cannot see) and
-    // the cursor:pointer pass. Lazily walked, so MAX_SCAN bounds the WORK rather
-    // than the allocation.
+    // the cursor:pointer pass. Lazily walked, so MAX_SCAN bounds the loop rather
+    // than the allocation — and, as above, the walk is tiered: the expensive
+    // probes below owe their bound to the wall-time budget, this cap bounds the
+    // cheap discovery so a huge light DOM cannot crowd out a late custom
+    // element.
     const result = walkElements(root, MAX_SCAN, (el) => {
       // Checked every 256 nodes: one clock read per 256 nodes is free next to
-      // the per-node work, and stopping MID-root is the whole point of a budget.
-      if (visited > 0 && (visited & 255) === 0 && nowMs() > deadline) {
+      // the per-node work, and it decides ONE thing now — whether the expensive
+      // tier may keep running. The walk itself continues; stopping MID-root is
+      // no longer the whole point of a budget, discovering what is left is.
+      if (!expired && visited > 0 && (visited & 255) === 0 && nowMs() > deadline) {
         truncated = true;
-        return false;
+        expired = true;
       }
       visited++;
       // CLOSED ROOTS COUNT, and they are the majority of the ones that matter.
@@ -352,11 +382,19 @@ export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): E
       // extension's own door and answers correctly there, while hints claimed
       // there was nothing to hint. Same door, same walk, one place it was
       // forgotten.
+      //
+      // The recursion is the CHEAP tier, above the budget: it is what makes
+      // `walk(sr, depth + 1)` — and therefore the root's own selector query —
+      // run even on the pages the deadline would otherwise have cut off.
       const sr = shadowRootOf(el);
       if (sr) {
         if (stats) stats.shadowRoots++;
         walk(sr, depth + 1);
       }
+      // The EXPENSIVE tier, bounded by the wall-time budget. Everything below
+      // reads rects and computed styles; once the budget is spent it stops for
+      // the rest of the pass rather than stopping the walk.
+      if (expired) return;
       // A large media surface, which nothing else collects: no text, no role,
       // no cursor:pointer. Added BEFORE the cursor:pointer test so the two can
       // never both claim one element (seen is checked, but the order also decides

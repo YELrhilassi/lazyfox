@@ -101,6 +101,12 @@ export interface CadenceInput {
   resyncAt: number;
   /** When the debounced re-collect after a DOM change is due, or 0. */
   domResyncAt: number;
+  /**
+   * When the slow, mutation-independent pool refresh is due (POOL_RESYNC_MS in
+   * selectors.ts), or 0. Optional so the older callers — and the cadence tests
+   * that exercise the three preceding deadlines — stay as they were.
+   */
+  poolResyncAt?: number;
 }
 
 /**
@@ -110,8 +116,15 @@ export interface CadenceInput {
  * loop allows, which is the exact failure this module exists to prevent.
  */
 export function nextMeasurementDelay(i: CadenceInput): number {
+  // `poolResyncAt` folds into `domResyncAt` when it is present: they are the
+  // same kind of due work (a pool re-collect), reached by two paths, and the
+  // caller passes the one it needs honoured. Singling it out would make the
+  // function's four-or-five deadline contract the caller's job to restate.
+  const dom = i.poolResyncAt && i.domResyncAt
+    ? Math.min(i.domResyncAt, i.poolResyncAt)
+    : i.domResyncAt || i.poolResyncAt || 0;
   let delay = i.moving && i.episodeUntil > i.now ? FAST_MS : SAFETY_MS;
-  for (const at of [i.resyncAt, i.domResyncAt]) {
+  for (const at of [i.resyncAt, dom]) {
     if (at && at > i.now && at - i.now < delay) delay = at - i.now;
   }
   return delay < 1 ? 1 : delay;

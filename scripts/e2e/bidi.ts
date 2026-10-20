@@ -734,7 +734,36 @@ export async function makeProfile(): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), "lazyfox-e2e-"));
   const chromeDir = join(dir, "chrome");
   mkdirSync(chromeDir, { recursive: true });
-  for (const f of ["userChrome.css", "userChrome.uc.js", "frame.js", "corebootstrap.js"]) {
+  // TEMPORARY loader boot-trace switch: when LAZYFOX_JS_DIAG is set, drop a
+  // sentinel file the loader looks for. The trace is also gated on an env var,
+  // but geckodriver's child-environment handling has already eaten one round
+  // of this measurement silently, so the file — a place config.js resolves
+  // through the SAME directory service it uses for everything else — is the
+  // switch that cannot be lost.
+  if (process.env.LAZYFOX_JS_DIAG) {
+    writeFileSync(join(chromeDir, "loader-diag.enable"), "1");
+  }
+  // The full shipped set, in the exact shape a real install writes it. The
+  // four UI files used to be all this copied, and the difference is MATERIAL: the
+  // "Lazyfox" JS window actor is built from the OTHER three — actor-boot.js
+  // plus the two .sys.mjs modules the install-dir config.js imports
+  // ("resource://lazyfox/lazyfox-child.sys.mjs" etc., which substitute to
+  // this directory). Without them the actor preflight fails and the trusted
+  // click path (activate.ts trustedClick → actor-child windowUtils) is
+  // silently absent from every harness run, which is how the two tests that
+  // assert "no actor is listening" were once true and stayed true without
+  // anyone noticing the environment was missing a shipped component. The
+  // files are copied conditional — a build that has not produced them yet
+  // must not break every other suite — but check-dist enforces they exist.
+  for (const f of [
+    "userChrome.css",
+    "userChrome.uc.js",
+    "frame.js",
+    "corebootstrap.js",
+    "actor-boot.js",
+    "lazyfox-child.sys.mjs",
+    "lazyfox-parent.sys.mjs",
+  ]) {
     const src = join(ROOT, "dist/chrome", f);
     if (existsSync(src)) writeFileSync(join(chromeDir, f), readFileSync(src));
   }

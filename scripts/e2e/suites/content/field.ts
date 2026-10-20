@@ -315,10 +315,12 @@ export async function run(ctx: any): Promise<void> {
     "a busy page still attempts the privileged press for a trust-gated control",
     async () => {
       // The player shape: the page never goes quiet, so "the page updated itself"
-      // said nothing about the control. The old trigger was total silence, which
-      // meant the privileged retry never ran here — the exact page it was
-      // written for. The stub listener stands in for the window actor: it
-      // records that the content script ASKED for a privileged press.
+      // said nothing about the control — its own state is the trigger, and it
+      // must fire even here. #gated on /busy answers only event.isTrusted, so
+      // what the escalation produces decides how this reads: with the window
+      // actor present (the harness carries it now — see makeProfile), the
+      // trusted press really fires and the control really acts. Absent would
+      // mean the trigger never fired — which is the bug this test exists for.
       await ctx.gotoPage(ctx.tabA, `${ctx.base}/busy`);
       await settled();
       const first = await evalIn(ctx.tabA, `document.getElementById("ticker").textContent`);
@@ -329,18 +331,22 @@ export async function run(ctx: any): Promise<void> {
       await ctx.leaderPress(ctx.tabA, "f");
       await hintsOn();
       await activate("gated");
-      // The report is the honest observable here: BiDi runs WITHOUT the chrome
-      // layer, so `trustedRetry: false` means the trigger DID fire and no
-      // privileged path was available. Absent would mean the trigger never
-      // fired — which is the bug this test exists for.
+      // The escalation fires a real press one watch window after the click,
+      // so the title lands a moment later than a normal activation.
+      await ctx.waitExpr(ctx.tabA, `document.title`, "GATED-OK", 6000);
+      assert(
+        (await evalIn(ctx.tabA, `document.title`)) === "GATED-OK",
+        "a trust-gated control on a busy page must still be really pressed"
+      );
       const rep = await waitFor(async () => {
         const r = await reportFor("/busy");
         return r && r.act ? r : null;
       }, 6000).catch(() => null);
       assert(rep && rep.act, "the page report must carry the activation");
       assert(
-        rep.act.trustedRetry === false,
-        "a silent target on a busy page must still trigger the privileged retry: " +
+        rep.act.trustedRetry === true,
+        "a silent target on a busy page must still trigger the privileged retry, " +
+          "and with the actor listening it must be ATTEMPTED: " +
           JSON.stringify(rep.act)
       );
       assert(

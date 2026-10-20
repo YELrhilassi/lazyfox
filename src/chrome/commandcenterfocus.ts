@@ -65,6 +65,32 @@ export interface FocusService {
  * a window that is not the active one is not ours to take.
  */
 export function focusSelectedContent(win: ChromeWindow, fm?: FocusService, flags = 0): void {
+  // RE-ENTRY GUARD, and it is load-bearing: every `win.focus()` / `b.focus()`
+  // below dispatches the window's own focus and activate events (winsync's
+  // give-back listener), which call giveKeyboardToSelectedPage — which calls
+  // THIS function again, synchronously, in the middle of itself. Measured:
+  // focusContent SA@…:34514 → focusContent@…:18388 → Bg (giveKeyboard) → E
+  // (the window focus/activate listener) → $C/< → SA … until
+  // "InternalError: too much recursion", twice per window load, with the
+  // helper's own event handling in the stack. While one give-back is in
+  // flight, a re-entrant call has nothing new to decide — the outer call is
+  // still mid-repair on the same browser element — so it returns at once.
+  if (inFocusApply) return;
+  inFocusApply = true;
+  try {
+    focusSelectedContentInner(win, fm, flags);
+  } finally {
+    inFocusApply = false;
+  }
+}
+// Set synchronously, cleared in focusSelectedContent's finally: a re-entrant
+// call between the two sees the guard and stands down. A module-level flag
+// (not per-window) is deliberately fine here: the guard only closes a
+// SYNCHRONOUS window, and two windows cannot focus their content in one call
+// stack.
+let inFocusApply = false;
+
+function focusSelectedContentInner(win: ChromeWindow, fm?: FocusService, flags = 0): void {
   let b: any = null;
   try {
     b = (win as any).gBrowser.selectedBrowser || null;

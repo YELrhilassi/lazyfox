@@ -508,6 +508,28 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
       "<error>"
     );
     partial.relay = step("relay", () => st.relay(), null);
+    // The loader's own failure channel. config.js and the window actor report
+    // through Services.console.logStringMessage, and until now those messages
+    // went to the ONLY observer a console hospital can see: the browser
+    // console, which nobody is watching when a feature silently fails. The
+    // snapshot carries the lazyfox lines ("lazyfox actor preflight failed" …)
+    // so a missing capability reads as a diagnostic, not as silence.
+    partial.lfConsole = step(
+      "lfConsole",
+      () => {
+        const svc =
+          env.Cc && env.Cc["@mozilla.org/consoleservice;1"]
+            ? env.Cc["@mozilla.org/consoleservice;1"].getService(env.Ci.nsIConsoleService)
+            : null;
+        if (!svc || typeof svc.getMessageArray !== "function") return { available: false };
+        const msgs = svc.getMessageArray() as any[];
+        return (msgs || [])
+          .map((m) => String((m && (m.message || m.errorMessage)) || ""))
+          .filter((s) => /lazyfox/i.test(s))
+          .slice(-12);
+      },
+      [] as any
+    );
 
     // --- popup ---------------------------------------------------------------
     partial.popup = step("popup", () => {
