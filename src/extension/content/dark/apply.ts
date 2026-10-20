@@ -30,6 +30,7 @@
 
 import { parseColor } from "./color";
 import type { PageSample } from "./detect";
+import { scanWindow } from "./scan";
 
 export interface ColorResolver {
   /** The colour `css` renders as, in the engine's own syntax, or null. */
@@ -711,14 +712,15 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
     try {
       const all = doc.querySelectorAll("*");
       documentElements = all.length;
-      const from = documentElements ? cursor % documentElements : 0;
-      window = Array.prototype.slice.call(all, from, from + MAX_SCAN);
-      cursor = from + window.length;
-      passed = cursor;
-      if (cursor >= documentElements) {
-        cursor = 0;
-        passed = 0;
-      }
+      // THE SLICE ARITHMETIC LIVES OUTSIDE THIS FILE (scan.ts), and `passed` is
+      // the number it exists for: the controller reads `pending()` after every
+      // pass to decide whether the document still has unreached elements. A wrap
+      // that reported the whole document as still pending is what made every page
+      // walk for ever (see the note there).
+      const slice = scanWindow(documentElements, cursor, MAX_SCAN);
+      window = Array.prototype.slice.call(all, slice.from, slice.from + slice.take);
+      cursor = slice.cursor;
+      passed = slice.passed;
     } catch {
       return Array.from(measured.values());
     }
@@ -921,6 +923,9 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       layerOriginals = new WeakMap();
       measuredLayers.clear();
     },
+    // `passed` is elements walked since the last wrap, so this is zero once the
+    // document has been covered — the signal the controller waits for before it
+    // stops asking for more (see scan.ts).
     pending: () => Math.max(0, documentElements - passed),
     clear: () => {
       setSheet("");

@@ -305,6 +305,17 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     return { theme, direction: mode, mode, engine: enginePref, reason: decision.reason + " · " + engine + " engine" };
   }
 
+  // HOW MANY TIMES THIS DOCUMENT HAS BEEN WALKED, published on <html> as
+  // `data-lf-dark-passes`.
+  //
+  // It exists because the OTHER mirrors only move when the VERDICT does: a
+  // controller that re-decided a settled page ~22 times a second (see the note in
+  // scan.ts) looked, from outside, exactly like one that had gone quiet — same
+  // verdict, same attributes, same bar. The counter is what makes "the page
+  // stopped being walked" a fact a test can assert in a real browser
+  // (scripts/e2e/suites/content/theme.ts) rather than a claim in a comment.
+  let passes = 0;
+
   function mirror(): void {
     try {
       const root = deps.doc.documentElement;
@@ -519,6 +530,12 @@ export function createDarkMode(deps: DarkDeps): DarkController {
   }
 
   async function apply(config: Config): Promise<void> {
+    passes++;
+    try {
+      deps.doc.documentElement?.setAttribute("data-lf-dark-passes", String(passes));
+    } catch {
+      /* the document may be going away */
+    }
     scheduleNativeChecks();
     const url = deps.url();
     state.site = siteFor();

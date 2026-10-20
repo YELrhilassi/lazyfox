@@ -88,6 +88,15 @@ export interface StoreSpec {
    * of the components report, which is what makes the comment true.
    */
   lfBridge: string;
+  /**
+   * The loader's own console lines (Services.console, "lazyfox"-tagged),
+   * relayed on the alive announce and stored as one newline-joined string.
+   * "the actor never instantiated" and "registration threw" produce the same
+   * absent bridge — these lines are the WHY, surfaced where the user and the
+   * diagnostics can read them instead of leaving them to an unobserved
+   * browser console.
+   */
+  lfLoaderErrs: string;
 }
 
 export interface StealthRecord {

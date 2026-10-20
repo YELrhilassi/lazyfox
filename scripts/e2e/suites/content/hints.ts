@@ -308,7 +308,17 @@ export async function run(ctx: any): Promise<void> {
   // The other half of the feedback loop: when the page really does ignore the
   // click, say so. Without this the failure is indistinguishable from "I pressed
   // the wrong key", which is how a hint bug stays a mystery for days.
-  await t("link hints: a click the page ignores is reported, not silent", async () => {
+  // THE TRUST-GATED CONTROL, MEASURED against the real privileged press. The
+  // #deaf control answers only event.isTrusted — the reported behaviour of
+  // YouTube's skip button — and the synthetic sequence can never satisfy it.
+  // The harness now carries the real window actor (see makeProfile in bidi.ts,
+  // and the fact those two facts were once inconsistent is the reason this
+  // test says it again), so the escalation to windowUtils.sendMouseEvent is
+  // EXERCISED here, not stood in for: the untrusted click is refused, the
+  // watcher finds the target silent, the privileged retry fires a real press
+  // — and the control must actually ACT, or this test names the step that
+  // failed instead.
+  await t("link hints: a trust-gated control is activated by the privileged real press", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/playerlike`);
     await pageSettled();
     await beginHints();
@@ -316,28 +326,98 @@ export async function run(ctx: any): Promise<void> {
       (await readHints()).some((h) => h.id === "deaf"),
       "the isTrusted-gated control must be hinted"
     );
-    await activateHint("deaf");
+    const titleBefore = await evalIn(ctx.tabA, "document.title");
+    await activateHint("deaf", async () => {
+      await ctx.waitExpr(ctx.tabA, `document.title`, "DEAF-PRESSED", 6000);
+    });
+    assert(
+      (await evalIn(ctx.tabA, "document.title")) === "DEAF-PRESSED",
+      "a control that only answers a trusted press must be pressed for real " +
+        "(title went " + JSON.stringify(titleBefore) + " -> " +
+        JSON.stringify(await evalIn(ctx.tabA, "document.title")) + ")"
+    );
+    const act = await waitFor(async () => {
+      const r = await playerReport();
+      return r && r.act && "trustedRetry" in r.act ? r.act : null;
+    }, 4000);
+    assert(
+      act && act.trustedRetry === true,
+      "the report must say the privileged press WAS attempted (the actor is " +
+        "listening): got " + JSON.stringify(act)
+    );
+    assert(
+      act && act.ignored === false,
+      "and the press that worked must be recorded as a success, not an ignore: " +
+        JSON.stringify(act)
+    );
+  });
+  // The same question with the forensics attached. /trustgate answers only a
+  // trusted press AND records every pointer event it was offered, so a
+  // failure names its own step: no entries means the real press never fired,
+  // trusted:false entries means only the synthetic sequence ran, trusted:true
+  // entries with no title change means the press landed at the wrong point —
+  // and the recorded coordinates say where it went instead.
+  await t("link hints: the privileged press reaches a trust-gated control with genuinely trusted events", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/trustgate`);
+    await pageSettled();
+    await beginHints();
+    const rows = await readHints();
+    assert(rows.some((x) => (x.id || x.dataId) === "gate"), "the gate button must be hinted");
+    await activateHint("gate", async () => {
+      await ctx.waitExpr(ctx.tabA, `document.title`, "GATE-OPEN", 6000);
+    });
+    assert(
+      (await evalIn(ctx.tabA, `document.title`)) === "GATE-OPEN",
+      "the trust-gated control must be activated for real"
+    );
+    const seen = JSON.parse(String(await evalIn(ctx.tabA, `JSON.stringify(window.__gate || [])`)));
+    const trusted = (seen || []).filter((e: { trusted: boolean }) => e.trusted);
+    assert(
+      trusted.length >= 3,
+      "the page must be offered the real pointer sequence (down+up and the click " +
+        "it derives), not only untrusted synthetic events: " + JSON.stringify(seen)
+    );
+    assert(
+      trusted.some((e: { type: string }) => e.type === "mousedown") &&
+        trusted.some((e: { type: string }) => e.type === "mouseup"),
+      "the trusted press must be a down-and-up pair: " + JSON.stringify(trusted)
+    );
+    await ctx.press(ctx.tabA, "Escape");
+  });
+  // The negative branch, in the same environment: a control NO press reaches
+  // (#stone has no listener at all, so even a genuinely trusted press does
+  // nothing) is still reported to the user rather than swallowed in silence.
+  // The retry is attempted and the page stays silent — “trustedRetry: true,
+  // ignored: true” is exactly the “not a control” diagnosis the tri-state
+  // trustedRetry exists to carry.
+  await t("link hints: a click the page ignores is reported, not silent", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/playerlike`);
+    await pageSettled();
+    await beginHints();
+    assert(
+      (await readHints()).some((h) => h.id === "stone"),
+      "the unlistenened control must be hinted"
+    );
+    await activateHint("stone", async () => {
+      // The escalation adds one extra watch window after the real press.
+      await waitFor(async () => {
+        const r = await playerReport();
+        return r && r.act && r.act.ignored && r.act.trustedRetry === true ? r.act : null;
+      }, 6000);
+    });
     const act = await waitFor(async () => {
       const r = await playerReport();
       return r && r.act && r.act.ignored ? r.act : null;
     }, 4000);
     assert(
-      /ignore me/i.test(act.target),
+      /no listener/i.test(act.target),
       "the report must name the control that was ignored (got: " + JSON.stringify(act) + ")"
     );
-    const title = await evalIn(ctx.tabA, "document.title");
-    assert(title !== "DEAF-PRESSED", "the untrusted click must not have activated it");
-    // The report has to distinguish "the page ignored us" from "the page
-    // ignored us AND the privileged retry did not work either". Those are
-    // different diagnoses — the second means the control is not a control —
-    // and collapsing them into one boolean is what made this class of bug
-    // undiagnosable. In the BiDi harness the window actor is NOT installed, so
-    // there is nobody to listen and the retry is reported as not attempted.
     assert(
-      act.trustedRetry === false,
-      "with no actor listening the report must say the trusted retry was NOT " +
-        "attempted, not that it was attempted and failed (got: " +
-        JSON.stringify(act) + ")"
+      act.trustedRetry === true,
+      "with the actor listening the report must say the trusted press was " +
+        "attempted and STILL got nothing — that is the “not a control” verdict " +
+        "(got: " + JSON.stringify(act) + ")"
     );
   });
   // The privileged path itself, when the actor IS listening. The harness runs
@@ -790,6 +870,65 @@ export async function run(ctx: any): Promise<void> {
       await ctx.waitExpr(ctx.tabA, `document.title`, "CLOSED-SHADOW-CLICKED", 5000);
     });
     assert((await evalIn(ctx.tabA, `document.title`)) === "CLOSED-SHADOW-CLICKED", "the closed shadow-root button was clicked");
+  });
+
+  // THE FEED-SIZE SHAPE. The closed-shadow test above covers "a control in a
+  // closed root is found"; this one covers the quiet suffix of that claim of that sentence that
+  // fails on real sites — found in time. A feed- or watch-page-sized DOM (the
+  // /carousel fixture carries 17 000 light-DOM rows before its two carousel
+  // hosts) exhausts the discovery budget long before it reaches the tail, and the
+  // per-root selector query cannot see into a shadow root — so the walk itself
+  // must survive to the hosts. The real pages: a Reddit image carousel's and an
+  // X viewer's previous/next arrows, both drawn inside custom elements whose
+  // buttons live in closed shadow roots.
+  await t("link hints: carousel prev/next in closed shadow roots late in a feed-sized DOM are hinted and click", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/carousel`);
+    await pageSettled();
+    await beginHints();
+    const rows = await readHints();
+    const ids = rows.map((x) => x.id || x.dataId);
+    // The rows are keyed by the HOSTS: a closed root hides its button's
+    // data-id from the page realm, and what is observable is the host element —
+    // which innerBounds() reproduces the button's box for. A hint on the host
+    // IS a hint on the button: the label sits on the one element the page can
+    // name for a control it cannot reach itself.
+    for (const id of ["caro-prev", "caro-next"]) {
+      const row = rows.find((x) => (x.id || x.dataId) === id);
+      assert(row, "the " + id + " button got a hint (hinted: " + ids.join(",") + ")");
+    }
+    // And it is a working key, not just a label: activate the next-arrow and
+    // wait for the click the closed-root button reports through document.title.
+    await activateHint("caro-next", async () => {
+      await ctx.waitExpr(ctx.tabA, `document.title`, "CAROUSEL-NEXT", 5000);
+    });
+    assert((await evalIn(ctx.tabA, `document.title`)) === "CAROUSEL-NEXT", "the closed-root carousel button was clicked");
+    await ctx.press(ctx.tabA, "Escape");
+  });
+
+  // THE HIDDEN-UNTIL-SKIPPABLE SHAPE. The late-inserted Skip button test (below)
+  // covers a control that ARRIVES by mutation; YouTube's skip control is the
+  // other shape: present in the DOM from the start — inside a display:none slot
+  // that un-hides when the skip window opens, an attribute change only. Nothing
+  // childList can observe; the pool built by ;f rejected it while its box was
+  // empty unless the pool refresh is owed even without a mutation.
+  await t("link hints: a Skip button hidden in the ad slot until the skip window opens still gets a key (attribute-only reveal)", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/adskip`);
+    await pageSettled();
+    // Open hints while the button is still un-presentable, exactly the real
+    // sequence: the user presses ;f while the countdown is running.
+    await beginHints();
+    const before = await readHints();
+    assert(before.every((x) => (x.id || x.dataId) !== "skip-ad"), "the hidden Skip button got no hint while its slot is display:none");
+    const row = await waitFor(async () => {
+      const r = await readHints();
+      return r.find((x) => (x.id || x.dataId) === "skip-ad") || null;
+    }, 10000);
+    assert(row, "the Skip button got a hint after its attribute-only un-hide");
+    await activateHint("skip-ad", async () => {
+      await ctx.waitExpr(ctx.tabA, `document.title`, "AD-SKIPPED", 5000);
+    });
+    assert((await evalIn(ctx.tabA, `document.title`)) === "AD-SKIPPED", "the revealed Skip button was clicked by its key");
+    await ctx.press(ctx.tabA, "Escape");
   });
   await t("link hints: a page whose controls are all in a frame says WHY, and stays off", async () => {
     // The frame policy is top-frame-only, and that decision is allowed. What is

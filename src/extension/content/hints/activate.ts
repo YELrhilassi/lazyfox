@@ -169,8 +169,15 @@ export function createActivator(): Activator {
   // press was attempted when no one was listening for it.
   function trustedClick(x: number, y: number): boolean {
     try {
-      const nonce = (window as unknown as Record<string, unknown>).__lazyfoxTrustedClick;
-      if (typeof nonce !== "string" || !nonce) return false;
+      // The handshake token travels as a DOM attribute set by the chrome actor
+      // (<html data-lf-trusted>), not as a window property: a property written
+      // from system code onto the content window is measurably invisible to
+      // this realm (and to the page's), which left this probe answering
+      // "nobody is listening" on every page. The DOM is the boundary that
+      // crosses reliably — the same direction data-lf-content already flows —
+      // and the token is obfuscation, not authentication (actor-child.ts).
+      const nonce = document.documentElement.getAttribute("data-lf-trusted");
+      if (!nonce) return false;
       window.dispatchEvent(
         new CustomEvent("lazyfox-trusted-click:" + nonce, {
           detail: { x: Math.round(x), y: Math.round(y) },
@@ -336,8 +343,45 @@ export function createActivator(): Activator {
     function onFocus(e: FocusEvent): void {
       const t = e.target as Element | null;
       if (!t) return;
-      if (t === el || el.contains(t) || (t.contains && t.contains(el))) {
+      // THE ORDER MATTERS: el.contains(t) is true for t === el, so the page's
+      // own focus choice must be asked BEFORE the self-focus rule below.
+      if (t !== el && (el.contains(t) || (t.contains && t.contains(el)))) {
         finish("it took focus");
+        return;
+      }
+      // FOCUS ON THE TARGET ITSELF is usually NOT a page reaction: Gecko gives
+      // any pressed control focus on mousedown (button, div[tabindex], …), so
+      // a click on an isTrusted-gated button lands "focused but otherwise
+      // silent" — and if that counted as life, the trusted press for exactly
+      // the control it was built for (YouTube's ad Skip button) would always
+      // be pre-empted. Measured on the busy-page fixture: the button's only
+      // observation was its own focus, the report said success, no
+      // privileged press was attempted.
+      //
+      // So self-focus counts only where focus IS the requested outcome: a
+      // text endpoint (input, textarea, contenteditable, selector). Every
+      // other control must prove itself with a real state change or leave the
+      // verdict to the escalation.
+      if (t === el && isFocusEndpoint(t)) finish("it took focus");
+    }
+    // The controls whose OWN focus is the response the user asked for. Skills
+    // like URL editors land here through the click route and short: their
+    // focus IS a page-level reaction, not a press side effect.
+    function isFocusEndpoint(t: Element): boolean {
+      try {
+        const tag = String(t.tagName || "").replace(/^.*:/, "").toUpperCase();
+        if (tag === "TEXTAREA" || tag === "SELECT" || tag === "ISINDEX") return true;
+        if (tag === "INPUT") {
+          const type = String(t.getAttribute("type") || "text").toLowerCase();
+          return type !== "button" && type !== "submit" && type !== "reset"
+            && type !== "checkbox" && type !== "radio";
+        }
+        if ((t as HTMLElement).isContentEditable === true) return true;
+        const ce = t.getAttribute && t.getAttribute("contenteditable");
+        return ce === "" || ce === "true";
+      } catch (err) {
+        // A hostile element must not count as focusable anything.
+        return false;
       }
     }
     // A navigation is the clearest possible "it worked", and it destroys this

@@ -1567,50 +1567,50 @@
   "content/field › Ctrl+G leaves a field without telling the page to close its dialog": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 10,
+    "passes": 10
   },
   "content/field › a hint on a field inside a closed shadow root focuses it and reports success": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 10,
+    "passes": 10
   },
   "content/field › ;i focuses the composer, not the first small field": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 10,
+    "passes": 10
   },
   "content/field › a large video surface is hinted, and its key reaches the player": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 10,
+    "passes": 10
   },
   "content/field › a busy page still attempts the privileged press for a trust-gated control": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 11,
+    "passes": 10
   },
   "content/field › a control that reacts is not re-pressed through the privileged path": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 11,
+    "passes": 11
   },
   "content/field › the leader key is never blocked by a hint layer": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/field › Escape dismisses a hint layer and the keys come back": {
     "status": "pass",
     "group": "content",
-    "runs": 8,
-    "passes": 8
+    "runs": 9,
+    "passes": 9
   },
   "content/field › Escape is the master cancel: the page still sees it and the caret leaves the field": {
     "status": "pass",
@@ -1711,8 +1711,8 @@
   "content/field › a chain of overlays leaves the next sentence typed into a field intact": {
     "status": "pass",
     "group": "content",
-    "runs": 6,
-    "passes": 6
+    "runs": 7,
+    "passes": 7
   },
   "content/toplayer › a page that transforms <html> cannot move the hint labels off their links": {
     "status": "pass",
@@ -2017,6 +2017,66 @@
   "commandcenter/tabs › the home page's install row opens the setup page in the current tab": {
     "status": "pass",
     "group": "commandcenter",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/theme › a themed page settles: the walk stops and the verdict is published once": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: carousel prev/next in closed shadow roots late in a feed-sized DOM are hinted and click": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: a Skip button hidden in the ad slot until the skip window opens still gets a key (attribute-only reveal)": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: a trust-gated control is activated by the privileged real press": {
+    "status": "fail",
+    "group": "content",
+    "runs": 1,
+    "passes": 0
+  },
+  "content/hints › link hints: the privileged press reaches a trust-gated control with genuinely trusted events": {
+    "status": "fail",
+    "group": "content",
+    "runs": 1,
+    "passes": 0
+  },
+  "content/typing › a load-time autofocus gives the leader back on the first ;": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/typing › a claim-parked box answers a real click with typing again": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/typing › a fresh page-parked focus still types ';' inside the park window": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/field › Escape is a ladder: the caret leaves first, the page's own action second": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/field › Escape with nothing to clean is the page's, first press": {
+    "status": "pass",
+    "group": "content",
     "runs": 1,
     "passes": 1
   }

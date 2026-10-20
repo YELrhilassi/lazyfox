@@ -610,6 +610,80 @@ export async function run(ctx: any): Promise<void> {
     );
   });
 
+  // THE ENDLESS WALK, and the mirror that can see it.
+  //
+  // The walk's slice arithmetic used to leave `pending()` reporting the whole
+  // document as unwalked (see src/extension/content/dark/scan.ts), so a page that
+  // had settled was measured again 60ms later for ever. MEASURED on this fixture,
+  // in this harness: ~22 passes a second and ~22 status-bar verdict reports a
+  // second, with the verdict never moving. Every OTHER mirror is blind to it —
+  // they change only when the VERDICT does, so a hammering controller and a quiet
+  // one look identical from outside, which is why this went unnoticed. Hence
+  // `data-lf-dark-passes`, and hence this test: a page left alone must stop being
+  // walked, and the bar must be told its verdict rather than told it again.
+  await t("a themed page settles: the walk stops and the verdict is published once", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/light`);
+    assert((await waitAttr("data-lf-dark", "on")) !== null, "the page is darkened first");
+
+    const passes = async (): Promise<number | null> => {
+      const v = await attr("data-lf-dark-passes");
+      return v === null ? null : Number(v);
+    };
+    // "Settled" means three consecutive reads 200ms apart that agree. A loop does
+    // not read as one big number — the count moves BETWEEN the reads — so the
+    // check is the absence of movement, not a budget that has to be guessed.
+    const settled = await waitFor(async () => {
+      const a = await passes();
+      if (a === null || !Number.isFinite(a)) return null;
+      await new Promise((r) => setTimeout(r, 200));
+      const b = await passes();
+      await new Promise((r) => setTimeout(r, 200));
+      const c = await passes();
+      return b === a && c === b ? a : null;
+    }, 8000).catch(() => null);
+    assert(
+      settled !== null,
+      "the page stopped being walked, counts: " + JSON.stringify([await passes()])
+    );
+    assert(settled > 0, "the page was walked at least once, got " + settled);
+
+    // And it STAYS settled. This is the property that was broken: a quiet page is
+    // not allowed to earn another pass 1.5 seconds later.
+    await new Promise((r) => setTimeout(r, 1500));
+    const after = await passes();
+    assert(after === settled, `no pass for a settled page: ${settled} passes, then ${after} 1.5s later`);
+
+    // THE BADGE ITSELF — the surface the user watches, fed by this page's
+    // verdict. Asserted through the chrome helper's own render mirror. Polled,
+    // because the read makes the probe tab transient and the bar may repaint
+    // against a shifted strip while it is in flight (a repaint with no dark
+    // entry for the selected index hides the segment until the next one).
+    const badge = async (): Promise<{ field: string; mounted: boolean }> => {
+      const s = await ctx.chromeState().catch(() => null);
+      const m = String((s && s.statusAttr) || "").match(/\|dark:[^|]*/);
+      return { field: m ? m[0] : "", mounted: !!(s && s.statusMounted) };
+    };
+    // A KEY FIRST, and it is the repair rather than a convenience: a key IS this
+    // document's presence re-assert, and the verdict rides it (see
+    // republishDarkVerdict in content/main.ts) — which is also what makes this
+    // assertion deterministic. The read itself makes the probe tab transient,
+    // and a bar repaint landing in that window resolves the segment against a
+    // shifted strip, where this tab has no entry yet.
+    await ctx.press(ctx.tabA, "j");
+    const shown = await waitFor(async () => {
+      const b = await badge();
+      return b.field ? b : null;
+    }, 10000).catch(() => null);
+    assert(
+      shown !== null,
+      "the bar shows this page's dark verdict (chrome mounted: " + JSON.stringify((await badge()).mounted) + ")"
+    );
+    assert(
+      shown.field === "|dark:on/dynamic",
+      "the segment reads the verdict this page published, got " + JSON.stringify(shown.field)
+    );
+  });
+
   await t("a site with its own theme really goes light when the site is turned off", async () => {
     // The ask writes `color-scheme: dark` on the root and leaves it there, which is
     // what keeps the site's theme on screen. Turning the site off has to take that
