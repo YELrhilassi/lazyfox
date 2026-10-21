@@ -16,16 +16,45 @@
 // the user invoked rather than whatever is first on PATH.
 //
 // When a script is started outside npm (`node scripts/build-dev-installers.ts`),
-// npm_execpath is absent and the platform's own launcher is used.
+// npm_execpath is absent. Then npm-cli.js is looked for beside the running Node,
+// and only as a last resort is the platform launcher spawned — through a shell on
+// Windows, because that is the only way a `.cmd` can be started there.
 
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+interface Invocation {
+  cmd: string;
+  args: string[];
+  /** True only for the Windows `.cmd` fallback, which cannot be spawned raw. */
+  shell: boolean;
+}
+
+/** npm-cli.js locations to try when npm did not tell us where it is. */
+function npmCliCandidates(): string[] {
+  const out: string[] = [];
+  const nodeDir = dirname(process.execPath);
+  if (process.platform === "win32") {
+    out.push(join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js"));
+  } else {
+    out.push(join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"));
+  }
+  return out;
+}
 
 /** The Node + npm-cli.js pair to run, or the platform's launcher. */
-function npmInvocation(): { cmd: string; args: string[] } {
+function npmInvocation(): Invocation {
   const cli = process.env.npm_execpath;
-  if (cli && existsSync(cli)) return { cmd: process.execPath, args: [cli] };
-  return { cmd: process.platform === "win32" ? "npm.cmd" : "npm", args: [] };
+  if (cli && existsSync(cli)) return { cmd: process.execPath, args: [cli], shell: false };
+  for (const candidate of npmCliCandidates()) {
+    if (existsSync(candidate)) return { cmd: process.execPath, args: [candidate], shell: false };
+  }
+  // Last resort. On Windows this must go through cmd.exe: spawn() of "npm.cmd"
+  // without a shell fails with EINVAL on current Node, which is a spawn error
+  // with no npm output at all — the exact failure this file exists to remove.
+  if (process.platform === "win32") return { cmd: "npm", args: [], shell: true };
+  return { cmd: "npm", args: [], shell: false };
 }
 
 /**
@@ -34,10 +63,11 @@ function npmInvocation(): { cmd: string; args: string[] } {
  * PATH, npm_config_*, npm_execpath for any nested run).
  */
 export function runNpm(args: string[], cwd: string, env?: NodeJS.ProcessEnv): void {
-  const { cmd, args: prefix } = npmInvocation();
+  const { cmd, args: prefix, shell } = npmInvocation();
   execFileSync(cmd, [...prefix, ...args], {
     cwd,
     stdio: "inherit",
+    shell,
     env: env ? { ...process.env, ...env } : process.env,
   });
 }

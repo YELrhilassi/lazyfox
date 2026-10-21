@@ -206,10 +206,18 @@ owns what only an external process can:
 
 ### Build & install
 
-- `native-host/main.go` — a real JSON-RPC 2.0 host over stdio: synchronous
-  request handling (a reply is always flushed before the next line is read, so
-  a piped EOF can't race a reply out of existence), `host.info`/`ping`/`diag`
-  only. Unknown methods return a proper JSON-RPC error.
+- `native-host/main.go` — a real JSON-RPC 2.0 host over stdio, in the actual
+  **native-messaging framing**: a 32-bit length in native byte order, then that
+  many bytes of UTF-8 JSON, no newline — in both directions. A JSON object piped
+  in by hand (starting with `{`) is still accepted, one per line, and answered in
+  the same shape, which is what the `echo … | lazyfox-host` smoke test does and
+  what `native-host/main_test.go` pins. That distinction is load-bearing: the
+  host previously read lines only, so a framed Firefox request (which contains
+  no newline) never produced a reply and the extension reported the host as
+  missing while every file was installed.
+- Synchronous request handling: a reply is always flushed before the next
+  message is read, so a piped EOF can't race a reply out of existence.
+  `host.info`/`ping`/`diag` only; unknown methods return a proper JSON-RPC error.
 - `build.ts` and `scripts/build-dev-installers.ts` build `lazyfox-host` for
   each installer target into `installer/internal/payload/data/native-host/<goos>/`,
   embedded
@@ -221,16 +229,21 @@ owns what only an external process can:
   (Linux `~/.mozilla/native-messaging-hosts/`, macOS
   `~/Library/Application Support/Mozilla/NativeMessagingHosts/`, Windows
   registry `HKCU\Software\Mozilla\NativeMessagingHosts\lazyfox`). Best-effort:
-  a missing host never fails the install.
+  a missing host never fails the install — but an INSTALLED host that Firefox
+  cannot reach does: `ops.Verify` reads the key back and fails the install, and
+  `ops.RegistrationProblem` names the two broken states. On Windows the manifest
+  and the key are written even when the host binary itself is locked by a
+  running host process, because that half is the part Firefox looks up.
 - Permission: `nativeMessaging` added to `dist/extension/manifest.json`.
 
 ### Extension usage
 
 - `src/extension/host.ts` — a thin `browser.runtime.connectNative("lazyfox")`
   wrapper: `hostCall()` JSON-RPC round-trips, `hostInfo()` / `hostPing()` /
-  `hostDiag()`, an automatic reconnect, and a `hostAvailable` flag so callers
-  fall back cleanly when the host is missing (normal for AMO/store installs).
-  Never throws — absence is a normal condition.
+  `hostDiag()`, and an automatic reconnect. A null result is how callers learn
+  the host is missing (normal for AMO/store installs); there is deliberately no
+  `hostAvailable` flag — it was written in five places and read in none. Never
+  throws — absence is a normal condition.
 - Wired in: `background.ts` runs `probeHostOnce()` (a dev-only `host.diag`
   console line when the host is present; silence when it isn't).
 

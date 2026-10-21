@@ -64,6 +64,12 @@ export function PlanPanel({
 
   return (
     <Shell title={isRemoval ? `Files Lazyfox will remove (${rows.length})` : `What will be written (${rows.length})`}>
+      {preview.action === "update" && (
+        <Line tone="primary">
+          Updating in place: the files below are replaced, in the profile you already use. Nothing is uninstalled
+          first, and no profile is created — your tabs, add-ons and settings stay exactly as they are.
+        </Line>
+      )}
       {preview.createsProfile && (
         <Line tone="primary">
           The new profile is named before anything is written:{" "}
