@@ -18,6 +18,8 @@ import { readKey, writeKey, vConfig, vStringMap } from "./store";
 import { core } from "../shared/core";
 import { favicon } from "../shared/dom";
 import { send } from "../shared/protocol";
+import { checkForUpdate, RELEASE_URL } from "../shared/updates";
+import { componentVerdict } from "../shared/versions";
 import type {
   ChromeHotkeys,
   Config,
@@ -434,7 +436,46 @@ import type {
     }
   });
 
-  // Component versions (the Components panel).
+  // Component versions (the Components panel) and the update story.
+  //
+  // The panel answers two different questions and keeps them apart:
+  //   • do the installed pieces belong to the SAME build? (offline, automatic)
+  //   • is there a newer release? (network, only when the user asks)
+  // The first is the one that catches a half-applied update — an add-on that
+  // moved ahead of the chrome layer — which no release check would notice,
+  // because from GitHub's point of view nothing is wrong.
+  const cUpdate = document.getElementById("cUpdate") as HTMLSpanElement | null;
+  const cUpdateHint = document.getElementById("cUpdateHint") as HTMLDivElement | null;
+  const cCheck = document.getElementById("cCheck") as HTMLButtonElement | null;
+  const cOpen = document.getElementById("cOpen") as HTMLButtonElement | null;
+  const cCheckHint = document.getElementById("cCheckHint") as HTMLDivElement | null;
+
+  function revealInstaller() {
+    if (cOpen) cOpen.hidden = false;
+  }
+
+  function showVerdict(ext: string, parts: { name: string; version: string | null | undefined }[]) {
+    const v = componentVerdict(ext, parts);
+    if (cUpdate) {
+      cUpdate.textContent =
+        v.state === "ok"
+          ? "same build"
+          : v.state === "stale"
+            ? "update needed"
+            : v.state === "newer"
+              ? "restart Firefox"
+              : "unknown";
+    }
+    if (cUpdateHint) {
+      cUpdateHint.textContent = v.lines.length
+        ? v.lines.join(" ")
+        : "Every installed piece is from the same build.";
+    }
+    // A stale piece is not something the add-on can fix: it is written by the
+    // installer, so the only useful next step is the installer.
+    if (v.state === "stale") revealInstaller();
+  }
+
   void send("components").then((c) => {
     if (!c) return;
     const set = (id: string, v: string | null | undefined) => {
@@ -445,6 +486,35 @@ import type {
     set("cWasm", c.wasm);
     set("cHost", c.nativeHost ? c.nativeHost + (c.nativeProtocol ? " (proto " + c.nativeProtocol + ")" : "") : null);
     set("cChrome", c.chromeHelper);
+    showVerdict(c.extension, [
+      { name: "the core engine", version: c.wasm },
+      { name: "the native host", version: c.nativeHost },
+      { name: "the chrome helper", version: c.chromeHelper },
+    ]);
+  });
+
+  cCheck?.addEventListener("click", () => {
+    const current = browser.runtime.getManifest().version;
+    cCheck.disabled = true;
+    cCheck.textContent = "Checking\u2026";
+    if (cCheckHint) cCheckHint.textContent = "";
+    void checkForUpdate(current).then((r) => {
+      cCheck.disabled = false;
+      cCheck.textContent = "Check for updates";
+      if (!cCheckHint) return;
+      if (r.state === "update-available") {
+        cCheckHint.textContent = `Lazyfox ${r.latest} is available (this build is ${current}). The installer refreshes an existing install in place \u2014 there is nothing to uninstall first.`;
+        revealInstaller();
+      } else if (r.state === "current") {
+        cCheckHint.textContent = `This is the newest release (${current}).`;
+      } else {
+        cCheckHint.textContent = `Could not check for updates: ${r.error || "unknown error"}.`;
+      }
+    });
+  });
+
+  cOpen?.addEventListener("click", () => {
+    void browser.tabs.create({ url: RELEASE_URL });
   });
 
   Promise.all([

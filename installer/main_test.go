@@ -28,6 +28,8 @@ func TestParseMode(t *testing.T) {
 		"":              "Interactive",
 		"auto":          "Automatic install",
 		"install":       "Install",
+		"update":        "Update",
+		"upgrade":       "Update",
 		"uninstall":     "Uninstall",
 		"loader-only":   "Install chrome loader only",
 		"loader-remove": "Remove chrome loader",

@@ -18,6 +18,10 @@ const (
 	Auto
 	Install
 	Uninstall
+	// Update refreshes an existing install in place. It is distinct from
+	// Install on purpose: it refuses when there is nothing to update, never
+	// creates a profile, and does nothing when the profile is already current.
+	Update
 	LoaderOnly
 	LoaderRemove
 	List
@@ -31,6 +35,8 @@ func (a Action) String() string {
 		return "Install"
 	case Uninstall:
 		return "Uninstall"
+	case Update:
+		return "Update"
 	case LoaderOnly:
 		return "Install chrome loader only"
 	case LoaderRemove:
@@ -47,9 +53,12 @@ type Config struct {
 	Action       Action
 	Profile      string
 	FirefoxDir   string
-	NoExt        bool
-	NoLaunch     bool
-	RemoveLoader bool
+	NoExt    bool
+	NoLaunch bool
+	// KeepLoader leaves the chrome loader installed on an uninstall. Removing it
+	// is the default, because leaving it behind keeps autoconfig switched on
+	// with no chrome layer behind it.
+	KeepLoader   bool
 	KeepDisabled bool
 	// DeleteProfile removes a Lazyfox-created profile on uninstall. Off by
 	// default: uninstall suggests it instead, so a mistyped command cannot
