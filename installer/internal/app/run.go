@@ -53,14 +53,52 @@ func (a *App) execute(p plan) Result {
 		}
 		return Result{OK: true, State: "installed", Text: "Lazyfox is installed.", PendingEnable: pending}
 
-	case config.Uninstall:
-		if err := ops.RunUninstall(a.src, rep, ops.UninstallOptions{
-			Profile:         p.profile,
-			Install:         p.install,
-			RemoveLoader:    p.removeLoader,
-			RemoveDedicated: p.deleteProfile,
+	case config.Update:
+		// An update is the same registry-driven write as an install, with two
+		// differences that matter to the outcome: the profile already exists
+		// (nothing is created), and the result is reported as an update with the
+		// version it moved to.
+		if p.reason != "" {
+			rep.Note("%s", p.reason)
+		}
+		if err := ops.Run(a.src, rep, ops.InstallOptions{
+			Profile:      p.profile,
+			Install:      p.install,
+			UseExtension: p.useExt,
+			UseLaunch:    p.useLaunch,
 		}, pw); err != nil {
 			return failure(err)
+		}
+		failures, pending := ops.Verify(a.src, p.profile.Dir)
+		a.refreshView()
+		if len(failures) > 0 {
+			return Result{
+				OK:       false,
+				State:    "failed",
+				Text:     "Lazyfox was updated, but the update did not verify.",
+				Failures: failures,
+			}
+		}
+		text := "Lazyfox is updated."
+		if v := a.src.AddonVersion(); v != "" {
+			text = "Lazyfox is updated to " + v + "."
+		}
+		return Result{OK: true, State: "updated", Text: text, PendingEnable: pending}
+
+	case config.Uninstall:
+		opts := ops.UninstallOptions{
+			Profile:         p.profile,
+			Install:         p.install,
+			KeepLoader:      p.keepLoader,
+			RemoveDedicated: p.deleteProfile,
+		}
+		if err := ops.RunUninstall(a.src, rep, opts, pw); err != nil {
+			// A failed uninstall still tells the user WHAT is left, not just that
+			// something went wrong: the leftovers are the actionable part.
+			res := failure(err)
+			res.Failures = ops.VerifyRemoved(a.src, opts)
+			a.refreshView()
+			return res
 		}
 		a.refreshView()
 		return Result{OK: true, State: "removed", Text: "Lazyfox is removed. Firefox is back to normal."}

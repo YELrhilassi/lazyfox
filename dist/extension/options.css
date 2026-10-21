@@ -163,6 +163,7 @@ textarea:focus { border-color: var(--accent); outline: none; }
 }
 .site-row .rm:hover { color: var(--red); }
 .btn-row { display: flex; gap: 8px; margin-top: 8px; }
+.btn-row .add-app { width: auto; flex: 1; margin-top: 0; }
 .add-app {
   margin-top: 10px; background: var(--bg2); color: var(--sub); border: 1px dashed var(--border2);
   border-radius: 8px; padding: 9px; width: 100%; font-family: inherit; font-size: 13px; cursor: pointer;

@@ -23,14 +23,17 @@ func parseArgs(args []string) (cfg config.Config, handled bool, err error) {
 
 	profile := fs.String("profile", "", "Firefox profile directory to use")
 	ffdir := fs.String("firefox-dir", "", "Firefox installation directory")
-	mode := fs.String("mode", "", "auto|install|uninstall|loader-only|loader-remove|list")
+	mode := fs.String("mode", "", "auto|install|update|uninstall|loader-only|loader-remove|list")
 	xpiPath := fs.String("xpi", "", "install this unsigned xpi instead of the embedded build (dev)")
 	chFlag := fs.String("channel", "", "stable|nightly — which Firefox channel to target (default: this build's channel)")
 
-	var noExt, noLaunch, removeLoader, keepDisabled, deleteProfile, force, help, tui bool
+	var noExt, noLaunch, keepLoader, removeLoader, keepDisabled, deleteProfile, force, help, tui bool
 	fs.BoolVar(&noExt, "no-extension", false, "skip the WebExtension install")
 	fs.BoolVar(&noLaunch, "no-launch", false, "do not relaunch Firefox after install")
-	fs.BoolVar(&removeLoader, "remove-loader", false, "also remove the chrome loader (uninstall)")
+	fs.BoolVar(&keepLoader, "keep-loader", false, "on uninstall, leave the chrome loader in the Firefox folder")
+	// Kept so existing invocations keep parsing. The loader is removed by an
+	// uninstall by default now, so asking for it explicitly is a no-op.
+	fs.BoolVar(&removeLoader, "remove-loader", false, "deprecated: the loader is removed by default")
 	fs.BoolVar(&keepDisabled, "keep-extension-disabled", false, "only disable the add-on, keep the xpi")
 	fs.BoolVar(&deleteProfile, "delete-profile", false, "on uninstall, also delete the profile Lazyfox created")
 	fs.BoolVar(&force, "force", false, "force a chrome-loader (re)install/removal")
@@ -52,7 +55,7 @@ func parseArgs(args []string) (cfg config.Config, handled bool, err error) {
 	cfg.FirefoxDir = *ffdir
 	cfg.NoExt = noExt
 	cfg.NoLaunch = noLaunch
-	cfg.RemoveLoader = removeLoader
+	cfg.KeepLoader = keepLoader
 	cfg.KeepDisabled = keepDisabled
 	cfg.DeleteProfile = deleteProfile
 	cfg.Force = force
@@ -98,6 +101,8 @@ func parseMode(mode string) config.Action {
 		return config.Auto
 	case "install":
 		return config.Install
+	case "update", "upgrade":
+		return config.Update
 	case "uninstall":
 		return config.Uninstall
 	case "loader-only":
@@ -157,6 +162,7 @@ Examples:
   lazyfox-install                             open the installer window
   lazyfox-install --tui                       terminal installer instead
   lazyfox-install --mode auto                 no prompts: detect, install, verify
+  lazyfox-install --mode update               refresh an existing install in place
   lazyfox-install --mode list                 show what this build targets
   lazyfox-install --mode uninstall --delete-profile
   lazyfox-install --mode loader-only --firefox-dir "…"
@@ -209,6 +215,9 @@ func runNonInteractive(src *payload.Source, cfg config.Config) error {
 		}
 		platform.WriteElevatedStatus(cfg.StatusFile, opErr) // the UAC parent watches this
 		return opErr
+
+	case config.Update:
+		return runUpdate(src, rep, cfg)
 
 	case config.Install:
 		view := fx.Scan(cfg.Channel)
@@ -303,7 +312,7 @@ func runUninstall(src *payload.Source, rep ops.Reporter, view fx.View, cfg confi
 	if err := ops.RunUninstall(src, rep, ops.UninstallOptions{
 		Profile:                   prof,
 		Install:                   install,
-		RemoveLoader:              cfg.RemoveLoader,
+		KeepLoader:                cfg.KeepLoader,
 		KeepExtensionDisabledOnly: cfg.KeepDisabled,
 		RemoveDedicated:           cfg.DeleteProfile && owned,
 	}, passwordProvider(cfg)); err != nil {
@@ -365,13 +374,21 @@ func listTargets(src *payload.Source, cfg config.Config) error {
 		}
 	}
 
+	// The installed version, measured from the profile itself, is the other half
+	// of "what will this binary do?": the add-on line above says what it WOULD
+	// write, these say what is there now — and therefore whether an update is
+	// the command to run.
+	installDir := ""
+	if fi := view.Install(""); fi != nil {
+		installDir = fi.Dir
+	}
 	fmt.Println("\nFirefox profiles for this channel:")
 	for _, p := range view.Profiles {
 		owned := ""
 		if fx.IsLazyfoxOwnedProfile(p.Dir) {
 			owned = "  [Lazyfox-owned: " + fx.OwnedProfileChannel(p.Dir).String() + "]"
 		}
-		fmt.Printf("  %s  %s%s\n", p.Label(), p.Dir, owned)
+		fmt.Printf("  %s  %s%s%s\n", p.Label(), p.Dir, owned, installedLabel(ops.Inspect(src, p.Dir, installDir)))
 	}
 	if len(view.Profiles) == 0 {
 		fmt.Println("  (none — the installer would create its own)")

@@ -12,8 +12,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -88,22 +92,30 @@ func (r *Router) Handle(ctx context.Context, method string, params json.RawMessa
 // Host manages the native messaging host lifecycle
 type Host struct {
 	router       *Router
-	stdinScanner *bufio.Scanner
+	stdin        *bufio.Reader
 	stdoutWriter *bufio.Writer
-	mu           sync.Mutex
-	shutdown     chan struct{}
+	// framed records the shape of the request being answered. Native messaging
+	// is length-prefixed; a person piping JSON into the binary is not, and the
+	// reply has to match or one of the two callers reads garbage.
+	framed   bool
+	mu       sync.Mutex
+	shutdown chan struct{}
 }
+
+// maxMessageBytes is the cap Firefox itself enforces on a native message; a
+// frame larger than this is a corrupt stream, not a message.
+const maxMessageBytes = 64 << 20
 
 // Native messaging is low-volume (health checks + the occasional system op),
 // so requests are handled synchronously on the read loop: a reply is always
-// flushed before the next line is read, and EOF cannot race an in-flight
+// flushed before the next message is read, and EOF cannot race an in-flight
 // handler out of existence (the piped test case would otherwise exit with the
 // response half-written).
 
 func NewHost() *Host {
 	h := &Host{
 		router:       NewRouter(),
-		stdinScanner: bufio.NewScanner(os.Stdin),
+		stdin:        bufio.NewReaderSize(os.Stdin, 64*1024),
 		stdoutWriter: bufio.NewWriter(os.Stdout),
 		shutdown:     make(chan struct{}),
 	}
@@ -146,20 +158,28 @@ func (h *Host) Run(ctx context.Context) error {
 }
 
 func (h *Host) readLoop(ctx context.Context) {
-	for h.stdinScanner.Scan() {
+	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
 
-		line := h.stdinScanner.Text()
-		if line == "" {
+		line, framed, err := h.readMessage()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("stdin read error: %v", err)
+			break
+		}
+		h.framed = framed
+		if len(line) == 0 {
 			continue
 		}
 
 		var req JSONRPCRequest
-		if err := json.Unmarshal([]byte(line), &req); err != nil {
+		if err := json.Unmarshal(line, &req); err != nil {
 			h.sendError(nil, -32700, "Parse error: "+err.Error())
 			continue
 		}
@@ -176,11 +196,62 @@ func (h *Host) readLoop(ctx context.Context) {
 		h.handleRequest(req.ID, req.Method, req.Params)
 	}
 
-	if err := h.stdinScanner.Err(); err != nil {
-		log.Printf("stdin scanner error: %v", err)
-	}
 	// Stdin closed (EOF) - signal shutdown
 	close(h.shutdown)
+}
+
+// readMessage reads one message and reports whether it was length-framed.
+//
+// THIS IS THE NATIVE MESSAGING PROTOCOL, and getting it wrong is invisible from
+// the host's side. Firefox writes a 32-bit length in native byte order followed
+// by that many bytes of UTF-8 JSON, with no newline, and reads replies in the
+// same shape. This host used to read LINES: a framed request has no newline in
+// it, so the scanner blocked until Firefox closed the port, the host answered
+// nothing, and the extension reported the host as missing on a machine where
+// every file was installed correctly.
+//
+// A line is still accepted when a person pipes JSON in by hand (or the docs'
+// `echo … | lazyfox-host` smoke test does): a JSON object starts with '{', while
+// the first byte of a frame is the low byte of a small length. The reply mirrors
+// whichever shape arrived.
+func (h *Host) readMessage() ([]byte, bool, error) {
+	for {
+		head, err := h.stdin.Peek(4)
+		if err != nil {
+			// Fewer than four bytes and then EOF: nothing left to answer.
+			if err == io.ErrUnexpectedEOF {
+				return nil, false, io.EOF
+			}
+			return nil, false, err
+		}
+		if head[0] == '{' {
+			line, err := h.stdin.ReadBytes('\n')
+			trimmed := bytes.TrimSpace(line)
+			if len(trimmed) > 0 {
+				return trimmed, false, nil
+			}
+			if err != nil {
+				return nil, false, err
+			}
+			continue // a blank line is not a message
+		}
+
+		if _, err := io.ReadFull(h.stdin, head); err != nil {
+			return nil, true, err
+		}
+		n := binary.NativeEndian.Uint32(head)
+		if n == 0 {
+			continue
+		}
+		if n > maxMessageBytes {
+			return nil, true, fmt.Errorf("frame of %d bytes exceeds the %d-byte limit", n, maxMessageBytes)
+		}
+		body := make([]byte, n)
+		if _, err := io.ReadFull(h.stdin, body); err != nil {
+			return nil, true, err
+		}
+		return body, true, nil
+	}
 }
 
 func (h *Host) handleRequest(id json.RawMessage, method string, params json.RawMessage) {
@@ -205,9 +276,22 @@ func (h *Host) sendResponse(resp *JSONRPCResponse) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, err = h.stdoutWriter.WriteString(string(data) + "\n")
-	if err != nil {
-		return err
+	if h.framed {
+		var head [4]byte
+		binary.NativeEndian.PutUint32(head[:], uint32(len(data)))
+		if _, err := h.stdoutWriter.Write(head[:]); err != nil {
+			return err
+		}
+		if _, err := h.stdoutWriter.Write(data); err != nil {
+			return err
+		}
+	} else {
+		if _, err := h.stdoutWriter.Write(data); err != nil {
+			return err
+		}
+		if err := h.stdoutWriter.WriteByte('\n'); err != nil {
+			return err
+		}
 	}
 	return h.stdoutWriter.Flush()
 }

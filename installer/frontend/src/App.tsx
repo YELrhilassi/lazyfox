@@ -8,7 +8,7 @@ import { RunPanel } from "@/components/RunPanel";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { Button } from "@/components/ui/button";
 import { installer, onStep } from "@/lib/installer";
-import { actionVerb, initialSelection, needsProfile, resetForAction, targetSummary, toRequest } from "@/lib/selection";
+import { actionVerb, defaultAction, initialSelection, needsProfile, resetForAction, targetSummary, toRequest } from "@/lib/selection";
 import {
   PROFILE_NAME_RE,
   type ActionId,
@@ -73,7 +73,7 @@ export function App() {
       .then((st) => {
         if (cancelled) return;
         setState(st);
-        setSel(initialSelection(st, "install"));
+        setSel(initialSelection(st, defaultAction(st)));
       })
       .catch((err: Error) => {
         if (!cancelled) setFatal(err.message);
@@ -191,7 +191,7 @@ export function App() {
     try {
       const st = await installer.state();
       setState(st);
-      setSel(initialSelection(st, "install"));
+      setSel(initialSelection(st, defaultAction(st)));
     } catch (err) {
       setFatal((err as Error).message);
     }
@@ -237,7 +237,13 @@ export function App() {
             from the embedded xpi, so it names the build a run would actually
             write rather than a version someone remembered to type here. */}
         <span className="ml-auto truncate text-[11px] text-muted-foreground">
-          {[state.channelLabel, state.addonVersion ? `add-on ${state.addonVersion}` : ""].filter(Boolean).join(" · ")}
+          {[
+            state.channelLabel,
+            state.addonVersion ? `add-on ${state.addonVersion}` : "",
+            state.updateAvailable ? "update available" : "",
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         </span>
       </header>
 
