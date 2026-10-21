@@ -101,6 +101,37 @@ func RegisterNativeHostWindows(manifestPath string) error {
 	return k.SetStringValue("", manifestPath)
 }
 
+// NativeHostRegisteredPath is the manifest path Firefox would use for the
+// Lazyfox host on this machine, or "" when the registry key is absent.
+//
+// It exists so "the host is installed" can be CHECKED rather than assumed: the
+// files can be present while the key that points Firefox at them is missing (a
+// deleted key, a half-finished install, an old build), and in that state the
+// extension reports the host as unavailable with nothing on disk looking wrong.
+func NativeHostRegisteredPath() string {
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Mozilla\NativeMessagingHosts\lazyfox`, registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer k.Close()
+	v, _, err := k.GetStringValue("")
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// UnregisterNativeHostWindows removes the HKCU key RegisterNativeHostWindows
+// wrote, so an uninstalled host leaves nothing for Firefox to look up. A key
+// that is already absent is success: uninstall must be safe to run twice.
+func UnregisterNativeHostWindows() error {
+	err := registry.DeleteKey(registry.CURRENT_USER, `Software\Mozilla\NativeMessagingHosts\lazyfox`)
+	if err == nil || err == registry.ErrNotExist {
+		return nil
+	}
+	return err
+}
+
 // sudo is a Unix concept; on Windows elevation uses UAC (ElevateSelf).
 func SudoAvailable() bool    { return false }
 func SudoPasswordless() bool { return false }

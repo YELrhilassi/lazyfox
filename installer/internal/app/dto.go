@@ -33,6 +33,20 @@ type ProfileInfo struct {
 	Owned bool `json:"owned"`
 	// Recommended marks the profile the installer would choose on its own.
 	Recommended bool `json:"recommended"`
+	// LazyfoxVersion is the version of the Lazyfox add-on installed in this
+	// profile, read out of that profile's own xpi. Empty when it is not there.
+	LazyfoxVersion string `json:"lazyfoxVersion"`
+	// LazyfoxState is not-installed | current | outdated | newer | incomplete,
+	// measured by comparing the profile with this binary (ops.Installed). It is
+	// what lets the window say "update available" about a profile without
+	// claiming to know about the world beyond it.
+	LazyfoxState string `json:"lazyfoxState"`
+	// HostState is the optional native messaging host: missing (the normal
+	// store-install state), ok, or unregistered — on disk but not registered with
+	// Firefox, where every file check passes and the extension still cannot reach
+	// it. Only an in-place update repairs that, so the window must be able to say
+	// it before the user picks an action.
+	HostState string `json:"hostState"`
 }
 
 // ActionInfo describes one thing the user can ask for, so the window's first
@@ -70,6 +84,12 @@ type State struct {
 	// created for this channel — since that is what an installer-managed install
 	// used. It equals DefaultProfile when this channel has no profile of its own.
 	DefaultUninstallProfile int `json:"defaultUninstallProfile"`
+	// UpdateAvailable is true when some profile holds an older or partial
+	// install of this channel's Lazyfox — i.e. when "Update" is the thing to do.
+	UpdateAvailable bool `json:"updateAvailable"`
+	// DefaultUpdateProfile pre-selects, for an update, the profile that holds
+	// the install an installer-managed update would refresh.
+	DefaultUpdateProfile int `json:"defaultUpdateProfile"`
 }
 
 // Request is one operation the window asks for, already narrowed to a choice.
@@ -88,7 +108,9 @@ type Request struct {
 
 	UseExtension bool `json:"useExtension"`
 	UseLaunch    bool `json:"useLaunch"`
-	RemoveLoader bool `json:"removeLoader"`
+	// KeepLoader (uninstall) leaves the chrome loader in the Firefox folder.
+	// Removing it is the default; the loader is removed unless this is set.
+	KeepLoader bool `json:"keepLoader"`
 	// DeleteProfile (uninstall) also removes the Lazyfox-owned profile. It is
 	// only ever honoured for a profile carrying the Lazyfox marker.
 	DeleteProfile bool `json:"deleteProfile"`
@@ -156,7 +178,7 @@ type Preview struct {
 // Result is the outcome of a run.
 type Result struct {
 	OK bool `json:"ok"`
-	// State is "installed", "removed" or "failed".
+	// State is "installed", "updated", "removed" or "failed".
 	State string `json:"state"`
 	Text  string `json:"text"`
 	// Failures lists the verification checks that did not pass, when the run

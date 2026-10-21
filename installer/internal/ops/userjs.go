@@ -68,11 +68,45 @@ func dropManagedPrefs(src *payload.Source, profileDir string) error {
 		return err
 	}
 	kept := nonManagedLines(userJs, UserPrefs(ours))
-	content := strings.Join(kept, "\n")
-	if strings.TrimSpace(content) != "" {
-		content += "\n"
+	// The managed block is not only prefs: it carries the comments that explain
+	// them. Those lines came from the payload, so they are dropped too — by exact
+	// text, which means a comment the user wrote stays unless it is word-for-word
+	// ours. Without this an uninstall left a growing pile of Lazyfox's own
+	// commentary in a file it had otherwise emptied.
+	oursComments := payloadCommentLines(ours)
+	var left []string
+	for _, line := range kept {
+		if oursComments[strings.TrimSpace(line)] {
+			continue
+		}
+		left = append(left, line)
 	}
-	return os.WriteFile(userJs, []byte(content), 0o644)
+	content := strings.TrimRight(strings.Join(left, "\n"), "\n")
+	// Nothing left means the file exists only because Lazyfox created it: an
+	// empty user.js is indistinguishable from a stray file the user did not
+	// write, and "uninstalled" should mean gone.
+	if strings.TrimSpace(content) == "" {
+		if err := os.Remove(userJs); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return os.WriteFile(userJs, []byte(content+"\n"), 0o644)
+}
+
+// payloadCommentLines returns the trimmed comment lines a managed-prefs payload
+// declares, so an uninstall can take its own explanation back out.
+func payloadCommentLines(source []byte) map[string]bool {
+	out := map[string]bool{}
+	sc := bufio.NewScanner(strings.NewReader(string(source)))
+	for sc.Scan() {
+		line := strings.TrimSpace(strings.TrimRight(sc.Text(), "\r"))
+		if line == "" || userPrefRe.MatchString(line) {
+			continue
+		}
+		out[line] = true
+	}
+	return out
 }
 
 // nonManagedLines returns the file's lines with managed prefs removed.

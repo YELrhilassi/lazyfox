@@ -42,6 +42,9 @@ export function SettingsPanel({
 }) {
   const showProfile = needsProfile(sel.action);
   const selected = state.profiles.find((p) => p.dir === sel.profileDir);
+  // An update only ever refreshes a profile Lazyfox is already in; offering
+  // "make a new profile" there would be a different operation wearing the label.
+  const isUpdate = sel.action === "update";
   const nameInvalid = sel.newProfile && sel.newProfileName !== "" && !PROFILE_NAME_RE.test(sel.newProfileName);
   // On the dev channel an install always lands in a profile Lazyfox owns, so
   // there is nothing to pick — only the option of starting from a fresh one.
@@ -148,6 +151,14 @@ export function SettingsPanel({
                 </div>
               )}
 
+              {isUpdate && selected && (
+                <div className="mt-2">
+                  <Line tone={selected.lazyfoxState === "outdated" || selected.lazyfoxState === "incomplete" ? "warning" : "muted"}>
+                    {updateStatus(selected, state.addonVersion)}
+                  </Line>
+                </div>
+              )}
+
               {sel.action === "uninstall" && selected?.owned && (
                 <div className="mt-2 divide-y divide-border overflow-hidden rounded-md border border-border">
                   <Toggle
@@ -195,12 +206,20 @@ export function SettingsPanel({
               />
             </>
           )}
+          {sel.action === "update" && (
+            <Toggle
+              label="Reopen Firefox when it is done"
+              meta="The add-on is reloaded when Firefox starts, so this skips a manual restart."
+              checked={sel.useLaunch}
+              onChange={(v) => onChange({ useLaunch: v })}
+            />
+          )}
           {sel.action === "uninstall" && (
             <Toggle
-              label="Remove the chrome loader too"
-              meta="It lives in the Firefox folder, so this needs administrator rights."
-              checked={sel.removeLoader}
-              onChange={(v) => onChange({ removeLoader: v })}
+              label="Keep the chrome loader"
+              meta="It lives in the Firefox folder and is removed by default. Keep it only if something else owns that config.js; otherwise it is left pointing at a Lazyfox layer that is gone."
+              checked={sel.keepLoader}
+              onChange={(v) => onChange({ keepLoader: v })}
             />
           )}
           {!needsProfile(sel.action) && (
@@ -301,7 +320,15 @@ function ProfileChoice({ profile }: { profile: ProfileInfo }) {
   const facts = [profile.edition, profile.version ? `v${profile.version}` : ""].filter(Boolean).join(" · ");
   const marks: string[] = [];
   if (profile.owned) marks.push("Lazyfox profile");
-  if (profile.hasLazyfox) marks.push("Lazyfox installed");
+  if (profile.lazyfoxState === "outdated") marks.push(`Lazyfox ${profile.lazyfoxVersion} — update available`);
+  else if (profile.lazyfoxState === "incomplete") marks.push(`Lazyfox ${profile.lazyfoxVersion || "?"} — needs repair`);
+  else if (profile.lazyfoxState === "newer") marks.push(`Lazyfox ${profile.lazyfoxVersion} — newer than this build`);
+  else if (profile.lazyfoxState === "current") marks.push(`Lazyfox ${profile.lazyfoxVersion}`);
+  else if (profile.hasLazyfox) marks.push("Lazyfox installed");
+  // The host is optional, so its absence says nothing. What is worth a line is
+  // the state no file check can see: installed, and unreachable.
+  if (profile.hostState === "unregistered") marks.push("native host not registered — an update fixes it");
+  else if (profile.hostState === "stale") marks.push("native host is from an older build — an update refreshes it");
   if (profile.isDefault) marks.push("default");
 
   return (
@@ -314,6 +341,31 @@ function ProfileChoice({ profile }: { profile: ProfileInfo }) {
       tone={profile.locked ? "warning" : "primary"}
     />
   );
+}
+
+/** updateStatus is the one sentence the update screen needs: what this profile
+ *  holds, and what the run will do about it. */
+function updateStatus(profile: ProfileInfo, payloadVersion: string): string {
+  switch (profile.lazyfoxState) {
+    case "outdated":
+      return `Installed: Lazyfox ${profile.lazyfoxVersion}. This update moves it to ${payloadVersion} in place — your add-ons, history and settings are untouched.`;
+    case "incomplete":
+      return `Installed: Lazyfox ${profile.lazyfoxVersion || "version unreadable"}, with files missing or out of date. The update repairs them.`;
+    case "newer":
+      return `This profile has Lazyfox ${profile.lazyfoxVersion}, which is newer than this installer's ${payloadVersion}. Continuing would replace it with the older build.`;
+    case "current":
+      if (profile.hostState === "unregistered") {
+        return `Lazyfox ${profile.lazyfoxVersion} is installed, but its native host is not registered with Firefox, so the add-on cannot reach it. Re-running the install registers it — nothing else changes.`;
+      }
+      if (profile.hostState === "stale") {
+        return `Lazyfox ${profile.lazyfoxVersion} is installed, but its native host is from an older build. The update replaces just that binary and keeps everything else.`;
+      }
+      return profile.lazyfoxVersion === payloadVersion
+        ? `Already up to date (Lazyfox ${profile.lazyfoxVersion}). The files are rewritten and Firefox restarts for nothing.`
+        : `Installed: Lazyfox ${profile.lazyfoxVersion}.`;
+    case "not-installed":
+      return "Lazyfox is not installed in this profile; use Install instead.";
+  }
 }
 
 function ownedName(state: State): string {
