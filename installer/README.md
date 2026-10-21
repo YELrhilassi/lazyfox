@@ -7,7 +7,7 @@ set of operations.
 |-------|------|----------|
 | `internal/app` + `frontend/` (a Wails window) | interactive, **default** | built natively per OS |
 | `internal/tui` | interactive with `--tui` | all (needs a terminal) |
-| `--mode auto/install/uninstall/…` (package `main`) | scripted | all |
+| `--mode auto/install/update/uninstall/…` (package `main`) | scripted | all |
 
 Every front-end calls the same `ops.Run` / `ops.RunUninstall` /
 `ops.InstallChromeLoader`, so behaviour cannot drift between them.
@@ -113,7 +113,9 @@ stable installer has none to Developer Edition or Nightly.
 Consequences worth knowing:
 
 - `--mode list` prints what the build will target *and* names what it ignores,
-  so the boundary is visible rather than implied.
+  so the boundary is visible rather than implied. It also prints, per profile,
+  the Lazyfox version actually installed there and whether an update is
+  available (read from the profile's own xpi — see `ops.Inspect`).
 - `--firefox-dir` / `--profile` outside the channel are **refused**, with a
   message saying which channel the build targets. There is deliberately no
   cross-channel fallback: installing Lazyfox into the wrong Firefox is worse
@@ -135,7 +137,21 @@ Uninstall is symmetric and cautious: it **suggests** deleting a Lazyfox-created
 profile rather than doing it unasked (`--delete-profile` opts in), never touches a
 profile without the `.lazyfox-profile` marker, and restores the classic
 `Default=1` flag on a surviving profile so a plain uninstall cannot leave Firefox
-with no default profile at all.
+with no default profile at all. It removes every component the install wrote —
+including the native messaging host and the chrome loader, which used to be left
+behind — and finishes with `ops.VerifyRemoved`, which reports anything that is
+still there instead of claiming success.
+
+## `--mode update` — updating without uninstalling
+
+`ops.Inspect` measures a profile against the running binary: the installed xpi's
+own manifest gives the installed version, the payload's embedded xpi gives the
+target, and the chrome files are compared byte-for-byte. `--mode update` uses
+that answer to do one of three things: refresh an older or partial install in
+place, report that the profile is already current and stop (unless `--force`),
+or refuse — nothing to update, or an installed build newer than this binary. It
+never creates a profile. See [docs/UPGRADING.md](../docs/UPGRADING.md) for the
+whole model, including what the extension's Components panel reports.
 
 ## `--mode auto` — the hands-off install (zero prompts)
 
@@ -155,9 +171,9 @@ The path the public one-click flow uses (`auto.go`):
 4. **Verify** — `ops.Verify` checks the xpi, `chrome/*` and `user.js` landed, and
    reports the add-on as pending-enable (imported on next launch) rather than
    falsely claiming success.
-5. **Uninstall** — reverses the install, then *offers* to delete the
-   Lazyfox-created profile (`--delete-profile` accepts); it never deletes a
-   profile without the marker.
+5. **Uninstall** — reverses the install (profile files, add-on, native host,
+   loader), then *offers* to delete the Lazyfox-created profile (`--delete-profile`
+   accepts); it never deletes a profile without the marker.
 
 ## Payloads — one declarative registry
 

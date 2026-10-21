@@ -77,13 +77,19 @@ export function RunPanel({
           <p className={cn("text-[13px] font-medium", result.ok ? "text-success" : "text-destructive")}>
             {result.text}
           </p>
-          {/* Only after an INSTALL: a removal that ended with "press ; to open the
-              overlay" would advertise the very thing the run just took away. */}
+          {/* Only after an INSTALL or UPDATE: a removal that ended with "press ;
+              to open the overlay" would advertise the very thing the run just
+              took away. */}
           {result.ok && result.state === "installed" && (
             <p className="text-[11px] leading-4 text-muted-foreground">
               {result.pendingEnable
                 ? "Start Firefox once and the add-on loads with it. Then press ; on any page."
                 : "Press ; on any page to open the command overlay."}
+            </p>
+          )}
+          {result.ok && result.state === "updated" && (
+            <p className="text-[11px] leading-4 text-muted-foreground">
+              Restart Firefox to finish applying the update. Your tabs, add-ons and settings are untouched.
             </p>
           )}
           {failures.length > 0 && (

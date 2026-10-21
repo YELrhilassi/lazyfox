@@ -48,6 +48,43 @@ func StopFirefoxForProfile(profileDir string) int {
 	return n
 }
 
+// StopProcessesNamed terminates every process of this uid whose executable name
+// is exactly name, returning how many were signalled. It is the Unix half of the
+// native host refresh: an update replaces the host binary, and the running copy
+// must exit first.
+func StopProcessesNamed(name string) int {
+	p, err := FindPath("pgrep")
+	if err != nil {
+		return 0
+	}
+	out, err := exec.Command(p, "-u", strconv.Itoa(os.Getuid()), "-x", name).Output()
+	if err != nil {
+		return 0
+	}
+	n := 0
+	var pids []int
+	for _, f := range strings.Fields(string(out)) {
+		if pid, err := strconv.Atoi(f); err == nil && pid > 0 {
+			pids = append(pids, pid)
+			if syscall.Kill(pid, syscall.SIGTERM) == nil {
+				n++
+			}
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	// Give it a moment, then make sure it is really gone: the caller is about to
+	// overwrite the binary these processes are executing.
+	time.Sleep(300 * time.Millisecond)
+	for _, pid := range pids {
+		if unixAlive(pid) {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+	return n
+}
+
 // pidsMatchingProfile lists pids for this user whose command line contains the
 // profile path (pgrep when available, else a /proc scan).
 func pidsMatchingProfile(profileDir string) []int {

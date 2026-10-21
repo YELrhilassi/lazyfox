@@ -222,6 +222,74 @@ func TestProfileNameCannotEscapeTheProfileRoot(t *testing.T) {
 	}
 }
 
+// An update is the one action whose whole promise is "nothing else changes":
+// it must land in the profile that holds Lazyfox, never create one, and refuse
+// when there is nothing to update rather than quietly installing.
+func TestUpdateTargetsAnExistingInstallInPlace(t *testing.T) {
+	ch := fx.ChannelStable
+	profile := ownedProfile(t, ch, "lazyfox-4f2a91cd")
+	installLazyfox(t, profile.Dir)
+	a := testApp(t, ch, []*fx.Profile{profile})
+
+	pv, err := a.Preview(Request{Action: "update", ProfileDir: profile.Dir})
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if pv.Action != "update" {
+		t.Errorf("preview action = %q, want update", pv.Action)
+	}
+	if pv.CreatesProfile {
+		t.Fatal("an update must never create a profile")
+	}
+	if !strings.Contains(pv.Summary, "in place") {
+		t.Errorf("the summary should say the update is in place, got: %q", pv.Summary)
+	}
+}
+
+func TestUpdateRefusesAProfileWithoutLazyfox(t *testing.T) {
+	profile := userProfile(t, "default-release")
+	a := testApp(t, fx.ChannelStable, []*fx.Profile{profile})
+
+	_, err := a.Preview(Request{Action: "update", ProfileDir: profile.Dir})
+	if err == nil {
+		t.Fatal("an update of an empty profile must be refused, not turned into an install")
+	}
+	if !strings.Contains(err.Error(), "not installed") {
+		t.Errorf("the refusal should say Lazyfox is not there, got: %v", err)
+	}
+}
+
+func TestUpdateRefusesToCreateAProfile(t *testing.T) {
+	ch := fx.ChannelStable
+	profile := ownedProfile(t, ch, "lazyfox-4f2a91cd")
+	installLazyfox(t, profile.Dir)
+	a := testApp(t, ch, []*fx.Profile{profile})
+
+	_, err := a.Preview(Request{Action: "update", NewProfile: true, NewProfileName: "fresh"})
+	if err == nil {
+		t.Fatal("an update with NewProfile must be refused")
+	}
+	if !strings.Contains(err.Error(), "choose a profile") {
+		t.Errorf("the refusal should point at choosing a profile, got: %v", err)
+	}
+}
+
+func TestUpdateFindsTheProfileThatHasTheAddon(t *testing.T) {
+	plain := userProfile(t, "default-release")
+	withLazyfox := userProfile(t, "work")
+	withLazyfox.HasLazyfox = true
+	installLazyfox(t, withLazyfox.Dir)
+	a := testApp(t, fx.ChannelStable, []*fx.Profile{plain, withLazyfox})
+
+	pv, err := a.Preview(Request{Action: "update"})
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if pv.Profile.Name != "work" {
+		t.Errorf("the update picked %q, want the profile that has Lazyfox", pv.Profile.Name)
+	}
+}
+
 func TestProfileNameCannotTakeOverAnExistingUserProfile(t *testing.T) {
 	existing := userProfile(t, "work")
 	a := testApp(t, fx.ChannelStable, []*fx.Profile{existing})
