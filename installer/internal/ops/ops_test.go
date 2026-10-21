@@ -144,7 +144,9 @@ func distWithManagedPrefs(t *testing.T) *payload.Source {
 	if err := os.MkdirAll(chrome, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	userjs := "user_pref(\"extensions.lazyfox.loader\", true);\nuser_pref(\"extensions.lazyfox.dev\", true);\n"
+	// One comment line, as the real payload has: an uninstall must take its own
+	// explanation back out, not just the user_pref lines.
+	userjs := "// Lazyfox's managed prefs (generated).\nuser_pref(\"extensions.lazyfox.loader\", true);\nuser_pref(\"extensions.lazyfox.dev\", true);\n"
 	if err := os.WriteFile(filepath.Join(chrome, payload.UserJSName), []byte(userjs), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -195,6 +197,44 @@ func TestDropManagedPrefs(t *testing.T) {
 	}
 	if !strings.Contains(s, "browser.custom.myown") {
 		t.Fatalf("user's own pref dropped:\n%s", s)
+	}
+}
+
+// A user.js that held ONLY managed prefs exists because Lazyfox created it (or
+// because the first install created it). Uninstall should leave no file behind,
+// not an empty one that looks like the user's own.
+func TestDropManagedPrefsRemovesAnEmptyUserJS(t *testing.T) {
+	src := distWithManagedPrefs(t)
+	prof := t.TempDir()
+	js := "user_pref(\"extensions.lazyfox.loader\", true);\nuser_pref(\"extensions.lazyfox.dev\", true);\n"
+	if err := os.WriteFile(filepath.Join(prof, payload.UserJSName), []byte(js), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := dropManagedPrefs(src, prof); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(prof, payload.UserJSName)); !os.IsNotExist(err) {
+		t.Fatalf("user.js should be gone when it held nothing but managed prefs, stat err = %v", err)
+	}
+}
+
+// A pref the user wrote, even beside our block, keeps the file.
+func TestDropManagedPrefsKeepsAUserOnlyFile(t *testing.T) {
+	src := distWithManagedPrefs(t)
+	prof := t.TempDir()
+	js := "user_pref(\"browser.custom.myown\", 7);\nuser_pref(\"extensions.lazyfox.loader\", true);\n"
+	if err := os.WriteFile(filepath.Join(prof, payload.UserJSName), []byte(js), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := dropManagedPrefs(src, prof); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(prof, payload.UserJSName))
+	if err != nil {
+		t.Fatalf("user.js should survive when it holds a user pref: %v", err)
+	}
+	if strings.Contains(string(got), "extensions.lazyfox") || !strings.Contains(string(got), "browser.custom.myown") {
+		t.Fatalf("wrong contents after uninstall:\n%s", got)
 	}
 }
 
@@ -258,6 +298,9 @@ func TestVerifyReportsAnEmptyProfileAsBroken(t *testing.T) {
 }
 
 func TestVerifyPassesWhenThePayloadLands(t *testing.T) {
+	// The native host lives outside the profile, so without this the test would
+	// read (and report on) the developer's own machine-wide install.
+	isolateHome(t)
 	src := &payload.Source{}
 	dir := t.TempDir()
 

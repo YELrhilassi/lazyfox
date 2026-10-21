@@ -2,9 +2,15 @@
 // hand rather than generated because they are the contract, not a by-product:
 // changing one is changing the installer's UI, and it should be deliberate.
 
-export type ActionId = "install" | "uninstall" | "loader-only" | "loader-remove";
+export type ActionId = "install" | "update" | "uninstall" | "loader-only" | "loader-remove";
+
+/** The installer's measurement of one profile, from ops.InstallStatus. */
+export type LazyfoxState = "not-installed" | "current" | "outdated" | "newer" | "incomplete";
 
 export type LoaderState = "current" | "outdated" | "missing";
+
+/** The optional native messaging host, as the installer measures it. */
+export type HostState = "missing" | "ok" | "unregistered" | "stale";
 
 export interface InstallInfo {
   label: string;
@@ -26,6 +32,16 @@ export interface ProfileInfo {
   isDefault: boolean;
   owned: boolean;
   recommended: boolean;
+  /** Version of the Lazyfox add-on installed in this profile, read from its own
+   *  xpi. Empty when it is not installed. */
+  lazyfoxVersion: string;
+  /** What this profile holds relative to the installer binary: current,
+   *  outdated, newer, incomplete or not-installed. */
+  lazyfoxState: LazyfoxState;
+  /** The optional native messaging host: absent (normal for a store install),
+   *  installed and registered, or installed but not registered — the state in
+   *  which the add-on cannot reach it and an update is the fix. */
+  hostState: HostState;
 }
 
 export interface ActionInfo {
@@ -53,6 +69,11 @@ export interface State {
   defaultInstall: number;
   defaultProfile: number;
   defaultUninstallProfile: number;
+  /** True when some profile holds an older or partial install — the state an
+   *  update fixes. */
+  updateAvailable: boolean;
+  /** Profile pre-selected for an update: the one that needs it, else ours. */
+  defaultUpdateProfile: number;
 }
 
 /** Selection is everything the user has chosen, before it becomes a Request. */
@@ -64,7 +85,9 @@ export interface Selection {
   newProfileName: string;
   useExtension: boolean;
   useLaunch: boolean;
-  removeLoader: boolean;
+  /** keepLoader leaves the chrome loader installed on an uninstall; removing it
+   *  is the default. */
+  keepLoader: boolean;
   deleteProfile: boolean;
 }
 
@@ -76,7 +99,7 @@ export interface Request {
   newProfileName: string;
   useExtension: boolean;
   useLaunch: boolean;
-  removeLoader: boolean;
+  keepLoader: boolean;
   deleteProfile: boolean;
 }
 
@@ -114,7 +137,7 @@ export interface Preview {
 
 export interface Result {
   ok: boolean;
-  state: "installed" | "removed" | "failed";
+  state: "installed" | "updated" | "removed" | "failed";
   text: string;
   failures: string[] | null;
   pendingEnable: boolean;

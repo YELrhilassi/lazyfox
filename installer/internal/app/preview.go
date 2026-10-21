@@ -36,7 +36,7 @@ func (a *App) preview(p plan) Preview {
 		pv.Install = a.installInfo(p.install)
 	}
 	if p.profile != nil {
-		pv.Profile = a.profileInfo(p.profile)
+		pv.Profile = a.profileInfo(p.profile, installDirOf(p.install))
 		// A profile that is about to be created has no marker on disk yet, so
 		// ownership is stated from the decision rather than from the file.
 		pv.Profile.Owned = pv.Profile.Owned || p.createsProfile
@@ -45,7 +45,7 @@ func (a *App) preview(p plan) Preview {
 	pv.DeletesProfile = p.deleteProfile
 
 	switch p.action {
-	case config.Install:
+	case config.Install, config.Update:
 		pv.Changes = a.installChanges(p)
 	case config.Uninstall:
 		pv.Removals, pv.Unchanged = a.uninstallInventory(p)
@@ -228,26 +228,43 @@ func (a *App) uninstallInventory(p plan) (removals, unchanged []RemovalInfo) {
 		Restorable: true,
 	})
 
-	if p.removeLoader {
+	// The loader is removed by an uninstall unless the user asked to keep it.
+	// Leaving it behind is not a harmless leftover: config.js switches
+	// autoconfig on and points at a chrome layer that is no longer there.
+	if p.keepLoader {
+		if p.install != nil && p.install.Dir != "" {
+			unchanged = append(unchanged, RemovalInfo{
+				Path:   p.install.Dir,
+				Kind:   "loader",
+				Detail: "chrome loader kept (you asked for it to stay)",
+				Exists: true,
+			})
+		}
+	} else {
 		removals = append(removals, a.loaderRemovals(p)...)
-	} else if p.install != nil && p.install.Dir != "" {
-		unchanged = append(unchanged, RemovalInfo{
-			Path:   p.install.Dir,
-			Kind:   "loader",
-			Detail: "chrome loader left in place (removing it needs admin)",
-			Exists: true,
-		})
 	}
 
-	// The native host is deliberately not part of an uninstall today, so it is
-	// reported as staying rather than quietly promised away.
+	// The native messaging host is part of the product and goes with it: the
+	// binary, the manifest Firefox scans, and (on Windows) the registry entry.
 	if t := ops.NativeHostTargets(dir); t.HostPath != "" {
-		unchanged = append(unchanged, RemovalInfo{
+		removals = addRemoval(removals, RemovalInfo{
 			Path:   t.HostPath,
 			Kind:   "file",
-			Detail: "native messaging host left in place",
-			Exists: platform.Exists(t.HostPath),
+			Detail: "native messaging host",
 		})
+		removals = addRemoval(removals, RemovalInfo{
+			Path:   t.ManifestPath,
+			Kind:   "file",
+			Detail: "the manifest Firefox reads to find the host",
+		})
+		if t.Registry {
+			removals = append(removals, RemovalInfo{
+				Path:   `HKCU\Software\Mozilla\NativeMessagingHosts\lazyfox`,
+				Kind:   "registry",
+				Detail: "the registry entry Firefox looks the host up by",
+				Exists: true,
+			})
+		}
 	}
 
 	if p.deleteProfile {
@@ -285,6 +302,18 @@ func (a *App) uninstallInventory(p plan) (removals, unchanged []RemovalInfo) {
 	return removals, unchanged
 }
 
+// installDirOf is the loader directory of the chosen install, or "" when there
+// is no install (the loader state is then simply not measured).
+func installDirOf(fi *fx.Install) string {
+	if fi == nil {
+		return ""
+	}
+	if fi.Dir != "" {
+		return fi.Dir
+	}
+	return filepath.Dir(fi.Exec)
+}
+
 // addRemoval appends a removal only when the file is actually there, so the
 // review shows what exists rather than what might have existed.
 func addRemoval(list []RemovalInfo, r RemovalInfo) []RemovalInfo {
@@ -311,6 +340,18 @@ func (a *App) summary(p plan) string {
 			where = "a new Lazyfox profile (" + p.newProfileName + ")"
 		}
 		return "Install Lazyfox into " + where + " in " + ff
+	case config.Update:
+		where := "the selected profile"
+		if p.profile != nil {
+			where = p.profile.Name
+		}
+		switch {
+		case p.updateFrom != "" && a.src.AddonVersion() != "" && p.updateFrom != a.src.AddonVersion():
+			return "Update Lazyfox " + p.updateFrom + " → " + a.src.AddonVersion() + " in " + where + " (in place, nothing else changes)"
+		case p.updateFrom != "":
+			return "Repair Lazyfox " + p.updateFrom + " in " + where + " (the files are refreshed in place)"
+		}
+		return "Update Lazyfox in " + where + " (in place)"
 	case config.Uninstall:
 		where := "the selected profile"
 		if p.profile != nil {
@@ -332,7 +373,18 @@ func (a *App) warnings(p plan) []string {
 		out = append(out, "Firefox is using this profile right now; the installer closes it first and can reopen it afterwards.")
 	}
 	switch p.action {
-	case config.Install:
+	case config.Install, config.Update:
+		if p.action == config.Update && p.profile != nil {
+			in := ops.Inspect(a.src, p.profile.Dir, installDirOf(p.install))
+			switch in.Status() {
+			case ops.StatusNewer:
+				out = append(out, "This profile already has Lazyfox "+in.AddonVersion+", newer than this build's "+in.PayloadVersion+". The update replaces it with the older build.")
+			case ops.StatusCurrent:
+				out = append(out, "This profile is already up to date (Lazyfox "+in.PayloadVersion+"); the files are rewritten and Firefox restarts for nothing.")
+			case ops.StatusIncomplete:
+				out = append(out, "This is a partial install, so the update also repairs it.")
+			}
+		}
 		if p.profile != nil && !p.createsProfile && p.profile.HasLazyfox {
 			out = append(out, "Lazyfox is already in this profile — the install refreshes it in place.")
 		}
@@ -369,6 +421,8 @@ func actionID(a config.Action) string {
 	switch a {
 	case config.Install:
 		return "install"
+	case config.Update:
+		return "update"
 	case config.Uninstall:
 		return "uninstall"
 	case config.LoaderOnly:
@@ -382,6 +436,8 @@ func actionID(a config.Action) string {
 // parseAction reads an action name leniently, defaulting to a full install.
 func parseAction(s string) config.Action {
 	switch s {
+	case "update":
+		return config.Update
 	case "uninstall":
 		return config.Uninstall
 	case "loader-only":

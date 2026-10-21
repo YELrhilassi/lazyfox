@@ -49,6 +49,7 @@ import {
 } from "./services/chromelayer";
 import { watchHomeTabs } from "./services/homeshim";
 import { openSetupTab, watchPageTabs } from "./services/components";
+import { checkUpdateOnLaunch, onUpdateNotificationClick } from "./services/updates";
 import { ensureCore } from "../shared/core";
 import type { CacheMode } from "../shared/types";
 import { handleRelayReq } from "./bgrelay";
@@ -207,6 +208,9 @@ function installBrowserLifecycle(): void {
   });
 
   browser.notifications.onClicked.addListener((id: string) => {
+    // The update notice opens the release page; everything else is the chrome
+    // layer's notification (which opens setup).
+    if (onUpdateNotificationClick(id)) return;
     onNotificationClick(id, () => void openSetupTab());
   });
 
@@ -240,6 +244,11 @@ function installWatchers(): void {
   // no-op — the host is optional, and AMO/store installs without the
   // installer's host step must degrade cleanly.
   probeHostOnce();
+
+  // One release check per browser session, and one notification at most. The
+  // guard lives in services/updates.ts (storage.session), so a background
+  // restart cannot repeat it; nothing here polls.
+  checkUpdateOnLaunch();
 }
 
 /**

@@ -30,8 +30,26 @@ type InstallOptions struct {
 }
 
 // Run performs the full install for the given profile and Firefox.
+//
+// It is also the update path: an install that is already there is refreshed in
+// place, and the log says which version it is moving from and to. There is no
+// separate update sequence to keep in step with the install, because the
+// registry-driven write loop is already idempotent.
 func Run(src *payload.Source, rep Reporter, o InstallOptions, pw PasswordProvider) error {
 	profileDir := o.Profile.Dir
+
+	// Report the in-place change BEFORE anything is written, so the log reads as
+	// an update rather than as a fresh install that happened to overwrite stuff.
+	prev := Inspect(src, profileDir, installDirOf(o.Install))
+	if change := describeUpdate(prev); change != "" {
+		rep.Note("Updating Lazyfox %s in %s", change, o.Profile.Name)
+	} else if prev.Status() == StatusNewer {
+		rep.Warn("This profile already has Lazyfox %s, newer than %s.", prev.AddonVersion, prev.PayloadVersion)
+	} else if prev.Status() == StatusCurrent {
+		rep.Note("Lazyfox %s is already installed here; refreshing it in place.", prev.PayloadVersion)
+	} else if prev.Status() == StatusIncomplete {
+		rep.Note("Repairing a partial Lazyfox install in %s.", o.Profile.Name)
+	}
 
 	// 1. Stop Firefox on this profile so the .xpi / extensions.json can be
 	//    replaced and the add-on enabled. If Firefox is STILL holding the
@@ -110,6 +128,15 @@ func Run(src *payload.Source, rep Reporter, o InstallOptions, pw PasswordProvide
 		}
 	}
 	return nil
+}
+
+// installDirOf is the loader directory of an install, or "" when there is none
+// (the loader state is then simply not measured).
+func installDirOf(fi *fx.Install) string {
+	if fi == nil {
+		return ""
+	}
+	return fi.Dir
 }
 
 // installExtension writes the add-on xpi whenever it is not yet enabled, and

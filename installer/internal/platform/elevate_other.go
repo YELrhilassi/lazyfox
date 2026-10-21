@@ -20,3 +20,9 @@ func WriteElevatedStatus(statusFile string, err error) {}
 // RegisterNativeHostWindows is Windows-only (the manifest lives in the registry
 // there); on Unix Firefox scans a directory for the manifest file.
 func RegisterNativeHostWindows(manifestPath string) error { return nil }
+
+// UnregisterNativeHostWindows has nothing to undo on this platform.
+func UnregisterNativeHostWindows() error { return nil }
+
+// NativeHostRegisteredPath is empty here: this platform has no host registry.
+func NativeHostRegisteredPath() string { return "" }

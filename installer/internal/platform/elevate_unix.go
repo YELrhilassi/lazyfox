@@ -98,6 +98,14 @@ func WriteElevatedStatus(statusFile string, err error) {
 // installer writes directly, so there is nothing to register.
 func RegisterNativeHostWindows(manifestPath string) error { return nil }
 
+// UnregisterNativeHostWindows has nothing to undo on Unix: the manifest is a
+// plain file that the installer writes and deletes directly.
+func UnregisterNativeHostWindows() error { return nil }
+
+// NativeHostRegisteredPath is empty on Unix: there is no registry, so the
+// manifest file IS the registration and its presence is checked directly.
+func NativeHostRegisteredPath() string { return "" }
+
 // statusOutcome reads what an elevated child reported. reported is false when
 // the file was never written, which means the child did not run at all (a
 // cancelled authentication prompt, for example) rather than failing at the work.

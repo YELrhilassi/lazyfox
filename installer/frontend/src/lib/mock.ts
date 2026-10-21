@@ -24,7 +24,7 @@ const MACHINE: State = {
   payloadOrigin: "embedded standalone payload",
   hasDist: false,
   addonAvailable: true,
-  addonVersion: "0.5.8",
+  addonVersion: "0.5.10",
   installs: [{ label: "Stable", exec: `${FF_DIR}\\firefox.exe`, dir: FF_DIR, flavor: "stable", loader: "missing" }],
   profiles: [
     {
@@ -39,6 +39,9 @@ const MACHINE: State = {
       isDefault: true,
       owned: false,
       recommended: true,
+      lazyfoxVersion: "",
+      lazyfoxState: "not-installed",
+      hostState: "missing",
     },
     {
       name: "work",
@@ -52,6 +55,9 @@ const MACHINE: State = {
       isDefault: false,
       owned: false,
       recommended: false,
+      lazyfoxVersion: "",
+      lazyfoxState: "not-installed",
+      hostState: "missing",
     },
     {
       name: "lazyfox-4f2a91cd",
@@ -65,10 +71,16 @@ const MACHINE: State = {
       isDefault: false,
       owned: true,
       recommended: false,
+      lazyfoxVersion: "0.5.9",
+      lazyfoxState: "outdated",
+      // Deliberately unregistered in the mock: it is the state worth walking the
+      // window through, because no version or file check reveals it.
+      hostState: "unregistered",
     },
   ],
   actions: [
     { id: "install", label: "Install Lazyfox", desc: "Add-on and chrome loader" },
+    { id: "update", label: "Update Lazyfox", desc: "Refreshes the existing install in place to 0.5.10" },
     { id: "uninstall", label: "Remove Lazyfox", desc: "Reverses an install, back to plain Firefox" },
     { id: "loader-only", label: "Install chrome loader only", desc: "config.js in the Firefox folder · admin" },
     { id: "loader-remove", label: "Remove chrome loader only", desc: "Deletes config.js · admin" },
@@ -76,6 +88,8 @@ const MACHINE: State = {
   defaultInstall: 0,
   defaultProfile: 0,
   defaultUninstallProfile: 2,
+  updateAvailable: true,
+  defaultUpdateProfile: 2,
 };
 
 function profileFor(req: Request) {
@@ -86,6 +100,9 @@ function profileFor(req: Request) {
       dir: `C:\\Users\\you\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\\${req.newProfileName || "lazyfox-9c31be07"}`,
       owned: true,
       hasLazyfox: false,
+      lazyfoxVersion: "",
+      lazyfoxState: "not-installed" as const,
+      hostState: "missing" as const,
     };
   }
   return MACHINE.profiles.find((p) => p.dir === req.profileDir) ?? MACHINE.profiles[0]!;
@@ -129,15 +146,15 @@ function uninstallInventory(profileDir: string, req: Request): { removals: Remov
   removals.push({ path: `${profileDir}\\extensions\\lazyfox@lazyfox.dev.xpi`, kind: "file", detail: "the Lazyfox add-on", exists: true, owned: false, restorable: true });
   removals.push({ path: `${profileDir}\\addonStartup.json.lz4`, kind: "file", detail: "Firefox's add-on import cache (rebuilt on the next start)", exists: true, owned: false, restorable: true });
   removals.push({ path: `${profileDir}\\extensions.json`, kind: "json", detail: "Lazyfox's entry removed; your other add-ons stay", exists: true, owned: false, restorable: true });
-  if (req.removeLoader) {
+  removals.push({ path: "C:\\Users\\you\\AppData\\Local\\Lazyfox\\lazyfox-host.exe", kind: "file", detail: "native messaging host", exists: true, owned: false, restorable: false });
+  removals.push({ path: "C:\\Users\\you\\AppData\\Local\\Lazyfox\\lazyfox.json", kind: "file", detail: "the manifest Firefox reads to find the host", exists: true, owned: false, restorable: false });
+  removals.push({ path: "HKCU\\Software\\Mozilla\\NativeMessagingHosts\\lazyfox", kind: "registry", detail: "the registry entry Firefox looks the host up by", exists: true, owned: false, restorable: false });
+  const unchanged: RemovalInfo[] = [];
+  if (req.keepLoader) {
+    unchanged.push({ path: `${FF_DIR}`, kind: "loader", detail: "chrome loader kept (you asked for it to stay)", exists: true, owned: false, restorable: false });
+  } else {
     removals.push({ path: `${FF_DIR}\\config.js`, kind: "loader", detail: "keyboard loader (needs admin)", exists: true, owned: false, restorable: false });
     removals.push({ path: `${FF_DIR}\\defaults\\pref\\config-prefs.js`, kind: "loader", detail: "keyboard loader (needs admin)", exists: true, owned: false, restorable: false });
-  }
-  const unchanged: RemovalInfo[] = [
-    { path: "C:\\Users\\you\\AppData\\Local\\Lazyfox\\lazyfox-host.exe", kind: "file", detail: "native messaging host left in place", exists: true, owned: false, restorable: false },
-  ];
-  if (!req.removeLoader) {
-    unchanged.unshift({ path: `${FF_DIR}`, kind: "loader", detail: "chrome loader left in place (removing it needs admin)", exists: true, owned: false, restorable: false });
   }
   const owned = profileDir === OWNED_PROFILE || req.profileDir === OWNED_PROFILE;
   if (req.deleteProfile && owned) {
@@ -154,6 +171,7 @@ function preview(req: Request): Preview {
   const profile = profileFor(req);
   const install = MACHINE.installs[0]!;
   const isUninstall = req.action === "uninstall";
+  const isUpdate = req.action === "update";
   const inv = uninstallInventory(profile.dir, req);
   return {
     action: req.action,
@@ -161,13 +179,15 @@ function preview(req: Request): Preview {
     profile,
     createsProfile: req.action === "install" && req.newProfile,
     deletesProfile: isUninstall && req.deleteProfile,
-    changes: req.action === "install" ? installChanges(profile.dir, req) : null,
+    changes: isUninstall ? null : installChanges(profile.dir, req),
     removals: isUninstall ? inv.removals : null,
     unchanged: isUninstall ? inv.unchanged : null,
     summary: isUninstall
       ? `Remove Lazyfox from ${profile.name}`
-      : `Install Lazyfox into ${req.newProfile ? `a new Lazyfox profile (${profile.name})` : profile.name} in ${install.label}`,
-    needsAdmin: !isUninstall || req.removeLoader,
+      : isUpdate
+        ? `Update Lazyfox ${profile.lazyfoxVersion} → ${MACHINE.addonVersion} in ${profile.name} (in place, nothing else changes)`
+        : `Install Lazyfox into ${req.newProfile ? `a new Lazyfox profile (${profile.name})` : profile.name} in ${install.label}`,
+    needsAdmin: !isUninstall || !req.keepLoader,
     warnings: [
       ...(profile.locked ? ["Firefox is using this profile right now; the installer closes it first and can reopen it afterwards."] : []),
       ...(isUninstall && !profile.owned
@@ -177,7 +197,13 @@ function preview(req: Request): Preview {
   };
 }
 
-const STEP_LINES: { kind: "step" | "warn" | "note"; text: string }[] = [
+type StepLine = { kind: "step" | "warn" | "note"; text: string };
+
+// The mock speaks the same three flows the Go side does. Keeping them apart is
+// not cosmetic: a canned install log under "Lazyfox is removed" showed the host
+// being INSTALLED one line before the removal reported success, which is exactly
+// the kind of contradiction this window exists to avoid.
+const INSTALL_STEPS: StepLine[] = [
   { kind: "note", text: "using your profile default-release" },
   { kind: "step", text: "Checking if this profile is in use…" },
   { kind: "step", text: "Chrome files installed (payload: embedded standalone payload)" },
@@ -190,6 +216,32 @@ const STEP_LINES: { kind: "step" | "warn" | "note"; text: string }[] = [
   { kind: "note", text: "Restart Firefox to activate Lazyfox." },
 ];
 
+const UPDATE_STEPS: StepLine[] = [
+  { kind: "note", text: "using your profile lazyfox-4f2a91cd" },
+  { kind: "step", text: "Checking if this profile is in use…" },
+  { kind: "note", text: "Updating Lazyfox 0.5.9 → 0.5.10 in lazyfox-4f2a91cd" },
+  { kind: "step", text: "Chrome files refreshed (payload: embedded standalone payload)" },
+  { kind: "step", text: "Prefs refreshed in user.js (yours kept)" },
+  { kind: "step", text: "Loader verified in C:\\Program Files\\Mozilla Firefox" },
+  { kind: "step", text: "Replaced the extension: …\\extensions\\lazyfox@lazyfox.dev.xpi" },
+  { kind: "step", text: "Cleared the add-on cache so the new xpi is imported" },
+  { kind: "note", text: "Restart Firefox to finish applying the update." },
+];
+
+const UNINSTALL_STEPS: StepLine[] = [
+  { kind: "note", text: "using your profile lazyfox-4f2a91cd" },
+  { kind: "step", text: "Checking if this profile is in use…" },
+  { kind: "step", text: "Removed the chrome files from the profile" },
+  { kind: "step", text: "Prefs removed from user.js (yours kept)" },
+  { kind: "step", text: "Removed extension lazyfox@lazyfox.dev.xpi" },
+  { kind: "step", text: "Cleared the add-on cache" },
+  { kind: "step", text: "Removed from extensions.json" },
+  { kind: "step", text: "Removed the native messaging host" },
+  { kind: "note", text: "Removing the chrome loader from C:\\Program Files\\Mozilla Firefox needs administrator rights." },
+  { kind: "step", text: "Loader removed from C:\\Program Files\\Mozilla Firefox" },
+  { kind: "step", text: "Uninstall verified — nothing of Lazyfox is left" },
+];
+
 /** mockBridge returns a bridge that answers from the fixture above. */
 export function mockBridge() {
   const listeners: ((s: { kind: string; text: string }) => void)[] = [];
@@ -198,12 +250,16 @@ export function mockBridge() {
       State: async () => MACHINE,
       Preview: async (req: Request) => preview(req),
       Run: async (req: Request): Promise<Result> => {
-        for (const line of STEP_LINES) {
+        const lines = req.action === "uninstall" ? UNINSTALL_STEPS : req.action === "update" ? UPDATE_STEPS : INSTALL_STEPS;
+        for (const line of lines) {
           await new Promise((r) => setTimeout(r, 320));
           listeners.forEach((cb) => cb(line));
         }
         if (req.action === "uninstall") {
           return { ok: true, state: "removed", text: "Lazyfox is removed. Firefox is back to normal.", failures: null, pendingEnable: false };
+        }
+        if (req.action === "update") {
+          return { ok: true, state: "updated", text: `Lazyfox is updated to ${MACHINE.addonVersion}.`, failures: null, pendingEnable: true };
         }
         return { ok: true, state: "installed", text: "Lazyfox is installed.", failures: null, pendingEnable: true };
       },

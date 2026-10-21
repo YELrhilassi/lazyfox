@@ -25,7 +25,11 @@ import (
 // rather than a poll.
 
 // RunningFirefoxPIDs returns the pids of every running firefox.exe.
-func RunningFirefoxPIDs() []uint32 {
+func RunningFirefoxPIDs() []uint32 { return RunningPIDs("firefox.exe") }
+
+// RunningPIDs returns the pids of every process whose executable name matches
+// name, with or without the .exe suffix.
+func RunningPIDs(name string) []uint32 {
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return nil
@@ -36,11 +40,30 @@ func RunningFirefoxPIDs() []uint32 {
 	entry.Size = uint32(unsafe.Sizeof(entry))
 	var pids []uint32
 	for err := windows.Process32First(snap, &entry); err == nil; err = windows.Process32Next(snap, &entry) {
-		if strings.EqualFold(windows.UTF16ToString(entry.ExeFile[:]), "firefox.exe") {
+		exe := windows.UTF16ToString(entry.ExeFile[:])
+		if strings.EqualFold(exe, name) || strings.EqualFold(exe, name+".exe") {
 			pids = append(pids, entry.ProcessID)
 		}
 	}
 	return pids
+}
+
+// StopProcessesNamed terminates every process whose executable matches name and
+// returns how many were stopped.
+//
+// It exists for one caller: the native messaging host, which the extension keeps
+// running for as long as a Firefox is connected to it. On Windows that process
+// holds its own .exe open, so an in-place update cannot replace the binary until
+// it exits — and the update must not confuse "the file is busy" with "the host
+// is not installed". Only our own binary is ever named.
+func StopProcessesNamed(name string) int {
+	stopped := 0
+	for _, pid := range RunningPIDs(name) {
+		if stopProcess(pid) {
+			stopped++
+		}
+	}
+	return stopped
 }
 
 // stopProcess terminates a pid and blocks until the kernel reports it gone (or

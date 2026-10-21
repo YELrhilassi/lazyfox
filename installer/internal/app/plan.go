@@ -7,6 +7,7 @@ import (
 
 	"lazyfox/installer/internal/config"
 	"lazyfox/installer/internal/fx"
+	"lazyfox/installer/internal/ops"
 )
 
 // plan is a fully resolved, validated operation. The window never hands the
@@ -25,11 +26,16 @@ type plan struct {
 	// reason explains the profile decision in the progress log.
 	reason string
 
-	useExt       bool
-	useLaunch    bool
-	removeLoader bool
+	useExt    bool
+	useLaunch bool
+	// keepLoader leaves the chrome loader installed on an uninstall. Removing it
+	// is the default (see ops.UninstallOptions), so this is opt-in.
+	keepLoader bool
 	// deleteProfile removes a Lazyfox-owned profile as part of an uninstall.
 	deleteProfile bool
+	// updateFrom is the version an update is replacing, filled in at resolve time
+	// so the summary and the run cannot disagree about what is changing.
+	updateFrom string
 }
 
 // profileNameRe is the shape a profile directory name may take. The name becomes
@@ -44,7 +50,7 @@ func (a *App) resolve(view fx.View, req Request) (plan, error) {
 		action:        parseAction(req.Action),
 		useExt:        req.UseExtension,
 		useLaunch:     req.UseLaunch,
-		removeLoader:  req.RemoveLoader,
+		keepLoader:    req.KeepLoader,
 		deleteProfile: req.DeleteProfile,
 	}
 	p.install = a.pickInstall(view, req)
@@ -61,10 +67,59 @@ func (a *App) resolve(view fx.View, req Request) (plan, error) {
 	if p.install == nil {
 		return p, a.installError(view, req)
 	}
-	if p.action == config.Install {
+	switch p.action {
+	case config.Install:
 		return a.resolveInstall(view, req, p)
+	case config.Update:
+		return a.resolveUpdate(view, req, p)
 	}
 	return a.resolveUninstall(view, req, p)
+}
+
+// resolveUpdate resolves an in-place update of an install that is already there.
+//
+// It never creates a profile and it refuses when the chosen profile has no
+// Lazyfox in it, because "update" that silently becomes "install" would hide a
+// wrong choice instead of showing it. The profile it picks on its own follows
+// what an installer-managed install actually used: ours first, then whichever
+// profile carries the add-on.
+func (a *App) resolveUpdate(view fx.View, req Request, p plan) (plan, error) {
+	if req.NewProfile {
+		return p, fmt.Errorf("an update refreshes the profile Lazyfox is already in — choose a profile instead of creating one")
+	}
+	if dir := strings.TrimSpace(req.ProfileDir); dir != "" {
+		p.profile = view.Profile(dir)
+	} else if owned := view.OwnedProfile(); owned != nil {
+		p.profile = owned
+	} else {
+		for _, pr := range view.Profiles {
+			if pr.HasLazyfox {
+				p.profile = pr
+				break
+			}
+		}
+	}
+	if p.profile == nil {
+		p.profile = a.pickProfile(view, req)
+	}
+	if p.profile == nil {
+		return p, fmt.Errorf("no %s profile found to update", a.cfg.Channel.ShortName())
+	}
+
+	installDir := ""
+	if p.install != nil {
+		installDir = p.install.Dir
+	}
+	in := ops.Inspect(a.src, p.profile.Dir, installDir)
+	if !in.IsInstalled() {
+		return p, fmt.Errorf("Lazyfox is not installed in %s — Install puts it there", p.profile.Name)
+	}
+	p.updateFrom = in.AddonVersion
+	// An update means "make this profile match this binary", so the add-on is
+	// always refreshed; only the launch choice is left to the user.
+	p.useExt = true
+	p.reason = "updating " + p.profile.Name
+	return p, nil
 }
 
 // resolveInstall resolves where an install goes.
