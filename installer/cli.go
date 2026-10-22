@@ -231,12 +231,13 @@ func runNonInteractive(src *payload.Source, cfg config.Config) error {
 		}
 		rep.Note("Channel: %s", cfg.Channel.Label())
 		return ops.Run(src, rep, ops.InstallOptions{
-			Profile:      prof,
-			Install:      install,
-			UseExtension: !cfg.NoExt,
-			UseLaunch:    !cfg.NoLaunch,
-			ForceLoader:  cfg.Force,
-			XpiPath:      cfg.XpiPath,
+			Profile:        prof,
+			Install:        install,
+			UseExtension:   !cfg.NoExt,
+			UseLaunch:      !cfg.NoLaunch,
+			ForceLoader:    cfg.Force,
+			AllowDowngrade: cfg.Force,
+			XpiPath:        cfg.XpiPath,
 		}, passwordProvider(cfg))
 
 	case config.Uninstall:

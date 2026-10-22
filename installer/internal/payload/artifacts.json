@@ -33,7 +33,7 @@
     "config-prefs.js"
   ],
 
-  "_targets": "Every shipping installer target, with the file name each one is committed under. devOut embeds the UNSIGNED add-on (nightly channel, for `npm run dev-install`); releaseOut embeds the AMO-signed one (stable channel). The native GUI window can only be compiled on its own platform — every other target gets the cross-compiled terminal installer (see buildInstaller).",
+  "_targets": "Every shipping installer target, with the CANONICAL file name each one is committed under. The build appends -<add-on version> before any .exe, so a committed file is e.g. lazyfox-install-windows-0.5.12.exe — the name states which build it carries. devOut embeds the UNSIGNED add-on (nightly channel, for `npm run dev-install`); releaseOut embeds the AMO-signed one (stable channel) and refuses to build with any other version's signed xpi. The native GUI window can only be compiled on its own platform — every other target gets the cross-compiled terminal installer (see buildInstaller).",
   "targets": [
     {
       "goos": "linux",

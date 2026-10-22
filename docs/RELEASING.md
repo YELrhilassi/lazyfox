@@ -99,7 +99,7 @@ problem:
    dev source, exactly" with no manual conflict resolution ever.
 5. **Build release:** syncs the AMO-**signed** xpi for that version, rebuilds the
    release-mode `dist/` bundles, and rebuilds the release installers
-   (`installer/bin/lazyfox-install-{linux,darwin,windows.exe}`).
+   (`installer/bin/lazyfox-install-{linux,darwin,windows.exe}-<ver>`).
 6. **Verify:** `check-dist`, installer tests, and that the xpi is not merely signed
    but **byte-identical to what AMO published**. The check compares the sha256 AMO
    reports for the signed file against the artifact about to be uploaded, so a
@@ -126,8 +126,8 @@ whatever the release added". The *only* things that make master different from
 dev are exactly what the release puts there:
 
 - the **signed** xpi (`dist/lazyfox2-<ver>.xpi` + `-signed.xpi`), and
-- the **release** installers (`installer/bin/lazyfox-install-*`, embedding the
-  signed add-on).
+- the **release** installers (`installer/bin/lazyfox-install-*-<ver>`, embedding
+  the signed add-on; the version in the name is the add-on it carries).
 
 Everything else — source, `dist/` bundles, `src/static/` — is copied from dev
 verbatim. So merging forward is deterministic and never conflicts (verified in a
@@ -182,8 +182,13 @@ CI, no permission gymnastics.
 
 | Binary | Channel | Embedded payload | Targets | Built & published by |
 |--------|---------|------------------|---------|----------------------|
-| `installer/bin/lazyfox-install-{linux,darwin,windows.exe}` | **stable** | **signed** xpi | stable / ESR | `npm run ship` → GitHub Release (`releases/latest`) |
-| `installer/bin/lazyfox-install-dev-{linux,darwin,windows.exe}` | **nightly** | **unsigned** xpi | Developer Edition / Nightly | `npm run build:installers` + `npm run ship:nightly` → `nightly` prerelease |
+| `installer/bin/lazyfox-install-{linux,darwin,windows.exe}-<ver>` | **stable** | **signed** xpi | stable / ESR | `npm run ship` → GitHub Release (`releases/latest`) |
+| `installer/bin/lazyfox-install-dev-{linux,darwin,windows.exe}-<ver>` | **nightly** | **unsigned** xpi | Developer Edition / Nightly | `npm run build:installers` + `npm run ship:nightly` → `nightly` prerelease |
+
+The `-<ver>` suffix is the add-on version the binary embeds, so the file name
+answers "which build is this?" before you run it. The released assets keep the
+canonical names (`lazyfox-install-linux`, …) so `releases/latest/download/…` and
+`install.sh` stay stable; `ship` renames on upload.
 
 The installer auto-detects the Firefox of its channel, the profile that Firefox
 is actually using (no prompting), and falls back to a dedicated Lazyfox-owned

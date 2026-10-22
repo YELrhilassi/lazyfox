@@ -31,13 +31,15 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   LOADER_FILES,
   ROOT,
   STAGED_CHROME_FILES,
   TARGETS,
-  devOutFor,
+  builtInstaller,
+  isBuiltInstallerName,
+  targetFor,
   verifyBinaries,
   type Verdict,
 } from "./payload.ts";
@@ -113,11 +115,15 @@ for (const f of LOADER_FILES) {
 
 /* ---------- 3. does this machine's binary actually run with a usable payload? ---------- */
 
-const hostOut = devOutFor(
+const hostTarget = targetFor(
   process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux",
 );
-if (hostOut) {
-  const bin = join(ROOT, "installer", "bin", hostOut);
+// Built binaries are named for the add-on version they embed, so resolve the
+// newest build for this host rather than composing a name that may not exist.
+const hostBin = hostTarget ? builtInstaller(ROOT, hostTarget, "dev") : null;
+if (hostBin) {
+  const hostOut = basename(hostBin);
+  const bin = hostBin;
   if (existsSync(bin)) {
     // Run it from OUTSIDE the repo: the binary prefers a live repo dist/ when it
     // can find one (it walks up from its own path and the cwd), and a
@@ -173,7 +179,7 @@ console.error("\ncheck-installer-payload: rebuilding what is stale…");
 
 // Dev installers first: those are the ones a developer launches, and they embed
 // the unsigned add-on that matches the tree.
-const devStale = stale.filter((v) => TARGETS.some((t) => t.devOut === v.out)).length;
+const devStale = stale.filter((v) => TARGETS.some((t) => isBuiltInstallerName(v.out, t, "dev"))).length;
 if (devStale > 0) {
   execFileSync(process.execPath, [join(ROOT, "scripts", "build-dev-installers.ts")], {
     cwd: ROOT,
@@ -185,7 +191,7 @@ if (devStale > 0) {
 // when one exists for this version. When it does not, the honest outcome is to
 // leave them and say so — a "fix" that silently downgraded a signed release
 // binary to an unsigned payload would be worse than the staleness it hides.
-const releaseStale = stale.filter((v) => TARGETS.some((t) => t.releaseOut === v.out)).length;
+const releaseStale = stale.filter((v) => TARGETS.some((t) => isBuiltInstallerName(v.out, t, "release"))).length;
 if (releaseStale > 0) {
   let ok = true;
   try {
