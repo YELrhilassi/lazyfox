@@ -15,9 +15,10 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDevInstaller } from "./dev-helpers.ts";
+import { builtInstaller, targetFor } from "./payload.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = process.argv.slice(2);
@@ -38,18 +39,22 @@ if (!noBuild) {
 
 const win = process.platform === "win32";
 const exe = win ? ".exe" : "";
-const releaseName = `lazyfox-install${win ? "-windows.exe" : process.platform === "darwin" ? "-darwin" : "-linux"}`;
+// Built binaries carry the add-on version in their name
+// (lazyfox-install-windows-0.5.12.exe); resolve the newest one for this host
+// instead of remembering a file name that a version bump would invalidate.
+const hostTarget = targetFor(win ? "windows" : process.platform === "darwin" ? "darwin" : "linux");
 
 let bin: string;
 if (release) {
-  bin = join(root, "installer", "bin", releaseName);
-  if (!existsSync(bin)) {
+  const found = hostTarget ? builtInstaller(root, hostTarget, "release") : null;
+  if (!found) {
     console.error(
-      `installer: no release installer at installer/bin/${releaseName}.\n` +
-        "  Build one with `npm run build:release-installers` (it needs a signed xpi).",
+      "installer: no release installer built for this platform.\n" +
+        "  Build one with `npm run build:release-installers` (it needs this version's signed xpi).",
     );
     process.exit(1);
   }
+  bin = found;
 } else {
   // ensureDevInstaller resolves the committed per-OS dev binary and rebuilds it
   // if it is older than the payload — a safety net if the build above was skipped.

@@ -18,13 +18,16 @@
 
 import { createHash } from "node:crypto";
 import {
+  copyFileSync,
   existsSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -93,9 +96,109 @@ export function isNativeTarget(t: { goos: string; arch: string }): boolean {
   return t.goos === HOST.goos && t.arch === HOST.goarch;
 }
 
-/** The file name a target's dev binary is committed under. */
+/** The file name a target's dev binary is committed under (before versioning). */
 export function devOutFor(goos: string): string | null {
   return TARGETS.find((t) => t.goos === goos)?.devOut ?? null;
+}
+
+/** The target for a platform, either channel. */
+export function targetFor(goos: string): TargetSpec | null {
+  return TARGETS.find((t) => t.goos === goos) ?? null;
+}
+
+/**
+ * The canonical (unversioned) name a target's binary is declared under: the name
+ * the release publishes it as, and the name install.sh / the setup page download.
+ */
+export function installerBase(t: TargetSpec, channel: "dev" | "release"): string {
+  return channel === "dev" ? t.devOut : t.releaseOut;
+}
+
+/**
+ * versionedInstallerName puts the payload version into the file name a binary is
+ * BUILT under: `lazyfox-install-windows.exe` → `lazyfox-install-windows-0.5.12.exe`
+ * (before the extension, so Windows still sees a .exe).
+ *
+ * The committed binaries are build products people run by hand, and the only
+ * honest label on one is the add-on version it carries — the file name is the
+ * one place that is visible before launching it. The release keeps the canonical
+ * name, so the stable download URLs do not move (see canonicalInstallerName).
+ */
+export function versionedInstallerName(base: string, version: string): string {
+  const ext = binaryExt(base);
+  return `${ext ? base.slice(0, -ext.length) : base}-${version}${ext}`;
+}
+
+/** The canonical name for a built binary: the version suffix removed. */
+export function canonicalInstallerName(file: string): string {
+  const ext = binaryExt(file);
+  const stem = ext ? file.slice(0, -ext.length) : file;
+  return `${stem.replace(/-\d+\.\d+\.\d+$/, "")}${ext}`;
+}
+
+/** The version a built binary's file name carries, or null if it is not one. */
+export function installerNameVersion(file: string, base: string): string | null {
+  const ext = binaryExt(base);
+  const stem = ext ? base.slice(0, -ext.length) : base;
+  const re = new RegExp(`^${escapeRe(stem)}-(\\d+\\.\\d+\\.\\d+)${escapeRe(ext)}$`);
+  return re.exec(file)?.[1] ?? null;
+}
+
+/**
+ * stageInstallerUploads copies each asset to its CANONICAL (unversioned) name in
+ * a temp directory, and returns the copies.
+ *
+ * gh names an uploaded asset after the file, so uploading the versioned build
+ * would publish `lazyfox-install-windows-0.5.12.exe` and break every stable URL
+ * (`releases/latest/download/lazyfox-install-windows.exe`, install.sh, the setup
+ * page). The version belongs in the local build name; the published asset name
+ * has to stay fixed. The caller removes the returned directory.
+ */
+export function stageInstallerUploads(assets: string[]): { dir: string; paths: string[] } {
+  const dir = mkdtempSync(join(tmpdir(), "lazyfox-release-"));
+  const paths = assets.map((asset) => {
+    const dst = join(dir, canonicalInstallerName(basename(asset)));
+    copyFileSync(asset, dst);
+    return dst;
+  });
+  return { dir, paths };
+}
+
+/** Does this file name belong to a target+channel, whatever its version? */
+export function isBuiltInstallerName(file: string, t: TargetSpec, channel: "dev" | "release"): boolean {
+  return installerNameVersion(file, installerBase(t, channel)) !== null;
+}
+
+/**
+ * builtInstaller finds the newest built binary for a target and channel, or null
+ * when none has been built. Sorted by VERSION, not by directory order: bin/ can
+ * legitimately hold more than one build, and "last one listed" is a different
+ * file per platform ("0.5.10" also sorts before "0.5.9" as text).
+ */
+export function builtInstaller(root: string, t: TargetSpec, channel: "dev" | "release"): string | null {
+  return builtInstallerNamed(root, installerBase(t, channel));
+}
+
+export function builtInstallerNamed(root: string, base: string): string | null {
+  const dir = join(root, "installer", "bin");
+  if (!existsSync(dir)) return null;
+  let best: { file: string; parts: [number, number, number] } | null = null;
+  for (const f of readdirSync(dir)) {
+    const v = installerNameVersion(f, base);
+    if (!v) continue;
+    const parts = v.split(".").map(Number) as [number, number, number];
+    if (!best || newerVersion(parts, best.parts)) best = { file: f, parts };
+  }
+  return best ? join(dir, best.file) : null;
+}
+
+/** The binary extension (`.exe` on Windows targets), or "". */
+function binaryExt(name: string): string {
+  return name.endsWith(".exe") ? ".exe" : "";
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /* ---------- payload content hashing ---------- */
@@ -417,6 +520,32 @@ export function readState(root: string): StateFile {
 export function writeState(root: string, entry: BinaryState): void {
   const state = readState(root);
   state.binaries[entry.out] = entry;
+  saveState(root, state);
+}
+
+/**
+ * pruneStateForVersion drops the records of older builds of one binary.
+ *
+ * A record is the claim "this file was built from these bytes". When the build
+ * deletes the older file (the name carries the version, so an update writes a
+ * new name), a record of a file nobody can point at is not a missing-binary
+ * alarm — it is bookkeeping for a file that was deliberately replaced. The
+ * current name's record is written afterwards, so a genuinely missing CURRENT
+ * binary is still reported.
+ */
+export function pruneStateForVersion(root: string, base: string, keep: string): void {
+  const state = readState(root);
+  let changed = false;
+  for (const name of Object.keys(state.binaries)) {
+    if (name === keep) continue;
+    if (name !== base && installerNameVersion(name, base) === null) continue;
+    delete state.binaries[name];
+    changed = true;
+  }
+  if (changed) saveState(root, state);
+}
+
+function saveState(root: string, state: StateFile): void {
   state._comment =
     "Generated by scripts/installer-build.ts — do not edit by hand. Every committed installer binary records the payload content hash it was compiled from, so `npm run check:installers` can prove no binary is stale. Rebuilt binaries re-write their own entry.";
   const path = join(root, "installer", "bin", "payload-state.json");
@@ -521,12 +650,17 @@ export function verifyBinaries(root: string): Verdict[] {
   }
 
   // Targets that exist in the tree but were never recorded: report them, so a
-  // binary nobody can vouch for is visible rather than silently trusted.
+  // binary nobody can vouch for is visible rather than silently trusted. Any
+  // version suffices — an old build left beside a new one is exactly the kind of
+  // "which one did I just run?" file this check exists to surface.
   const binDir = join(root, "installer", "bin");
   if (existsSync(binDir)) {
     for (const f of readdirSync(binDir)) {
       if (seen.has(f) || f.endsWith(".stamp") || f === "payload-state.json") continue;
-      if (!TARGETS.some((t) => t.devOut === f || t.releaseOut === f)) continue;
+      const known = TARGETS.some(
+        (t) => installerNameVersion(f, t.devOut) !== null || installerNameVersion(f, t.releaseOut) !== null,
+      );
+      if (!known) continue;
       out.push({ out: f, status: "unverified", reason: "present but not recorded in payload-state.json" });
     }
   }

@@ -6,7 +6,7 @@
 
 import { mergeConfig } from "../../shared/config";
 import { ensureCore } from "../../shared/core";
-import { blurTypingFocus, isTypingEvent, isTypingTarget, typingTargetOf } from "../../shared/dom";
+import { isExpandedCombobox, isTypingEvent, isTypingTarget, typingTargetOf } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { installContentDom } from "./contentdom";
 import { LeaderController, isCancel } from "../../shared/leader";
@@ -50,6 +50,7 @@ import {
 } from "./framekeys";
 import type { ContentPopupShell } from "./find";
 import { createFieldPark } from "./parkrule";
+import { createStickyBlur } from "./stickyblur";
 
 (function () {
   "use strict";
@@ -579,7 +580,10 @@ import { createFieldPark } from "./parkrule";
     }
     // Blur whatever holds focus. A FIELD goes through the deep helper: a
     // field in a closed shadow root reports its HOST as activeElement, and
-    // blurring the host leaves the caret exactly where it was.
+    // blurring the host leaves the caret exactly where it was. It is also the
+    // STICKY helper (stickyblur.ts): a page that takes its caret back from its
+    // own blur handler undid this rung silently, which is the WhatsApp report
+    // of 2026-10-20 — "the field keeps focus and I have to click outside".
     //
     // A BLUR RUNG COUNTS AS A RUNG ONLY WHEN THE BLUR TOOK. This is the
     // "Escape never reaches my page's dialog" bug: a dialog whose focus
@@ -592,7 +596,7 @@ import { createFieldPark } from "./parkrule";
     // target is actually gone (field rung), or activeElement has fallen
     // back to body/documentElement (generic rung).
     if (isTypingTarget(document.activeElement)) {
-      return blurTypingFocus();
+      return stickyBlur.leave();
     }
     const ae = document.activeElement;
     if (ae && ae !== document.body && ae !== document.documentElement) {
@@ -732,6 +736,25 @@ import { createFieldPark } from "./parkrule";
         // page's. Ctrl+G always does the same cleanup and is ALWAYS
         // consumed: it exists for pages that fight Lazyfox for Escape.
         const cancelChord = e.key !== "Escape";
+        // FIELD-SCOPED DISMISSAL, measured rather than assumed (google.com,
+        // 2026-10-20): the suggestion list is closed by the page's own Escape
+        // handler and by nothing else — a blur does not close it, and a
+        // synthetic Escape dispatched at the field is ignored. Consuming the
+        // press therefore left the list OPEN with the caret out, and the only
+        // repair was a click outside. So when the caret is in an EXPANDED
+        // COMBOBOX the press belongs to the list: drop the caret AND let the
+        // page hear it. Read before the blur, because aria-expanded is usually
+        // taken off the field by the same blur handler.
+        const listOwnsPress = !cancelChord && isExpandedCombobox(typingTargetOf(e));
+        if (listOwnsPress) {
+          // The page's widget takes the key, and the caret leaves on the NEXT
+          // task: measured on google.com, blurring first makes the page abandon
+          // its suggest session instead of closing it, and the list stayed on
+          // screen. Nothing is prevented here — this is the page's press.
+          br = "cancel-field-own";
+          stickyBlur.leaveSoon();
+          return;
+        }
         const cleaned = cancelOverlays();
         if (cancelChord || cleaned) {
           e.preventDefault();
@@ -747,8 +770,10 @@ import { createFieldPark } from "./parkrule";
         // Blur NOW: with the caret still in the box the next keydown
         // re-enters this guard and disarms the leader the claim arms. The
         // deep helper, because a closed-root field blurs its host otherwise
-        // (see cancelOverlays). If the blur is refused, fall through anyway.
-        blurTypingFocus();
+        // (see cancelOverlays), and the sticky one because a page that parks
+        // the caret can put it back. If the blur is refused, fall through
+        // anyway.
+        stickyBlur.leave();
       } else {
         fieldPark.noteUserType(typingTargetOf(e));
         if (leader.active) leader.hide();
@@ -893,6 +918,10 @@ import { createFieldPark } from "./parkrule";
 
   const fieldPark = createFieldPark();
   fieldPark.install(document, document.activeElement as Element | null);
+
+  // The cancel rung's blur, and the parked-field claim's: one that survives a
+  // page that re-focuses its own composer (see stickyblur.ts).
+  const stickyBlur = createStickyBlur();
 
   window.addEventListener("blur", releaseLostHold, true);
   try {

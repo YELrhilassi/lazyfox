@@ -374,11 +374,14 @@ func (a *App) warnings(p plan) []string {
 	}
 	switch p.action {
 	case config.Install, config.Update:
-		if p.action == config.Update && p.profile != nil {
+		// The downgrade notice is shown for an install as well as an update: the
+		// operations layer refuses it either way, and a refusal the window could
+		// have predicted before the click is worse than a warning.
+		if p.profile != nil {
 			in := ops.Inspect(a.src, p.profile.Dir, installDirOf(p.install))
 			switch in.Status() {
 			case ops.StatusNewer:
-				out = append(out, "This profile already has Lazyfox "+in.AddonVersion+", newer than this build's "+in.PayloadVersion+". The update replaces it with the older build.")
+				out = append(out, "This profile already has Lazyfox "+in.AddonVersion+", newer than this build's "+in.PayloadVersion+". It will not be downgraded — use the newer installer.")
 			case ops.StatusCurrent:
 				out = append(out, "This profile is already up to date (Lazyfox "+in.PayloadVersion+"); the files are rewritten and Firefox restarts for nothing.")
 			case ops.StatusIncomplete:

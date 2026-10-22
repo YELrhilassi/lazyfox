@@ -4,10 +4,13 @@ import { join, basename, dirname, relative } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import {
+  builtInstaller,
+  builtInstallerNamed,
   payloadHash,
   latestUnsignedXpi as payloadLatestUnsignedXpi,
   readState,
   sha256File as payloadSha256File,
+  targetFor,
 } from './payload.ts';
 
 const HELPERS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -282,14 +285,21 @@ export function findFirefoxDir(): string | null {
 // per-OS binaries below, so a fresh clone has a working dev installer with no
 // Go toolchain. This helper returns the committed dev binary for the current
 // platform, or (for an uncovered platform) builds a host-form fallback
-// (installer/bin/lazyfox-install, gitignored) on demand embedding the latest
-// unsigned xpi.
+// (installer/bin/lazyfox-install-<version>, gitignored) on demand embedding the
+// latest unsigned xpi. Every built file carries the add-on version in its name.
 
-const DEV_INSTALLER_BINARIES = {
-  linux: 'lazyfox-install-dev-linux',
-  darwin: 'lazyfox-install-dev-darwin',
-  win32: 'lazyfox-install-dev-windows.exe',
-};
+// The GOOS this host's installer targets, or null when the repo declares no
+// target for it (then the host-form fallback below is built instead).
+function hostGoos(): 'linux' | 'darwin' | 'windows' | null {
+  if (process.platform === 'linux') return 'linux';
+  if (process.platform === 'darwin') return 'darwin';
+  if (process.platform === 'win32') return 'windows';
+  return null;
+}
+
+// Built installers are named for the add-on version they carry
+// (installer/bin/lazyfox-install-dev-linux-0.5.12), so "the dev installer" is
+// whichever of them is newest — never a remembered file name.
 
 // The chrome payload files that make an installer stale when they change, the
 // payload content hash, and the per-binary state file all live in payload.ts
@@ -344,10 +354,10 @@ export function ensureDevInstaller(
   root: string,
   { rebuild = false, xpi = null }: { rebuild?: boolean; xpi?: string | null } = {}
 ): string {
-  const binDir = join(root, 'installer/bin');
-  const perOs = DEV_INSTALLER_BINARIES[process.platform as keyof typeof DEV_INSTALLER_BINARIES];
-  const committed = perOs ? join(binDir, perOs) : null;
-  const hostForm = join(binDir, process.platform === 'win32' ? 'lazyfox-install.exe' : 'lazyfox-install');
+  const goos = hostGoos();
+  const target = goos ? targetFor(goos) : null;
+  const committed = target ? builtInstaller(root, target, 'dev') : null;
+  const hostFormBase = process.platform === 'win32' ? 'lazyfox-install.exe' : 'lazyfox-install';
 
   const fresh = !!committed && devInstallerIsFresh(root, committed, xpi);
   if (!rebuild && fresh) return committed!;
@@ -370,8 +380,12 @@ export function ensureDevInstaller(
     env: { ...process.env, LF_INSTALLER_TARGETS: 'host' },
   });
 
-  if (committed && existsSync(committed)) return committed;
-  if (existsSync(hostForm)) return hostForm;
+  // Re-resolve after the rebuild: a version bump writes a NEW file name, so the
+  // path resolved before it is the old build (and may no longer exist).
+  const rebuilt = target ? builtInstaller(root, target, 'dev') : null;
+  if (rebuilt) return rebuilt;
+  const rebuiltHostForm = builtInstallerNamed(root, hostFormBase);
+  if (rebuiltHostForm) return rebuiltHostForm;
   throw new Error('ensureDevInstaller: the dev installer rebuild produced no binary in installer/bin');
 }
 

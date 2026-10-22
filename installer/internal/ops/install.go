@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,10 @@ type InstallOptions struct {
 	ForceLoader bool
 	// NoStop skips stopping/relaunching Firefox (non-interactive safety).
 	NoStop bool
+	// AllowDowngrade lets a deliberately older build replace a newer install.
+	// It exists only for the explicit --force escape hatch; every normal path
+	// leaves it false, so an old installer cannot move a profile backwards.
+	AllowDowngrade bool
 	// XpiPath installs this unsigned xpi instead of the embedded build (dev).
 	XpiPath string
 }
@@ -41,10 +46,23 @@ func Run(src *payload.Source, rep Reporter, o InstallOptions, pw PasswordProvide
 	// Report the in-place change BEFORE anything is written, so the log reads as
 	// an update rather than as a fresh install that happened to overwrite stuff.
 	prev := Inspect(src, profileDir, installDirOf(o.Install))
+
+	// A DOWNGRADE IS A REFUSAL, not a warning followed by the write it warned
+	// about. Every other status is "make this profile match this binary"; when
+	// the profile is ahead, the binary is the thing that is wrong — it is an
+	// older installer someone kept after the release moved on. Writing its xpi
+	// and chrome layer would move the user backwards (and, on stable, Firefox
+	// would then re-update the add-on and leave the chrome layer old again — the
+	// half-installed state the mismatch check exists to report). So nothing is
+	// touched, and the message names the installer that would work.
+	if !o.AllowDowngrade {
+		if err := refuseDowngrade(prev, incomingAddonVersion(src, o), o.Profile.Name); err != nil {
+			return err
+		}
+	}
+
 	if change := describeUpdate(prev); change != "" {
 		rep.Note("Updating Lazyfox %s in %s", change, o.Profile.Name)
-	} else if prev.Status() == StatusNewer {
-		rep.Warn("This profile already has Lazyfox %s, newer than %s.", prev.AddonVersion, prev.PayloadVersion)
 	} else if prev.Status() == StatusCurrent {
 		rep.Note("Lazyfox %s is already installed here; refreshing it in place.", prev.PayloadVersion)
 	} else if prev.Status() == StatusIncomplete {
@@ -128,6 +146,44 @@ func Run(src *payload.Source, rep Reporter, o InstallOptions, pw PasswordProvide
 		}
 	}
 	return nil
+}
+
+// incomingAddonVersion is the version of the xpi this run would write: the
+// embedded payload normally, the --xpi override (dev) when one is given. Reading
+// the override matters — a dev xpi can be any version, so comparing the profile
+// against the EMBEDDED version would judge a file that is not the one about to be
+// installed.
+func incomingAddonVersion(src *payload.Source, o InstallOptions) string {
+	if o.XpiPath != "" {
+		if v, err := payload.VersionFromXpiFile(o.XpiPath); err == nil {
+			return v
+		}
+		return ""
+	}
+	return src.AddonVersion()
+}
+
+// ErrDowngrade marks the refusal to replace a newer install with an older one.
+// It is a sentinel because callers must not treat it like a failed install: the
+// hands-off flow creates a fresh profile when an install into the user's own
+// profile fails, and doing that here would bury the real answer ("use the newer
+// installer") under an older Lazyfox in a new profile.
+var ErrDowngrade = errors.New("refusing to downgrade")
+
+// refuseDowngrade returns an error when the profile already holds a newer add-on
+// than this run would install. An unknown version on either side is not a
+// downgrade: a version that cannot be read is not evidence of one, and refusing
+// on that basis would block repairing a corrupt install.
+func refuseDowngrade(in Installed, incoming, profileName string) error {
+	if !in.AddonPresent || in.AddonVersion == "" || incoming == "" {
+		return nil
+	}
+	if payload.CompareVersions(in.AddonVersion, incoming) <= 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: this installer carries Lazyfox %s, but %s already has %s.\n"+
+		"Nothing was changed: an older installer does not replace a newer install.\n"+
+		"Use the installer for %s or later.", ErrDowngrade, incoming, profileName, in.AddonVersion, in.AddonVersion)
 }
 
 // installDirOf is the loader directory of an install, or "" when there is none

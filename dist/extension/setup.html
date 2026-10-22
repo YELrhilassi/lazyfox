@@ -16,7 +16,8 @@
 
     <!-- Verified state: the full Lazyfox chrome is running. -->
     <section class="card status ok" id="doneCard" hidden>
-      <div class="status-line"><span class="dot on"></span><span><b>The full Lazyfox is installed and running.</b></span><button class="ghost" id="verify">Check again</button></div>
+      <div class="status-line"><span class="dot on" id="doneDot"></span><span><b id="doneHeadline">The full Lazyfox is installed and running.</b></span><button class="ghost" id="verify">Check again</button></div>
+      <p id="doneNote" hidden></p>
       <div class="done-grid">
         <div><div class="mini-k">Add-on</div><div class="mini-v" id="doneExt">—</div></div>
         <div><div class="mini-k">Window chrome</div><div class="mini-v" id="doneChrome">—</div></div>

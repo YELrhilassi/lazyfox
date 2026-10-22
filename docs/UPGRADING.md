@@ -10,7 +10,9 @@ together. That is the whole shape of this problem: an update is not "download a
 new file", it is "make every piece in this profile match one build, without
 losing anything". Both the installer and the extension are built around that.
 
-Nothing here requires an uninstall first.
+Nothing here requires an uninstall first. The installer binary's file name
+carries the add-on it embeds (`lazyfox-install-windows-0.5.12.exe`), so you can
+tell which build you are about to run before launching it.
 
 ## Updating
 
@@ -29,7 +31,10 @@ lazyfox-install --mode update
   is the new one.
 - **Refuses** when there is nothing to update (that is an install, not an
   update), and **refuses to downgrade** a profile that already holds a newer
-  build unless `--force` is passed.
+  build unless `--force` is passed. The downgrade refusal is not specific to
+  `update`: `install`, `auto` and the window refuse it too, before writing
+  anything, because an old installer left on disk must never move a profile
+  backwards.
 - **Does nothing** when the profile is already current, rather than restarting
   Firefox to rewrite identical bytes. `--force` re-applies anyway.
 - Otherwise rewrites the chrome files, merges the managed prefs, refreshes the

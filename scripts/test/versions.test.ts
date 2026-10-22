@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
   compareVersions,
   componentVerdict,
+  installedHeadline,
   isKnownVersion,
   parseVersion,
 } from "../../src/shared/versions.ts";
@@ -95,6 +96,42 @@ describe("component skew", () => {
       { name: "the native host", version: "0.5.11" },
     ]);
     assert.equal(v.state, "stale");
+  });
+});
+
+// The setup page's finished card. A live chrome announce proves the layer
+// loaded; it does not prove it is the same build as the add-on, and treating
+// the two as one question is how a half-applied update earned a green tick.
+// The field case: extension 0.5.12 (auto-updated from AMO), chrome 0.5.9 (the
+// last installer run).
+describe("finished-install headline", () => {
+  test("matching versions are the full install, and say nothing more", () => {
+    const h = installedHeadline("0.5.12", "0.5.12");
+    assert.equal(h.ok, true);
+    assert.match(h.headline, /installed and running/);
+    assert.equal(h.note, "");
+  });
+
+  test("an add-on ahead of the window chrome is not 'installed and running'", () => {
+    const h = installedHeadline("0.5.12", "0.5.9");
+    assert.equal(h.ok, false);
+    assert.match(h.headline, /older than the add-on/);
+    assert.match(h.note, /window chrome 0\.5\.9 is older than the extension 0\.5\.12/);
+    assert.match(h.note, /installer/, "names the fix, not just the problem");
+  });
+
+  test("window chrome newer than the add-on means Firefox has not loaded it yet", () => {
+    const h = installedHeadline("0.5.9", "0.5.12");
+    assert.equal(h.ok, false);
+    assert.match(h.headline, /previous add-on/);
+    assert.match(h.note, /Firefox has not loaded/);
+  });
+
+  test("an unreported chrome version is not a disagreement", () => {
+    // Only reachable when the helper announced without a version; absence is
+    // handled by the not-installed state, not by this card.
+    assert.equal(installedHeadline("0.5.12", null).ok, true);
+    assert.equal(installedHeadline("0.5.12", "unknown").ok, true);
   });
 });
 

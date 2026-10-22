@@ -258,6 +258,11 @@
     "scripts/test/wire-replay.test.ts",
     "scripts/test/relay-queue.test.ts",
     "scripts/test/typing-target.test.ts",
+    // expanded-combobox is the same shape as typing-target, one predicate over:
+    // it drives shared/dom.ts's isExpandedCombobox with synthetic elements, and
+    // dom.ts is DOM-typed top to bottom. The predicate is typechecked by
+    // tsconfig.json, which owns the browser tree.
+    "scripts/test/expanded-combobox.test.ts",
     "scripts/test/keymap.test.ts",
     // hints-collect is excluded for the same reason as the other hints tests
     // listed here: it drives collect.ts, which is DOM-typed (Element, window,

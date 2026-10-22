@@ -541,7 +541,7 @@ Layout of the repo:
 ## Uninstall
 
 Run the same standalone installer with the `uninstall` action
-(`installer/bin/lazyfox-install-linux --mode uninstall`, or open the installer
+(`installer/bin/lazyfox-install-linux-<version> --mode uninstall`, or open the installer
 window and pick **Remove Lazyfox**). It reverses exactly what the installer did —
 it removes the Lazyfox extension from `extensions.json`, takes Lazyfox's own
 preferences back out of `user.js`, and never touches your bookmarks, history or

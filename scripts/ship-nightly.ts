@@ -26,6 +26,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { TARGETS, stageInstallerUploads, versionedInstallerName } from "./payload.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -100,10 +101,12 @@ console.log(`[nightly] version: ${version}`);
 const unsignedXpi = path.join(root, "dist", `lazyfox2-${version}.xpi`);
 
 // 2. Require the artifacts to exist. Dev installers + the unsigned xpi.
+// Built binaries are named for the add-on they carry (…-dev-linux-0.5.12); the
+// upload copies below put the canonical name back so the nightly URLs stay put.
 const assets = [
-  path.join(root, "installer", "bin", "lazyfox-install-dev-linux"),
-  path.join(root, "installer", "bin", "lazyfox-install-dev-darwin"),
-  path.join(root, "installer", "bin", "lazyfox-install-dev-windows.exe"),
+  ...TARGETS.map((t) =>
+    path.join(root, "installer", "bin", versionedInstallerName(t.devOut, version)),
+  ),
   // The one-line installers, published under their base names so the nightly
   // pipes work:  …/releases/download/nightly/install.sh  /  install.ps1
   path.join(root, "installer", "scripts", "install.sh"),
@@ -136,21 +139,27 @@ if (existing === "false") {
   fail(`release \`${TAG}\` exists but is not a prerelease — refusing to overwrite a real release.`);
 }
 
-if (existing === "true") {
-  console.log(`[nightly] release \`${TAG}\` exists — updating it in place.`);
-  shout("gh", ["release", "upload", TAG, ...assets, "--repo", repoSlug, "--clobber"]);
-  shout("gh", ["release", "edit", TAG, "--repo", repoSlug, "--title", TITLE, "--notes", NOTES, "--prerelease"]);
-} else {
-  console.log(`[nightly] creating release \`${TAG}\`.`);
-  shout("gh", [
-    "release", "create", TAG,
-    "--repo", repoSlug,
-    "--title", TITLE,
-    "--notes", NOTES,
-    "--prerelease",
-    "--target", sh("git", ["rev-parse", "HEAD"]),
-    ...assets,
-  ]);
+// Upload under the canonical names the nightly URLs and install.sh expect.
+const staged = stageInstallerUploads(assets);
+try {
+  if (existing === "true") {
+    console.log(`[nightly] release \`${TAG}\` exists — updating it in place.`);
+    shout("gh", ["release", "upload", TAG, ...staged.paths, "--repo", repoSlug, "--clobber"]);
+    shout("gh", ["release", "edit", TAG, "--repo", repoSlug, "--title", TITLE, "--notes", NOTES, "--prerelease"]);
+  } else {
+    console.log(`[nightly] creating release \`${TAG}\`.`);
+    shout("gh", [
+      "release", "create", TAG,
+      "--repo", repoSlug,
+      "--title", TITLE,
+      "--notes", NOTES,
+      "--prerelease",
+      "--target", sh("git", ["rev-parse", "HEAD"]),
+      ...staged.paths,
+    ]);
+  }
+} finally {
+  fs.rmSync(staged.dir, { recursive: true, force: true });
 }
 
 console.log(`\n════════════════════════════════════════════════════════════`);

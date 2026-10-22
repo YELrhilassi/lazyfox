@@ -1751,3 +1751,127 @@ alone would not reproduce it. The second is the same page with hints already up.
   control — `content/hints › a visible aria-hidden link is hinted; hidden, inert
   and pointer-dead ones are not` keeps asserting `covered-link` is hinted AND
   dimmed AND that its key still activates it.
+
+## 18. The ninth field report (2026-10-20): Escape in a field blurs, and the page never gets its key
+
+> "I still can't do esc to unfocus the input field in WhatsApp Web (usually doing
+> esc natively there closes the whole chat, but I just want to unfocus so I can
+> keep using the leader key — now the field keeps focus and I have to manually
+> click outside). And on some other sites I can't dismiss elements and popups:
+> on Google it opens the search suggestions and I still have to click outside to
+> make that disappear."
+
+§14.3's ladder did exactly what it said: one press, one rung, blur the typing
+focus and CONSUME the key so the page's own Escape cannot run. On these two pages
+that produced neither of the things Escape is for. Both were measured before
+anything changed — the probe is `scripts/e2e/probe-esc.ts`, the fixture it drives
+is `/escapes` in `scripts/e2e/pages.ts`.
+
+### 18.1 What the press actually did
+
+**google.com, harness Firefox, dev build, `textarea.gLFyf`** (measured:
+`role="combobox"`, `aria-expanded="true"`, `aria-controls="Alh6id"`,
+`aria-autocomplete="both"`). Typing opens four list containers
+(`.aajZCb`, `.erkvQe`, two `.G43f7e`). Then:
+
+| press | caret | page's document-level Escape counter | suggestion lists |
+|-------|-------|--------------------------------------|------------------|
+| first | **leaves the field** (BODY) | **0 — the page never saw it** | **unchanged: 50/40/32px, still on screen** |
+| second | still BODY | 1 | unchanged |
+
+Two more measurements, because both ruled out a fix that looked obvious:
+
+* a **synthetic** Escape dispatched at the blurred field — non-bubbling AND
+  bubbling — is ignored. The list closes only for the page's own, trusted press.
+* the list does not close on **blur** either (the first row is exactly that
+  state). Google's suggestion list is dismissed by its own Escape handler or by
+  an outside pointer press, and by nothing else.
+
+**The fixture, for the two shapes separately.** A combobox whose list closes only
+from its own Escape handler (and only when `defaultPrevented` is false), and a
+chat composer whose blur handler takes the caret back once.
+
+| shape | before | after the fix |
+|-------|--------|---------------|
+| combobox, list open | caret out, **list still open**, page saw nothing | **list closed by the page**, caret out |
+| composer that refocuses once | caret **back in the composer**, nothing visible happened | caret out, page's Escape still not run |
+| composer that does not refocus | caret out | caret out (unchanged) |
+| composer that refocuses forever | caret back | caret back — see 18.5 |
+
+So the single rung had two different failures: on a combobox it removed the only
+thing that could dismiss the page's list, and on a composer the page simply undid
+it. Neither is visible in code; both are one keystroke on the reported pages.
+
+### 18.2 The rule: an expanded combobox owns its press
+
+`isExpandedCombobox` (`shared/dom.ts`) answers whether the caret is in a field
+that announces an OPEN popup: `aria-expanded="true"` on an element within four
+ancestors that is combobox-shaped — `role="combobox"`, or it declares
+`aria-autocomplete`, or it names the popup it owns through `aria-controls` /
+`aria-owns`, or it is an `INPUT`/`TEXTAREA` (which can only be announcing a popup
+it owns). Four ancestors because a wrapper often holds the state, and a bound so
+a page that marks its whole app expanded cannot turn every field into one.
+
+When it answers true, the Escape handler does **not** consume the press:
+
+* the page's own handler runs with the field still focused, which is what closes
+the list (`esc` reaches the page at the element that owns the widget, not at the
+body the second rung reaches today);
+* the caret still leaves, on the **next task** (`stickyBlur.leaveSoon()`).
+  Measured: blurring first made Google ABANDON its suggest session instead of
+  closing it, so the list stayed — the order is load-bearing, not tidiness.
+
+Every other field keeps §14.3 exactly: blur, consume, the dialog with the
+half-filled form is safe. The distinction is not a site list, it is the page's own
+ARIA contract: a field that declares an open popup has told the page and the user
+that Escape is its, and a field that declares nothing keeps the protective rung.
+
+### 18.3 The other half: a blur the page undoes
+
+`content/stickyblur.ts` replaces the bare `blurTypingFocus()` call on the rung. It
+blurs as before, then holds the caret out for a bounded **350ms** by blurring the
+SAME element again whenever it takes focus back. Only that element: focus that
+moves to a dialog, a menu or another field is left alone. Any trusted key or
+pointer press ends the hold immediately — after that the user is driving, and
+stealing focus back would be the product fighting them (the rule parkrule.ts
+already applies to a page-parked caret). It is used by the cancel rung and by the
+parked-field leader claim, which has the same shape.
+
+### 18.4 What is verified
+
+* `scripts/test/expanded-combobox.test.ts` — 7 cases: Google's measured shape,
+the same box closed, a chat composer refused, the wrapper at two levels and not
+at five, an expanded plain input, expanded alone (a container), and a hostile DOM.
+* `content/field › Escape closes an open combobox's list and leaves the field` —
+fixture `/escapes`: the list closes BY THE PAGE (its counter is 1) and
+`document.activeElement` is not the field, on one press.
+* `content/field › Escape leaves a composer that takes its caret back` — the
+fixture re-focuses from its blur handler; the test asserts the caret is out, that
+the page's refocus was answered by a second blur, and that the page's own
+document-level Escape did **not** run (`__escapes === 0`).
+* The old ladder tests still pass unchanged: `#field` is a plain input, so the
+first Escape is still consumed and the page's dialog stays standing.
+* Measured on the real page after the fix: Google's four list containers collapse
+to 0px, `aria-expanded` goes to `"false"`, and the caret is out — one press.
+
+### 18.5 What is NOT claimed here
+
+* **WhatsApp Web was not measured.** The site is authenticated and its DOM was not
+  available to the harness; what is modelled is the mechanism the report
+  describes — the page takes the caret back after a blur — not its implementation.
+* **A page that re-focuses its field forever still wins.** The fixture keeps a
+  `"forever"` row for exactly this: with the hold bounded at 350ms, the caret is
+  back in the composer at the end. The hold is a fix for a page that re-grabs the
+  caret once (a re-render, a `setTimeout(…, 0)`), not a focus war. An unbounded
+  guard would be the product taking the keyboard from the user on every page that
+  autofocuses.
+* **A combobox press is the PAGE's press**, with everything that implies: the same
+  fixture counts the page's document-level Escape running too (`__escapes` is 1 in
+  the combobox test). That is native Escape behaviour, and it is the price of
+  letting Google close its list; an ordinary field still gets the protective rung.
+* **Only ARIA-declared comboboxes pass through.** A site that draws a suggestion
+  list from a plain input that never sets `aria-expanded` keeps the old behaviour
+  (blur + consume, its list survives). The reported Google case is covered because
+  Google declares the contract; a site that does not declare it is not guessed at.
+* The synthetic-event rejection was measured on Google only. It is the reason no
+  re-dispatch path was shipped, not a general claim about the web.

@@ -215,6 +215,116 @@ export async function run(ctx: any): Promise<void> {
   );
 
   await t(
+    "Escape closes an open combobox's list and leaves the field",
+    async () => {
+      // THE REPORT (2026-10-20): "on Google it opens the search suggestions and
+      // I still have to click outside to make that disappear."
+      //
+      // Measured on google.com before this test existed: Escape in the search
+      // box blurred it, the page's own handler NEVER ran (the ladder consumed
+      // the press), and every suggestion list stayed on screen — a blur does
+      // not close that list, and a synthetic Escape dispatched at the field is
+      // ignored. So this is the one field whose press the ladder must hand
+      // over: an EXPANDED COMBOBOX owns the key that closes its list, and the
+      // caret still leaves (on the next task, because blurring first makes
+      // Google abandon its suggest session instead of closing it).
+      await ctx.gotoPage(ctx.tabA, `${ctx.base}/escapes`);
+      await settled();
+      await evalIn(ctx.tabA, `document.getElementById("combo").focus(); true`);
+      await ctx.typeIn(ctx.tabA, "lazy");
+      await ctx.waitExpr(
+        ctx.tabA,
+        `document.getElementById("combo").getAttribute("aria-expanded")`,
+        "true",
+        5000
+      );
+      await ctx.press(ctx.tabA, "Escape");
+      const st = await waitFor(async () => {
+        const raw = await evalIn(
+          ctx.tabA,
+          `JSON.stringify({
+             hidden: document.getElementById("list").hidden,
+             closedByPage: window.__listClosedByPage,
+             active: document.activeElement && (document.activeElement.id || document.activeElement.tagName)
+           })`
+        );
+        const r = JSON.parse(String(raw));
+        return r.hidden === true && r.active !== "combo" ? r : null;
+      }, 5000).catch(() => null);
+      assert(
+        st,
+        "the page's own list must close AND the caret must leave the field on the same press: " +
+          JSON.stringify(
+            await evalIn(
+              ctx.tabA,
+              `JSON.stringify({ hidden: document.getElementById("list").hidden, closedByPage: window.__listClosedByPage, active: document.activeElement && document.activeElement.id })`
+            )
+          )
+      );
+      assert(
+        st!.closedByPage === 1,
+        "the combobox's own Escape handler — the only thing that dismisses this list — must run (saw " +
+          st!.closedByPage +
+          ")"
+      );
+    }
+  );
+
+  await t(
+    "Escape leaves a composer that takes its caret back",
+    async () => {
+      // THE OTHER HALF OF THE REPORT: "I can't press Esc to unfocus the input in
+      // WhatsApp Web — the field keeps focus and I have to click outside."
+      //
+      // The ladder's blur DID happen; the page put the caret back from its own
+      // blur handler. A single re-blur loses that race, so the rung now holds
+      // the caret out for a bounded window — and the press stays CONSUMED, so
+      // the page's own, much larger Escape action (closing the whole chat) does
+      // not run because the user wanted to stop typing.
+      await ctx.gotoPage(ctx.tabA, `${ctx.base}/escapes`);
+      await settled();
+      await evalIn(ctx.tabA, `document.getElementById("composer").focus(); true`);
+      await ctx.typeIn(ctx.tabA, "hello");
+      await ctx.press(ctx.tabA, "Escape");
+      // Past the page's refocus timer and the trap's window: the answer is the
+      // state the user is left in, not the state one tick after the blur.
+      await waitFor(async () => ((await evalIn(ctx.tabA, `document.activeElement && document.activeElement.id`)) !== "composer" ? true : null), 4000).catch(() => null);
+      const st = JSON.parse(
+        String(
+          await evalIn(
+            ctx.tabA,
+            `JSON.stringify({
+               active: document.activeElement && (document.activeElement.id || document.activeElement.tagName),
+               blurs: window.__composerBlurs,
+               escapes: window.__escapes
+             })`
+          )
+        )
+      );
+      assert(
+        st.active !== "composer",
+        "the caret must be OUT of the composer after the press — the page takes it back once, and the rung is supposed to survive that (active: " +
+          st.active +
+          ", blurs: " +
+          st.blurs +
+          ")"
+      );
+      assert(
+        st.blurs >= 2,
+        "the page's refocus must have been answered with a second blur (blurs: " +
+          st.blurs +
+          ")"
+      );
+      assert(
+        st.escapes === 0,
+        "the page's OWN Escape action must not run — closing the whole chat is not what leaving a field means (saw " +
+          st.escapes +
+          ")"
+      );
+    }
+  );
+
+  await t(
     "Escape with nothing to clean is the page's, first press",
     async () => {
       // The other end of the ladder, on a page where the caret is nowhere near a
