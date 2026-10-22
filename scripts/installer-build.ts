@@ -22,10 +22,13 @@ import {
   LOADER_FILES,
   STAGED_CHROME_FILES,
   isNativeTarget,
+  installerNameVersion,
   payloadHash,
+  pruneStateForVersion,
   relFromRoot,
   sha256File,
   sourceHash,
+  versionedInstallerName,
   writeState,
 } from "./payload.ts";
 
@@ -211,7 +214,14 @@ export function buildInstallerSet(opts: {
       buildWinRes(installerDir, opts.version);
       ldflags += " -H windowsgui";
     }
-    const out = join(installerDir, "bin", t.out);
+    // The built file's name carries the add-on version it embeds — the committed
+    // binaries are run by hand, and the name is the only label a reader gets
+    // before launching one. The canonical, unversioned name is what the release
+    // publishes it under (canonicalInstallerName), so download URLs stay fixed.
+    const outName = versionedInstallerName(t.out, opts.version);
+    const out = join(installerDir, "bin", outName);
+    removeOtherVersions(join(installerDir, "bin"), t.out, outName);
+    pruneStateForVersion(root, t.out, outName);
     buildInstaller({ installerDir, target: t, ldflags, out });
 
     // Record what this binary was built from. That record (installer/bin/
@@ -224,7 +234,7 @@ export function buildInstallerSet(opts: {
     // "lazyfox2-0.5.6-signed.xpi", and a name-based guess reported that as 0.0.0
     // — which made a real record look like a broken one.
     writeState(root, {
-      out: t.out,
+      out: outName,
       channel: opts.channel,
       goos: t.goos,
       arch: t.arch,
@@ -234,7 +244,29 @@ export function buildInstallerSet(opts: {
       source: sourceHash(root),
       bin: sha256File(out),
     });
-    console.log(`${logPrefix} ${t.goos}/${t.arch} -> installer/bin/${t.out}`);
+    console.log(`${logPrefix} ${t.goos}/${t.arch} -> installer/bin/${outName}`);
+  }
+}
+
+/**
+ * removeOtherVersions deletes older builds of the SAME binary, so installer/bin/
+ * holds one build per target rather than a growing pile that a reader has to
+ * compare versions to choose from. Other channels and other targets are left
+ * alone: this is only ever about the one file this build just wrote.
+ */
+function removeOtherVersions(dir: string, base: string, keep: string): void {
+  if (!existsSync(dir)) return;
+  for (const f of readdirSync(dir)) {
+    if (f === keep) continue;
+    // `f === base` is the pre-versioning name: same binary, no version label,
+    // and leaving it beside the versioned build recreates exactly the "which
+    // one is which?" problem the versioned names exist to remove.
+    if (f !== base && installerNameVersion(f, base) === null) continue;
+    try {
+      rmSync(join(dir, f), { force: true });
+    } catch {
+      // best-effort: a locked file under Windows is reported by the check, not here
+    }
   }
 }
 

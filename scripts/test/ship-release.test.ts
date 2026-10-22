@@ -20,19 +20,57 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createGitHubRelease, missingAssets, releaseAssets } from "../ship-release.ts";
+import { stageInstallerUploads } from "../payload.ts";
 
 describe("the release asset list", () => {
   test("it names every asset a stable release publishes", () => {
     const assets = releaseAssets("/repo", "0.5.9");
     assert.equal(assets.length, 6);
+    // The built installers are named for the add-on version they carry, so the
+    // release must name exactly this version's file — never "whatever is in
+    // bin/", which is how an older signed build once got shipped.
     assert.deepEqual(assets, [
-      path.join("/repo", "installer", "bin", "lazyfox-install-linux"),
-      path.join("/repo", "installer", "bin", "lazyfox-install-darwin"),
-      path.join("/repo", "installer", "bin", "lazyfox-install-windows.exe"),
+      path.join("/repo", "installer", "bin", "lazyfox-install-linux-0.5.9"),
+      path.join("/repo", "installer", "bin", "lazyfox-install-darwin-0.5.9"),
+      path.join("/repo", "installer", "bin", "lazyfox-install-windows-0.5.9.exe"),
       path.join("/repo", "installer", "scripts", "install.sh"),
       path.join("/repo", "installer", "scripts", "install.ps1"),
       path.join("/repo", "dist", "lazyfox2-0.5.9-signed.xpi"),
     ]);
+  });
+
+  test("the upload puts the canonical, unversioned name back", () => {
+    // gh names an asset after the file it is given, and every published URL
+    // (`releases/latest/download/lazyfox-install-windows.exe`, install.sh, the
+    // setup page) uses the unversioned name. The version belongs in the local
+    // build name only.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "lazyfox-stage-"));
+    try {
+      const built = releaseAssets(root, "0.5.9");
+      for (const asset of built) {
+        fs.mkdirSync(path.dirname(asset), { recursive: true });
+        fs.writeFileSync(asset, asset);
+      }
+      const staged = stageInstallerUploads(built);
+      try {
+        assert.deepEqual(
+          staged.paths.map((p) => path.basename(p)),
+          [
+            "lazyfox-install-linux",
+            "lazyfox-install-darwin",
+            "lazyfox-install-windows.exe",
+            "install.sh",
+            "install.ps1",
+            "lazyfox2-0.5.9-signed.xpi",
+          ],
+        );
+        assert.equal(fs.readFileSync(staged.paths[2]!, "utf8"), built[2]);
+      } finally {
+        fs.rmSync(staged.dir, { recursive: true, force: true });
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("a root containing a space stays ONE path per asset", () => {

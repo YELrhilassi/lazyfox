@@ -247,24 +247,25 @@ if (DEV) {
   }
 
   // The RELEASE installers embed an AMO-signed add-on, so they can only be rebuilt
-  // when a signed xpi exists (stable Firefox refuses an unsigned one). When one
-  // does, they are refreshed here too — with the CURRENT chrome layer and the
-  // last signed add-on — so a plain build never leaves a committed binary
-  // carrying an old payload. When none exists they are left alone, and the
-  // reason is printed rather than left to be discovered later.
-  const signedXpis = existsSync(join(root, "dist"))
-    ? readdirSync(join(root, "dist")).filter((f) => /^lazyfox2-.*-signed\.xpi$/.test(f))
-    : [];
+  // when THIS version's signed xpi exists (stable Firefox refuses an unsigned
+  // one, and an older signed add-on is not a stand-in — see
+  // build-release-installers.ts). When it does, they are refreshed here with the
+  // CURRENT chrome layer; when it does not, they are left alone and the reason is
+  // printed rather than left to be discovered later.
+  const signedCurrent = [
+    join(root, "dist", `lazyfox2-${version}.xpi`),
+    join(root, "dist", `lazyfox2-${version}-signed.xpi`),
+  ].filter((p) => existsSync(p));
   if (skipInstallers) {
     // Nothing to do: the release binaries were not touched either.
-  } else if (signedXpis.length > 0) {
-    console.log("\n[installer] refreshing the release installers (signed add-on: …" + signedXpis[signedXpis.length - 1] + ")…");
+  } else if (signedCurrent.length > 0) {
+    console.log("\n[installer] refreshing the release installers (signed add-on: …" + basename(signedCurrent[signedCurrent.length - 1]!) + ")…");
     run(process.execPath, [join(root, "scripts", "build-release-installers.ts")], { cwd: root });
   } else {
     console.log(
-      "\n[installer] no signed add-on in dist/ yet, so the release installers were left alone:\n" +
-        "  they carry the last signed build, which is correct for their channel. Sign one\n" +
-        "  with `npm run submit` (or run `npm run build:release`) to refresh them.",
+      "\n[installer] " + version + " has no signed add-on in dist/ yet, so the release installers were left alone:\n" +
+        "  they carry the last release's signed build, which is correct for their channel. Sign\n" +
+        "  this version with `npm run submit`, then `node scripts/sync-signed-xpi.ts`.",
     );
   }
 
@@ -329,7 +330,9 @@ const extensionVersion = JSON.parse(readFileSync(join(root, "dist", "extension",
 // (profile chrome files, user.js merge, signed add-on install, loader) with no
 // repo checkout, no dist/ folder and no toolchain. Build it for every supported
 // platform into installer/bin/ so releases ship one native binary per OS:
-//   lazyfox-install-linux, lazyfox-install-darwin, lazyfox-install-windows.exe
+//   lazyfox-install-linux-<version>, lazyfox-install-darwin-<version>,
+//   lazyfox-install-windows-<version>.exe
+// (the version in the name is the add-on the binary embeds)
 const INSTALLER_TARGETS: InstallerTarget[] = TARGETS.map((t) => ({
   goos: t.goos,
   arch: t.arch,

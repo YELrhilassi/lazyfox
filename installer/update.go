@@ -62,12 +62,13 @@ func runUpdate(src *payload.Source, rep ops.Reporter, cfg config.Config) error {
 	// The from→to line is printed by ops.Run itself, so every front-end reports
 	// the same thing and this one does not print it twice.
 	if err := ops.Run(src, rep, ops.InstallOptions{
-		Profile:      prof,
-		Install:      install,
-		UseExtension: !cfg.NoExt,
-		UseLaunch:    !cfg.NoLaunch,
-		ForceLoader:  cfg.Force,
-		XpiPath:      cfg.XpiPath,
+		Profile:        prof,
+		Install:        install,
+		UseExtension:   !cfg.NoExt,
+		UseLaunch:      !cfg.NoLaunch,
+		ForceLoader:    cfg.Force,
+		AllowDowngrade: cfg.Force,
+		XpiPath:        cfg.XpiPath,
 	}, passwordProvider(cfg)); err != nil {
 		return err
 	}
