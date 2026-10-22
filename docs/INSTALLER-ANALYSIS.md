@@ -11,7 +11,7 @@
 | Half | What it is | How it gets onto your machine | Needs admin? |
 |------|-----------|-------------------------------|--------------|
 | **The add-on** | `dist/extension` — the WebExtension. Leader key on web pages, find/yank, hints, every popup, the command center, sessions, split requests, the per-page status bar. | Install from **addons.mozilla.org**, or load the unsigned dev build from `about:debugging` on Nightly/Developer Edition. | No |
-| **The chrome layer** | Four files in your **profile** (`chrome/userChrome.css`, `userChrome.uc.js`, `frame.js`, `corebootstrap.js`) + a `user.js` preference block, and a small **loader** in the Firefox **install folder**. | The **installer** (`installer/bin/lazyfox-install-*`) or the setup page (home page → **Complete the install**), which walks you into the installer. | Profile files: no. Loader: **yes, once** (UAC / sudo). |
+| **The chrome layer** | Four files in your **profile** (`chrome/userChrome.css`, `userChrome.uc.js`, `frame.js`, `corebootstrap.js`) + a `user.js` preference block, and a small **loader** in the Firefox **install folder**. | The **installer** (`installer/bin/lazyfox-install-*-<version>`) or the setup page (home page → **Complete the install**), which walks you into the installer. | Profile files: no. Loader: **yes, once** (UAC / sudo). |
 
 A WebExtension **cannot** write either of those places. It has no filesystem
 access, and AMO will not sign a privileged (XPCOM) add-on for a normal

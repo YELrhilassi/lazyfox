@@ -7,10 +7,11 @@
 // fresh clone with no Go toolchain) can install Lazyfox into Nightly/Developer
 // Edition right after `npm run build` without recompiling anything.
 //
-// Output (committed to the repo, alongside the release binaries):
-//   installer/bin/lazyfox-install-dev-linux
-//   installer/bin/lazyfox-install-dev-darwin
-//   installer/bin/lazyfox-install-dev-windows.exe
+// Output (committed to the repo, alongside the release binaries), named for the
+// add-on each one embeds:
+//   installer/bin/lazyfox-install-dev-linux-<version>
+//   installer/bin/lazyfox-install-dev-darwin-<version>
+//   installer/bin/lazyfox-install-dev-windows-<version>.exe
 //
 // Usage:
 //   npm run build:installers            every platform
@@ -23,10 +24,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildInstallerSet, type InstallerTarget } from "./installer-build.ts";
 import {
-  HOST,
-  TARGETS as ALL_PLATFORM_TARGETS,
-  isNativeTarget,
-  latestUnsignedXpi,
+  HOST,	TARGETS as ALL_PLATFORM_TARGETS,
+	isNativeTarget,
+	latestUnsignedXpi,
+	versionedInstallerName,
 } from "./payload.ts";
 import { xpiVersion } from "./amo-lib.ts";
 
@@ -82,7 +83,11 @@ if (ONLY === "host") {
         },
       ];
 }
-console.log(`[dev-installer] building: ${TARGETS.map((t) => t.goos + "/" + t.arch + " -> " + t.out).join(", ")}`);
+console.log(
+  `[dev-installer] building: ${TARGETS.map(
+    (t) => t.goos + "/" + t.arch + " -> " + versionedInstallerName(t.out, latestUnsignedXpiVersion),
+  ).join(", ")}`,
+);
 
 // One staging + compile path, shared with the release installers. It also writes
 // each binary's record into installer/bin/payload-state.json, which is what

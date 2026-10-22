@@ -1153,6 +1153,66 @@ html,body{margin:0}
 </script>
 </body></html>`,
   },
+  // The two shapes behind the 2026-10-20 Escape report, measured on the real
+  // sites before this page existed (scripts/e2e/probe-esc.ts):
+  //
+  //   * a combobox whose list is closed by ITS OWN Escape handler and by nothing
+  //     else — google.com's suggestion list survives a blur, and a synthetic
+  //     Escape at the field is ignored, so the page's own press is the only
+  //     thing that dismisses it;
+  //   * a chat composer that takes the caret back after a blur — WhatsApp Web's
+  //     shape, where the ladder's blur changed nothing the user could see.
+  //
+  // The document-level handler is the page's OWN Escape action (close the whole
+  // chat). It must never run on the press that only meant "leave this box".
+  "/escapes": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>ESCAPES</title>
+<style>
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:#0b0b0f; color:#eee; }
+  main { padding:16px; max-width:640px; }
+  input, [contenteditable] { font:14px system-ui,sans-serif; }
+  #combo { display:block; width:360px; padding:8px; }
+  #list { margin:0; padding:0; list-style:none; width:360px; border:1px solid #555; }
+  #list li { padding:6px; }
+  #list[hidden] { display:none; }
+  #composer { display:block; width:420px; min-height:60px; margin-top:14px; padding:10px;
+              border:1px solid #444; background:#15151c; }
+</style></head>
+<body>
+<main>
+  <input id="combo" data-id="combo" role="combobox" aria-expanded="false"
+         aria-controls="list" aria-autocomplete="list" autocomplete="off" placeholder="search">
+  <ul id="list" data-id="list" hidden><li>one</li><li>two</li></ul>
+  <div id="composer" data-id="composer" contenteditable="true"><p>Ask anything</p></div>
+</main>
+<script>
+  window.__escapes = 0;            // the page's own (document-level) Escape ran
+  window.__listClosedByPage = 0;   // the combobox's own Escape ran
+  window.__composerBlurs = 0;      // times the composer lost the caret
+  window.__refocus = 1;            // refocuses left; a test can raise this
+  var combo = document.getElementById("combo");
+  var list = document.getElementById("list");
+  var composer = document.getElementById("composer");
+  function openList() { list.hidden = false; combo.setAttribute("aria-expanded", "true"); }
+  function closeList() { list.hidden = true; combo.setAttribute("aria-expanded", "false"); }
+  combo.addEventListener("input", function () { if (combo.value) openList(); });
+  combo.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    closeList();
+    window.__listClosedByPage++;
+  });
+  composer.addEventListener("blur", function () {
+    window.__composerBlurs++;
+    if (window.__refocus < 1) return;
+    window.__refocus--;
+    setTimeout(function () { if (document.activeElement !== composer) composer.focus(); }, 0);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") window.__escapes++;
+  });
+</script>
+</body></html>`,
+  },
   // YouTube's load shape: the search box takes focus the moment the page
   // paints, BEFORE the content script arrives, and stays parked. The park rule
   // keys off the real focusin the page itself fires — a scripted focus during

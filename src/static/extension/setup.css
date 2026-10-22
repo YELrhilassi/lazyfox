@@ -27,8 +27,12 @@ h1 { font-size: 22px; margin: 0 0 4px; color: var(--fg); font-weight: 680; lette
 .status-line { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--fg); }
 .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--red); flex: none; }
 .dot.on { background: var(--green); }
-#statusCard.ok { border-color: var(--green); }
-#statusCard.warn { border-color: var(--red); }
+#doneCard.ok { border-color: var(--green); }
+/* The finished card turns red only when the pieces DISAGREE (a stale window
+   chrome, or an add-on Firefox has not loaded yet) — the id here used to be
+   #statusCard, which is not on the page, so neither rule ever applied. */
+#doneCard.warn { border-color: var(--red); }
+#doneNote { margin-top: 12px !important; color: var(--red); }
 button, a.dl {
   display: inline-block; background: var(--accent); color: #0b0e18;
   border: none; border-radius: 8px; font-family: inherit; font-size: 14px;

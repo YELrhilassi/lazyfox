@@ -29,7 +29,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { sha256File } from "./payload.ts";
+import { TARGETS, sha256File, stageInstallerUploads, versionedInstallerName } from "./payload.ts";
 
 /** The notes every signed release carries. */
 export const RELEASE_NOTES = "Signed release for stable Firefox";
@@ -45,15 +45,20 @@ export const RELEASE_NOTES = "Signed release for stable Firefox";
  *   irm …/releases/latest/download/install.ps1 | iex
  */
 export function releaseAssets(root: string, version: string): string[] {
+  // The built installers are named for the add-on they carry, and the release
+  // build refuses any version but this one — so the expected file names are
+  // exact, not "whatever is in bin/".
+  const installers = TARGETS.map((t) =>
+    path.join(root, "installer", "bin", versionedInstallerName(t.releaseOut, version)),
+  );
   return [
-    path.join(root, "installer", "bin", "lazyfox-install-linux"),
-    path.join(root, "installer", "bin", "lazyfox-install-darwin"),
-    path.join(root, "installer", "bin", "lazyfox-install-windows.exe"),
+    ...installers,
     path.join(root, "installer", "scripts", "install.sh"),
     path.join(root, "installer", "scripts", "install.ps1"),
     path.join(root, "dist", `lazyfox2-${version}-signed.xpi`),
   ];
 }
+
 
 /** Which of those are not on disk. Empty means the release can be created. */
 export function missingAssets(root: string, version: string): string[] {
@@ -88,11 +93,16 @@ export function createGitHubRelease(opts: { root: string; version: string; tag?:
     );
   }
   console.log(`\n[ship] creating GitHub Release ${tag}…`);
-  execFileSync(
-    "gh",
-    ["release", "create", tag, "--title", `Lazyfox ${tag}`, "--notes", RELEASE_NOTES, ...releaseAssets(root, version)],
-    { cwd: root, stdio: "inherit" }
-  );
+  const staged = stageInstallerUploads(releaseAssets(root, version));
+  try {
+    execFileSync(
+      "gh",
+      ["release", "create", tag, "--title", `Lazyfox ${tag}`, "--notes", RELEASE_NOTES, ...staged.paths],
+      { cwd: root, stdio: "inherit" }
+    );
+  } finally {
+    fs.rmSync(staged.dir, { recursive: true, force: true });
+  }
 }
 
 // `npm run ship:release` — publish (or re-create) the release page for the version

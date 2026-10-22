@@ -276,6 +276,64 @@ export function isTypingTarget(el: Element | null): boolean {
 }
 
 /**
+ * Is this field the owner of an OPEN suggestion list?
+ *
+ * THE REPORT (2026-10-20): "on Google it opens the search suggestions and I
+ * still have to click outside to make that disappear." Measured in the harness
+ * against google.com: Escape in the search box blurs it, the page's own keydown
+ * handler NEVER runs (the ladder consumed the press), and the suggestion list
+ * stays open. Blur does not close that list, and a synthetic Escape dispatched
+ * at the field is ignored — so the page's own, trusted press is the only thing
+ * that dismisses it.
+ *
+ * A field that announces an AVAILABLE POPUP is therefore the one typing target
+ * whose Escape is unambiguous and field-scoped: "close my list". Everything
+ * else keeps the §14.3 rule, where the press is consumed so a dialog holding a
+ * half-filled form cannot close under the user.
+ *
+ * The test is the ARIA contract, not a site: `aria-expanded="true"` on an
+ * element that is combobox-shaped — `role="combobox"`, a field that declares
+ * `aria-autocomplete`, or one that names the popup it owns through
+ * `aria-controls` / `aria-owns`. An expanded plain input also counts: it can
+ * only be announcing a popup it owns.
+ *
+ * Bounded on purpose (four ancestors): a wrapper puts the state one or two
+ * levels up, and a page that marks its whole app expanded must not make every
+ * field on it a combobox.
+ */
+export function isExpandedCombobox(el: Element | null): boolean {
+  let cur: Element | null = deepTypingFocus(el) || el;
+  for (let depth = 0; cur && depth < 4; depth++) {
+    try {
+      const attr = (name: string): string => {
+        const fn = (cur as Element).getAttribute;
+        if (typeof fn !== "function") return "";
+        return String(fn.call(cur, name) || "");
+      };
+      if (attr("aria-expanded").toLowerCase() === "true") {
+        const role = attr("role").toLowerCase();
+        const owns = attr("aria-controls") !== "" || attr("aria-owns") !== "";
+        const auto = attr("aria-autocomplete") !== "";
+        const tag = String((cur as Element).tagName || "")
+          .replace(/^[^:]+:/, "")
+          .toUpperCase();
+        if (role === "combobox" || owns || auto || tag === "INPUT" || tag === "TEXTAREA") {
+          return true;
+        }
+      }
+    } catch (e) {
+      // A hostile DOM must not decide this.
+    }
+    try {
+      cur = (cur as Element).parentElement || null;
+    } catch (e) {
+      cur = null;
+    }
+  }
+  return false;
+}
+
+/**
  * The element a keydown ACTUALLY happened in, for typing detection.
  *
  * `e.target` is not that element. A keydown inside a shadow root is retargeted
