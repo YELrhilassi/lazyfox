@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -38,6 +39,11 @@ func runAuto(src *payload.Source, cfg config.Config) error {
 
 	if err := installAndVerify(src, rep, install, prof, cfg, pw); err == nil {
 		return nil
+	} else if errors.Is(err, ops.ErrDowngrade) {
+		// Not a failed install: the profile is AHEAD of this binary. Creating a
+		// fresh profile would "succeed" by installing the older build somewhere
+		// new, which is not what the user asked and not a repair.
+		return err
 	} else {
 		rep.Warn("Install into %s failed: %v", prof.Name, err)
 	}
@@ -57,12 +63,13 @@ func runAuto(src *payload.Source, cfg config.Config) error {
 	}
 	rep.Step("Using profile: %s", fallback.Dir)
 	if err := ops.Run(src, rep, ops.InstallOptions{
-		Profile:      fallback,
-		Install:      install,
-		UseExtension: !cfg.NoExt,
-		UseLaunch:    !cfg.NoLaunch,
-		ForceLoader:  cfg.Force,
-		XpiPath:      cfg.XpiPath,
+		Profile:        fallback,
+		Install:        install,
+		UseExtension:   !cfg.NoExt,
+		UseLaunch:      !cfg.NoLaunch,
+		ForceLoader:    cfg.Force,
+		AllowDowngrade: cfg.Force,
+		XpiPath:        cfg.XpiPath,
 	}, pw); err != nil {
 		return err
 	}
@@ -128,12 +135,13 @@ func installAndVerify(
 	pw ops.PasswordProvider,
 ) error {
 	if err := ops.Run(src, rep, ops.InstallOptions{
-		Profile:      prof,
-		Install:      fi,
-		UseExtension: !cfg.NoExt,
-		UseLaunch:    !cfg.NoLaunch,
-		ForceLoader:  cfg.Force,
-		XpiPath:      cfg.XpiPath,
+		Profile:        prof,
+		Install:        fi,
+		UseExtension:   !cfg.NoExt,
+		UseLaunch:      !cfg.NoLaunch,
+		ForceLoader:    cfg.Force,
+		AllowDowngrade: cfg.Force,
+		XpiPath:        cfg.XpiPath,
 	}, pw); err != nil {
 		return err
 	}

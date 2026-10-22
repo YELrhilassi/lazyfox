@@ -237,6 +237,50 @@ func TestInspectClassifiesInstalledVersions(t *testing.T) {
 	})
 }
 
+// A newer install is REFUSED, not warned about and then overwritten. The status
+// has described this case for a while (StatusNewer, NeedsWork false); Run used
+// to print a warning and write the older build anyway.
+func TestRunRefusesToDowngrade(t *testing.T) {
+	src, prof, ff := layDown(t, "99.0.0")
+	xpi := payload.Dest(prof, payload.AddonArtifact())
+	beforeXpi, err := os.ReadFile(xpi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chrome := payload.ChromeArtifacts()[0]
+	beforeChrome, err := os.ReadFile(payload.Dest(prof, chrome))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = Run(src, quiet{}, InstallOptions{
+		Profile:      &fx.Profile{Dir: prof, Root: filepath.Dir(prof), Name: "test-profile"},
+		Install:      &fx.Install{Dir: ff},
+		UseExtension: true,
+		NoStop:       true,
+	}, nil)
+	if err == nil {
+		t.Fatal("an installer carrying an older add-on must refuse a newer profile")
+	}
+	for _, want := range []string{"99.0.0", "Nothing was changed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not mention %q:\n%v", want, err)
+		}
+	}
+
+	// "Nothing was changed" has to be true: neither the add-on nor the chrome
+	// layer may be touched on the way to the refusal.
+	if after, err := os.ReadFile(xpi); err != nil || !bytes.Equal(beforeXpi, after) {
+		t.Fatal("the installed xpi was overwritten before the refusal")
+	}
+	if after, err := os.ReadFile(payload.Dest(prof, chrome)); err != nil || !bytes.Equal(beforeChrome, after) {
+		t.Fatal("the chrome layer was written before the refusal")
+	}
+	if in := Inspect(src, prof, ff); in.Status() != StatusNewer {
+		t.Fatalf("status after the refusal = %s, want %s", in.Status(), StatusNewer)
+	}
+}
+
 // srcVersion is the version this binary embeds, so a "current" fixture compares
 // equal to it rather than relying on a hard-coded number that drifts on release.
 func srcVersion(t *testing.T) string {

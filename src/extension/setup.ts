@@ -15,6 +15,7 @@
 import { isTypingTarget } from "../shared/dom";
 import { createGgArm } from "../shared/gg";
 import { send } from "../shared/protocol";
+import { installedHeadline } from "../shared/versions";
 import { readKey, vBoolean, vString } from "./store";
 
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
@@ -86,17 +87,32 @@ function setState(installed: boolean): void {
 async function renderDone(): Promise<void> {
   let ext = "unknown";
   let chromeV = "running (version unknown)";
+  let chrome: string | null = null;
   try {
     const c = await send("components");
     if (c) {
       ext = c.extension || "unknown";
-      chromeV = c.chromeHelper || chromeV;
+      chrome = c.chromeHelper || null;
+      chromeV = chrome || chromeV;
     }
   } catch (e) {
     // ignore — the summary degrades to placeholders
   }
   $("doneExt").textContent = ext;
   $("doneChrome").textContent = chromeV;
+  // A live announce means the chrome layer loaded; it does NOT mean it is the
+  // same build as the add-on. Compare them, or the page congratulates a profile
+  // whose window chrome is three releases behind (the add-on auto-updates from
+  // AMO, the chrome files only change when the installer runs).
+  const verdict = installedHeadline(ext, chrome);
+  const card = $("doneCard");
+  card.classList.toggle("ok", verdict.ok);
+  card.classList.toggle("warn", !verdict.ok);
+  $("doneDot").classList.toggle("on", verdict.ok);
+  $("doneHeadline").textContent = verdict.headline;
+  const note = $("doneNote");
+  note.textContent = verdict.note;
+  note.hidden = verdict.ok;
   const prof = await readProfile();
   $("doneProfile").textContent = prof.name || "the profile this window is using";
 }

@@ -86,8 +86,9 @@ does the entire release, automatically and deterministically:
   gets from AMO / the GitHub release.
 
 That's why there are two installer families:
-`installer/bin/lazyfox-install-*` (release, signed embed) and
-`installer/bin/lazyfox-install-dev-*` (dev, unsigned embed).
+`installer/bin/lazyfox-install-*-<version>` (release, signed embed) and
+`installer/bin/lazyfox-install-dev-*-<version>` (dev, unsigned embed). The
+version in the name is the add-on the binary carries.
 
 ### The dev channel is fully self-service (no AMO, no waiting)
 

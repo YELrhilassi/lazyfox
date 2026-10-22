@@ -1567,50 +1567,50 @@
   "content/field › Ctrl+G leaves a field without telling the page to close its dialog": {
     "status": "pass",
     "group": "content",
-    "runs": 11,
-    "passes": 11
+    "runs": 12,
+    "passes": 12
   },
   "content/field › a hint on a field inside a closed shadow root focuses it and reports success": {
     "status": "pass",
     "group": "content",
-    "runs": 10,
-    "passes": 10
+    "runs": 11,
+    "passes": 11
   },
   "content/field › ;i focuses the composer, not the first small field": {
-    "status": "pass",
-    "group": "content",
-    "runs": 10,
-    "passes": 10
-  },
-  "content/field › a large video surface is hinted, and its key reaches the player": {
-    "status": "pass",
-    "group": "content",
-    "runs": 10,
-    "passes": 10
-  },
-  "content/field › a busy page still attempts the privileged press for a trust-gated control": {
-    "status": "pass",
-    "group": "content",
-    "runs": 11,
-    "passes": 10
-  },
-  "content/field › a control that reacts is not re-pressed through the privileged path": {
     "status": "pass",
     "group": "content",
     "runs": 11,
     "passes": 11
   },
-  "content/field › the leader key is never blocked by a hint layer": {
+  "content/field › a large video surface is hinted, and its key reaches the player": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 11,
+    "passes": 11
   },
-  "content/field › Escape dismisses a hint layer and the keys come back": {
+  "content/field › a busy page still attempts the privileged press for a trust-gated control": {
+    "status": "pass",
+    "group": "content",
+    "runs": 12,
+    "passes": 11
+  },
+  "content/field › a control that reacts is not re-pressed through the privileged path": {
+    "status": "pass",
+    "group": "content",
+    "runs": 12,
+    "passes": 12
+  },
+  "content/field › the leader key is never blocked by a hint layer": {
     "status": "pass",
     "group": "content",
     "runs": 10,
     "passes": 10
+  },
+  "content/field › Escape dismisses a hint layer and the keys come back": {
+    "status": "pass",
+    "group": "content",
+    "runs": 11,
+    "passes": 11
   },
   "content/field › Escape is the master cancel: the page still sees it and the caret leaves the field": {
     "status": "pass",
@@ -1711,8 +1711,8 @@
   "content/field › a chain of overlays leaves the next sentence typed into a field intact": {
     "status": "pass",
     "group": "content",
-    "runs": 7,
-    "passes": 7
+    "runs": 8,
+    "passes": 8
   },
   "content/toplayer › a page that transforms <html> cannot move the hint labels off their links": {
     "status": "pass",
@@ -2071,14 +2071,14 @@
   "content/field › Escape is a ladder: the caret leaves first, the page's own action second": {
     "status": "pass",
     "group": "content",
-    "runs": 2,
-    "passes": 2
+    "runs": 3,
+    "passes": 3
   },
   "content/field › Escape with nothing to clean is the page's, first press": {
     "status": "pass",
     "group": "content",
-    "runs": 2,
-    "passes": 2
+    "runs": 3,
+    "passes": 3
   },
   "content/core › Esc is a ladder: it blurs the focused input, and the page gets the next press": {
     "status": "pass",
@@ -2123,6 +2123,18 @@
     "passes": 1
   },
   "content/hints › link hints: a dialog opened under a live batch takes its labels away": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/field › Escape closes an open combobox's list and leaves the field": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/field › Escape leaves a composer that takes its caret back": {
     "status": "pass",
     "group": "content",
     "runs": 1,

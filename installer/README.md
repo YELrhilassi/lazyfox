@@ -233,8 +233,8 @@ installer/
 │   ├── install.sh             curl … | sh   (macOS / Linux)
 │   └── install.ps1            irm … | iex   (Windows)
 ├── bin/                       per-OS installer binaries (committed)
-│   ├── lazyfox-install-*      release binaries (stable xpi)   — `npm run build:release-installers`
-│   └── lazyfox-install-dev-*  dev binaries (unsigned xpi)     — `npm run build:installers`
+│   ├── lazyfox-install-*-<version>      release binaries (stable xpi)   — `npm run build:release-installers`
+│   └── lazyfox-install-dev-*-<version>  dev binaries (unsigned xpi)     — `npm run build:installers`
 └── winres/                    Windows exe resources (manifest, icons, version)
     ├── winres.json            go-winres input (RT_MANIFEST / RT_GROUP_ICON / RT_VERSION)
     └── icon*.png              the logomark at each size
@@ -264,8 +264,10 @@ installer/
 - `npm run build:installers` — rebuild the committed per-OS **dev** binaries for
   every platform (unsigned xpi; used by `submit`/`ship:nightly`).
 - `npm run build:release-installers` — rebuild the committed **release** binaries
-  (stable channel, needs a signed xpi) without rebuilding `dist/` in release
-  mode. Use this to refresh `installer/bin/lazyfox-install-*` from a dev branch.
+  (stable channel, needs this version's signed xpi — it refuses to embed an
+  older signed one) without rebuilding `dist/` in release mode. Use this to
+  refresh `installer/bin/lazyfox-install-*-<version>` from a dev branch; each
+  build writes a new versioned name and removes the previous build of that file.
 - `npm run installer` — build and then **open** this platform's installer, so
   testing never means finding a binary by hand. `-- --release` opens the release
   one, `-- --no-build` skips the build.

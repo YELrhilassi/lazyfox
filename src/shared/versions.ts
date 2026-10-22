@@ -121,3 +121,47 @@ export function componentVerdict(extension: string, parts: ComponentVersion[]): 
     lines,
   };
 }
+
+/**
+ * installedHeadline is the setup page's verdict for a finished install.
+ *
+ * A live chrome announce proves the chrome layer LOADED; it does not prove it
+ * is the same build as the add-on. Those are different questions, and
+ * conflating them is how a half-applied update read as "The full Lazyfox is
+ * installed and running" in a profile whose window chrome was three releases
+ * behind: Firefox auto-updates the add-on from AMO on its own, while the chrome
+ * files only change when the installer runs.
+ *
+ * So "ok" here means both pieces agree. A known disagreement is reported with
+ * the same sentence the options page uses, which already names the fix.
+ */
+export interface InstalledHeadline {
+  /** False when a component disagrees with the extension. */
+  ok: boolean;
+  /** The bold line at the top of the finished card. */
+  headline: string;
+  /** The reason, ready to show; empty when ok. */
+  note: string;
+}
+
+export function installedHeadline(
+  extension: string | null | undefined,
+  chrome: string | null | undefined,
+): InstalledHeadline {
+  const verdict = componentVerdict(extension ?? "", [{ name: "The window chrome", version: chrome }]);
+  if (verdict.stale.length) {
+    return {
+      ok: false,
+      headline: "Lazyfox is installed, but part of it is older than the add-on.",
+      note: verdict.lines.join(" "),
+    };
+  }
+  if (verdict.newer.length) {
+    return {
+      ok: false,
+      headline: "Lazyfox is installed, but Firefox is still running the previous add-on.",
+      note: verdict.lines.join(" "),
+    };
+  }
+  return { ok: true, headline: "The full Lazyfox is installed and running.", note: "" };
+}
