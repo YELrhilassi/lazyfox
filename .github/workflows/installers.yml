@@ -38,12 +38,15 @@ jobs:
           - os: ubuntu-22.04
             name: linux
             artifact: lazyfox-install-dev-linux
+            bin: installer/bin/lazyfox-install-dev-linux-*
           - os: macos-14
             name: darwin
             artifact: lazyfox-install-dev-darwin
+            bin: installer/bin/lazyfox-install-dev-darwin-*
           - os: windows-2022
             name: windows
             artifact: lazyfox-install-dev-windows.exe
+            bin: installer/bin/lazyfox-install-dev-windows-*.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -91,7 +94,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
+          # Built binaries carry the add-on version in their name, so the upload
+          # is a glob; check-installer-payload has already verified the file it
+          # matches.
           path: |
-            installer/bin/${{ matrix.artifact }}
+            ${{ matrix.bin }}
             installer/bin/payload-state.json
           if-no-files-found: error
