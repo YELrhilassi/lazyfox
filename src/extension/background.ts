@@ -35,6 +35,7 @@ import { requestChrome } from "./services/relay";
 import {
   componentsInfo,
   diagnoseTabs,
+  openAddonsTab,
   openDiagnosticsTab,
   openSetupTab,
   pageReport
@@ -43,6 +44,7 @@ import { stealthOpen } from "./stealth";
 import { quitBrowser, saveSession, scheduleLayoutSnapshot } from "./sessions";
 import { alternateTab as alternateTabOp, reopenTab } from "./windowops";
 import {
+  pushConfigToChrome,
   pushContentStateToChrome,
   pushDarkStateToChrome,
   pushFindStateToChrome,
@@ -87,6 +89,7 @@ const handlers = {
     diagnoseTabs,
     openSetupTab,
     openDiagnosticsTab,
+    openAddonsTab,
     cacheState: () => cache.cacheState(),
     cacheSet: (scope, mode) => cache.cacheSet(scope, mode),
     hardReload: () => cache.hardReload(),
@@ -97,6 +100,7 @@ const handlers = {
     pushContentStateToChrome,
     pushFindStateToChrome,
     pushDarkStateToChrome,
+    pushConfigToChrome,
     stealthOpen,
     pushSessionStateToChrome,
   }),

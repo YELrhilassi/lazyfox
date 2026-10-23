@@ -153,4 +153,71 @@ export async function run(ctx: any): Promise<void> {
     await evalIn(setupCtx.context, `browser.tabs.remove(${setupTab.id})`).catch(() => {});
     await ctx.activateTab(ctx.tabA).catch(() => {});
   });
+
+  await t("setup page: a newer published installer is one quiet line, and silence otherwise", async () => {
+    // The installer is what writes the chrome layer, so "is there a newer
+    // installer?" is answered against the chrome version — not the add-on's.
+    // The page must say it once, quietly, and say nothing at all when the two
+    // match. The release answer is seeded (fresh, so no request is made): this
+    // is a test of the rule, not of GitHub being reachable.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    const setupTab = await ctx.openSetupFromHome(ctx.tabA);
+    assert(setupTab, "the install row opened a setup.html tab");
+    const setupCtx = contextsOf(await getTree()).find((c) => (c.url || "").includes("setup.html"));
+    assert(setupCtx, "found the setup page context");
+    const ver = String(
+      await evalIn(setupCtx.context, `browser.runtime.getBrowserInfo().then((i) => String(i.version || "")).catch(() => "")`)
+    );
+    const channel = /[ab]\d+$/.test(ver) ? "nightly" : "stable";
+    const seeded = {
+      chromeAlive: true,
+      chromeHelperVersion: "0.5.9",
+      lfProfileName: "lf-e2e-profile",
+      lfProfileDir: "/tmp/lf-e2e",
+      lfInstallerCheck: { channel, version: "9.9.9", at: Date.now() },
+    };
+    await evalIn(setupCtx.context, `browser.storage.local.set(${JSON.stringify(seeded)}).then(() => true)`);
+    await evalIn(setupCtx.context, `document.getElementById("verify").click(); true`);
+    const snap = () =>
+      evalIn(
+        setupCtx.context,
+        `JSON.stringify({
+          hidden: document.getElementById("updateAvailable").hidden,
+          text: (document.getElementById("updateAvailable") || {}).textContent || "",
+          href: (document.getElementById("updateAvailable") || {}).href || "",
+          dl: (document.getElementById("dl") || {}).href || "",
+          dlVer: (document.getElementById("dlVer") || {}).textContent || "",
+          dl2Ver: (document.getElementById("dl2Ver") || {}).textContent || "",
+        })`
+      );
+    const shown = await waitFor(async () => {
+      const s = JSON.parse(await snap());
+      return s.hidden ? null : s;
+    }, 5000).catch(() => null);
+    assert(shown, "a published installer newer than the chrome shows the notice");
+    assert(/9\.9\.9/.test(shown.text), "the notice names the published version, got " + shown.text);
+    assert(
+      shown.href === shown.dl,
+      "the notice points at the same channel-correct asset as the download, got " + shown.href
+    );
+    assert(shown.dlVer === "9.9.9", "the install card's download is labelled with the version, got " + JSON.stringify(shown.dlVer));
+    assert(shown.dl2Ver === "9.9.9", "the uninstall card's download carries the same label, got " + JSON.stringify(shown.dl2Ver));
+
+    // Same version on disk: the normal state, and it must be silent.
+    await evalIn(setupCtx.context, `browser.storage.local.set({ chromeHelperVersion: "9.9.9" }).then(() => true)`);
+    await evalIn(setupCtx.context, `document.getElementById("verify").click(); true`);
+    const quiet = await waitFor(async () => {
+      const s = JSON.parse(await snap());
+      return s.hidden ? s : null;
+    }, 5000).catch(() => null);
+    assert(quiet, "an installer equal to the chrome layer says nothing");
+    assert(quiet.text === "", "the quiet state keeps no leftover text, got " + JSON.stringify(quiet.text));
+
+    await evalIn(
+      setupCtx.context,
+      `browser.storage.local.remove(["chromeAlive", "chromeHelperVersion", "lfInstallerCheck", "lfProfileName", "lfProfileDir"]).then(() => true)`
+    );
+    await evalIn(setupCtx.context, `browser.tabs.remove(${setupTab.id})`).catch(() => {});
+    await ctx.activateTab(ctx.tabA).catch(() => {});
+  });
 }

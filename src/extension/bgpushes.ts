@@ -6,9 +6,24 @@
 // outright: content script -> background -> helper. Everything else in
 // background.ts is either a composition or a listener.
 
-import type { LeaderSignal } from "../shared/leadersignal";
+import type { LeaderPanelHtml, LeaderSignal } from "../shared/leadersignal";
+import type { Config } from "../shared/types";
 import { sessionState } from "./sessions";
 import { requestChrome } from "./services/relay";
+
+/**
+ * Push a changed config to the chrome helper.
+ *
+ * The helper is privileged code that cannot read extension storage, so it keeps
+ * its own copy in a pref — and until now only the OPTIONS PAGE ever updated it.
+ * A `;q` pressed on a web page reached storage and every content script while
+ * the helper kept painting which-key over the panes it owns, which is the
+ * reported "I disabled it with ;q and it still shows on one split pane". One
+ * push, from whichever side changed the setting, keeps the two copies equal.
+ */
+export function pushConfigToChrome(config: Config): void {
+  requestChrome("cfg", { config });
+}
 
 // Push the fresh session summary to the chrome helper's status bar after a
 // session mutation that did NOT originate from the helper (the helper
@@ -31,9 +46,16 @@ export async function pushSessionStateToChrome(): Promise<void> {
 // it: the helper owns the bar but not the leader on a web page, so without
 // them the bar can only say "armed" — which is the one thing the user already
 // knew when they pressed the key.
-export function pushLeaderStateToChrome(index: number, signal: LeaderSignal): void {
+export function pushLeaderStateToChrome(
+  index: number,
+  signal: LeaderSignal,
+  panel?: LeaderPanelHtml | null
+): void {
   if (index < 0) return;
-  requestChrome("leaderState", { index, signal });
+  // `panel` is only carried when the page is a SPLIT pane: every other page
+  // paints its own menu, and sending the HTML would make the helper paint a
+  // second copy over it.
+  requestChrome("leaderState", panel === undefined ? { index, signal } : { index, signal, panel });
 }
 
 // Relay the content script's find-in-page count to the chrome helper so its

@@ -23,6 +23,8 @@ export function createUiOps(deps: {
   cfg: ChromeCfg;
   persistCfg(cfg: ChromeCfg, config?: import("../../shared/types").Config): void;
   applyHoverRevealPref(cfg: ChromeCfg): void;
+  // Told the new value so an already-painted surface can stand down.
+  onWhichKeyChanged?(on: boolean): void;
   popup: { openResizePopup(): void };
   channel: {
     requestBg(action: "focusFirstInput" | "startHints" | "openSetup" | "openDiagnostics" | "toggleWhichKey" | "quit", arg?: any): void;
@@ -113,6 +115,10 @@ export function createUiOps(deps: {
       // Keep the background's stored config in step (the chrome helper only
       // caches a copy).
       deps.channel.requestBg("toggleWhichKey");
+      // Turning the overlay off has to take the overlay that is ON SCREEN
+      // with it. Without this the which-key panel stayed painted until the
+      // next chord, which reads as the toggle having done nothing.
+      if (deps.onWhichKeyChanged) deps.onWhichKeyChanged(deps.cfg.config.whichKey !== false);
       toast("which-key: " + (deps.cfg.config.whichKey !== false ? "on" : "off"));
     },
     focusFirstInput: () => {
