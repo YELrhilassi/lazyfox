@@ -320,6 +320,23 @@ if (process.env.RELEASE === "1") {
     );
     process.exit(1);
   }
+  // THE DEV INSTALLERS ARE REBUILT HERE, AND THEY HAVE TO BE.
+  //
+  // They are compiled earlier in this file, from dist/lazyfox2-<ver>.xpi while it
+  // was still the unsigned archive this build had just written. sync-signed-xpi.ts
+  // then overwrites that same path with the AMO-signed bytes — so the record each
+  // dev installer wrote ("built from this xpi, this payload hash") no longer
+  // describes the tree it sits in. `npm run check` on master then reported the dev
+  // binaries STALE after every release (0.5.9 through 0.5.14), which is why each
+  // release commit in that history is followed by a hand rebuild of them. Building
+  // once more, with the signed bytes already in place, is what makes the release
+  // commit verify against itself.
+  if (!skipInstallers) {
+    console.log(
+      "\n[installer] the canonical xpi is the signed one now — rebuilding the dev installers so they embed it…"
+    );
+    run(process.execPath, [join(root, "scripts", "build-dev-installers.ts")], { cwd: root });
+  }
 } else {
   console.log("[sign] ensuring signed xpi for the current version…");
   serverRun(process.execPath, [join(root, "scripts", "amo-sign.ts")]);
