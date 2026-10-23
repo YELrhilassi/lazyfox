@@ -15,8 +15,9 @@
 import { isTypingTarget } from "../shared/dom";
 import { createGgArm } from "../shared/gg";
 import { send } from "../shared/protocol";
+import { checkForUpdate, installerNotice, type ReleaseChannel } from "../shared/updates";
 import { installedHeadline } from "../shared/versions";
-import { readKey, vBoolean, vString } from "./store";
+import { readKey, vBoolean, vInstallerCheck, vString, writeKey } from "./store";
 
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
 
@@ -65,6 +66,12 @@ let alive = false;
 let assetName = "lazyfox-install-linux";
 let nightly = false;
 let os = "linux";
+/** Where the download links point; the notice reuses it. */
+let assetUrl = "";
+/** The window-chrome version the finished card last showed. */
+let shownChrome: string | null = null;
+/** The newest published installer for this channel, once known. */
+let installerVersion: string | null = null;
 
 /* ------------------------------------------------------------- rendering */
 
@@ -115,6 +122,81 @@ async function renderDone(): Promise<void> {
   note.hidden = verdict.ok;
   const prof = await readProfile();
   $("doneProfile").textContent = prof.name || "the profile this window is using";
+  shownChrome = chrome;
+  renderInstallerNotice(chrome);
+}
+
+/* ------------------------------------------------- published installer */
+
+// How long a GitHub answer is trusted. The page is opened a few times per
+// install, not per session, and the answer changes only when a release is cut —
+// so re-asking on every open (and on every "Check again" click) would spend a
+// rate limit to learn the same number.
+const INSTALLER_CHECK_TTL = 6 * 60 * 60 * 1000;
+
+const channelNow = (): ReleaseChannel => (nightly ? "nightly" : "stable");
+
+/**
+ * renderInstallerNotice is the whole "a newer installer exists" UI: one quiet
+ * line in the finished card, shown only when the published build is strictly
+ * newer than the window chrome on disk. Everything else — current, a dev build
+ * ahead of the release, an unknown version, or the check having failed — is
+ * silence. There is no banner, no repetition and no dismissal to manage.
+ */
+function renderInstallerNotice(chromeVersion: string | null): void {
+  const el = $("updateAvailable") as HTMLAnchorElement;
+  const text = alive ? installerNotice(installerVersion || "", chromeVersion, channelNow()) : null;
+  el.hidden = !text;
+  if (!text) {
+    el.textContent = "";
+    el.removeAttribute("href");
+    return;
+  }
+  el.textContent = text;
+  el.href = assetUrl;
+}
+
+/** The version next to each download link; the CSS hides an empty span. */
+function applyInstallerVersion(): void {
+  $("dlVer").textContent = installerVersion || "";
+  $("dl2Ver").textContent = installerVersion || "";
+  renderInstallerNotice(shownChrome);
+}
+
+/**
+ * refreshInstallerVersion asks which installer the channel publishes today.
+ *
+ * The request never blocks the page and never surfaces an error: a failed or
+ * rate-limited check leaves the links exactly as they were, because "could not
+ * ask GitHub" is not something the user needs to fix on a setup page.
+ */
+async function refreshInstallerVersion(): Promise<void> {
+  const now = Date.now();
+  const cached = await readKey("lfInstallerCheck", vInstallerCheck, { channel: "", version: "", at: 0 });
+  const sameChannel = cached.channel === channelNow() && cached.version !== "";
+  if (sameChannel && cached.at <= now && now - cached.at < INSTALLER_CHECK_TTL) {
+    installerVersion = cached.version;
+    applyInstallerVersion();
+    return;
+  }
+  if (sameChannel) {
+    // Show the last known answer while the fresh request is in flight.
+    installerVersion = cached.version;
+    applyInstallerVersion();
+  }
+  const startedAt = now;
+  const check = await checkForUpdate(browser.runtime.getManifest().version, undefined, 7000, {
+    channel: channelNow(),
+  });
+  if (!check.latest) return; // could not ask: the cached answer (or silence) stands
+  installerVersion = check.latest;
+  // A response that STARTED before a newer answer was stored must not replace
+  // it — this page can be reopened while an older request is still in flight.
+  const current = await readKey("lfInstallerCheck", vInstallerCheck, { channel: "", version: "", at: 0 });
+  if (current.at < startedAt) {
+    await writeKey("lfInstallerCheck", { channel: channelNow(), version: check.latest, at: Date.now() });
+  }
+  applyInstallerVersion();
 }
 
 async function readProfile(): Promise<{ name: string; dir: string }> {
@@ -191,6 +273,7 @@ async function render(): Promise<void> {
   $("osName2").textContent = osName(os);
 
   const url = releaseUrl(assetName, nightly);
+  assetUrl = url;
   ($("dl") as HTMLAnchorElement).href = url;
   ($("dl2") as HTMLAnchorElement).href = url;
   $("channelNote").textContent = nightly
@@ -218,6 +301,9 @@ async function render(): Promise<void> {
     : "The installer removes only Lazyfox's own files; your bookmarks, history, passwords and other add-ons are untouched.";
 
   await render();
+  // Not awaited: the page is fully usable before GitHub answers, and a slow or
+  // blocked request must not delay the install steps.
+  void refreshInstallerVersion();
 
   browser.storage.onChanged.addListener(
     (changes: { [key: string]: { oldValue?: unknown; newValue?: unknown } }, area: string) => {
@@ -234,6 +320,10 @@ async function render(): Promise<void> {
   const verify = async (btn: HTMLElement, was: string): Promise<void> => {
     btn.textContent = "checking…";
     await render();
+    // The chrome version is the local half. The published half is asked again
+    // too, because "Check again" is the user asking whether they are current —
+    // a cached answer is reused for hours, so this normally costs no network.
+    void refreshInstallerVersion();
     btn.textContent = was;
   };
   $("verify").addEventListener("click", () => void verify($("verify"), "Check again"));

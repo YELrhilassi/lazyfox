@@ -1,7 +1,7 @@
 // statusbar tests (split). Deterministic: every wait targets a product signal
 // (status bar mount state, per-pane bar hosts, split view ids) instead of
 // fixed sleeps.
-import { closeContext, createTab, evalIn, navigate, waitFor } from "../../bidi.ts";
+import { closeContext, createTab, evalIn, keyTap, navigate, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 import { makeSplitHelpers } from "./_shared.ts";
 export async function run(ctx: any): Promise<void> {
@@ -89,5 +89,81 @@ export async function run(ctx: any): Promise<void> {
     await closeContext(b).catch(() => {});
     await closeContext(a).catch(() => {});
     await ctx.waitTabUrl("/hello", { gone: true, timeoutMs: 8000 }).catch(() => {});
+  });
+
+  await t("split: which-key is painted by the WINDOW, not inside a pane, and ;q takes it down", async () => {
+    // A page owns HALF the window in a split view, so a menu it draws itself
+    // appears at the corner of that pane and reads as the tab's UI. The pane
+    // therefore sends the rendered menu to the chrome helper, which paints it
+    // over the whole window. `;q` must remove that copy too — the reported
+    // "I disabled which-key and it still shows on one split pane".
+    await waitNoSplit();
+    const b = await createTab();
+    await navigate(b, `${ctx.base}/hello`, "complete");
+    await ctx.waitTabUrl("/hello", { timeoutMs: 10000 });
+    // Split the web page itself: hello + a fresh split panel.
+    await ctx.leaderSeq(b, ["W", "|"]);
+    await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      return ts.filter((x) => typeof x.splitViewId === "number" && x.splitViewId >= 0).length === 2
+        ? true
+        : null;
+    }, 8000).catch(async () => {
+      throw new Error("split did not form; tabs=" + JSON.stringify(await ctx.tabsInfo()));
+    });
+
+    // Arm the page's leader. The menu must appear in the WINDOW...
+    await ctx.leaderSeq(b, []);
+    const painted = await waitFor(async () => {
+      const st = await ctx.chromeState();
+      return st && st.pageWhichKey === true ? true : null;
+    }, 5000).catch(() => null);
+    assert(
+      painted,
+      "the window paints a split pane's which-key; pane=" +
+        JSON.stringify(await evalIn(b, `document.documentElement.getAttribute("data-lf-splitpane")`)) +
+        " state=" +
+        JSON.stringify(await ctx.chromeState())
+    );
+    // ...and the pane must not paint its own copy. `data-lf-whichkey` is the
+    // page's mirror of "which-key is painted in THIS document"; the window's
+    // copy is the one that is up. (The host element may exist from a sequence
+    // armed before the split and is deliberately persistent — what must not be
+    // true is that it is what the user sees.)
+    assert(
+      !(await evalIn(b, `document.documentElement.getAttribute("data-lf-whichkey") === "1"`)),
+      "the pane paints no which-key of its own"
+    );
+
+    // Already armed, so `q` completes the `;q` chord.
+    await ctx.press(b, "q");
+    await waitFor(async () => {
+      const st = await ctx.chromeState();
+      return st && st.pageWhichKey === false ? true : null;
+    }, 5000).catch(() => null);
+    assert(
+      !(await ctx.chromeState()).pageWhichKey,
+      "`;q` takes the window's copy down"
+    );
+
+    // Disabled stays disabled: arming again paints nothing, in either place.
+    await ctx.leaderSeq(b, []);
+    await new Promise((r) => setTimeout(r, 700));
+    assert(
+      !(await ctx.chromeState()).pageWhichKey,
+      "with which-key off, arming paints nothing in the window"
+    );
+    assert(
+      !(await evalIn(b, `document.documentElement.getAttribute("data-lf-whichkey") === "1"`)),
+      "...and nothing in the pane"
+    );
+    await keyTap(b, "Escape").catch(() => {});
+    // Leave the setting as it was found (the runner also repairs it, but a test
+    // should not depend on that).
+    await ctx.leaderSeq(b, ["q"]);
+
+    await ctx.leaderSeq(b, ["W", "u"]);
+    await waitNoSplit();
+    await closeContext(b).catch(() => {});
   });
 }

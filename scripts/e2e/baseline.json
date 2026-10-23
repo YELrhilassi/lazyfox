@@ -258,10 +258,10 @@
     "passes": 11
   },
   "content/setup › setup page: the installed state and uninstall help appear only on a confirmed chrome signal": {
-    "status": "fail",
+    "status": "pass",
     "group": "content",
-    "runs": 10,
-    "passes": 8
+    "runs": 11,
+    "passes": 9
   },
   "content/scroll › scroll keys j k d u gg G": {
     "status": "pass",
@@ -2011,8 +2011,8 @@
   "content/setup › the home page's install row opens the setup page with a GitHub Releases installer download": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "commandcenter/tabs › the home page's install row opens the setup page in the current tab": {
     "status": "pass",
@@ -2137,6 +2137,30 @@
   "content/field › Escape leaves a composer that takes its caret back": {
     "status": "pass",
     "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/setup › setup page: a newer published installer is one quiet line, and silence otherwise": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "split/statusbar › split: which-key is painted by the WINDOW, not inside a pane, and ;q takes it down": {
+    "status": "pass",
+    "group": "split",
+    "runs": 1,
+    "passes": 1
+  },
+  "options/options › add-ons page: lists installed add-ons, controls them, installs nothing": {
+    "status": "pass",
+    "group": "options",
+    "runs": 1,
+    "passes": 1
+  },
+  "split/lifecycle › split: native split ;W h / ;W l are DIRECTIONAL, and the keyboard follows the pane": {
+    "status": "pass",
+    "group": "split",
     "runs": 1,
     "passes": 1
   }

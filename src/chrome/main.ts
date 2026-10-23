@@ -35,6 +35,7 @@ import { toast } from "../shared/overlay";
 import { runLeaderAction, type PopupCtx } from "../shared/popups";
 import { createChromeLeader } from "./leadersetup";
 
+import { mergeConfig } from "../shared/config";
 import { createAliveAnnounce, detectProfile } from "./alive";
 import { createCacheCtl } from "./cache";
 import { createChannel, type Channel } from "./channel";
@@ -65,6 +66,7 @@ import {
   chromeFieldHoldsUserText,
   focusCommandCenterContent,
   focusIsInSelectedContent,
+  focusSelectedBrowser,
   focusSelectedContent,
   selectedContentHasKeyboard,
 } from "./commandcenterfocus";
@@ -78,6 +80,7 @@ import { createScrollKeys } from "./scrollkeys";
 import { createSplitView, type SplitView } from "./splitview";
 import { createStatusBar, type StatusBarCtl } from "./statusbar";
 import { createTypingChannel } from "./typing";
+import { createGlobalWhichKey } from "./wkglobal";
 
 (function () {
   "use strict";
@@ -146,6 +149,16 @@ import { createTypingChannel } from "./typing";
   split = createSplitView({
     env,
     ccBaseUrl: () => channel.ccBaseUrl(),
+    // A pane switch inside one split is not a tab switch the win-sync rule is
+    // guaranteed to see, and the selected pane's docshell is not activated by
+    // selecting it — so the keyboard stayed in the pane the user left.
+    focusSelectedPane: () => {
+      // The page repair first (it also focuses the command center's body when
+      // the pane is the home page), then the operation that moves a split
+      // pane's keyboard and is measured in commandcenterfocus.ts.
+      keyboard.giveKeyboardToSelectedPage();
+      focusSelectedBrowser(win, env.services.focus);
+    },
     onSplitChange: () => {
       // The status bar tracks whether the split changed (layout, or the tab the
       // user is looking at); the LAYOUT report is a separate callback, because
@@ -176,6 +189,7 @@ import { createTypingChannel } from "./typing";
       } catch (e) {
         /* no relay yet: nothing to report to */
       }
+
     },
     // Resolved at call time: `channel` is built after `split` (it needs the
     // popup context that wraps ops), and the relay's identity is only known
@@ -193,6 +207,11 @@ import { createTypingChannel } from "./typing";
     getState: () => ({
       hasPopup: () => popup.isOpen(),
       leaderActive: () => !!(leader && leader.active),
+      // Did a SPLIT pane hand its menu to this window, and is the window
+      // painting it? The only externally visible answer: the menu lives in a
+      // closed shadow root, and in a split the page's copy is deliberately
+      // absent (wkglobal.ts).
+      pageWhichKey: () => !!(globalWhichKey && globalWhichKey.shown()),
       chromeOwnsKeys: () => chromeOwnsKeys(win),
       // WHERE THE KEYBOARD IS, not who owns the keys — see
       // ChromeStateFocusV1. Read from the browser's focus manager, which is the
@@ -388,6 +407,10 @@ import { createTypingChannel } from "./typing";
     cfg,
     persistCfg,
     applyHoverRevealPref,
+    // `;q` turns which-key off; the overlay on screen comes down with it.
+    onWhichKeyChanged: (on) => {
+      if (!on && leader) leader.unpaint();
+    },
     getChannel: () => channel,
   });
 
@@ -676,6 +699,22 @@ import { createTypingChannel } from "./typing";
   // is keyed off the status bar's live tab-id snapshot (strip order).
   const cache = createCacheCtl({ getTabIds: () => status.getTabIds() });
 
+  // THE WHICH-KEY MENU A SPLIT PAGE ASKS THE WINDOW TO PAINT (wkglobal.ts).
+  // Only a page that says it is a pane sends one; every other page paints its
+  // own. The selected index is read from the strip for the same reason the
+  // status bar reads it: a leftover from another pane must not paint here.
+  const globalWhichKey = createGlobalWhichKey({
+    enabled: () => cfg.config.whichKey !== false,
+    selectedIndex: () => {
+      try {
+        const t: any = (win.gBrowser as any).selectedTab;
+        return t && typeof t.index === "number" ? t.index : -1;
+      } catch {
+        return -1;
+      }
+    },
+  });
+
   // Both chrome-side numberings — the one that COUNTS tabs for a typed digit
   // and the one that RESOLVES the digit to a tab — must agree about the relay
   // by REFERENCE, not only by URL: a relay whose page has not committed yet is
@@ -702,6 +741,20 @@ split,
     // from a page over the pushes.
     takeScreenshot: (shot) => void chromeOps.screenshot(shot),
     cfg,
+    // The helper's cached config + prefs, applied in one place from both
+    // directions: the options page's #lfc=cfg push, and the background's
+    // `cfg` push after a toggle made on a web page (`;q` in a content script,
+    // which used to reach storage and every page but never this window).
+    applyConfig: (config) => {
+      cfg.config = mergeConfig(config);
+      persistCfg(cfg, cfg.config);
+      applyHoverRevealPref(cfg);
+      if (cfg.config.whichKey === false && leader) leader.unpaint();
+      // ...and the mirror a split page asked for, which is not the helper's
+      // own panel and would otherwise survive the toggle on screen.
+      if (cfg.config.whichKey === false) globalWhichKey.clear();
+    },
+    pagePanel: (index, panel) => globalWhichKey.set(index, panel),
     debug,
     cache,
     // The `#lfc=keys` channel carries keyDOWNS and nothing else — there is no
