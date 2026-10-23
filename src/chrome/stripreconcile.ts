@@ -26,6 +26,17 @@ export interface StripReconciler {
    * at once and land on whichever finished last.
    */
   repinAfterSplit(order: ChromeTab[]): void;
+  /**
+   * Stop the settle loop that is in flight, without starting another.
+   *
+   * A split schedules its re-pin for hundreds of milliseconds. An UNSplit that
+   * arrives inside that window cannot wait for the loop to finish before it
+   * touches the strip, and it must not let the loop keep MOVING tabs while the
+   * wrapper is being torn down — that is precisely the "pin a strip whose split
+   * still exists" state the unsplit path exists to avoid, and it is what a
+   * `;W |` immediately followed by `;W u` produces.
+   */
+  cancelRepin(): void;
   /** Desired order after gluing two non-adjacent tabs. */
   coalescePairOrder(pre: ChromeTab[], anchor: ChromeTab, partner: ChromeTab): ChromeTab[];
   /** Desired order after moving `tab` into the group `sv`. */
@@ -169,5 +180,15 @@ export function createStripReconciler(opts: {
       .filter((t) => !!t);
   }
 
-  return { reconcileTo, repinAfterSplit, coalescePairOrder, coalesceIntoGroupOrder };
+  function cancelRepin(): void {
+    repinSeq++;
+  }
+
+  return {
+    reconcileTo,
+    repinAfterSplit,
+    cancelRepin,
+    coalescePairOrder,
+    coalesceIntoGroupOrder,
+  };
 }
