@@ -236,9 +236,22 @@ export async function run(ctx: any): Promise<void> {
       // alongside the layer's own counts.
       const unlabeled = await evalIn(
         ctx.tabA,
-        `(function () {
+        `(function (boxes) {
            var HINTABLE = ${JSON.stringify(HINTABLE)};
-           var out = { inView: 0, unlabeled: 0, samples: [] };
+           var out = { inView: 0, unlabeled: 0, reallyHidden: 0, pointerDead: 0, samples: [] };
+           // "Does this control carry a label" is the BADGE's position, not the
+           // element under it: a badge sits at the control's corner and a button's
+           // own text/svg is what elementFromPoint answers, so the old test called
+           // every icon button unlabelled while it had a key drawn on it.
+           function hasLabel(el) {
+             var r = el.getBoundingClientRect();
+             for (var i = 0; i < boxes.length; i++) {
+               var b = boxes[i];
+               var cx = (b.l + b.r) / 2, cy = (b.t + b.b) / 2;
+               if (cx >= r.left - 8 && cx <= r.right + 8 && cy >= r.top - 8 && cy <= r.bottom + 8) return true;
+             }
+             return false;
+           }
            var all = document.querySelectorAll(HINTABLE);
            for (var i = 0; i < all.length; i++) {
              var el = all[i];
@@ -249,16 +262,49 @@ export async function run(ctx: any): Promise<void> {
              var cs = getComputedStyle(el);
              if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") continue;
              out.inView++;
-             if (el.__lfProbeToken !== undefined) continue;
+             if (hasLabel(el)) continue;
              out.unlabeled++;
-             if (out.samples.length < 6) {
+             // WHY it is unlabeled, in the layer's own vocabulary. checkVisibility
+             // is the only per-element answer that sees an opacity:0 ANCESTOR;
+             // without it a dropdown menu that is merely faded out looks like a
+             // control the engine refused.
+             var human = true;
+             try {
+               human = el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true, contentVisibilityAuto: true });
+             } catch (e) { human = true; }
+             if (!human) { out.reallyHidden++; continue; }
+             var pe = cs.pointerEvents;
+             // A control can legitimately be pointer-dead itself and still
+             // clickable through a child that takes the pointer (an icon button
+             // built as button > span) — only the layer's hit test can tell them
+             // apart, so this is reported, not dismissed.
+             if (pe === "none") out.pointerDead++;
+             // WHY the layer's own visibility pass could still refuse it: the
+             // ancestors it walks. Printed per sample so a real miss and a
+             // faded-out dropdown can never be read as the same finding again.
+             var why = [];
+             for (var a = el.parentElement, n = 0; a && n < 40; a = a.parentElement, n++) {
+               var acs = getComputedStyle(a);
+               if (acs.opacity === "0") { why.push("opacity:0 on " + a.tagName.toLowerCase()); break; }
+               if (acs.visibility === "hidden") { why.push("visibility:hidden on " + a.tagName.toLowerCase()); break; }
+               if (a.hasAttribute("hidden")) { why.push("hidden on " + a.tagName.toLowerCase()); break; }
+               if (a.hasAttribute("inert")) { why.push("inert on " + a.tagName.toLowerCase()); break; }
+             }
+             if (out.samples.length < 8) {
+               var name = (el.getAttribute("aria-label") || el.getAttribute("title") || el.textContent || "")
+                 .replace(/\\s+/g, " ").trim().slice(0, 24);
                out.samples.push(String(el.tagName.toLowerCase() + (el.id ? "#" + el.id : "")) + " " +
-                 Math.round(r.width) + "x" + Math.round(r.height) + " pe=" + cs.pointerEvents +
-                 (el.getAttribute("role") ? " role=" + el.getAttribute("role") : ""));
+                 Math.round(r.width) + "x" + Math.round(r.height) +
+                 (pe !== "none" ? "" : " pe=none") +
+                 (el.getAttribute("role") ? " role=" + el.getAttribute("role") : "") +
+                 " " + (name || "(unnamed)") + (why.length ? " [" + why[0] + "]" : "") +
+                 (el.hasAttribute("disabled") ? " disabled" : "") +
+                 (el.closest("[inert]") ? " inert-ancestor" : "") +
+                 " bareCv=" + (el.checkVisibility ? el.checkVisibility() : "?"));
              }
            }
            return JSON.stringify(out);
-         })()`,
+         })(${JSON.stringify(s0.boxes)})`,
       ).catch(() => `{"unlabeled":0}`);
       const sideB = JSON.parse(String(unlabeled));
 
@@ -269,7 +315,15 @@ export async function run(ctx: any): Promise<void> {
           `, no page excuse ${noExcuse.length}` +
           `, layer counters ${h ? JSON.stringify({ candidates: h.candidates, hinted: h.hinted, covered: h.covered, rejected: h.rejected, truncated: (h as any).truncated }) : "?"}` +
           `, unlabeled in view ${sideB.unlabeled}/${sideB.inView}` +
-          `${sideB.unlabeled ? " :: " + sideB.samples.join(" | ") : ""})`,
+          ` (of those really hidden ${sideB.reallyHidden}, pointer-dead ${sideB.pointerDead})` +
+          `${sideB.samples.length ? " :: " + sideB.samples.join(" | ") : ""}` +
+          `, layer says why ${h ? h.unlabeled.length : "?"}` +
+          `${h && h.unlabeled.length ? " :: " + h.unlabeled.slice(0, 8).map((u) => u.tag + " " + u.name + " -> " + u.reason).join(" | ") : ""}` +
+          // A link with a destination is the shape a user calls "important": if
+          // one is unfoldingered, the reason is the whole finding.
+          `${h && h.unlabeled.some((u) => u.tag === "a")
+            ? " :: links -> " + h.unlabeled.filter((u) => u.tag === "a").slice(0, 6).map((u) => (u.name || "(unnamed)") + ": " + u.reason).join(" | ")
+            : ""})`,
       );
       if (samples.length) {
         console.log(

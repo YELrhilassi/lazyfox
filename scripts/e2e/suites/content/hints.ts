@@ -537,6 +537,72 @@ export async function run(ctx: any): Promise<void> {
         "(got: " + JSON.stringify(act) + ")"
     );
   });
+  // THE PRESS THAT UNDID ITSELF. A control whose effect lands elsewhere — a
+  // search field, a modal opener, a sidebar's collapse button — leaves its own
+  // class and ARIA state alone, so "the target was silent" says nothing about
+  // whether the press worked. Judged on that alone, the privileged retry fired a
+  // watch window later and toggled the control BACK: the field opened and
+  // closed, the modal appeared and vanished, the sidebar shrank and grew again.
+  // One press, counted twice, is the whole bug.
+  const awayReport = async () =>
+    await evalIn(
+      ctx.probe,
+      `(async function () {
+         var tabs = await browser.tabs.query({});
+         for (const t of tabs) {
+           try {
+             var res = await browser.tabs.sendMessage(t.id, { action: "pageReport" });
+             var r = res && res.report;
+             if (r && r.url && r.url.indexOf("/toggleaway") !== -1) return r.hints.lastActivation || null;
+           } catch (e) { /* no content script in that tab */ }
+         }
+         return null;
+       })()`,
+    );
+  await t("link hints: a control whose effect is elsewhere is pressed once, not twice", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/toggleaway`);
+    await pageSettled();
+    await beginHints();
+    await activateHint("open");
+    // The verdict is written when the watch window closes, which is the last
+    // moment a retry could be sent. Waiting for IT (rather than sleeping) is
+    // what makes "no second press" a measurement instead of a race.
+    const act = await waitFor(async () => await awayReport(), 6000).catch(() => null);
+    assert(act, "the activation must be reported");
+    const presses = Number(await evalIn(ctx.tabA, `window.__away.open`));
+    assert(
+      presses === 1,
+      "one hinted press must reach the control exactly once (got " + presses +
+        "): the retry must not fire after a press the page already acted on — " +
+        JSON.stringify(act),
+    );
+    const off = await evalIn(ctx.tabA, `document.getElementById("bar").classList.contains("off")`);
+    assert(off === false, "the revealed panel must STAY revealed (it was toggled back)");
+    assert(
+      act.ignored === false,
+      "a press the page acted on is a success, not an ignore: " + JSON.stringify(act),
+    );
+  });
+  // The same rule where the whole reaction is ONE class flip on <body>, which is
+  // the least visible page change there is — and therefore the one most easily
+  // mistaken for "nothing happened".
+  await t("link hints: a sidebar collapse driven by a class flip is pressed once", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/toggleaway`);
+    await pageSettled();
+    await beginHints();
+    await activateHint("side-btn");
+    const act = await waitFor(async () => await awayReport(), 6000).catch(() => null);
+    assert(act, "the activation must be reported");
+    const presses = Number(await evalIn(ctx.tabA, `window.__away.side`));
+    assert(
+      presses === 1,
+      "one hint press must be one press on a class-only toggle (got " + presses + ") — " + JSON.stringify(act),
+    );
+    assert(
+      (await evalIn(ctx.tabA, `document.body.classList.contains("side-min")`)) === true,
+      "the sidebar must stay collapsed, not shrink and grow back",
+    );
+  });
   // The privileged path itself, when the actor IS listening. The harness runs
   // the real chrome layer, so this exercises the actor end to end: the nonce
   // handshake, the CustomEvent, and windowUtils.sendMouseEvent producing a

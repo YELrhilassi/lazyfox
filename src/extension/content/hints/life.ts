@@ -54,21 +54,142 @@ export interface LifeSnapshot {
   // which covers the long tail (a counter, a toast, a re-render of an unrelated
   // subtree) without knowing what the site was going to do.
   mutations: number;
+  // The same count with page chrome (<head>) and Lazyfox's own nodes excluded:
+  // the body's reaction, which is what the retry decision is made on.
+  quiet: number;
 }
 
-// A mutation counter for the whole document, started only while a watch is in
-// flight. Counting is cheaper than inspecting, and the count alone is enough:
-// we are asking "did the page do ANYTHING", not "did it do the right thing".
+// A mutation counter for the whole document, running for as long as the hints
+// are OPEN (not only for the 320ms after a click). Counting is cheaper than
+// inspecting, and the count alone answers two questions:
+//
+//   * "did the page do ANYTHING since the press" (the verdict), and
+//   * "how much of that is just the page's own background activity" — the
+//     AMBIENT rate, which is what makes the verdict's twin question answerable.
+//
+// THE AMBIENT RATE IS THE FIX FOR A DESTRUCTIVE BUG, so it is worth stating in
+// full. The privileged retry is a SECOND press, so it may only be sent when the
+// first one provably did nothing. "The target did nothing" is not enough
+// evidence: a control whose effect lands elsewhere — a search field opening, a
+// modal appearing, a sidebar collapsing — changes nothing about itself, and the
+// page reaction it does cause was indistinguishable from a player's progress bar
+// ticking, because the counter started at zero at the press. So every such
+// control was pressed TWICE, and the second press undid the first: the field
+// opened and closed, the modal appeared and vanished, the sidebar shrank and
+// grew back about a third of a second later (the watch window).
+//
+// Measured against its own background, the two are trivially different: a modal
+// inserting itself is a burst of mutations over a page that was quiet, while a
+// heartbeat produces the same trickle whether a key was pressed or not. So the
+// observer starts when the batch opens, and this module keeps the rate it has
+// seen since then.
 let lifeObserver: MutationObserver | null = null;
+// Every page mutation (see snapshotLife's `mutations`).
 let lifeMutations = 0;
+// ...and the subset that is NOT page chrome (<head>). The retry decision is
+// made on these: a title update is how a trust-gated control says it refused a
+// synthetic press, so it must not read as "the press worked" — while the
+// verdict still counts it (pageSignal compares document.title itself anyway).
+let lifeQuiet = 0;
+// When the ambient window opened (0 = not open). performance.now() based, like
+// every other clock in the hints engine.
+let ambientFrom = 0;
 
+/**
+ * Is this record Lazyfox's own bookkeeping rather than the page's activity?
+ *
+ * The hints overlay, the toasts, the popups and the dark-mode sampler all live
+ * in the page's document and all mutate. Counting them made an idle page look
+ * busy — measured on the quietest possible fixture, the "ambient" rate was
+ * almost entirely `data-lf-*` attributes on <html> and the overlay host's own
+ * `popover` attribute, which both inflated the rate and buried the one mutation
+ * the page made in reply to a press. "The page did something" has to mean the
+ * PAGE.
+ *
+ * Narrow on purpose: our own attributes (`data-lf-*`), and anything inside one
+ * of our hosts (`#lazyfox-*`). A page is free to use those names, but a page
+ * that does is already indistinguishable from us elsewhere in the product.
+ */
+function isOwnMutation(rec: MutationRecord): boolean {
+  try {
+    if (rec.type === "attributes" && rec.attributeName && rec.attributeName.indexOf("data-lf-") === 0) {
+      return true;
+    }
+    let n: Node | null = rec.target as Node | null;
+    for (let i = 0; n && i < 10; i++) {
+      const el = n as HTMLElement;
+      const id = el.id || "";
+      if (id.indexOf("lazyfox-") === 0) return true;
+      n = el.parentNode;
+    }
+  } catch (e) {
+    // A record that refuses inspection counts as the page's: silence would be
+    // the more misleading answer.
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Is this record a change to the page's own chrome — its `<head>`?
+ *
+ * The title is the case that matters: a trust-gated control that refuses a
+ * synthetic press often says so by retitling the document, and treating that as
+ * a reaction would report success and leave the control dead. The verdict still
+ * sees it (`pageSignal` compares the title strings), so nothing is lost.
+ */
+function isHeadMutation(rec: MutationRecord): boolean {
+  try {
+    let n: Node | null = rec.target as Node | null;
+    for (let i = 0; n && i < 10; i++) {
+      if (n === document.head) return true;
+      n = (n as Element).parentNode;
+    }
+  } catch (e) {
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Count one batch of records: [page mutations, quiet page mutations]. Both
+ * exclude Lazyfox's own nodes; the second also excludes `<head>`.
+ */
+function countRecords(records: MutationRecord[]): [number, number] {
+  let all = 0;
+  let quiet = 0;
+  for (const r of records) {
+    if (isOwnMutation(r)) continue;
+    all++;
+    if (!isHeadMutation(r)) quiet++;
+  }
+  return [all, quiet];
+}
+
+function nowMs(): number {
+  try {
+    if (typeof performance !== "undefined" && performance && typeof performance.now === "function") {
+      return performance.now();
+    }
+  } catch (e) {
+    // fall through
+  }
+  return Date.now();
+}
+
+/**
+ * Start (or keep) the ambient window. Called when a hint batch opens, and again
+ * at every activation — idempotent, and deliberately NOT a reset: a watch is
+ * "since the press", but the background rate is "since hints opened".
+ */
 export function startLifeCounting(): void {
-  // Reset the baseline every time: a watch is always about "since the click".
-  lifeMutations = 0;
+  if (!ambientFrom) ambientFrom = nowMs();
   if (lifeObserver) return;
   try {
     lifeObserver = new MutationObserver((records) => {
-      lifeMutations += records.length;
+      const [all, quiet] = countRecords(records);
+      lifeMutations += all;
+      lifeQuiet += quiet;
     });
     lifeObserver.observe(document.documentElement, {
       subtree: true,
@@ -81,8 +202,33 @@ export function startLifeCounting(): void {
   }
 }
 
+/**
+ * Fold the observer's pending records into the count NOW.
+ *
+ * MutationObserver delivers on a microtask, so a synchronous read of the count
+ * can be one batch behind — which matters at exactly the wrong moment: the
+ * batch's labels are torn down (a real document mutation) in the same task
+ * that presses the hinted control, so without this drain those records land
+ * INSIDE the watch window and every activation reads as "the page responded".
+ * Taking them here, before the baseline snapshot, files them where they belong:
+ * before the press.
+ */
+export function flushLifeCounting(): void {
+  if (!lifeObserver) return;
+  try {
+    const [all, quiet] = countRecords(lifeObserver.takeRecords());
+    lifeMutations += all;
+    lifeQuiet += quiet;
+  } catch (e) {
+    // ignore — the count is then merely one batch behind
+  }
+}
+
 export function stopLifeCounting(): number {
   const n = lifeMutations;
+  ambientFrom = 0;
+  lifeMutations = 0;
+  lifeQuiet = 0;
   if (lifeObserver) {
     try {
       lifeObserver.disconnect();
@@ -114,7 +260,78 @@ export function snapshotLife(el: Element): LifeSnapshot {
     scrollX: window.scrollX || 0,
     scrollY: window.scrollY || 0,
     mutations: lifeMutations,
+    quiet: lifeQuiet,
   };
+}
+
+/**
+ * How many mutations per millisecond the page produced on its own, before and
+ * between acts of the user. 0 means "no ambient activity observed" (a quiet
+ * page, or a window too short to estimate from).
+ */
+export function ambientMutationRate(): number {
+  if (!lifeObserver || !ambientFrom) return 0;
+  const elapsed = nowMs() - ambientFrom;
+  // Too short to be an estimate — claiming a rate from 20ms of observation is
+  // how a quiet page gets mistaken for a busy one.
+  if (elapsed < 120) return 0;
+  return lifeQuiet / elapsed;
+}
+
+/**
+ * Did the page react to the press — as opposed to merely being busy?
+ *
+ * Same facts as pageSignal, with the mutation count judged against the page's
+ * own AMBIENT rate over an equivalent window. This is the question the
+ * privileged retry must be gated on (see the note above): `pageSignal` answers
+ * "is anything different", and on a page with a heartbeat that is always yes,
+ * which made the retry fire after a press that had already worked.
+ *
+ * NO TITLE CLAUSE, deliberately, and the reason is the one control that needs
+ * the retry: a trust-gated widget refuses the synthetic click and often SAYS SO
+ * in the document title ("not allowed", a status update). Counting that as a
+ * reaction would report success and leave the control dead. A title change is
+ * also not evidence of the press being consumed: a real navigation destroys
+ * this document and settles through pagehide — what remains here is a page that
+ * merely restated something. A DOM reaction, on the other hand, is the shape
+ * every open/close/sidebar toggle has, so it does suppress the retry.
+ *
+ * The bias is still one-sided. Border cases count as a reaction: missing one
+ * trust-gated control is a smaller loss than pressing a working toggle twice.
+ */
+export function pageResponded(
+  el: Element,
+  before: LifeSnapshot,
+  watchedMs: number,
+  // Injectable for the same reason selectHintables' probes are: the rule is a
+  // POLICY (how much growth means "the page responded"), and a policy should be
+  // testable in Node, where there is no MutationObserver and therefore no
+  // ambient rate at all.
+  deps: { now?: () => LifeSnapshot; rate?: () => number } = {},
+): string {
+  flushLifeCounting();
+  const now = deps.now ? deps.now() : snapshotLife(el);
+  if (!el.isConnected || !before.connected) return "the element was replaced";
+  if (now.scrollX !== before.scrollX || now.scrollY !== before.scrollY) {
+    return "the page scrolled";
+  }
+  const growth = now.quiet - before.quiet;
+  if (growth <= 0) return "";
+  const rate = deps.rate ? deps.rate() : ambientMutationRate();
+  const expected = rate * watchedMs;
+  // A QUIET PAGE HAS NO BACKGROUND TO SUBTRACT, and this is the arm that keeps
+  // the reported bug fixed. One class flip is ONE record, so a proportional
+  // test alone drowns it: a hint session that has been open for a second and
+  // seen a couple of its own setup mutations already "expects" about that many,
+  // and the response is then indistinguishable from noise on paper. Below two
+  // expected records there is no rate worth believing, so any change counts —
+  // which is also the one-sided bias this whole module keeps: a missed retry is
+  // cheaper than a press that undoes a working one.
+  if (expected < 2) return "the page updated itself";
+  // Above that the page really is muttering to itself, and a response has to
+  // stand out from it (a modal's subtree, a re-render) rather than merely exist.
+  if (growth > expected * 1.5) return "the page updated itself";
+  return "";
 }
 
 // THE TARGET's own reaction, with none of the page-level signals folded in.

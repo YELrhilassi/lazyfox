@@ -11,8 +11,10 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ALT_MRU_MAX,
+  alternateCandidates,
   alternateTarget,
   forgetTab,
+  mergeMru,
   noteActivation,
 } from "../../src/shared/alttab.ts";
 
@@ -94,5 +96,40 @@ describe("closed tabs leave no trace", () => {
   test("forgetting an absent id returns the same list", () => {
     const mru = [1, 2];
     assert.equal(forgetTab(mru, 9), mru);
+  });
+});
+
+describe("the list survives the background being suspended", () => {
+  test("a restored list is folded BEHIND the live one", () => {
+    // The reported shape: `;a` away worked, back was silent. An MV3 event page
+    // drops its memory when it goes idle, so the back press runs against a list
+    // restored from storage while the current tab was already seeded into it.
+    // Recency must be the live order's, whatever order the two arrived in.
+    assert.deepEqual(mergeMru([2], [2, 1]), [2, 1]);
+    assert.deepEqual(mergeMru([2, 1], [2, 1]), [2, 1]);
+    assert.deepEqual(mergeMru([3], [2, 1]), [3, 2, 1]);
+  });
+
+  test("restoring cannot duplicate, demote, or exceed the bound", () => {
+    assert.deepEqual(mergeMru([1, 2], [3, 1, 2]), [1, 2, 3]);
+    const long = Array.from({ length: ALT_MRU_MAX + 6 }, (_, i) => i + 1);
+    assert.equal(mergeMru([], long).length, ALT_MRU_MAX);
+    // A hostile/legacy value cannot poison the list with junk ids.
+    assert.deepEqual(mergeMru([5], [NaN, Infinity, 0, -1 as number, 6]), [5, 6]);
+  });
+});
+
+describe("when the first candidate is not a place, the walk goes on", () => {
+  test("the current tab is removed and the rest keep their order", () => {
+    assert.deepEqual(alternateCandidates([3, 2, 1], 2), [3, 1]);
+  });
+
+  test("a list that does not contain the current tab is passed through", () => {
+    assert.deepEqual(alternateCandidates([3, 2, 1], 9), [3, 2, 1]);
+  });
+
+  test("nothing but the current tab is nowhere to go", () => {
+    assert.deepEqual(alternateCandidates([7], 7), []);
+    assert.deepEqual(alternateCandidates([], 7), []);
   });
 });
