@@ -898,12 +898,6 @@
     "runs": 8,
     "passes": 5
   },
-  "split/lifecycle › split: native split ;W [ / ;W ] switch the active pane": {
-    "status": "pass",
-    "group": "split",
-    "runs": 8,
-    "passes": 8
-  },
   "split/lifecycle › split: native split ;W u unsplits back to independent tabs": {
     "status": "pass",
     "group": "split",
@@ -923,12 +917,6 @@
     "passes": 8
   },
   "split/lifecycle › split: native split ;W m +N moves tab N into the split": {
-    "status": "pass",
-    "group": "split",
-    "runs": 8,
-    "passes": 6
-  },
-  "split/lifecycle › split: ;W { and ;W } swap the panes left/right": {
     "status": "pass",
     "group": "split",
     "runs": 8,
@@ -2161,6 +2149,42 @@
   "split/lifecycle › split: native split ;W h / ;W l are DIRECTIONAL, and the keyboard follows the pane": {
     "status": "pass",
     "group": "split",
+    "runs": 1,
+    "passes": 1
+  },
+  "split/lifecycle › split: `;W |` then `;W u` typed straight away leaves a usable window": {
+    "status": "pass",
+    "group": "split",
+    "runs": 1,
+    "passes": 1
+  },
+  "split/statusbar › split: a pane RELOADED inside the split still paints its menu in the window": {
+    "status": "pass",
+    "group": "split",
+    "runs": 1,
+    "passes": 1
+  },
+  "split/statusbar › split: `;o` in the split-panel pane closes it and hands the keyboard to the sister": {
+    "status": "pass",
+    "group": "split",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: a control whose effect is elsewhere is pressed once, not twice": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: a sidebar collapse driven by a class flip is pressed once": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "audit › tab: a twice — the toggle comes back to the tab it left": {
+    "status": "pass",
+    "group": "audit",
     "runs": 1,
     "passes": 1
   }

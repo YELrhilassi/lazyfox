@@ -24,6 +24,7 @@ import { sheetOver } from "./probe";
 import { shadowRootOf, walkElements } from "../../../shared/dom";
 import { createCoalescer } from "../../../shared/coalesce";
 import { createMotionWatch, type MotionKind, type MotionWatch } from "./motion";
+import { startLifeCounting, stopLifeCounting } from "./life";
 import { createFrameCoalescer, nextMeasurementDelay, FAST_EPISODE_MS } from "./frames";
 
 // WHEN A PASS RUNS — the rules, and the tests that pin them, live in frames.ts.
@@ -222,6 +223,11 @@ export function createLinkHints(
       return;
     }
     active = true;
+    // THE AMBIENT WINDOW OPENS WITH THE BATCH. The activation watcher needs
+    // "how much does this page mutate on its own" BEFORE the press, or it cannot
+    // tell a reaction from a heartbeat — and the difference decides whether a
+    // hinted control is pressed once or twice (see hints/life.ts).
+    startLifeCounting();
     overlay.mount();
     watchDom();
     watchMotion();
@@ -871,7 +877,10 @@ export function createLinkHints(
   // resolved element to the activator, which does the work and reports whether
   // the page reacted (see docs/HINTS.md for why that report exists).
   function activate(it: HintItem): void {
-    exit();
+    // The ambient window survives the teardown: the press is about to be judged
+    // against it, and a page's background rate does not stop being true because
+    // the labels were removed.
+    exit(true);
     // THE ONE PLACE A RE-COLLECT IS ALLOWED (see hintresolve.resolve): a
     // keypress is a one-shot, so paying for a document-wide collection once —
     // to find the node the framework replaced under this badge — is worth it,
@@ -915,11 +924,15 @@ export function createLinkHints(
     activator.activate(el, "click");
   }
 
-  function exit(): void {
+  function exit(keepAmbient = false): void {
     // Bumping the session is what CANCELS a start that is still in flight, so
     // Escape works even in the window before `active` is set. It is also what
     // makes exit() safe to call when nothing is happening.
     session++;
+    // The document-wide mutation observer must not outlive the batch — that is
+    // the one cost of keeping it open while hints are up. `keepAmbient` is the
+    // activation path, which tears the labels down and then presses.
+    if (!keepAmbient) stopLifeCounting();
     active = false;
     starting = false;
     unwatchDom();

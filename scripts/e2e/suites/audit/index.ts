@@ -320,6 +320,18 @@ const ENTRIES: Entry[] = [
     steps: [{ keys: ["a"], must: activeMoved }],
   },
   {
+    // The reported shape: it switched once and then would not come back. The
+    // second press is the whole point — its candidate list may hold a closed tab
+    // or a plumbing page (a relay, a split-panel pane) in front of the tab the
+    // user actually left, and it must walk past anything that is not a place.
+    name: "tab: a twice — the toggle comes back to the tab it left",
+    setup: openExtra(true),
+    steps: [
+      { keys: ["a"], must: activeMoved, label: ";a (away)" },
+      { keys: ["a"], must: activeMoved, label: ";a (back)" },
+    ],
+  },
+  {
     name: "tab: 2 — digit jumps to a numbered tab",
     setup: async (ctx) => {
       await ctx.newPageTab(`${ctx.base}/hello`);

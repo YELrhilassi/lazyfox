@@ -5,7 +5,7 @@
 // second implementation that drifts. Nothing here clicks anything.
 import { rectCenter, reachable, shortName, deepHit, inViewport, hintVisible, sheetOver } from "./probe";
 import { collectHintables, type CollectStats } from "./collect";
-import { selectHintables } from "./select";
+import { selectHintables, type Rejection } from "./select";
 import { createVisibilityPass } from "./visibility";
 import { MAX_HINTS } from "./selectors";
 import type { HintProbe } from "../../../shared/types";
@@ -43,6 +43,27 @@ export interface HintDiagnosticsSnapshot {
   probed: number;
   probeCap: number;
   probes: HintProbe[];
+  /**
+   * In view, visible, and NOT labelled — each with the pipeline rule that
+   * dropped it and, for a duplicate, what won instead.
+   *
+   * This is the half of the report the counts could not express. `rejected`
+   * said "110 were duplicates", which is not actionable: the questions are
+   * WHICH rule and WHICH control took the slot, and on a dense app shell the
+   * answer is often a generic wrapper beating a real link inside it.
+   */
+  unlabeled: Array<{ tag: string; name: string; reason: string }>;
+}
+
+/** The reason a rejected candidate carries, in words, for the report. */
+function describeRejection(r: Rejection): string {
+  if (r.reason === "duplicate") {
+    const by = r.by ? shortName(r.by) : "?";
+    return "duplicate of " + by + " (" + (r.rule || "?" ) + ")";
+  }
+  if (r.reason === "behind") return "behind a dialog or overlay";
+  if (r.reason === "not-scanned") return "not reached (batch scan limit)";
+  return "outside the viewport or not visible";
 }
 
 // The diagnostics page's view of the hint pipeline. It re-runs the ordinary
@@ -66,8 +87,29 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
   // makes (same caches, same order, same costs).
   const pass = createVisibilityPass();
   const pool = collectHintables(stats, pass);
-  // Same selection the live flow runs, so the counters are the truth.
-  const sel = selectHintables(pool, MAX_HINTS, pass);
+  // Same selection the live flow runs, so the counters are the truth. The
+  // explain sink is the ONE difference and it changes no decision.
+  const why = new Map<Element, string>();
+  const sel = selectHintables(pool, MAX_HINTS, pass, undefined, undefined, (r) => {
+    why.set(r.el, describeRejection(r));
+  });
+  const kept = new Set<Element>(sel.kept.map((k) => k.el));
+  const unlabeled: HintDiagnosticsSnapshot["unlabeled"] = [];
+  for (const el of pool) {
+    if (kept.has(el)) continue;
+    let seen = false;
+    try {
+      seen = inViewport(el) && hintVisible(el, pass);
+    } catch (e) {
+      seen = false;
+    }
+    if (!seen) continue;
+    unlabeled.push({
+      tag: String(el.tagName || "?").toLowerCase(),
+      name: shortName(el),
+      reason: why.get(el) || "not selected",
+    });
+  }
 
   const probes: HintProbe[] = [];
   for (const el of pool.slice(0, Math.max(0, limit))) {
@@ -89,7 +131,14 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     // drawn at all, because it would be drawn on top of that surface.
     const sheet = reach ? null : sheetOver(el);
     let reason: string;
+    // THE SELECTION'S OWN ANSWER COMES FIRST when the element has none: a row
+    // that is visible and clickable but carries no label is the reported shape
+    // ("the important ones don't show"), and "clickable here" was the least
+    // useful thing to tell it. The rule that dropped it, and what took its slot,
+    // is the answer.
+    const dropped = kept.has(el) ? "" : why.get(el) || "";
     if (!vis) reason = "outside the viewport (page to it with ])";
+    else if (dropped) reason = dropped + " \u2014 no label";
     else if (reach) reason = "clickable here";
     else if (sheet)
       reason =
@@ -126,5 +175,6 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     probed: stats.probes,
     probeCap: stats.probeCap,
     probes: probes,
+    unlabeled: unlabeled,
   };
 }
