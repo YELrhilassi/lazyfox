@@ -657,6 +657,21 @@ import { createGlobalWhichKey } from "./wkglobal";
     if (engineHintsAction) engineHintsAction();
   });
 
+  // `;o` IN THE SPLIT-PANEL PANE CLOSES IT.
+  //
+  // The panel is our own utility surface ("move a tab into this split"), not a
+  // page to read, so opening a URL INTO it replaces the list with a web page the
+  // split never asked for and leaves a layout nobody wanted (reported: "I did
+  // `;o` instead of pulling another tab and it kind of breaks the software").
+  // The pane's reason to exist ends the moment the user asks for something else,
+  // so the chord closes the pane and hands the keyboard to the sister tab with
+  // the split (the platform auto-unsplits a two-pane view when one pane closes).
+  const openUrlAction = leaderActions["openUrl"];
+  leaderActions["openUrl"] = () => {
+    if (split.closePanelPane()) return;
+    if (openUrlAction) openUrlAction();
+  };
+
   // Warm the wasm core AND the which-key bindings so the first leader press
   // is already synchronous (the overlay renders from the preloaded table;
   // loading it lazily on the first `;` was the visible activation delay).
@@ -701,16 +716,27 @@ import { createGlobalWhichKey } from "./wkglobal";
 
   // THE WHICH-KEY MENU A SPLIT PAGE ASKS THE WINDOW TO PAINT (wkglobal.ts).
   // Only a page that says it is a pane sends one; every other page paints its
-  // own. The selected index is read from the strip for the same reason the
-  // status bar reads it: a leftover from another pane must not paint here.
+  // own. WHETHER THE SENDER IS ON SCREEN is answered against the strip, because
+  // a leftover from a tab the user cannot see must not paint here — but the
+  // answer has to include the SISTER PANE: in a split the pane holding the
+  // keyboard is not always the one Firefox reports as selected, and gating on
+  // the selected tab alone is what made the menu appear in one pane and not the
+  // other (reported).
   const globalWhichKey = createGlobalWhichKey({
     enabled: () => cfg.config.whichKey !== false,
-    selectedIndex: () => {
+    visible: (index) => {
       try {
-        const t: any = (win.gBrowser as any).selectedTab;
-        return t && typeof t.index === "number" ? t.index : -1;
-      } catch {
-        return -1;
+        const tabs = Array.from<unknown>((win.gBrowser as any).tabs) as any[];
+        const tab = tabs[index];
+        if (!tab) return false;
+        const sel: any = (win.gBrowser as any).selectedTab;
+        if (!sel) return false;
+        if (tab === sel) return true;
+        const mine = tab.splitview;
+        const theirs = sel.splitview;
+        return !!mine && !!theirs && mine === theirs;
+      } catch (e) {
+        return false;
       }
     },
   });
@@ -828,6 +854,7 @@ split,
       if (releaseLostHoldOnBlur(leader)) holdWatchdog.stop();
     },
     status,
+    revalidatePagePanel: () => globalWhichKey.revalidate(),
     isWindowActive: () => env.services.focus.activeWindow === win,
     setTimeout: (fn, ms) => env.setTimeout(fn, ms),
   });

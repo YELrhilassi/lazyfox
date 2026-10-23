@@ -114,18 +114,32 @@ function countingPass() {
 }
 
 describe("hints visibility: the answers", () => {
-  test("a control under a hidden or inert ancestor is not visible", () => {
+  test("inert on an ancestor hides a control; `hidden` alone does not", () => {
     const { pass } = countingPass();
     const root = el();
-    // These are the two attribute states that really mean "nobody can use this":
-    // `hidden` takes the box out of layout, `inert` makes the subtree neither
-    // clickable nor focusable.
-    for (const attr of ["hidden", "inert"]) {
-      const blocked = child(root, el({ attrs: { [attr]: "" } }));
-      const control = child(blocked, el({ tag: "BUTTON" }));
-      assert.equal(pass.visible(control), false, attr + " on the HOST hides what is inside it");
-      assert.equal(pass.fullyVisible(control), false);
-    }
+    // `inert` is the one attribute that really means "nobody can use this": it
+    // makes the subtree neither clickable nor focusable and no stylesheet can
+    // undo it.
+    const inertHost = child(root, el({ attrs: { inert: "" } }));
+    const blocked = child(inertHost, el({ tag: "BUTTON" }));
+    assert.equal(pass.visible(blocked), false, "inert on the HOST hides what is inside it");
+    assert.equal(pass.fullyVisible(blocked), false);
+
+    // `hidden` is only the UA's default display:none, and AUTHOR CSS OVERRIDES IT
+    // (`[hidden] { display: flex }`, a utility class on the same element). App
+    // shells set the attribute to drive their own styling and end up with a
+    // visible control wearing it; trusting the attribute dropped those before
+    // anything measured a box — the reported "important labels never show".
+    const hiddenButShown = child(root, el({ attrs: { hidden: "" } }));
+    const shown = child(hiddenButShown, el({ tag: "BUTTON" }));
+    assert.equal(pass.visible(shown), true, "a [hidden] ancestor with a box is displayed by CSS");
+    assert.equal(pass.fullyVisible(shown), true);
+
+    // What really is hidden has no box, and that is still refused.
+    const hiddenAndGone = child(root, el({ attrs: { hidden: "" }, visible: false }));
+    const gone = child(hiddenAndGone, el({ tag: "BUTTON", visible: false }));
+    assert.equal(pass.visible(gone), false, "display:none leaves no box, which is the real answer");
+    assert.equal(pass.fullyVisible(gone), false);
   });
 
   test("aria-hidden is NOT a visibility signal (the YouTube thumbnail case)", () => {

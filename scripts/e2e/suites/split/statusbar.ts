@@ -1,7 +1,7 @@
 // statusbar tests (split). Deterministic: every wait targets a product signal
 // (status bar mount state, per-pane bar hosts, split view ids) instead of
 // fixed sleeps.
-import { closeContext, createTab, evalIn, keyTap, navigate, waitFor } from "../../bidi.ts";
+import { closeContext, createTab, evalIn, keyTap, navigate, send, sleep, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 import { makeSplitHelpers } from "./_shared.ts";
 export async function run(ctx: any): Promise<void> {
@@ -165,5 +165,120 @@ export async function run(ctx: any): Promise<void> {
     await ctx.leaderSeq(b, ["W", "u"]);
     await waitNoSplit();
     await closeContext(b).catch(() => {});
+  });
+
+  await t("split: a pane RELOADED inside the split still paints its menu in the window", async () => {
+    // The menu reached the window only when the page already had a LOCAL host to
+    // repaint from — which a page that armed before the split happened to have.
+    // A document that boots as a pane never builds one, and the render path
+    // bailed before sending anything, so the window painted nothing at all.
+    // That is the reported "it might show for a few first times but then stops
+    // showing", and a reload inside the split is the smallest way to put a
+    // document in that state.
+    await waitNoSplit();
+    const b = await createTab();
+    await navigate(b, `${ctx.base}/hello`, "complete");
+    await ctx.waitTabUrl("/hello", { timeoutMs: 10000 });
+    await ctx.leaderSeq(b, ["W", "|"]);
+    await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      return ts.filter((x) => typeof x.splitViewId === "number" && x.splitViewId >= 0).length === 2
+        ? true
+        : null;
+    }, 8000).catch(async () => {
+      throw new Error("split did not form; tabs=" + JSON.stringify(await ctx.tabsInfo()));
+    });
+
+    // Reload the pane: a fresh document that learns it is a pane before its
+    // first `;`, so it has never painted a host of its own.
+    await send("browsingContext.reload", { context: b, wait: "complete" }).catch(() => null);
+    const paneAgain = await waitFor(async () => {
+      const on = await evalIn(b, `document.documentElement.getAttribute("data-lf-splitpane")`).catch(() => null);
+      return on === "1" ? true : null;
+    }, 10000).catch(() => null);
+    assert(
+      paneAgain,
+      "the reloaded document is told it is a pane (data-lf-splitpane); tabs=" +
+        JSON.stringify(await ctx.tabsInfo().catch(() => "ERR"))
+    );
+    await sleep(300);
+
+    await ctx.leaderSeq(b, []);
+    const painted = await waitFor(async () => {
+      const st = await ctx.chromeState();
+      return st && st.pageWhichKey === true ? true : null;
+    }, 8000).catch(() => null);
+    assert(
+      painted,
+      "the window paints a reloaded pane's which-key; pane=" +
+        JSON.stringify(await evalIn(b, `document.documentElement.getAttribute("data-lf-splitpane")`)) +
+        " state=" +
+        JSON.stringify(await ctx.chromeState().catch(() => "ERR"))
+    );
+    assert(
+      !(await evalIn(b, `document.documentElement.getAttribute("data-lf-whichkey") === "1"`)),
+      "the reloaded pane paints nothing of its own"
+    );
+
+    await keyTap(b, "Escape").catch(() => {});
+    await ctx.leaderSeq(b, ["W", "u"]);
+    await waitNoSplit();
+    await closeContext(b).catch(() => {});
+  });
+
+  await t("split: `;o` in the split-panel pane closes it and hands the keyboard to the sister", async () => {
+    // The panel is our own utility surface, not a page to read: opening a URL
+    // INTO it replaces the move-a-tab list with a web page the split never asked
+    // for (reported: "I did `;o` instead of pulling another tab and it kind of
+    // breaks the software ... instead of doing regular `;o` for that splitpanel
+    // tab we just delete it and focus the other sister tab").
+    await waitNoSplit();
+    await ctx.openCC(ctx.tabA);
+    await ctx.leaderSeq(ctx.tabA, ["W", "|"]);
+    const pair = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const panes = ts.filter((x) => typeof x.splitViewId === "number" && x.splitViewId >= 0);
+      return panes.length === 2 ? panes : null;
+    }, 8000).catch(async () => {
+      throw new Error("split did not form; tabs=" + JSON.stringify(await ctx.tabsInfo()));
+    });
+    const panel = pair.find((x) => String(x.url || "").includes("splitpanel.html"));
+    assert(panel, "the split has a panel pane: " + JSON.stringify(pair));
+    const sister = pair.find((x) => x.id !== panel!.id);
+    assert(!!sister, "the split has a sister pane: " + JSON.stringify(pair));
+
+    // Put the keyboard in the panel pane: the panel is created after the home
+    // tab, so it is the pane on the right.
+    await ctx.leaderSeq(ctx.tabA, ["W", "l"]);
+    await waitFor(async () => {
+      const a = await ctx.activeTabInfo();
+      return a && a.id === panel!.id ? true : null;
+    }, 6000).catch(async () => {
+      throw new Error("the panel pane was not selected; tabs=" + JSON.stringify(await ctx.tabsInfo()));
+    });
+    const panelCtx = await ctx.contextForTabId(panel!.id);
+
+    // `;o` is "open URL" everywhere else. Here it must close the pane.
+    await ctx.leaderSeq(panelCtx, ["o"]);
+    const gone = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      return ts.every((x) => x.id !== panel!.id) ? true : null;
+    }, 8000).catch(() => null);
+    assert(gone, "the panel pane is gone: " + JSON.stringify(await ctx.tabsInfo()));
+
+    const after = await ctx.tabsInfo();
+    assert(
+      after.every((x) => !(typeof x.splitViewId === "number" && x.splitViewId >= 0)),
+      "closing the panel dissolved the split: " + JSON.stringify(after)
+    );
+    const active = await ctx.activeTabInfo();
+    assert(
+      !!active && active.id === sister!.id,
+      "the keyboard is on the sister tab: " + JSON.stringify({ active: active && active.id, sister: sister!.id })
+    );
+    // And the window still answers keys on the sister.
+    await ctx.leaderSeq(ctx.tabA, []);
+    await keyTap(ctx.tabA, "Escape").catch(() => {});
+    await ctx.openCC(ctx.tabA);
   });
 }

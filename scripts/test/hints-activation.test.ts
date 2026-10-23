@@ -10,8 +10,20 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { lifeSignal, pageSignal, snapshotLife, targetSignal } from "../../src/extension/content/hints/life.ts";
-import { canEscalate, insideMediaSurface, pressForReal } from "../../src/extension/content/hints/escalate.ts";
+import {
+  type LifeSnapshot,
+  lifeSignal,
+  pageResponded,
+  pageSignal,
+  snapshotLife,
+  targetSignal,
+} from "../../src/extension/content/hints/life.ts";
+import {
+  canEscalate,
+  insideMediaSurface,
+  pressForReal,
+  samePressBox,
+} from "../../src/extension/content/hints/escalate.ts";
 import { isLargeMediaSurface } from "../../src/extension/content/hints/collect.ts";
 
 type FakeEl = {
@@ -123,6 +135,90 @@ describe("canEscalate refuses to repeat an action that already happened", () => 
   });
 });
 
+// THE ESCALATION'S REAL TRIGGER: "the page did not react", not "the page is
+// not mutating".
+//
+// The distinction is not academic. The retry is a SECOND PRESS, so firing it
+// after a press that worked is how a hinted control ends up toggled twice — a
+// search field that opens and closes, a modal that appears and vanishes, a
+// sidebar that shrinks and grows back a third of a second later. The rule is
+// "a reaction suppresses the retry", and the only hard part is telling a
+// reaction from a page's own heartbeat.
+describe("a page reaction suppresses the privileged retry; a heartbeat does not", () => {
+  const at = (mutations: number, extra: Partial<LifeSnapshot> = {}): LifeSnapshot => ({
+    connected: true,
+    cls: "",
+    disabled: "",
+    aria: "",
+    value: "",
+    checked: false,
+    href: "",
+    title: "T",
+    scrollX: 0,
+    scrollY: 0,
+    mutations: mutations,
+    quiet: mutations,
+    ...extra,
+  });
+  const button = node("button");
+  const respond = (growth: number, rate: number, extra: Partial<LifeSnapshot> = {}) =>
+    pageResponded(
+      button as unknown as Element,
+      at(0),
+      320,
+      { now: () => at(growth, extra), rate: () => rate },
+    );
+
+  test("a quiet page that changed at all reacted", () => {
+    assert.equal(respond(1, 0), "the page updated itself");
+  });
+
+  test("the same change on a page with a heartbeat is not a reaction", () => {
+    // 0.06 mutations/ms is one mutation every ~16ms — a clock, a progress bar.
+    // Over the 320ms watch that is ~19 records on its own, so the same number
+    // again is background, not a response.
+    assert.equal(respond(19, 0.06), "");
+  });
+
+  test("a slow drip has no rate worth believing, so a change still counts", () => {
+    // One mutation a second is the page idling, not a signal to press twice.
+    // Without the absolute floor this case (expected ~0.3 over the watch) would
+    // read as "nothing happened" and the retry would undo the press.
+    assert.equal(respond(1, 0.001), "the page updated itself");
+  });
+
+  test("a burst well above the heartbeat IS a reaction", () => {
+    assert.equal(respond(60, 0.06), "the page updated itself");
+  });
+
+  test("a title change alone does NOT suppress the retry", () => {
+    // The trust-gated control's refusal is exactly this: the page restates
+    // itself ("not allowed") without the control acting. Counting the title as
+    // a reaction would leave that control dead, and a title change is not
+    // evidence the press was consumed — a real navigation destroys the document
+    // and settles through pagehide instead.
+    assert.equal(respond(0, 1, { title: "T2" }), "");
+  });
+
+  test("the same title change is still a success for the verdict", () => {
+    // pageSignal (the verdict) keeps the permissive rule; only the retry trigger
+    // is strict. Accusing a working press is worse than missing a retry.
+    setPage("T", 0, 0);
+    const button = node("button");
+    const before = snapshotLife(button as unknown as Element);
+    (globalThis as unknown as { document: { title: string } }).document.title = "T2";
+    assert.equal(pageSignal(button as unknown as Element, before), "the page title changed");
+  });
+
+  test("a scroll is a reaction whatever the background rate", () => {
+    assert.equal(respond(0, 1, { scrollY: 40 }), "the page scrolled");
+  });
+
+  test("a page that did nothing is not a reaction", () => {
+    assert.equal(respond(0, 0), "");
+  });
+});
+
 // THE ROUTE FOR A PLAYER'S OWN OVERLAY.
 //
 // `pressForReal` is the rule that made "Skip ad" work again, and it is narrow on
@@ -193,6 +289,44 @@ describe("a player's own overlay is pressed for real, once", () => {
     // (a real press on a video is a play/pause, which is what the user asked for).
     const video = placed(node("video"), rect(0, 0, 640, 360), [player]);
     assert.equal(pressForReal(video as unknown as Element), true);
+  });
+});
+
+describe("a second press must land on the same control", () => {
+  // THE REPORTED REVERT: a search bar opened and closed, a modal appeared and
+  // vanished, a sidebar shrank and grew back. Each was the privileged retry
+  // firing after a press that HAD worked — the control's own state never changed,
+  // so on a busy app the page-level verdict read "silent" and a real press went
+  // out at the old coordinates, onto the panel the first press had just opened.
+  // The geometry is the evidence the statistics could not supply.
+  const box = (left: number, top: number, width: number, height: number) => ({
+    left,
+    top,
+    width,
+    height,
+  });
+
+  test("an unchanged control keeps the retry", () => {
+    assert.equal(samePressBox(box(10, 20, 32, 32), box(10, 20, 32, 32)), true);
+    // Sub-pixel/fractional layout noise is not a reaction.
+    assert.equal(samePressBox(box(10, 20.4, 32, 32), box(10.2, 20, 32.2, 32)), true);
+  });
+
+  test("a control the press MOVED refuses it", () => {
+    // A sidebar collapse moves its own toggle — the classic "it collapses and
+    // grows back" shape.
+    assert.equal(samePressBox(box(10, 20, 32, 32), box(240, 20, 32, 32)), false);
+    // A panel that opens above the control pushes it down.
+    assert.equal(samePressBox(box(10, 20, 32, 32), box(10, 96, 32, 32)), false);
+    // A control that changed size (a search field expanding in place) reacted too.
+    assert.equal(samePressBox(box(10, 20, 32, 32), box(10, 20, 240, 32)), false);
+  });
+
+  test("an unmeasured box never invents a failure", () => {
+    // The guard exists to STOP a destructive press, so a page that refuses a rect
+    // must fall back to the old behaviour rather than block the retry outright.
+    assert.equal(samePressBox(null, box(1, 2, 3, 4)), true);
+    assert.equal(samePressBox(box(1, 2, 3, 4), null), true);
   });
 });
 

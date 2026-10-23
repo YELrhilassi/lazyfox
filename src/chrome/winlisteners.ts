@@ -37,6 +37,10 @@ export interface WinListenersDeps {
   releaseLeaderHoldOnTabSwitch(): void;
   // Recompute the status bar after a tab switch.
   status: { compute(): void };
+  // Re-check the which-key mirror a split pane asked the window to paint: a
+  // selection that moved to a tab which is neither that pane nor its split
+  // sister leaves the mirror over a tab it does not describe.
+  revalidatePagePanel?(): void;
   // Is this still the focused OS window? Injected because the answer lives on
   // env.services.focus, and a blur fires on every tab switch — deciding on the
   // next tick, after the switch settles, is what makes it an ACTIVATION check
@@ -195,6 +199,11 @@ export function installWinListeners(deps: WinListenersDeps): void {
         deps.typing.reset();
       } catch (e) {
         // ignore — a mid-collapse read must not break the tab switch
+      }
+      try {
+        if (deps.revalidatePagePanel) deps.revalidatePagePanel();
+      } catch (e) {
+        // a mirror that fails to come down must not fail the tab switch
       }
       deps.status.compute();
     });

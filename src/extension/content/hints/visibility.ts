@@ -39,17 +39,27 @@ export type StyleReader = (el: Element) => CSSStyleDeclaration;
 
 export interface VisibilityPass {
   /**
-   * Actually hidden — `hidden` or `inert`, on this element or any composed
+   * Actually unavailable to a pointer — `inert`, on this element or any composed
    * ancestor.
    *
-   * `aria-hidden="true"` is deliberately NOT one of these. It says "keep this out
-   * of the accessibility tree", which is a statement about screen readers, not
-   * about the screen: the most common use of it on a real page is a DUPLICATE
-   * affordance — YouTube marks the thumbnail link `aria-hidden` because the
-   * title link beside it is the accessible one, while the thumbnail is the
-   * biggest click target on the page. Treating it as invisibility deleted those
-   * targets outright (see docs/HINTS.md §10). What is genuinely off-screen or
-   * covered is answered by the checks that can actually see that: the CSS
+   * THAT IS THE ONLY ATTRIBUTE THAT QUALIFIES. `hidden` used to be here, and it
+   * is a trap: the attribute is the UA's `display:none` default, which ANY
+   * author rule overrides (`[hidden] { display: flex }`, or a utility class on
+   * the same element). Component libraries set `hidden` to drive their own
+   * show/hide styling and end up with a visible control wearing the attribute;
+   * the engine then refused it before it ever measured a box, which is exactly
+   * the "some important labels just don't show" report on app shells. The box
+   * itself is the honest question — a really hidden element has none, or fails
+   * `checkVisibility` — so `hidden` is no longer trusted from the attribute.
+   *
+   * `aria-hidden="true"` is deliberately NOT one of these either. It says "keep
+   * this out of the accessibility tree", which is a statement about screen
+   * readers, not about the screen: the most common use of it on a real page is a
+   * DUPLICATE affordance — YouTube marks the thumbnail link `aria-hidden`
+   * because the title link beside it is the accessible one, while the thumbnail
+   * is the biggest click target on the page. Treating it as invisibility deleted
+   * those targets outright (see docs/HINTS.md §10). What is genuinely off-screen
+   * or covered is answered by the checks that can actually see that: the CSS
    * visibility test, `inViewport`, and `reachable`'s hit tests.
    */
   hiddenByAttribute(el: Element): boolean;
@@ -120,9 +130,12 @@ export function createVisibilityPass(readStyle: StyleReader = defaultStyleReader
     if (own === undefined) {
       own = false;
       try {
-        // `hidden` and `inert` both mean "not available to anyone": one removes
-        // the box from layout, the other makes the subtree unclickable and
-        // unfocusable. Those are the two that can be trusted from an attribute.
+        // `inert` is the one attribute that means "not available to anyone": it
+        // makes the subtree neither clickable nor focusable, and no stylesheet
+        // can undo that. `hidden` is NOT here — it is only the UA's default
+        // display:none, which author CSS overrides routinely (see the interface
+        // note above and docs/HINTS.md §10.1). A subtree the UA really is
+        // hiding has no box, which `visible()` measures directly.
         //
         // `aria-hidden="true"` is NOT in this list (see hiddenByAttribute in the
         // interface above and docs/HINTS.md §10): it hides a node from assistive
@@ -130,7 +143,7 @@ export function createVisibilityPass(readStyle: StyleReader = defaultStyleReader
         // clickable — a thumbnail link duplicated by a title link, an icon inside
         // a labelled button, a decorative overlay. Dropping every aria-hidden
         // candidate is what made YouTube's video thumbnails unhintable.
-        own = el.hasAttribute("hidden") || el.hasAttribute("inert");
+        own = el.hasAttribute("inert");
       } catch (e) {
         own = false;
       }

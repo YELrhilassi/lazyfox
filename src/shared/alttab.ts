@@ -53,3 +53,44 @@ export function alternateTarget(mru: number[], current: number): number | null {
   }
   return null;
 }
+
+/**
+ * Fold an older list (one restored from storage) behind a newer one.
+ *
+ * First occurrence wins, so the result is `newer`'s order with only the entries
+ * it lacks appended — recency is preserved whatever order the two lists arrived
+ * in. This is what makes restoring the list independent of the startup race:
+ * `primeActivation` and the storage read can land either way round, and neither
+ * can put a tab ahead of one that was active more recently.
+ */
+export function mergeMru(newer: number[], older: number[]): number[] {
+  const out: number[] = [];
+  const seen = new Set<number>();
+  for (const id of newer.concat(older)) {
+    // Tab ids are positive integers; anything else came from a corrupt or
+    // older stored value and has no tab to point at.
+    if (typeof id !== "number" || !isFinite(id) || id <= 0 || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+    if (out.length >= ALT_MRU_MAX) break;
+  }
+  return out;
+}
+
+/**
+ * Every place `;a` could go, newest first.
+ *
+ * `alternateTarget` answers with ONE candidate, which is all a pure list can
+ * answer — but a candidate is not necessarily a PLACE. Its tab may have closed,
+ * or it may be plumbing (a relay page, the split-panel companion) that the user
+ * was never really on. So the caller walks this list and checks each one, and
+ * that is why the order is the list's order with the current tab removed rather
+ * than a single answer.
+ */
+export function alternateCandidates(mru: number[], current: number): number[] {
+  const out: number[] = [];
+  for (const id of mru) {
+    if (id !== current) out.push(id);
+  }
+  return out;
+}

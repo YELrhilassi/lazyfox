@@ -13,11 +13,13 @@
 // a long correctness argument (see reopentab.ts) that must be readable without
 // the window-management code around it.
 
-import { getActiveTab, omittedTabsInWindow, realTabsInWindow } from "./tabs";
+import { getActiveTab, isUITab, omittedTabsInWindow, realTabsInWindow } from "./tabs";
 import { reconcileStealth, stealthContainers } from "./stealth";
 import {
-  alternateTarget,
+  ALT_MRU_MAX,
+  alternateCandidates,
   forgetTab as forgetTabEntry,
+  mergeMru,
   noteActivation,
 } from "../shared/alttab";
 
@@ -51,9 +53,52 @@ export {
 // pure and unit-tested there, because a silent no-op is invisible in a browser.
 const mruByWindow = new Map<number, number[]>();
 
+// THE LIST IS MIRRORED INTO storage.session, and the reason is the lifetime of
+// an MV3 background. Firefox runs it as an EVENT PAGE: it is suspended when it
+// goes idle, and a suspended page loses everything it held in memory. `;a` is a
+// TOGGLE, so losing the list between its two presses produces exactly the report
+// "away works, back does nothing": the second press wakes a fresh background
+// whose list holds only the tab it is standing on (primeActivation), so there is
+// nowhere to go and the answer is a silent no-op.
+//
+// storage.session is the right lifetime, not storage.local: it survives a
+// background suspension AND is cleared when the browser exits, which is the
+// lifetime TAB IDS have. A persisted id from a previous browser session is a
+// different tab; restoring one would make `;a` jump to a stranger.
+const MRU_STORE = "lf.alttab.mru";
+// Coalesce the writes: a session restore activates tabs in a burst, and the
+// list's whole value is available without waiting for a write to land.
+let mruWriteTimer: ReturnType<typeof setTimeout> | null = null;
+
+function persistMru(): void {
+  if (mruWriteTimer) return;
+  mruWriteTimer = setTimeout(() => {
+    mruWriteTimer = null;
+    try {
+      const session = (browser.storage as any)?.session;
+      if (!session || typeof session.set !== "function") return;
+      const value: Record<string, number[]> = {};
+      for (const [windowId, ids] of mruByWindow) {
+        if (ids.length) value[String(windowId)] = ids.slice(0, ALT_MRU_MAX);
+      }
+      void Promise.resolve(session.set({ [MRU_STORE]: value })).catch(() => {});
+    } catch (e) {
+      // Older Gecko without storage.session: the list lives in memory only,
+      // which is the behaviour every version had before this.
+    }
+  }, 250);
+  // Never keep the event page alive for a write.
+  try {
+    (mruWriteTimer as any).unref?.();
+  } catch (e) {
+    // ignore
+  }
+}
+
 export function noteTabActivation(windowId: number, tabId: number): void {
   if (windowId == null || tabId == null) return;
   mruByWindow.set(windowId, noteActivation(mruByWindow.get(windowId) || [], tabId));
+  persistMru();
 }
 
 export function forgetTab(windowId: number, tabId: number): void {
@@ -61,26 +106,79 @@ export function forgetTab(windowId: number, tabId: number): void {
   const cur = mruByWindow.get(windowId);
   if (!cur) return;
   mruByWindow.set(windowId, forgetTabEntry(cur, tabId));
+  persistMru();
 }
 
+/**
+ * Rehydrate the per-window lists from storage.session.
+ *
+ * MERGED, not replaced: a live activation may already have been recorded while
+ * the read was in flight, and it is newer than anything on disk. `mergeMru`
+ * keeps the live order and appends only what it does not have, so this cannot
+ * demote the tab the user is actually on.
+ *
+ * A no-op wherever storage.session does not exist — which is better than a
+ * throw, because the caller is startup code that must not fail for a key.
+ */
+export async function restoreAlternateTabs(): Promise<void> {
+  try {
+    const session = (browser.storage as any)?.session;
+    if (!session || typeof session.get !== "function") return;
+    const got = await session.get(MRU_STORE);
+    const raw = got && got[MRU_STORE];
+    if (!raw || typeof raw !== "object") return;
+    for (const key of Object.keys(raw)) {
+      const windowId = Number(key);
+      const ids = raw[key];
+      if (!isFinite(windowId) || !Array.isArray(ids)) continue;
+      const clean = ids.filter((id: unknown) => typeof id === "number" && id > 0);
+      if (!clean.length) continue;
+      mruByWindow.set(windowId, mergeMru(mruByWindow.get(windowId) || [], clean));
+    }
+  } catch (e) {
+    // No storage.session, or a hostile value: keep whatever memory holds.
+  }
+}
+
+// The toggle is a WALK down the list, not a single lookup.
+//
+// It used to ask the list for one id and then try that id once: if the partner
+// had been closed (or had been a plumbing tab, see isUITab), the answer was a
+// silent {ok:false} — nothing moved, nothing was said — even though the list
+// still held live tabs right behind it. From the user's side that is `;a`
+// "working once and then not coming back".
+//
+// So every candidate is checked, dead ids are dropped on the way, and the first
+// REAL tab in the window wins. Plumbing (the relay page, the split-panel
+// companion, an `#lfc=` carrier) is skipped rather than forgotten: it is a
+// legitimate activation, just not a place the user can be "on".
 export async function alternateTab(): Promise<{ ok: boolean }> {
   const active = await getActiveTab();
   if (!active || active.id == null) return { ok: false };
-  const target = alternateTarget(mruByWindow.get(active.windowId) || [], active.id);
-  if (target == null) return { ok: false };
-  try {
-    const t = await browser.tabs.get(target);
-    if (!t || t.windowId !== active.windowId) {
-      forgetTab(active.windowId, target);
+  const windowId = active.windowId;
+  for (const target of alternateCandidates(mruByWindow.get(windowId) || [], active.id)) {
+    let t: any = null;
+    try {
+      t = await browser.tabs.get(target);
+    } catch (e) {
+      t = null;
+    }
+    if (!t || t.windowId !== windowId) {
+      forgetTab(windowId, target);
+      continue;
+    }
+    if (isUITab(t)) continue;
+    try {
+      await browser.tabs.update(target, { active: true });
+      await browser.windows.update(windowId, { focused: true });
+      return { ok: true };
+    } catch (e) {
+      forgetTab(windowId, target);
       return { ok: false };
     }
-    await browser.tabs.update(target, { active: true });
-    await browser.windows.update(active.windowId, { focused: true });
-    return { ok: true };
-  } catch (e) {
-    forgetTab(active.windowId, target);
-    return { ok: false };
   }
+  // Nowhere left to go: a genuinely silent answer, not a wrong tab.
+  return { ok: false };
 }
 
 /**
