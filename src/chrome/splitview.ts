@@ -87,6 +87,12 @@ export interface SplitView {
   /** The window's split groups, in strip order (1-based), for a chooser. */
   splitTargets(): { split: number; active: boolean; panes: { title: string; url: string; active: boolean }[] }[];
   unsplit(): boolean;
+  /**
+   * Close the split-panel companion pane when it is the pane the user is in,
+   * and hand the selection and the keyboard to its sister. Returns false when
+   * the selected tab is not a live panel pane.
+   */
+  closePanelPane(): boolean;
   switchPane(dir: number): boolean;
   swapPane(dir: number): boolean;
   restoreSplits(groups: number[][], expect?: number): void;
@@ -132,7 +138,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     },
     setTimeout: (fn, ms) => env.setTimeout(fn, ms),
   });
-  const { repinAfterSplit, coalescePairOrder, coalesceIntoGroupOrder } = reconcile;
+  const { repinAfterSplit, cancelRepin, coalescePairOrder, coalesceIntoGroupOrder } = reconcile;
 
   // The split view wrapper the user last interacted with, so `;W m` (move the
   // selected tab into the split) works even while the selected tab itself is
@@ -140,6 +146,21 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // Firefox; this fallback guards older 149/150 builds where it was not yet
   // exposed. The wrapper is a DOM element, so isConnected detects unsplits.
   let lastNativeSplit: SplitViewWrapper | null = null;
+
+  // When a split was just asked for, and the platform has not necessarily
+  // finished describing it yet.
+  //
+  // `addTabSplitView` parks and creates the pair ASYNCHRONOUSLY, so an unsplit
+  // typed straight after a split can arrive while the wrapper does not exist
+  // yet. Answering "not in a split view" there is not just unhelpful: the pair
+  // then forms a beat later and the window is left in a split the user has
+  // already asked to take apart. The reported "I did ;W| then ;Wu and it broke
+  // the software and I was locked" is what that window looks like from a hand.
+  let splitFormingUntil = 0;
+
+  // When a pane swap last ran. See swapPane: a swap is its own undo, so a
+  // command delivered twice must not become "nothing happened".
+  let lastSwapAt = 0;
 
   function activeSplitView(): SplitViewWrapper | null {
     return identityActiveSplitView();
@@ -388,6 +409,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         }
       };
       let first = attempt();
+      if (first === "ok") splitFormingUntil = Date.now() + 2000;
       sp("split=" + first + " " + svWho() + " newPane=" + who(blank));
       if (first !== "ok") {
         // First attempt can fail with stale internal split state; dissolve the
@@ -687,6 +709,9 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
    * which is the whole difference from `;W u`.
    */
   function pullFromSplit(): boolean {
+    // Same rule as unsplit: the layout is about to change by hand, so a settle
+    // loop from the operation that built it must stop first.
+    cancelRepin();
     const mv = (msg: string): void => {
       try {
         if (deps.onMove) deps.onMove(msg);
@@ -818,6 +843,12 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         // Diagnosis only.
       }
     };
+    // STOP THE PREVIOUS SPLIT'S SETTLE LOOP FIRST. A split keeps re-pinning the
+    // strip for ~1.2s after it forms; an unsplit that arrives inside that window
+    // must not race it, because the loop's plan is a snapshot from BEFORE the
+    // split and it would go on moving tabs while the wrapper is torn down — the
+    // half-empty strip this function exists to avoid.
+    cancelRepin();
     const wrappers = splitWrappers();
     const active = activeSplitView();
     mv(
@@ -838,9 +869,24 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       const only = wrappers.length === 1 ? wrappers[0] : undefined;
       if (!sv && only) sv = only;
       if (!sv) {
+        // A split was just asked for and the platform has not finished forming
+        // it: wait for the pair rather than refusing to undo something the user
+        // can already see. Bounded, and cleared before the retry so a split
+        // that genuinely never forms still answers "not in a split view".
+        const wait = splitFormingUntil - Date.now();
+        if (wait > 0) {
+          mv("unsplit: waiting for the split being formed (" + wait + "ms)");
+          env.setTimeout(() => {
+            unsplit();
+          }, Math.min(wait, 120));
+          return true;
+        }
+        splitFormingUntil = 0;
         mv("unsplit: no split view to take apart");
         return false;
       }
+      // There IS a split to undo, so the grace period has done its job.
+      splitFormingUntil = 0;
       // The panes are captured BEFORE the call: after it the wrapper is empty and
       // the list is the only record of which tabs were in it (one of them is our
       // panel pane, which is pure UI and must not pile up as a stray tab).
@@ -973,6 +1019,79 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     }
   }
 
+  /**
+   * CLOSE THE SPLIT-PANEL PANE WHEN THE USER ASKS IT TO GO.
+   *
+   * The panel is our own utility surface (search/URL + "move a tab into this
+   * split"), not a page anyone reads. A chord that would have NAVIGATED it —
+   * `;o` — used to open a URL INSIDE the pane, which replaced the list with a web
+   * page the split never asked for and left a half-dead layout (reported: "I did
+   * `;o` instead of pulling another tab and it kind of breaks the software ...
+   * instead of doing regular `;o` for that splitpanel tab we just delete it and
+   * focus the other sister tab").
+   *
+   * The sister is selected BEFORE the close, so the window is never left with a
+   * split dissolving out from under the selection (the other half of that
+   * failure), and the keyboard is handed over both now and once more on a timer:
+   * the platform finishes moving the split's active pane asynchronously, exactly
+   * as a pane switch does.
+   */
+  function closePanelPane(): boolean {
+    try {
+      const sel = win.gBrowser.selectedTab as ChromeTab | null;
+      if (!sel || isDeadWrapper(sel) || !isSplitPanelTab(sel)) return false;
+      let sv: SplitViewWrapper | null = null;
+      try {
+        sv = (sel as any).splitview || null;
+      } catch (e) {
+        sv = null;
+      }
+      if (!sv) {
+        // The same fallback the other ops use: the wrapper that CONTAINS the
+        // selected tab, because a reference on the tab can be stale.
+        for (const w of splitWrappers()) {
+          try {
+            if (Array.isArray(w.tabs) && w.tabs.indexOf(sel) !== -1) {
+              sv = w;
+              break;
+            }
+          } catch (e) {
+            // an unreadable wrapper is not a match
+          }
+        }
+      }
+      if (!sv) return false;
+      let panes: ChromeTab[] = [];
+      try {
+        if (Array.isArray(sv.tabs)) panes = sv.tabs.slice();
+      } catch (e) {
+        panes = [];
+      }
+      const sister = panes.filter((p) => !!p && p !== sel && !isDeadWrapper(p))[0];
+      if (!sister) return false;
+      try {
+        win.gBrowser.selectedTab = sister;
+      } catch (e) {
+        // selection is best-effort; the close still removes the pane
+      }
+      win.gBrowser.removeTab(sel);
+      try {
+        deps.focusSelectedPane?.();
+      } catch (e) {
+        // the deferred call below covers the platform's own async pane move
+      }
+      try {
+        env.setTimeout(() => deps.focusSelectedPane?.(), 60);
+      } catch (e) {
+        // ignore
+      }
+      rememberSplit();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   function switchPane(dir: number): boolean {
     try {
       const sv = activeSplitView();
@@ -1023,13 +1142,48 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   // it with the pane order flipped. The pane layout follows the array passed to
   // addTabSplitView, so no tab moves are needed.
   function swapPane(dir: number): boolean {
+    // A SWAP IS ITS OWN UNDO, so a command that arrives TWICE is a no-op the
+    // user never asked for. The relay can hand the same decision over more than
+    // once (its queue retries while the relay tab is coming up), and the result
+    // is reproducible on a split formed a moment earlier: the pair is re-formed
+    // twice and the strip reads exactly as it did before, while everything
+    // reports success. Three keystrokes cannot be typed inside this window, so a
+    // second swap this close is a redelivery, not a second intention.
+    const now = Date.now();
+    if (now - lastSwapAt < 250) {
+      try {
+        deps.onMove && deps.onMove("swap: ignored a repeated command");
+      } catch (e) {
+        // diagnosis only
+      }
+      return true;
+    }
+    lastSwapAt = now;
+    // The pair is dissolved and re-formed below; a loop still pinning toward the
+    // pre-swap snapshot would fight the re-form.
+    cancelRepin();
+    // Every exit is logged, because a silent `false` here is invisible from the
+    // page: the content side toasts "swapped" as soon as the request is posted.
+    const note = (m: string): void => {
+      try {
+        deps.onMove && deps.onMove("swap: " + m);
+      } catch (e) {
+        // diagnosis only
+      }
+    };
     try {
       let sv = activeSplitView();
       if (!sv && lastNativeSplit && lastNativeSplit.isConnected) sv = lastNativeSplit;
-      if (!sv || !Array.isArray(sv.tabs) || sv.tabs.length < 2) return false;
+      if (!sv || !Array.isArray(sv.tabs) || sv.tabs.length < 2) {
+        note("no split view (active=" + !!sv + ")");
+        return false;
+      }
       const active = win.gBrowser.selectedTab;
       const idx = sv.tabs.indexOf(active);
-      if (idx < 0) return false;
+      if (idx < 0) {
+        note("the selected tab is not a pane of the split");
+        return false;
+      }
       const panes = Array.isArray(sv.tabs) ? sv.tabs.slice() : [];
       const preStrip = stripSnapshot();
       if (panes.length === 2) {
@@ -1040,7 +1194,10 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
         const ni = (idx + (dir > 0 ? 1 : -1) + panes.length) % panes.length;
         panes.splice(ni, 0, active);
       }
-      if (typeof sv.unsplitTabs !== "function") return false;
+      if (typeof sv.unsplitTabs !== "function") {
+        note("this platform cannot unsplit");
+        return false;
+      }
       sv.unsplitTabs();
       if (typeof win.gBrowser.addTabSplitView === "function") {
         win.gBrowser.addTabSplitView(panes, splitInsertOpt(panes));
@@ -1050,8 +1207,10 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
       // to its pre-swap order so the pane swap never moves the pair around.
       repinAfterSplit(preStrip);
       rememberSplit();
+      note("reformed " + panes.length + " pane(s)");
       return true;
     } catch (e) {
+      note("threw: " + String((e && (e as Error).message) || e).slice(0, 80));
       return false;
     }
   }
@@ -1078,6 +1237,7 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
     pullFromSplit,
     splitTargets,
     unsplit,
+    closePanelPane,
     switchPane,
     swapPane,
     restoreSplits,

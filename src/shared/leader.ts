@@ -439,7 +439,18 @@ export class LeaderController {
   }
 
   private async render(): Promise<void> {
-    if (!this.panel.current()) return;
+    // THE LOCAL HOST IS ONLY REQUIRED WHEN THE MENU IS PAINTED HERE.
+    //
+    // In remote mode the window owns the pixels, and this document may never
+    // have built a host at all — a page that was already open when the split
+    // formed, or one whose split-state reply landed before its first `;`. The
+    // old guard bailed on exactly those documents, so the page sent NOTHING to
+    // the window and the menu was painted the first few times and then never
+    // again (reported: "I still get leader showing for one pane but not the
+    // other ... it might show for a few first times but then stops showing").
+    // A document that armed BEFORE it knew it was a pane had a host by
+    // accident; the ones that did not stayed silent.
+    if (!this.remote && !this.panel.current()) return;
     // WHAT to draw is decided in wkPanelHtml (pure, therefore assertable —
     // a closed shadow root cannot be read back from a page). This method
     // only supplies the state.

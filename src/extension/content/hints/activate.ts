@@ -13,12 +13,14 @@
 import { toast } from "../../../shared/overlay";
 import { editableRootOf, focusLandedOn } from "../../../shared/dom";
 import { deepHit, describeTarget } from "./probe";
-import { canEscalate, pressForReal } from "./escalate";
+import { boxOf, canEscalate, pressForReal, pressPointIntact, type PressBox } from "./escalate";
 import {
   ESCALATION_WATCH_MS,
+  flushLifeCounting,
   LIFE_TICKS_MS,
   LIFE_WATCH_MS,
   type LifeSnapshot,
+  pageResponded,
   pageSignal,
   snapshotLife,
   startLifeCounting,
@@ -224,6 +226,10 @@ export function createActivator(): Activator {
     // is not observable from this realm at dispatch time, so the verdict is read
     // one window later and no further press is attempted.
     pressedForReal = false,
+    // Where the control was when the press was sent, so the retry can tell "the
+    // page ignored it" from "the page reacted and the control MOVED/opened
+    // something over itself". See pressPointIntact.
+    pressedBox: PressBox | null = null,
   ): void {
     const timers: number[] = [];
     let done = false;
@@ -235,7 +241,10 @@ export function createActivator(): Activator {
       document.removeEventListener("focusin", onFocus, true);
       window.removeEventListener("pagehide", onLeave);
       window.removeEventListener("hashchange", onLeave);
-      stopLifeCounting();
+      // NOT stopLifeCounting(): the ambient window survives an activation, and
+      // must — it is the page's background rate, which the NEXT press needs in
+      // order to tell a reaction from a heartbeat. hints/session.ts ends it
+      // when the batch closes.
       lastAct = rec;
     };
     const finish = (signal: string): void => {
@@ -301,21 +310,52 @@ export function createActivator(): Activator {
         settle({ target: desc, signal: own, watchedMs: LIFE_WATCH_MS, ignored: false });
         return;
       }
-      // The target did not react. Before calling that a failure, try the
-      // privileged path once: a site that filters on event.isTrusted (YouTube's
-      // ad skip button is the canonical case) rejects the synthetic click
-      // outright, and the user has no way to know that. One retry, never a
-      // loop.
+      // THE PAGE MOVED, SO THE PRESS WORKED — and the retry must NOT be sent.
       //
-      // The cost of widening the trigger from "total silence" to "the TARGET
-      // was silent" is an extra real press on a control whose effect is
-      // elsewhere and leaves no trace on itself; that is a far better trade
-      // than a privileged path that only ever fires on a page that is not
-      // rendering anything, and it is bounded by canEscalate (never a link,
-      // never a download) plus the one-retry rule.
+      // This is the question `pageSignal` cannot answer on its own. It reports
+      // "anything changed", which on a page with a heartbeat is always true, so
+      // the retry used to be gated on the TARGET alone — and a control whose
+      // effect lands elsewhere (a search field opening, a modal appearing, a
+      // sidebar collapsing) changes nothing about itself. The result was two
+      // presses, one a third of a second apart, and the second undid the first: a
+      // field that opened and closed, a modal that appeared and vanished, a
+      // sidebar that shrank and grew back. That is the report, and it is a
+      // data-loss-shaped bug rather than a missed activation.
+      //
+      // `pageResponded` is the same facts judged against the page's own ambient
+      // rate, so a genuinely busy page (a player, a clock, a chat transcript)
+      // still shows up as silent and still gets its privileged retry — which is
+      // the one case the retry exists for.
+      const responded = pageResponded(el, before, LIFE_WATCH_MS);
+      if (responded) {
+        settle({ target: desc, signal: responded, watchedMs: LIFE_WATCH_MS, ignored: false });
+        return;
+      }
+      // Silent target, and a page that did not react beyond its own background
+      // activity. Before calling that a failure, try the privileged path once: a
+      // site that filters on event.isTrusted (YouTube's ad skip button is the
+      // canonical case) rejects the synthetic click outright, and the user has
+      // no way to know that. One retry, never a loop.
       const page = pageSignal(el, before);
       let escalated = false;
       const warranted = canEscalate(el);
+      // THE LAYOUT ALREADY ANSWERED. Before spending the privileged second press,
+      // ask whether the first one changed the ground it was fired from: a panel
+      // that opened over the control, a sidebar whose collapse moved it, a modal
+      // that pushed it. A real press at the old coordinates would then land on
+      // that panel/backdrop/neighbour and undo the action the user just got —
+      // the reported "it runs and then reverts". A press the page ignored leaves
+      // the box and its topmost owner unchanged, which is the only state the
+      // retry is for.
+      if (warranted && !pressPointIntact(el, pressedBox)) {
+        settle({
+          target: desc,
+          signal: "the press moved the layout around it",
+          watchedMs: LIFE_WATCH_MS,
+          ignored: false,
+        });
+        return;
+      }
       if (warranted) {
         try {
           const r = el.getBoundingClientRect();
@@ -338,6 +378,11 @@ export function createActivator(): Activator {
         //   true       the press was dispatched (recorded after the extra
         //              watch window, below)
         if (warranted) {
+          // NO PRIVILEGED PATH HERE (standalone, or no chrome helper). The
+          // retry was warranted, but the page-noise question is answered
+          // permissively again: a title or a mutation we could not attribute
+          // still counts as “something happened”, because accusing a working
+          // press is worse than missing the retry. Only total silence is named.
           settle({
             target: desc,
             signal: page,
@@ -537,8 +582,13 @@ export function createActivator(): Activator {
       return;
     }
     // Start counting BEFORE the snapshot, so the "mutations since" baseline is
-    // the moment before the click, not the moment the watch began.
+    // the moment before the click, not the moment the watch began. The ambient
+    // window is normally already open (the batch opened it); FLUSH is the part
+    // that matters here — the labels are torn down in this same task, and those
+    // records would otherwise be delivered inside the watch window and read as
+    // the page reacting to a press it never saw.
     startLifeCounting();
+    flushLifeCounting();
     const before = snapshotLife(el);
     const desc = describeTarget(el);
     // WHICH PRESS, decided up front, and exactly one of them is sent.
@@ -559,6 +609,7 @@ export function createActivator(): Activator {
     // dead key wherever the privileged side did not act. This one is taken only
     // when the channel answers, and the synthetic sequence still runs when it
     // does not.
+    const pressedBox = boxOf(el);
     let pressedForReal = false;
     if (pressForReal(el)) {
       try {
@@ -576,7 +627,7 @@ export function createActivator(): Activator {
         throw e;
       }
     }
-    watchForLife(el, before, desc, pressedForReal);
+    watchForLife(el, before, desc, pressedForReal, pressedBox);
   }
 
   return { activate, lastActivation: () => lastAct };

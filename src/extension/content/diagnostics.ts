@@ -154,6 +154,7 @@ export async function collectPageReport(
       probed: hints.probed,
       probeCap: hints.probeCap,
       probes: hints.probes,
+      unlabeled: hints.unlabeled,
       shadowRoots: hints.shadowRoots,
       pointerControls: hints.pointerControls,
       // The outcome of the last activation, so the page can answer "I pressed

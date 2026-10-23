@@ -31,6 +31,7 @@ import {
   MEDIA_SURFACE_MIN_W,
   MEDIA_SURFACE_SELECTOR,
 } from "./selectors";
+import { deepHit } from "./probe";
 
 export function canEscalate(el: Element): boolean {
   try {
@@ -118,4 +119,74 @@ export function insideMediaSurface(el: Element): boolean {
  */
 export function pressForReal(el: Element): boolean {
   return canEscalate(el) && insideMediaSurface(el);
+}
+
+/** The box a press was aimed at, captured BEFORE the press. */
+export interface PressBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export function boxOf(el: Element): PressBox | null {
+  try {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Is the control still where the press left it?
+ *
+ * A couple of pixels of tolerance, and "no measurement" answers yes: this guard
+ * exists to STOP a destructive second press, so it must never invent a failure
+ * out of a missing rect.
+ */
+export function samePressBox(a: PressBox | null, b: PressBox | null): boolean {
+  if (!a || !b) return true;
+  return (
+    Math.abs(a.left - b.left) <= 2 &&
+    Math.abs(a.top - b.top) <= 2 &&
+    Math.abs(a.width - b.width) <= 2 &&
+    Math.abs(a.height - b.height) <= 2
+  );
+}
+
+/**
+ * Would a real second press still land on this control?
+ *
+ * THE PRIVILEGED RETRY IS DESTRUCTIVE WHEN THE FIRST PRESS WORKED, and on a
+ * complex app the evidence for "it worked" is often only the layout: a search
+ * field opens, a modal appears, a sidebar collapses. None of those touch the
+ * control's own class/ARIA/value, and on a busy document the page-level mutation
+ * rate cannot separate the press's burst from the app's own churn — so the
+ * retry fires, and the real press lands on whatever now owns those coordinates
+ * (the panel it opened, the backdrop, the moved button) and undoes the work. The
+ * user sees it as "the action runs and then reverts".
+ *
+ * This is the question that needs no statistics: after a press that did
+ * something, the control has MOVED (the layout reacted) or something else is on
+ * top of its press point (the surface it opened). Either way a real click at the
+ * old coordinates is no longer the same action, so the retry is refused. A press
+ * the page genuinely ignored leaves both unchanged, which is the one state the
+ * retry exists for.
+ */
+export function pressPointIntact(el: Element, before: PressBox | null): boolean {
+  try {
+    if (!el.isConnected) return false;
+    const now = boxOf(el);
+    if (!now) return false;
+    if (!samePressBox(before, now)) return false;
+    const hit = deepHit(now.left + now.width / 2, now.top + now.height / 2);
+    // The same rule activation uses: the press point belongs to the control when
+    // the topmost node is the control or something inside it. An ANCESTOR is not
+    // enough here (unlike `reachable`): a real click on it would not activate the
+    // control we are about to press a second time.
+    return !!hit && (hit === el || el.contains(hit));
+  } catch (e) {
+    return false;
+  }
 }

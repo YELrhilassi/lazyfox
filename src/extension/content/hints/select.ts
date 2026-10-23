@@ -37,6 +37,23 @@ export interface HintCandidate {
   covered: boolean;
 }
 
+/**
+ * Why one candidate did not get a label.
+ *
+ * Reported only when a caller asks (the diagnostics pass does, `;f` does not),
+ * because it is the answer the "why isn't this important button hinted" report
+ * has never had: a rejection count says SOMETHING was dropped, never which rule
+ * dropped it nor what won instead.
+ */
+export interface Rejection {
+  el: Element;
+  reason: "hidden" | "behind" | "duplicate" | "not-scanned";
+  /** Which duplicate rule collapsed it, when `reason` is "duplicate". */
+  rule?: "nested" | "same-box" | "inside" | "same-target";
+  /** The kept element the candidate lost to. */
+  by?: Element;
+}
+
 export interface SelectResult {
   kept: HintCandidate[];
   hidden: number;
@@ -139,7 +156,10 @@ export function selectHintables(
   // The "is it behind a separate surface" answer, injectable for the same reason
   // the reach probe is: the rule is a policy, and a policy should be testable
   // without painting a modal in a browser. Defaults to the real geometry.
-  sheet: (el: Element) => Element | null = sheetOver
+  sheet: (el: Element) => Element | null = sheetOver,
+  // Called once per rejected candidate, with the rule and the winner. Absent on
+  // the live path (`;f`): the pass must not pay for an explanation nobody reads.
+  explain?: (r: Rejection) => void
 ): SelectResult {
   const vis = pass || createVisibilityPass();
   const cap = Math.max(1, Math.floor(limit) || 1);
@@ -154,6 +174,8 @@ export function selectHintables(
   let covered = 0;
   let duplicate = 0;
   let behind = 0;
+  // How many candidates the loop actually judged (the rest are not-scanned).
+  let visited = 0;
   // A covered control must not outrank a clickable one that overlaps it: the
   // point of the label is to be pressed, and the earlier candidate is only a
   // duplicate because of where the page happened to put it. Replacing in place
@@ -162,8 +184,10 @@ export function selectHintables(
     return !newCovered && loser.covered;
   }
   for (const el of candidates) {
+    visited++;
     if (!inViewport(el) || !hintVisible(el, vis)) {
       hidden++;
+      if (explain) explain({ el: el, reason: "hidden" });
       continue;
     }
     // Covered is a LABEL STATE, not a rejection (see the note at the top) — with
@@ -176,6 +200,7 @@ export function selectHintables(
     if (isCovered) {
       if (sheet(el)) {
         behind++;
+        if (explain) explain({ el: el, reason: "behind" });
         continue;
       }
       covered++;
@@ -199,6 +224,7 @@ export function selectHintables(
       if (s.el.contains(el)) {
         if (specificity(el) > specificity(s.el) || winsOver(s, isCovered))
           kept[i] = { el: el, r: r, key: key, covered: isCovered, rank: rankScore(r, vw, vh) };
+        else if (explain) explain({ el: el, reason: "duplicate", rule: "nested", by: s.el });
         dup = true;
         break;
       }
@@ -220,6 +246,7 @@ export function selectHintables(
       ) {
         if (winsOver(s, isCovered))
           kept[i] = { el: el, r: r, key: key, covered: isCovered, rank: rankScore(r, vw, vh) };
+        else if (explain) explain({ el: el, reason: "duplicate", rule: "same-box", by: s.el });
         dup = true;
         break;
       }
@@ -232,6 +259,7 @@ export function selectHintables(
       if (!mediaPair && overlapFraction(r, sr) >= 0.85) {
         if (winsOver(s, isCovered))
           kept[i] = { el: el, r: r, key: key, covered: isCovered, rank: rankScore(r, vw, vh) };
+        else if (explain) explain({ el: el, reason: "duplicate", rule: "inside", by: s.el });
         dup = true;
         break;
       }
@@ -240,6 +268,7 @@ export function selectHintables(
       if (key && key === s.key && overlapFraction(r, sr) > 0.4) {
         if (winsOver(s, isCovered))
           kept[i] = { el: el, r: r, key: key, covered: isCovered, rank: rankScore(r, vw, vh) };
+        else if (explain) explain({ el: el, reason: "duplicate", rule: "same-target", by: s.el });
         dup = true;
         break;
       }
@@ -250,6 +279,11 @@ export function selectHintables(
     }
     kept.push({ el: el, r: r, key: key, covered: isCovered, rank: rankScore(r, vw, vh) });
     if (kept.length >= scanCap) break;
+  }
+  if (explain) {
+    for (let i = visited; i < candidates.length; i++) {
+      explain({ el: candidates[i]!, reason: "not-scanned" });
+    }
   }
   let more = 0;
   let chosen = kept;

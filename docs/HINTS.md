@@ -490,9 +490,28 @@ that is what made the bug undiagnosable:
 
 | value | meaning |
 |---|---|
-| absent | no escalation was WARRANTED — the target itself reacted, or the element is one the retry must never repeat |
+| absent | no escalation was WARRANTED — the target itself reacted, the page reacted, or the element is one the retry must never repeat |
 | `false` | the target was silent, so the retry **was** warranted, and **no privileged path was listening** (standalone mode, or no chrome layer). Recorded even when the page itself was busy, which is what makes the trigger observable without an actor |
 | `true` | the privileged press **was** dispatched (see §8.1 for the extra watch window that follows it) |
+
+**Why "the page reacted" is part of the trigger (2026-10, reported).** The retry
+is a SECOND press, so it may only be sent when the first one provably did
+nothing. "The target was silent" is not proof: a control whose effect lands
+elsewhere — a search field opening, a modal appearing, a sidebar's collapse
+button — changes nothing about itself, and the page reaction it causes looked
+identical to a player's progress bar ticking, because the counter started at the
+press. Every such control was therefore pressed twice, one watch window apart,
+and the second press undid the first: fields opened and closed, modals appeared
+and vanished, sidebars shrank and grew back. The fix has three parts:
+
+* the mutation counter runs for the whole batch (not just the watch window), so
+  the page's own background rate is known BEFORE the press;
+* a reaction is a change above that rate — so a busy page still gets its retry;
+* Lazyfox's own nodes and `<head>` are excluded (`data-lf-*`, `#lazyfox-*`, the
+  title). Counting our own overlay churn made an idle page look busy and buried
+  the one mutation the page made in reply; a title update is how a trust-gated
+  control often says it REFUSED a synthetic press, so it must not read as
+  success.
 
 `true` is the interesting one: it means the control is not a control, and no
 amount of event synthesis will reach it. The BiDi suite pins the `false` case,
@@ -892,9 +911,9 @@ on the card, and it was the one target on the page the keyboard could not reach.
 Icons inside labelled buttons, decorative overlays and mirrored mobile fields are
 the same shape.
 
-The rule now reads `hidden` or `inert`, and nothing else. Everything that
-genuinely is not on screen is still caught, by the checks that can actually see
-it: `checkVisibility` and computed style (display, visibility, opacity —
+The rule now reads `inert`, and nothing else (see §10.1 for the last one to go).
+Everything that genuinely is not on screen is still caught, by the checks that can
+actually see it: `checkVisibility` and computed style (display, visibility, opacity —
 including an `opacity:0` ANCESTOR, which opacity is not inherited), `inViewport`,
 and `reachable`'s five-point hit test, which is what drops a control under a scrim
 or one scrolled off the edge. Those were always doing the real work; `aria-hidden`
@@ -907,6 +926,30 @@ fixture now carries an `inert` link and a `hidden` row that must stay unhinted, 
 YouTube-shaped thumbnail link that must be hinted, and a second test that types
 its key and requires the navigation to actually happen — a label that appears and
 does nothing is a different bug with the same symptom.
+
+### 10.1 `hidden` is not invisibility either (2026-10-22)
+
+The same mistake one attribute later, reported as *"some of the important labels
+don't show"* on a single-page app shell. Collection asked whether the element or
+any composed ancestor carried `hidden` and dropped the candidate when it did.
+
+`hidden` is only the UA's default `display: none`. **Any author rule overrides
+it** — `[hidden] { display: flex }`, a Tailwind-style `flex` class on the same
+element, a component library that toggles `hidden` to drive its own visibility
+CSS. The control is then on screen, has a box, is clickable, and the engine
+refused it before it ever measured that box. That is a whole class of
+control-library internals, and it is invisible in a fixture that only writes
+`hidden` on rows the UA really does hide.
+
+`inert` stays authoritative and is the only attribute that does. It is a
+platform promise that the subtree is neither clickable nor focusable, and no
+stylesheet can undo it. A `hidden` subtree that really is hidden by the UA has
+no box, which `visible()` measures directly, and a subtree hidden some other way
+fails `checkVisibility` — the honest questions were always one layer down.
+
+Pinned by `scripts/test/hints-visibility.test.ts`: an `inert` host still hides
+its child, a `[hidden]` host with a real box no longer does, and a `[hidden]`
+subtree with no box is still refused.
 
 **What is deliberately NOT changed:** `;i` (`focusFirstInput`) still refuses a
 field whose own `aria-hidden` is `true`. That path has no occlusion test of its
@@ -1875,3 +1918,69 @@ to 0px, `aria-expanded` goes to `"false"`, and the caret is out — one press.
   Google declares the contract; a site that does not declare it is not guessed at.
 * The synthetic-event rejection was measured on Google only. It is the reason no
   re-dispatch path was shipped, not a general claim about the web.
+
+---
+
+## 19. The tenth field report (2026-10-22): the action ran, then undid itself
+
+*"Some elements after I click on them using hints show (they execute the action)
+and then they revert back their state: search bars opening and closing, modals
+opening and closing, sidebars minimize for a sec and then grow back."*
+
+That is one mechanism with three faces: **the privileged retry firing after a
+press that had already worked.** The retry is a second, genuinely trusted click,
+and the first one opened a panel, a modal or a collapsed sidebar — so the second
+press lands at coordinates that now belong to that panel, its backdrop, or a
+control that the reflow moved, and closes what was just opened. The delay in the
+report ("for a sec") is `LIFE_WATCH_MS` (320ms), the window the retry waits.
+
+§8.1 already tried to gate it on evidence: the target's own state, then the
+page's mutations judged against its ambient rate. That works on a fixture with a
+heartbeat and fails on a real app, because a complex page's background rate is
+high enough that a small UI response — a 40px panel, a menu, a class flip deep in
+a tree — does not clear the statistical bar, while a genuinely ignored press on
+the same page looks identical. The gate was asking the wrong question.
+
+### 19.1 The rule: a second press must still land on the same control
+
+`escalate.pressPointIntact()` answers a question no counter can: after the first
+press, is the control still where it was, and does its press point still belong
+to it?
+
+* the target's box must be unchanged (within 2px) — a sidebar that collapsed
+  moved its own toggle, a panel that opened pushed the control down, a search
+  field that expanded changed its width;
+* the topmost node at the centre of that box must still be the control or
+  something inside it — a modal's backdrop, the opened panel, a scrim over the
+  control all answer "no".
+
+Either failure means the press DID something, so the verdict settles as a
+reaction (`the press moved the layout around it`) and no second press is sent. A
+press the page genuinely ignored leaves both facts unchanged, which is the only
+state the retry exists for. "No measurement" answers "intact": this guard exists
+to stop a destructive press, and it must never invent a failure from a rect the
+page refused.
+
+### 19.2 What is verified
+
+* `scripts/test/hints-activation.test.ts` — `samePressBox` over the three
+  reported shapes: a moved control (sidebar toggle), a pushed control (a panel
+  opening above it), a resized control (an expanding field), the sub-pixel noise
+  that must NOT count, and an unmeasured box.
+* `content › a control that reacts is not re-pressed through the privileged
+  path` and `content › a busy page still attempts the privileged press for a
+  trust-gated control` still pass unchanged: the guard narrows the retry, it does
+  not remove it.
+* The live LeetCode page (`LF_LIVE_URLS=…`) still draws 37 of its 39 in-view
+  hintable controls, with the two it leaves out refused as genuinely invisible.
+
+### 19.3 What is NOT claimed here
+
+* **A reaction that neither moves nor covers the control is still invisible to
+  this rule.** A status line updating below the fold, an `aria-expanded` on a
+  wrapper: the retry may still fire there. It is strictly narrower than the
+  statistical gate it sits on top of, not a proof.
+* **The live page was measured on one URL.** LeetCode's problem view is the
+  reported shape (sticky header, resizable panes, a component-library shell); a
+  different app can react in a way that keeps the box and the press point
+  identical.
