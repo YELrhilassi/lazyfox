@@ -65,6 +65,14 @@ export interface SplitViewDeps {
   // re-deriving identity — otherwise a relay that is still settling shifts
   // every tab number after it by one, and `;4` moves the wrong tab.
   isRelayTab?(tab: ChromeTab | null | undefined): boolean;
+  // Hand the keyboard to whichever pane is selected now.
+  //
+  // Selecting a tab inside a split view is not a normal tab switch: the
+  // selected pane's docshell stays inactive and the keyboard stays in the pane
+  // it came from, so the next keypress (and the page UI it opens) belongs to
+  // the OLD pane while the bar and the URL name the new one. The TabSelect rule
+  // covers a tab switch; this covers the pane switch that rule may not see.
+  focusSelectedPane?(): void;
 }
 
 export interface SplitView {
@@ -968,17 +976,40 @@ export function createSplitView(deps: SplitViewDeps): SplitView {
   function switchPane(dir: number): boolean {
     try {
       const sv = activeSplitView();
-      if (sv && Array.isArray(sv.tabs) && sv.tabs.length > 1) {
-        const active = win.gBrowser.selectedTab;
-        const idx = sv.tabs.indexOf(active);
-        const next =
-          sv.tabs[(idx + (dir > 0 ? 1 : -1) + sv.tabs.length) % sv.tabs.length];
-        if (next) {
-          win.gBrowser.selectedTab = next;
-          return true;
+      // No split: the only case that reports "not in a split view". A split at
+      // its edge is a different answer — see below.
+      if (!sv || !Array.isArray(sv.tabs) || sv.tabs.length <= 1) return false;
+      const active = win.gBrowser.selectedTab;
+      const idx = sv.tabs.indexOf(active);
+      if (idx < 0) return false;
+      // DIRECTIONAL, NOT ROUND-ROBIN. `sv.tabs` is the visual left-to-right
+      // order (addTabSplitView lays the panes out in that order, and swapPane
+      // re-forms the pair the same way). The modulo here used to wrap, so
+      // "focus left" pressed in the LEFT pane jumped to the right one — which
+      // is every chord a two-pane split has, and it made `;W h` and `;W l`
+      // read as swapped ("things act flipped"). Moving past the edge is now a
+      // quiet no-op, not a wrap.
+      const next = sv.tabs[idx + (dir > 0 ? 1 : -1)];
+      if (next) {
+        win.gBrowser.selectedTab = next;
+        // THE KEYBOARD MOVES WITH THE SELECTION. See focusSelectedPane.
+        // Deferred once as well: the platform finishes moving the split's
+        // active pane asynchronously, and a focus call that races that move
+        // lands back in the pane the user just left.
+        try {
+          if (deps.focusSelectedPane) deps.focusSelectedPane();
+        } catch (e) {
+          // the next TabSelect still applies the rule
+        }
+        try {
+          if (deps.focusSelectedPane) env.setTimeout(() => deps.focusSelectedPane?.(), 60);
+        } catch (e) {
+          // ignore
         }
       }
-      return false;
+      // Handled either way: we ARE in a split, so the caller must not report
+      // "not in a split view" for a correct edge no-op.
+      return true;
     } catch (e) {
       return false;
     }

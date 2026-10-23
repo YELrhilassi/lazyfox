@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<title>Lazyfox — add-ons</title>
+<link rel="stylesheet" href="addons.css">
+</head>
+<body id="lazyfox-addons">
+  <div class="wrap">
+    <header class="head">
+      <h1>Add-ons</h1>
+      <p class="tagline">
+        Everything installed in this browser, managed from one quiet page. Nothing
+        is offered for install here — this is for the add-ons you already have.
+      </p>
+    </header>
+
+    <div class="bar">
+      <input id="filter" autocomplete="off" autocapitalize="off" spellcheck="false"
+        placeholder="filter by name&#8230;  ( / )">
+      <span id="count" class="count"></span>
+    </div>
+
+    <ul id="list" class="list" aria-label="Installed add-ons"></ul>
+    <p id="empty" class="empty" hidden>No add-ons match that filter.</p>
+    <p id="error" class="error" hidden></p>
+
+    <footer class="foot">
+      <span><b>&uarr; &darr;</b> choose</span>
+      <span><b>Enter</b> enable / disable</span>
+      <span><b>o</b> settings</span>
+      <span><b>u</b> remove</span>
+      <span><b>/</b> filter</span>
+      <span><b>r</b> refresh</span>
+    </footer>
+    <p class="firefox-link">
+      Turning add-ons on and off here does not install anything. Firefox's own
+      <a href="about:addons">about:addons</a> opens the same state with more detail.
+    </p>
+  </div>
+<script src="addons.js"></script>
+</body>
+</html>

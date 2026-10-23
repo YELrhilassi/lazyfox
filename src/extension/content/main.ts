@@ -9,6 +9,7 @@ import { ensureCore } from "../../shared/core";
 import { isExpandedCombobox, isTypingEvent, isTypingTarget, typingTargetOf } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { installContentDom } from "./contentdom";
+import type { LeaderPanelHtml } from "../../shared/leadersignal";
 import { LeaderController, isCancel } from "../../shared/leader";
 import { idleSignal, type LeaderSignal } from "../../shared/leadersignal";
 import { specToText } from "../../shared/keymap";
@@ -157,6 +158,12 @@ import { createStickyBlur } from "./stickyblur";
           config = mergeConfig(changes.config.newValue || {});
           darkVerdicts.reset();
           darkMode.update(config);
+          // Turning which-key OFF has to take down the panel that is already
+          // painted. `show()` checks the setting when the leader arms; nothing
+          // re-checked it after the setting changed, so `;q` left the overlay
+          // sitting there until the next chord (and in a split, only in the
+          // pane where it had been opened).
+          if (config.whichKey === false && leader) leader.unpaint();
         }
       }
     );
@@ -253,6 +260,42 @@ import { createStickyBlur } from "./stickyblur";
   });
 
   let leader: LeaderController;
+  // WHETHER THIS DOCUMENT IS ONE PANE OF A SPLIT VIEW.
+  //
+  // A pane cannot paint across its half of the window, so in a split the menu
+  // is handed to the chrome helper and drawn there (LeaderController's remote
+  // panel). The answer is not readable from a content script — splitViewId is
+  // a tabs-API field — so the background supplies it on boot and on every
+  // layout change (see splitState / splitUI in protocol.ts).
+  let splitPane = false;
+  function applySplitPane(on: boolean): void {
+    if (on === splitPane) return;
+    splitPane = on;
+    // The page-level answer to "did the window tell this document it is a
+    // pane?" — the same kind of mirror the leader uses, because nothing else
+    // about this state is visible from outside (the menu is in a closed root).
+    mirrorFlag("splitpane", on);
+    if (!leader) return;
+    leader.useRemotePanel(
+      on
+        ? (panel: LeaderPanelHtml | null) => void send("syncLeader", { signal: readout(), panel })
+        : null
+    );
+  }
+  function refreshSplitPane(): void {
+    void send("splitState", {})
+      .then((r) => {
+        if (r) applySplitPane(!!r.split);
+      })
+      .catch(() => {
+        // no answer means "not a split" — the local panel keeps working
+      });
+  }
+  // Known before the first `;` on a page that was already in a split when it
+  // loaded; refreshed on every arm below, which covers a split formed under a
+  // page that was already open (the state a page cannot observe for itself).
+  refreshSplitPane();
+
   const ctx: PopupCtx = {
     ops: contentOps,
     open: shell.open,
@@ -868,6 +911,11 @@ import { createStickyBlur } from "./stickyblur";
       leader.sticky = true;
       publishHoldState(true);
       holdWatchdog.keepAlive();
+      // Is this pane of a split? Asked at the moment the menu is about to be
+      // painted, because that is the only moment the answer matters and a
+      // page cannot read splitViewId itself. The reply is cached; a leader
+      // that learns it is a pane mid-sequence repaints through the window.
+      refreshSplitPane();
       leader.show();
       return;
     }

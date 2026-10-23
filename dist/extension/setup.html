@@ -23,6 +23,10 @@
         <div><div class="mini-k">Window chrome</div><div class="mini-v" id="doneChrome">—</div></div>
         <div><div class="mini-k">Profile</div><div class="mini-v" id="doneProfile">—</div></div>
       </div>
+      <!-- One quiet line, only when the channel publishes a newer installer
+           than the window chrome on disk. Hidden otherwise: silence is the
+           normal state. -->
+      <a class="update-line" id="updateAvailable" href="#" hidden></a>
     </section>
 
     <!-- Not-yet state: the chrome layer is missing. -->
@@ -49,7 +53,7 @@
       <ol class="steps" id="steps">
         <li><b>Download the installer</b>
           <p>One small file for <b id="osName" style="color:var(--fg)">your system</b>. It is open-source and self-contained.</p>
-          <a class="dl" id="dl" href="#">Download the installer</a>
+          <a class="dl" id="dl" href="#">Download the installer<span class="dl-ver" id="dlVer"></span></a>
           <p class="muted" id="channelNote"></p>
         </li>
         <li><b>Run it</b>
@@ -67,7 +71,7 @@
     <section class="card" id="uninstallCard" hidden>
       <h2>Uninstall</h2>
       <p>To remove Lazyfox and return Firefox to normal, run the same installer and choose <b>Remove Lazyfox</b> (or run it with the <code>uninstall</code> argument). It removes only files Lazyfox added — your bookmarks, history, passwords, cookies and other add-ons stay exactly as they are.</p>
-      <p><a class="dl ghost" id="dl2" href="#">Download the installer</a></p>
+      <p><a class="dl ghost" id="dl2" href="#">Download the installer<span class="dl-ver" id="dl2Ver"></span></a></p>
       <p class="muted">Then run:</p>
       <p><code id="uninstallCmd" class="cmd"></code></p>
       <p class="muted" id="uninstallNote"></p>

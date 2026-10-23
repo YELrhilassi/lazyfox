@@ -13,6 +13,8 @@
 // error HERE and a removed action a compile error on the background side too.
 
 import type { ChromeAction, ChromeReq } from "../shared/protocol";
+import type { LeaderPanelHtml } from "../shared/leadersignal";
+import type { Config } from "../shared/types";
 import type { CacheCtl } from "./cache";
 import type { SplitView } from "./splitview";
 import type { StatusBarCtl } from "./statusbar";
@@ -31,6 +33,12 @@ export interface PushDeps {
   dismissDownloads(): void;
   // Firefox's native Screenshots for the selected tab (`;C f` / `;C v`).
   takeScreenshot(shot: "full" | "visible"): void;
+  // Apply a config the background changed (see the `cfg` push below). The host
+  // owns the prefs and the surfaces the change invalidates.
+  applyConfig(config: Partial<Config>): void;
+  // Paint (or clear) the which-key menu a SPLIT page sent; the window is the
+  // only surface that spans every pane. See wkglobal.ts.
+  pagePanel(index: number, panel: LeaderPanelHtml | null): void;
 }
 
 export type PushDispatcher = (action: string, arg: unknown) => void;
@@ -63,6 +71,10 @@ export function createPushDispatcher(deps: PushDeps): PushDispatcher {
       // than a bare glyph for the entire sequence.
       leaderState: (req) => {
         if (req.index >= 0) deps.status.setContentLeader(req.index, req.signal);
+        // The page is a SPLIT pane, so its menu is OURS to paint: the window
+        // spans every pane and the page does not. Absent panel = a normal page
+        // painting its own menu, which must leave this surface untouched.
+        if (req.panel !== undefined) deps.pagePanel(req.index, req.panel || null);
       },
       // "A content script is running in this tab", pushed by the tab itself.
       // The helper cannot work this out on its own — see noteContentPresent.
@@ -90,6 +102,11 @@ export function createPushDispatcher(deps: PushDeps): PushDispatcher {
             String(req.engine || "")
           );
       },
+      // The background's stored config changed — a `;q` pressed on a WEB page
+      // updates storage and every content script, but the helper keeps its own
+      // copy in prefs and would go on painting which-key in the panes it owns.
+      // CONFIG CHANGES HAVE ONE SOURCE; this is the helper catching up.
+      cfg: (req) => deps.applyConfig(req.config || {}),
       // Global page-cache mode pushed by the background's diagnostics page.
       cacheGlobal: (req) => deps.cache.setGlobalMode(req.mode || "normal"),
       // Per-tab/session page-cache policy; tabIds aligned to the strip order

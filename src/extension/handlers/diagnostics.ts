@@ -11,7 +11,17 @@ import type { Domain } from "./types";
 // The actions this domain owns. The list is the contract: background.ts unions
 // every domain's list and requires the result to cover BgApi exactly, so a new
 // action cannot be declared without someone deciding which domain answers it.
-type Owns = "components" | "openSetup" | "openDiagnostics" | "quit" | "pageReport" | "diagnoseTabs" | "cacheState" | "cacheSet" | "hardReload";
+type Owns =
+  | "components"
+  | "openSetup"
+  | "openDiagnostics"
+  | "openAddons"
+  | "quit"
+  | "pageReport"
+  | "diagnoseTabs"
+  | "cacheState"
+  | "cacheSet"
+  | "hardReload";
 
 export interface DiagnosticsDeps {
   // The shape is declared here as well as in the protocol because this dep is
@@ -31,6 +41,7 @@ export interface DiagnosticsDeps {
   diagnoseTabs(): Promise<{ tabs: { id: number; title: string; url: string; active: boolean }[] }>;
   openSetupTab(): Promise<{ ok: boolean }>;
   openDiagnosticsTab(): Promise<{ ok: boolean }>;
+  openAddonsTab(): Promise<{ ok: boolean }>;
   cacheState(): Promise<CacheState>;
   cacheSet(scope: CacheScope, mode: CacheMode): Promise<{ ok: boolean; state?: CacheState; error?: string }>;
   hardReload(): Promise<{ ok: boolean }>;
@@ -43,6 +54,7 @@ export function createDiagnosticsHandlers(deps: DiagnosticsDeps): Domain<Owns> {
 
     openSetup: () => deps.openSetupTab(),
     openDiagnostics: () => deps.openDiagnosticsTab(),
+    openAddons: () => deps.openAddonsTab(),
     quit: () => deps.quitBrowser(),
 
     // Ask a tab's content script for a live self-report. A page with no content
