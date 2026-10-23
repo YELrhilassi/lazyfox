@@ -39,6 +39,7 @@ export interface QuickActions {
   quit(): void;
   openOptions(): void;
   openSetup(): void;
+  openAddons(): void;
   openPage(url: string): void;
   setMode(mode: string): void;
   stealthOpen(): void;
@@ -69,7 +70,11 @@ export function quickCommands(a: QuickActions): QuickCmd[] {
     // that no longer exists.
     { kind: "cmd", group: "Browser", ic: "\u{1F527}", title: "Complete the install", keys: "", desc: "open the installer / setup page", run: () => a.openSetup() },
     { kind: "cmd", group: "Browser", ic: "\u{1F98A}", title: "Firefox settings", keys: "", desc: "open about:preferences", run: () => a.openPage("about:preferences") },
-    { kind: "cmd", group: "Browser", ic: "\u2609", title: "Add-ons manager", keys: "", desc: "open about:addons", run: () => a.openPage("about:addons") },
+    // Lazyfox's own add-ons page rather than about:addons: it lists the same
+    // installed add-ons and controls the same state, in this product's keyboard
+    // grammar. It offers nothing to install by design, and links to Firefox's
+    // manager for anything it does not show.
+    { kind: "cmd", group: "Browser", ic: "\u2609", title: "Add-ons", keys: "", desc: "enable, configure or remove what is installed", run: () => a.openAddons() },
     { kind: "cmd", group: "Browser", ic: "\u21ba", title: "History", keys: "", desc: "show history here", run: () => a.setMode("history") },
     { kind: "cmd", group: "Browser", ic: "\u2913", title: "Downloads", keys: "", desc: "show downloads here", run: () => a.setMode("downloads") },
   ];

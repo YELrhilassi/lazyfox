@@ -35,7 +35,7 @@ import {
 import { markChromeAlive } from "./services/chromelayer";
 import { openDiagnosticsTab, openSetupTab } from "./services/components";
 import { stealthOpen } from "./stealth";
-import { pushSessionStateToChrome } from "./bgpushes";
+import { pushConfigToChrome, pushSessionStateToChrome } from "./bgpushes";
 
 // Forward a request to the active tab's content script.
 async function relayToContent(
@@ -84,6 +84,10 @@ export const relayHandlers: {
     const c = await getConfig();
     c.whichKey = !c.whichKey;
     await setConfig(c);
+    // Echo STORAGE back, not the helper's flipped cache: storage is the copy
+    // every content script reads, so it wins if the two ever disagreed — and
+    // it is the only way the helper hears about a change made from a page.
+    pushConfigToChrome(c);
     return null;
   },
   // Best-effort: a tab with no content script (about:, an extension page, a

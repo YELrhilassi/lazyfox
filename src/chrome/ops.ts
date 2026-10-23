@@ -60,6 +60,10 @@ export interface ChromeOpsDeps {
   cfg: ChromeCfg;
   persistCfg(cfg: ChromeCfg, config?: Config): void;
   applyHoverRevealPref(cfg: ChromeCfg): void;
+  // A config toggle changed something a surface is showing. `;q` turns the
+  // which-key overlay off; the overlay that is already painted must come down
+  // with it, not at the next keypress.
+  onWhichKeyChanged?(on: boolean): void;
   // The persistent relay channel (channel.ts). Created AFTER ops because the
   // channel needs the popup context that wraps ops; requestBg /
   // requestReply / requestSessionState only run at action time, so a getter
@@ -94,6 +98,7 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     cfg: deps.cfg,
     persistCfg: deps.persistCfg,
     applyHoverRevealPref: deps.applyHoverRevealPref,
+    onWhichKeyChanged: deps.onWhichKeyChanged,
     popup: deps.popup,
     // Lazy, like the tabs ops above: the channel is created AFTER ops (it
     // needs the popup context that wraps ops), so calling deps.getChannel()

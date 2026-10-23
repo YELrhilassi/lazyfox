@@ -5,7 +5,7 @@
 //   - background -> content script (startHints / focusFirstInput)
 // One table, typed request and response per action, so the send() helper and
 // the background handler cannot drift.
-import type { LeaderSignal } from "./leadersignal";
+import type { LeaderPanelHtml, LeaderSignal } from "./leadersignal";
 import type { CacheMode, CacheScope, CacheState, Config, PageReport, PopupItem, Session, SessionSummaryItem, TabInfo } from "./types";
 
 export interface WindowSize {
@@ -72,6 +72,9 @@ export interface BgApi {
   // The diagnostics & performance page (live page diagnosis, framework
   // detection report, efficiency metering).
   openDiagnostics: { req: Record<string, never>; res: { ok: boolean } };
+  // The add-ons page: what is installed, and what can be turned off, opened or
+  // removed. Never an installer — see src/extension/addons.ts.
+  openAddons: { req: Record<string, never>; res: { ok: boolean } };
   // Live page report. No tabId = the active tab (or the last real page tab,
   // since the diagnostics page is itself an extension tab); null report =
   // the tab has no content script at all — itself a diagnostic answer.
@@ -111,9 +114,19 @@ export interface BgApi {
   // wire shape the sender can half-fill showed a chord with no expectation
   // in a live browser only.
   syncLeader: {
-    req: { signal: LeaderSignal };
+    req: {
+      signal: LeaderSignal;
+      // The rendered which-key menu, when the page is in a SPLIT view and has
+      // asked the chrome helper to paint it (a page's own overlay is clipped to
+      // its pane). Absent for every other page: nothing in the window changes.
+      panel?: LeaderPanelHtml | null;
+    };
     res: { ok: boolean };
   };
+  // "Is THIS document one pane of a split view?" Asked once on boot, because a
+  // content script has no way to read splitViewId (it is a tabs-API field) and
+  // the answer changes which surface paints the leader menu.
+  splitState: { req: Record<string, never>; res: { split: boolean } };
   // "A content script is running in this tab", boot-pushed / pagehide-
   // retracted. It exists because the helper cannot look it up itself
   // (contentDocument is null for every OOP tab) — dead-keyboard prevention.
@@ -361,7 +374,7 @@ export interface ChromeApi {
   // that pressed `;D` has nothing left to do once the bar is told.
   dismissDownload: { req: Record<string, never>; res: void };
   leaderState: {
-    req: { index: number; signal: LeaderSignal };
+    req: { index: number; signal: LeaderSignal; panel?: LeaderPanelHtml | null };
     res: void;
   };
   // `doc` is the reporting document's own nonce. The URL rides along to
@@ -376,6 +389,11 @@ export interface ChromeApi {
   screenshot: { req: { shot: string }; res: void };
   cacheGlobal: { req: { mode: CacheMode }; res: void };
   cachePolicy: { req: { mode: CacheMode; tabIds: number[] }; res: void };
+  // The stored config changed in the background (a `;q` from a web page, an
+  // options-page save). The helper caches its own copy in prefs, so without
+  // this push a toggle made from a CONTENT script never reached the panes the
+  // helper owns — which-key kept painting there after it was turned off.
+  cfg: { req: { config: Partial<Config> }; res: void };
 }
 
 export type ChromeAction = keyof ChromeApi;

@@ -49,6 +49,8 @@ export interface ChromeStateRelayV1 {
 export interface ChromeStateSource {
   hasPopup(): boolean;
   leaderActive(): boolean;
+  /** Is the window painting a SPLIT page's which-key menu? (wkglobal.ts) */
+  pageWhichKey(): boolean;
   chromeOwnsKeys(): boolean;
   /** Where the keyboard is — see ChromeStateFocusV1. Never a decision input. */
   focus(): ChromeStateFocusV1;
@@ -193,6 +195,9 @@ export interface ChromeStateV1 {
 
   // --- ownership --------------------------------------------------------------
   leaderActive: boolean;
+  // A split pane's which-key menu, painted by the WINDOW because a page's own
+  // overlay is clipped to its half. False on every non-split page.
+  pageWhichKey: boolean;
   chromeOwnsKeys: boolean;
   leaderPending: boolean;
   lastAction: string | null;
@@ -407,6 +412,7 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
 
     // --- ownership -----------------------------------------------------------
     partial.leaderActive = verdict("leaderActive", () => st.leaderActive());
+    partial.pageWhichKey = step("pageWhichKey", () => st.pageWhichKey(), false);
     partial.chromeOwnsKeys = verdict("chromeOwnsKeys", () => st.chromeOwnsKeys());
     partial.leaderPending = verdict("leaderPending", () => st.leaderPending());
     partial.lastAction = verdict("lastAction", () => st.lastAction());

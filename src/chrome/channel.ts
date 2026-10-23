@@ -31,12 +31,12 @@
 // The dependency runs one way: this file imports the collaborators, none of
 // them import it.
 
-import { mergeConfig, mergeHotkeys } from "../shared/config";
+import { mergeHotkeys } from "../shared/config";
 import { openBookmarksPopup, openDownloadsPopup, openHistoryPopup, openSearchPopup, openTabsPopup, openUrlPopup, type PopupCtx } from "../shared/popups";
 import type { PopupItem } from "../shared/types";
 import type { RelayAction, RelayReq, RelayRes } from "../shared/protocol";
 import { HASH_PREFIX, decodeCommand, decodeReply, encodeRequest } from "../shared/relay-wire";
-import { applyHoverRevealPref, type ChromeCfg } from "./config";
+import type { ChromeCfg } from "./config";
 import { handleKeys } from "./keys";
 import { createRelaySeq, noteCmdSeq, relaySeqReadout } from "./relayseq";
 import { createTabGuard } from "./tabguard";
@@ -70,6 +70,13 @@ export interface ChannelDeps {
   // (`;C f` / `;C v` on any page whose keyboard an extension surface owns).
   takeScreenshot(shot: "full" | "visible"): void;
   cfg: ChromeCfg;
+  // Apply a config change made elsewhere (the options page's #lfc=cfg push,
+  // or the background's `cfg` push after a `;q` on a web page). The host owns
+  // the prefs and the surfaces the change invalidates.
+  applyConfig(config: Partial<import("../shared/types").Config>): void;
+  // Paint (or clear) the which-key menu a SPLIT page sent; the window is the
+  // only surface that spans every pane. See wkglobal.ts.
+  pagePanel(index: number, panel: import("../shared/leadersignal").LeaderPanelHtml | null): void;
   debug: DebugHandlers;
   // Per-tab / per-session page-cache enforcement (the global scope is owned by
   // the extension background).
@@ -479,9 +486,7 @@ export function createChannel(deps: ChannelDeps): Channel {
             Services.prefs.setStringPref("lazyfox.chrome.bindings", JSON.stringify(deps.cfg.bindings));
           }
           if (parsed.config && typeof parsed.config === "object") {
-            deps.cfg.config = mergeConfig(parsed.config as Partial<ChannelDeps["cfg"]["config"]>);
-            Services.prefs.setStringPref("lazyfox.chrome.config", JSON.stringify(deps.cfg.config));
-            applyHoverRevealPref(deps.cfg);
+            deps.applyConfig(parsed.config as Partial<ChannelDeps["cfg"]["config"]>);
           }
         }
       } catch (e) {

@@ -17,7 +17,16 @@ import {
   isKnownVersion,
   parseVersion,
 } from "../../src/shared/versions.ts";
-import { checkForUpdate, normalizeTag, RELEASE_URL, updateNotice } from "../../src/shared/updates.ts";
+import {
+  checkForUpdate,
+  installerNotice,
+  NIGHTLY_API_URL,
+  normalizeTag,
+  releaseApiUrl,
+  releaseVersion,
+  RELEASE_URL,
+  updateNotice,
+} from "../../src/shared/updates.ts";
 
 describe("version ordering", () => {
   test("0.5.10 is newer than 0.5.9, unlike as text", () => {
@@ -169,6 +178,68 @@ describe("release check", () => {
 
     const empty = await checkForUpdate("0.5.10", fakeFetch({ tag_name: "" }));
     assert.equal(empty.state, "unknown");
+  });
+});
+
+// The setup page's second question: is the INSTALLER on GitHub newer than the
+// chrome layer the last installer wrote? The field case was add-on 0.5.11 and
+// chrome 0.5.11 with a 0.5.12 installer published and never run — the page's
+// own comparison said "installed and running".
+describe("published installer", () => {
+  test("a stable release states its version in the tag", () => {
+    assert.equal(releaseVersion({ tag_name: "v0.5.13" }), "0.5.13");
+  });
+
+  test("the rolling nightly states it only in the xpi it carries", () => {
+    // Its tag is literally "nightly". Treating that as a version parses to [0]
+    // and would call every build current — the one bug this branch prevents.
+    assert.equal(
+      releaseVersion({ tag_name: "nightly", assets: [{ name: "install.sh" }, { name: "lazyfox2-0.5.13.xpi" }] }),
+      "0.5.13",
+    );
+    assert.equal(
+      releaseVersion({ tag_name: "nightly", assets: [{ name: "lazyfox2-0.5.13-signed.xpi" }] }),
+      "0.5.13",
+    );
+  });
+
+  test("a tag that is not a version is not mistaken for one", () => {
+    assert.equal(releaseVersion({ tag_name: "nightly" }), "");
+    assert.equal(releaseVersion(null), "");
+  });
+
+  test("each channel asks its own endpoint", () => {
+    assert.match(releaseApiUrl("stable"), /releases\/latest$/);
+    assert.equal(releaseApiUrl("nightly"), NIGHTLY_API_URL);
+  });
+
+  test("the nightly channel is compared against its own payload", async () => {
+    let asked = "";
+    const fake = async (url: string) => {
+      asked = url;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ tag_name: "nightly", assets: [{ name: "lazyfox2-0.5.13.xpi" }] }),
+      };
+    };
+    const r = await checkForUpdate("0.5.12", fake, 7000, { channel: "nightly" });
+    assert.equal(asked, NIGHTLY_API_URL);
+    assert.equal(r.state, "update-available");
+    assert.equal(r.latest, "0.5.13");
+  });
+
+  test("the notice says nothing unless the installer is strictly newer", () => {
+    assert.equal(installerNotice("0.5.13", "0.5.12"), "Installer 0.5.13 is available — download it");
+    // The boring answers are silent: that is what keeps the page calm.
+    assert.equal(installerNotice("0.5.13", "0.5.13"), null);
+    assert.equal(installerNotice("0.5.13", "0.5.14"), null, "a dev build ahead of the release is not behind");
+    assert.equal(installerNotice("0.5.13", "running (version unknown)"), null);
+    assert.equal(installerNotice("", "0.5.12"), null, "a failed check says nothing");
+    assert.equal(
+      installerNotice("0.5.13", "0.5.12", "nightly"),
+      "Dev installer 0.5.13 is available — download it",
+    );
   });
 });
 

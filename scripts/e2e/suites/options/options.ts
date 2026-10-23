@@ -121,4 +121,82 @@ export async function run(ctx: any): Promise<void> {
     assert(f.rendered > 0, "the page rendered at all");
     await evalIn(ctx.tabA, `browser.storage.local.remove("config")`);
   });
+
+  // The add-ons page manages what is INSTALLED. It must list the browser's real
+  // add-ons (the management permission is what makes that possible), control
+  // them, and offer nothing to install.
+  await t("add-ons page: lists installed add-ons, controls them, installs nothing", async () => {
+    const u = ctx.ccUrl.replace("commandcenter.html", "addons.html");
+    await ctx.gotoUrl(ctx.tabA, u, "complete");
+    await waitFor(async () =>
+      evalIn(ctx.tabA, `document.querySelectorAll("#list .row").length > 0 ? true : null`), 8000
+    );
+    const f = await evalIn(ctx.tabA, `(async () => {
+      const rows = Array.from(document.querySelectorAll("#list .row"));
+      const self = rows.filter((r) => /this add-on/.test(r.textContent || ""))[0];
+      const other = rows.filter((r) => r !== self)[0];
+      let all = [];
+      try { all = await browser.management.getAll(); } catch (e) { all = []; }
+      return {
+        rows: rows.length,
+        self: !!self,
+        selfHasRemove: self ? !!self.querySelector("button[data-act=remove]") : null,
+        selfHasToggle: self ? !!self.querySelector("button[data-act=toggle]") : null,
+        all: all.length,
+        otherHasToggle: other ? !!other.querySelector("button[data-act=toggle]") : null,
+        installs: document.querySelectorAll("[data-act=install], input[type=file]").length,
+        count: (document.getElementById("count") || {}).textContent || "",
+      };
+    })()`);
+    assert(f.all > 0, "the management API answered with installed add-ons: " + JSON.stringify(f));
+    assert(f.rows > 0, "the page renders a row per add-on: " + JSON.stringify(f));
+    assert(f.self === true, "Lazyfox's own row is present: " + JSON.stringify(f));
+    assert(f.selfHasRemove === false && f.selfHasToggle === false, "its own row offers no remove/toggle");
+    assert(f.otherHasToggle === true, "another add-on's row offers the enable/disable control");
+    assert(f.installs === 0, "nothing on the page installs an add-on");
+    assert(/on/.test(f.count), "the count line reports the enabled total, got " + JSON.stringify(f.count));
+
+    // `/` puts the caret in the filter, and a non-matching filter empties the
+    // list rather than leaving every row in place.
+    await evalIn(ctx.tabA, `(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "/", bubbles: true }));
+      return true;
+    })()`);
+    const focused = await evalIn(ctx.tabA, `document.activeElement === document.getElementById("filter")`);
+    assert(focused === true, "/ focuses the filter");
+    await evalIn(ctx.tabA, `(() => {
+      const i = document.getElementById("filter");
+      i.value = "zzzz-no-such-addon";
+      i.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    })()`);
+    const none = await waitFor(async () =>
+      evalIn(ctx.tabA, `document.querySelectorAll("#list .row").length === 0 ? true : null`), 4000
+    ).catch(() => null);
+    assert(none === true, "a filter that matches nothing leaves no rows");
+    await evalIn(ctx.tabA, `(() => {
+      const i = document.getElementById("filter");
+      i.value = "";
+      i.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    })()`);
+
+    // The home page's row opens it. From the home page the tab is replaced in
+    // place, which is the rule every extension page follows there.
+    await ctx.openCC(ctx.tabA);
+    const clicked = await evalIn(ctx.tabA, `(() => {
+      const rows = Array.prototype.slice.call(document.querySelectorAll("#results .result"));
+      const row = rows.filter((r) => /Add-ons/.test(r.textContent || "") && !/manager/i.test(r.textContent || ""))[0];
+      if (!row) return rows.map((r) => (r.textContent || "").trim().slice(0, 80)).join(" | ");
+      row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      return true;
+    })()`);
+    assert(clicked === true, "the home page has an Add-ons row; rows=" + JSON.stringify(clicked));
+    const opened = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      return ts.find((x) => (x.url || "").includes("addons.html")) || null;
+    }, 8000).catch(() => null);
+    assert(opened, "the Add-ons row opens the add-ons page");
+    await ctx.gotoUrl(ctx.tabA, ctx.ccUrl, "complete").catch(() => {});
+  });
 }
