@@ -21,7 +21,7 @@
 
 import { core } from "./core";
 import { LeaderCapture, type CaptureResult } from "./leadercapture";
-import { makeLeaderSignal, type LeaderSignal } from "./leadersignal";
+import { makeLeaderSignal, type LeaderPanelHtml, type LeaderSignal } from "./leadersignal";
 import {
   chordFor,
   keymapReady,
@@ -88,6 +88,18 @@ export class LeaderController {
   // renders for an in-flight sequence (`;l` waiting for its final key).
   prefix = "";
   private readonly panel = new LeaderPanel();
+  // WHERE THE PANEL IS PAINTED, when it is not painted here.
+  //
+  // In a native split view a page owns half the window, so the host this
+  // controller would build sits INSIDE its pane and the menu reads as that
+  // tab's UI rather than the window's (reported). When the window is showing
+  // panes, the chrome helper paints this menu instead: this sink receives the
+  // rendered HTML (and null when it comes down) and nothing local is drawn.
+  // Null means "paint here", which is every non-split page.
+  private remote: ((v: LeaderPanelHtml | null) => void) | null = null;
+  // Whether the REMOTE panel is up. The local panel answers this for itself
+  // (`panel.shown()`), but in remote mode there is no local host to ask.
+  private remoteShown = false;
   private lazyBindings: WkItem[] = [];
   private bindingsLoaded: Promise<WkItem[]> | null = null;
   // The category whose head was pressed; drives the overlay's contents and
@@ -281,9 +293,54 @@ export class LeaderController {
     return this.bindingsLoaded;
   }
 
-  /** PAINTED = host exists + allowed by config + the panel carries its `on` class. The third check was missing and the persistent host kept "shown" true after hide() — navigation keys claimed by a menu nobody could see. */
+  /**
+   * Paint somewhere else: the window (chrome helper) instead of this page.
+   *
+   * Passing a sink switches this controller to REMOTE painting — used when the
+   * window is a native split view, where a page's overlay is clipped to its
+   * pane. Passing null switches back and takes the remote panel down, so the
+   * menu cannot outlive the split that justified it.
+   */
+  useRemotePanel(sink: ((v: LeaderPanelHtml | null) => void) | null): void {
+    if (this.remote === sink) return;
+    const old = this.remote;
+    this.remote = sink;
+    this.remoteShown = false;
+    if (old) {
+      try {
+        old(null);
+      } catch (e) {
+        // a sink whose window is gone has nothing to take down
+      }
+    }
+    this.panel.setShown(false);
+    if (sink) {
+      // This document is no longer the painter, so its mirror says so too —
+      // "which-key is on screen HERE" is now false (the window has it).
+      mirrorFlag("whichkey", false);
+      if (this.active) {
+        // The leader was already armed when the window became a split — repaint
+        // through the new sink now rather than at the next keypress.
+        this.remoteShown = true;
+        void this.render();
+      }
+      return;
+    }
+    if (this.active && this.enabled()) {
+      // Back on an ordinary page with the leader already armed: take the menu
+      // up locally, or it would stay invisible until the next keypress.
+      this.panel.ensure();
+      void this.render();
+      this.panel.setShown(true);
+      mirrorFlag("whichkey", true);
+    }
+  }
+
+  /** PAINTED = allowed by config + visible here or in the window it was sent to. The third check was missing and the persistent host kept "shown" true after hide() — navigation keys claimed by a menu nobody could see. */
   private shown(): boolean {
-    return this.panel.current() !== null && this.enabled() && this.panel.shown();
+    if (!this.enabled()) return false;
+    if (this.remote) return this.remoteShown;
+    return this.panel.current() !== null && this.panel.shown();
   }
 
   /** Repaint from CURRENT state whenever something the panel draws changes; the bug class this ends is a view one step behind the state it shows. */
@@ -303,6 +360,14 @@ export class LeaderController {
    * and hiding would break the keymap silently.
    */
   unpaint(): void {
+    if (this.remote) {
+      this.remoteShown = false;
+      try {
+        this.remote(null);
+      } catch (e) {
+        // the window this was painted in is gone
+      }
+    }
     this.panel.setShown(false);
     // The mirror is the only externally visible signal of this overlay: the
     // closed shadow root makes `querySelectorAll(".wk.on")` return nothing.
@@ -386,6 +451,16 @@ export class LeaderController {
       pageNum: this.wk.page,
       total: () => this.wk.pageCount(),
     });
+    if (this.remote) {
+      this.remoteShown = true;
+      try {
+        this.remote(v);
+      } catch (e) {
+        // nobody is painting: the local host stays down, which is the honest
+        // state for "the window asked for this and could not draw it"
+      }
+      return;
+    }
     this.panel.fill(v.head, v.body, v.foot);
   }
 
@@ -406,8 +481,16 @@ export class LeaderController {
       this.unpaint();
       return;
     }
-    this.panel.ensure();
     this.wk.reset();
+    if (this.remote) {
+      // Nothing local: the window's painter owns the pixels (useRemotePanel).
+      // The page mirror says the same thing — false — because it answers "is
+      // which-key painted in THIS DOCUMENT", and in a split the answer is no.
+      void this.render();
+      mirrorFlag("whichkey", false);
+      return;
+    }
+    this.panel.ensure();
     void this.render();
     this.panel.setShown(true);
     mirrorFlag("whichkey", true);

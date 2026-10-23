@@ -97,6 +97,23 @@ export interface StoreSpec {
    * browser console.
    */
   lfLoaderErrs: string;
+  /**
+   * The last published-installer version the setup page saw, with the moment it
+   * asked. The setup page is the one place that can point at a newer installer,
+   * and it is opened a handful of times, so the answer is cached for a few
+   * hours rather than asked on every open and every "Check again" click
+   * (GitHub's unauthenticated limit is not the page's to spend). The channel is
+   * stored with it: stable and nightly answer different versions, and a cached
+   * stable answer must never label a dev download.
+   */
+  lfInstallerCheck: InstallerCheckRecord;
+}
+
+export interface InstallerCheckRecord {
+  channel: string;
+  version: string;
+  /** When the answer was fetched (ms since epoch). */
+  at: number;
 }
 
 export interface StealthRecord {
@@ -457,6 +474,16 @@ export const vSessions: Validator<Record<string, Session>> = vRecordOf(vSession)
 export const vStealth: Validator<StealthRecord> = (raw) => ({
   containers: vArray(vString)(isObject(raw) ? raw.containers : undefined) || [],
 });
+
+/** A cached release answer: a channel, a version, and when it was fetched. */
+export const vInstallerCheck: Validator<InstallerCheckRecord> = (raw) => {
+  if (!isObject(raw)) return undefined;
+  const channel = vString(raw.channel);
+  const version = vString(raw.version);
+  const at = vNumber(raw.at);
+  if (channel === undefined || version === undefined || at === undefined) return undefined;
+  return { channel, version, at };
+};
 
 export type { Config, Session, CacheScope, CacheMode };
 

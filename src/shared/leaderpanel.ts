@@ -17,13 +17,22 @@ export type LeaderHost = HTMLElement & { _sh: ShadowRoot };
 
 export class LeaderPanel {
   private host: LeaderHost | null = null;
+  // The host's element id. Configurable because a window can hold TWO panels
+  // of this class at once: the chrome helper's own leader and the mirror it
+  // paints for a SPLIT page's leader (the page cannot draw across its pane, so
+  // the helper paints its menu in the window and this is the second host).
+  private readonly id: string;
+
+  constructor(id = "lazyfox-leader") {
+    this.id = id;
+  }
 
   /** The live host, creating it on first use and RE-attaching it if the page
    * detached it. */
   ensure(): LeaderHost {
     if (!this.host) {
       const host = document.createElement("div") as unknown as LeaderHost;
-      host.id = "lazyfox-leader";
+      host.id = this.id;
       // A viewport-sized box that ignores the pointer: the panel inside it is
       // the only interactive part (see leader-css.ts), and the host exists so
       // that the panel is measured against the VIEWPORT rather than against

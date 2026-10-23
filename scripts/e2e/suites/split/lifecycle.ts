@@ -1,6 +1,6 @@
 // lifecycle tests (split). Split verbatim from the original
 // split.ts monolith — behavior unchanged, timing fixed separately.
-import { createTab, evalIn, getTree, navigate, waitFor } from "../../bidi.ts";
+import { createTab, evalIn, getTree, navigate, sleep, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 import { makeSplitHelpers } from "./_shared.ts";
 export async function run(ctx: any): Promise<void> {
@@ -125,35 +125,74 @@ export async function run(ctx: any): Promise<void> {
     if (p2) await evalIn(ctx.probe, `browser.tabs.remove(${p2.id})`).catch(() => {});
     await waitNoSplit();
   });
-  await t("split: native split ;W h / ;W l switch the active pane", async () => {
+  await t("split: native split ;W h / ;W l are DIRECTIONAL, and the keyboard follows the pane", async () => {
     const pair = await nativeSplit();
-    const p1 = pair.find((t) => t.active);
-    const p2 = pair.find((t) => !t.active);
-    assert(p1 && p2, "native split has an active and an inactive pane: " + JSON.stringify(pair));
-    // The command center pane stays selected right after splitting (the helper
-    // keeps the original tab active); keys on it reach the chrome helper.
-    await ctx.leaderSeq(ctx.tabA, ["W", "h"])
-    try {
-      await waitFor(async () => {
-        const a = await ctx.activeTabInfo();
-        return a && a.id === p2.id ? a : null;
-      }, 8000);
-    } catch (e) {
-      const st = await ctx.chromeState().catch((e2) => "ERR:" + String(e2 && e2.message ? e2.message : e2));
-      const ts = await ctx.tabsInfo().catch((e2) => "ERR:" + String(e2 && e2.message ? e2.message : e2));
-      throw new Error("pane switch to p2 failed; pair=" + JSON.stringify(pair) + " state=" + JSON.stringify(st) + " tabs=" + JSON.stringify(ts));
+    // The pair is laid out in `sv.tabs` order, left to right (see
+    // addTabSplitView in splitview.ts): the command center is the left pane and
+    // the fresh split panel the right one.
+    const left = pair.find((t) => t.active);
+    const right = pair.find((t) => !t.active);
+    assert(left && right, "native split has a left and a right pane: " + JSON.stringify(pair));
+    const activeId = async () => ((await ctx.activeTabInfo()) || {}).id;
+    const expectActive = async (want: any, what: string) => {
+      try {
+        await waitFor(async () => {
+          const a = await ctx.activeTabInfo();
+          return a && a.id === want.id ? a : null;
+        }, 8000);
+      } catch (e) {
+        const st = await ctx.chromeState().catch((e2) => "ERR:" + String(e2 && e2.message ? e2.message : e2));
+        const ts = await ctx.tabsInfo().catch((e2) => "ERR:" + String(e2 && e2.message ? e2.message : e2));
+        throw new Error(what + " failed; pair=" + JSON.stringify(pair) + " state=" + JSON.stringify(st) + " tabs=" + JSON.stringify(ts));
+      }
+    };
+
+    // `;W l` is "focus RIGHT". It used to wrap from the rightmost pane back to
+    // the left one, and `;W h` from the leftmost to the right, so every chord
+    // in a two-pane split moved the opposite way it was named — "things act
+    // flipped". From the left pane, right must select the right pane.
+    await ctx.leaderSeq(ctx.tabA, ["W", "l"]);
+    await expectActive(right, "focus right from the left pane");
+
+    // THE KEYBOARD FOLLOWS THE PANE. Selecting the other pane moves
+    // `selectedTab`, but its docshell stays inactive and the previous pane's
+    // document keeps the focus; keys then land in the pane the user left (and
+    // its content script draws the page UI) while the bar and the URL name the
+    // new one. That is the second half of the same report.
+    const focus = await waitFor(async () => {
+      const st = await ctx.chromeState();
+      return st && st.focus && st.focus.pageHasFocus === true ? st.focus : null;
+    }, 5000).catch(() => null);
+    if (!focus) {
+      const st = await ctx.chromeState().catch(() => null);
+      const ts = await ctx.tabsInfo().catch(() => "ERR");
+      assert(
+        false,
+        "the selected pane has the keyboard after a pane switch; focus=" +
+          JSON.stringify(st && st.focus) +
+          " keyboard=" +
+          JSON.stringify(st && st.keyboard) +
+          " sel=" +
+          JSON.stringify(st && st.nativeSplit && st.nativeSplit.selUrl) +
+          " tabs=" +
+          JSON.stringify(ts)
+      );
     }
-    await ctx.leaderSeq(ctx.tabA, ["W", "l"])
-    try {
-      await waitFor(async () => {
-        const a = await ctx.activeTabInfo();
-        return a && a.id === p1.id ? a : null;
-      }, 8000);
-    } catch (e) {
-      const st = await ctx.chromeState().catch((e2) => "ERR:" + String(e2 && e2.message ? e2.message : e2));
-      const ts = await ctx.tabsInfo().catch((e2) => "ERR:" + String(e2 && e2.message ? e2.message : e2));
-      throw new Error("switch-back to p1 failed; p1=" + JSON.stringify(p1) + " state=" + JSON.stringify(st) + " tabs=" + JSON.stringify(ts));
-    }
+
+    // `;W h` is "focus LEFT".
+    await ctx.leaderSeq(ctx.tabA, ["W", "h"]);
+    await expectActive(left, "focus left from the right pane");
+
+    // At an edge, the move is a no-op — not a wrap to the far side.
+    await ctx.leaderSeq(ctx.tabA, ["W", "h"]);
+    await sleep(600);
+    assert((await activeId()) === left.id, "focus left at the left edge stays put (no wrap)");
+    await ctx.leaderSeq(ctx.tabA, ["W", "l"]);
+    await expectActive(right, "focus right from the left edge (after the no-op)");
+    await ctx.leaderSeq(ctx.tabA, ["W", "l"]);
+    await sleep(600);
+    assert((await activeId()) === right.id, "focus right at the right edge stays put (no wrap)");
+
     const finalTs = await ctx.tabsInfo();
     const sv = finalTs.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
     assert(sv.length === 2, "split intact after pane switching: " + JSON.stringify(finalTs));
@@ -672,7 +711,12 @@ export async function run(ctx: any): Promise<void> {
     };
 
     const before = await activeId();
-    await timed("switch pane", "h", async () => {
+    // The split is formed on the home pane, and `;W l` means FOCUS RIGHT (the
+    // panes are laid out left to right). This used to be written as `h`, which
+    // only moved because the old chord wrapped from the left edge to the right
+    // one — the bug the directional test above pins. At the edge it is now a
+    // no-op, which is correct and not a slow op.
+    await timed("switch pane", "l", async () => {
       const id = await waitFor(async () => {
         const now = await activeId();
         return now != null && now !== before ? now : null;

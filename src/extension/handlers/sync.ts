@@ -12,7 +12,7 @@
 // because the typing state has to survive the content script being torn down and
 // rebuilt (a bfcache restore, a virtual-DOM navigation).
 import { mergeConfig } from "../../shared/config";
-import type { LeaderSignal } from "../../shared/leadersignal";
+import type { LeaderPanelHtml, LeaderSignal } from "../../shared/leadersignal";
 import { createTabHoldState, type TabHoldState } from "../../shared/holdstate";
 import { getConfig, setConfig } from "../config";
 import { vConfig } from "../store";
@@ -23,6 +23,8 @@ import type { Domain } from "./types";
 type Owns =
   | "syncTyping"
   | "syncLeader"
+  | "splitState"
+  | "splitState"
   | "syncContent"
   | "syncFind"
   | "syncDark"
@@ -45,12 +47,14 @@ const defaultHoldState = createTabHoldState({
 export type { TabHoldState as SyncHoldState };
 
 export interface SyncDeps {
-  pushLeaderStateToChrome(index: number, signal: LeaderSignal): void;
+  pushLeaderStateToChrome(index: number, signal: LeaderSignal, panel?: LeaderPanelHtml | null): void;
   pushContentStateToChrome(index: number, active: boolean, url: string, doc?: string): void;
   pushFindStateToChrome(index: number, count: number, cur: number): void;
   pushDarkStateToChrome(index: number, on: boolean, mode: string, engine: string): void;
   stealthOpen(onDone: () => void): Promise<{ ok: boolean; error?: string }>;
   pushSessionStateToChrome(): Promise<void>;
+  /** Push the changed config to the chrome helper (see bgpushes). */
+  pushConfigToChrome(config: import("../../shared/types").Config): void;
 }
 
 export function createSyncHandlers(
@@ -79,10 +83,19 @@ export function createSyncHandlers(
       if (tab && tab.id != null) {
         deps.pushLeaderStateToChrome(
           typeof tab.index === "number" ? tab.index : -1,
-          data.signal
+          data.signal,
+          data.panel
         );
       }
       return { ok: true };
+    },
+    // A page asking whether it is one pane of a split view. Read from the
+    // sender's own tab: splitViewId is a tabs-API field and content scripts
+    // have no tabs API.
+    splitState: (_data, sender) => {
+      const tab = (sender as { tab?: { splitViewId?: number } } | undefined)?.tab;
+      const id = tab && tab.splitViewId;
+      return { split: typeof id === "number" && id >= 0 };
     },
 
     syncContent: async (data, sender) => {
@@ -211,6 +224,9 @@ export function createSyncHandlers(
       const c = await getConfig();
       c.whichKey = !c.whichKey;
       await setConfig(c);
+      // A `;q` on a web page is handled HERE, not by the chrome helper — so
+      // this copy is the only one that can tell the helper the overlay is off.
+      deps.pushConfigToChrome(c);
       return { whichKey: c.whichKey };
     },
 

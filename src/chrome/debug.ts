@@ -17,6 +17,8 @@ import { createStateReader } from "./stateapi";
 export interface DebugState {
   hasPopup(): boolean;
   leaderActive(): boolean;
+  /** Is the window painting a SPLIT page's which-key menu? (wkglobal.ts) */
+  pageWhichKey(): boolean;
   // The helper's own verdict on whether it owns the selected tab. Exposed
   // because ownership is the gate on every surface decision (keys AND pixels),
   // and a disagreement between what the helper believes and what it paints is

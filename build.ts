@@ -63,6 +63,7 @@ const BUNDLES: Bundle[] = [
   { in: "src/extension/popup.ts", out: "dist/extension/popup.js" },
   { in: "src/extension/setup.ts", out: "dist/extension/setup.js" },
   { in: "src/extension/diagnostics.ts", out: "dist/extension/diagnostics.js" },
+  { in: "src/extension/addons.ts", out: "dist/extension/addons.js" },
 ];
 
 /* ---------- 1. wasm core ---------- */
@@ -252,10 +253,14 @@ if (DEV) {
   // build-release-installers.ts). When it does, they are refreshed here with the
   // CURRENT chrome layer; when it does not, they are left alone and the reason is
   // printed rather than left to be discovered later.
-  const signedCurrent = [
-    join(root, "dist", `lazyfox2-${version}.xpi`),
-    join(root, "dist", `lazyfox2-${version}-signed.xpi`),
-  ].filter((p) => existsSync(p));
+  // ONLY the signed file counts. The list used to include the unsigned xpi
+  // this build just wrote, so the "is this version signed?" question was
+  // always true on a dev build — and the release-installer step then failed
+  // because the signed add-on it needs did not exist yet. A dev build of a
+  // version AMO has not signed must leave the release binaries alone.
+  const signedCurrent = [join(root, "dist", `lazyfox2-${version}-signed.xpi`)].filter((p) =>
+    existsSync(p)
+  );
   if (skipInstallers) {
     // Nothing to do: the release binaries were not touched either.
   } else if (signedCurrent.length > 0) {

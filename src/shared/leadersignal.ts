@@ -29,6 +29,21 @@
 // capture that takes anything has nothing to promise, and showing a guess would
 // be worse than showing nothing. Where there IS an answer the armer supplies
 // one (see digitExpect in this file), because only the armer knows.
+/**
+ * The which-key panel's rendered contents.
+ *
+ * It is the rendered HTML, not the state behind it, because the only reason
+ * this ever crosses a process boundary is to be PAINTED somewhere else. A
+ * state-shaped payload would need a second renderer in the painting context,
+ * and two renderers of one menu is how a split window ends up showing a
+ * different menu from the one the keys are matching against.
+ */
+export interface LeaderPanelHtml {
+  head: string;
+  body: string;
+  foot: string;
+}
+
 export interface LeaderSignal {
   armed: boolean;
   // The chord committed so far, WITHOUT the leading leader key: "" or ";" both

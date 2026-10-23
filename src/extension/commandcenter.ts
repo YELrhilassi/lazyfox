@@ -68,6 +68,9 @@ import type { ContentPopupShell } from "./content/find";
     config = mergeConfig(c);
     apps = config.apps;
     renderer.refresh();
+    // Same rule as the content script: disabling which-key pulls the panel
+    // that is already on screen, instead of leaving it until the next chord.
+    if (config.whichKey === false && leader) leader.unpaint();
   }
   void readKey("config", vConfig, {}).then(applyConfig);
   browser.storage.onChanged.addListener((changes: any, area: any) => {
@@ -94,6 +97,7 @@ import type { ContentPopupShell } from "./content/find";
       }
     },
     openSetup: () => void send("openSetup"),
+    openAddons: () => void send("openAddons"),
     openPage: (url: string) => void send("openPage", { url }),
     setMode: (m: string) => renderer.setMode(m),
     stealthOpen: () => void send("stealthOpen"),

@@ -31,6 +31,21 @@ export const RELEASE_URL = `https://github.com/${LAZYFOX_REPO}/releases/latest`;
 /** The API endpoint the check reads; the newest non-prerelease release. */
 export const RELEASE_API_URL = `https://api.github.com/repos/${LAZYFOX_REPO}/releases/latest`;
 
+/**
+ * The dev-channel release. It is one rolling prerelease at the fixed tag
+ * `nightly`, which is why it is addressed by tag rather than by "latest":
+ * `releases/latest` deliberately skips prereleases, and a dev user must not be
+ * compared against the stable channel they are ahead of.
+ */
+export const NIGHTLY_API_URL = `https://api.github.com/repos/${LAZYFOX_REPO}/releases/tags/nightly`;
+
+export type ReleaseChannel = "stable" | "nightly";
+
+/** The endpoint a channel's newest build is published under. */
+export function releaseApiUrl(channel: ReleaseChannel): string {
+  return channel === "nightly" ? NIGHTLY_API_URL : RELEASE_API_URL;
+}
+
 export interface ReleaseCheck {
   /** "update-available" | "current" — what this build should do about it. */
   state: "update-available" | "current" | "unknown";
@@ -57,6 +72,41 @@ interface FetchLike {
   }>;
 }
 
+interface ReleaseBody {
+  tag_name?: string;
+  name?: string;
+  html_url?: string;
+  prerelease?: boolean;
+  assets?: { name?: string }[];
+}
+
+/** Just the numeric form: "nightly" is a known tag, not a version. */
+function isVersionText(v: string): boolean {
+  return /^\d+(?:\.\d+)+$/.test(v);
+}
+
+/**
+ * releaseVersion is the version a release states about itself.
+ *
+ * A stable release has it in the tag (`v0.5.13`). The rolling `nightly`
+ * release does not: its tag is literally `nightly`, and the only thing in it
+ * that names a version is the xpi it carries (`lazyfox2-0.5.13.xpi`, or the
+ * `-signed` variant). Reading the asset name is therefore not a fallback — for
+ * the dev channel it is the only truthful answer, and reporting "nightly" as a
+ * version would compare as `[0]` and call every build current.
+ */
+export function releaseVersion(body: ReleaseBody | null | undefined): string {
+  const tag = normalizeTag(body?.tag_name || body?.name);
+  if (isVersionText(tag)) return tag;
+  for (const asset of body?.assets || []) {
+    const m = /^lazyfox2-(.+)\.xpi$/i.exec(String(asset?.name || ""));
+    if (!m) continue;
+    const v = normalizeTag(m[1]!.replace(/-signed$/i, ""));
+    if (isVersionText(v)) return v;
+  }
+  return "";
+}
+
 /** The copy a launch-time (or panel) notification shows, when there is one. */
 export interface UpdateNotice {
   title: string;
@@ -80,6 +130,33 @@ export function updateNotice(check: ReleaseCheck, currentVersion: string): Updat
 }
 
 /**
+ * installerNotice is the setup page's one line about the installer itself, or
+ * null when there is nothing worth saying.
+ *
+ * WHY IT COMPARES WITH THE WINDOW CHROME, NOT THE ADD-ON. The installer is
+ * what writes the chrome layer, so "is there a newer installer?" is answered
+ * against what the installer last put on disk. The case this exists for: the
+ * add-on sat at 0.5.11 and the published installer was also 0.5.11, so the
+ * page's own version comparison was happy while a 0.5.12 installer had been
+ * published and never run. Comparing against the chrome layer instead is the
+ * difference between "the two pieces agree" and "the piece you can update is
+ * behind what exists".
+ *
+ * Silence is the default and stays the default: equal versions say nothing, an
+ * installer older than the installed build (a dev build running ahead of the
+ * release) says nothing, and an unknown version on either side says nothing.
+ */
+export function installerNotice(
+  latest: string,
+  installed: string | null | undefined,
+  channel: ReleaseChannel = "stable",
+): string | null {
+  if (!isVersionText(latest) || !isVersionText(normalizeTag(installed))) return null;
+  if (compareVersions(installed, latest) >= 0) return null;
+  return `${channel === "nightly" ? "Dev installer" : "Installer"} ${latest} is available — download it`;
+}
+
+/**
  * checkForUpdate asks GitHub for the newest release and compares it with the
  * version running here.
  *
@@ -92,11 +169,12 @@ export async function checkForUpdate(
   currentVersion: string,
   fetchImpl: FetchLike = fetch as unknown as FetchLike,
   timeoutMs = 7000,
+  opts: { channel?: ReleaseChannel } = {},
 ): Promise<ReleaseCheck> {
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
-    const res = await fetchImpl(RELEASE_API_URL, {
+    const res = await fetchImpl(releaseApiUrl(opts.channel ?? "stable"), {
       headers: { Accept: "application/vnd.github+json" },
       ...(controller ? { signal: controller.signal } : {}),
     });
@@ -108,10 +186,10 @@ export async function checkForUpdate(
         error: res.status === 403 || res.status === 429 ? "GitHub rate limit reached — try again later" : `GitHub answered ${res.status}`,
       };
     }
-    const body = (await res.json()) as { tag_name?: string; name?: string; html_url?: string; prerelease?: boolean };
-    const latest = normalizeTag(body.tag_name || body.name);
+    const body = (await res.json()) as ReleaseBody;
+    const latest = releaseVersion(body);
     if (!latest) {
-      return { state: "unknown", latest: "", url: RELEASE_URL, error: "the release has no version tag" };
+      return { state: "unknown", latest: "", url: RELEASE_URL, error: "the release does not state a version" };
     }
     return {
       state: compareVersions(currentVersion, latest) < 0 ? "update-available" : "current",

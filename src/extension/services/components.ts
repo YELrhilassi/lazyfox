@@ -66,6 +66,12 @@ export function openDiagnosticsTab(): Promise<{ ok: boolean }> {
   return openExtensionPageInActiveOrNewTab("diagnostics.html");
 }
 
+// The add-ons page. Same placement rule as the two above: from the home page it
+// replaces the home page, from anywhere else it opens beside it.
+export function openAddonsTab(): Promise<{ ok: boolean }> {
+  return openExtensionPageInActiveOrNewTab("addons.html");
+}
+
 const EXT_BASE = browser.runtime.getURL("");
 let lastPageTabId: number | null = null;
 

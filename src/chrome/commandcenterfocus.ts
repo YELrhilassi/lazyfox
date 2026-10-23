@@ -78,10 +78,47 @@ function focusSelectedContentInner(win: ChromeWindow, fm?: FocusService, flags =
       return false;
     }
   };
+  // A SPLIT PANE'S DOCSHELL IS NOT ACTIVATED BY SELECTING ITS TAB.
+  //
+  // In a native split view both panes stay on screen, each with its own
+  // browser. Moving the selection to the other pane moves `selectedTab` (and
+  // the URL bar) but leaves the NEW pane's docshell inactive and the keyboard
+  // in the pane it came from: measured after `;W h`/`;W l`, the selected pane
+  // reported docShell.isActive:false, pageHasFocus:false and focusedWindow
+  // still the OTHER pane, while the previous pane's document still reported
+  // hasFocus:true. Focusing the browser element alone does not fix it — the
+  // focus manager treats that as "the browser is focused" and stops.
+  //
+  // Activating the docshell is the operation a click on the pane performs. Do
+  // it before focusing, so every key after a pane switch lands in the pane the
+  // user just moved to (and its content script — not the previous pane's —
+  // draws the page UI).
+  try {
+    const ds: any = b.docShell;
+    if (ds && ds.isActive === false) {
+      if (typeof ds.makeActive === "function") ds.makeActive(true);
+      else b.docShellIsActive = true;
+    }
+  } catch {
+    // older/newer builds without either knob: the focus calls below remain
+  }
   try {
     if (typeof b.focus === "function") b.focus();
   } catch {
     // a torn-down tab has no keyboard to take
+  }
+  // THE DOCUMENT ITSELF, not just its frame element. `browser.focus()` asks the
+  // chrome element for focus; in a split view the platform is happy to say the
+  // browser is focused while the previous pane's document still holds the
+  // keyboard (measured: focusedElement === the selected <browser>,
+  // focusedWindow still the other pane, pageHasFocus false). Asking the
+  // document's own window to focus is what a click inside the pane does, and it
+  // crosses to a remote document the same way.
+  try {
+    const cw = b.contentWindow;
+    if (cw && typeof cw.focus === "function") cw.focus();
+  } catch {
+    // an inaccessible document falls back to the element focus above
   }
   if (!fm) return;
   if (held(focused())) return;
@@ -104,9 +141,82 @@ function focusSelectedContentInner(win: ChromeWindow, fm?: FocusService, flags =
   }
   if (held(focused())) return;
   try {
-    if (typeof fm.setFocus === "function") fm.setFocus(b, flags);
+    if (typeof fm.setFocus !== "function") return;
+    // FLAG_NOSCROLL IS REFUSED BY A SPLIT PANE'S BROWSER. Measured after
+    // `;W l` in a native split: this call with the scroll flag present was
+    // accepted (no throw) and changed nothing — focusedElement stayed null,
+    // document.activeElement stayed the OTHER pane's browser, and that pane's
+    // document kept the keyboard — while the identical call with flags 0 moved
+    // the focus on the first try. The flag exists to keep an ELEMENT focus from
+    // scrolling the page; a <browser> is not in the page's scroll box, so
+    // dropping it costs nothing and is the difference between "the pane switch
+    // took the keyboard" and "every key after it ran in the pane you left".
+    fm.setFocus(b, flags);
+    if (!contentHasKeyboard(b)) fm.setFocus(b, 0);
   } catch {
     // the focus manager refused: nothing else in this realm can ask
+  }
+}
+
+/**
+ * Put the keyboard in the SELECTED SPLIT PANE, by the one call that measurably
+ * moves it.
+ *
+ * Split view keeps both panes' documents alive and both browsing contexts
+ * active, so the usual escalation in focusSelectedContent is answered "already
+ * focused" while the keyboard is still in the pane the user left. Measured
+ * after `;W l` in a native split: docShell.isActive false for BOTH panes,
+ * focusedElement null, focusedWindow the other pane's window, and
+ * document.activeElement in the chrome document was the other pane's <browser>.
+ * `focus()` on the selected browser, its contentWindow, the tab element and the
+ * browser container all changed nothing; `nsIFocusManager.setFocus(browser, 0)`
+ * moved it on the first try. WITH FLAG_NOSCROLL IT DID NOT (accepted, no throw,
+ * no effect) — see the note in focusSelectedContentInner.
+ *
+ * Called on a pane switch and once more after the platform has settled the
+ * new selection (splitview.ts), because the first call can race the platform
+ * moving the selected pane.
+ */
+export function focusSelectedBrowser(win: ChromeWindow, fm?: FocusService): void {
+  let b: any = null;
+  try {
+    b = (win as any).gBrowser.selectedBrowser || null;
+  } catch {
+    b = null;
+  }
+  if (!b) return;
+  try {
+    win.focus();
+  } catch {
+    // unfocusable window: nothing below can land either
+  }
+  try {
+    if (typeof b.focus === "function") b.focus();
+  } catch {
+    // a torn-down pane has no keyboard to take
+  }
+  try {
+    if (fm && typeof fm.setFocus === "function") fm.setFocus(b, 0);
+  } catch {
+    // the focus manager refused: the pane keeps whatever it had
+  }
+  try {
+    const cw = b.contentWindow;
+    if (cw && typeof cw.focus === "function") cw.focus();
+  } catch {
+    // an inaccessible document falls back to the element focus above
+  }
+}
+
+// Does the content document behind this browser hold the keyboard? Asked after
+// the focus call rather than before, so it answers "did the repair land" — the
+// one question the escalating path above is built on.
+function contentHasKeyboard(b: any): boolean {
+  try {
+    const cw = b && b.contentWindow;
+    return !!(cw && cw.document && cw.document.hasFocus());
+  } catch {
+    return false;
   }
 }
 
