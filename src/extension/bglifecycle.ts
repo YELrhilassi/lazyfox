@@ -19,7 +19,8 @@ import {
   noteTabActivation,
   noteTabRemoved,
   primeActivation,
-  primeKnownTabs
+  primeKnownTabs,
+  restoreAlternateTabs
 } from "./windowops";
 import {
   reconcileStealth,
@@ -103,14 +104,27 @@ function installTabBookkeeping(): void {
   });
   // Tabs that already existed when the background woke up.
   void primeKnownTabs();
+  // The `;a` list survives this page being SUSPENDED (MV3 event page), so the
+  // recovered list is merged in before/alongside the fresh seed. Order does not
+  // matter: restoreAlternateTabs merges behind whatever memory already has, and
+  // primeActivation only ever moves the current tab to the front.
+  void restoreAlternateTabs();
   // One MRU entry per window, so `;a` has a list even in a window that has not
   // seen an activation since this process started (see windowops.alternateTab).
   void primeActivation();
 
   // Suppressed during a session restore rebuild (the transient activations
   // would pollute the pair).
+  //
+  // Plumbing activations are not recorded either: a relay tab carrying a
+  // message, or the split-panel companion pane, is never a place the user was
+  // "on", so remembering it makes `;a` spend its one target on a page with no
+  // content. alternateTab() skips such entries too (a list built before this
+  // filter existed is still on disk == in memory), which is why the skip is
+  // written where the landing is decided as well as here.
   browser.tabs.onActivated.addListener((info: any) => {
     if (isRestoring()) return;
+    if (transientTabIds.has(info.tabId)) return;
     noteTabActivation(info.windowId, info.tabId);
   });
   browser.tabs.onRemoved.addListener((tabId: number, removeInfo: any) => {

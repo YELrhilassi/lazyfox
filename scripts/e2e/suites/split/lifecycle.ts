@@ -242,6 +242,59 @@ export async function run(ctx: any): Promise<void> {
     await ctx.leaderSeq(ctx.tabA, ["W", "u"]); // cleanup
     await waitNoSplit();
   });
+  await t("split: `;W |` then `;W u` typed straight away leaves a usable window", async () => {
+    // THE REPORTED SEQUENCE: "I was on lazyfox home screen and I did ;W| for
+    // split then ;Wu to unsplit and that somehow broke the software and I was
+    // locked and couldn't do anything".
+    //
+    // `addTabSplitView` forms the pair ASYNCHRONOUSLY, so the unsplit can land
+    // while the pair is still being built. Everything downstream of a split —
+    // the settle loop that re-pins the strip, the wrapper the platform has not
+    // finished creating — then races the teardown, and the window is left in a
+    // state no later chord can rescue. This asserts the contract a hand typing
+    // the two chords expects: you end up with no split and a working keyboard.
+    await waitNoSplitStable();
+    await ctx.openCC(ctx.tabA);
+    await ctx.leaderSeq(ctx.tabA, ["W", "|"]);
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]);
+
+    const cleared = await waitNoSplitStable();
+    assert(
+      cleared,
+      "no split survives a split-then-unsplit typed back to back: " +
+        JSON.stringify(await ctx.tabsInfo().catch(() => "ERR")) +
+        " trail=" +
+        JSON.stringify((await ctx.chromeState().catch(() => null))?.lastMoveDebug)
+    );
+    const after = await ctx.tabsInfo();
+    assert(
+      after.some((x) => x.active),
+      "a tab is selected after the unsplit: " + JSON.stringify(after)
+    );
+    // The keyboard still answers: arming the leader throws when it cannot.
+    await ctx.leaderSeq(ctx.tabA, []);
+    await evalIn(ctx.tabA, `true`).catch(() => {});
+    await ctx.keyTap(ctx.tabA, "Escape").catch(() => {});
+
+    // And the strip is not wedged: splitting again still forms a pair.
+    await ctx.leaderSeq(ctx.tabA, ["W", "|"]);
+    const pair = await waitFor(async () => {
+      const ts = await ctx.tabsInfo();
+      const sv = ts.filter((t) => typeof t.splitViewId === "number" && t.splitViewId >= 0);
+      return sv.length === 2 ? sv : null;
+    }, 8000).catch(async () => {
+      throw new Error(
+        "re-split after a fast unsplit failed; tabs=" +
+          JSON.stringify(await ctx.tabsInfo().catch(() => "ERR")) +
+          " trail=" +
+          JSON.stringify((await ctx.chromeState().catch(() => null))?.lastMoveDebug)
+      );
+    });
+    assert(pair.length === 2, "the window can split again: " + JSON.stringify(pair));
+    await ctx.leaderSeq(ctx.tabA, ["W", "u"]);
+    await waitNoSplitStable();
+  });
+
   await t("split: native split closing one pane auto-unsplits the other", async () => {
     const pair = await nativeSplit();
     const toClose = pair.find((t) => !t.active) || pair[1];
@@ -402,7 +455,7 @@ export async function run(ctx: any): Promise<void> {
     } catch (e) {
       const now = await ctx.tabsInfo().catch(() => "ERR");
       const st = await ctx.chromeState().catch(() => "ERR");
-      throw new Error(";W s did not flip panes; before=" + before + " now=" + JSON.stringify(now) + " state=" + JSON.stringify(st && { lastAction: st.lastAction, strip: st.strip }));
+      throw new Error(";W s did not flip panes; before=" + before + " now=" + JSON.stringify(now) + " state=" + JSON.stringify(st && { lastAction: st.lastAction, strip: st.strip, move: st.lastMoveDebug }));
     }
     const after1 = await order();
     assert(after1 === flipped, ";W s swapped the panes: " + before + " -> " + after1);

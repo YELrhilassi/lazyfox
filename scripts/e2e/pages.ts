@@ -1329,6 +1329,56 @@ html,body{margin:0}
 </script>
 </body></html>`,
   },
+  // THE "IT OPENED AND CLOSED AGAIN" SHAPE.
+  //
+  // Every control here does its work SOMEWHERE ELSE: the button's own class,
+  // ARIA state and text never change, and all the page does is reveal a panel or
+  // flip a class on <body>. That is the ordinary framework toggle (a search
+  // field, a modal opener, a sidebar's collapse button), and it is exactly the
+  // shape the activation watcher used to judge as "the target did nothing" —
+  // which sent a privileged real press a third of a second later, undoing the
+  // first one. The counters make the double press countable instead of a video
+  // of a panel blinking.
+  "/toggleaway": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>TOGGLE AWAY</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:#fff; color:#111; }
+  main { padding:24px; max-width:760px; }
+  .bar { display:flex; gap:8px; padding:10px; background:#eef1f6; border:1px solid #d5dbe5;
+         border-radius:8px; margin:12px 0; }
+  /* Display-toggled rather than [hidden], because a class flip is the harder
+     case: it changes nothing about the tree. */
+  .bar.off { display:none; }
+  #side { width:220px; min-height:120px; background:#dfe6f2; border-radius:8px; padding:10px;
+          transition:width .12s linear; }
+  body.side-min #side { width:70px; }
+  button { font:inherit; padding:7px 12px; border:1px solid #cfd6e0; border-radius:6px;
+           background:#fff; color:#111; cursor:pointer; }
+</style></head>
+<body>
+<main>
+  <button id="open" data-id="open">Search</button>
+  <div class="bar off" id="bar"><input id="q" aria-label="query"><button id="go" data-id="go">Go</button></div>
+  <button id="side-btn" data-id="side-btn">Sidebar</button>
+  <div id="side">Sidebar body</div>
+</main>
+<script>
+  window.__away = { open: 0, side: 0 };
+  // The button is untouched: no class, no aria, no text change. Only the panel
+  // responds — which is why "the target was silent" is not evidence of a
+  // refused press.
+  document.getElementById("open").addEventListener("click", function () {
+    window.__away.open++;
+    document.getElementById("bar").classList.toggle("off");
+  });
+  document.getElementById("side-btn").addEventListener("click", function () {
+    window.__away.side++;
+    document.body.classList.toggle("side-min");
+  });
+</script>
+</body></html>`,
+  },
   // THE TRUNCATION SHAPE. A re-collect walks the document on a wall-time budget
   // (12ms) and a node cap (MAX_SCAN), and its EXPENSIVE tier — cursor:pointer
   // controls and media surfaces — is what expires first. A control that only the

@@ -431,6 +431,12 @@ export interface PageReport {
     probed: number;
     probeCap: number;
     probes: HintProbe[];
+    /**
+     * In view, visible, and NOT labelled — with the rule that dropped it (and,
+     * for a duplicate, the control that won the slot). `rejected` is the count;
+     * this is the answer to "why is that important button not hinted".
+     */
+    unlabeled: Array<{ tag: string; name: string; reason: string }>;
     shadowRoots: number;
     pointerControls: number;
     // What the last hint activation actually did. This is the answer to "I
