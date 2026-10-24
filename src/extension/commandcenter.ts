@@ -372,7 +372,7 @@ import type { ContentPopupShell } from "./content/find";
   // keystroke the presence report exists to prevent.
   //
   // `pageshow` is not enough on its own, and the gap is the one the field report
-  // describes (docs/KEYBOARD-FREEZE.md): a report can go missing while this
+  // describes: a report can go missing while this
   // document is alive, and a page that only speaks at boot cannot correct the
   // helper. A KEY is the proof this document is the one holding the keyboard,
   // and a click into the page is the repair the user performs by hand — so both

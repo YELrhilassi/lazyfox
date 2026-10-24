@@ -180,6 +180,64 @@ func TestMergeUserJS(t *testing.T) {
 	}
 }
 
+// A pref Lazyfox used to write and no longer manages must be taken OUT on
+// update, not left behind. The theme prefs are the real case: the browser only
+// follows the system again once the forced-dark values are gone, and a merge
+// that knew only the new payload's names would keep them forever.
+func TestMergeUserJSDropsRetiredPrefs(t *testing.T) {
+	src := distWithManagedPrefs(t)
+	prof := t.TempDir()
+	orig := "user_pref(\"ui.systemUsesDarkTheme\", 1);\n" +
+		"user_pref(\"extensions.activeThemeID\", \"firefox-compact-dark@mozilla.org\");\n" +
+		"user_pref(\"layout.css.prefers-color-scheme.content\", 2);\n" +
+		"user_pref(\"browser.custom.myown\", 1);\n"
+	if err := os.WriteFile(filepath.Join(prof, payload.UserJSName), []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeUserJS(src, prof); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(prof, payload.UserJSName))
+	s := string(got)
+	for name := range retiredPrefs {
+		if strings.Contains(s, name) {
+			t.Fatalf("retired pref %q survived the merge:\n%s", name, s)
+		}
+	}
+	if !strings.Contains(s, "browser.custom.myown") {
+		t.Fatalf("the user's own pref was taken out with the retired ones:\n%s", s)
+	}
+	if !strings.Contains(s, `extensions.lazyfox.loader", true`) {
+		t.Fatalf("the managed prefs were not written:\n%s", s)
+	}
+}
+
+// Uninstall takes the retired names out too: an uninstall that leaves a forced
+// dark mode behind did not return the browser to normal.
+func TestDropManagedPrefsDropsRetiredPrefs(t *testing.T) {
+	src := distWithManagedPrefs(t)
+	prof := t.TempDir()
+	js := "user_pref(\"ui.systemUsesDarkTheme\", 1);\n" +
+		"user_pref(\"browser.custom.myown\", 5);\n" +
+		"user_pref(\"extensions.lazyfox.loader\", true);\n"
+	if err := os.WriteFile(filepath.Join(prof, payload.UserJSName), []byte(js), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := dropManagedPrefs(src, prof); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(prof, payload.UserJSName))
+	if err != nil {
+		t.Fatalf("user.js should survive when it holds a user pref: %v", err)
+	}
+	if strings.Contains(string(got), "ui.systemUsesDarkTheme") || strings.Contains(string(got), "extensions.lazyfox") {
+		t.Fatalf("retired/managed prefs not dropped:\n%s", got)
+	}
+	if !strings.Contains(string(got), "browser.custom.myown") {
+		t.Fatalf("the user's own pref was dropped:\n%s", got)
+	}
+}
+
 func TestDropManagedPrefs(t *testing.T) {
 	src := distWithManagedPrefs(t)
 	prof := t.TempDir()

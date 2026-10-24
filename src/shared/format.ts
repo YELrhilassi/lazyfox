@@ -36,6 +36,19 @@ export function relTime(ts: number): string {
   return Math.floor(d / 30) + "mo ago";
 }
 
+// A URL as a list row should show it. Extension pages live under a UUID origin
+// that means nothing to a reader, so the product's own pages get a name.
+export function displayUrl(url: string): string {
+  const m = /^moz-extension:\/\/[^/]+\/([^?#]*)/.exec(url || "");
+  if (!m) return url || "";
+  const page = m[1] || "";
+  if (page === "commandcenter.html") return "Lazyfox home";
+  if (page === "options.html") return "Lazyfox settings";
+  if (page === "addons.html") return "Lazyfox add-ons";
+  if (page === "setup.html") return "Lazyfox setup";
+  return page || url;
+}
+
 // Display host for a URL ("example.com" from a full URL), stripping a leading
 // "www." the same way the Go core's HostOf does. Used by the related-history
 // index to group pages by site.

@@ -401,7 +401,7 @@ ok(
 // to be swallowed. A bar that only reports what already happened looks
 // identical to an idle one, so the bar has to say what it wants.
 //
-// This is the half docs/MULTIKEY-DESIGN.md §5 specifies as `; 1 ▸` and that
+// This is the half the bar needs to draw as `; 1 ▸` and that
 // shipped as `;` — the ▸ was drawn in the proposal and never built.
 
 eq("no expectation is the same shape as before", leaderSeqText("W", ""), leaderSeqText("W"));

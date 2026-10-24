@@ -42,7 +42,7 @@ export interface StatusBarCtl {
   update(): void;
   compute(): void;
   refreshDownloads(): Promise<void>;
-  pollDownloads(): Promise<void>;
+  pollDownloads(force?: boolean): Promise<void>;
   // Apply a sessionState reply from the background (the parsed state object,
   // delivered structured-cloned over the relay) — pushed into the Go store.
   applySessionState(state: any): void;
@@ -224,6 +224,15 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   // and re-render. Never throws: the leader's status callback runs this MID
   // key dispatch (a ;| split collapses the window while the bar re-renders),
   // so a dead tab or a half-torn-down window must degrade to best-effort.
+  // WHAT THE LAST compute() PUSHED. `compute` runs on a 500ms timer as well as
+  // on real events, and everything it does is expensive: a wasm status batch
+  // (across the Go boundary), a JSON stringify of the snapshot, and a repaint of
+  // the bar. On an idle browser none of its inputs change between ticks, so the
+  // tuple below is compared first and an unchanged one costs a few property
+  // reads instead of all of that. It used to do the full batch twice a second,
+  // per window, forever.
+  let computeKey: string | null = null;
+
   function compute(): void {
     // The raw strip index, read defensively and SEPARATELY. It is the one
     // volatile input the leader indicator needs, and it is exactly what throws
@@ -256,11 +265,21 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
         // selection not readable mid-collapse; keep the pushed value
         selStealth = !!(lastSnap && lastSnap.activeStealth);
       }
-      pushAndPaint([
-        { kind: "tab", selected: sel, tabIndex: (realSel < 0 ? 0 : realSel) + 1, tabCount: liveCount },
-        { kind: "ui", popup: ui.popup, leader: ui.leader },
-        { kind: "stealth", on: selStealth },
-      ]);
+      // NOTHING MOVED: the store already holds exactly these values and the bar
+      // already draws them. The leader indicator below is still consulted — it
+      // has its own, finer-grained guard (paintLeader) because it can change
+      // without any of these inputs changing.
+      const key =
+        sel + "|" + realSel + "|" + liveCount + "|" +
+        (ui.popup ? 1 : 0) + "|" + (ui.leader ? 1 : 0) + "|" + (selStealth ? 1 : 0);
+      if (key !== computeKey) {
+        computeKey = key;
+        pushAndPaint([
+          { kind: "tab", selected: sel, tabIndex: (realSel < 0 ? 0 : realSel) + 1, tabCount: liveCount },
+          { kind: "ui", popup: ui.popup, leader: ui.leader },
+          { kind: "stealth", on: selStealth },
+        ]);
+      }
     } catch (e) {
       // ignore — mid-collapse reads can throw. The leader indicator below is
       // deliberately OUTSIDE this guard: it is the one signal the user reads
@@ -286,6 +305,12 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   // repaint (any TabSelect, any poll) resurrects it — which is how a `;`
   // followed by Esc could leave the indicator lit forever. statusLeaderSignal
   // returns void, so the store is authoritative and still lands synchronously.
+  // The signal the bar is currently drawn from. Painting is idempotent but not
+  // free — a wasm write plus a whole shadow-DOM repaint (~20 querySelector calls
+  // and a dozen writes, see shared/statusbar.ts render) — and this runs on every
+  // compute(), which is a 500ms timer. Compare the rendered fields first.
+  let lastLeaderKey: string | null = null;
+
   function paintLeader(sel: number): void {
     try {
       const sig = resolveLeaderSignal({
@@ -297,6 +322,10 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
         selectedStrip: sel,
         uiLeader: deps.getUi().leader,
       });
+      const key =
+        (sig.armed ? "1" : "0") + "|" + sig.prefix + "|" + sig.expect + "|" + sel;
+      if (key === lastLeaderKey) return;
+      lastLeaderKey = key;
       try {
         core.statusLeaderSignal(sig.armed, sig.prefix, sig.expect);
       } catch (e) {
@@ -308,20 +337,41 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     }
   }
 
+  // A PUSH ASKS FOR A READ NOW. `refreshDownloads` used to repaint from the
+  // store only, which was enough while the store was re-read every second; with
+  // the idle back-off below, the first second of a new download would show the
+  // PREVIOUS list. So the push path reads Firefox's list first, then paints.
   function refreshDownloads(): Promise<void> {
-    return paint();
+    return pollDownloads(true);
   }
 
   let downloadsPolling = false;
-  async function pollDownloads(): Promise<void> {
+  // WAS ANYTHING MOVING at the last read, and when may the next IDLE read
+  // happen. The timer still ticks once a second, but a tick that is neither
+  // forced nor following an active download is a no-op unless a full idle
+  // period has passed.
+  //
+  // WHY: this used to read Downloads.sys.mjs, push a wasm status batch, and
+  // REPAINT THE WHOLE BAR once a second, per window, for the life of the
+  // browser — with nothing downloading, which is almost always. Measured with
+  // the extension installed on a quiet page, the browser process burned 7-27%
+  // of a core; a download list nobody is watching was a large part of it.
+  let downloadsActive = false;
+  let nextIdleReadAt = 0;
+  const DOWNLOAD_IDLE_RECHECK_MS = 15000;
+
+  async function pollDownloads(force = false): Promise<void> {
     // Never overlap polls: a slow Downloads.sys.mjs read (large histories,
     // long-lived big downloads) must not pile up intervals that race the
     // store. updateDownloads pushes the fresh snapshot into Go, which owns
     // the merge, dismissed flags and speed.
     if (downloadsPolling) return;
+    if (!force && !downloadsActive && Date.now() < nextIdleReadAt) return;
     downloadsPolling = true;
     try {
-      await updateDownloads();
+      const { active } = await updateDownloads();
+      downloadsActive = active > 0;
+      nextIdleReadAt = Date.now() + DOWNLOAD_IDLE_RECHECK_MS;
       await paint();
     } catch (e) {
       // downloads are best-effort; never let a poll break the bar

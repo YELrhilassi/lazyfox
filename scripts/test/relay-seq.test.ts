@@ -5,8 +5,8 @@
 // arrive the helper does not merely lack a fact: it claims the tab's keys, and
 // the user's first keystroke on that page is answered by nobody. The reported
 // symptom has no explanation in the product at all — "nothing responds, not even
-// the leader" (docs/KEYBOARD-FREEZE.md) — because nothing records that a message
-// was ever MISSING. docs/KEYBOARD-OWNERSHIP.md 5.6 asks for the number, and this
+// the leader" — because nothing records that a message
+// was ever MISSING. The counter exists for that number, and this
 // is the arithmetic that produces it.
 //
 // What matters most here is the DIRECTION of the mistakes. A counter that

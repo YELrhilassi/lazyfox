@@ -1,6 +1,7 @@
 import { esc } from "../dom";
 import { core } from "../core";
 import { faviconHtml } from "../favicon";
+import { displayUrl } from "../format";
 import { planTabJump } from "../tabjump";
 import type { PopupItem } from "../types";
 import { basePanel, makeSelector, type PopupCtx } from "./kit";
@@ -223,7 +224,7 @@ export function openTabsPopup(ctx: PopupCtx): void {
   ctx.open(
     basePanel(
       "Tabs",
-      "no tabs",
+      "filter tabs\u2026",
       "<span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Enter</span> switch &middot; " +
         "<span class='lf-badge'>x</span> close &middot; <span class='lf-badge'>h/l</span> move &middot; " +
         "<span class='lf-badge'>Esc</span> close"
@@ -267,7 +268,7 @@ export function openTabsPopup(ctx: PopupCtx): void {
             // when the tab has none.
             faviconHtml(t.favIconUrl) +
             "</div><div class='s'>" +
-            esc(t.url || "") +
+            esc(displayUrl(t.url || "")) +
             "</div>"
           );
         },

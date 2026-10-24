@@ -191,11 +191,32 @@ export function startLifeCounting(): void {
       lifeMutations += all;
       lifeQuiet += quiet;
     });
+    // ATTRIBUTE-CHURN IS FILTERED, and this one mattered: a hint session can
+    // stay open for minutes on exactly the apps that write classes and styles
+    // every frame, and an unfiltered `attributes: true` on the whole subtree
+    // makes Gecko record EVERY one of those writes for a counter that only
+    // needs "did something happen". The filter keeps the attributes that mean
+    // "the page reacted" (a state class, an expanded/selected flag, a hidden
+    // panel, a disabled control) and drops the rest; new nodes and changed
+    // text are still counted, which is where most responses show up anyway.
     lifeObserver.observe(document.documentElement, {
       subtree: true,
       childList: true,
       characterData: true,
       attributes: true,
+      attributeFilter: [
+        "class",
+        "style",
+        "hidden",
+        "open",
+        "disabled",
+        "aria-hidden",
+        "aria-expanded",
+        "aria-selected",
+        "aria-checked",
+        "aria-disabled",
+        "aria-pressed",
+      ],
     });
   } catch (e) {
     lifeObserver = null;

@@ -33,7 +33,11 @@ export function defaultApps(): QuickApp[] {
 // it, so a page themed onto the same colours stops looking like a different
 // application bolted onto the browser.
 const DARK_DEFAULTS: DarkConfig = {
-  mode: "auto",
+  // OFF by default. Darkening pages is a preference, and a browser that
+  // recolours every site on install is asking the user to notice and undo a
+  // design decision they never made. `;Y g` (or Settings → Dark mode) turns it
+  // on, `auto` is the smart policy once it is on.
+  mode: "off",
   engine: "auto",
   palette: DEFAULT_PALETTE,
   background: "#16161e",

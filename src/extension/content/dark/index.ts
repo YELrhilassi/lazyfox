@@ -350,14 +350,38 @@ export function createDarkMode(deps: DarkDeps): DarkController {
    */
   let running: Promise<void> | null = null;
   let queued = false;
+  // WHAT ARRIVED WHILE A PASS WAS RUNNING: the nodes those mutations added. The
+  // next pass measures THEM, not the document — see SampleOptions.added. Bounded,
+  // because a page can add nodes faster than a pass can paint them, and an
+  // unbounded list would be its own leak; past the bound the flag asks for one
+  // ordinary pass instead.
+  const ADDED_QUEUE_MAX = 600;
+  let queuedAdded: Element[] = [];
+  let queuedFull = false;
   let tailTimer: number | null = null;
 
-  function requestApply(config: Config): void {
+  function rememberAdded(added: Element[]): void {
+    if (!added.length) return;
+    if (queuedAdded.length + added.length > ADDED_QUEUE_MAX) {
+      queuedAdded = [];
+      queuedFull = true;
+      return;
+    }
+    for (const el of added) queuedAdded.push(el);
+  }
+
+  function requestApply(config: Config, added?: Element[]): void {
+    rememberAdded(added || []);
     if (running) {
       queued = true;
       return;
     }
-    running = apply(config)
+    // A full pass is asked for by the coverage walk, a user action and the
+    // overflow case; everything the observer reports is served from the queue.
+    const target = queuedFull ? undefined : queuedAdded.length ? queuedAdded : undefined;
+    queuedAdded = [];
+    queuedFull = false;
+    running = apply(config, target)
       .catch(() => undefined)
       .then(() => {
         running = null;
@@ -383,12 +407,22 @@ export function createDarkMode(deps: DarkDeps): DarkController {
    * white panels under our mapped-light ink — 991 unreadable text elements. A
    * settled page produces no mutations, so nothing else would have asked.
    */
+  // A page that keeps GROWING never reports zero pending: an infinite feed adds
+  // elements as fast as a slice walks them, so "cover the rest of the page" is a
+  // walk that never ends — one more pass every 60ms for the life of the tab. The
+  // ceiling makes the coverage walk finite; past it, new content is painted by
+  // the incremental resamples, which cost what the new nodes cost.
+  const MAX_CONTINUATIONS = 16;
+  let continuations = 0;
+
   function scheduleContinuation(): void {
+    if (continuations >= MAX_CONTINUATIONS) return;
     if (tailTimer !== null) return;
     try {
       tailTimer = deps.win.setTimeout(() => {
         tailTimer = null;
         if (!state.on || applier.pending() <= 0) return;
+        continuations++;
         requestApply(deps.getConfig());
       }, 60);
     } catch {
@@ -482,6 +516,44 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     }
   }
 
+  /**
+   * The elements a batch ADDED — the only thing a pass can act on.
+   *
+   * A CLASS OR STYLE CHANGE CANNOT MOVE A COLOUR THIS ENGINE KNOWS. Every
+   * element's own colours were recorded the first time it was measured
+   * (`originals`) and are never re-read — deliberately, because a later pass runs
+   * with our sheet installed and would read our own paint back. So attribute
+   * churn can only change GEOMETRY, and geometry is re-read for the elements a
+   * pass actually visits. `attributes: true, subtree: true` was therefore buying
+   * a pass per 400ms on every framework app — a virtualised list, a chat client,
+   * a mail client — for an answer that cannot change. Measured on the harness's
+   * app fixture: 1 600 attribute writes a frame, and the add-on pinned the main
+   * thread for 600-800ms of every frame. That is the reported freeze.
+   *
+   * Toggling a theme is a class change on <html> or <body>, and that one IS
+   * watched — without `subtree` (see `rootObserver`).
+   */
+  function addedElements(records: MutationRecord[]): Element[] {
+    const out: Element[] = [];
+    for (const rec of records) {
+      const nodes = rec.addedNodes;
+      const n = nodes ? nodes.length : 0;
+      for (let i = 0; i < n; i++) {
+        const node = nodes[i];
+        if (!node) continue;
+        if (node.nodeType === 1) out.push(node as Element);
+        else if (node.nodeType === 3) {
+          const parent = (node as Text).parentElement;
+          if (parent) out.push(parent);
+        }
+        if (out.length >= ADDED_QUEUE_MAX) return out;
+      }
+    }
+    return out;
+  }
+
+  let rootObserver: MutationObserver | null = null;
+
   function ensureObserver(): void {
     if (observer) return;
     try {
@@ -499,20 +571,43 @@ export function createDarkMode(deps: DarkDeps): DarkController {
         } catch {
           /* the document may be going away; treat the batch as the page's */
         }
+        const added = addedElements(records);
+        if (!added.length) return;
+        rememberAdded(added);
         if (gate()) {
           requestApply(deps.getConfig());
           return;
         }
         scheduleTail();
       });
+      // CHILD LIST ONLY: new nodes are the only thing that can need painting.
       observer.observe(deps.doc.documentElement, {
         childList: true,
         subtree: true,
-        attributes: true,
-        attributeFilter: ["class", "style"],
       });
     } catch {
       observer = null;
+    }
+    // THE ROOT'S OWN ATTRIBUTES, without subtree: `class="dark"` on <html> or
+    // <body> is how a site switches its palette, and that answer can change. One
+    // element each, so the cost is nothing — unlike the subtree version, which
+    // charged a record per class write anywhere in the document.
+    if (rootObserver) return;
+    try {
+      rootObserver = new MutationObserver(() => {
+        if (!state.on) return;
+        if (quiet > 0) return;
+        if (!gate()) {
+          scheduleTail();
+          return;
+        }
+        requestApply(deps.getConfig());
+      });
+      const opts = { attributes: true, attributeFilter: ["class", "style"] };
+      if (deps.doc.documentElement) rootObserver.observe(deps.doc.documentElement, opts);
+      if (deps.doc.body) rootObserver.observe(deps.doc.body, opts);
+    } catch {
+      rootObserver = null;
     }
   }
 
@@ -532,7 +627,7 @@ export function createDarkMode(deps: DarkDeps): DarkController {
     earlySheet = false;
   }
 
-  async function apply(config: Config): Promise<void> {
+  async function apply(config: Config, added?: Element[]): Promise<void> {
     passes++;
     try {
       deps.doc.documentElement?.setAttribute("data-lf-dark-passes", String(passes));
@@ -562,6 +657,7 @@ export function createDarkMode(deps: DarkDeps): DarkController {
       // at.
       lastUrl = url;
       gate.reset();
+      continuations = 0;
     }
     // A MODE THAT NO LONGER WANTS DARK HANDS THE PAGE ITS OWN SCHEME BACK.
     // The ask writes `color-scheme: dark` on the root and leaves it there for as
@@ -669,7 +765,13 @@ export function createDarkMode(deps: DarkDeps): DarkController {
             state.coverage = asked.coverage;
             state.pageDark = true;
             mirror();
-            ensureObserver();
+            // NO OBSERVER HERE. The handle returns immediately while no theme of
+            // ours is live (`if (!state.on) return`), and a page that paints its
+            // own dark design has nothing for us to repaint: every record would
+            // be work queued for a callback that does nothing with it. On a
+            // natively-dark app (YouTube, GitHub, X) that is a permanent tax
+            // paid for a feature doing no work. The observer is attached where it
+            // matters — when a sheet is actually applied (see below).
             return;
           }
           // It declared a dark theme and did not honour the ask (a declaration
@@ -687,7 +789,10 @@ export function createDarkMode(deps: DarkDeps): DarkController {
 
     // The first pass after a placeholder paint still measures in ONE task: a
     // yield there is a frame of half-dressed page, even with the placeholder up.
-    let samples: PageSample[] = await applier.sample({ sync: repaintSync });
+    let samples: PageSample[] = await applier.sample({
+      sync: repaintSync,
+      added: added && added.length ? added : undefined,
+    });
     let analysis = analyze(samples);
 
     // ONCE THE SITE'S THEME IS THE ANSWER, IT STAYS THE ANSWER.
@@ -711,7 +816,9 @@ export function createDarkMode(deps: DarkDeps): DarkController {
       state.coverage = analysis.coverage;
       state.pageDark = true;
       mirror();
-      ensureObserver();
+      // NO OBSERVER: see the same note in the native-verdict branch above. This
+      // path means "the site paints its own dark theme, we paint nothing", so
+      // there is nothing for a mutation callback to do.
       return;
     }
     // The page was the site's own theme and is not any more (the site dropped it,
@@ -793,6 +900,9 @@ export function createDarkMode(deps: DarkDeps): DarkController {
 
   function write(next: Config): void {
     deps.setConfig(next);
+    // A user action re-opens the coverage budget: turning the theme on is the
+    // moment a fresh walk is wanted.
+    continuations = 0;
     // A user action re-opens the native-theme question: turning a site off and on
     // again should give the site's own theme back rather than a recolouring of
     // its light palette. Answering it needs the page unpainted, so our paint comes
@@ -870,11 +980,13 @@ export function createDarkMode(deps: DarkDeps): DarkController {
       // white.
       //
       // It can only guess, because the stored config is still loading and a site
-      // rule cannot be known yet. The guess is the OS preference: a user on a
-      // dark desktop asked for dark pages, and a dark placeholder over a page that
-      // turns out to be dark already is invisible, while a white one is not. On a
-      // light desktop the guess is skipped here and made again the moment the
-      // config lands (see `apply`), which is normally still before first paint.
+      // rule cannot be known yet. The guess is the OS preference applied to the
+      // config in hand — which, before storage answers, is the SHIPPED default.
+      // That default is `off`, so a fresh profile paints nothing here and the
+      // real config installs the placeholder in `apply` the moment it lands
+      // (normally still before first paint). Guessing dark on a dark-OS machine
+      // before the config says so is what a page nobody asked to recolour must
+      // not see, so the guess follows the config rather than the desktop.
       let prefersDark = false;
       try {
         prefersDark = !!deps.win.matchMedia && deps.win.matchMedia("(prefers-color-scheme: dark)").matches;

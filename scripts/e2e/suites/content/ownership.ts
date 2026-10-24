@@ -405,7 +405,7 @@ export async function run(ctx: any): Promise<void> {
     // navigation; and the readout carries the measured gap, which is the number
     // CONTENT_EXPECT_MS is supposed to be set from. NOT claimed: that the
     // report always fits inside the window (measured 210ms/3043ms/3277ms
-    // samples in docs/tasks/2026-10-15-MANUAL-TEST-REPORTS.md).
+    // samples of 210ms, 3043ms and 3277ms).
     await ctx.collapseWindow();
     const a = await createTab();
     await ctx.gotoPage(a, HOME);
@@ -532,9 +532,8 @@ export async function run(ctx: any): Promise<void> {
     // deletes the arming — which is why `ageMs` is -1 in both cases, and why a
     // "spent" window can carry a gap LONGER than the window — and in between the
     // helper has claimed the keys, so the double owner comes back for keys pressed
-    // in that gap. That is Report 1's named residual, now a number: see
-    // docs/tasks/2026-10-15-MANUAL-TEST-REPORTS.md, which records the samples and
-    // leaves the constant's value as the open question it is.
+    // in that gap. The measured samples are in the baseline; the constant's
+    // value stays the open question it is.
     const gap = Number(spent.gapMs);
     assert(Number.isFinite(gap) && gap >= 0, "the readout names the gap it measured: " + JSON.stringify(spent));
     assert(Number(spent.gapSamples) >= 1, "and the sample is counted: " + JSON.stringify(spent));

@@ -22,8 +22,7 @@
 // has to be handed to the browser to be exercised.
 //
 // See `src/chrome/dependency-audit.ts` for the check that keeps this from
-// rotting, and docs/tasks/2026-10-02-DETERMINISTIC-CHROME-TESTING.md §1 for
-// why.
+// rotting, and why the seam exists.
 
 /** The subset of `document` the chrome layer actually touches. */
 export interface ChromeDocument {
