@@ -1,11 +1,5 @@
 # Releasing Lazyfox
 
-> **Design note.** This repo's release flow is an instance of a reusable
-> pattern — the “one-command, read-only-CI” release. If you want to *understand*
-> why it is built this way and reapply it to another project, read
-> **`docs/RELEASE-WORKFLOW-PATTERN.md`** (written agnostically). This page is the
-> concrete, Lazyfox-specific playbook.
-
 Two long-lived branches, with a strict rule:
 
 - **`dev-nightly`** (and any feature branches) — the latest **unsigned** build.
@@ -192,7 +186,7 @@ canonical names (`lazyfox-install-linux`, …) so `releases/latest/download/…`
 
 The installer auto-detects the Firefox of its channel, the profile that Firefox
 is actually using (no prompting), and falls back to a dedicated Lazyfox-owned
-profile if the user's own cannot be used. See `docs/INSTALLER-ANALYSIS.md`.
+profile if the user's own cannot be used.
 
 ## CLI reference
 

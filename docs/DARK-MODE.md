@@ -65,14 +65,16 @@ the first frame, before any measurement can run (see "The first frame" below).
 
 ## 2. Deciding (dark/index.ts)
 
-Four policies, and the default is the interesting one:
+Four policies. **The default is `off`**: nothing is recoloured until the user asks
+for it, because a page that is left alone is the only result that can never be
+wrong. `;Y g` cycles the default, and the settings page has the same field.
 
 | `mode` | What happens |
 | --- | --- |
-| `auto` (default) | darken the page UNLESS it is already dark — the detection is consulted |
+| `off` (default) | nothing at all |
+| `auto` | darken the page UNLESS it is already dark — the detection is consulted |
 | `dark` | darken regardless; the detection is not consulted |
 | `light` | the mirror image, for a user who prefers light pages |
-| `off` | nothing at all |
 
 `auto` is what "smart" means here. `;Y d` writes `dark` (or `off`) as a **per-site
 rule**, because a user who toggles a page is overriding an automatic decision
