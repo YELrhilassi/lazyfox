@@ -68,23 +68,27 @@ replaces is backed up first. The same binary removes Lazyfox again.
 
 | Key | Action |
 | --- | --- |
-| `;` | which-key menu |
+| `;` | open the leader menu (which-key) |
+| `;n` / `;x` | new tab / close tab |
+| `;j` / `;k` | next tab / previous tab |
+| `;t` | tab switcher; type to filter, digits jump to a tab |
 | `;f` | link hints |
-| `;t` | tab switcher (type to filter, `1`–`9` to jump) |
-| `;s` / `;S` | search in a new tab / the current tab |
-| `;o` / `;O` | open a URL in a new tab / the current tab |
+| `;s` / `;S` | search the web in a new tab / in this tab |
+| `;o` / `;O` | open a URL in a new tab / in this tab |
 | `;h` / `;b` / `;d` | history / bookmarks / downloads |
 | `;P` | sessions |
-| `;W \|` | split side by side |
+| `;Q` | save the session and quit |
+| `;W` | window and layout; `;W` then `&#124;` splits side by side |
+| `;F` / `;B` | next / previous scroll region |
+| `;C` / `;Z` / `;K` | screenshot / zoom / address groups |
 | `;/` | find in page |
 | `;R` | reader mode |
-| `;Y d` | dark mode for this site |
-| `;N` | isolated tab |
+| `;Y d` | dark mode for this site (all theme actions are under `;Y`) |
+| `;N` | stealth tab, wiped when it closes |
+| `;T` | diagnostics |
 | `;?` | the full keymap, searchable |
 
-`;W`, `;Z`, `;C`, `;Y` and `;K` open groups for window and layout, zoom,
-screenshots, theme and address. `j`/`k`/`d`/`u`, `gg` and `G` scroll the page or
-the focused scroll region.
+`j`/`k`/`d`/`u`, `gg` and `G` scroll the page or the focused scroll region.
 
 ## How it works
 
