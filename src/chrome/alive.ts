@@ -127,6 +127,12 @@ export function createAliveAnnounce(
 ) {
   let announced = false;
   let ackInFlight = false;
+  // The one post-boot re-announce (see announce) has already been spent. It is
+  // a ONE-SHOT: a timer that re-armed itself here used to run for the life of
+  // the window, and each pass enumerated the whole browser console
+  // (getMessageArray) and pushed it through the relay — on an idle browser, for
+  // no new information. A diagnostic must cost something once, or not at all.
+  let reannounced = false;
 
   function announce(): void {
     if (announced || ackInFlight) return;
@@ -149,13 +155,16 @@ export function createAliveAnnounce(
         // requestReply resolves null on timeout/error; the ack object on success.
         if (ack && ack.ok) announced = true;
         // otherwise the next 500ms poll retries
-        // TEMPORARY diagnostic: one re-announce a generation after boot, so the
-        // loader-error capture in storage reflects the console state AFTER the
-        // user has actually driven pages (the boot-time capture predates every
-        // content-page load and could never answer "did the child actor ever
-        // instantiate"). The ack store refreshes lfLoaderErrs on this second
-        // pass; anything after that is again silent-by-design.
-        if (ack && ack.ok) {
+        // ONE re-announce a generation after boot, so the loader-error capture
+        // in storage reflects the console state AFTER the user has actually
+        // driven pages (the boot-time capture predates every content-page load
+        // and could never answer "did the child actor ever instantiate"). The
+        // ack store refreshes lfLoaderErrs on this second pass; anything after
+        // that is again silent-by-design — and it must be ONCE. This used to
+        // re-arm itself, so every window enumerated the browser console and
+        // wrote a relay round trip every 25 seconds, forever.
+        if (ack && ack.ok && !reannounced) {
+          reannounced = true;
           globalThis.setTimeout(() => {
             announced = false;
             announce();

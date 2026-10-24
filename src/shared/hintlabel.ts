@@ -31,7 +31,7 @@
 //
 // The design decisions behind these numbers (flat, no border, no shadow, fill
 // contrast instead of chrome, why monospace, and what the earlier versions looked
-// like) are argued in docs/HINTS.md §11.
+// like) are settled by the measurements below.
 //
 // MEASURED, NOT GUESSED: with the values below a one-character label is
 // 15.7 x 17 CSS px (the preview page reports it; a two-character label is

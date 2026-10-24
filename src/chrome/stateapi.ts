@@ -11,7 +11,7 @@ import type { ChromeEnv } from "./env";
 // The shapes are structural, so DebugState satisfies these without either side
 // importing the other.
 
-// The relay tab and the LOST-COMMAND COUNTER (docs/KEYBOARD-OWNERSHIP.md 5.6).
+// The relay tab and the LOST-COMMAND COUNTER.
 // A presence report travels four fire-and-forget hops and its loss is silent:
 // the helper keeps owning a live page's keys. `gaps`/`lastGap` make that a
 // number and name the hop — `relayLost` = the relay PAGE discarded them (TTL or
@@ -148,7 +148,7 @@ export interface ChromeStateFocusV1 {
 // this reply can be right while the user's keyboard is dead: keys are delivered
 // to the FOCUSED document and nowhere else, so `owns` true with `inPage` false
 // means every key silently does nothing — `;` and `;r` working while
-// `j`/`k`/hints/find are dead (docs/KEYBOARD-OWNERSHIP.md §1 is the table).
+// `j`/`k`/hints/find are dead.
 // `veto` is the other half of the same report: a repair vetoed every time,
 // invisibly, looks identical to one that was never wired up.
 export interface ChromeStateKeyboardV1 {

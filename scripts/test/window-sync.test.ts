@@ -50,6 +50,7 @@ function harness(opts: { readyState?: string; autoRunTimers?: boolean } = {}) {
     env,
     channel: {
       startRelay: () => true,
+      poll: () => {},
       requestSessionState: () => Promise.resolve(),
       handleLfc: () => {},
     },

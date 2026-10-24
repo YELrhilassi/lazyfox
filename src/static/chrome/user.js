@@ -39,11 +39,20 @@ user_pref("privacy.resistFingerprinting.block_mozAddonManager", true);
 // BiDi suite exercises.
 user_pref("extensions.webextensions.remote", false);
 
-// Dark mode — Lazyfox is a dark, keyboard-first UI; force it for both the
-// browser chrome and web content regardless of the OS theme.
-user_pref("ui.systemUsesDarkTheme", 1);
-user_pref("layout.css.prefers-color-scheme.content", 2);
-user_pref("extensions.activeThemeID", "firefox-compact-dark@mozilla.org");
+// Theme — FOLLOW THE SYSTEM, never force one. Firefox's chrome theme, the
+// `prefers-color-scheme` a page sees, and the website colour scheme all come
+// from the OS setting. A browser should look like the rest of the desktop
+// unless its user chose otherwise, and that choice is Firefox's own
+// Settings → Appearance, not a pref this file pins on every update.
+//
+// Earlier builds forced dark here (`ui.systemUsesDarkTheme`, the dark theme in
+// `extensions.activeThemeID`, and a misspelled
+// `layout.css.prefers-color-scheme.content` that Firefox never read). Those
+// pref NAMES are retired in the installer
+// (installer/internal/ops/userjs.go#retiredPrefs), so an update takes the
+// forced values back out of an existing profile instead of leaving it stuck on
+// dark for good. Nothing is written in their place: Firefox's default is the
+// system theme, which is the whole point.
 
 // Privacy + quiet-by-default: strong tracking protection, and none of the
 // telemetry / crash / recommendation noise that nags a normal user.
@@ -106,3 +115,67 @@ user_pref("browser.startup.homepage_override.mstone", "ignore");
 // Lazyfox key worked until (and sometimes despite) dismissing it.
 user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("browser.aboutwelcome.enabled", false);
+
+// ---- RESOURCE PREFS: what Firefox does when nobody asked -------------------
+//
+// Lazyfox exists to be fast on a keyboard, and a browser that spends its idle
+// time prefetching, pre-connecting to links, animating chrome it does not have,
+// and writing session state to disk is spending the user's battery on work they
+// never asked for. Every pref below removes work; none of them remove a feature
+// Lazyfox uses, and all of them can be deleted from this file (the installer
+// merges, it does not own the profile).
+
+// AUTOPLAY OFF. `media.autoplay.default=5` blocks audio AND video; the blocking
+// policy makes the block happen before the media element starts decoding, not
+// after the first frame. This is the single biggest CPU win on news/social
+// pages, which is exactly where a keyboard-first user lands.
+user_pref("media.autoplay.default", 5);
+user_pref("media.autoplay.blocking_policy", 2);
+user_pref("media.autoplay.block-webaudio", true);
+
+// NO SPECULATIVE NETWORK. Firefox pre-connects and, on many builds,
+// pre-fetches links it thinks you will click — DNS + TLS + sometimes the whole
+// response, for a guess. Lazyfox jumps by keyboard, so the guess is usually
+// wrong; the connections are pure CPU/network/battery. DNS prefetch and the
+// connection predictor are the other two halves of the same behaviour.
+user_pref("network.prefetch-next", false);
+user_pref("network.dns.disablePrefetch", true);
+user_pref("network.dns.disablePrefetchFromHTTPS", true);
+user_pref("network.predictor.enabled", false);
+user_pref("network.predictor.enable-prefetch", false);
+user_pref("network.http.speculative-parallel-limit", 0);
+user_pref("browser.urlbar.speculativeConnect.enabled", false);
+
+// SESSION STATE IS WRITTEN TO DISK EVERY 15 SECONDS for the life of the
+// browser, whether or not a tab changed. A minute is the same guarantee with a
+// quarter of the writes.
+user_pref("browser.sessionstore.interval", 60000);
+
+// CHROME ANIMATIONS. Lazyfox's UI is its own; Firefox's tab/panel/fullscreen
+// animations are frames nobody watches on a UI with no visible tabs.
+user_pref("toolkit.cosmeticAnimations.enabled", false);
+user_pref("ui.prefersReducedMotion", 1);
+user_pref("browser.tabs.animate", false);
+user_pref("browser.fullscreen.animate", false);
+// SMOOTH SCROLLING OFF, deliberately: `j`/`k`/`d`/`u` are Lazyfox's own instant
+// scrolls, and an animated wheel scroll is a repaint per frame for motion the
+// user did not ask for. Turn it back on if you like the feel; nothing in
+// Lazyfox depends on it.
+user_pref("general.smoothScroll", false);
+
+// NO MACHINE-LEARNING SURFACES. Firefox ships link/tab suggestions, smart tab
+// groups and a local model that run in the background; none of them is used by
+// a keyboard-first UI, and the wrong one is in the wrong place anyway.
+user_pref("browser.ml.enable", false);
+user_pref("browser.ml.chat.enabled", false);
+user_pref("browser.tabs.groups.smart.enabled", false);
+user_pref("extensions.ml.enabled", false);
+
+// Nothing else from Mozilla's own surfaces: pocket (the real pref name —
+// `browser.pocket.enabled` above is kept for older builds that honoured it),
+// Firefox View's own tab, and the tab hover previews that paint a card over the
+// page on mouse-over.
+user_pref("extensions.pocket.enabled", false);
+user_pref("extensions.pocket.showHome", false);
+user_pref("browser.tabs.firefox-view.enabled", false);
+user_pref("browser.tabs.hoverPreview.enabled", false);

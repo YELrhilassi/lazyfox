@@ -58,7 +58,7 @@ export interface VisibilityPass {
    * DUPLICATE affordance — YouTube marks the thumbnail link `aria-hidden`
    * because the title link beside it is the accessible one, while the thumbnail
    * is the biggest click target on the page. Treating it as invisibility deleted
-   * those targets outright (see docs/HINTS.md §10). What is genuinely off-screen
+   * those targets outright. What is genuinely off-screen
    * or covered is answered by the checks that can actually see that: the CSS
    * visibility test, `inViewport`, and `reachable`'s hit tests.
    */
@@ -134,11 +134,11 @@ export function createVisibilityPass(readStyle: StyleReader = defaultStyleReader
         // makes the subtree neither clickable nor focusable, and no stylesheet
         // can undo that. `hidden` is NOT here — it is only the UA's default
         // display:none, which author CSS overrides routinely (see the interface
-        // note above and docs/HINTS.md §10.1). A subtree the UA really is
+        // note above). A subtree the UA really is
         // hiding has no box, which `visible()` measures directly.
         //
         // `aria-hidden="true"` is NOT in this list (see hiddenByAttribute in the
-        // interface above and docs/HINTS.md §10): it hides a node from assistive
+        // interface above): it hides a node from assistive
         // technology, and pages put it on elements that are plainly visible and
         // clickable — a thumbnail link duplicated by a title link, an icon inside
         // a labelled button, a decorative overlay. Dropping every aria-hidden

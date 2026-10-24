@@ -3,6 +3,7 @@
 // No DOM or state here — everything is a function of (mode, query, item).
 
 import { esc, favicon } from "../../shared/dom";
+import { displayUrl } from "../../shared/format";
 import { send } from "../../shared/protocol";
 import type { QuickApp } from "../../shared/types";
 
@@ -159,7 +160,7 @@ export function renderItem(it: any, mode: string, quickView: boolean): string {
   if (mode === "tabs") {
     return (
       "<div class='t'>" + (it.active ? "<span class='dot'></span>" : "") + esc(it.title) +
-      "</div><div class='s'>" + esc(it.url || "") + "</div>"
+      "</div><div class='s'>" + esc(displayUrl(it.url || "")) + "</div>"
     );
   }
   if (mode === "downloads") {

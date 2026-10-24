@@ -37,7 +37,7 @@ export interface WinSyncDeps {
   status: {
     update(): void;
     compute(): void;
-    pollDownloads(): Promise<void>;
+    pollDownloads(force?: boolean): Promise<void>;
     setActiveStealth(on: boolean): void;
     getStealthFlags(): boolean[];
   };
@@ -61,6 +61,19 @@ export interface WinSyncDeps {
 // keypress. Reading a URL string is a property access, not an IPC round trip, so
 // the read can afford to be frequent; the EXPENSIVE half of the tick (tab
 // dedupe, selection steering, status repaint) stays on RELAY_POLL_MS below.
+// How often the relay's URL is READ. The messaging design in docs/MESSAGING.md
+// has the helper read the relay page's rewritten URL, so this interval IS the
+// floor on how long any command from the background can sit unnoticed. It is
+// a property read when the slot is empty (the common case), which is why it can
+// afford to be this frequent — unlike the 500ms tick below, whose work is tab
+// lists, selection steering and a status repaint.
+//
+// (A location-change hook was tried here to make delivery event-driven. It did
+// fire, and it did cut the wake-ups — but it also gave the slot TWO readers, and
+// the split suite's own counters showed duplicate handling of the same
+// fragment. The dedupe below makes that impossible now, but the transport is
+// the one part of this browser that must not be clever: a late command is a
+// bug report, a dropped one is a broken feature. The timer stays the reader.)
 const RELAY_SLOT_MS = 80;
 const RELAY_POLL_MS = 500;
 // Download progress is allowed to be approximate — it is a visual indicator and

@@ -117,7 +117,7 @@ import { createStickyBlur } from "./stickyblur";
     setConfig: (next) => {
       // Optimistic locally, then confirmed through the background: the
       // background caches config, and writing storage behind its back lets the
-      // copies disagree (docs/FINDINGS.md). The writer carries the ack/retry/revert
+      // copies disagree. The writer carries the ack/retry/revert
       // contract above so a dropped reply can no longer be a dropped setting.
       config = next;
       void writeConfig(next);
@@ -368,7 +368,7 @@ import { createStickyBlur } from "./stickyblur";
     if (active && republishDark) republishDarkVerdict();
     return send("syncContent", { active, url: href, doc: docId });
   };
-  // The report is RE-ASSERTED, not sent once (docs/KEYBOARD-FREEZE.md): a
+  // The report is RE-ASSERTED, not sent once: a
   // dropped report left the helper claiming keys the page owned while it was
   // alive and answering. A key is the proof the document still has the
   // keyboard; costs a background round trip + two session writes, so

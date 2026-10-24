@@ -15,6 +15,38 @@ import (
 // owns, without parsing the values.
 var userPrefRe = regexp.MustCompile(`^user_pref\("([^"]+)"`)
 
+// retiredPrefs are pref names Lazyfox wrote in earlier builds and no longer
+// manages. They are removed from user.js on install/update as if they were
+// managed, because a merge only knows the names the NEW payload declares: a
+// pref deleted from the payload would otherwise survive every update forever,
+// leaving a value the product no longer controls.
+//
+//   - ui.systemUsesDarkTheme and extensions.activeThemeID forced a dark
+//     browser regardless of the OS. Lazyfox now follows the system, which
+//     Firefox expresses by both prefs being ABSENT (its Appearance "device"
+//     choice clears ui.systemUsesDarkTheme rather than setting a value).
+//   - layout.css.prefers-color-scheme.content was never a real pref — the real
+//     one is ...content-override — so it did nothing, but it should still not
+//     accumulate in a profile.
+var retiredPrefs = map[string]bool{
+	"ui.systemUsesDarkTheme":                  true,
+	"extensions.activeThemeID":                true,
+	"layout.css.prefers-color-scheme.content": true,
+}
+
+// removalSet is what a merge or uninstall must take out of user.js: every pref
+// the payload manages, plus every retired name.
+func removalSet(managed map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(managed)+len(retiredPrefs))
+	for name := range managed {
+		out[name] = true
+	}
+	for name := range retiredPrefs {
+		out[name] = true
+	}
+	return out
+}
+
 // UserPrefs returns the set of pref names a managed-prefs payload declares.
 func UserPrefs(source []byte) map[string]bool {
 	managed := map[string]bool{}
@@ -40,7 +72,7 @@ func mergeUserJS(src *payload.Source, profileDir string) error {
 	if err := backupFile(userJs, "install"); err != nil {
 		return err
 	}
-	kept := nonManagedLines(userJs, managed)
+	kept := nonManagedLines(userJs, removalSet(managed))
 	var body strings.Builder
 	for _, l := range kept {
 		body.WriteString(l)
@@ -67,7 +99,7 @@ func dropManagedPrefs(src *payload.Source, profileDir string) error {
 	if err := backupFile(userJs, "uninst"); err != nil {
 		return err
 	}
-	kept := nonManagedLines(userJs, UserPrefs(ours))
+	kept := nonManagedLines(userJs, removalSet(UserPrefs(ours)))
 	// The managed block is not only prefs: it carries the comments that explain
 	// them. Those lines came from the payload, so they are dropped too — by exact
 	// text, which means a comment the user wrote stays unless it is word-for-word

@@ -1,7 +1,7 @@
 // ESC probe — "I can't press Escape to leave the field" (WhatsApp Web) and
 // "the page's suggestions stay open" (Google).
 //
-// The product's rule (docs/HINTS.md §14.3) is a ladder: Escape in a field blurs
+// The product's rule is a ladder: Escape in a field blurs
 // the field and is CONSUMED, so the page never runs its own Escape action. This
 // probe asks whether that rule actually produces the two things the user wants
 // on the pages they reported, and separates the mechanisms with a fixture:

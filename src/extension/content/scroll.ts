@@ -102,10 +102,10 @@ export function createScrollController(): ScrollController {
   let pointerValid = false;
   // The last region scan, with the time it was taken. A page that scrolls its
   // document never needs one at all; a page that does not has to look, and the
-  // look is `querySelectorAll("*")` over up to 12000 elements with two computed
-  // style reads per node. Repeating that on every `j`/`k`/`d`/`u` is a full
-  // document scan per keystroke, so the answer is held briefly and dropped when
-  // the page changes under it.
+  // look is a bounded element walk (up to 12000 nodes) with two computed-style
+  // reads per candidate. Repeating that on every `j`/`k`/`d`/`u` is a document
+  // scan per keystroke, so the answer is held briefly and dropped when the
+  // page's SHAPE changes under it (see onMutations).
   let scanCache: HTMLElement[] | null = null;
   let scanAt = 0;
   // The list has been invalidated since it was taken. A FLAG rather than a
@@ -146,25 +146,24 @@ export function createScrollController(): ScrollController {
     autoEl = null;
   }
 
-  // PRESENTATIONAL invalidation: a class / style / hidden attribute changed.
+  // PRESENTATIONAL CHURN IS NOT OBSERVED AT ALL, and that is deliberate.
   //
-  // That cannot put a NEW scroll container into the document — only the ranking
-  // of the ones already found can have moved — so the cached list is KEPT and
-  // only the chosen target is re-derived. Keeping the list is the whole point:
-  // every attribute mutation used to run invalidateRegions(), and on any page
-  // whose classes change while you read it (a hover state, a video player's
-  // chrome, an ad rotator) that dropped a full-document style scan
-  // (querySelectorAll("*") plus getComputedStyle per node, up to MAX_SCAN) into
-  // the NEXT scroll keypress — once per keypress, indefinitely. Re-deriving the
-  // target from a still-valid cache is one array read.
+  // A class / style / hidden change cannot put a NEW scroll container into the
+  // document — at most it moves the ranking of containers already found — and
+  // both cache consumers already re-validate what they use: the chosen target
+  // through isScrollable() on every dispatch (autoTarget, pickUnderPointer) and
+  // the list through its TTL (regionsCached). So a style change is picked up
+  // when it matters, at the next scroll key, without being watched for.
   //
-  // Nothing is lost: a pane that BECOMES scrollable through a style change is
-  // found when the TTL backstop expires the list (see regionsCached), because
-  // the next request re-scans; and the cached target itself is re-validated by
-  // isScrollable() on every use (see autoTarget and current).
-  function invalidateTarget(): void {
-    autoEl = null;
-  }
+  // Watching for it was expensive, and invisible from here. `attributes: true`
+  // WITH `subtree: true` on documentElement makes Gecko queue and deliver a
+  // MutationRecord for EVERY class/style write anywhere in the document, for
+  // the life of every page. That is thousands of records a second on a
+  // framework app (a virtualised list, a chat client, a mail client) — work
+  // paid whether or not the user ever presses a scroll key, and work the
+  // browser bills to this add-on. It was Lazyfox's largest UNCONDITIONAL
+  // per-page cost on a heavy site — paid with the feature idle, for a cache
+  // hint that is re-validated on use anyway.
 
   try {
     // Viewport size changes affect visibility and which pane dominates.
@@ -173,40 +172,30 @@ export function createScrollController(): ScrollController {
     // ignore — a missing resize listener only costs a stale scan for a moment
   }
   // Region membership is a DOM/CSS fact, not a pointer fact. Invalidate the
-  // list when a pane appears/disappears or its inline/class styling changes,
-  // then scan lazily at the next explicit region request. MutationObserver
-  // callbacks never scan/layout-read, so framework churn itself stays cheap.
+  // list when a NODE appears/disappears, then scan lazily at the next region
+  // request. MutationObserver callbacks never scan/layout-read, so the observer
+  // itself stays cheap — and childList is the only thing it watches.
   let regionObserver: MutationObserver | null = null;
   const scrollObservers: MutationObserver[] = [];
 
-  // What one mutation batch means for the caches. Structural changes drop the
-  // list; presentational ones only drop the chosen target. See the two
-  // invalidators above for why the difference is the whole cost model.
-  function onMutations(records: MutationRecord[]): void {
-    let structural = false;
-    for (const rec of records) {
-      if (rec.type === "childList") {
-        structural = true;
-        break;
-      }
-    }
-    if (structural) invalidateRegions();
-    else invalidateTarget();
-    rootsDiscovery.request();
+  // What one mutation batch means for the caches: the tree's SHAPE changed, so
+  // the list (and the ranking inside it) is no longer trustworthy. Attributes
+  // never reach here — they are not observed (see the note above).
+  function onMutations(): void {
+    invalidateRegions();
   }
 
   // ---- finding shadow roots is a FULL-DOCUMENT WALK, so it is coalesced ----
   //
-  // `watchShadowRoots` runs querySelectorAll("*") over every node (up to
-  // MAX_SCAN) looking for roots nobody observes yet. Paying that once, when the
-  // controller is built, is a reasonable price. Paying it per mutation batch is
-  // not, and that is what it was: the document observer called it synchronously,
-  // so a page whose class/style attributes change (every framework page) ran a
-  // full-document walk dozens of times a second, on the main thread, whether or
-  // not the user ever pressed a scroll key — and the observer is installed on
-  // EVERY page for the life of the document. The walk does no layout reads, but
-  // it does walk every node, which is exactly the shape of work this module
-  // moved off the keystroke path.
+  // `watchShadowRoots` walks every node (up to ROOTS_WALK_BUDGET) looking for
+  // roots nobody observes yet. It is NOT run when the controller is built, and
+  // not on mutation: it runs when a region scan runs (scanRegions), which is to
+  // say when a scroll key — or an explicit `;F` / diagnostics request — actually
+  // asks which pane to move. A page the user only reads on therefore pays
+  // nothing for shadow-root discovery, however much it mutates; and a page the
+  // user scrolls pays a coalesced walk at most once a second. Before this, the
+  // document observer requested it on every mutation batch, synchronously, on
+  // every page for the life of the document.
   //
   // The rule lives in shared/coalesce.ts, where it is unit-tested, because the
   // hint session needs exactly the same rule for exactly the same reason. Roots
@@ -222,6 +211,7 @@ export function createScrollController(): ScrollController {
     everyMs: ROOTS_DISCOVERY_MS,
     run: () => watchShadowRoots(document, 0),
   });
+  // (requested from scanRegions, never from the mutation observer)
 
   function watchShadowRoots(root: ParentNode, depth: number): void {
     if (depth >= 6) return;
@@ -237,12 +227,7 @@ export function createScrollController(): ScrollController {
       // below happens when the root is DISCOVERED (it may contain nested roots),
       // not on every mutation inside it.
       const observer = new MutationObserver(onMutations);
-      observer.observe(shadow, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ["class", "style", "hidden"],
-      });
+      observer.observe(shadow, { childList: true, subtree: true });
       scrollObservers.push(observer);
       watchShadowRoots(shadow, depth + 1);
     });
@@ -251,13 +236,7 @@ export function createScrollController(): ScrollController {
   try {
     if (typeof MutationObserver !== "undefined" && document.documentElement) {
       regionObserver = new MutationObserver(onMutations);
-      regionObserver.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ["class", "style", "hidden"],
-      });
-      rootsDiscovery.request();
+      regionObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
   } catch (e) {
     regionObserver = null;
@@ -378,24 +357,25 @@ export function createScrollController(): ScrollController {
 
   function scanRegions(): HTMLElement[] {
     const out: HTMLElement[] = [];
-    let all: NodeListOf<Element>;
-    try {
-      all = document.querySelectorAll("*");
-    } catch (e) {
-      return out;
-    }
-    const n = Math.min(all.length, MAX_SCAN);
-    for (let i = 0; i < n; i++) {
-      const el = all[i] as HTMLElement;
-      if (!el || el.nodeType !== 1) continue;
+    // DISCOVERY IS A SCROLL-TIME COST, not a page-lifetime one: the walk that
+    // finds shadow roots exists so this scan can see inside them, and this scan
+    // only runs when a scroll key needs an answer. See rootsDiscovery.
+    rootsDiscovery.request();
+    // LAZY AND BUDGETED (shared/dom.ts walkElements). This used to be
+    // `document.querySelectorAll("*")`, which MATERIALIZED every element in the
+    // document before MAX_SCAN was applied — on a large app the cap bounded the
+    // loop, not the allocation, which is the same mistake the shadow-root walk
+    // was already fixed for.
+    walkElements(document, MAX_SCAN, (el) => {
+      const he = el as HTMLElement;
       // Cheap rejects before touching computed style.
-      if (el.clientHeight < MIN_SIZE || el.clientWidth < MIN_SIZE) continue;
-      if (el.scrollHeight <= el.clientHeight + MIN_OVERFLOW) continue;
-      if (isEditable(el)) continue;
-      if (!isScrollable(el)) continue;
-      if (visibleArea(el) <= 0) continue;
-      out.push(el);
-    }
+      if (he.clientHeight < MIN_SIZE || he.clientWidth < MIN_SIZE) return;
+      if (he.scrollHeight <= he.clientHeight + MIN_OVERFLOW) return;
+      if (isEditable(el)) return;
+      if (!isScrollable(el)) return;
+      if (visibleArea(he) <= 0) return;
+      out.push(he);
+    });
     out.sort((a, b) => visibleArea(b) - visibleArea(a));
     return out;
   }

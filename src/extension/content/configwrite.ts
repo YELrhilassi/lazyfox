@@ -16,7 +16,7 @@
 // all, the write goes to storage.local directly — storage belongs to the
 // extension, every context re-reads it through the storage.onChanged
 // listener, and the background's own read paths (getConfig) read the key
-// fresh, so a direct write cannot leave the copies behind (docs/FINDINGS.md).
+// fresh, so a direct write cannot leave the copies behind.
 // Only when storage itself refuses does the caller's toast fire, and a failed
 // save is now NEWS instead of silence.
 //

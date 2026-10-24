@@ -178,7 +178,10 @@ import { HASH_PREFIX, decodeRequest, encodeCommand, encodeReply, isRelayHash, re
 
   // The helper navigates the tab (loadURI) to write rq hashes; we see them as
   // hashchange (same-document) or pageshow (a fresh load). Polling is the
-  // backstop for both.
+  // backstop for both — and ONLY a backstop, so it is deliberately slow (see
+  // the interval at the bottom): the hashchange listener is what actually
+  // delivers a request, and this hidden page lives for the whole session, so
+  // its idle wake-up rate is a permanent cost.
   function processHash(): void {
     try {
       const h = location.hash;
@@ -285,5 +288,10 @@ import { HASH_PREFIX, decodeRequest, encodeCommand, encodeReply, isRelayHash, re
 
   window.addEventListener("hashchange", processHash);
   window.addEventListener("pageshow", processHash);
-  setInterval(processHash, 100);
+  // 250ms, not 100ms. This used to be ten wake-ups a second, forever, in a page
+  // that is hidden for the whole session — for a channel whose fast path is
+  // hashchange and whose other end (the chrome helper) reads the slot every
+  // 80ms anyway. The backstop only matters if a hashchange is ever missed, so
+  // its period is a fallback latency, not a transport rate.
+  setInterval(processHash, 250);
 })();

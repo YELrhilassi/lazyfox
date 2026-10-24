@@ -118,7 +118,7 @@ export function createSyncHandlers(
       // keys: the user's `;` armed the helper's leader, its chords worked, and
       // everything that lives in the page (j/k/d/u, hints, find) was dead until
       // they clicked or reloaded. That is exactly the freeze in
-      // docs/KEYBOARD-FREEZE.md, so the two are ordered by what they are: the
+      // so the two are ordered by what they are: the
       // presence report is not bookkeeping and must not queue behind it.
       //
       // The hold work still runs before the reply, because the booting document

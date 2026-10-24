@@ -9,6 +9,7 @@
 // installBackgroundLifecycle(), which the root calls last.
 
 import { getConfig } from "./config";
+import { pushDownloadsChangedToChrome } from "./bgpushes";
 import { probeHostOnce } from "./host";
 import { isUITab, transientTabIds } from "./tabs";
 import { createCacheController } from "./cache";
@@ -198,6 +199,33 @@ function installStealthCleanup(): void {
   });
 }
 
+// WAKE THE BAR WHEN A DOWNLOAD APPEARS OR ENDS.
+//
+// The chrome helper reads Firefox's download list on a timer, and that timer now
+// backs off to one read every 15 seconds while nothing is downloading — which is
+// most of the browser-process cost this add-on used to pay forever, on every
+// window, awake or idle. Without a push, a download started during that window
+// would take up to 15 seconds to appear on the bar.
+//
+// EVENTS ONLY: a new download, and one that finished/failed. Progress is NOT
+// pushed — while a download is running the poll is back at 1s, and a message per
+// progress update would flood the relay's single URL slot (the same slot every
+// keystroke's state push travels over).
+function installDownloadNotifications(): void {
+  try {
+    if (!browser.downloads) return;
+    browser.downloads.onCreated.addListener(() => pushDownloadsChangedToChrome());
+    browser.downloads.onChanged.addListener((delta: any) => {
+      // Only the END of a download is interesting: that is the edge the idle
+      // timer would otherwise sit on.
+      if (delta && (delta.state || delta.error)) pushDownloadsChangedToChrome();
+    });
+  } catch {
+    // No downloads permission (a store build that dropped it): the bar keeps
+    // its timer, which is the behaviour this replaces.
+  }
+}
+
 // Browser-level startup/quit/notification events.
 function installBrowserLifecycle(): void {
   // On startup, resume the saved session when autoRestore is on. See
@@ -277,6 +305,7 @@ export function installBackgroundLifecycle(): void {
   installNavTracks();
   installSessionAutosave();
   installStealthCleanup();
+  installDownloadNotifications();
   installBrowserLifecycle();
   // Wire the chrome-helper hooks into the session manager (breaks the import
   // cycle sessions -> relay -> sessions).

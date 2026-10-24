@@ -209,7 +209,7 @@ export function createActivator(): Activator {
   // control that refuses untrusted events, a handler on an ancestor that stops
   // propagation, or a control that was never really the thing under the cursor
   // all look IDENTICAL from the user's side: a label, a keypress, silence. That
-  // ambiguity is what made every hint bug in docs/HINTS.md expensive — there
+  // ambiguity is what made every hint bug expensive — there
   // was no way to tell "the hint found the wrong element" from "the hint found
   // the right element and the page ignored it".
   //

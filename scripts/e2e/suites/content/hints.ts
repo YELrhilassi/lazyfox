@@ -719,12 +719,12 @@ export async function run(ctx: any): Promise<void> {
   // privileged path); what this pins is the event STATE: mouseup buttons:0,
   // mousedown buttons:1, and down/up sharing an event.target. If trusted
   // ever becomes true, the actor path in actor-child.ts can be dropped —
-  // update docs/HINTS.md then.
+  // and this assertion would need updating.
     assert(
       click.trusted === false,
       "the click is expected to arrive UNTRUSTED. If this ever becomes " +
         "true, the privileged path in actor-child.ts can be dropped as " +
-        "unnecessary — update docs/HINTS.md when it does, because the " +
+        "unnecessary — and this assertion will need updating, because the " +
         "YouTube note there is written on the assumption it is false."
     );
     const up = seen.find((e) => e.type === "mouseup");
@@ -1512,7 +1512,7 @@ export async function run(ctx: any): Promise<void> {
   // through getRootNode().host to the `inert` wrapper outside.
   //
   // This used to use an `aria-hidden` wrapper, which stopped being a reason to
-  // exclude anything (§10 of docs/HINTS.md). `inert` is the stronger fixture: it
+  // exclude anything. `inert` is the stronger fixture: it
   // removes no geometry, so a test that passed on the RECT would fail on this
   // one.
   await t("link hints: an inert ancestor hides a control inside a closed shadow root", async () => {
