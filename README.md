@@ -1,553 +1,168 @@
 <p align="center">
-  <img alt="Lazyfox" src="docs/img/lazyfox-logo.svg" width="640">
+  <img alt="Lazyfox" src="docs/img/lazyfox-logo.svg" width="520">
 </p>
 
-# Lazyfox
+Lazyfox is Firefox with the browser UI removed.
 
-**Firefox with the browsing UI stripped away — everything behind one key: `;`.**
+No tab strip, no address bar, no menus. Pages get the whole window. A thin bar
+along the bottom shows the current session, your place in the tab list, running
+downloads, and the key the leader is waiting for.
 
-<p align="center">
-  <img alt="license MIT" src="https://img.shields.io/badge/license-MIT-blue">
-  <img alt="Firefox Developer Edition | Nightly" src="https://img.shields.io/badge/firefox-Developer%20Edition%20%7C%20Nightly-orange">
-</p>
+Press `;` and a small grid of bindings appears. Press the key for what you want,
+and it happens. The grid is a reminder, never a confirmation step.
 
-Lazyfox hides the tab strip, the URL bar and the menus. Your page gets the
-whole window, with a slim status bar along the bottom that tells you where you
-are. Everything else runs through one leader key: press `;`, a small menu of
-bindings appears, press the key for what you want — and it happens. No mouse,
-no `Enter`, nothing to memorize.
+![The Lazyfox command center](docs/img/command-center.png)
 
-<p align="center">
-  <img alt="The Lazyfox command center" src="docs/img/command-center.png" width="880">
-</p>
+## What you get
 
-## What's inside
-
-- **Command center** — your new-tab page is a search box over recent actions,
-  tabs, history, bookmarks and downloads.
-- **Link hints** — every visible link gets a short label; type it and the
-  link opens. Labels stay short because only what you can see gets one.
-- **Find in page** — `;/` searches the page with a live match count, a
-  highlight that survives page scripts, and neovim-style copy/yank of what
-  you find. It works on framework pages where `Ctrl+F` gives up.
-- **Sessions** — name your current window and switch between named ones; tabs
-  and split layout come back exactly as you left them.
-- **Split view** — two tabs side by side, without a window manager.
-- **Stealth tabs** — isolated tabs that wipe their cookies and storage when
-  they close. YouTube in a stealth tab won't know your account.
-- **A status bar** — current session, place in the tab list, session pills,
-  live download progress, and whether the dark engine is covering this site.
-  It steps aside during fullscreen video.
-- **Dark mode & reader** — the dark engine measures each page before painting
-  it (a page that is already dark is left alone), with named color schemes,
-  per-site rules and Dark Reader-format fixes; `;R` reads the article of any
-  page in place, inside the dark theme when the page is darkned. Both are
-  documented in **[docs/DARK-MODE.md](docs/DARK-MODE.md)** and
-  **[docs/READER.md](docs/READER.md)**.
-- **Zen mode** — true fullscreen: the page fills the screen and the toolbar
-  never peeks in.
-
-The leader key works on internal pages too (`about:*`, error pages), so there
-is always a way in. Those pages also get the vim scroll keys (`j`/`k`/`d`/`u`,
-`gg`/`G`) and `Esc` unfocuses whatever input holds focus — so a focused
-settings search box never blocks `;g` or the scroll keys.
+- **Command center.** New tabs open on a search box over open tabs, history,
+  bookmarks and downloads, with quick-launch tiles for the sites you use.
+  `1`–`6` switch modes, `j`/`k` move, `Enter` opens.
+- **Link hints.** Every visible link, button and menu item gets a short label.
+  Type the label to follow it.
+- **Find.** Live match count, matches in reading order, and a yank mode that
+  copies text. It reads shadow roots and text split across elements.
+- **Sessions.** Named snapshots of a window, splits included. Switching
+  sessions replaces the whole window; the current one keeps saving itself.
+- **Split view.** Two tabs side by side, addressable from the keyboard.
+- **Isolated tabs.** A tab in its own container that wipes its cookies and
+  storage when it closes.
+- **Reader.** `;R` extracts the article and shows it in place, with your
+  typography and the normal keys still working.
+- **Dark mode.** Off by default. Turn it on globally or per site; the settings
+  page has the same controls as the keyboard.
 
 ## Install
 
-Two halves make Lazyfox: the **add-on** (this repo's `dist/extension` — also
-published on addons.mozilla.org as the signed `lazyfox2` add-on) and the
-**profile patch** that physically removes the browser chrome. Firefox will not
-let an add-on write files, so the profile patch is applied by a small installer.
-(For exactly what each half enables — and what the status bar does in each —
-see **[docs/INSTALLER-ANALYSIS.md](docs/INSTALLER-ANALYSIS.md)**.)
-The installer ships the **signed** add-on xpi and installs it verbatim, so both
-setup paths work on **stable** Firefox — no Developer Edition or Nightly needed
-(it is only required if you manually load a *unsigned* dev build from
-`about:debugging`).
+Lazyfox is two pieces: the add-on, and a small profile patch that removes
+Firefox's own chrome. Extensions cannot touch the browser window, so that patch
+comes from an installer.
 
-**From the store** — install `Lazyfox` from addons.mozilla.org, then open the
-home page and pick **Complete the install** (the first-run banner points at the
-same page). It detects the right profile,
-writes the four `chrome/` files, merges Lazyfox's preferences, installs the
-add-on, and asks for admin rights **once** to drop the autoconfig loader into
-the Firefox install folder. The page never assumes the install worked — it verifies
-the chrome layer's own alive signal, and once that is confirmed it turns into
-uninstall help (the same installer, on the `Remove Lazyfox` path) instead.
+**From addons.mozilla.org:** install the add-on, open its home page and choose
+**Complete the install**. The page picks the installer for your platform and
+channel; run it. It finds your profiles, writes the chrome files, merges
+Lazyfox's preferences, installs the add-on and asks for administrator rights
+once for the autoconfig loader. Restart Firefox and the page turns green.
 
-**The installer** — one prebuilt binary does the whole install. There are no
-install scripts to read or trust: the binary itself *is* the installer, and it
-opens **its own window** (a native window backed by the OS webview — no browser,
-no local server). It detects your OS, every Firefox installation and every
-profile, asks whether to use the profile you already have or to create one of
-its own, shows you exactly what it will write (or remove) before it does
-anything, and only then acts.
-
-If you would rather not pick a file off the Releases page, there are thin
-one-line wrappers that download the right binary and run it — nothing else:
-
-```powershell
-# Windows (PowerShell)
-irm https://github.com/YELrhilassi/lazyfox/releases/latest/download/install.ps1 | iex
-```
+**From the releases page:** one binary per platform, with no runtime to
+install. It opens a native window, lists the Firefox profiles it found, shows
+what it will write or remove, and only then acts. There are one-line wrappers
+as well:
 
 ```sh
 # macOS / Linux
 curl -fsSL https://github.com/YELrhilassi/lazyfox/releases/latest/download/install.sh | sh
 ```
 
-On Windows the wrapper also clears the download's Mark-of-the-Web (the tag that
-triggers *"Windows protected your PC"*) and prints a SHA-256 you can check.
-Replace `latest/download` with `download/nightly` for the Developer Edition build.
-
-| OS | Distribution | Command / run |
-| --- | --- | --- |
-| Linux | GitHub Releases `lazyfox-install-linux` | `chmod +x lazyfox-install-linux` then run it |
-| macOS | GitHub Releases `lazyfox-install-darwin` | run `lazyfox-install-darwin` |
-| Windows | GitHub Releases `lazyfox-install-windows.exe` | double-click, or run from a terminal |
-
-Downloads publish through the repo's **GitHub Releases** page; each build is
-also committed under `installer/bin/` for direct use. Running the binary with
-no arguments opens the installer window and auto-detects your profile; `--tui`
-gives the same installer in a terminal instead. To skip the UI and target a
-specific profile non-interactively (used by the automated tests), pass it as a
-positional argument or a flag:
-
-```
-lazyfox-install                # installer window (default)
-lazyfox-install --tui          # terminal installer instead
-lazyfox-install --mode list
-lazyfox-install --mode install --profile "…" --firefox-dir "…"
-lazyfox-install --mode uninstall --profile "…"
+```powershell
+# Windows
+irm https://github.com/YELrhilassi/lazyfox/releases/latest/download/install.ps1 | iex
 ```
 
-The installer finds your Firefox profile, copies the UI files, merges only the
-preferences Lazyfox owns, and installs the add-on permanently. It also drops a
-small helper into the Firefox install folder so the leader key works on pages
-where add-ons cannot run — that one step asks for admin rights **once** (a UAC
-prompt on Windows, `sudo` on Linux). Your profile, bookmarks, history and
-settings are never touched; every file that gets replaced is backed up first.
-An uninstall is symmetric and cautious: it lists every file it will delete and
-everything it will leave alone, and it deletes a profile directory only when
-Lazyfox created that profile and you explicitly ask for it.
+The installer needs administrator rights for one file: the autoconfig loader in
+the Firefox installation directory. Everything else lives in the profile.
+Bookmarks, history, passwords and other add-ons are left alone, and any file it
+replaces is backed up first. The same binary removes Lazyfox again.
 
-## Development, testing & Nightly
+## Keys
 
-Lazyfox develops against **Firefox Nightly**. Testing and manual smoke-tests
-use the one installer binary with non-interactive flags (see above) so
-everything is automatable. Nightly is used for both WebDriver (BiDi/Marionette)
-test runs and for loading an *unsigned* dev build of the add-on from
-`about:debugging` — stable Firefox rejects unsigned builds, so dev work happens
-on Nightly, while released installs use the AMO-signed xpi on stable.
-
-## Everyday use
-
-### The leader key
-
-Press `;` and a small overlay shows your bindings — a reminder, not a
-gatekeeper. The action runs the moment you press its key; `Esc` just cancels.
-
-| Keys | Action |
+| Key | Action |
 | --- | --- |
-| `; f` | link hints (on the command-center home: hint-pick — every grid tile gets a letter, a key runs that tile) |
-| `; s` / `; S` | web search (new tab / current tab) |
-| `; o` / `; O` | open a URL (new tab / current tab) |
-| `; t` | tab switcher — each row shows its number; type to filter, or press `1`–`9` to jump straight to that tab |
-| `; 1`–`; 9` | jump to tab N. With nine tabs or fewer every digit is unambiguous and goes straight there; past nine a digit that could be a prefix waits one more keystroke (`;1` `;1` is tab 11), and an ambiguous digit opens a quiet keypad of just the matching positions — no search box, because there is nothing to search |
-| `; ?` | keybindings help — grouped and searchable by key, name or group |
-| `; p` | sessions popup |
-| `; n` / `; x` / `; v` / `; c` | new tab / close / duplicate / reopen |
-| `; V` | recently closed tabs & windows (restore one, or all) |
-| `; j` / `; k` | next / previous tab |
-| `; a` | alternate tab — jump to the last used tab and back |
-| `; r` / `; g` / `; l` | reload / back / forward |
-| `; G` / `; L` | navigation stack (Shift) — the whole back/forward history of this tab as a list; pick an entry to jump |
-| `; y` / `; m` | copy URL / mute tab |
-| `; w` | resize / move the window |
-| `; W` | **window & layout** category — see below |
-| `; d` / `; h` / `; b` | downloads / history / bookmarks |
-| `; /` | find in page — search, walk, copy (`y`) or yank (`Y`) |
-| `; R` | reader mode — the article on this page, in place of everything else (`Esc` leaves) |
-| `; C` | **screenshot** category — see below |
-| `; i` | focus the first input on the page |
-| `; Z` | **zoom** category — `;Z i` in, `;Z o` out, `;Z r` reset |
-| `; D` | dismiss the download notification |
-| `; q` | toggle the which-key overlay |
-| `; I` | full install — the setup page that completes the toolbar-free UI |
-| `; T` | diagnostics & performance — live page report, detection probes, cache controls |
-| `; N` | new stealth tab |
-| `; Q` | save the session and quit Firefox |
-| `; m` | mute tab (see also `;W m` to move a tab into the split) |
-| `; F` / `; B` | scroll target: next / previous scrollable region |
-| `j` `k` `d` `u` `gg` `G` | scroll the page (when not typing) |
-| `Ctrl+Alt+Space` / `Ctrl+Alt+K` | open the menu / command center from anywhere |
+| `;` | which-key menu |
+| `;f` | link hints |
+| `;t` | tab switcher (type to filter, `1`–`9` to jump) |
+| `;s` / `;S` | search in a new tab / the current tab |
+| `;o` / `;O` | open a URL in a new tab / the current tab |
+| `;h` / `;b` / `;d` | history / bookmarks / downloads |
+| `;P` | sessions |
+| `;W \|` | split side by side |
+| `;/` | find in page |
+| `;R` | reader mode |
+| `;Y d` | dark mode for this site |
+| `;N` | isolated tab |
+| `;?` | the full keymap, searchable |
 
-### Two-key categories
+`;W`, `;Z`, `;C`, `;Y` and `;K` open groups for window and layout, zoom,
+screenshots, theme and address. `j`/`k`/`d`/`u`, `gg` and `G` scroll the page or
+the focused scroll region.
 
-Most keys stay one keystroke. A few belong to a concept you cannot type in one
-keystroke without making the menu a wall of punctuation, so they live one
-level down. Press the head, the status bar shows the head and a waiting
-affordance, and your next keystroke picks the action:
+## How it works
 
-| Chord | Action |
-| --- | --- |
-| `; W \|` | split side-by-side |
-| `; W [` / `; W ]` | previous / next split pane |
-| `; W {` / `; W }` | swap panes left / right |
-| `; W ,` / `; W .` | move the active tab left / right |
-| `; W u` | dissolve the split (undo) |
-| `; W m` then `1`–`9` | move that tab into the split |
-| `; W w` | resize / move the window |
-| `; W z` | zen mode (fullscreen) |
-| `; W e` | toolbar reveal on hover |
-| `; Z i` / `; Z o` / `; Z r` | zoom in / out / reset |
-| `; C f` / `; C v` | screenshot: full page (Firefox's native picker) / visible area |
-| `; Y d` / `; Y g` | dark mode for this site (toggle) / the default (`auto → dark → light → off`) |
-| `; Y e` / `; Y x` | dark engine for this site (`auto → dynamic → filter`) / clear this site's rules |
-| `; Y p` | dark color scheme: next preset |
+- **`src/extension/`** is a regular WebExtension: content scripts, background,
+  popups, hints, the command center. It runs everywhere Firefox lets an
+  extension run, and it is what AMO ships.
+- **`src/chrome/`** is privileged JavaScript loaded through Firefox's
+  autoconfig hook. It hides the tab strip and toolbar, draws the window status
+  bar, and owns the leader key on pages where extensions are not allowed. The
+  hook exists because nothing in the WebExtension API can remove browser chrome.
+- **`core/`** is a Go core compiled to WebAssembly and embedded in both
+  bundles. The keymap, chord resolution, hint ordering, scrolling and the
+  status bar model live there, so both halves agree on what a key means and the
+  logic is tested once, in Go.
 
-The sub-keys are, with three deliberate exceptions, the key the action
-already had — `;W |` used to be `;|`, so the hand does not relearn anything.
-The three that changed are the ones that were hard to read or needed a
-modifier for no reason: `\\` became `;W u` (undo), `+` became `;W m` (move),
-and zoom's `=` `-` `0` became `;Z i` `;Z o` `;Z r` (in / out / reset).
+The chrome helper has no `browser.*` API, so the extension and the helper talk
+through a hidden relay tab and a native messaging host. The installer writes
+the chrome files and `user.js` into the profile, installs the add-on, and copies
+the autoconfig loader into the Firefox installation.
 
-A category head can never shadow a plain binding: the controller checks the
-real keymap first and, if the key already does something on its own, runs that
-instead. That rule exists because `;G` / `;L` once shipped as sequences that
-shadowed nothing, which is exactly why they were unreachable.
+## Repository layout
 
-### How a chord is spelled
+```
+src/extension/   add-on: content scripts, background, popups, command center
+src/chrome/      privileged window code: chrome removal, status bar, leader
+src/shared/      code both halves import: config, popups, protocol, status bar
+core/            Go core, compiled to wasm and embedded in both bundles
+installer/       Go installer with a native window, and its build payload
+native-host/     Go native messaging host
+scripts/         build, release, e2e and packaging tools
+dist/            built add-on and chrome files (committed)
+docs/            architecture, development, testing and release notes
+```
 
-Five rules, and they are rules rather than conventions — each one is asserted in
-`core/keymap_test.go` and `scripts/test/keymap.test.ts`, so the documentation and
-the keyboard cannot drift apart:
-
-- **A capital is Shift.** `;W` is Window & layout; `;w` is nothing. Case is never
-  "handled for you": `;P` (Sessions) and `;p` are different chords, and the one
-  that names nothing tells you so instead of guessing.
-- **A modifier is part of the chord.** `;Ctrl+Alt+r` is not `;r`, and it runs
-  nothing — including when a page binds `Ctrl+Alt+r` itself, in which case the
-  page gets it.
-- **A head opens a namespace.** `;W m` then a digit is one sequence, and the
-  sub-keys of a head cannot collide with the top level (`;W m` and a bare `;m`
-  are different keys). A head is a menu of things that *differ*; a "category"
-  whose rows all run the same action is just a slower key.
-- **Digits are positions, and they compose.** With nine tabs or fewer, `;1`…`;9`
-  each go straight to their tab. Past nine a digit that could be a prefix waits
-  for one more keystroke: `;11` is tab 11, and `;1` followed by nothing still
-  works once the sequence resolves.
-- **What is bound is the table, not this page.** `;?` is the live, searchable
-  index of every key (including the leaves inside each head), `core/keymap.go` is
-  the table it is generated from, and the which-key overlay is the same answer
-  for the keys you are reading right now.
-
-### Scrolling
-
-The vim keys (`j` `k` `d` `u`, `gg`/`G`) follow the page's scroll target. On an
-ordinary page that is the document, exactly as before. On an app shell whose
-content lives in an inner pane (ChatGPT, dashboards, mail clients) whose window
-never scrolls, the largest visible scroll area becomes the target automatically
-(there is no window to lose). `; F` / `; B` cycle the target through every
-scrollable region — the document, then each pane/sidebar largest-first — so you
-can drive a sidebar with the same keys; the focused region is outlined so you
-can see where they land, and `Esc` returns to the automatic target.
-
-## Diagnostics & performance
-
-`; T` opens a special page that answers "why is Lazyfox behaving like this here?".
-It shows the live page report from the tab's content script (the scroll target and
-every scroll region, the active editor, how many hint candidates were found and
-how many survived each filter, with a per-element probe table explaining exactly
-why a control was or was not clickable), the components that are actually
-installed, and an efficiency panel: DOM size, resource count split into cache hits
-and network fetches, transferred bytes, JS heap, load timing and a live frame-rate
-meter.
-
-The same page owns the **page-cache** policy. Firefox's HTTP cache is one global
-switch with no per-tab knob, so Lazyfox maps each scope onto what a layer can
-really do: **Everywhere** uses the browser's own cache switch ("revalidate every
-load" needs a pref only the privileged window chrome can set), while **This
-session** and **This tab** are enforced by the window chrome, which adds
-`Cache-Control: no-cache` to the requests of exactly those tabs. A per-tab policy
-therefore needs the full Lazyfox chrome; the page says so rather than pretending,
-and **Hard reload this tab** bypasses the cache for a single navigation.
-
-The history (`;h`) and recently-closed (`;V`) popups group entries by time —
-Today, Yesterday, This week, This month, Earlier — with a hint letter on
-each group header. `c` arms group toggling, then the hint letter
-collapses/expands that group (`c` again toggles the group under the cursor);
-`C` collapses all groups, `O` expands them, `g`/`G` jump to the top/bottom.
-The popup footer always shows the keys for what you're doing at the moment.
-
-### The command center
-
-`Ctrl+T` (and the startup tab) opens the command center instead of a blank
-new-tab page. It is keyboard-first: the home grid shows your quick-launch web
-apps and the browser/settings access, and it opens in command mode —
-`h`/`j`/`k`/`l` (or the arrows) move across the tiles, `Enter` runs the
-selection, and `;` arms the leader right here (so `;f`, `;n`, … all work with
-no mouse click). **Complete the install** is a tile here rather than a chord:
-setting Lazyfox up is a one-time step, not something you press while reading.
-Type any letter and the input takes over for a
-search. `1`–`6` (or `Tab`) switch modes — Search · URL · Tabs · History ·
-Bookmarks · Downloads — where `j`/`k` move through the list and `Enter` runs
-it. `Esc` clears back to command mode.
-
-<p align="center">
-  <img alt="The command center in tabs mode" src="docs/img/command-center-tabs.png" width="880">
-</p>
-
-### Link hints
-
-`;f` labels every visible link with a short key. Type the key and the link
-opens — no mouse, no tabbing.
-
-- Only links **in the current viewport** get labels, so keys stay short no
-  matter how many links the page has.
-- A hint fires once its letters are unambiguous; `Enter` picks the current
-  prefix if you do not want to finish it.
-- `]` / `[` (or `Tab` / `Shift+Tab`) page to the next / previous batch;
-  typing a prefix whose link is below the fold scrolls it into view first.
-- Hints cover buttons and custom widgets too, not just `<a>` tags.
-- Labels are placed deterministically: on a dense page a label that cannot sit
-  on its control's corner moves a few pixels rather than disappearing, so a
-  control you can see always has a key. When there are more controls in view
-  than the batch holds, `;f` says so (`80 hints — 34 more in view, ] for the
-  next batch`) instead of going quiet, and the controls nearest the middle of
-  the screen are the ones that get keys.
-
-<p align="center">
-  <img src="docs/img/hints.png" width="880">
-</p>
-
-### Find in page
-
-`;/` searches the page you're looking at. The widget sits in a corner
-instead of the middle, so it never covers the text you're searching.
-
-- Type to search: the **N/M** match count updates live on the widget and on
-  the status bar (`0` in red means no matches yet). The search is
-  framework-proof — it reads through open shadow roots (Reddit-style custom
-  elements), matches words split across elements, treats `&nbsp;` and stray
-  whitespace as one space, and reaches text nested dozens of levels deep —
-  the pages where `Ctrl+F` finds nothing.
-- `Enter` / `Shift+Enter` walk to the next / previous match. The first jump
-  starts from where you are, not the top of the page. `Ctrl+o` steps back
-  through every position you visited; `Esc` returns you to where you started
-  the search. Matches are walked in **visual reading order** — top to
-  bottom, left to right as the page renders — even when the site reorders
-  blocks with CSS.
-- After walking, the widget enters command mode and its hints switch:
-  `n`/`N` walk · `y` copy · `Y` yank mode · `i` edit the query · `Esc`
-  close. `y` copies the current match with an amber flash over the copied
-  text.
-- `Y` opens **yank mode**: a block cursor moves through the page's parsed
-  text (`hjkl`, `w`/`b`/`e`, `0`/`$`, `g`/`G`), `y` starts a selection —
-  highlighted live with a character count and a preview of exactly what
-  will be copied — and `y` again yanks that range with the flash. `yy`
-  yanks the whole line. Selections follow the page's content tree: menus,
-  buttons, headers and footers are never part of what you copy. `Esc` steps
-  back to the search, `i` edits the query.
-- The highlight is Lazyfox's own overlay drawn in a shadow root — page
-  scripts and clicks can't clear it, and it survives lazy-loading feeds.
-
-### Sessions
-
-Sessions are named snapshots of your window — tabs, split layout, everything.
-Switch sessions and the whole window becomes that session; switch back and
-the previous one is still there, untouched. Only one session is active at a
-time, and the status bar shows which.
-
-- **`;p`** opens the sessions popup: the session list on the left, the
-  selected session's tabs on the right — look before you leap. Type to
-  filter.
-- Type a name that does not exist yet and the popup offers to **save the
-  current tabs** under it or **start a clean empty session** — your current
-  tabs stay exactly as they are either way.
-- **`x x`** deletes the highlighted session — the first `x` arms a
-  confirmation, the second one confirms. A stray keypress can never lose a
-  session.
-- **`;'`** then `1`–`9`, or **`Ctrl+1`–`9`**, jumps straight to a marked
-  session.
-- Sessions stay live: the current one re-saves itself as you open, close or
-  rearrange tabs, so quitting — or even a crash — never loses tabs you added
-  after saving. `;Q` saves and quits in one step.
-
-<p align="center">
-  <img src="docs/img/sessions.png" width="880">
-</p>
-
-### The status bar
-
-One slim strip at the bottom (top if you prefer), reading left to right:
-
-1. the **current session**,
-2. your **place in the tab list** (`3/7`),
-3. your **saved sessions** as connected chevrons — `1:work 5 › 2:dev 3 › …`,
-   each colored by its marker,
-4. a **download segment** while something downloads — name, percent, speed,
-   updating live. A finished download shows a green check, a failed one a red,
-   and a click dismisses it from the bar (the file stays in the Downloads
-   list).
-
-The bar hides automatically when a page goes fullscreen — a video, for
-example. Turn it off completely in settings if you prefer.
-
-<p align="center">
-  <img src="docs/img/statusbar.png" width="880">
-</p>
-
-**`;d`** opens the download list, prepopulated so there's nothing to search
-for. Every entry shows the file name, its location, its state and live
-progress. On the highlighted row: **`Enter`** opens the file, **`o`** shows it
-in its folder, **`x x`** deletes it.
-
-### Split view
-
-**`;W |`** puts the current tab side by side with the split panel — a search
-box plus the live list of your other tabs, each row showing its `;W m N`
-number. Pick a tab and it lands in the split, replacing the panel, so no
-empty pane is left behind.
-
-- **`;W [` / `;W ]`** switch the active pane.
-- **`;W {` / `;W }`** swap the two panes.
-- **`;W m`** then `1`–`9` moves that tab straight into the split.
-- **`;W u`** dissolves the split back into normal tabs.
-- Splits are part of sessions: save a session while split, and restoring the
-  session brings the whole layout back.
-
-### Stealth tabs
-
-**`;N`** opens a fresh stealth tab: isolated, empty, self-wiping. It is a
-real Firefox container, so it has its own cookies and storage — open YouTube
-in a stealth tab and you will not find your account there, and nothing it
-stores leaks into your other tabs. Close it and its data is gone; if Firefox
-quits before the cleanup runs, the orphan is caught and wiped at the next
-launch.
-
-You always know where you are: the status bar shows a dark-glasses badge, the
-tab switcher (`;t`) marks the row, and the command center turns dark purple
-inside a stealth tab.
-
-### Settings
-
-The settings page is a two-pane layout: a section list on the left (General,
-Quick launch, Sessions & bar, Dark mode, Reader mode, Firefox chrome,
-Components) that follows the scroll, and the settings cards on the right.
-It changes the leader key, the hint characters, whether `j`/`k` scrolling is
-on, whether URL / history opens go to a new or the same tab, and whether the
-status bar and the last-session restore run — plus the **dark mode engine and
-color scheme** (a preset fills the canvas/text/link colours, which you can then
-tweak freely, with per-site rules and Dark Reader-format fixes) and the
-**reader mode typography**. Nothing is saved until you press **Save**. Keys
-work there too: `j`/`k` scroll, `;` opens the leader, `Esc` returns to the
-command center.
-
-### Screenshots
-
-`; C` hands you Firefox's native screenshot picker with a straightened UI
-story: `; C f` opens the full-page picker (Firefox already owns "select a
-region"), `; C v` captures the visible area, and previewing, copying and
-downloading happen inside Firefox's own flow — Lazyfox adds the shortcuts, not
-a second capture pipeline.
-
-## A note on limits
-
-- The leader key lives in the add-on for regular pages and in a
-  browser-level helper for everything else. Where neither runs,
-  `Ctrl+Alt+Space` (or the mouse) is the way in.
-- `Ctrl+Tab` is reserved by Firefox and cannot be intercepted; `;t` and
-  `;j`/`;k` do the same job.
-- User stylesheets are unofficial but widely used; internal names change
-  occasionally, and the file is a few lines — easy to adjust.
+Two choices shape most of the code above. The keymap lives in the Go core
+because the same keys have to work in two contexts that cannot share
+JavaScript. And `dist/` plus `installer/bin/` are committed, because a download
+must work without a toolchain; `npm run check` hashes them against the source,
+so a stale artifact fails the build instead of shipping.
 
 ## Development
 
-Lazyfox is TypeScript with a Go/Wasm core compiled into every build. `dist/`
-is committed, so installing never needs the toolchain — change source, run
-`npm run build`, and reinstall or **Reload** in `about:debugging`.
+Node and Go are required. `npm install` checks both.
 
-```bash
-npm install            # esbuild + typescript (+ toolchain check)
-npm run build          # dev build: wasm, bundles, unsigned xpi — fast, no AMO
-npm run dev-install    # build + install that dev build into Nightly/Devedition
-npm run dev-install:clean  # …or first wipe stale dev profiles, then install
-npm run ci             # run the whole local CI check before you push (never push to test CI)
-npm run verify         # typecheck + full test suite, in one shot
-npm test               # go test ./core/ + installer tests + dist/ completeness
+```sh
+npm install          # dependencies and toolchain check
+npm run build        # wasm, bundles, xpi, installer binaries
+npm run dev-install  # build, then install into Nightly or Developer Edition
+npm run verify       # typecheck and tests
+npm run ci           # the checks CI runs, locally
 ```
 
-> Prefer the concise walkthrough in **`docs/DEVELOPING.md`** (daily loop,
-> publishing, releasing in one page) and **`docs/CI.md`** (running the exact CI
-> checks locally so you never have to push to discover a broken workflow).
+Browser tests drive a real Firefox over WebDriver BiDi:
 
-Daily loop: `npm run dev-install` (or `npm run dev-install:clean`) is all most
-people need — it builds and installs the unsigned dev build into Firefox
-Nightly/Devedition automatically. `npm run build` alone just makes the built
-output.
-
-**Dev vs signed builds.** Lazyfox has two build modes, and they are not the
-same command — use the one that matches what you are doing:
-
-| I want to… | Run | What it does |
-|---|---|---|
-| Develop / try the latest changes | `npm run sync` | **Unsigned** dev build (`__DEV__=true`), fast, no AMO. Produces `dist/lazyfox2-<ver>.xpi` for Nightly/Devedition **and** rebuilds every committed installer binary so none of them is stale. |
-| Install my fresh dev build into Nightly | `npm run dev-install` (or `npm run dev-install:clean`) | Builds + installs the unsigned dev xpi into a new profile. |
-| Start a new version | `npm run bump -- X.Y.Z` | Bump the version everywhere at once. |
-| Publish the next version to AMO | `npm run submit` | Packs the fresh build, uploads it to AMO as a **listed/public** version, and rebuilds the dev installers. Needs `AMO_API_KEY`/`SECRET` in `.env`. |
-| **Ship the signed release** | **`npm run ship`** | **The whole release, from a dev branch**: merges dev into master (`-X theirs`), syncs the **AMO-signed** xpi, rebuilds the release installers, commits master, tags `v<version>`, pushes, and creates the GitHub Release. Run it after AMO review has signed the submitted version. |
-
-**Signing.** Stable Firefox rejects unsigned add-ons, so the shipped xpi is the
-**signed** one from addons.mozilla.org. AMO signs a **listed** (public) version
-only *after* it is reviewed — submitting (`npm run submit`) uploads the xpi but
-does not sign it instantly; it starts the review clock. Once AMO approves,
-`npm run ship` does the rest in one command:
-
-- `npm run submit` — uploads the fresh build to AMO (listed) → starts review.
-- `npm run ship` — the release: merge to master, download the now-**signed** xpi
-  (`scripts/sync-signed-xpi.ts`), embed it in the release installers, tag
-  `v<version>` and create the GitHub Release.
-
-`ship` is deterministic about the version (it always comes from
-`src/static/extension/manifest.json`) and refuses to fake or guess a signed
-xpi: it verifies the version is signed on AMO before touching git, then syncs
-the exact version's signed xpi (reusing the committed signed artifact when it is
-already current).
-
-The full release flow (just `bump` → `submit` → wait → `ship`) is documented
-in `docs/RELEASING.md`. CI is read-only on both branches: neither workflow
-pushes, tags, or publishes — releases are created by `ship`, exactly once.
-
-The end-to-end suite drives a real Firefox over WebDriver BiDi, and the
-screenshots in this README are captured the same way:
-
-```bash
-node scripts/e2e/test.ts            # full run
-node scripts/e2e/test.ts --group sessions
-node scripts/e2e/screenshots.ts     # writes docs/img/*.png
+```sh
+npm run e2e                        # every suite
+node scripts/e2e/main.ts --suite content
+node scripts/e2e/screenshots.ts    # regenerate docs/img/*.png
 ```
 
-Layout of the repo:
+Development builds are unsigned and need Nightly or Developer Edition.
+Releases use the AMO-signed add-on on stable Firefox: `npm run submit` uploads
+a version, and after AMO signs it, `npm run ship` merges to `master`, embeds the
+signed xpi, tags the release and publishes it.
 
-- `src/shared/` — types, config, popup engine, leader, status bar
-- `src/chrome/` — the browser-level helper (toolbar-free browsing UI)
-- `src/extension/` — the add-on: background, content script, command center
-- `core/` — the Go core, compiled to Wasm and embedded in every bundle
-- `docs/` — architecture notes, the release playbook, and screenshots. The
-  release design is also documented *agnostically* in
-  `docs/RELEASE-WORKFLOW-PATTERN.md`, so the pattern can be lifted into any
-  project that has a pair of dev-vs-released branches.
+More detail: [ARCHITECTURE](docs/ARCHITECTURE.md),
+[DEVELOPING](docs/DEVELOPING.md), [TESTING](docs/TESTING.md),
+[RELEASING](docs/RELEASING.md), [DARK-MODE](docs/DARK-MODE.md),
+[READER](docs/READER.md), [UPDATES](docs/UPDATES.md),
+[UPGRADING](docs/UPGRADING.md), [MESSAGING](docs/MESSAGING.md),
+[AMO listing](docs/AMO-LISTING.md), [third-party code](docs/THIRD-PARTY.md).
 
-## Uninstall
+## Limits
 
-Run the same standalone installer with the `uninstall` action
-(`installer/bin/lazyfox-install-linux-<version> --mode uninstall`, or open the installer
-window and pick **Remove Lazyfox**). It reverses exactly what the installer did —
-it removes the Lazyfox extension from `extensions.json`, takes Lazyfox's own
-preferences back out of `user.js`, and never touches your bookmarks, history or
-other add-ons. Before it removes anything it shows the complete list of files it
-will delete and everything it will leave alone; a profile directory goes only if
-Lazyfox created it **and** you tick the box to delete it.
+- Lazyfox depends on Firefox internals for the chrome layer. A Firefox update
+  can break it and may need a matching Lazyfox release.
+- Firefox keeps `Ctrl+Tab`; use `;t` or `;j`/`;k`.
+- Where neither half can run the leader, `Ctrl+Alt+Space` still opens the menu.
 
 ## License
 
