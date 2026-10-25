@@ -70,25 +70,39 @@ replaces is backed up first. The same binary removes Lazyfox again.
 | --- | --- |
 | `;` | open the leader menu (which-key) |
 | `;n` / `;x` | new tab / close tab |
+| `;v` / `;V` | reopen closed tab / recently closed tabs |
+| `;c` / `;a` | duplicate tab / alternate to the last used tab |
 | `;j` / `;k` | next tab / previous tab |
-| `;t` | tab switcher; type to filter, digits jump to a tab |
+| `;1`–`;9` | go to tab by position; past nine, `;11` means tab 11 |
+| `;$` | go to the last tab |
+| `;t` | tab switcher: type to filter, numbers jump, `h`/`l` move, `x` closes |
+| `;r` / `;g` / `;l` | reload / back / forward |
+| `;G` / `;L` | back / forward through the history stack |
+| `;m` | mute tab |
 | `;f` | link hints |
-| `;s` / `;S` | search the web in a new tab / in this tab |
 | `;o` / `;O` | open a URL in a new tab / in this tab |
+| `;s` / `;S` | search the web in a new tab / in this tab |
 | `;h` / `;b` / `;d` | history / bookmarks / downloads |
+| `;i` | focus the first input |
 | `;P` | sessions |
 | `;Q` | save the session and quit |
-| `;W` | window and layout; `;W` then `&#124;` splits side by side |
+| `;W` | window and layout menu: resize, zen, splits, panes, tab order |
+| `;W` then &#124; | split the current tab side by side |
+| `;C` | screenshot menu: `f` full page, `v` visible area |
+| `;Z` | zoom menu: `i` in, `o` out, `r` reset |
+| `;K` | address menu: `c` copy the URL, `e` edit it |
 | `;F` / `;B` | next / previous scroll region |
-| `;C` / `;Z` / `;K` | screenshot / zoom / address groups |
 | `;/` | find in page |
 | `;R` | reader mode |
-| `;Y d` | dark mode for this site (all theme actions are under `;Y`) |
+| `;Y` | theme menu: `d` this site, `g` default, `e` engine, `p` palette, `x` reset |
 | `;N` | stealth tab, wiped when it closes |
-| `;T` | diagnostics |
-| `;?` | the full keymap, searchable |
+| `;T` | diagnostics and performance |
+| `;q` | toggle the which-key overlay |
+| `;D` | dismiss the download notification |
+| `;?` | searchable keybindings help |
 
-`j`/`k`/`d`/`u`, `gg` and `G` scroll the page or the focused scroll region.
+The leader is `;` by default; it can be changed in settings. `j`/`k`/`d`/`u`,
+`gg` and `G` scroll the page or the focused scroll region.
 
 ## How it works
 
