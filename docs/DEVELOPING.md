@@ -15,11 +15,17 @@ by one command. CI is read-only on both.
 ## Daily dev loop (on `dev-nightly`)
 
 ```bash
-npm install          # once; checks toolchain (node + go)
+npm install          # once; checks toolchain and installs the git hooks
 npm run sync         # build everything, refresh every installer, verify, print the table
 npm run dev-install  # install that build into a fresh Nightly/Dev profile
 npm run ci           # the full local test run (run before you push)
 ```
+
+`npm install` also runs `scripts/install-hooks.ts`, which points `core.hooksPath`
+at `.githooks`. The commit-msg hook refuses an agent credit or a `Co-Authored-By`
+trailer before the commit exists; the pre-push hook scans every reachable commit.
+`npm run check:attribution` runs the same check by hand, and CI runs it with full
+history on every push.
 
 That's it. `npm run sync` is the command that ends the "did I remember to rebuild
 the executables?" question: after it finishes, every committed installer binary
