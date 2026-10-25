@@ -1,38 +1,5 @@
 {
   "binaries": {
-    "lazyfox-install-linux-0.5.14": {
-      "out": "lazyfox-install-linux-0.5.14",
-      "channel": "stable",
-      "goos": "linux",
-      "arch": "amd64",
-      "xpi": "dist/lazyfox2-0.5.14.xpi",
-      "xpiVersion": "0.5.14",
-      "payload": "ec6e7c0c556954b1017e7577af900c8d5388ae2382a8c9373ecb0133f40f49b2",
-      "source": "cb47e4101e212ef81210e8f6a50c9b7ea1b4c617b59cbe45623bfeb81bc83194",
-      "bin": "f3bc6f428879d3bae7b4cf48a2d6c1a411104e5c5af55ede83c03feaf2ac5269"
-    },
-    "lazyfox-install-darwin-0.5.14": {
-      "out": "lazyfox-install-darwin-0.5.14",
-      "channel": "stable",
-      "goos": "darwin",
-      "arch": "arm64",
-      "xpi": "dist/lazyfox2-0.5.14.xpi",
-      "xpiVersion": "0.5.14",
-      "payload": "ec6e7c0c556954b1017e7577af900c8d5388ae2382a8c9373ecb0133f40f49b2",
-      "source": "cb47e4101e212ef81210e8f6a50c9b7ea1b4c617b59cbe45623bfeb81bc83194",
-      "bin": "d8ce4fb7083b94b4334b38fc4f8addd5b10c7c44fae0d41dce9641e67aeb4e84"
-    },
-    "lazyfox-install-windows-0.5.14.exe": {
-      "out": "lazyfox-install-windows-0.5.14.exe",
-      "channel": "stable",
-      "goos": "windows",
-      "arch": "amd64",
-      "xpi": "dist/lazyfox2-0.5.14.xpi",
-      "xpiVersion": "0.5.14",
-      "payload": "ec6e7c0c556954b1017e7577af900c8d5388ae2382a8c9373ecb0133f40f49b2",
-      "source": "cb47e4101e212ef81210e8f6a50c9b7ea1b4c617b59cbe45623bfeb81bc83194",
-      "bin": "624cc1cfc879ec5b5f3a930a64c0a4f2d764d5fa3053d80d7387904995ff7855"
-    },
     "lazyfox-install-dev-linux-0.5.15": {
       "out": "lazyfox-install-dev-linux-0.5.15",
       "channel": "nightly",
@@ -40,9 +7,9 @@
       "arch": "amd64",
       "xpi": "dist/lazyfox2-0.5.15.xpi",
       "xpiVersion": "0.5.15",
-      "payload": "fa37396877681365cb7e26fb6471fe3f5b8ed55a53e77bafb57cb1001c17950f",
+      "payload": "c2d1d7545e478226f2b9f1cbd73b0a2fe7b19b2b52199f2716f6b5fd4b90df5f",
       "source": "1f144a6192c2f17310db0fc5d69ad972c88355842541efb6278e78bd07883849",
-      "bin": "9ccceed0fc0400beda58f66578bccf6051eb642c9f5d6ffd3d5cacd3b56d504e"
+      "bin": "45645f89a6cc39813296c189190bb86283912c3ac85501898ad2163296087ff0"
     },
     "lazyfox-install-dev-darwin-0.5.15": {
       "out": "lazyfox-install-dev-darwin-0.5.15",
@@ -51,9 +18,9 @@
       "arch": "arm64",
       "xpi": "dist/lazyfox2-0.5.15.xpi",
       "xpiVersion": "0.5.15",
-      "payload": "fa37396877681365cb7e26fb6471fe3f5b8ed55a53e77bafb57cb1001c17950f",
+      "payload": "c2d1d7545e478226f2b9f1cbd73b0a2fe7b19b2b52199f2716f6b5fd4b90df5f",
       "source": "1f144a6192c2f17310db0fc5d69ad972c88355842541efb6278e78bd07883849",
-      "bin": "3516db826b22c3214aec26544c9e7fea6bc043d7c5d164464d07073b005a13e7"
+      "bin": "e5b83fa2c1948e0f90bc2d6d350c3b23293d034684ce5170ec6f8a49d555f48b"
     },
     "lazyfox-install-dev-windows-0.5.15.exe": {
       "out": "lazyfox-install-dev-windows-0.5.15.exe",
@@ -62,9 +29,42 @@
       "arch": "amd64",
       "xpi": "dist/lazyfox2-0.5.15.xpi",
       "xpiVersion": "0.5.15",
-      "payload": "fa37396877681365cb7e26fb6471fe3f5b8ed55a53e77bafb57cb1001c17950f",
+      "payload": "c2d1d7545e478226f2b9f1cbd73b0a2fe7b19b2b52199f2716f6b5fd4b90df5f",
       "source": "1f144a6192c2f17310db0fc5d69ad972c88355842541efb6278e78bd07883849",
-      "bin": "f0bd5156fcd7ba769613e927fbbd52bc4778bba80100575e1d4b0c4d54251335"
+      "bin": "a9b3a882add1f2856777cdfd9c74a9a672ec3ac1670f17420eb16c9febb5806c"
+    },
+    "lazyfox-install-linux-0.5.15": {
+      "out": "lazyfox-install-linux-0.5.15",
+      "channel": "stable",
+      "goos": "linux",
+      "arch": "amd64",
+      "xpi": "dist/lazyfox2-0.5.15.xpi",
+      "xpiVersion": "0.5.15",
+      "payload": "c2d1d7545e478226f2b9f1cbd73b0a2fe7b19b2b52199f2716f6b5fd4b90df5f",
+      "source": "1f144a6192c2f17310db0fc5d69ad972c88355842541efb6278e78bd07883849",
+      "bin": "f7279dfb9305ea091055f4234039aa62d0ce9db298ea784ff0b6dc2a418e1c3b"
+    },
+    "lazyfox-install-darwin-0.5.15": {
+      "out": "lazyfox-install-darwin-0.5.15",
+      "channel": "stable",
+      "goos": "darwin",
+      "arch": "arm64",
+      "xpi": "dist/lazyfox2-0.5.15.xpi",
+      "xpiVersion": "0.5.15",
+      "payload": "c2d1d7545e478226f2b9f1cbd73b0a2fe7b19b2b52199f2716f6b5fd4b90df5f",
+      "source": "1f144a6192c2f17310db0fc5d69ad972c88355842541efb6278e78bd07883849",
+      "bin": "842fea3db2c5334cd3762ca005ab5b49eab3145929453cb3ea5c2b63d4932b42"
+    },
+    "lazyfox-install-windows-0.5.15.exe": {
+      "out": "lazyfox-install-windows-0.5.15.exe",
+      "channel": "stable",
+      "goos": "windows",
+      "arch": "amd64",
+      "xpi": "dist/lazyfox2-0.5.15.xpi",
+      "xpiVersion": "0.5.15",
+      "payload": "c2d1d7545e478226f2b9f1cbd73b0a2fe7b19b2b52199f2716f6b5fd4b90df5f",
+      "source": "1f144a6192c2f17310db0fc5d69ad972c88355842541efb6278e78bd07883849",
+      "bin": "6e492ba2fed8a8afd3bcc267610c2152518a0fb358ffe2b380ac45180c2d5d12"
     }
   },
   "_comment": "Generated by scripts/installer-build.ts — do not edit by hand. Every committed installer binary records the payload content hash it was compiled from, so `npm run check:installers` can prove no binary is stale. Rebuilt binaries re-write their own entry."
