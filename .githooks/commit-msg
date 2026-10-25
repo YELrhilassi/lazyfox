@@ -1,0 +1,6 @@
+#!/bin/sh
+# A Co-Authored-By trailer is what makes GitHub list a second contributor, and
+# it is invisible to every diff-based check. Refuse it before the commit exists.
+set -eu
+root=$(git rev-parse --show-toplevel)
+exec node "$root/scripts/check-attribution.ts" --message-file "$1"
