@@ -19,7 +19,7 @@ import (
 	"syscall/js"
 )
 
-const version = "0.5.14"
+const version = "0.5.15"
 
 // ---------------------------------------------------------------------------
 // JS value construction helpers
