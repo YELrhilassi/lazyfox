@@ -13,6 +13,7 @@
 // while a stylesheet keyed by selector survives a re-render. No `filter` on
 // anything but <html> in filter mode.
 
+import { walkElements } from "../../../shared/dom";
 import { parseColor } from "./color";
 import type { PageSample } from "./detect";
 import { scanWindow } from "./scan";
@@ -121,7 +122,24 @@ const OUR_ID_PREFIX = "lazyfox-";
 // — a hard stop once left 991 text elements unreadable below the fold on
 // Wikipedia's Firefox article.
 const MAX_SCAN = 4000;
-const CHUNK = 250;
+// A SLICE IS A BUDGET IN MILLISECONDS, not a count of elements.
+//
+// `CHUNK = 250` was a count, and a count is only a budget when an element costs
+// the same everywhere. Measured on a 6 900-element app fixture in the e2e
+// harness: 250 elements took 600-800ms — i.e. 2.5-3ms per element — so every
+// "short" slice blocked the main thread for most of a second, fifteen slices to
+// a pass, and the browser reported the add-on as slowing Firefox down. A
+// deadline is the thing the frame budget actually needs: whatever the page's
+// element cost, the walk yields before it is felt.
+const SLICE_MS = 8;
+// A hard cap in the same loop, so a hostile clock (a page that replaces
+// `performance.now`) still cannot make one slice endless.
+const SLICE_MAX_ELEMENTS = 400;
+// Where the walk starts when a mutation names the nodes it added: enough roots
+// for a burst of re-rendered chrome, and a bounded walk per root, so a route
+// change that replaces the whole view cannot turn one pass into a document scan.
+const ADDED_ROOTS_MAX = 200;
+const ADDED_WALK_MAX = 1200;
 // The smallest element worth a rule. Was 900 (≈30×30): most of the TEXT in a
 // real interface (a menu label, a badge, a table corner cell) is smaller, was
 // never sampled, and stayed `#111` on a cell we painted near-black. Lowering
@@ -145,11 +163,15 @@ const RESAMPLE_SLOW_MS = 2500;
 const STYLE_ID = "lazyfox-dark";
 
 export interface SampleOptions {
-  /** Measure in ONE task instead of yielding every CHUNK elements. Only the
+  /** Measure in ONE task instead of yielding at the slice deadline. Only the
    * first pass after the placeholder paint asks for it: the placeholder sheet
    * is removed before measuring, so every yield in that window is a frame the
    * user sees the undarkened page. */
   sync?: boolean;
+  /** The subtrees the page just added. A pass with these measures THEM instead
+   * of the next window of the document — the cost of a resample becomes the
+   * cost of what changed, not of the page. */
+  added?: Element[];
 }
 
 export interface DarkApplier {
@@ -277,43 +299,76 @@ function stablePathFor(el: Element): string {
 export interface ElementSelectors {
   /** The selector a rule is keyed by when the whole group agrees. */
   shared: string;
-  /** A selector that reaches this element alone, or "" when there is none. */
-  solo: string;
+  /** A selector that reaches this element alone, or "" when there is none.
+   * DEFERRED: see `soloSelectorFor`. */
+  solo: () => string;
 }
 
+/**
+ * THE NAME AN ELEMENT'S RULES ARE GROUPED BY — and, deliberately, nothing more.
+ *
+ * This used to answer "what unique address reaches this element too?", and that
+ * answer cost two full-document `querySelectorAll` calls and two ancestor walks
+ * (each enumerating every sibling) PER ELEMENT, ON EVERY PASS. Measured on a
+ * 1 200-row feed: 2.5-3ms per element, 10-12 seconds of main-thread work per
+ * 4 000-element window, fifteen windows to a pass, repeated on every resample —
+ * the freeze the user sees as "Lazyfox is slowing down Firefox".
+ *
+ * The uniqueness was never needed here. `entriesFor` (theme.ts) groups samples
+ * by this name and reads `solo` ONLY for a group that disagrees; a name that
+ * several elements share is the normal, useful case. So what a pass pays per
+ * element is now one class read, and the expensive address is computed for the
+ * handful of elements whose group actually needs one.
+ */
 export function selectorsFor(el: Element): ElementSelectors {
   const id = el.id;
   if (id && SAFE_ID.test(id)) {
     const s = "#" + id;
-    return { shared: s, solo: s };
+    return { shared: s, solo: () => s };
   }
   const tag = (el.tagName || "").toLowerCase();
-  if (!tag) return { shared: "", solo: "" };
+  if (!tag) return { shared: "", solo: () => "" };
   const classes = classesOf(el);
-  const classSel = classes.length ? tag + "." + classes.join(".") : "";
-  const classOk = !!classSel && onlyMatches(el, classSel);
-  const path = pathFor(el);
-  const pathOk = !!path && onlyMatches(el, path);
-  // A unique class is already a solo selector; otherwise prefer the stable
-  // path (survives re-render) and fall back to the positional path for an
-  // element whose classes repeat down the tree.
-  let solo = "";
-  if (classOk) solo = classSel;
-  else {
-    const stable = stablePathFor(el);
-    solo = stable && onlyMatches(el, stable) ? stable : pathOk ? path : "";
+  if (classes.length) {
+    const classSel = tag + "." + classes.join(".");
+    return { shared: classSel, solo: () => soloSelectorFor(el, classSel) };
   }
-  // A SHARED SELECTOR IS NOT A REASON TO PAINT NOTHING. Requiring uniqueness
-  // as a filter left 826 mapped text elements on unpainted white panels
-  // (merriam-webster.com) — "some text is not readable". So the name is kept:
-  // `entriesFor` in theme.ts decides from every element that wears it — one
-  // rule when they agree, one per element against the solo selector when not.
-  const shared = classOk ? classSel : pathOk ? path : classSel || path;
-  return { shared, solo };
+  // No classes at all: the positional path is the only name there is, and it is
+  // also unique by construction. Pricing an ancestor walk for these is fine —
+  // they are the exception, and the alternative is emitting no rule at all.
+  const path = pathFor(el);
+  return { shared: path, solo: () => path };
+}
+
+/**
+ * A selector that reaches `el` and NOTHING ELSE, or "". Only computed when a
+ * group of elements sharing a name disagrees about what they need — the case
+ * where one rule cannot say one thing (see entriesFor).
+ */
+export function soloSelectorFor(el: Element, classSel?: string): string {
+  const classes = classSel || classesOf(el).reduce((all, c) => all + "." + c, (el.tagName || "").toLowerCase());
+  if (classes && !/\.$/.test(classes) && onlyMatches(el, classes)) return classes;
+  const stable = stablePathFor(el);
+  if (stable && onlyMatches(el, stable)) return stable;
+  const path = pathFor(el);
+  return path && onlyMatches(el, path) ? path : "";
 }
 
 export function selectorFor(el: Element): string {
   return selectorsFor(el).shared;
+}
+
+/** A value computed at most once, on first read. */
+function once(fn: () => string): () => string {
+  let done = false;
+  let value = "";
+  return () => {
+    if (!done) {
+      done = true;
+      value = fn();
+    }
+    return value;
+  };
 }
 
 // The pixels behind a transparent root, which is NOT always white: `color`
@@ -542,20 +597,39 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
     // document is covered over several passes without any single task doing all
     // of it. See the note on MAX_SCAN.
     let window: Element[] = [];
-    try {
-      const all = doc.querySelectorAll("*");
-      documentElements = all.length;
-      // THE SLICE ARITHMETIC LIVES OUTSIDE THIS FILE (scan.ts), and `passed` is
-      // the number it exists for: the controller reads `pending()` after every
-      // pass to decide whether the document still has unreached elements. A wrap
-      // that reported the whole document as still pending is what made every page
-      // walk for ever (see the note there).
-      const slice = scanWindow(documentElements, cursor, MAX_SCAN);
-      window = Array.prototype.slice.call(all, slice.from, slice.from + slice.take);
-      cursor = slice.cursor;
-      passed = slice.passed;
-    } catch {
-      return Array.from(measured.values());
+    // A RESAMPLE MEASURES WHAT CHANGED, not the next window of the document.
+    // The observer names the nodes a mutation added (see `added` above), so the
+    // steady-state cost of a page that keeps rendering is the cost of its new
+    // nodes. Before this, every resample re-walked up to MAX_SCAN elements with
+    // two computed-style reads each, every 2.5 seconds, for the life of the tab —
+    // a permanent tax on exactly the apps the user keeps open.
+    if (opts.added && opts.added.length) {
+      const roots = opts.added.slice(0, ADDED_ROOTS_MAX);
+      for (const root of roots) {
+        if (window.length >= ADDED_WALK_MAX) break;
+        if (!root || !root.isConnected) continue;
+        window.push(root);
+        if (window.length >= ADDED_WALK_MAX) break;
+        walkElements(root, ADDED_WALK_MAX - window.length, (el) => {
+          window.push(el);
+        });
+      }
+    } else {
+      try {
+        const all = doc.querySelectorAll("*");
+        documentElements = all.length;
+        // THE SLICE ARITHMETIC LIVES OUTSIDE THIS FILE (scan.ts), and `passed` is
+        // the number it exists for: the controller reads `pending()` after every
+        // pass to decide whether the document still has unreached elements. A wrap
+        // that reported the whole document as still pending is what made every page
+        // walk for ever (see the note there).
+        const slice = scanWindow(documentElements, cursor, MAX_SCAN);
+        window = Array.prototype.slice.call(all, slice.from, slice.from + slice.take);
+        cursor = slice.cursor;
+        passed = slice.passed;
+      } catch {
+        return Array.from(measured.values());
+      }
     }
     // Recorded colour FIRST, live only with no record: see `originals`. The
     // record is the OWN colour, not the resolved one — resolution is a per-pass
@@ -571,11 +645,23 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
       }
     };
     let processed = 0;
+    // The deadline the slice is measured against. `performance` is read once per
+    // slice; a page that has replaced it falls back to Date.now().
+    const clock = (): number => {
+      try {
+        return typeof win.performance?.now === "function" ? win.performance.now() : Date.now();
+      } catch {
+        return Date.now();
+      }
+    };
+    let sliceStart = clock();
     for (const el of window) {
       processed++;
-      if (!opts.sync && processed % CHUNK === 0) {
-        // Yield, so the walk is several short tasks rather than one long one.
+      // YIELD ON THE DEADLINE, whatever the element cost was. See SLICE_MS: a
+      // COUNT of elements is not a budget when one element can cost 3ms.
+      if (!opts.sync && (processed % SLICE_MAX_ELEMENTS === 0 || clock() - sliceStart >= SLICE_MS)) {
         await new Promise<void>((resolve) => win.setTimeout(resolve, 0));
+        sliceStart = clock();
       }
       const tag = (el.tagName || "").toUpperCase();
       if (tag === "STYLE" || tag === "SCRIPT" || tag === "LINK" || tag === "META") continue;
@@ -657,9 +743,15 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
           image: bgImage
         });
       }
+      // THE ELEMENT'S OWN ADDRESS IS PRICED ONLY IF SOMETHING ASKS FOR IT.
+      // `entriesFor` reads `solo` for a disagreeing group; a group that agrees
+      // (the common case: every row of a list) never pays for it.
+      const soloOnce = once(sel.solo);
       const one: PageSample = {
         selector,
-        solo: sel.solo || undefined,
+        get solo() {
+          return soloOnce() || undefined;
+        },
         share: area / viewport,
         tag,
         bg,
@@ -709,7 +801,10 @@ export function createDarkApplier(doc: Document, win: Window): DarkApplier {
           if (alpha <= 0.02 && !layerImage) continue;
           kept.push({
             selector: selector + layer,
-            solo: sel.solo ? sel.solo + layer : undefined,
+            get solo() {
+              const s = soloOnce();
+              return s ? s + layer : undefined;
+            },
             share: area / viewport,
             tag: tag + layer,
             bg: ownBg,

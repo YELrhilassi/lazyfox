@@ -3,7 +3,7 @@
 // WHY THIS IS A MODULE AT ALL. It is three lines, and three lines that drifted
 // is exactly the reason: the content script and the command-center page both
 // re-assert their presence to the chrome helper when a key proves they are alive
-// (docs/KEYBOARD-FREEZE.md §5), and each report is a background round trip plus
+// on a key, and each report is a background round trip plus
 // two session writes — so both need the same limiter, and an inline
 // `Date.now() - last < MS` written twice is two chances to get the FIRST call
 // wrong. The first call is the one that matters: a limiter that refuses it drops

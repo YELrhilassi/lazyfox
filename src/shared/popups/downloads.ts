@@ -11,7 +11,7 @@ export function openDownloadsPopup(ctx: PopupCtx): void {
   const ctl = ctx.open(
     basePanel(
       "Downloads",
-      "no downloads",
+      "filter downloads\u2026",
       "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>o</span> location &middot; <span class='lf-badge'>r</span> retry &middot; <span class='lf-badge'>y</span> copy link &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
     ),
     (root) => {
@@ -45,7 +45,10 @@ export function openDownloadsPopup(ctx: PopupCtx): void {
             pct >= 0
               ? "<div class='dl-bar'><div class='dl-fill" + fillCls + "' style='width:" + pct + "%'></div></div>"
               : "";
-          const size = fmtBytes(d.received || 0) + (d.total ? " / " + fmtBytes(d.total) : "");
+          // A download Firefox does not know the size of reports total -1.
+          // Appending it anyway left a bare "1.9 MB /" in the row.
+          const totalTxt = d.total && d.total > 0 ? fmtBytes(d.total) : "";
+          const size = fmtBytes(d.received || 0) + (totalTxt ? " / " + totalTxt : "");
           const spd = d.speed ? " \u00b7 " + fmtBytes(d.speed) + "/s" : "";
           const label =
             d.state === "in_progress"

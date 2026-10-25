@@ -373,6 +373,12 @@ export interface ChromeApi {
   // Clear the bar's download notification(s) — pushed, because the page
   // that pressed `;D` has nothing left to do once the bar is told.
   dismissDownload: { req: Record<string, never>; res: void };
+  // A download APPEARED (or finished) — pushed by the background from
+  // `browser.downloads` events. The bar reads Firefox's download list on a
+  // timer, and that timer is deliberately slow while nothing is downloading
+  // (see statusbar.pollDownloads); this push is what makes the first second of
+  // a new download show up immediately instead of up to an idle period late.
+  downloadsChanged: { req: Record<string, never>; res: void };
   leaderState: {
     req: { index: number; signal: LeaderSignal; panel?: LeaderPanelHtml | null };
     res: void;

@@ -179,7 +179,7 @@ export function createChannel(deps: ChannelDeps): Channel {
   // a structured value from RelayApi, not a string: the wire JSON-encodes it
   // exactly as it already did replies and commands.
   let pendingReqs: Array<{ id: number; action: RelayAction; arg: unknown }> = [];
-  // THE LOST-COMMAND COUNTER (docs/KEYBOARD-OWNERSHIP.md 5.6): the background's
+  // THE LOST-COMMAND COUNTER: the background's
   // per-window sequence numbers, the gaps between them, and which hop ate each
   // one. Every command that reaches this side is noted here, and the whole thing
   // is published in the state reply as `relay`, so "a report never arrived" is a
@@ -222,6 +222,16 @@ export function createChannel(deps: ChannelDeps): Channel {
     );
   }
 
+  // THE SLOT HAS MORE THAN ONE READER NOW (a location change and a backstop
+  // timer), and clearing it is a cross-process write that takes a moment to
+  // land — so the same fragment can be READ twice. Handling a command twice is
+  // not harmless: a `moveToSplit` that already ran reports "already in a split
+  // view", a request gets two replies, and the sequence arithmetic the helpers
+  // keep reports out-of-order deliveries that never happened. Fragments are
+  // unique (request ids and command sequence numbers both only go up), so an
+  // identical fragment after one has been handled is always a re-read.
+  let lastHandledSlot = "";
+
   // Poll the relay tab's URL (called from startRelay every 500ms): handle a
   // reply or command hash the page wrote, then send the next queued request.
   function pollRelayUrl(): void {
@@ -231,11 +241,14 @@ export function createChannel(deps: ChannelDeps): Channel {
     const i = spec.indexOf(RELAY_HASH_PREFIX);
     if (i < 0) {
       // Slot free (page cleared a forwarded request): send the next one.
+      lastHandledSlot = "";
       sendNextRelay();
       return;
     }
     const frag = spec.slice(i + RELAY_HASH_PREFIX.length);
+    if (frag === lastHandledSlot) return; // a re-read of a slot whose clear is still landing
     if (frag.indexOf("rq.") === 0) return; // our own pending request; page will clear it
+    lastHandledSlot = frag;
     const reply = decodeReply(frag);
     if (reply) {
       const w = relayWaiters[reply.id];
@@ -541,4 +554,4 @@ export function createChannel(deps: ChannelDeps): Channel {
     isKnownRelayTab: relayTab.isKnown,
     relayReady: () => relayReady,
   };
-}
+}

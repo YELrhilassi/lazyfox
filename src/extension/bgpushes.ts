@@ -105,6 +105,21 @@ export function pushScreenshotToChrome(shot: "full" | "visible"): void {
 // the PAGE, not the helper. The bar it clears is still the helper's, so the
 // page's request travels: content -> background (this) -> helper. Without it
 // `;D` was silently a no-op on a web page and on the home page.
+/**
+ * A download started or finished: wake the chrome helper's bar NOW.
+ *
+ * The bar polls Firefox's download list on a timer that backs off to one read
+ * every 15 seconds while nothing is downloading (statusbar.pollDownloads).
+ * That back-off is most of the browser-process idle cost this add-on used to
+ * pay forever, and this push is what keeps a new download from waiting for it.
+ * Pushed from EVENTS only (created / finished), never from progress updates:
+ * while a download IS running the poll already ticks once a second, and a
+ * progress push per byte would flood the relay's single URL slot.
+ */
+export function pushDownloadsChangedToChrome(): void {
+  requestChrome("downloadsChanged", {});
+}
+
 export function pushDismissDownloadsToChrome(): void {
   requestChrome("dismissDownload", {});
 }

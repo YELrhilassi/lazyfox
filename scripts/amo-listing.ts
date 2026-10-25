@@ -18,25 +18,18 @@ const GUID = "lazyfox@lazyfox.dev";
 const guid = () => encodeURIComponent(GUID);
 
 const SUMMARY =
-  "Firefox with the browsing UI stripped away. One key — `;` — drives tabs, split view, sessions, link hints, find-in-page and search. No menus, no mouse.";
+  "Firefox with the toolbar and tab strip removed. Press `;` for tabs, sessions, hints, find and search. Keyboard-first, no telemetry.";
 
 const DESCRIPTION = [
-  "Lazyfox hides the tab strip, the URL bar and the menus. Your page gets the whole window, with a slim status bar along the bottom. Everything else runs through one leader key: press `;` and a small menu of bindings appears, press the key for what you want, and it happens — no mouse, no Enter.",
+  "Lazyfox removes Firefox's toolbar and tab strip. Pages fill the window, and a slim bar at the bottom shows the session, tab position and downloads.",
   "",
-  "Your new-tab page becomes a command center: a search box over your recent actions, open tabs, history, bookmarks and downloads, plus quick-launch web apps (Spotify, YouTube, X, …) that you can tweak in the settings.",
+  "Press ; to see the keys for tabs, sessions, link hints, find and search, then press the one you want.",
   "",
-  "Highlights",
-  "  · Link hints — every visible link gets a short label; type it and the link opens.",
-  "  · Split view — two tabs side by side, no window manager required.",
-  "  · Sessions — save and switch named windows; tabs and split layout come back exactly.",
-  "  · Find in page — highlights matches with a live count and neovim-style yank.",
-  "  · Stealth tabs — isolated tabs that wipe their cookies when they close.",
-  "  · Scroll keys — h/j/k/l, gg/G and d/u work like vim, and Esc unfocuses any input.",
+  "The home page is a command center over open tabs, history, bookmarks and downloads, with quick-launch tiles for the sites you use.",
   "",
-  "Everything works on internal pages too (about:* and error pages), so you can never get stuck. The browser stays fully in your control: it is customizable from the settings page, and no telemetry, analytics or data ever leaves your machine.",
+  "Split view, named sessions, isolated tabs, reader mode and dark mode are one key away. Nothing is sent anywhere: no account, no telemetry.",
   "",
-  "Install notes",
-  "Lazyfox is two halves: the add-on (this listing) and a one-time companion installer that physically removes the browser chrome for the full keyboard-first experience. Install from this page, open the home page and pick \"Complete the install\", then follow the one dialog — your bookmarks, passwords and other add-ons are untouched.",
+  "Install the add-on, open the home page and choose Complete the install to remove the browser chrome. Your bookmarks, passwords and other add-ons are not touched.",
 ].join("\n");
 
 const HOMEPAGE = "https://github.com/YELrhilassi/lazyfox";

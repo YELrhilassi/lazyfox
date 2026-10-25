@@ -240,7 +240,7 @@ export function installChromestate(
    * script" is missing, and no test input can remove it — presence is written by
    * the page's own script, and everything that retracts it also replaces the
    * document. See chrome/keystate.dropPresenceForSelectedTab, and
-   * docs/KEYBOARD-FREEZE.md for the state this is the entry to.
+   * this is the entry to that state.
    */
   ctx.chromeForget = async function chromeForget(): Promise<any> {
     await ctx.ensureProbe().catch(() => {});
