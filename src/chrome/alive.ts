@@ -13,7 +13,7 @@
 import type { Channel } from "./channel";
 import type { ChromeEnv } from "./env";
 
-export const CHROME_HELPER_VERSION = "0.5.14";
+export const CHROME_HELPER_VERSION = "0.5.15";
 
 // Profile directory leaf name (e.g. "65rp05zu.lfxdev-…"), announced with the
 // alive ping so the extension can show the ACTIVE profile in the command-
