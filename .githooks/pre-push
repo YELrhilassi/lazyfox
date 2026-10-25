@@ -1,0 +1,7 @@
+#!/bin/sh
+# The commit-msg hook can be bypassed with --no-verify, and an old branch can
+# still reach pre-rewrite commits. Nothing leaves the machine until both are
+# clean.
+set -eu
+root=$(git rev-parse --show-toplevel)
+exec node "$root/scripts/check-attribution.ts"

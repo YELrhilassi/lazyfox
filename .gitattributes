@@ -41,3 +41,8 @@ installer/internal/payload/data/** -text
 # cannot be in the shared hash). A CRLF checkout of native-host on Windows and an
 # LF checkout on Linux therefore produce the same payload hash, without pinning
 # the source files to one ending style. See docs/RELEASING.md.
+
+# The repository hooks are POSIX shell scripts. Git for Windows refuses a hook
+# whose shebang line ends in CR, so pin them to LF; the executable bit lives in
+# the index (`git add --chmod=+x`).
+.githooks/** text eol=lf
