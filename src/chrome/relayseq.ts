@@ -5,12 +5,12 @@
 // -> here, and every hop is fire-and-forget. When the report does not arrive the
 // helper does not merely lack a fact — it claims the tab's keys (no record, no
 // expectation window left), so the user's first keystroke on that page is
-// answered by nobody: the freeze in docs/KEYBOARD-FREEZE.md, whose whole symptom
+// answered by nobody: the freeze whose whole symptom
 // is "nothing responds, not even the leader". Nothing in the system noticed that
 // a report had gone missing, because being fire-and-forget is the point of the
 // channel and there was no number that said a message was absent.
 //
-// docs/KEYBOARD-OWNERSHIP.md 5.6 asks for exactly this: the background stamps
+// The counter is built for exactly this: the background stamps
 // every command it pushes with a per-window monotonic id, this side records the
 // highest it has seen and how many gaps it has counted, and a missing report
 // becomes a NUMBER. The relay page stamps its own discard count on the command

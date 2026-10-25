@@ -14,7 +14,7 @@
 //                    the HELPER's leader, its chords (`;r`, `;s`, `;o`, `;d`)
 //                    work, and everything that lives in the page — j/k/d/u,
 //                    hints, find — is dead until the user clicks or reloads.
-//                    That is the freeze in docs/KEYBOARD-FREEZE.md, and it is
+//                    That is the freeze, and it is
 //                    the failure this test exists to prevent from coming back.
 //
 // A hold store that never settles is not an artificial input: it is what a

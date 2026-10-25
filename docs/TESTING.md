@@ -4,9 +4,6 @@ Three tiers, three commands, one gate. This document is the reference for what
 runs where, what each command means, and — the part that matters — how to add a
 test without it becoming a liability.
 
-The design and the reasoning behind it are in
-[`TEST-HARNESS-REWRITE.md`](TEST-HARNESS-REWRITE.md). This is the operating
-manual.
 
 ---
 
@@ -150,8 +147,8 @@ command arrives as **2**, not as a fresh 1. That hole is the whole point: since
 number, and the helper counts what arrives and what is missing
 (`src/chrome/relayseq.ts`, published as `relay` in the `#lfc=state` reply, with
 its own 15-case file `scripts/test/relay-seq.test.ts` for the arithmetic). A
-report that never arrived — the freeze in KEYBOARD-FREEZE.md, whose symptom is a
-key nobody answers — is therefore a number in every state read, and
+report that never arrived, whose symptom is a key nobody answers, is therefore
+a number in every state read, and
 `relay.gaps` growing during a case is the failure text naming which hop ate it.
 
 ---
@@ -591,15 +588,14 @@ against. This is the measurement.
 
 | Tier | Where | Blocks |
 | --- | --- | --- |
-| `npm test` + `npm run typecheck` | every push (the `unit` job) | merge |
-| `npm run test:seam` | every push (inside `npm test`, named separately in `ci`) | merge |
-| `npm run test:wire` | every push (inside `npm test`, named separately in `ci`) | merge |
+| `npm test` + `npm run typecheck` | `npm run ci` (the `unit` job) | merge |
+| `npm run test:seam` | inside `npm test`, named separately in `ci` | merge |
+| `npm run test:wire` | inside `npm test`, named separately in `ci` | merge |
 | `npm run test:mutation` | when a decision module changes | merge |
-| `npm run e2e` | pre-merge, `BIDI_HEADLESS=1` | merge, honouring quarantine |
+| `npm run e2e` | before a release, or `npm run ci:bidi` | merge, honouring quarantine |
 
-The browser suite is still not on the free-plan GitHub runner by default; see
-[`CI.md`](CI.md). With the per-test lifecycle the failures it produces are now
-specific enough to be worth running.
+The browser suite runs locally: it needs a real Firefox, geckodriver and a
+display, so it is not part of the read-only GitHub jobs.
 
 ---
 
@@ -680,7 +676,7 @@ offered as one.
 
 | group | measured | note |
 | --- | --- | --- |
-| sessions | **31/31** | and the runner reports **4 fixed since the baseline**, including `restore brings back every tab's exact strip position (split included)` — the failure `docs/STATUS-AND-ROADMAP.md` §3.1 called the last one whose root cause was unpinned. The `openCC` self-heal fixed it. |
+| sessions | **31/31** | the runner reports **4 fixed since the baseline**, including `restore brings back every tab's exact strip position (split included)`; the `openCC` self-heal fixed it. |
 | split | **13/13** | with the new post-`addTabs` trail readback in place. |
 | options | **5/5** | |
 | content | **114/115** | the one failure is `a page that never responds still answers the leader key`, whose baseline row already records it as a **harness gap rather than a product gap** (the navigation to the never-answering route is not observably started). Nothing else in the group fails. |
@@ -717,9 +713,8 @@ Three rows, each moving with no PRODUCT change under it, in both directions. The
 the report window and **no report spent it for eight seconds**
 (`{"open":false,"ageMs":8242,"gapMs":439,"gapSamples":77}`) — in a session whose
 last 77 reports landed in a few hundred milliseconds and whose final run printed a
-sample of **844ms**. That is the lost boot report of
-[KEYBOARD-OWNERSHIP.md](KEYBOARD-OWNERSHIP.md) §5.6, seen from outside for the
-first time; neither test was weakened to get the green run. Instead:
+sample of **844ms**. That is the lost boot report seen from outside for the first
+time; neither test was weakened to get the green run. Instead:
 
 * the report-window case asks a **second** document (a real cross-document load)
   when the first document's report never spends its window, and records the miss in
@@ -921,8 +916,8 @@ wrong" is the claim a future reader most needs.
 ### Known costs
 
 **A test whose window is shorter than its slowest read is not strict, it is a
-coin toss.** The e2e test for the leader indicator's new "what we need next"
-hint (see `docs/STATUS-AND-ROADMAP.md` §2) read `ctx.chromeState()` to see it.
+coin toss.** The e2e test for the leader indicator's "what we need next" hint
+read `ctx.chromeState()` to see it.
 `chromeState()` is the only door into the chrome document and it is a four-hop
 round trip — probe tab → `#lfc=state` → background → re-activate — which takes
 seconds on a loaded machine. A tab-position digit capture lives for **three

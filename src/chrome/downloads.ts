@@ -100,9 +100,10 @@ async function snapshot(): Promise<DownloadEntry[]> {
 
 // Poll once and push the fresh snapshot into the Go store (the single source
 // of truth: it merges, carries dismissed flags, seeds history and derives
-// the speed EMA). Returns the entry count for the caller, or throws so the
-// poller can decide how to degrade.
-export async function updateDownloads(): Promise<number> {
+// the speed EMA). Returns the count and whether anything is still MOVING —
+// the caller uses `active` to decide how soon to look again, which is what
+// keeps an idle browser from reading this list every second forever.
+export async function updateDownloads(): Promise<{ total: number; active: number }> {
   const fresh = await snapshot();
   // Batched rather than a bare setter: the poller runs on an interval for the
   // whole life of the window, and going through the per-call path means an
@@ -111,7 +112,9 @@ export async function updateDownloads(): Promise<number> {
   // store is the single source of truth, so a download update and a tab update
   // must not be able to tear.
   await core.statusBatch([{ kind: "downloads", fresh }]);
-  return fresh.length;
+  let active = 0;
+  for (const d of fresh) if (d.state === "in_progress") active++;
+  return { total: fresh.length, active };
 }
 
 // The merged list (newest first) for the downloads popup, from the store.

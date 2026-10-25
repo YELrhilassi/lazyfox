@@ -64,6 +64,10 @@ export function createPushDispatcher(deps: PushDeps): PushDispatcher {
       // download notification(s). The page keeps no state about the bar, so
       // there is nothing to report back.
       dismissDownload: () => deps.dismissDownloads(),
+      // A download started or finished. Read Firefox's list NOW rather than at
+      // the next idle tick — that tick is what makes a start visible in the
+      // first second while an idle browser pays almost nothing.
+      downloadsChanged: () => void deps.status.refreshDownloads(),
       // Content-script leader arm/disarm, cached per tab-strip index so the
       // window-level status bar can show the pulsing LEADER chevron on web
       // pages, where the content script owns the leader key. The chord and the

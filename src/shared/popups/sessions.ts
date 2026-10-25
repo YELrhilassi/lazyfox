@@ -5,6 +5,7 @@ import { esc } from "../dom";
 // sessions popup is the one surface with its own key routing (panes, a pending
 // copy/move picker), so it has to ask the same question rather than test for
 // Escape itself; Ctrl+G did nothing at all in here while Escape backed out.
+import { displayUrl } from "../format";
 import { isCancel } from "../leader";
 import type { PopupCtl } from "../overlay";
 import type { PopupItem } from "../types";
@@ -148,7 +149,7 @@ export function openSessionsPopup(ctx: PopupCtx): void {
             // the column's width out instead of clipping, which is what "the
             // tabs popup should truncate long text of the tab" was about.
             "<div class='t'><span class='txt'>" + esc(t.title || "") + "</span></div>" +
-            "<div class='s'>" + esc(t.subtitle || t.url || "") + "</div>";
+            "<div class='s'>" + esc(displayUrl(t.subtitle || t.url || "")) + "</div>";
           tabsPane.appendChild(row);
         });
         // Same observable contract as the left list's `lazyfox:list` event: the

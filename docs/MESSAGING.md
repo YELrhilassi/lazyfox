@@ -1,38 +1,22 @@
-# Lazyfox messaging: persistent relay + native host — plan & design
+# Relay and native messaging
 
-Status: **implemented on `feat/native-host-relay`** (off `dev-nightly`).
-Stages 1–3 below are done and verified with the BiDi suite; this document
-records the design for anyone touching the channel.
+The chrome helper is privileged JavaScript with no `browser.runtime`. The
+extension is a normal WebExtension. They have to talk, and Firefox gives them no
+sanctioned channel, so Lazyfox uses two: a hidden relay tab between the helper
+and the background, and native messaging between the extension and a small Go
+host. This page documents both, and the typed contracts that keep them honest.
 
-## The problem
+`browser.runtime.sendNativeMessage` connects the extension to an external
+process over stdio. The chrome helper cannot use it: it runs in the
+browser-chrome document, so it has no extension APIs at all. That is why the
+helper's side is a tab and not a message.
 
-Every `#lfc=` message between the chrome helper and the extension background
-used to open a **throwaway tab** (`commandcenter.html#lfc=req.<action>…`),
-hold it under a 3–5 s safety timeout, then delete it. Users saw empty tabs
-popping up and auto-closing, and the hash handshake was timing-sensitive (a
-reply raced the removal, a safety timeout dropped a request that landed late,
-a fresh clone's first launch churned tab counts). That was the reported
-unreliability.
+| Channel | Direction | Mechanism |
+|---------|-----------|-----------|
+| Helper ↔ background | both | persistent relay tab (`relay.html`) |
+| Extension ↔ Go host | extension → host | native messaging, via `host.ts` |
 
-## The constraint (why native messaging alone can't fix it)
-
-`browser.runtime.sendNativeMessage` connects the **extension** to an external
-**Go host** over stdio. It is the sanctioned channel for *extension ↔ external
-process*. It is NOT a channel the **chrome helper** can use: the helper runs in
-the privileged browser-chrome document and has no `browser.runtime`, so it
-cannot send a native message, and there is no sanctioned API for a
-chrome-privileged script to message an extension except the URL/hash/tab
-mechanism.
-
-So messaging is really **two separate channels**, with two separate fixes:
-
-| Channel | Direction | Today | Fix |
-|---------|-----------|-------|-----|
-| Helper ↔ background | both | throwaway `#lfc=` tabs | **persistent relay tab** (no tab churn, no create/remove race) — DONE |
-| Extension ↔ Go host | extension → host | scaffold stubs, not built, not wired | **built, installed with a native-messaging manifest, used via `host.ts`** — DONE |
-
-The relay is itself two buses, and the third message bus is the one still
-untidy:
+The relay is itself two buses, and the third message bus is less formal:
 
 | Bus | Contract | Carries |
 |-----|----------|---------|
@@ -40,7 +24,7 @@ untidy:
 | chrome helper ↔ background | `RelayApi` + `ChromeApi` | the relay tab's port |
 | background → content script | **none** — still bare `{ action: "..." }` objects | `startHints`, `focusFirstInput`, `pageReport` |
 
-## Stage 2 — typing the relay (`RelayApi` / `ChromeApi`) — DONE
+## The typed relay (`RelayApi` / `ChromeApi`)
 
 Goal: **an action nobody handles must be a compile error, not a silent no-op.**
 
@@ -75,7 +59,7 @@ a human-readable `note` ("no such tab", "same session") that the chrome side
 discarded, so a failed tab copy looked exactly like a successful one. Those two
 actions are now reply-bearing and the failure is toasted.
 
-## Stage 3 — one wire format, tested — DONE
+## The wire format
 
 The three message shapes are packed into a URL fragment:
 
@@ -88,8 +72,8 @@ The three message shapes are packed into a URL fragment:
 The command's two leading numbers are added 2026-10-16, and they exist for the
 one message whose loss is SILENT: a dropped request or reply times its sender
 out, while a dropped command simply never happens — which is how a presence
-report goes missing and a live page's keys end up answered by nobody
-(docs/KEYBOARD-FREEZE.md). `seq` is the background's per-window sequence number,
+report goes missing and a live page's keys end up answered by nobody. `seq` is
+the background's per-window sequence number,
 minted when it DECIDES to send (so a command it cannot post still consumes a
 number, and a real drop leaves a visible hole); `lost` is the relay page's own
 count of commands it had to discard, carried so the helper can tell a command
@@ -123,7 +107,7 @@ hand-rolled parsers and both invisible because nothing currently violates them:
 - `Number("")` is `0`, so a corrupt or truncated hash with no id decoded to
   id 0 rather than being rejected. Ids must now match `/^\d+$/`.
 
-## Stage 1 — persistent relay (replaces throwaway `#lfc=` tabs) — DONE
+## The persistent relay
 
 Goal: **zero tab churn**. One dedicated, hidden relay tab carries every
 helper↔background message; nothing is created or removed per message.
@@ -186,7 +170,7 @@ helper↔background message; nothing is created or removed per message.
 - `src/extension/tabs.ts` / `src/chrome/splitview.ts` / `statusbar.ts` —
   real-tab predicates skip the relay so numbering never shifts.
 
-## Stage 2 — native messaging host (extension ↔ Go) — DONE
+## Native messaging host
 
 The Go host is **built, installed to the right place, and actually used** from
 the extension — while degrading gracefully when it's absent (store/standalone
@@ -247,7 +231,7 @@ owns what only an external process can:
 - Wired in: `background.ts` runs `probeHostOnce()` (a dev-only `host.diag`
   console line when the host is present; silence when it isn't).
 
-## Stage 3 — remove the throwaway-tab machinery — DONE
+## Why the throwaway tab is gone
 
 - The per-message tab creation/removal paths in `channel.ts`, `background.ts`
   and `main.ts` (safety timeouts, `removeReqTab`, the old `#lfc=req` tab
@@ -281,9 +265,9 @@ If it is ever reintroduced, the rule is: **never report a privileged action as
 done from the sender's side of an asynchronous hop.** It needs a real reply from
 the chrome helper (nonce-correlated, with a short timeout), a per-tab cache of
 whether that reply ever arrives, and a synthetic fallback on anything but a
-confirmed press. See `docs/HINTS.md`.
+confirmed press.
 
-## Out of scope (explicitly)
+## Not handled here
 
 - Replacing the helper↔background bridge with native messaging — impossible,
   the helper has no `browser.runtime` (see constraint above). The persistent

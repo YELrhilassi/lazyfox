@@ -31,15 +31,16 @@ const SLUG = "lazyfox2";
 
 // file, position, caption
 const SHOTS: { file: string; position: number; caption: string }[] = [
-  { file: "command-center.png", position: 1, caption: "Your new-tab page: the command center with quick-launch apps." },
-  { file: "home-search.png", position: 2, caption: "Type to search the web or jump to a site from the home grid." },
-  { file: "which-key.png", position: 3, caption: "Press ; for the whole menu of bindings, over any page." },
-  { file: "hints.png", position: 4, caption: "Link hints — a short label on every visible link." },
-  { file: "find.png", position: 5, caption: "Find in page with a live match count in the status bar." },
-  { file: "sessions.png", position: 6, caption: "Named sessions; save and switch whole windows." },
-  { file: "command-center-tabs.png", position: 7, caption: "Tab switcher from the command center — search open tabs." },
-  { file: "statusbar.png", position: 8, caption: "The status bar: mode, keys and the stealth indicator." },
-  { file: "options.png", position: 9, caption: "Settings — shortcuts, keys and appearance." },
+  { file: "command-center.png", position: 1, caption: "The command center: search tabs, history, bookmarks and downloads." },
+  { file: "tabs.png", position: 2, caption: "The tab switcher, with the number that jumps to each tab." },
+  { file: "sessions.png", position: 3, caption: "Named sessions, with the selected session's tabs." },
+  { file: "downloads.png", position: 4, caption: "Downloads, with state and file size." },
+  { file: "history.png", position: 5, caption: "History grouped by day, with a details pane." },
+  { file: "which-key.png", position: 6, caption: "Press ; for every binding on this page." },
+  { file: "hints.png", position: 7, caption: "Link hints put a key on every visible control." },
+  { file: "find.png", position: 8, caption: "Find in page with a live count and yank." },
+  { file: "options.png", position: 9, caption: "Settings for keys, sessions, dark mode and reader." },
+  { file: "statusbar.png", position: 10, caption: "The status bar: session, tab position and downloads." },
 ];
 
 function fail(msg: string): never {

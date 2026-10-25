@@ -6,7 +6,7 @@
 // DECLARED STARTING STATE", ctx.reset()). That is what makes those tests
 // trustworthy, and it is exactly what hides this class of bug: the field report
 // is not "a feature is broken", it is "after a while of normal use Lazyfox stops
-// responding until I click the page" (docs/KEYBOARD-FREEZE.md). A wedge that
+// responding until I click the page". A wedge that
 // needs three tabs, an armed hold, a dismissed popup and a page whose content
 // script went quiet cannot appear in a suite that undoes all of that before every
 // assertion.
@@ -73,8 +73,8 @@ export async function run(ctx: any): Promise<void> {
       /* ---------- state readers ---------- */
 
       // The page's own mirrors, in one round trip. The attribute names are the
-      // content script's contract with the tests (see docs/HINTS.md and the
-      // audit's snapshot, which this is a small subset of).
+      // content script's contract with the tests: a small subset of the
+      // state the page publishes for diagnostics.
       const mirrors = async (tab: any) =>
         evalIn(
           tab,

@@ -16,7 +16,7 @@
 // label sits on — see hints/activate.ts, which deliberately keeps the pointer
 // sequence off a foreign target and still calls the control's own click), and
 // when it is not, the existing activation watcher reports "the page did nothing"
-// rather than silence (docs/HINTS.md §3).
+// rather than silence.
 //
 // So a covered control is KEPT and FLAGGED. The flag reaches the overlay, which
 // draws that label dimmed, and it is in the hint snapshot so a test can assert

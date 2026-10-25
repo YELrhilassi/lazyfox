@@ -213,7 +213,7 @@ describe("a real press is a hold", () => {
   });
 
   test("the release ends the HOLD, not the leader", () => {
-    // This is the sentence docs/MULTIKEY-DESIGN.md §9 used to get backwards,
+    // This is the sentence that is easy to get backwards,
     // and getting it backwards would delete the keymap: "release → disarm"
     // would mean holding `;` ran exactly one action.
     const { leader, down } = setup();
@@ -1275,7 +1275,7 @@ describe("the dispatcher names what it did with a key", () => {
 // reported in practice: Lazyfox renders the URL bar with `display:none`, Firefox
 // parks the keyboard in it, and one stray character typed into the invisible
 // field sets `valueIsTyped`. From that moment every rescue was vetoed, on every
-// key, for the life of the window (docs/KEYBOARD-FREEZE.md §5a).
+// key, for the life of the window.
 //
 // Two rules close it, and they are asserted here at the level the product
 // decides them — the real dispatcher, over a real presence record:
@@ -1388,7 +1388,7 @@ describe("the rescue, when the browser's own address bar holds the keyboard", ()
 // not name as the active one, and that safeguard is right for the TRIGGERS — a
 // tab select or a load finishing can happen in a window the user is not in, and
 // pulling focus there would be an intrusion. At a KEY it is the freeze in its
-// purest form (docs/KEYBOARD-OWNERSHIP.md K2): the keydown was delivered to THIS
+// purest form: the keydown was delivered to THIS
 // window's listener, so the user's keyboard is here and the manager's answer is
 // stale — while believing it means the helper declines the key because "the page
 // owns it" and the page sees nothing, because its document is not focused. The

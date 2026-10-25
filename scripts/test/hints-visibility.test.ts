@@ -148,7 +148,7 @@ describe("hints visibility: the answers", () => {
     // thumbnail link is aria-hidden because the title link beside it is the
     // accessible one, while the thumbnail is the largest click target on the
     // card. Counting it as invisibility is what made those targets unhintable
-    // (docs/HINTS.md §10), so this pins the opposite direction deliberately —
+    // so this pins the opposite direction deliberately —
     // being hidden for assistive technology must not remove a key from a link
     // the user can see and click.
     const { pass } = countingPass();

@@ -59,6 +59,42 @@ export async function run(ctx: any): Promise<void> {
     return raw ? JSON.parse(raw as string) : [];
   };
 
+  // THIS SUITE IS ABOUT THE ENGINE, NOT THE SHIPPED DEFAULT. Dark mode now
+  // ships OFF — a page nobody asked to recolour must not be — so a fresh
+  // profile would leave every assertion below staring at an unthemed page.
+  // Turn the default ON for this file and put it back at the end.
+  //
+  // The mode has to change in ctx.pristineConfig as well as in storage: the
+  // reset hook restores the pristine config before every test, so a write to
+  // storage alone is undone before the second test runs.
+  const pristineDark = ctx.pristineConfig?.dark ? { ...ctx.pristineConfig.dark } : null;
+  const setDefaultMode = async (mode: string): Promise<void> => {
+    if (!ctx.probe) await ctx.bootstrap();
+    if (!ctx.pristineConfig) return;
+    ctx.pristineConfig.dark = { ...(ctx.pristineConfig.dark || {}), mode };
+    const ok = await evalIn(
+      ctx.probe,
+      `(async () => {
+         const r = await browser.runtime.sendMessage({ action: "setConfig", data: { config: ${JSON.stringify(
+           ctx.pristineConfig,
+         )} } });
+         return !!(r && r.ok);
+       })()`,
+    ).catch(() => false);
+    if (!ok) throw new Error("could not set dark.mode=" + mode + " for the theme suite");
+    // The write crosses content → background → storage; wait for the value the
+    // product kept rather than assuming the round trip already landed.
+    await waitFor(async () => {
+      const raw = await evalIn(
+        ctx.probe,
+        `browser.storage.local.get("config").then(r => JSON.stringify(((r.config || {}).dark || {}).mode))`,
+      ).catch(() => null);
+      return raw === JSON.stringify(mode) ? true : null;
+    }, 8000);
+  };
+
+  await setDefaultMode("auto");
+
   // Wait for the rule for `match` to satisfy `ok`. The write crosses content →
   // background → storage, so "press and read" would race it.
   const waitRule = async (match: string, ok: (rule: any) => boolean, ms = 8000): Promise<any> => {
@@ -1274,4 +1310,8 @@ export async function run(ctx: any): Promise<void> {
     await ctx.waitPopupGone(ctx.tabA, 8000);
     await ctx.press(ctx.tabA, "Escape");
   });
+
+  // Back to the value the run started with (the shipped default on a fresh
+  // profile), so the groups after this one do not inherit a recoloured web.
+  await setDefaultMode(pristineDark?.mode ?? "off").catch(() => {});
 }

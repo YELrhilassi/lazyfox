@@ -911,7 +911,7 @@ export async function run(ctx: any): Promise<void> {
     // marked in the document (`data-lf-content="1"`), the other tab in the window
     // reporting normally, and the helper holding no record for this one — with
     // `relay.urlSlot` still carrying a report for a DIFFERENT url at the same
-    // index (see docs/KEYBOARD-OWNERSHIP.md §5.6, where the missing instrument for
+    // index, where the missing instrument for
     // exactly this is named). The product's answer to a missing report is L2: the
     // document re-announces itself on a key IT RECEIVES, which is when its report
     // is true again. So the premise asks the way a user would — press a key into

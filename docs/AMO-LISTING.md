@@ -1,165 +1,94 @@
-# AMO store listing — Lazyfox
+# AMO store listing
 
-Everything the addons.mozilla.org listing page needs, in one place. Where a
-field can be automated through the AMO v5 API (`npm run listing`), the exact
-value to paste is given inline; a few fields (screenshots, tags picked from
-AMO's fixed list) are done in the developer dashboard.
+The listing text lives in two places so the API and this page agree:
 
-The developer dashboard is:
-https://addons.mozilla.org/developers/addon/lazyfoxlazyfox.dev/edit/
+- `scripts/amo-listing.ts` pushes the summary, description, links, categories
+  and tags through the addons.mozilla.org v5 API (`npm run listing`).
+- This page is the same copy, plus the parts the API cannot set: screenshots
+  and the curated tag pick.
 
----
+Dashboard: https://addons.mozilla.org/developers/addon/lazyfox2/edit/
 
 ## Icon
 
-The store icon is taken from the package's `manifest.json` `icons` field. Use
-the **non-horizontal** logomark (the fox alone, `docs/img/lazyfox-mark.svg`);
-the horizontal logo-with-name is for headers only.
+The package icon comes from `manifest.json`. The source is
+`docs/img/lazyfox-mark.svg`; the horizontal logo is only for headers.
+`npm run gen:icons` rebuilds the PNG set.
 
-PNGs are generated from that SVG by `npm run gen:icons` (ImageMagick + librsvg,
-which preserves the gold→orange gradient and transparency), into
-`src/static/extension/icons/`:
+## Listing copy
 
-| Size | File |
-|------|------|
-| 16 / 32 / 48 / 64 | `icons/icon16.png` … `icons/icon64.png` |
-| 96 / 128 / 256 / 512 | `icons/icon96.png` … `icons/icon512.png` |
+**Name:** Lazyfox
 
-AMO requires at least 48×48; a 128×128+ version makes the listing icon crisp.
+**Summary** (250 characters or fewer):
 
-## Name & summary
+> Firefox with the toolbar and tab strip removed. Press `;` for tabs, sessions,
+> hints, find and search. Keyboard-first, no telemetry.
 
-- **Name:** Lazyfox
-- **Summary** (short, ≤ 250 chars; this is the one-liner under the title):
-
-> Firefox with the browsing UI stripped away. One key — `;` — drives tabs,
-> split view, sessions, link hints, find-in-page and search. No menus, no mouse.
-
-## Description
-
-Multi-paragraph listing body (plain text; AMO renders line breaks):
+**Description:**
 
 ```
-Lazyfox hides the tab strip, the URL bar and the menus. Your page gets the
-whole window, with a slim status bar along the bottom. Everything else runs
-through one leader key: press `;` and a small menu of bindings appears, press
-the key for what you want, and it happens — no mouse, no Enter.
+Lazyfox removes Firefox's toolbar and tab strip. Pages fill the window, and a
+slim bar at the bottom shows the session, tab position and downloads.
 
-Your new-tab page becomes a command center: a search box over your recent
-actions, open tabs, history, bookmarks and downloads, plus quick-launch web
-apps (Spotify, YouTube, X, …) that you can tweak in the settings.
+Press ; to see the keys for tabs, sessions, link hints, find and search, then
+press the one you want.
 
-Highlights
-  · Link hints — every visible link gets a short label; type it and the link opens.
-  · Split view — two tabs side by side, no window manager required.
-  · Sessions — save and switch named windows; tabs and split layout come back exactly.
-  · Find in page — highlights matches with a live count and neovim-style yank.
-  · Stealth tabs — isolated tabs that wipe their cookies when they close.
-  · Scroll keys — h/j/k/l, gg/G and d/u work like vim, and Esc unfocuses any input.
+The home page is a command center over open tabs, history, bookmarks and
+downloads, with quick-launch tiles for the sites you use.
 
-Everything works on internal pages too (about:* and error pages), so you can
-never get stuck. The browser yourself stays in control: it's fully
-customizable from the settings page, and no telemetry, analytics or data ever
-leaves your machine.
+Split view, named sessions, isolated tabs, reader mode and dark mode are one key
+away. Nothing is sent anywhere: no account, no telemetry.
 
-Install notes
-Lazyfox is two halves: the add-on (this listing) and a one-time companion
-installer that physically removes the browser chrome for the full
-keyboard-first experience. Install from this page, open the home page and pick
-**Complete the install**, then follow the one dialog — your bookmarks, passwords
-and other add-ons are untouched.
+Install the add-on, open the home page and choose Complete the install to remove
+the browser chrome. Your bookmarks, passwords and other add-ons are not touched.
 ```
 
-## Tags & category
+## Tags and category
 
-AMO picks tags from a fixed, curated list (visible via the v5 API
-`GET /addons/tags/`); anything else is rejected. The tags applied on the
-listing are the best matches from that list:
+Tags come from AMO's curated list, so the API rejects anything else:
 
 ```
 container, privacy, search
 ```
 
-(`container` for the stealth tabs, `privacy` for the no-telemetry design,
-`search` for the command-center search. If the curated list changes, re-run
-`npm run listing` with the new slugs from `GET /addons/tags/`.)
-
-- **Category:** `tabs`.
-
-`npm run listing` submits `summary`, the description above, `homepage`,
-`support_url`, the `categories` array **and** `tags` through the v5 API (all
-verified working). Screenshots are the only field the API can't set — upload
-them in the dashboard.
+Category: `tabs`.
 
 ## Screenshots
 
-All are generated by `node scripts/e2e/screenshots.ts` into `docs/img/`.
-Landscape, current UI, real content. Upload them with:
+All ten are captured by `node scripts/e2e/screenshots.ts` into `docs/img/`.
+Each one is a full-window shot: the chrome layer is installed, the popups are
+opened with the product's own keys, and the tabs, sessions, downloads and
+history are real state in a throwaway profile.
+
+| # | File | Caption |
+|---|---|---|
+| 1 | `command-center.png` | The command center: search tabs, history, bookmarks and downloads. |
+| 2 | `tabs.png` | The tab switcher, with the number that jumps to each tab. |
+| 3 | `sessions.png` | Named sessions, with the selected session's tabs. |
+| 4 | `downloads.png` | Downloads, with state and file size. |
+| 5 | `history.png` | History grouped by day, with a details pane. |
+| 6 | `which-key.png` | Press `;` for every binding on this page. |
+| 7 | `hints.png` | Link hints put a key on every visible control. |
+| 8 | `find.png` | Find in page, with a live count and yank. |
+| 9 | `options.png` | Settings for keys, sessions, dark mode and reader. |
+| 10 | `statusbar.png` | The status bar: session, tab position and downloads. |
+
+AMO caps screenshots at ten. To replace the set, delete the old previews in the
+dashboard, then run `npm run screenshots`. Uploads are rate-limited, so a full
+set takes a while; the uploader skips positions that already exist.
+
+## Links
+
+- Homepage: https://github.com/YELrhilassi/lazyfox
+- Support: https://github.com/YELrhilassi/lazyfox/issues
+- License: MIT
+- Privacy: "No data is collected, stored on or sent to any server."
+
+## Commands
 
 ```
-npm run screenshots   # pushes docs/img/*.png to the listing via the v5 API
+npm run gen:icons     # rebuild the PNG icon set from the mark
+npm run screenshots   # capture docs/img/*.png and upload them
+npm run listing       # push summary, description, links, categories and tags
+npm run submit        # upload a listed version for review
 ```
-
-The API upload is rate-limited by AMO (3/min burst, 10/hour, 24/day), so the
-script paces itself and waits out any cooldown; re-runs are idempotent.
-
-| File | Caption |
-|------|---------|
-| `command-center.png` | Your new-tab page: the command center with quick-launch apps. |
-| `home-search.png` | Type to search the web or jump to a site from the home grid. |
-| `which-key.png` | Press `;` for the whole menu of bindings, over any page. |
-| `hints.png` | Link hints — a short label on every visible link. |
-| `find.png` | Find in page with a live match count in the status bar. |
-| `sessions.png` | Named sessions; save and switch whole windows. |
-| `options.png` | Settings — shortcuts, keys and appearance. |
-
-## Browser versions
-
-- Firefox (Gecko) stable, Developer Edition, Nightly — manifest
-  `strict_min_version` 115; the chrome layer is verified on FF ≥ 133.
-- Works on Linux, macOS and Windows.
-
-## Support / links (set in the dashboard)
-
-- **Homepage:** https://github.com/YELrhilassi/lazyfox
-- **Support site:** https://github.com/YELrhilassi/lazyfox/issues
-- **License:** MIT (also declared in the package)
-- **Privacy policy:** the add-on has no accounts, servers or analytics; data stays
-  local. Note in the listing: "No data is collected, stored on or sent to any
-  server."
-
----
-
-## About the “not actively monitored for security by Mozilla” banner
-
-You see this warning on the **install** page for a **self-hosted** (non-AMO)
-signed add-on — i.e. when someone installs the `.xpi` served from the website
-or a GitHub release rather than from addons.mozilla.org. Firefox shows it for
-any add-on that AMO hasn't reviewed. It is not a statement about quality; it
-means "unreviewed."
-
-It disappears once the user installs Lazyfox **from this AMO listing**, after a
-Mozilla reviewer approves the version (full review clears the banner). To get
-past review with the least friction:
-
-1. Keep the listing complete (description, screenshots, license, homepage,
-   support site) — reviewers reuse these.
-2. The bundles are minified by esbuild; if Mozilla's full review asks for the
-   matching non-minified source, point them at the source tree
-   (`src/extension/*`, `src/shared/*`, `src/chrome/*`) under MIT on GitHub, and
-   commit the esbuild options used by `build.ts`.
-3. Avoid changing the `id` (`lazyfox@lazyfox.dev`) between submissions.
-4. Use the store install path (home page → **Complete the install**) so every new
-   user installs the already-reviewed version rather than a sideloaded `.xpi`.
-
-Pre-releasing to earliest adopters on Nightly is fine; document that the
-sideloaded XPI on the /releases page is an "unreviewed sign" so nobody is
-surprised.
-
-## Version workflow reminder
-
-- `npm run gen:icons` — rebuild the PNG icon set from the logomark SVG.
-- `node scripts/e2e/screenshots.ts` — regenerate the screenshots from the live UI.
-- `npm run submit` — upload a new **listed** version (starts the review).
-- `npm run listing` — push the listing metadata (summary/description/links/tags) via the API.
-- `npm run screenshots` — upload `docs/img/*.png` to the listing via the API.

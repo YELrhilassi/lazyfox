@@ -106,7 +106,7 @@ page (home page → **Complete the install**) detects the running Firefox (`a1` 
 Nightly, `b` → Developer
 Edition) and links Nightly/Dev users at this prerelease, stable users at
 `releases/latest`. So both audiences always get the build that matches their
-browser — see `docs/INSTALLER-ANALYSIS.md`.
+browser.
 
 The `--mode auto` installer (what that page's download runs) needs no decisions:
 it picks the channel-matched Firefox, the profile Firefox is actually using,
@@ -137,15 +137,19 @@ a dev installer refuses to masquerade as a signed one.
 | `clean` | wipe regenerable build products |
 | `verify` / `test` / `typecheck` | run the test suites / typecheck |
 
-## Running CI locally before pushing
+## Running CI locally
 
 ```bash
 npm run ci
 ```
 
-Don't push to test whether CI passes — run this. The GitHub workflows
-(`dev-nightly.yml`, `master.yml`) run the exact same read-only checks. See
-**docs/CI.md** for details (and how to install the test tools on Void).
+This runs the same checks as the workflows, in the same order: actionlint, a
+clean install, the toolchain check, an artifact freshness check, a full build,
+every test suite, then the freshness check again. No Docker and no push.
+
+`npm run ci:bidi` adds the WebDriver suite, which needs a real Firefox and
+geckodriver (`bash scripts/install-tools.sh`). The workflows are read-only:
+`master.yml` verifies a release commit and the other two run on demand.
 
 ---
 
@@ -214,6 +218,6 @@ reporting `0.5.1` long after the extension shipped `0.5.7`.
 
 The add-on and the window chrome are separate halves with different capabilities
 (the status bar in particular exists in both, by two different mechanisms). If
-you are unsure what a given checkout is actually doing, read
-**`docs/INSTALLER-ANALYSIS.md`** — it has the full capability matrix and how to
-probe the live state (`npm run probe:chrome`).
+you are unsure what a given checkout is actually doing, `npm run probe:chrome`
+prints the live state: whether the chrome helper booted, whether the status bar
+is mounted, and whether the relay is up.

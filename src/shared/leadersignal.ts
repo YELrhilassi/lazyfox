@@ -228,7 +228,7 @@ export function leaderSeqText(
   const head = !p || p === ";" ? "⌘" : "⌘ " + p;
   const want = String(expect || "").trim();
   // "committed so far ▸ what we need next" — the shape
-  // docs/MULTIKEY-DESIGN.md §5 specifies, and the half that was missing.
+  // that the bar has to draw, and the half that was missing.
   //
   // A capture that is waiting for a digit is a modal state with no visible
   // sign: the chord is already committed and the overlay is gone, so a bar

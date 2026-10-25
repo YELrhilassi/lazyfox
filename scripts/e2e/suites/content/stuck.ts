@@ -487,8 +487,7 @@ export async function run(ctx: any): Promise<void> {
       // neither the page's dispatch trace nor the helper's leader (both measured),
       // while the harness's press on an ordinary injectable page works, so this is
       // either a real freeze or a limit of driving an error page from WebDriver.
-      // It is recorded as an open question in
-      // docs/tasks/2026-10-15-MANUAL-TEST-REPORTS.md rather than papered over.
+      // It stays an open question rather than something papered over.
       await ctx.sendKeys(tab, [{ k: ";" }]);
       const s = await leaderAnswered(tab, 8000);
       assert(s, "the leader key is answered on a " + code + " error page (url " +

@@ -875,7 +875,7 @@ export function createLinkHints(
 
   // Activate a hinted item: decide the route (focus vs click) and hand the
   // resolved element to the activator, which does the work and reports whether
-  // the page reacted (see docs/HINTS.md for why that report exists).
+  // the page reacted (the report is what makes a silent failure visible).
   function activate(it: HintItem): void {
     // The ambient window survives the teardown: the press is about to be judged
     // against it, and a page's background rate does not stop being true because
