@@ -1,0 +1,28 @@
+name: Attribution guard
+
+# A Co-Authored-By trailer is invisible to the diff and to every test, so it
+# needs its own check. This runs on every push and pull request, with full
+# history: a shallow checkout would only prove that the tip is clean.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  history:
+    name: Only the owner is credited
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Scan every reachable commit
+        run: node scripts/check-attribution.ts
