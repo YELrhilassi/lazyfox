@@ -9,7 +9,7 @@
 //     ride a throwaway #lfc=open hash tab that the chrome helper answers
 //     natively, so the current command-center tab never reloads.
 //   - openUI: extension UI popups, routed through the same #lfc= hash channel.
-import { CC_URL, getActiveTab, isCommandCenter, stripHash } from "../tabs";
+import { CC_URL, activeTabInWindow, isCommandCenter, stripHash } from "../tabs";
 import { getConfig } from "../config";
 
 // Known about: pages get a short key in the #lfc=open payload; any other
@@ -29,14 +29,18 @@ function base64Url(url: string): string | null {
   }
 }
 
-export async function openUrl(url: string, newTab: boolean | undefined) {
+// `winId` is the window the request came from (see tabs.senderWindowId). It is
+// load-bearing on every `tabs.create`: the tabs API defaults to the window the
+// BACKGROUND considers current, so a link picked in session A used to open in
+// session B — the same cross-session jump as the reported `;g`/`;l`.
+export async function openUrl(url: string, newTab: boolean | undefined, winId: number | null = null) {
   if (!url) return { ok: false };
   // about: pages cannot be navigated with the tabs API (Firefox rejects them
   // with "Illegal URL"), so they always route through the chrome helper.
   if (/^about:/i.test(url)) {
-    return openPage(url);
+    return openPage(url, winId);
   }
-  const tab = await getActiveTab();
+  const tab = await activeTabInWindow(winId);
   if (isCommandCenter(tab)) {
     await browser.tabs.update(tab.id, { url, active: true });
     return { ok: true, reused: true };
@@ -45,16 +49,17 @@ export async function openUrl(url: string, newTab: boolean | undefined) {
     const c = await getConfig();
     newTab = c.openInNewTab !== false;
   }
+  const inWin = winId == null ? {} : { windowId: winId };
   if (newTab || !tab) {
-    await browser.tabs.create({ url, active: true });
+    await browser.tabs.create({ url, active: true, ...inWin });
   } else {
     await browser.tabs.update(tab.id, { url });
   }
   return { ok: true };
 }
 
-export async function openPage(url: string) {
-  const tab = await getActiveTab();
+export async function openPage(url: string, winId: number | null = null) {
+  const tab = await activeTabInWindow(winId);
   let payload: string | null = null;
   let target = CHROME_PAGES[url];
   if (!target) {
@@ -78,7 +83,8 @@ export async function openPage(url: string) {
     // state (an in-place #lfc= navigation would reload it).
     await browser.tabs.create({
       url: CC_URL + "#lfc=open." + payload + ".c",
-      active: false
+      active: false,
+      ...(winId == null ? {} : { windowId: winId })
     });
     return { ok: true };
   }
@@ -86,13 +92,17 @@ export async function openPage(url: string) {
     await browser.tabs.update(tab.id, { url, active: true });
     return { ok: true, reused: true };
   }
-  await browser.tabs.create({ url, active: true });
+  await browser.tabs.create({
+    url,
+    active: true,
+    ...(winId == null ? {} : { windowId: winId })
+  });
   return { ok: true };
 }
 
 // Ask the chrome helper (userChrome.uc.js) to open one of its native popups.
-export async function openUI(which: string) {
-  const tab = await getActiveTab();
+export async function openUI(which: string, winId: number | null = null) {
+  const tab = await activeTabInWindow(winId);
   const hash = "open." + which + ".c";
   if (isCommandCenter(tab)) {
     await browser.tabs.update(tab.id, {
@@ -110,6 +120,10 @@ export async function openUI(which: string) {
     }
     return { ok: true, reused: true };
   }
-  await browser.tabs.create({ url: CC_URL + "#lfc=" + hash, active: true });
+  await browser.tabs.create({
+    url: CC_URL + "#lfc=" + hash,
+    active: true,
+    ...(winId == null ? {} : { windowId: winId })
+  });
   return { ok: true };
 }

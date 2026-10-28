@@ -6,6 +6,7 @@
 
 import { mergeConfig } from "../shared/config";
 import { core, ensureCore } from "../shared/core";
+import { installFetchedCore } from "../shared/corefetch";
 import { LeaderController, isCancel } from "../shared/leader";
 import { specToText } from "../shared/keymap";
 import { mirror, mirrorFlag } from "../shared/observability";
@@ -636,7 +637,9 @@ import type { ContentPopupShell } from "./content/find";
 
   // Warm the Go core off the critical path so the first keystroke's URL-vs-
   // search detection and Enter's URL normalization are instant instead of
-  // paying a cold wasm instantiation (the home grid renders regardless).
+  // paying a cold wasm instantiation (the home grid renders regardless). The
+  // wasm is fetched from the package rather than carried in this bundle.
+  installFetchedCore();
   void ensureCore().catch(() => {});
   // Start in COMMAND mode with the input blurred: the home grid is keyboard-
   // first, so hjkl/arrows navigate the tiles, Enter opens the selection, and

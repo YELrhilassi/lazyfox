@@ -18,8 +18,13 @@ const scope: any = globalThis;
     const GoCtor = scope.Go;
     if (!GoCtor) throw new Error("Lazyfox core: wasm runtime missing");
     const go = new GoCtor();
-    const b64: string = scope.atob(WASM_BASE64);
-    const raw = Uint8Array.from(b64, (c) => c.charCodeAt(0));
+    // A PLAIN LOOP. Uint8Array.from(string, map) calls the mapper once per
+    // byte and measured ~425 ms for this module; atob + charCodeAt is ~22 ms.
+    // This runs once per browser window, so the difference is a startup stall
+    // the user can see.
+    const bin: string = scope.atob(WASM_BASE64);
+    const raw = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) raw[i] = bin.charCodeAt(i);
     const { instance } = await scope.WebAssembly.instantiate(raw, go.importObject);
     go.run(instance);
     const api = scope.LazyfoxCore as CoreApi | undefined;

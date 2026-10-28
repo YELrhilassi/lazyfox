@@ -13,7 +13,13 @@
 // a long correctness argument (see reopentab.ts) that must be readable without
 // the window-management code around it.
 
-import { getActiveTab, isUITab, omittedTabsInWindow, realTabsInWindow } from "./tabs";
+import {
+  activeTabInWindow,
+  getActiveTabFor,
+  isUITab,
+  omittedTabsIn,
+  realTabsIn
+} from "./tabs";
 import { reconcileStealth, stealthContainers } from "./stealth";
 import {
   ALT_MRU_MAX,
@@ -152,8 +158,10 @@ export async function restoreAlternateTabs(): Promise<void> {
 // REAL tab in the window wins. Plumbing (the relay page, the split-panel
 // companion, an `#lfc=` carrier) is skipped rather than forgotten: it is a
 // legitimate activation, just not a place the user can be "on".
-export async function alternateTab(): Promise<{ ok: boolean }> {
-  const active = await getActiveTab();
+export async function alternateTab(sender?: unknown): Promise<{ ok: boolean }> {
+  // The sender's own tab when there is one (a `;a` from a page), the focused
+  // window's active tab otherwise (the chrome-helper relay path).
+  const active = await getActiveTabFor(sender);
   if (!active || active.id == null) return { ok: false };
   const windowId = active.windowId;
   for (const target of alternateCandidates(mruByWindow.get(windowId) || [], active.id)) {
@@ -224,8 +232,18 @@ export async function clearHistory(): Promise<{ ok: boolean }> {
 
 /* ---------- window geometry ---------- */
 
-export async function getWindowSize() {
-  const win = await browser.windows.getCurrent();
+// The window a geometry request means: the sender's own window when the request
+// came from a tab, the focused one otherwise. `windows.getCurrent()` from the
+// background is "the window the background last touched", which after a
+// multi-window session restore is exactly the answer that resizes the wrong
+// window.
+async function windowFor(winId: number | null): Promise<any> {
+  if (winId == null) return browser.windows.getCurrent();
+  return browser.windows.get(winId).catch(() => browser.windows.getCurrent());
+}
+
+export async function getWindowSize(winId: number | null = null) {
+  const win = await windowFor(winId);
   return {
     width: win.width,
     height: win.height,
@@ -235,16 +253,16 @@ export async function getWindowSize() {
   };
 }
 
-export async function resizeWindow(dx: number, dy: number) {
-  const win = await browser.windows.getCurrent();
+export async function resizeWindow(dx: number, dy: number, winId: number | null = null) {
+  const win = await windowFor(winId);
   const w = Math.max(420, (win.width || 1200) + (dx || 0));
   const h = Math.max(300, (win.height || 800) + (dy || 0));
   const up = await browser.windows.update(win.id, { width: w, height: h });
   return { width: up.width, height: up.height, state: up.state };
 }
 
-export async function moveWindow(dx: number, dy: number) {
-  const win = await browser.windows.getCurrent();
+export async function moveWindow(dx: number, dy: number, winId: number | null = null) {
+  const win = await windowFor(winId);
   if (win.state === "maximized" || win.state === "fullscreen") {
     return {
       left: win.left,
@@ -259,8 +277,8 @@ export async function moveWindow(dx: number, dy: number) {
   return { left: up.left, top: up.top, state: up.state };
 }
 
-export async function toggleMaximize() {
-  const win = await browser.windows.getCurrent();
+export async function toggleMaximize(winId: number | null = null) {
+  const win = await windowFor(winId);
   const isMax = win.state === "maximized";
   const up = await browser.windows.update(win.id, {
     state: isMax ? "normal" : "maximized"
@@ -268,8 +286,8 @@ export async function toggleMaximize() {
   return { maximized: !isMax, state: up.state };
 }
 
-export async function toggleZen() {
-  const win = await browser.windows.getCurrent();
+export async function toggleZen(winId: number | null = null) {
+  const win = await windowFor(winId);
   const isZen = win.state === "fullscreen";
   await browser.windows.update(win.id, {
     state: isZen ? "normal" : "fullscreen"
@@ -279,8 +297,8 @@ export async function toggleZen() {
 
 /* ---------- the tab strip ---------- */
 
-export async function activateTabByIndex(n: number) {
-  const tabs = await realTabsInWindow();
+export async function activateTabByIndex(n: number, winId: number | null = null) {
+  const tabs = await realTabsIn(winId);
   const idx = Math.max(0, (n || 1) - 1);
   const tab = tabs[Math.min(idx, tabs.length - 1)];
   if (!tab) return { ok: false };
@@ -289,13 +307,13 @@ export async function activateTabByIndex(n: number) {
   return { ok: true, title: tab.title || "" };
 }
 
-export async function tabsInWindow() {
+export async function tabsInWindow(winId: number | null = null) {
   await reconcileStealth();
-  const tabs = await realTabsInWindow();
+  const tabs = await realTabsIn(winId);
   // What the list left out, and why (see omittedTabsInWindow): the popup
   // ignores it, and a reader comparing two counts stops having to guess which
   // tab is missing.
-  const omitted = await omittedTabsInWindow();
+  const omitted = await omittedTabsIn(winId);
   return {
     omitted,
     tabs: tabs.map((t: any) => ({
@@ -313,8 +331,8 @@ export async function tabsInWindow() {
 
 /* ---------- per-tab state ---------- */
 
-export async function zoom(delta: number, factor: number | undefined) {
-  const tab = await getActiveTab();
+export async function zoom(delta: number, factor: number | undefined, winId: number | null = null) {
+  const tab = await activeTabInWindow(winId);
   if (!tab || tab.id === browser.tabs.TAB_ID_NONE) return { factor: 1 };
   let f: number | null = factor != null ? factor : null;
   if (f == null) {
@@ -324,8 +342,8 @@ export async function zoom(delta: number, factor: number | undefined) {
   return { factor: f };
 }
 
-export async function toggleMute() {
-  const tab = await getActiveTab();
+export async function toggleMute(winId: number | null = null) {
+  const tab = await activeTabInWindow(winId);
   if (!tab) return { muted: false };
   const muted = !(tab.mutedInfo && tab.mutedInfo.muted);
   await browser.tabs.update(tab.id, { muted });

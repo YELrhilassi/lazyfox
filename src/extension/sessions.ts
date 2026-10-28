@@ -37,9 +37,11 @@ import {
 } from "./sessions/autosave";
 import { sessionFromWindows, sessionWindowsOf } from "../shared/sessionwindows";
 import {
+  bindRestoreBroadcastChrome,
   bindRestoreRequestChrome,
   bindRestoreRequestChromeToWindow,
   isRestoringFlag,
+  isResumeActive as isResumeActiveImpl,
   resumeOnStartup as resumeOnStartupImpl,
   restoreSession as restoreSessionImpl
 } from "./sessions/restore";
@@ -60,6 +62,9 @@ type ChromeHooks = {
     action: K,
     arg?: ChromeReq<K>
   ) => void;
+  // The same command to EVERY window's helper. A restore's splash is the one
+  // thing that is addressed to all of them (see sessions/restore.ts).
+  broadcastChrome: <K extends ChromeAction>(action: K, arg?: ChromeReq<K>) => void;
   pushSessionState: () => void;
 };
 let pushSessionState: ChromeHooks["pushSessionState"] = () => {};
@@ -68,10 +73,18 @@ export function bindChromeHooks(h: ChromeHooks): void {
   pushSessionState = h.pushSessionState;
   bindRestoreRequestChrome(h.requestChrome);
   bindRestoreRequestChromeToWindow(h.requestChromeToWindow);
+  bindRestoreBroadcastChrome(h.broadcastChrome);
 }
 
 export function isRestoring(): boolean {
   return isRestoringFlag();
+}
+
+// "A launch is being resumed right now": what the chrome helper's alive ack
+// carries, so a window that boots in the middle of a restore knows to cover
+// itself with the splash instead of flashing its way through the rebuild.
+export function isResumeActive(): boolean {
+  return isResumeActiveImpl();
 }
 
 export function scheduleAutosave(): void {

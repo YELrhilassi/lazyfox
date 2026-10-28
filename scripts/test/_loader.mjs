@@ -14,3 +14,13 @@
 // (see ts-resolve-hook.mjs): the code under test is read exactly as written.
 import { register } from "node:module";
 register("../ts-resolve-hook.mjs", import.meta.url);
+
+// The wasm bytes are no longer embedded in shared/core (see corefetch.ts), so a
+// unit test that exercises a core call needs a source. Read the same file the
+// browser fetches; nothing is instantiated until a test actually calls the
+// core, so suites that never touch it pay one fs.stat and no wasm work.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+const wasmPath = fileURLToPath(new URL("../../core/js/core.wasm", import.meta.url));
+const { setCoreWasmSource } = await import("../../src/shared/core.ts");
+setCoreWasmSource(async () => new Uint8Array(readFileSync(wasmPath)));

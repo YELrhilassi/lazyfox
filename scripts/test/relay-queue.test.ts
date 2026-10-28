@@ -51,6 +51,7 @@ type Relay = {
     transientTabIds: Set<number>,
   ) => void;
   requestChrome: (action: string, arg?: any) => void;
+  broadcastChrome: (action: string, arg?: any) => void;
   registerTransientRelayTab: (tab: any, transientTabIds: Set<number>) => void;
   isRelayUrl: (url: string | undefined | null) => boolean;
 };
@@ -183,6 +184,53 @@ describe("push delivery", () => {
     assert.ok(
       live.posted.some((m: any) => m.action === "sessionState"),
       "the push was not recovered after the relay came back",
+    );
+  });
+});
+
+describe("the launch splash's broadcast", () => {
+  // The splash is raised and dropped for whichever windows the resume touches,
+  // and a resume can touch several (it rebuilds the session's whole window set).
+  // requestChrome follows the user's FOCUS, so the drop used to leave every other
+  // window covered — which is why the drop is a broadcast. These two cases pin the
+  // two halves of that: every window that is listening gets it, and a window that
+  // is not listening yet is queued for rather than skipped.
+  test("every window with a relay port gets it, not just the focused one", async () => {
+    const relay = await freshRelay();
+    stubBrowser([{ id: 1, windowId: 7 }]);
+    const a = fakePort("lazyfox-relay:7", { id: 3, windowId: 7 });
+    const b = fakePort("lazyfox-relay:9", { id: 4, windowId: 9 });
+    relay.acceptRelayPort(a, async () => null, new Set<number>());
+    relay.acceptRelayPort(b, async () => null, new Set<number>());
+    relay.broadcastChrome("splash", { on: false });
+    await tick();
+    for (const [name, p] of [
+      ["focused", a],
+      ["the other window", b],
+    ] as const) {
+      const cmd = p.posted.find((m: any) => m.action === "splash");
+      assert.ok(cmd, `${name}'s helper never heard the splash was over`);
+      assert.deepEqual(cmd.arg, { on: false }, "the splash state did not cross intact");
+    }
+  });
+
+  test("with no port yet it is queued for the focused window, not dropped", async () => {
+    const relay = await freshRelay();
+    stubBrowser([{ id: 1, windowId: 7 }]);
+    // The resume raises the splash before the window's relay page has connected:
+    // dropping it there would leave the one window whose boot the splash exists
+    // for uncovered. Its own alive announce covers the OTHER direction (the ack
+    // carries the resume state), but the queue is what makes the first raise
+    // survive a port that is still coming up.
+    relay.broadcastChrome("splash", { on: true });
+    await tick();
+    await tick();
+    const p = fakePort("lazyfox-relay:7", { id: 3, windowId: 7 });
+    relay.acceptRelayPort(p, async () => null, new Set<number>());
+    await tick();
+    assert.ok(
+      p.posted.some((m: any) => m.action === "splash"),
+      "a broadcast with no live port was dropped instead of queued",
     );
   });
 });

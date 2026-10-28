@@ -34,8 +34,10 @@ import type { Session, SessionWindow } from "../../src/shared/types.ts";
 };
 
 const {
+  bindRestoreBroadcastChrome,
   bindRestoreRequestChrome,
   bindRestoreRequestChromeToWindow,
+  isResumeActive,
   resumeOnStartup,
 } = await import("../../src/extension/sessions/restore.ts");
 
@@ -190,13 +192,16 @@ const savedSession = (windows: SessionWindow[]): Session => ({
   windows,
 });
 
-// Every command the resume sends, in order, with the window it addressed.
+// Every command the resume sends, in order, with the window it addressed — or
+// ALL_WINDOWS for the broadcast one (the splash's raise and drop).
 type Sent = { win: number | null; action: string; arg: any };
+const ALL_WINDOWS = -1;
 
 function captureRequests() {
   const sent: Sent[] = [];
   bindRestoreRequestChrome((action, arg) => sent.push({ win: null, action, arg }));
   bindRestoreRequestChromeToWindow((win, action, arg) => sent.push({ win, action, arg }));
+  bindRestoreBroadcastChrome((action, arg) => sent.push({ win: ALL_WINDOWS, action, arg }));
   return sent;
 }
 
@@ -249,6 +254,102 @@ describe("resumeOnStartup — one launch, every window", () => {
     // so focus-based targeting would have addressed the wrong helper.
     assert.equal(repairs[0]!.win, winId);
     assert.deepEqual(repairs[0]!.arg.groups, [[1, 2]]);
+  });
+
+  test("a plumbing tab in the live window does not stop it being recognised", async () => {
+    // The regression: the match is an exact URL list, and the live list counted
+    // the split-panel companion (and `#lfc=` carriers) as content. One carrier
+    // made the session's OWN window look like a stranger, so the resume left it
+    // open AND created the saved window beside it — the session came back twice.
+    const fake = fakeBrowser([
+      ["https://a.com/1", "moz-extension://lazyfox-test/splitpanel.html", "https://a.com/2"],
+    ]);
+    (globalThis as any).browser = fake.browser;
+    const sent = captureRequests();
+    const win = fake.windows[0]!.id;
+    const last = savedSession([
+      savedWindow(["https://a.com/1", "https://a.com/2"], { splits: "0:1" }),
+    ]);
+    await resumeOnStartup(last, async () => {});
+    assert.equal(fake.windows.length, 1, "the live window IS the saved one: " + JSON.stringify(fake.windows));
+    const repairs = sent.filter((s) => s.action === "restoreSplits");
+    assert.equal(repairs.length, 1, "its pairing was repaired: " + JSON.stringify(sent));
+    assert.equal(repairs[0]!.win, win);
+  });
+
+  test("a near-miss live window is rebuilt in place, not duplicated", async () => {
+    // Native restore is frequently CLOSE to the snapshot but not equal (a tab
+    // dropped, one re-created blank). The old code answered that by creating the
+    // saved window beside the near-miss: two windows for one session, and the
+    // flashing that comes with the duplicate set.
+    const fake = fakeBrowser([["https://a.com/1"]]); // missing a.com/2
+    (globalThis as any).browser = fake.browser;
+    const sent = captureRequests();
+    const win = fake.windows[0]!.id;
+    const last = savedSession([
+      savedWindow(["https://a.com/1", "https://a.com/2"], { splits: "0:1" }),
+      savedWindow(["https://b.com/1"]),
+    ]);
+    await resumeOnStartup(last, async () => {});
+    assert.equal(fake.windows.length, 2, "one window per saved window: " + JSON.stringify(fake.windows));
+    assert.deepEqual(fake.urlsOf(win), ["https://a.com/1", "https://a.com/2"]);
+    const repairs = sent.filter((s) => s.action === "restoreSplits");
+    assert.equal(repairs.length, 1, "the rebuilt window's pairing was re-created: " + JSON.stringify(sent));
+    assert.equal(repairs[0]!.win, win, "the repair names the rebuilt window");
+  });
+
+  test("a live window the session does not describe is closed", async () => {
+    // The session owns the window set, exactly as it does on a session switch.
+    // An unrelated window left open would sit there forever beside it, and a
+    // launch that also restores the session would look like it "did not load".
+    const fake = fakeBrowser([["https://a.com/1"], ["https://elsewhere.com/"]]);
+    (globalThis as any).browser = fake.browser;
+    captureRequests();
+    const last = savedSession([savedWindow(["https://a.com/1"])]);
+    await resumeOnStartup(last, async () => {});
+    assert.equal(fake.windows.length, 1, "only the session's window is left: " + JSON.stringify(fake.windows));
+    assert.ok(
+      !fake.tabs.some((t) => t.url.indexOf("elsewhere") !== -1),
+      "the unrelated window is gone"
+    );
+  });
+
+  test("the launch is covered by the splash from the first moment to the last", async () => {
+    // WHAT THIS PINS. The reported launch was "a bunch of things flashing around
+    // while things are loading": Firefox restoring windows one beat apart, the
+    // resume rebuilding the near-misses, windows closing. The cover has to be up
+    // for ALL of it and down at the end — a raise that came after the churn, or a
+    // drop that never came, is the same defect seen from either side.
+    const fake = fakeBrowser([["https://elsewhere.com/"]]);
+    (globalThis as any).browser = fake.browser;
+    const sent = captureRequests();
+    const last = savedSession([savedWindow(["https://a.com/1", "https://a.com/2"]), savedWindow(["https://b.com/1"])]);
+    assert.equal(isResumeActive(), false, "no resume was running yet");
+    await resumeOnStartup(last, async () => {});
+    assert.equal(sent[0]!.action, "splash", "the cover was not raised first: " + JSON.stringify(sent));
+    assert.deepEqual(sent[0]!.arg, { on: true });
+    const drop = sent[sent.length - 1]!;
+    assert.equal(drop.action, "splash", "the cover was not dropped last: " + JSON.stringify(sent));
+    assert.deepEqual(drop.arg, { on: false });
+    // ...and to EVERY window, not just the focused one: a resume covers the whole
+    // window set, and requestChrome alone would leave the other windows' helpers
+    // showing it for ever (until their own failsafe, twenty seconds later).
+    assert.equal(drop.win, ALL_WINDOWS, "the drop was addressed to one window");
+    // The resume is not "in progress" once it is over: that flag is what the
+    // alive ack answers for a window booting later.
+    assert.equal(isResumeActive(), false, "the resume was left marked as running");
+  });
+
+  test("a launch with nothing to resume never raises the cover", async () => {
+    // Fresh install, or autoRestore off: the resume returns before it does
+    // anything, and a launching browser that is not restoring must not be covered
+    // by a logo — the delay in the chrome helper is a second guard, not the first.
+    const fake = fakeBrowser([["https://a.com/1"]]);
+    (globalThis as any).browser = fake.browser;
+    const sent = captureRequests();
+    await resumeOnStartup(null, async () => {});
+    assert.equal(sent.filter((s) => s.action === "splash").length, 0, "a fresh launch was covered: " + JSON.stringify(sent));
+    assert.equal(isResumeActive(), false);
   });
 
   test("rebuilds the whole set when nothing matches what Firefox restored", async () => {

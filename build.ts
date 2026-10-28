@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 // Build pipeline for Lazyfox.
 //
-//   1. Compile the Go core to core/js/core.wasm, base64 it, and write
-//      src/shared/wasm-embed.ts (gitignored; the wasm is embedded into every
-//      bundle so each context is self-contained). The wasm is embedded raw (no
-//      gzip): decompression would need DecompressionStream/pako, which are not
-//      guaranteed in every context, whereas atob() + WebAssembly.instantiate()
-//      are.
+//   1. Compile the Go core to core/js/core.wasm and write src/shared/wasm-embed.ts
+//      (gitignored). Only the chrome helper's sandbox bundle embeds that base64:
+//      it has no fetch. Everything else loads dist/extension/core.wasm on first
+//      use (src/shared/corefetch.ts), because inlining 4.9 MB of base64 into the
+//      content script made every page decode it at document_start.
 //   2. esbuild-bundle each TypeScript entry (chrome helper, core bootstrap,
 //      frame script, content script, background, command center, options x2,
 //      popup) into dist/.
@@ -54,6 +53,10 @@ const BUNDLES: Bundle[] = [
   { in: "src/chrome/actor-child.ts", out: "dist/chrome/lazyfox-child.sys.mjs", format: "esm", minify: false },
   { in: "src/chrome/actor-parent.ts", out: "dist/chrome/lazyfox-parent.sys.mjs", format: "esm", minify: false },
   { in: "src/extension/content/main.ts", out: "dist/extension/content.js" },
+  // Frames get the message bridge only (content/frame.ts). See the manifest's
+  // two content_scripts entries: all_frames for this one, top-frame for the
+  // full script. Loading 5 MB into every iframe was the old behaviour.
+  { in: "src/extension/content/frame.ts", out: "dist/extension/frame.js" },
   { in: "src/extension/background.ts", out: "dist/extension/background.js" },
   { in: "src/extension/commandcenter.ts", out: "dist/extension/commandcenter.js" },
   { in: "src/extension/relay.ts", out: "dist/extension/relay.js" },
@@ -167,6 +170,13 @@ function copyAssetLf(from: string, to: string): void {
 copyAssetLf(join(root, "src", "static", "extension"), join(root, "dist", "extension"));
 copyAssetLf(join(root, "src", "static", "chrome"), join(root, "dist", "chrome"));
 console.log("[static] src/static/{extension,chrome} -> dist/ (text normalised to LF)");
+
+// The core ships as a FILE, not as base64 inside every bundle (see
+// src/shared/corefetch.ts). The content script, background and extension pages
+// fetch it on first use; the manifest lists it as web-accessible so the content
+// script's fetch is allowed.
+cpSync(wasmOut, join(root, "dist", "extension", "core.wasm"));
+console.log(`[wasm] packaged dist/extension/core.wasm (${wasmBytes.length} bytes)`);
 
 /* ---------- 3b. native messaging host ---------- */
 
