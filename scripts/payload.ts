@@ -216,8 +216,8 @@ export function sha256File(p: string): string {
 
 // The directories and files whose contents decide what dist/ (and therefore
 // every installer binary) will contain. The Go core is here because it is
-// compiled to core.wasm and embedded in every bundle; native-host is here
-// because it is compiled into the installers.
+// compiled to core.wasm, which ships in the extension package; native-host is
+// here because it is compiled into the installers.
 //
 // THE INSTALLER'S OWN INPUTS ARE HERE TOO, and they were not before. `installer/
 // internal` is the installer's Go logic and `installer/frontend/src` is the

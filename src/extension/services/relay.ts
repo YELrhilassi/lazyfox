@@ -226,6 +226,28 @@ export function requestChromeToWindow<K extends string>(winId: number, action: K
   sendChromeCommand(winId, action, arg);
 }
 
+// Deliver one command to EVERY window's chrome helper.
+//
+// Almost every command is about ONE window — the one whose helper asked, or the
+// user's focused one — and requestChrome is the right tool for those. The launch
+// splash is the exception: a startup resume rebuilds several windows at once and
+// each window's splash lives in that window's own helper, so "a session is
+// loading" is news for all of them.
+//
+// A window whose helper has not connected its relay port yet is not skipped: its
+// own alive announce is answered with the resume state (see bgrelay's `alive`),
+// which is how a window that boots mid-restore learns to cover itself. When no
+// window has a port at all, the command still goes out through requestChrome, so
+// it is queued for whoever comes up first instead of being dropped.
+export function broadcastChrome<K extends string>(action: K, arg?: any): void {
+  const winIds = Array.from(relayPorts.keys());
+  if (!winIds.length) {
+    requestChrome(action, arg);
+    return;
+  }
+  for (const winId of winIds) sendChromeCommand(winId, action, arg);
+}
+
 // Ask the chrome helper to do something only it can (native splits, status
 // pushes): post the command over the relay's runtime port.
 //

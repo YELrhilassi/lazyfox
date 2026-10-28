@@ -37,6 +37,7 @@ import {
 } from "./sessions";
 import {
   acceptRelayPort,
+  broadcastChrome,
   isRelayUrl,
   registerTransientRelayTab,
   requestChrome,
@@ -53,6 +54,7 @@ import { watchHomeTabs } from "./services/homeshim";
 import { openSetupTab, watchPageTabs } from "./services/components";
 import { checkUpdateOnLaunch, onUpdateNotificationClick } from "./services/updates";
 import { ensureCore } from "../shared/core";
+import { installFetchedCore } from "../shared/corefetch";
 import type { CacheMode } from "../shared/types";
 import { handleRelayReq } from "./bgrelay";
 import { pushSessionStateToChrome } from "./bgpushes";
@@ -279,7 +281,10 @@ function installWatchers(): void {
   // Track the last real page tab for the diagnostics page report.
   watchPageTabs();
 
-  // Warm the wasm core for the first URL suggestion.
+  // Warm the wasm core for the first URL suggestion. The bytes are fetched
+  // from dist/extension/core.wasm — this bundle no longer carries a 4.9 MB
+  // base64 copy (see shared/corefetch.ts).
+  installFetchedCore();
   void ensureCore().catch(() => {});
 
   // Dev-only smoke test: log the native host's diag once. Absence is a silent
@@ -313,8 +318,10 @@ export function installBackgroundLifecycle(): void {
     requestChrome,
     // A session restore rebuilds every window of the session, so its
     // split-layout commands have to name their window instead of following the
-    // user's focus (see sessions/restore.ts).
+    // user's focus (see sessions/restore.ts). Its splash is the mirror case: one
+    // command for all of them, because every window of the session is covered.
     requestChromeToWindow,
+    broadcastChrome,
     pushSessionState: pushSessionStateToChrome,
   });
   installWatchers();

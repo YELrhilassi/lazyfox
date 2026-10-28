@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lazyfox",
-  "version": "0.5.15",
+  "version": "0.5.16",
   "description": "Firefox with the browsing UI stripped away — tabs, split view, sessions, link hints, find-in-page, search and a status bar, all behind one key: ;",
   "homepage_url": "https://github.com/YELrhilassi/lazyfox",
   "license": "MIT",
@@ -52,17 +52,29 @@
         "file:///*"
       ],
       "js": [
-        "content.js"
+        "frame.js"
       ],
       "run_at": "document_start",
       "all_frames": true,
       "match_about_blank": true
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "file:///*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
     }
   ],
   "web_accessible_resources": [
     {
       "resources": [
-        "setup.html"
+        "setup.html",
+        "core.wasm"
       ],
       "matches": [
         "<all_urls>"

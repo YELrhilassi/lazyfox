@@ -77,8 +77,10 @@ import { createChromeOps } from "./ops";
 import { createPrimitives } from "./ops/primitives";
 import { createPopupHost } from "./popup";
 import { createScrollKeys } from "./scrollkeys";
+import { createSplash } from "./splash";
 import { createSplitView, type SplitView } from "./splitview";
 import { createStatusBar, type StatusBarCtl } from "./statusbar";
+import { resolveCcBaseUrl } from "./extbaseurl";
 import { createTypingChannel } from "./typing";
 import { createGlobalWhichKey } from "./wkglobal";
 
@@ -144,6 +146,16 @@ import { createGlobalWhichKey } from "./wkglobal";
     realTabs: () => split.realTabs(),
     getConfig: () => cfg,
     getUi: () => ({ popup: popup.isOpen(), leader: !!(leader && leader.active) }),
+  });
+
+  // The launch splash (splash.ts). Built FIRST of the window surfaces because it
+  // may be asked for while the rest of this root is still wiring: the alive ack
+  // is answered by the background, and a window booting in the middle of a
+  // restart can be told to cover itself before `channel` exists — hence the
+  // base-URL getter falling back to the policy lookup.
+  const splash = createSplash({
+    env,
+    baseUrl: () => (channel ? channel.ccBaseUrl() : resolveCcBaseUrl()),
   });
 
   split = createSplitView({
@@ -706,7 +718,9 @@ import { createGlobalWhichKey } from "./wkglobal";
   /* ===================== alive announce ===================== */
 
   const profile = detectProfile(env);
-  const alive = createAliveAnnounce(env, win, () => channel, profile);
+  // The ack carries the background's answer about a running resume, and this is
+  // where a window that boots mid-restore learns to cover itself.
+  const alive = createAliveAnnounce(env, win, () => channel, profile, (on) => splash.set(on));
 
   /* ===================== cache control ===================== */
 
@@ -754,6 +768,7 @@ import { createGlobalWhichKey } from "./wkglobal";
     ops: chromeOps as unknown as { openTarget(which: string): boolean; openUrlNative(url: string): boolean; openResize(): void },
 split,
     status,
+    splash,
     // A presence report arrives carrying a STRIP INDEX, because that is the only
     // coordinate the sending document can be given — and it is resolved to the
     // tab it is about at the door. Everything past this point is keyed by the

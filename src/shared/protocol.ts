@@ -274,7 +274,11 @@ export interface RelayApi {
       // channel dies in exactly the situations the lines exist for.
       errs?: string[];
     };
-    res: { ok: true };
+    // `splash`: a startup resume is in progress RIGHT NOW. The helper takes the
+    // splash up on it, because this announce is how a window that boots during
+    // the restore learns there is something to wait for — the broadcast that
+    // started the restore reached only the windows that already had a port.
+    res: { ok: true; splash?: boolean };
   };
   // Flip the "press the key to reach the chrome layer" preference on both
   // copies: the helper flips its cache, the background flips storage.
@@ -369,6 +373,11 @@ export interface ChromeApi {
   // parent process a tick or two after `tabs.create` resolves, and pairing
   // early pairs the tabs being torn down.
   restoreSplits: { req: { groups: number[][]; expect?: number }; res: void };
+  // The launch splash: up while a session is being resumed, down when it has
+  // settled. Pushed to every window's helper (and answered in the alive ack for
+  // a window that boots mid-restore), because a multi-window session touches
+  // windows whose helpers came up at different moments.
+  splash: { req: { on: boolean }; res: void };
   sessionState: { req: RelaySessionState; res: void };
   // Clear the bar's download notification(s) — pushed, because the page
   // that pressed `;D` has nothing left to do once the bar is told.

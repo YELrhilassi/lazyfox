@@ -9,9 +9,57 @@ import { isRelayTabUrl } from "../shared/transient";
 
 export const CC_URL = browser.runtime.getURL("commandcenter.html");
 
+/**
+ * The DEFAULT window, for callers with no better answer: the one the background
+ * context considers current. It is only the right window when nobody told us
+ * which one the request came from.
+ */
 export async function getActiveTab(): Promise<any> {
   const tabs = await browser.tabs.query({ active: true, currentWindow: true });
   return tabs && tabs[0];
+}
+
+/**
+ * The tab a message came FROM, when the sender is a tab.
+ *
+ * `currentWindow` is not the answer to "which window is the user in". With one
+ * window the two agree by luck; the moment a session holds several windows — or
+ * a stale one is left open mid-restore — the background's notion of "current"
+ * drifts to whichever window IT last touched, and every action that acts on
+ * "the active tab" (back/forward, the tab list, zoom, mute, splits) is applied
+ * there instead. What the user sees is a keystroke landing on a tab in ANOTHER
+ * session: the reported ";g / ;l switches to a tab in some other session".
+ *
+ * A message that carries a sender tab names its window exactly, so it is the
+ * one authority every one of those actions uses now (see getActiveTabFor).
+ */
+export function senderTab(sender: unknown): any | null {
+  const t = (sender as { tab?: any } | undefined)?.tab;
+  return t && typeof t === "object" && t.id != null ? t : null;
+}
+
+/** The window a request came from, or null when the sender is not a tab. */
+export function senderWindowId(sender: unknown): number | null {
+  const t = senderTab(sender);
+  return t && typeof t.windowId === "number" ? t.windowId : null;
+}
+
+/**
+ * The tab an action should act on: the SENDER'S OWN TAB when the request came
+ * from a tab, otherwise the focused window's active tab (the chrome-helper
+ * relay path, which has no tab sender).
+ */
+export async function getActiveTabFor(sender: unknown): Promise<any> {
+  const t = senderTab(sender);
+  if (t) return t;
+  return getActiveTab();
+}
+
+/** The active tab of a NAMED window, or of the default window for null. */
+export async function activeTabInWindow(winId: number | null): Promise<any> {
+  if (winId == null) return getActiveTab();
+  const tabs = await browser.tabs.query({ windowId: winId, active: true }).catch(() => []);
+  return (tabs && tabs[0]) || null;
 }
 
 // Transient UI tabs (the split-panel companion and the throwaway #lfc= request
@@ -52,12 +100,18 @@ function isPendingRelayTab(t: any): boolean {
   return url === "" || url === "about:blank";
 }
 
-// The user-visible tabs in the current window, in strip order.
-export async function realTabsInWindow(): Promise<any[]> {
-  const tabs = await browser.tabs.query({ currentWindow: true });
+// The user-visible tabs of a NAMED window, in strip order. Null means the
+// default window (the focused one), which is what every pre-sender caller wants.
+export async function realTabsIn(winId: number | null): Promise<any[]> {
+  const tabs = await browser.tabs.query(winId == null ? { currentWindow: true } : { windowId: winId });
   return (tabs || []).filter(
     (t: any) => !isUITab(t) && !isPendingRelayTab(t)
   );
+}
+
+// The user-visible tabs in the current window, in strip order.
+export async function realTabsInWindow(): Promise<any[]> {
+  return realTabsIn(null);
 }
 
 /**
@@ -74,7 +128,14 @@ export async function realTabsInWindow(): Promise<any[]> {
 export async function omittedTabsInWindow(): Promise<
   { id: number; url: string; why: string }[]
 > {
-  const tabs = await browser.tabs.query({ currentWindow: true });
+  return omittedTabsIn(null);
+}
+
+/** The rows realTabsIn(winId) leaves out, with the reason. */
+export async function omittedTabsIn(
+  winId: number | null
+): Promise<{ id: number; url: string; why: string }[]> {
+  const tabs = await browser.tabs.query(winId == null ? { currentWindow: true } : { windowId: winId });
   const out: { id: number; url: string; why: string }[] = [];
   for (const t of tabs || []) {
     if (isUITab(t)) {

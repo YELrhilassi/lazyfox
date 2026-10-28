@@ -13,7 +13,7 @@
 import type { Channel } from "./channel";
 import type { ChromeEnv } from "./env";
 
-export const CHROME_HELPER_VERSION = "0.5.15";
+export const CHROME_HELPER_VERSION = "0.5.16";
 
 // Profile directory leaf name (e.g. "65rp05zu.lfxdev-…"), announced with the
 // alive ping so the extension can show the ACTIVE profile in the command-
@@ -123,7 +123,14 @@ export function createAliveAnnounce(
   env: ChromeEnv,
   win: ChromeEnv["window"],
   channel: () => Channel,
-  profile: { profileName: string; profileDir: string }
+  profile: { profileName: string; profileDir: string },
+  // The background's answer about a launch resume, applied as a STATE: true
+  // raises the splash, false leaves it down. It rides the ACK rather than a
+  // separate push because the ack is the one message a window booting in the
+  // middle of a restore is guaranteed to receive — the broadcast that raised the
+  // splash in the other windows reached only windows that already had a relay
+  // port. Absent = false, which is the idle case.
+  onSplash?: (on: boolean) => void
 ) {
   let announced = false;
   let ackInFlight = false;
@@ -154,6 +161,16 @@ export function createAliveAnnounce(
         ackInFlight = false;
         // requestReply resolves null on timeout/error; the ack object on success.
         if (ack && ack.ok) announced = true;
+        // A resume running right now covers this window too, however late it
+        // joined (see onSplash above). Best-effort: a splash never earned a
+        // failed announce.
+        if (ack && (ack as any).ok && onSplash) {
+          try {
+            onSplash(!!(ack as any).splash);
+          } catch (e) {
+            // ignore
+          }
+        }
         // otherwise the next 500ms poll retries
         // ONE re-announce a generation after boot, so the loader-error capture
         // in storage reflects the console state AFTER the user has actually

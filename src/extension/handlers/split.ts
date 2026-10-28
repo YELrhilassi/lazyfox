@@ -10,7 +10,7 @@
 // they are the same feature from the other end: what the split panel shows, and
 // which tab the user picked from it.
 import type { ChromeAction, ChromeReq } from "../../shared/protocol";
-import { realTabsInWindow } from "../tabs";
+import { realTabsIn, senderWindowId } from "../tabs";
 import type { Domain } from "./types";
 // The actions this domain owns. The list is the contract: background.ts unions
 // every domain's list and requires the result to cover BgApi exactly, so a new
@@ -29,6 +29,12 @@ type Owns =
 
 export interface SplitDeps {
   requestChrome<K extends ChromeAction>(action: K, arg?: ChromeReq<K>): void;
+  /** The same, aimed at a NAMED window (relay.requestChromeToWindow). */
+  requestChromeToWindow<K extends ChromeAction>(
+    winId: number,
+    action: K,
+    arg?: ChromeReq<K>
+  ): void;
   /**
    * A split appeared, was dissolved, or had its panes rearranged. Recorded here
    * because it is the one event in this domain that changes the SAVED layout
@@ -37,36 +43,57 @@ export interface SplitDeps {
   onLayoutChanged(): void;
 }
 
+/**
+ * Send a split command to the WINDOW THE REQUEST CAME FROM.
+ *
+ * A split forms in the window you are looking at, and only that window's chrome
+ * helper can form it. Addressing it by "the focused window" (the old
+ * requestChrome) meant a `;|` pressed in session A could pair two tabs in
+ * session B: the same class of bug as `;g`/`;l`, on the same reported path.
+ */
+function ask<K extends ChromeAction>(
+  deps: SplitDeps,
+  sender: unknown,
+  action: K,
+  arg?: ChromeReq<K>
+): void {
+  const winId = senderWindowId(sender);
+  if (winId == null) deps.requestChrome(action, arg);
+  else deps.requestChromeToWindow(winId, action, arg);
+}
+
 export function createSplitHandlers(deps: SplitDeps): Domain<Owns> {
   return {
-    sessionSplit: () => {
-      deps.requestChrome("splitTab");
+    sessionSplit: (_data, sender) => {
+      ask(deps, sender, "splitTab");
       return { ok: true };
     },
-    sessionUnsplit: () => {
-      deps.requestChrome("unsplit");
+    sessionUnsplit: (_data, sender) => {
+      ask(deps, sender, "unsplit");
       return { ok: true };
     },
-    sessionSwitchPane: (data) => {
-      deps.requestChrome("switchPane", { dir: data.dir > 0 ? 1 : -1 });
+    sessionSwitchPane: (data, sender) => {
+      ask(deps, sender, "switchPane", { dir: data.dir > 0 ? 1 : -1 });
       return { ok: true };
     },
-    sessionSwapPane: (data) => {
-      deps.requestChrome("swapSplitPanes", { dir: data.dir > 0 ? 1 : -1 });
+    sessionSwapPane: (data, sender) => {
+      ask(deps, sender, "swapSplitPanes", { dir: data.dir > 0 ? 1 : -1 });
       return { ok: true };
     },
-    sessionSplitAddTabByIndex: (data) => {
+    sessionSplitAddTabByIndex: (data, sender) => {
       const n = Number(data.index);
       if (!(n >= 1 && n <= 9)) return { ok: false, note: "tab number must be 1-9" };
       const split = Number(data.split);
-      deps.requestChrome(
+      ask(
+        deps,
+        sender,
         "moveToSplit",
         split >= 1 ? { index: n, split: split } : { index: n }
       );
       return { ok: true };
     },
 
-    sessionSplitTargets: async () => {
+    sessionSplitTargets: async (_data, sender) => {
       // A window can hold MORE THAN ONE native split, so "move this tab into
       // the split" has more than one answer and the chooser needs the list.
       //
@@ -75,7 +102,7 @@ export function createSplitHandlers(deps: SplitDeps): Domain<Owns> {
       // derived from the same numbering the strip uses rather than from a
       // second guess about it. Groups are ordered by their first tab, which is
       // the order the user sees them in.
-      const tabs = await realTabsInWindow();
+      const tabs = await realTabsIn(senderWindowId(sender));
       const groups = new Map<number, typeof tabs>();
       for (const t of tabs) {
         const id = (t as any).splitViewId;
@@ -96,8 +123,8 @@ export function createSplitHandlers(deps: SplitDeps): Domain<Owns> {
       return { splits: splits };
     },
 
-    sessionPullFromSplit: () => {
-      deps.requestChrome("pullFromSplit");
+    sessionPullFromSplit: (_data, sender) => {
+      ask(deps, sender, "pullFromSplit");
       return { ok: true };
     },
 
@@ -110,10 +137,10 @@ export function createSplitHandlers(deps: SplitDeps): Domain<Owns> {
       return null;
     },
 
-    splitPanelTabs: async () => {
+    splitPanelTabs: async (_data, sender) => {
       // Number REAL tabs only (skip splitpanel + #lfc=), so the list's numbers
       // match ;+N and never shift when a companion pane is added/removed.
-      const tabs = await realTabsInWindow();
+      const tabs = await realTabsIn(senderWindowId(sender));
       return {
         tabs: tabs.map((t, i) => ({
           index: i + 1,
@@ -127,10 +154,10 @@ export function createSplitHandlers(deps: SplitDeps): Domain<Owns> {
       };
     },
 
-    moveTabToSplit: (data) => {
+    moveTabToSplit: (data, sender) => {
       const n = Number(data.index);
       if (!(n >= 1 && n <= 9)) return { ok: false };
-      deps.requestChrome("moveToSplit", { index: n });
+      ask(deps, sender, "moveToSplit", { index: n });
       return { ok: true };
     },
   };
