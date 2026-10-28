@@ -199,9 +199,28 @@ export class LeaderController {
       if (this.onChange) this.onChange();
       this.repaint();
     });
+    this.loadAndReplay();
+  }
+
+  /**
+   * Load the keymap, then run every chord that arrived while it was missing.
+   *
+   * THE REPLAY USED TO HANG OFF THE CONSTRUCTOR'S ONE FETCH. If that first
+   * fetch failed — the command center installed its wasm source after this
+   * constructor ran, so it did on EVERY home page load — the `.then` saw "not
+   * ready" and returned, and the queue's only reader was gone. The next
+   * keystroke retried the fetch (handleKey) and the retry succeeded, but
+   * nothing drained the queue: the leader stayed armed, the chord was lost,
+   * and pressing the SAME action again worked. That is the reported "leader +
+   * action does nothing until I press it twice", and the press that paid for
+   * the retry is the one that disappeared.
+   *
+   * So the replay is attached to every attempt, not one: handlers on an
+   * already-resolved promise run in order, the first drains the queue and the
+   * rest find it empty.
+   */
+  private loadAndReplay(): void {
     void loadKeymap().then(() => {
-      // A failed fetch keeps the keys buffered; the next keystroke retries
-      // the fetch (handleKey).
       if (!keymapReady()) return;
       const held = this.buffered;
       this.buffered = [];
@@ -584,7 +603,7 @@ export class LeaderController {
     if (!keymapReady()) {
       this.buffered.push(e);
       if (this.buffered.length > LeaderController.BUFFER_LIMIT) this.buffered.shift();
-      void loadKeymap();
+      this.loadAndReplay();
       return true;
     }
     // THE OVERLAY'S OWN NAVIGATION, resolved BEFORE the keymap: this block

@@ -32,6 +32,17 @@ import type { ContentPopupShell } from "./content/find";
 (function () {
   "use strict";
 
+  // POINT THE CORE AT THE PACKAGED WASM BEFORE ANYTHING CAN ASK IT ANYTHING.
+  //
+  // This used to sit at the END of boot, next to a warm-up call. But the
+  // LeaderController is built in between, and its constructor fetches the
+  // keymap — so on every home page load the first fetch ran with no wasm
+  // source installed, failed, and left the leader's key buffer with no reader.
+  // The first chord after that was swallowed and the second worked (see
+  // LeaderController.loadAndReplay). The install is idempotent and cheap; it
+  // belongs before the first consumer, not after the last one.
+  installFetchedCore();
+
   const refs: CCRefs = {
     input: document.getElementById("input") as HTMLInputElement,
     resultsEl: document.getElementById("results") as HTMLUListElement,
@@ -638,8 +649,9 @@ import type { ContentPopupShell } from "./content/find";
   // Warm the Go core off the critical path so the first keystroke's URL-vs-
   // search detection and Enter's URL normalization are instant instead of
   // paying a cold wasm instantiation (the home grid renders regardless). The
-  // wasm is fetched from the package rather than carried in this bundle.
-  installFetchedCore();
+  // wasm is fetched from the package rather than carried in this bundle, and
+  // the source was installed at the top of boot — before the leader could ask
+  // for the keymap.
   void ensureCore().catch((e) => {
     // A failed core is the difference between a working leader and one that
     // paints and then eats every key. It used to be swallowed here, which made
