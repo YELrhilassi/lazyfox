@@ -5,7 +5,7 @@
 // core; the module only glues browser APIs to that logic.
 
 import { core } from "../shared/core";
-import { getActiveTab, isCommandCenter } from "./tabs";
+import { activeTabInWindow, isCommandCenter } from "./tabs";
 
 let visitedCache: any[] = [];
 let visitedCacheAt = 0;
@@ -143,10 +143,12 @@ export async function searchUrlFor(q: string): Promise<string> {
   return url;
 }
 
-export async function doSearch(query: string) {
+// `winId` is the window the request came from (see tabs.senderWindowId): every
+// create below defaults to the background's "current" window without it.
+export async function doSearch(query: string, winId: number | null = null) {
   const q = (query || "").trim();
   if (!q) return { ok: false };
-  const tab = await getActiveTab();
+  const tab = await activeTabInWindow(winId);
   if (isCommandCenter(tab)) {
     await browser.tabs.update(tab.id, { url: await searchUrlFor(q), active: true });
     return { ok: true, engine: "default", reused: true };
@@ -161,7 +163,11 @@ export async function doSearch(query: string) {
     // google.com, so a user whose engine was DuckDuckGo silently got Google
     // the one time the preferred API failed.
   }
-  await browser.tabs.create({ url: await searchUrlFor(q), active: true });
+  await browser.tabs.create({
+    url: await searchUrlFor(q),
+    active: true,
+    ...(winId == null ? {} : { windowId: winId }),
+  });
   return { ok: true, engine: "fallback" };
 }
 

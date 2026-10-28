@@ -16,6 +16,7 @@ import { corpusStats, parseFixList } from "../shared/dark-rules";
 import { paletteById, paletteOptions } from "../shared/darkpalettes";
 import { readKey, writeKey, vConfig, vStringMap } from "./store";
 import { core } from "../shared/core";
+import { installFetchedCore } from "../shared/corefetch";
 import { favicon } from "../shared/dom";
 import { send } from "../shared/protocol";
 import { checkForUpdate, RELEASE_URL } from "../shared/updates";
@@ -34,6 +35,9 @@ import type {
 
 (function () {
   "use strict";
+
+  // The core's wasm is a package file now, not a 4.9 MB string in this bundle.
+  installFetchedCore();
 
   const leader = document.getElementById("leader") as HTMLInputElement;
   const hintChars = document.getElementById("hintChars") as HTMLInputElement;

@@ -31,7 +31,7 @@ import { createTabHandlers } from "./handlers/tabs";
 import { createWindowHandlers } from "./handlers/window";
 import type { BgActionName } from "./handlers/types";
 import { openPage, openUI, openUrl } from "./services/navigation";
-import { requestChrome } from "./services/relay";
+import { requestChrome, requestChromeToWindow } from "./services/relay";
 import {
   componentsInfo,
   diagnoseTabs,
@@ -75,6 +75,7 @@ const handlers = {
   }),
   ...createSplitHandlers({
     requestChrome,
+    requestChromeToWindow,
     // The pane layout moved. Re-measure until the platform has finished
     // describing it, then persist — see scheduleLayoutSnapshot. Without this a
     // split made after the last tab change was never written down at all, and

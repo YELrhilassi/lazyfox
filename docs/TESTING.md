@@ -99,6 +99,7 @@ claims a behaviour test cannot see and a comment cannot keep true:
 | `scripts/test/hints-visibility.test.ts` | one composed-ancestor walk per distinct element per pass, and one style read per element | the pass takes its style reader as a parameter, so the test COUNTS the reads: 200 candidates over a shared chain are 202 reads, where the per-element predicates cost 600+ |
 | `scripts/test/hints-frames.test.ts` | one measurement pass per frame; the safety net's cadence and its 1.5s episode cap; the earliest owed re-hint wins | the frame host is a manual clock, so 150 requests in "one frame" are one call, and a `cancel` is asserted to have reached the host |
 | `scripts/test/hints-motion.test.ts` | the event list, the kind each event reports, the `moving()` window's boundary, and that `dispose()` unregisters exactly what it registered | real `EventTarget`s, so the assertions are about the wiring rather than a stub that agrees with them |
+| `scripts/test/launch-splash.test.ts` | the launch cover is deferred, an early `off` cancels the paint entirely, and the failsafe lifts it whatever the background does | the controller schedules through `env.setTimeout` and the test owns that queue, so "it painted" and "it was taken down" are two moments it can look at separately — a single drain of the fake's timers would collapse them into one |
 
 The pattern to copy from these: **make the cost countable and then count it.**
 The visibility pass is injectable, the frame host is injectable, and the motion
@@ -133,9 +134,12 @@ Two lessons, both now written at the call site so they are not re-attempted:
   queue and the URL slot are the same channel; adding a producer to one silently
   changes the other's latency.
 
-`scripts/test/relay-queue.test.ts` (11 checks) pins the queue's delivery
+`scripts/test/relay-queue.test.ts` (13 checks) pins the queue's delivery
 guarantees, and 2 of them were confirmed to go **red** against the pre-fix code
-before being believed — a test never seen failing is not evidence.
+before being believed — a test never seen failing is not evidence. Two more
+cover the other direction of the same channel: the launch splash's drop is a
+BROADCAST, because a resume rebuilds the session's whole window set and the
+focus-following path would leave every other window covered.
 
 One of those eleven is now about the opposite direction, and it is the reason
 the tier table above can say "999 cases" rather than "999 except one long one":

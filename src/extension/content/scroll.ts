@@ -19,7 +19,6 @@
 // document scroller needs no outline.
 
 import { shadowRootOf, walkElements } from "../../shared/dom";
-import { createCoalescer } from "../../shared/coalesce";
 import { toast } from "../../shared/overlay";
 import { promoteToTopLayer } from "../../shared/toplayer";
 import type { ScrollRegionInfo } from "../../shared/types";
@@ -124,7 +123,6 @@ export function createScrollController(): ScrollController {
   let scanStale = false;
   const SCAN_TTL_MS = 1000;
   const STRUCTURAL_RESCAN_MS = 500;
-  const observedRoots = new WeakSet<ShadowRoot>();
 
   function trackPointer(e: PointerEvent): void {
     pointerX = e.clientX;
@@ -171,76 +169,20 @@ export function createScrollController(): ScrollController {
   } catch (e) {
     // ignore — a missing resize listener only costs a stale scan for a moment
   }
-  // Region membership is a DOM/CSS fact, not a pointer fact. Invalidate the
-  // list when a NODE appears/disappears, then scan lazily at the next region
-  // request. MutationObserver callbacks never scan/layout-read, so the observer
-  // itself stays cheap — and childList is the only thing it watches.
-  let regionObserver: MutationObserver | null = null;
-  const scrollObservers: MutationObserver[] = [];
-
-  // What one mutation batch means for the caches: the tree's SHAPE changed, so
-  // the list (and the ranking inside it) is no longer trustworthy. Attributes
-  // never reach here — they are not observed (see the note above).
-  function onMutations(): void {
-    invalidateRegions();
-  }
-
-  // ---- finding shadow roots is a FULL-DOCUMENT WALK, so it is coalesced ----
+  // NO DOCUMENT-WIDE MutationObserver. It only marked this cache stale, and a
+  // chat client or a virtualised list mutates its DOM hundreds of times a
+  // second — so the observer delivered records (and allocated them) for the
+  // whole life of every page, paid even when the user pressed no scroll key.
+  // Worse, on exactly those pages it defeated the cache it existed to protect:
+  // every mutation batch set `scanStale`, so the next scroll key always ran the
+  // full walk instead of reusing a one-second-old answer.
   //
-  // `watchShadowRoots` walks every node (up to ROOTS_WALK_BUDGET) looking for
-  // roots nobody observes yet. It is NOT run when the controller is built, and
-  // not on mutation: it runs when a region scan runs (scanRegions), which is to
-  // say when a scroll key — or an explicit `;F` / diagnostics request — actually
-  // asks which pane to move. A page the user only reads on therefore pays
-  // nothing for shadow-root discovery, however much it mutates; and a page the
-  // user scrolls pays a coalesced walk at most once a second. Before this, the
-  // document observer requested it on every mutation batch, synchronously, on
-  // every page for the life of the document.
-  //
-  // The rule lives in shared/coalesce.ts, where it is unit-tested, because the
-  // hint session needs exactly the same rule for exactly the same reason. Roots
-  // are therefore found up to a second late, and nothing depends on finding them
-  // immediately: a root's own observer only exists to invalidate a cache, and
-  // the caches already have a TTL backstop.
-  const ROOTS_DISCOVERY_MS = 1000;
-  // Elements one discovery pass may visit per walked root. The walk restarts
-  // from the document on every pass, so the budget delays finding a root in a
-  // very large subtree rather than losing it.
-  const ROOTS_WALK_BUDGET = 4000;
-  const rootsDiscovery = createCoalescer({
-    everyMs: ROOTS_DISCOVERY_MS,
-    run: () => watchShadowRoots(document, 0),
-  });
-  // (requested from scanRegions, never from the mutation observer)
-
-  function watchShadowRoots(root: ParentNode, depth: number): void {
-    if (depth >= 6) return;
-    // Lazy and budgeted (shared/dom.ts walkElements): the previous version
-    // materialized an array of every element in the subtree and only then
-    // applied MAX_SCAN to its length, so the cap did not bound the allocation.
-    walkElements(root, ROOTS_WALK_BUDGET, (el) => {
-      const shadow = shadowRootOf(el);
-      if (!shadow || observedRoots.has(shadow)) return;
-      observedRoots.add(shadow);
-      // A mutation INSIDE an observed root means the same thing a mutation
-      // anywhere else does, so it goes through the same handler. The recursion
-      // below happens when the root is DISCOVERED (it may contain nested roots),
-      // not on every mutation inside it.
-      const observer = new MutationObserver(onMutations);
-      observer.observe(shadow, { childList: true, subtree: true });
-      scrollObservers.push(observer);
-      watchShadowRoots(shadow, depth + 1);
-    });
-  }
-
-  try {
-    if (typeof MutationObserver !== "undefined" && document.documentElement) {
-      regionObserver = new MutationObserver(onMutations);
-      regionObserver.observe(document.documentElement, { childList: true, subtree: true });
-    }
-  } catch (e) {
-    regionObserver = null;
-  }
+  // The cache is now TTL-only. That is enough because every consumer already
+  // re-validates what it uses (`autoTarget` asks isScrollable, which checks the
+  // element is still connected and still overflows), and an explicit region
+  // request (;F, diagnostics) forces a scan. A pane that appears mid-scroll is
+  // picked up by the next scan, at most SCAN_TTL_MS later — the old observer
+  // only shortened that to STRUCTURAL_RESCAN_MS, at the cost above.
   try {
     window.addEventListener("pointermove", trackPointer, { capture: true, passive: true });
     window.addEventListener("pointerdown", trackPointer, { capture: true, passive: true });
@@ -357,10 +299,6 @@ export function createScrollController(): ScrollController {
 
   function scanRegions(): HTMLElement[] {
     const out: HTMLElement[] = [];
-    // DISCOVERY IS A SCROLL-TIME COST, not a page-lifetime one: the walk that
-    // finds shadow roots exists so this scan can see inside them, and this scan
-    // only runs when a scroll key needs an answer. See rootsDiscovery.
-    rootsDiscovery.request();
     // LAZY AND BUDGETED (shared/dom.ts walkElements). This used to be
     // `document.querySelectorAll("*")`, which MATERIALIZED every element in the
     // document before MAX_SCAN was applied — on a large app the cap bounded the

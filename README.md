@@ -113,10 +113,11 @@ The leader is `;` by default; it can be changed in settings. `j`/`k`/`d`/`u`,
   autoconfig hook. It hides the tab strip and toolbar, draws the window status
   bar, and owns the leader key on pages where extensions are not allowed. The
   hook exists because nothing in the WebExtension API can remove browser chrome.
-- **`core/`** is a Go core compiled to WebAssembly and embedded in both
-  bundles. The keymap, chord resolution, hint ordering, scrolling and the
-  status bar model live there, so both halves agree on what a key means and the
-  logic is tested once, in Go.
+- **`core/`** is a Go core compiled to WebAssembly. The keymap, chord
+  resolution, hint ordering, scrolling and the status bar model live there, so
+  both halves agree on what a key means and the logic is tested once, in Go.
+  The bytes ship once as `core.wasm` and load on first use; the chrome helper's
+  sandbox embeds its own copy because it has no fetch.
 
 The chrome helper has no `browser.*` API, so the extension and the helper talk
 through a hidden relay tab and a native messaging host. The installer writes
@@ -129,7 +130,7 @@ the autoconfig loader into the Firefox installation.
 src/extension/   add-on: content scripts, background, popups, command center
 src/chrome/      privileged window code: chrome removal, status bar, leader
 src/shared/      code both halves import: config, popups, protocol, status bar
-core/            Go core, compiled to wasm and embedded in both bundles
+core/            Go core, compiled to wasm (shipped as core.wasm)
 installer/       Go installer with a native window, and its build payload
 native-host/     Go native messaging host
 scripts/         build, release, e2e and packaging tools

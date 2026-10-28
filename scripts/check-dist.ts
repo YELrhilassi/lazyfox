@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 // Verifies dist/ is complete and self-contained (used by `npm test`).
-// Every context with real logic (chrome helper, content, background, command
-// center, options) must embed the wasm core; the frame script and the two
-// browser.runtime shims (optionskeys, popup) are intentionally core-free.
+//
+// The wasm bytes ship ONCE, as dist/extension/core.wasm. Extension contexts
+// fetch that file when they first need the core; only the chrome helper's
+// CSP-free sandbox still embeds base64 (it has no fetch). The frame script and
+// the two browser.runtime shims (optionskeys, popup) are intentionally
+// core-free. This check pinned the old "every bundle embeds the core" rule,
+// which is exactly what made every page carry 4.9 MB.
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -26,6 +30,8 @@ const REQUIRED = [
   "dist/extension/options.html",
   "dist/extension/popup.html",
   "dist/extension/content.js",
+  "dist/extension/frame.js",
+  "dist/extension/core.wasm",
   "dist/extension/background.js",
   "dist/extension/commandcenter.js",
   "dist/extension/options.js",
@@ -38,17 +44,47 @@ const REQUIRED = [
   "dist/extension/icons/icon128.png",
 ];
 
-// optionskeys.js and popup.js are thin browser.runtime shims and intentionally
-// do not embed the core; every other bundle does (corebootstrap.js is the
-// chrome helper's sandbox core).
-const EMBEDDED = [
-  "dist/chrome/userChrome.uc.js",
-  "dist/chrome/corebootstrap.js",
+// The chrome sandbox is the one bundle that still carries the bytes: it runs in
+// a CSP-free realm with no fetch, so corebootstrap.js embeds base64 and decodes
+// it there. It must be big enough to actually contain the wasm.
+{
+  const p = "dist/chrome/corebootstrap.js";
+  const text = readFileSync(join(root, p), "utf8");
+  if (text.indexOf("LazyfoxCore") === -1 || text.indexOf("WebAssembly.instantiate") === -1) {
+    console.error(`check-dist: ${p} does not embed the wasm core (run npm run build).`);
+    process.exit(1);
+  }
+  if (statSync(join(root, p)).size < 1_000_000) {
+    console.error(`check-dist: ${p} is suspiciously small — the embedded wasm may be missing.`);
+    process.exit(1);
+  }
+}
+
+// Extension contexts load the packaged file instead. Each must still reference
+// it, and none may carry a copy again: a >1 MB JS bundle here means the base64
+// came back and every page (content.js) is paying for it.
+for (const p of [
   "dist/extension/content.js",
   "dist/extension/background.js",
   "dist/extension/commandcenter.js",
   "dist/extension/options.js",
-];
+]) {
+  const text = readFileSync(join(root, p), "utf8");
+  if (text.indexOf("core.wasm") === -1) {
+    console.error(`check-dist: ${p} does not load the packaged core.wasm.`);
+    process.exit(1);
+  }
+  if (statSync(join(root, p)).size > 1_000_000) {
+    console.error(`check-dist: ${p} is carrying an embedded wasm copy again (it should fetch core.wasm).`);
+    process.exit(1);
+  }
+}
+
+// The chrome helper uses the sandbox core; its own bundle must stay small too.
+if (statSync(join(root, "dist/chrome/userChrome.uc.js")).size > 1_000_000) {
+  console.error("check-dist: dist/chrome/userChrome.uc.js embeds the wasm core again (use corebootstrap.js).");
+  process.exit(1);
+}
 
 const missing = REQUIRED.filter((p) => !existsSync(join(root, p)));
 if (missing.length) {
@@ -56,18 +92,6 @@ if (missing.length) {
   for (const p of missing) console.error("  - " + p);
   console.error("Run `npm run build` first.");
   process.exit(1);
-}
-
-for (const p of EMBEDDED) {
-  const text = readFileSync(join(root, p), "utf8");
-  if (text.indexOf("LazyfoxCore") === -1 || text.indexOf("WebAssembly.instantiate") === -1) {
-    console.error(`check-dist: ${p} does not embed the wasm core (run npm run build).`);
-    process.exit(1);
-  }
-  if (statSync(join(root, p)).size < 100_000) {
-    console.error(`check-dist: ${p} is suspiciously small — wasm core may be missing.`);
-    process.exit(1);
-  }
 }
 
 // The frame script must NOT carry the core; it is a message-manager shim. Nor

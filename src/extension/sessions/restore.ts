@@ -16,6 +16,7 @@
 // around, which is the bug this replaces rather than a feature it keeps.
 
 import { core } from "../../shared/core";
+import { isUITab } from "../tabs";
 import {
   contentUrls,
   matchSavedWindow,
@@ -40,11 +41,18 @@ type RequestChromeToWindow = <K extends ChromeAction>(
 ) => void;
 let requestChrome: RequestChrome = () => {};
 let requestChromeToWindow: RequestChromeToWindow = () => {};
+// EVERY window's helper, for the one command that is not about one window (the
+// launch splash; see splashOff). Injected like the other two, so this module
+// never reaches for the relay itself.
+let broadcastChrome: RequestChrome = () => {};
 export function bindRestoreRequestChrome(fn: RequestChrome): void {
   requestChrome = fn;
 }
 export function bindRestoreRequestChromeToWindow(fn: RequestChromeToWindow): void {
   requestChromeToWindow = fn;
+}
+export function bindRestoreBroadcastChrome(fn: RequestChrome): void {
+  broadcastChrome = fn;
 }
 
 // True while restoreSession/resumeOnStartup is rebuilding the window; tab-change
@@ -61,6 +69,21 @@ let inFlight: Promise<unknown> | null = null;
 
 export function isRestoringFlag(): boolean {
   return restoring;
+}
+
+// True from the moment a startup resume decides it has something to do until
+// the last window has settled. This is NOT the same flag as `restoring`: that one
+// gates tab-change side effects and is only up while windows are actually being
+// rebuilt, whereas the splash has to cover the WHOLE wait — the settle pause and
+// Firefox's own window-by-window native restore are part of what the user would
+// otherwise watch happen.
+//
+// Read by the background's `alive` handler, which answers a helper booting
+// mid-restore with the splash state (see bgrelay.ts).
+let resumeActive = false;
+
+export function isResumeActive(): boolean {
+  return resumeActive;
 }
 
 /**
@@ -127,13 +150,18 @@ export function endRestore(): void {
 // The user-visible tabs of ONE window, in strip order. The current-window form
 // lives in tabs.ts; this one names its window, because a startup resume has to
 // ask about a window it is not in.
+//
+// It uses the SAME predicate the snapshot uses for "what counts as a tab"
+// (isUITab), which is the whole point: a split-panel companion pane or a
+// throwaway `#lfc=` carrier is not session content. Counting one here made a
+// launch that had such a tab fail to recognise the very window it was looking
+// at — the match is by exact URL list, so one extra carrier turned the user's
+// own window into a stranger, and the resume then left a partial window open
+// AND created the saved one beside it (the reported "sessions don't reload
+// properly", with the flashing that comes from the duplicate set).
 async function realTabsIn(winId: number): Promise<any[]> {
   const tabs = ((await browser.tabs.query({ windowId: winId }).catch(() => [])) || []) as any[];
-  return tabs.filter((t: any) => {
-    const url = (t && t.url) || "";
-    if (url.indexOf("relay.html") !== -1) return false;
-    return !!url;
-  });
+  return tabs.filter((t: any) => !!t && !!t.url && !isUITab(t));
 }
 
 // Whether a window is missing split pairings its saved counterpart has. Native
@@ -244,10 +272,17 @@ export async function applySessionToWindows(s: Session): Promise<number[]> {
   // 1. In place. The user is looking at this window; a switch that recreated it
   //    would put the restored session in a different window than the one they
   //    were in, which reads as "my window jumped".
-  const firstIds = await restoreOneWindow(null, first, true);
+  //
+  //    WHICH window is named explicitly now. `null` meant "the window the
+  //    background considers current", and with more than one window alive that
+  //    can be a different one than the user is looking at: the rebuild landed
+  //    in the wrong window and closeWindowsNotIn then closed the intended one.
+  //    getLastFocused is the same authority the snapshot uses.
+  const curWin = (await browser.windows.getLastFocused().catch(() => null)) as any;
+  const focusWinId = curWin && curWin.id != null ? curWin.id : null;
+  const firstIds = await restoreOneWindow(focusWinId, first, true);
   const keep = new Set<number>();
-  const curWin = (await browser.windows.getCurrent().catch(() => null)) as any;
-  if (curWin && curWin.id != null) keep.add(curWin.id);
+  if (focusWinId != null) keep.add(focusWinId);
   // 2. The rest, created unfocused (focusing each in turn would flicker the
   //    user's screen through every window of the session), each filled by the
   //    same rebuild and re-paired through its own helper.
@@ -325,9 +360,14 @@ async function settleWindows(): Promise<void> {
  * Per WINDOW, because a session is a window set: each live window is matched to
  * the saved window with the same content, its selection and pairing are
  * repaired in place, and a saved window the browser did not bring back is
- * created. Only when NOTHING matches does this fall back to rebuilding the
- * whole set, which is the launch where Firefox restored something else
- * entirely (or nothing).
+ * rebuilt — IN PLACE of a spare live window when there is one, and created
+ * only when there is not. That last part is what makes a launch faithful
+ * instead of additive: Firefox's native restore is frequently close to the
+ * snapshot but not equal (a dropped tab, a re-created tab that came back
+ * blank), and the old code answered a near-miss by creating a second window
+ * beside the near-miss, so the session came back twice and the screen flashed
+ * through both. A live window the session does not describe at all is closed,
+ * exactly as a session switch closes it.
  */
 export async function resumeOnStartup(
   last: Session | null,
@@ -335,17 +375,45 @@ export async function resumeOnStartup(
 ): Promise<void> {
   const targets = sessionWindowsOf(last);
   if (!targets.length || !targets.some((w) => (w.tabs || []).length)) return;
+  // The splash is announced from here rather than from the caller because this
+  // is the point at which a resume stops being hypothetical: the guards above
+  // return for a fresh launch (nothing saved) and for autoRestore off, and those
+  // launches must stay splash-free. It is cleared in a `finally` so no early
+  // return, thrown error or closed window can leave a logo covering the window —
+  // the helper's own failsafe is the second line of defence, not the first.
+  resumeActive = true;
+  splashOn();
+  try {
+    await resumeWindows(targets, postRestore);
+  } finally {
+    resumeActive = false;
+    splashOff();
+  }
+}
+
+// The resume itself, with the saved window set already validated.
+async function resumeWindows(
+  targets: SessionWindow[],
+  postRestore: () => Promise<void>
+): Promise<void> {
   // Let Firefox's native session restore finish populating the windows before
   // we compare or rebuild — the wait only happens when there is actually a
   // session to resume.
   await new Promise((r) => setTimeout(r, 1000));
   await settleWindows();
   const live = await liveWindows();
-  const used = new Set<number>();
+  const usedLive = new Set<number>();
+  const usedSaved = new Set<number>();
+
+  // 1. Every live window the snapshot describes EXACTLY: keep its tabs, repair
+  //    its selection and its split pairing. This is the common launch (Firefox
+  //    restores the same set we saved) and it must stay rebuild-free, or every
+  //    restart would churn every tab through the screen.
   for (const lw of live) {
-    const idx = matchSavedWindow(contentUrls(lw.tabs), targets, used);
+    const idx = matchSavedWindow(contentUrls(lw.tabs), targets, usedSaved);
     if (idx < 0) continue;
-    used.add(idx);
+    usedSaved.add(idx);
+    usedLive.add(lw.winId);
     const tw = targets[idx]!;
     const active = Math.min(Math.max(0, tw.active || 0), lw.tabs.length - 1);
     if (lw.tabs[active] && lw.tabs[active].id != null) {
@@ -355,33 +423,70 @@ export async function resumeOnStartup(
       await repSplitWindow(lw.winId, tw);
     }
   }
-  if (!used.size) {
-    // Nothing matched: rebuild the whole set from the snapshot, replacing
-    // whatever Firefox natively restored.
-    beginRestore();
-    try {
-      await applySessionToWindows(last as Session);
-      await postRestore();
-    } finally {
-      endRestore();
-    }
-    return;
-  }
-  // Windows the snapshot has that the browser did not bring back at all. This
-  // is the "restore them all" half: a window that failed to come back would
-  // otherwise take its session's layout with it, since nothing else re-creates
-  // windows.
-  const missing = targets.filter((_, i) => !used.has(i));
-  if (missing.length) {
-    beginRestore();
-    try {
-      for (const mw of missing) {
-        if (!mw.tabs.length) continue;
-        await createRestoredWindow(mw);
+
+  // 2. The saved windows with no counterpart, and the live windows the session
+  //    does not describe. The first group is rebuilt into the second group
+  //    (in place, focused window first) before any new window is created.
+  const spare = live.filter((lw) => !usedLive.has(lw.winId));
+  const missing = targets
+    .map((w, i) => ({ w, i }))
+    .filter(({ w, i }) => !usedSaved.has(i) && (w.tabs || []).length);
+  const leftovers = spare.slice(missing.length);
+  if (!missing.length && !leftovers.length) return;
+  beginRestore();
+  try {
+    for (let k = 0; k < missing.length; k++) {
+      const w = missing[k]!.w;
+      const s = spare[k];
+      if (s) {
+        usedLive.add(s.winId);
+        await restoreOneWindow(s.winId, w, false);
+      } else {
+        const id = await createRestoredWindow(w);
+        if (id != null) usedLive.add(id);
       }
-      await postRestore();
-    } finally {
-      endRestore();
     }
+    // 3. The session owns the window set: a live window it does not describe is
+    //    closed, exactly as a session switch closes it. Only windows we SAW are
+    //    closed (never a window whose tabs are still arriving — those were not
+    //    in `live` at all), and never the last one.
+    if (usedLive.size) {
+      for (const lw of leftovers) {
+        await browser.windows.remove(lw.winId).catch(() => {});
+      }
+    }
+    await postRestore();
+  } finally {
+    endRestore();
+  }
+}
+
+// The chrome-side launch splash, announced to every window's helper.
+//
+// It is deliberately raised BEFORE the settle wait and dropped AFTER the last
+// window is done, including on the paths that turn out to need no rebuilding at
+// all: a launch that only has to repair a selection still shows the user a window
+// full of native restore, and "something is loading" is the honest thing to say
+// about it. The helper decides whether it is worth painting (see
+// chrome/splash.ts) — the announce is cheap and idempotent, so this side does not
+// try to predict the timing.
+//
+// The raise goes to whoever is listening through requestChrome (the focused
+// window, queued for the relay if it is not up yet); the drop is a BROADCAST,
+// because by then every window of the session has a helper that may be showing
+// one — including windows this resume created itself.
+function splashOn(): void {
+  try {
+    requestChrome("splash", { on: true });
+  } catch {
+    // A splash is cosmetic: never let it affect the resume.
+  }
+}
+
+function splashOff(): void {
+  try {
+    broadcastChrome("splash", { on: false });
+  } catch {
+    // ignore
   }
 }
