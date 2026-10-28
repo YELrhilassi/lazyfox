@@ -34,6 +34,10 @@ export interface RelayTabCtl {
   // True when this tab element IS the window's relay, BY REFERENCE as well as by
   // URL — see the implementation for why the URL alone is not enough.
   isKnown(tab: any): boolean;
+  // True when Firefox has unloaded the relay's PAGE (the tab survives, its JS
+  // does not). A discarded relay looks identical to a live one by URL, so the
+  // channel has to ask this rather than infer it from a silent poll.
+  isDiscarded(): boolean;
 }
 
 export interface RelayTabDeps {
@@ -98,6 +102,16 @@ export function createRelayTabCtl(deps: RelayTabDeps): RelayTabCtl {
     relayBrowsers.add(r.browser);
     try {
       r.tab.hidden = true; // cosmetic hide only (see above)
+      // KEEP THE TAB UNLOADER OFF THIS PAGE. The relay is not a page anyone
+      // reads and then leaves; it is the browser's own plumbing, and Firefox's
+      // memory-pressure tab unloading targets exactly this shape (hidden,
+      // idle, no user). Unloading it used to hang every command that needs the
+      // background until the tab happened to be reloaded. `dontdiscard` is the
+      // platform's own opt-out; the watchdog in channel.ts still recovers a
+      // relay that was unloaded before this line could run.
+      if (r.tab.hasAttribute && !r.tab.hasAttribute("dontdiscard")) {
+        r.tab.setAttribute("dontdiscard", "true");
+      }
     } catch (e) {
       // ignore
     }
@@ -206,6 +220,21 @@ export function createRelayTabCtl(deps: RelayTabDeps): RelayTabCtl {
     }
   }
 
+  function isDiscarded(): boolean {
+    const r = resolve();
+    if (!r) return false;
+    try {
+      // The tab attribute is what Firefox's own tab UI draws the unloaded icon
+      // from, and it survives the page being gone. `isDiscarded` on the
+      // <browser> is the equivalent fact one level down; either is enough.
+      if (r.tab && r.tab.hasAttribute && r.tab.hasAttribute("discarded")) return true;
+      if (r.browser && r.browser.isDiscarded) return true;
+    } catch (e) {
+      // an unreadable tab is not a discarded one; the watchdog still covers it
+    }
+    return false;
+  }
+
   function isKnown(tab: any): boolean {
     try {
       const b = tab && tab.linkedBrowser;
@@ -218,5 +247,5 @@ export function createRelayTabCtl(deps: RelayTabDeps): RelayTabCtl {
     }
   }
 
-  return { browser, url, load, clearHash, create, dedupe, isKnown };
+  return { browser, url, load, clearHash, create, dedupe, isKnown, isDiscarded };
 }

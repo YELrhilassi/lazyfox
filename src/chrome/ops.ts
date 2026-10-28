@@ -71,7 +71,7 @@ export interface ChromeOpsDeps {
   getChannel(): {
     requestBg<K extends RelayAction>(action: K, arg?: RelayReq<K>): void;
     requestReply<K extends RelayAction>(action: K, arg?: RelayReq<K>): Promise<RelayRes<K> | null>;
-    requestSessionState(): Promise<void>;
+    requestSessionState(): Promise<boolean>;
     requestSessionTabs(name: string): Promise<PopupItem[]>;
     requestRecentlyClosed(): Promise<PopupItem[]>;
     ccBaseUrl(): string | null;

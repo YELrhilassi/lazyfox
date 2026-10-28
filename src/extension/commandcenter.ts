@@ -640,7 +640,16 @@ import type { ContentPopupShell } from "./content/find";
   // paying a cold wasm instantiation (the home grid renders regardless). The
   // wasm is fetched from the package rather than carried in this bundle.
   installFetchedCore();
-  void ensureCore().catch(() => {});
+  void ensureCore().catch((e) => {
+    // A failed core is the difference between a working leader and one that
+    // paints and then eats every key. It used to be swallowed here, which made
+    // the failure invisible from both the page and the console.
+    try {
+      console.error("lazyfox: core init failed:", e);
+    } catch (e2) {
+      // a console that cannot log is not a reason to fail the page
+    }
+  });
   // Start in COMMAND mode with the input blurred: the home grid is keyboard-
   // first, so hjkl/arrows navigate the tiles, Enter opens the selection, and
   // `;` arms the leader (so ;f and ctrl/shift combos reach their actions) with
