@@ -139,7 +139,10 @@ export interface Channel {
   // Request with a reply (the background's response resolves the promise).
   // Resolves null on timeout / relay failure — callers must tolerate that.
   requestReply<K extends RelayAction>(action: K, arg?: RelayReq<K>): Promise<RelayRes<K> | null>;
-  requestSessionState(): Promise<void>;
+  // Resolves true when the background answered and the bar was updated, false
+  // when the request could not even be sent (the relay is not up yet) or the
+  // reply timed out. The caller retries on false; see winsync.ts.
+  requestSessionState(): Promise<boolean>;
   // Fetches one named session's tabs (for the sessions popup's right pane).
   requestSessionTabs(name: string): Promise<PopupItem[]>;
   requestRecentlyClosed(): Promise<PopupItem[]>;
@@ -221,6 +224,7 @@ export function createChannel(deps: ChannelDeps): Channel {
     if (!next) return;
     // The wire format is shared/relay-wire.ts, which the relay page also uses,
     // so the two ends cannot drift apart.
+    slotWrittenAt = Date.now();
     relayTab.load(
       base + "relay.html" + RELAY_HASH_PREFIX + encodeRequest(next.id, next.action, next.arg)
     );
@@ -236,6 +240,79 @@ export function createChannel(deps: ChannelDeps): Channel {
   // identical fragment after one has been handled is always a re-read.
   let lastHandledSlot = "";
 
+  // ---------------------------------------------------------------------
+  // THE RELAY IS A REAL TAB, AND IDLE TABS DIE.
+  //
+  // Firefox freezes or discards background/hidden tabs, and the relay is a
+  // hidden tab whose only job is to sit there. A frozen page cannot clear the
+  // request hash the helper just navigated it to — which looks exactly like
+  // "the page hasn't got to it YET". The URL cannot tell the two apart; only
+  // time can, because a live page clears an `rq` hash synchronously.
+  //
+  // What a dead relay used to cost: every later command was written into the
+  // URL of a document that would never read it. The leader still painted (that
+  // part is local), and no action ran — the reported "after a while the leader
+  // opens but nothing works, not even ;Q" — because nothing ever navigated the
+  // dead page again.
+  // ---------------------------------------------------------------------
+  const RELAY_STUCK_MS = 3500;
+  // Idle liveness. With no traffic the page has no way to prove it is still
+  // running, so the helper asks; `__ping` is answered by the PAGE itself (see
+  // extension/relay.ts), never forwarded, so this neither wakes the background
+  // nor keeps its event page alive. One URL write every 20s is the whole cost.
+  const RELAY_PING_MS = 20000;
+  // When THIS side wrote the `rq` currently in the slot (0 = the slot holds no
+  // request of ours: empty, or a page-written rp/cm).
+  let slotWrittenAt = 0;
+  // Seeded with the build time so the FIRST idle ping is one interval after
+  // the window opens, not on its first poll.
+  let lastRelayHeard = Date.now();
+  let lastPingAt = 0;
+  let lastHealAt = 0;
+
+  function noteRelayAlive(): void {
+    relayReady = true;
+    lastRelayHeard = Date.now();
+  }
+
+  /**
+   * Bring a dead relay page back.
+   *
+   * Loading the base URL is the one operation that means both halves: on a LIVE
+   * page it is the same-document hash clear this transport already relies on,
+   * and on a discarded/frozen page it starts a new document, which is the only
+   * way back. The request that was in the slot is lost (its caller times out —
+   * the retrying callers retry); the QUEUE is untouched and drains again once
+   * the page is up.
+   */
+  function healRelay(): void {
+    const now = Date.now();
+    // A cooldown, not a one-shot: a page that is still coming up (a cold content
+    // process) must not be reloaded on every poll while it boots.
+    if (now - lastHealAt < 6000) return;
+    lastHealAt = now;
+    slotWrittenAt = 0;
+    lastHandledSlot = "";
+    lastRelayHeard = 0;
+    relayTab.clearHash();
+  }
+
+  /** Ask the page to prove it is alive, when there is nothing else to say. */
+  function maybePingRelay(): void {
+    if (pendingReqs.length) return; // real traffic is its own heartbeat
+    const now = Date.now();
+    if (now - lastRelayHeard < RELAY_PING_MS) return;
+    if (now - lastPingAt < RELAY_PING_MS) return;
+    const base = ccBaseUrl();
+    if (!base) return;
+    if (relayTab.url().indexOf(RELAY_HASH_PREFIX) !== -1) return; // slot occupied
+    lastPingAt = now;
+    slotWrittenAt = now;
+    relayTab.load(
+      base + "relay.html" + RELAY_HASH_PREFIX + encodeRequest(++relaySeq, "__ping", {})
+    );
+  }
+
   // Poll the relay tab's URL (called from startRelay every 500ms): handle a
   // reply or command hash the page wrote, then send the next queued request.
   function pollRelayUrl(): void {
@@ -244,15 +321,28 @@ export function createChannel(deps: ChannelDeps): Channel {
     const spec = relayTab.url();
     const i = spec.indexOf(RELAY_HASH_PREFIX);
     if (i < 0) {
-      // Slot free (page cleared a forwarded request): send the next one.
+      // Slot free. If WE wrote it, the page read it — the strongest proof of
+      // life this transport has, and the moment a dead relay stops looking
+      // merely quiet.
+      if (slotWrittenAt) {
+        slotWrittenAt = 0;
+        noteRelayAlive();
+      }
       lastHandledSlot = "";
+      maybePingRelay();
       sendNextRelay();
       return;
     }
     const frag = spec.slice(i + RELAY_HASH_PREFIX.length);
     if (frag === lastHandledSlot) return; // a re-read of a slot whose clear is still landing
-    if (frag.indexOf("rq.") === 0) return; // our own pending request; page will clear it
+    if (frag.indexOf("rq.") === 0) {
+      // Our own request, still unanswered. A live page clears it in the same
+      // task it reads it; one this old means the document is not running.
+      if (slotWrittenAt && Date.now() - slotWrittenAt > RELAY_STUCK_MS) healRelay();
+      return;
+    }
     lastHandledSlot = frag;
+    noteRelayAlive();
     const reply = decodeReply(frag);
     if (reply) {
       const w = relayWaiters[reply.id];
@@ -286,6 +376,9 @@ export function createChannel(deps: ChannelDeps): Channel {
       relayTab.create();
       return true;
     }
+    // The tab exists but its page may not: do not let the next command be
+    // written into a document that cannot read it.
+    if (relayTab.isDiscarded()) healRelay();
     relayReady = true;
     relayTab.dedupe();
     tabGuard.ensureRealTabSelected();
@@ -363,9 +456,11 @@ export function createChannel(deps: ChannelDeps): Channel {
   // shaped by RelayApi. They survive the `Array.isArray` / object guards
   // because the reply crosses a URL and a port: a truncated or half-parsed
   // payload must degrade to an empty list, never to a render-time crash.
-  function requestSessionState(): Promise<void> {
+  function requestSessionState(): Promise<boolean> {
     return requestReply("sessionState").then((state) => {
-      if (state && typeof state === "object") deps.status.applySessionState(state);
+      if (!state || typeof state !== "object") return false;
+      deps.status.applySessionState(state);
+      return true;
     });
   }
 

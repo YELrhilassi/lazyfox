@@ -131,6 +131,12 @@ export async function resumeOnStartup(autoRestore: boolean | undefined): Promise
     await setLastWindowSnapshot();
     scheduleAutosave();
   });
+  // The bar's own startup read can lose its race with this restore (the helper
+  // boots while the windows are still being rebuilt), so give it the fresh
+  // summary from HERE too — after the resume, including the wait for the pages
+  // to load, which is the one moment the session set and its tab counts are
+  // final. Unconditional: the resume's fast path (everything already matched)
+  // returns before its own post-restore callback runs.
 }
 
 export async function sessionList(): Promise<{ sessions: Session[] }> {
@@ -212,11 +218,21 @@ export async function newSession(name: string): Promise<{ ok: boolean; note?: st
 // refused. Refusing it meant the user asked for a session and silently got the
 // other one, with nothing on screen saying so.
 export async function restoreSession(name: string): Promise<{ ok: boolean; note?: string }> {
+  const nm = (name || "").trim();
   const all = await readSessions();
-  const s = all[(name || "").trim()];
+  const s = all[nm];
   // A clean (empty) session is valid: it restores to a single blank home tab.
   // Only a missing session is an error.
   if (!s) return { ok: false };
+  // ALREADY THERE IS A NO-OP. Restoring the session you are in rebuilds the
+  // window from the snapshot the autosave just took OF THAT SAME WINDOW, so the
+  // only thing the user sees is the screen flashing through a full rebuild to
+  // arrive back where it started — the reported "I was on the sessions and
+  // navigating to the same session actually navigates and causes flashing".
+  // The stored snapshot is a live view of this window, so there is nothing a
+  // restore could apply that the window does not already show.
+  const cur = await readCurrentSessionName();
+  if (cur === nm) return { ok: true, note: "current" };
   // Checkpoint before switching so the current window is never lost.
   await autosaveCurrentSession(all);
   await restoreSessionImpl(
@@ -232,7 +248,7 @@ export async function restoreSession(name: string): Promise<{ ok: boolean; note?
       }
     },
     async () => {
-      await writeCurrentSessionName(s.name);
+      await writeCurrentSessionName(nm);
       pushSessionState();
     }
   );
