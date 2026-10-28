@@ -17,7 +17,7 @@ export interface SessionChannel {
     action: K,
     arg: K extends "deleteSession" ? { name: string } : { from: string; index: number; to: string }
   ): Promise<any>;
-  requestSessionState(): Promise<void>;
+  requestSessionState(): Promise<boolean>;
   requestSessionTabs(name: string): Promise<PopupItem[]>;
 }
 

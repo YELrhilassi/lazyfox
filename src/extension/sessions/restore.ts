@@ -350,6 +350,63 @@ async function settleWindows(): Promise<void> {
   }
 }
 
+// How long the cover may stay up waiting for the pages a resume opened, and how
+// often it looks. The splash exists to hide the churn of a restore, and the
+// churn does not stop when a tab exists: its document is still arriving, the
+// first paint still lands, a web app still hydrates. Dropping the cover at the
+// former moment ("every window has its tabs") put that second wave back on
+// screen a beat later, which is the reported "everything flashes while things
+// are loading".
+//
+// BOUNDED on purpose: a stalled request must never leave a logo over the
+// window, and the splash is an overlay rather than a gate — the user can click
+// through it while it waits.
+const PAGE_LOAD_WAIT_MS = 10000;
+const PAGE_LOAD_POLL_MS = 120;
+
+// Does any real tab of any normal window still report a document in flight?
+async function pagesStillLoading(): Promise<boolean> {
+  const wins = ((await browser.windows.getAll().catch(() => [])) || []) as any[];
+  for (const w of wins) {
+    if (!w || w.id == null) continue;
+    if (w.type && w.type !== "normal") continue;
+    const tabs = ((await browser.tabs.query({ windowId: w.id }).catch(() => [])) || []) as any[];
+    for (const t of tabs) {
+      if (!t || !t.url || isUITab(t)) continue;
+      // ONLY an explicit "loading" holds the cover. A host that does not
+      // report `status` (a stripped build, a test fake) must not be read as
+      // "loading forever" and sit out the whole timeout, and a discarded tab
+      // reports "unloaded" — there is no document arriving to wait for.
+      if (t.status === "loading") return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Hold the launch cover until the resumed pages have finished loading.
+ *
+ * TWO consecutive clean reads, not one: a tab that was just created can report
+ * `complete` while it is still `about:blank`, and a document that is committed
+ * but has not started its network load looks the same. Two polls apart is long
+ * enough for that transition to become visible, short enough that a genuinely
+ * loaded window drops the cover in a quarter of a second.
+ */
+async function waitForPagesLoaded(): Promise<void> {
+  const deadline = Date.now() + PAGE_LOAD_WAIT_MS;
+  let clean = 0;
+  while (Date.now() < deadline) {
+    try {
+      if (await pagesStillLoading()) clean = 0;
+      else if (++clean >= 2) return;
+    } catch {
+      // A window torn down mid-wait is not a reason to keep the cover up.
+      return;
+    }
+    await new Promise((r) => setTimeout(r, PAGE_LOAD_POLL_MS));
+  }
+}
+
 /**
  * Resume the saved session on startup when autoRestore is on. This runs
  * UNCONDITIONALLY (not just when the window is blank): Firefox's own session
@@ -385,6 +442,10 @@ export async function resumeOnStartup(
   splashOn();
   try {
     await resumeWindows(targets, postRestore);
+    // LAST, and still inside the cover: the windows have their tabs by now, but
+    // the pages in them are only starting to load, and that is the part of a
+    // launch the user actually watches happen.
+    await waitForPagesLoaded();
   } finally {
     resumeActive = false;
     splashOff();

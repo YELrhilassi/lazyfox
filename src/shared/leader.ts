@@ -282,13 +282,25 @@ export class LeaderController {
   /** The selectable (non-native) bindings in core order; wk.sel indexes it. */
   bindings(): Promise<WkItem[]> {
     if (!this.bindingsLoaded) {
-      this.bindingsLoaded = core
+      // A FAILED READ IS NOT AN EMPTY TABLE.
+      //
+      // Caching `[]` here made one transient core failure permanent for this
+      // controller: the leader still armed and painted, its panel had nothing
+      // to show, and it never asked the core again. Releasing the promise on
+      // failure means the next repaint retries — and with ensureCore no longer
+      // caching a rejection, that retry can actually succeed.
+      let attempt: Promise<WkItem[]> | null = null;
+      attempt = core
         .bindings()
         .then((all) => {
           this.lazyBindings = all.filter((x) => !x.native);
           return all;
         })
-        .catch(() => []);
+        .catch(() => {
+          if (this.bindingsLoaded === attempt) this.bindingsLoaded = null;
+          return [] as WkItem[];
+        });
+      this.bindingsLoaded = attempt;
     }
     return this.bindingsLoaded;
   }

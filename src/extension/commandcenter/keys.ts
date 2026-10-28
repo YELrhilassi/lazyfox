@@ -146,13 +146,29 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
   function onEnter(): void {
     const state = store.get();
     const v = input.value.trim();
-    // The home grid has no typed query, so Enter ALWAYS opens the selected
-    // tile. (It must skip the staleness guard below — after a filter + clear,
-    // allQuery still holds the old text while v is empty, and the guard would
-    // wrongly swallow Enter and do nothing.)
-    if (state.quickView) {
+    // A TYPED QUERY OUTRANKS THE HIGHLIGHT.
+    //
+    // This used to decide from `quickView` alone. The list is rebuilt on a 70ms
+    // debounce, so an Enter pressed inside that window — a fast typist, or one
+    // who typed and hit Enter in the same breath — still saw the HOME GRID and
+    // ran whichever tile happened to be lit: the reported "I typed a search,
+    // hit Enter, and it opened one of the quick-launch items". The typed value
+    // is checked first now, and the highlight is only in charge when the user
+    // actually put it somewhere (`navigated`).
+    if (state.quickView && !v) {
+      // The home grid has no typed query, so Enter opens the selected tile.
       openItem(state.all[state.idx] || state.all[0], state.mode);
       return;
+    }
+    if (v && !state.navigated) {
+      if (state.mode === "search") {
+        void send("search", { query: v });
+        return;
+      }
+      if (state.mode === "url") {
+        void core.normalizeUrl(v).then((u) => send("openUrl", { url: u }));
+        return;
+      }
     }
     // Act on the TYPED value whenever the visible list is empty or was built
     // for an earlier query (the 70ms debounce means it lags a fast typist).
@@ -170,6 +186,11 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
   }
 
   function startTyping(k: string): void {
+    // A CHARACTER INVALIDATES THE HIGHLIGHT: whatever row was selected belongs
+    // to the previous query, so Enter must not open it. The debounced refresh
+    // resets this too, but an Enter inside that window would otherwise act on
+    // a row the user is no longer looking at.
+    store.patch({ navigated: false });
     deps.focusInput();
     const s = input.selectionStart == null ? input.value.length : input.selectionStart;
     const en = input.selectionEnd == null ? input.value.length : input.selectionEnd;
@@ -365,6 +386,27 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
       onEnter();
       return;
     }
+    // TYPING WINS ONCE A QUERY EXISTS, even if the box lost focus.
+    //
+    // The grid owns h/j/k/l in command mode, which is the vim contract and the
+    // footer says so — but a box that ALREADY holds a search is a different
+    // state: the next letter belongs to the query, not to the cursor. Without
+    // this, a search whose text was interrupted by a focus loss (a reload, a
+    // mode click, a window switch) could not be continued with `h`, `j`, `k`
+    // or `l` — they moved the grid instead, which is exactly the reported "I
+    // can't type j/k/h/l".
+    if (
+      input.value.trim() !== "" &&
+      (k === "h" || k === "j" || k === "k" || k === "l") &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey
+    ) {
+      e.preventDefault();
+      renderer.setStateTag("insert");
+      startTyping(k);
+      return;
+    }
     if (k === "ArrowDown" || k === "j") {
       e.preventDefault();
       renderer.move(0, 1);
@@ -422,9 +464,23 @@ export function createKeyHandler(deps: KeysDeps): KeyHandler {
       return;
     }
     if (k === "i" || k === "I") {
+      // THE EXPLICIT WAY INTO THE BOX. Command mode owns h/j/k/l for the grid,
+      // so `i` is what makes a query that STARTS with one of them typeable;
+      // without a key that says "the letters belong to the box now" there was
+      // no way to search for "hello" at all. It is also the repair for every
+      // ambiguous state — a clicked-away caret, a mode button, a fuzzy-focus
+      // page — and it always lands the caret at the END of what is already
+      // typed, so pressing it mid-edit continues the query instead of
+      // prepending to it.
       e.preventDefault();
       renderer.setStateTag("insert");
       deps.focusInput();
+      try {
+        const n = input.value.length;
+        input.setSelectionRange(n, n);
+      } catch {
+        // an input type without selection support keeps the caret where it is
+      }
       return;
     }
     if (k.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {

@@ -11,6 +11,12 @@ export interface CCState {
   // Enter before they arrive) — a stale row would open the WRONG thing.
   allQuery: string;
   idx: number;
+  // Whether the user has CHOSEN a row since the list was last built (arrow /
+  // hjkl / a click). Enter must only open the highlighted row when they did:
+  // right after typing, idx is 0 with nothing chosen, and treating that as a
+  // choice is how Enter came to open the first quick-launch tile instead of
+  // running the query the user had just typed.
+  navigated: boolean;
   quickView: boolean;
   resizeOpen: boolean;
   moveOpen: boolean;
@@ -33,6 +39,7 @@ export function createStore(initial: Partial<CCState> = {}): CCStore {
     all: [],
     allQuery: "",
     idx: 0,
+    navigated: false,
     quickView: true,
     resizeOpen: false,
     moveOpen: false,

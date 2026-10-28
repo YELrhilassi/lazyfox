@@ -153,6 +153,18 @@ import { HASH_PREFIX, decodeRequest, encodeCommand, encodeReply, isRelayHash, re
   function handleReqHash(frag: string): void {
     const req = decodeRequest(frag);
     if (!req) return;
+    // THE HELPER'S LIVENESS PING, answered HERE and never forwarded.
+    //
+    // A frozen or discarded relay cannot clear the request hash the helper just
+    // navigated it to, which is indistinguishable from "the page hasn't got to
+    // it yet" — so the helper asks on an idle timer and treats silence as death.
+    // Answering locally is what keeps that check free: the background's event
+    // page is never woken for a ping. The reply REPLACES the request hash (do
+    // not clear it here — clearing would erase the answer the helper waits for).
+    if (req.action === "__ping") {
+      writeHash(encodeReply(req.id, "pong"));
+      return;
+    }
     if (!port) {
       // No port yet (background still loading): drop — the helper's request
       // has its own timeout and retries (the announce loop / pollers).
