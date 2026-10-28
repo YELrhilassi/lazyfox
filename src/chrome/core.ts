@@ -10,7 +10,7 @@ let chromeCore: Promise<CoreApi> | null = null;
 
 export function ensureChromeCore(): Promise<CoreApi> {
   if (!chromeCore) {
-    chromeCore = (async () => {
+    const attempt = (async () => {
       const sb = new Cu.Sandbox(Services.scriptSecurityManager.getSystemPrincipal());
       const w = globalThis as unknown as Record<string, unknown>;
       for (const k of [
@@ -82,6 +82,15 @@ export function ensureChromeCore(): Promise<CoreApi> {
         );
       }
       throw e;
+    });
+    chromeCore = attempt;
+    // A window whose sandbox failed once is not a window without a core.
+    // Caching the rejection made the failure permanent for the whole window:
+    // the leader painted (its panel does not consult the core), `keymapReady()`
+    // stayed false, and every chord was buffered — "the leader opens but nothing
+    // works, not even ;Q". The next keypress re-runs the bootstrap instead.
+    attempt.catch(() => {
+      if (chromeCore === attempt) chromeCore = null;
     });
   }
   return chromeCore;

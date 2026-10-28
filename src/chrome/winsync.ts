@@ -28,7 +28,7 @@ export interface WinSyncDeps {
   channel: {
     startRelay(): boolean;
     poll(): void;
-    requestSessionState(): Promise<void>;
+    requestSessionState(): Promise<boolean>;
     handleLfc(browser: any, payload: string): void;
   };
   // The alive announce, re-announced every tick.
@@ -83,10 +83,20 @@ const DOWNLOAD_POLL_MS = 1000;
 // anyone is waiting on it.
 const DOWNLOAD_FIRST_READ_MS = 1500;
 // The session summary round-trip creates a transient background tab, so it is
-// fetched ONCE at startup and then only after chrome-triggered session actions —
+// fetched at startup and then only after chrome-triggered session actions —
 // never on a timer and never on TabSelect, which would churn tab counts under
 // automation.
 const SESSION_STATE_FIRST_READ_MS = 2000;
+// "ONCE" CANNOT MEAN "ONCE, WHETHER OR NOT IT LANDED". The first read races the
+// helper's own boot: the relay tab is created by the alive announce, and until
+// the extension base URL resolves (or the relay page commits) `requestReply`
+// answers null immediately. That null used to be final, so the bar kept an
+// empty session list for the rest of the session — the reported "the status
+// bar doesn't load the sessions every time after launch". A failed attempt
+// costs nothing: the transient tab is only created once the relay is actually
+// up, so a retry that loses the race again is a couple of property reads.
+const SESSION_STATE_RETRY_MS = 1200;
+const SESSION_STATE_RETRIES = 8;
 
 export function installWinSync(deps: WinSyncDeps): void {
   const { env, status } = deps;
@@ -177,8 +187,19 @@ export function installWinSync(deps: WinSyncDeps): void {
   /* ---- tab select bookkeeping ---- */
 
   // Fetch the session name + list once at startup and after chrome-triggered
-  // session actions (see the constant above for why not on a timer).
-  env.setTimeout(() => void deps.channel.requestSessionState(), SESSION_STATE_FIRST_READ_MS);
+  // session actions (see the constants above for why not on a timer). A failed
+  // first attempt is retried, because losing the boot race is normal and the
+  // consequence used to be a permanently empty session list.
+  const readSessionState = (attempt: number): void => {
+    void deps.channel
+      .requestSessionState()
+      .then((ok) => {
+        if (ok || attempt >= SESSION_STATE_RETRIES) return;
+        env.setTimeout(() => readSessionState(attempt + 1), SESSION_STATE_RETRY_MS);
+      })
+      .catch(() => {});
+  };
+  env.setTimeout(() => readSessionState(0), SESSION_STATE_FIRST_READ_MS);
 
   try {
     win.gBrowser.tabContainer.addEventListener("TabSelect", () => {

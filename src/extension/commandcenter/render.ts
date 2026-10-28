@@ -99,6 +99,7 @@ export function createRenderer(deps: RenderDeps): Renderer {
         allQuery: "",
         all: [...appItems(deps.getApps()), ...quickCommands(deps.quick)],
         idx: 0,
+        navigated: false,
       });
       render();
       return;
@@ -111,7 +112,10 @@ export function createRenderer(deps: RenderDeps): Renderer {
     const state = store.patch({ allQuery: q });
     getItems(state.mode, q).then((items) => {
       if (q !== input.value.trim()) return;
-      store.patch({ all: items, idx: 0 });
+      // A NEW LIST IS NOT A CHOICE. The selection is reset to row 0, and Enter
+      // must treat that as "nothing chosen yet" so it can act on the typed
+      // value instead of the first suggestion.
+      store.patch({ all: items, idx: 0, navigated: false });
       render();
     });
   }
@@ -186,9 +190,12 @@ export function createRenderer(deps: RenderDeps): Renderer {
     if (state.quickView) {
       const last = state.all.length - 1;
       const nxt = state.idx + dx + dy * GRID_COLS;
-      store.patch({ idx: Math.max(0, Math.min(nxt, last)) });
+      store.patch({ idx: Math.max(0, Math.min(nxt, last)), navigated: true });
     } else {
-      store.patch({ idx: (state.idx + dy + state.all.length) % state.all.length });
+      store.patch({
+        idx: (state.idx + dy + state.all.length) % state.all.length,
+        navigated: true,
+      });
     }
     markSelected();
   }

@@ -228,8 +228,27 @@ export function setCoreApi(p: Promise<CoreApi>): void {
 }
 
 // Default backend: the current realm (content script, extension page).
+//
+// A FAILED INIT MUST NOT BE A PERMANENT ONE. The promise used to be cached even
+// when it rejected, so one transient failure — the wasm fetch racing an
+// extension reload, a compile that lost its content process — left this realm
+// with no core for the rest of its life. Every symptom of that is silent: the
+// leader still arms and paints, `keymapReady()` stays false, and every chord is
+// BUFFERED forever. Releasing the rejected promise lets the next keypress try
+// again instead of eating the keyboard until the page is reloaded.
 export function ensureCore(): Promise<CoreApi> {
-  if (!apiPromise) setCoreApi(initCoreIn(globalThis));
+  if (!apiPromise) {
+    const attempt = initCoreIn(globalThis);
+    setCoreApi(attempt);
+    attempt.catch(() => {
+      // Only the attempt that failed may clear the slot: a retry may already be
+      // in flight by the time this rejection is handled.
+      if (apiPromise === attempt) {
+        apiPromise = null;
+        readyApi = null;
+      }
+    });
+  }
   return apiPromise!;
 }
 
