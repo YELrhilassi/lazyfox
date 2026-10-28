@@ -98,13 +98,19 @@ function isVersionText(v: string): boolean {
 export function releaseVersion(body: ReleaseBody | null | undefined): string {
   const tag = normalizeTag(body?.tag_name || body?.name);
   if (isVersionText(tag)) return tag;
+  // The NEWEST xpi, not the first one in the list. A rolling release keeps the
+  // assets it has ever been given unless something removes them, and the API
+  // returns them in upload order — so `assets[0]` answered 0.5.10 for a nightly
+  // that was carrying 0.5.17, and the setup page told a 0.5.16 install it was
+  // current. Position is not a version; compare them.
+  let newest = "";
   for (const asset of body?.assets || []) {
     const m = /^lazyfox2-(.+)\.xpi$/i.exec(String(asset?.name || ""));
     if (!m) continue;
     const v = normalizeTag(m[1]!.replace(/-signed$/i, ""));
-    if (isVersionText(v)) return v;
+    if (isVersionText(v) && (!newest || compareVersions(v, newest) > 0)) newest = v;
   }
-  return "";
+  return newest;
 }
 
 /** The copy a launch-time (or panel) notification shows, when there is one. */
@@ -154,6 +160,44 @@ export function installerNotice(
   if (!isVersionText(latest) || !isVersionText(normalizeTag(installed))) return null;
   if (compareVersions(installed, latest) >= 0) return null;
   return `${channel === "nightly" ? "Dev installer" : "Installer"} ${latest} is available — download it`;
+}
+
+/**
+ * installerCheckUsable decides whether a stored GitHub answer may stand for
+ * this page load instead of asking again.
+ *
+ * A CACHED ANSWER IS ONLY WORTH KEEPING WHILE IT STILL SAYS SOMETHING. The case
+ * that exposed this: the page stored 0.5.16, 0.5.17 was published minutes
+ * later, and the label stayed at 0.5.16 for the whole six-hour TTL — on a page
+ * whose Download link serves `releases/latest`, i.e. the 0.5.17 file. The
+ * number and the file disagreed, and "Check again" reused the cache, so the
+ * button could not correct it either.
+ *
+ * The rule that fixes it: an answer naming the build already installed is not
+ * reused, because a release published after it is exactly what invalidates it.
+ * An answer AHEAD of the installed build can be reused — it already reports a
+ * pending update — and `force` (the button) always asks.
+ */
+export function installerCheckUsable(opts: {
+  cachedChannel: string;
+  channel: ReleaseChannel;
+  cachedVersion: string;
+  cachedAt: number;
+  now: number;
+  /** The installed piece the answer is compared against (chrome, else add-on). */
+  installed: string | null | undefined;
+  ttlMs: number;
+  force?: boolean;
+}): boolean {
+  if (opts.force) return false;
+  if (opts.cachedChannel !== opts.channel) return false;
+  if (!isVersionText(opts.cachedVersion)) return false;
+  // `cachedAt > now` is a clock that moved backwards (a profile copied between
+  // machines, an NTP correction): its age cannot be known, so ask again.
+  if (!(opts.cachedAt <= opts.now) || opts.now - opts.cachedAt >= opts.ttlMs) return false;
+  const installed = normalizeTag(opts.installed);
+  if (!isVersionText(installed)) return true; // nothing to compare: the TTL decides
+  return compareVersions(installed, opts.cachedVersion) < 0;
 }
 
 /**
