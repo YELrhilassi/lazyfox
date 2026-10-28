@@ -2187,5 +2187,11 @@
     "group": "audit",
     "runs": 1,
     "passes": 1
+  },
+  "commandcenter/firstchord › the first leader chord after the home page opens runs on one press": {
+    "status": "pass",
+    "group": "commandcenter",
+    "runs": 1,
+    "passes": 1
   }
 }
