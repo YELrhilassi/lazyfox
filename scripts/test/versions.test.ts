@@ -19,6 +19,7 @@ import {
 } from "../../src/shared/versions.ts";
 import {
   checkForUpdate,
+  installerCheckUsable,
   installerNotice,
   NIGHTLY_API_URL,
   normalizeTag,
@@ -203,6 +204,32 @@ describe("published installer", () => {
     );
   });
 
+  test("the newest xpi wins, whatever order the release lists them in", () => {
+    // The rolling nightly accumulated every xpi it was ever uploaded, and the
+    // API returns assets in upload order — reading the first one reported 0.5.10
+    // as the channel's version, so a 0.5.16 install was told it was current.
+    assert.equal(
+      releaseVersion({
+        tag_name: "nightly",
+        assets: [
+          { name: "lazyfox2-0.5.10.xpi" },
+          { name: "lazyfox2-0.5.15.xpi" },
+          { name: "lazyfox2-0.5.16.xpi" },
+          { name: "lazyfox2-0.5.17.xpi" },
+        ],
+      }),
+      "0.5.17",
+    );
+    // Out of order, and with a signed file in the list: still the newest.
+    assert.equal(
+      releaseVersion({
+        tag_name: "nightly",
+        assets: [{ name: "lazyfox2-0.5.9-signed.xpi" }, { name: "lazyfox2-0.5.12.xpi" }],
+      }),
+      "0.5.12",
+    );
+  });
+
   test("a tag that is not a version is not mistaken for one", () => {
     assert.equal(releaseVersion({ tag_name: "nightly" }), "");
     assert.equal(releaseVersion(null), "");
@@ -227,6 +254,52 @@ describe("published installer", () => {
     assert.equal(asked, NIGHTLY_API_URL);
     assert.equal(r.state, "update-available");
     assert.equal(r.latest, "0.5.13");
+  });
+
+  // The setup page stores GitHub's answer to spare the API. That cache is what
+  // showed "0.5.16" on a page whose Download link already served 0.5.17, for
+  // the length of the TTL — so the rule that an answer naming the installed
+  // build is never reused is pinned here.
+  test("a cached answer that names the installed build is not reused", () => {
+    const base = {
+      cachedChannel: "stable",
+      channel: "stable" as const,
+      cachedVersion: "0.5.16",
+      cachedAt: 1_000,
+      now: 2_000,
+      installed: "0.5.16",
+      ttlMs: 6 * 60 * 60 * 1000,
+    };
+    assert.equal(installerCheckUsable(base), false, "a newer release may exist since it was stored");
+    assert.equal(
+      installerCheckUsable({ ...base, cachedVersion: "0.5.17" }),
+      true,
+      "an answer ahead of the install already reports the pending update",
+    );
+    assert.equal(
+      installerCheckUsable({ ...base, cachedVersion: "0.5.17", installed: "0.5.15" }),
+      true,
+      "one release behind is still ahead of this install",
+    );
+  });
+
+  test("the cached answer is dropped for a different channel, an old answer, or a forced check", () => {
+    const base = {
+      cachedChannel: "stable",
+      channel: "stable" as const,
+      cachedVersion: "0.5.17",
+      cachedAt: 1_000,
+      now: 2_000,
+      installed: "0.5.16",
+      ttlMs: 6 * 60 * 60 * 1000,
+    };
+    assert.equal(installerCheckUsable(base), true);
+    assert.equal(installerCheckUsable({ ...base, cachedChannel: "nightly" }), false);
+    assert.equal(installerCheckUsable({ ...base, channel: "nightly" }), false);
+    assert.equal(installerCheckUsable({ ...base, force: true }), false, "Check again asks GitHub");
+    assert.equal(installerCheckUsable({ ...base, now: base.cachedAt + base.ttlMs }), false);
+    assert.equal(installerCheckUsable({ ...base, cachedAt: base.now + 1_000 }), false, "clock moved back");
+    assert.equal(installerCheckUsable({ ...base, cachedVersion: "" }), false);
   });
 
   test("the notice says nothing unless the installer is strictly newer", () => {

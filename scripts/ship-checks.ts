@@ -344,6 +344,21 @@ export function amoSignatureCheck(
  * The alignment is intentional: a rehearsal's value is that the blocked line can
  * be found without reading prose, and the fix under it can be pasted.
  */
+/**
+ * staleReleaseXpis names the assets a ROLLING release must drop.
+ *
+ * `gh release upload --clobber` replaces the file with today's name; it does not
+ * remove the one uploaded under last release's name. So the nightly release
+ * accumulated `lazyfox2-0.5.10.xpi`, `0.5.15`, `0.5.16` and `0.5.17`, and the
+ * extension reads a release's assets to decide which version it publishes —
+ * position became the answer, and the oldest file won (see releaseVersion).
+ * Pruning keeps exactly the xpi this build carries, so the release's own
+ * contents are what the next reader sees, not its history.
+ */
+export function staleReleaseXpis(assetNames: string[], keep: string): string[] {
+  return assetNames.filter((n) => /^lazyfox2-.*\.xpi$/i.test(n) && n !== keep);
+}
+
 export function renderReport(checks: Check[], pad = 2): string {
   const width = Math.max(4, ...checks.map((c) => c.name.length));
   const tag = (level: CheckLevel): string =>

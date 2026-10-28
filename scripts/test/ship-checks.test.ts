@@ -20,6 +20,7 @@ import {
   pushCredentialCheck,
   renderReport,
   signedXpiCheck,
+  staleReleaseXpis,
   tagRefs,
   treeCheck,
 } from "../ship-checks.ts";
@@ -242,6 +243,40 @@ describe("the AMO signature check", () => {
   test("a file id with a non-200 status is not treated as signed", () => {
     // Defensive: the id is only meaningful on a 200 response.
     assert.equal(amoSignatureCheck(500, 123, "0.5.9").level, "fail");
+  });
+});
+
+// The rolling nightly keeps every xpi it is ever given unless the upload path
+// removes them, and the extension decides the published version from those
+// assets — so the list that gets pruned is part of update detection, not tidying.
+describe("the rolling release's stale xpis", () => {
+  test("every xpi except the one this build carries is dropped", () => {
+    const names = [
+      "install.ps1",
+      "lazyfox-install-dev-linux",
+      "lazyfox2-0.5.10.xpi",
+      "lazyfox2-0.5.16.xpi",
+      "lazyfox2-0.5.17.xpi",
+    ];
+    assert.deepEqual(staleReleaseXpis(names, "lazyfox2-0.5.17.xpi"), [
+      "lazyfox2-0.5.10.xpi",
+      "lazyfox2-0.5.16.xpi",
+    ]);
+  });
+
+  test("a signed or unexpectedly named xpi is not left behind either", () => {
+    // The nightly carries an unsigned xpi, but a stray -signed upload would
+    // still be read by releaseVersion's asset scan.
+    assert.deepEqual(staleReleaseXpis(["lazyfox2-0.5.17-signed.xpi"], "lazyfox2-0.5.17.xpi"), [
+      "lazyfox2-0.5.17-signed.xpi",
+    ]);
+  });
+
+  test("non-xpi assets and the kept file are untouched", () => {
+    assert.deepEqual(
+      staleReleaseXpis(["install.sh", "install.ps1", "lazyfox-install-dev-darwin", "lazyfox2-0.5.17.xpi"], "lazyfox2-0.5.17.xpi"),
+      [],
+    );
   });
 });
 

@@ -15,8 +15,8 @@
 import { isTypingTarget } from "../shared/dom";
 import { createGgArm } from "../shared/gg";
 import { send } from "../shared/protocol";
-import { checkForUpdate, installerNotice, type ReleaseChannel } from "../shared/updates";
-import { installedHeadline } from "../shared/versions";
+import { checkForUpdate, installerCheckUsable, installerNotice, type ReleaseChannel } from "../shared/updates";
+import { compareVersions, installedHeadline } from "../shared/versions";
 import { readKey, vBoolean, vInstallerCheck, vString, writeKey } from "./store";
 
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
@@ -170,17 +170,32 @@ function applyInstallerVersion(): void {
  * rate-limited check leaves the links exactly as they were, because "could not
  * ask GitHub" is not something the user needs to fix on a setup page.
  */
-async function refreshInstallerVersion(): Promise<void> {
+async function refreshInstallerVersion(force = false): Promise<void> {
   const now = Date.now();
   const cached = await readKey("lfInstallerCheck", vInstallerCheck, { channel: "", version: "", at: 0 });
-  const sameChannel = cached.channel === channelNow() && cached.version !== "";
-  if (sameChannel && cached.at <= now && now - cached.at < INSTALLER_CHECK_TTL) {
+  // The chrome layer is what the installer writes, so it is the version the
+  // answer is about; before it has announced itself the add-on is the only
+  // installed piece this page can compare against.
+  const installed = shownChrome || browser.runtime.getManifest().version;
+  const usable = installerCheckUsable({
+    cachedChannel: cached.channel,
+    channel: channelNow(),
+    cachedVersion: cached.version,
+    cachedAt: cached.at,
+    now,
+    installed,
+    ttlMs: INSTALLER_CHECK_TTL,
+    force,
+  });
+  if (usable) {
     installerVersion = cached.version;
     applyInstallerVersion();
     return;
   }
-  if (sameChannel) {
-    // Show the last known answer while the fresh request is in flight.
+  // An answer that is still ahead of the install reports a pending update, so
+  // it can stand while the fresh request is in flight.
+  const stillAhead = cached.version !== "" && compareVersions(installed, cached.version) < 0;
+  if (stillAhead) {
     installerVersion = cached.version;
     applyInstallerVersion();
   }
@@ -188,7 +203,16 @@ async function refreshInstallerVersion(): Promise<void> {
   const check = await checkForUpdate(browser.runtime.getManifest().version, undefined, 7000, {
     channel: channelNow(),
   });
-  if (!check.latest) return; // could not ask: the cached answer (or silence) stands
+  if (!check.latest) {
+    // Could not ask. A number that is no longer ahead of the install is worse
+    // than no number: the Download link serves the newest file either way, so a
+    // stale label would tell the user they are getting an older build.
+    if (!stillAhead) {
+      installerVersion = null;
+      applyInstallerVersion();
+    }
+    return;
+  }
   installerVersion = check.latest;
   // A response that STARTED before a newer answer was stored must not replace
   // it — this page can be reopened while an older request is still in flight.
@@ -321,9 +345,9 @@ async function render(): Promise<void> {
     btn.textContent = "checking…";
     await render();
     // The chrome version is the local half. The published half is asked again
-    // too, because "Check again" is the user asking whether they are current —
-    // a cached answer is reused for hours, so this normally costs no network.
-    void refreshInstallerVersion();
+    // too, and FORCED: this button is the user asking whether they are current,
+    // so a cached answer must not be able to answer for GitHub.
+    void refreshInstallerVersion(true);
     btn.textContent = was;
   };
   $("verify").addEventListener("click", () => void verify($("verify"), "Check again"));
