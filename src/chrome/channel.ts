@@ -45,6 +45,7 @@ import { createRelayTabCtl } from "./relaytab";
 import { createPushDispatcher } from "./pushes";
 import type { CacheCtl } from "./cache";
 import type { DebugHandlers } from "./debug";
+import type { SplashCtl } from "./splash";
 import type { SplitView } from "./splitview";
 import type { StatusBarCtl } from "./statusbar";
 
@@ -59,6 +60,9 @@ export interface ChannelDeps {
   };
   split: SplitView;
   status: StatusBarCtl;
+  // The launch splash: raised and dropped by the background's `splash` push and
+  // by the alive ack (a window booting mid-restore). See splash.ts.
+  splash: SplashCtl;
   // Records that a tab's own content script is running (see noteContentPresent).
   // `doc` identifies the reporting DOCUMENT — the URL describes it but cannot
   // identify it across a single-page navigation.

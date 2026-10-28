@@ -16,12 +16,16 @@ import type { ChromeAction, ChromeReq } from "../shared/protocol";
 import type { LeaderPanelHtml } from "../shared/leadersignal";
 import type { Config } from "../shared/types";
 import type { CacheCtl } from "./cache";
+import type { SplashCtl } from "./splash";
 import type { SplitView } from "./splitview";
 import type { StatusBarCtl } from "./statusbar";
 
 export interface PushDeps {
   split: SplitView;
   status: StatusBarCtl;
+  // The launch splash (see splash.ts). Driven from the background, which is the
+  // only side that knows a session resume is running.
+  splash: SplashCtl;
   // Records that a tab's own content script is running. `doc` identifies the
   // reporting document; the URL only describes it (see noteContentPresent).
   setContentPresent(index: number, active: boolean, url: string, doc?: string): void;
@@ -58,6 +62,9 @@ export function createPushDispatcher(deps: PushDeps): PushDispatcher {
       // Session restore finished opening tabs; re-create the native split
       // groupings. Positions are 1-based over the SAVED tab list.
       restoreSplits: (req) => deps.split.restoreSplits(req.groups, req.expect),
+      // A startup resume is running (or has finished): cover the window while
+      // Firefox's native restore and our reconcile churn through it.
+      splash: (req) => deps.splash.set(!!req.on),
       // Status-bar push/reply: the fresh session summary as an object.
       sessionState: (req) => deps.status.applySessionState(req),
       // `;D` from a page (web page or the command center): clear the bar's

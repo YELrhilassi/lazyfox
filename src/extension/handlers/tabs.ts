@@ -5,7 +5,12 @@
 // background's FILTERED reopen rather than Firefox's own undo stack, because
 // SessionStore's "most recently closed" is usually one of the extension's own
 // hidden plumbing tabs.
-import { CC_URL, getActiveTab, realTabsInWindow } from "../tabs";
+import {
+  CC_URL,
+  getActiveTabFor,
+  realTabsIn,
+  senderWindowId,
+} from "../tabs";
 import { tabTrack } from "../navstore";
 import { activateTabByIndex, noteClosedTab, tabsInWindow } from "../windowops";
 import type { NavEntry } from "../../shared/types";
@@ -27,37 +32,51 @@ export interface TabDeps {
 
 export function createTabHandlers(deps: TabDeps): Domain<Owns> {
   return {
-    tabs: () => tabsInWindow(),
+    // EVERY action below targets the window the request came from — never the
+    // background's own idea of "current". See senderTab in ../tabs.ts for the
+    // cross-session jump that made this a bug rather than a preference.
+    tabs: (_data, sender) => tabsInWindow(senderWindowId(sender)),
 
     // The count only — no per-tab rows. This is on the `;1` hot path, where
     // the only question is whether the digit is a prefix of more than one tab
     // number, and building every row to answer it would be visible latency on
     // the most-used binding in the app.
-    tabCount: async () => ({ count: (await realTabsInWindow()).length }),
+    tabCount: async (_data, sender) => ({
+      count: (await realTabsIn(senderWindowId(sender))).length,
+    }),
 
     activateTab: async (data) => {
       await browser.tabs.update(data.id, { active: true });
-      await browser.windows.update((await getActiveTab()).windowId, {
-        focused: true,
-      });
+      // Focus the tab's OWN window: asking the background for "the active tab"
+      // here focused whichever window the background considered current, which
+      // after a multi-window restore is how a `;t` pick raised another session.
+      const t = await browser.tabs.get(data.id).catch(() => null);
+      if (t && typeof t.windowId === "number") {
+        await browser.windows.update(t.windowId, { focused: true }).catch(() => {});
+      }
       return { ok: true };
     },
 
-    activateTabAt: async (data) => {
+    activateTabAt: async (data, sender) => {
+      const winId = senderWindowId(sender);
       if (data.last) {
-        const tabs = await realTabsInWindow();
+        const tabs = await realTabsIn(winId);
         const t = tabs[tabs.length - 1];
         if (!t) return { ok: false };
         await browser.tabs.update(t.id, { active: true });
         await browser.windows.update(t.windowId, { focused: true });
         return { ok: true };
       }
-      return activateTabByIndex(data.index || 1);
+      return activateTabByIndex(data.index || 1, winId);
     },
 
     moveTab: async (data) => {
-      const tabs = await browser.tabs.query({ currentWindow: true });
-      const idx = tabs.findIndex((t: { id?: number }) => t.id === data.id);
+      // The tab itself names its window; a move must never reach into another
+      // one just because that window happened to be "current".
+      const t = await browser.tabs.get(data.id).catch(() => null);
+      if (!t || typeof t.windowId !== "number") return { ok: false };
+      const tabs = await browser.tabs.query({ windowId: t.windowId });
+      const idx = tabs.findIndex((x: { id?: number }) => x.id === data.id);
       if (idx < 0) return { ok: false };
       const dir = data.dir > 0 ? 1 : -1;
       const ni = Math.max(0, Math.min(tabs.length - 1, idx + dir));
@@ -65,8 +84,11 @@ export function createTabHandlers(deps: TabDeps): Domain<Owns> {
       return { ok: true };
     },
 
-    moveActiveTab: async (data) => {
-      const tabs = await browser.tabs.query({ currentWindow: true });
+    moveActiveTab: async (data, sender) => {
+      const winId = senderWindowId(sender);
+      const tabs = await browser.tabs.query(
+        winId == null ? { currentWindow: true } : { windowId: winId }
+      );
       const idx = tabs.findIndex((t: { active?: boolean }) => t.active);
       if (idx < 0) return { ok: false };
       const dir = data.dir > 0 ? 1 : -1;
@@ -75,12 +97,17 @@ export function createTabHandlers(deps: TabDeps): Domain<Owns> {
       return { ok: true };
     },
 
-    closeTab: async (data) => {
+    closeTab: async (data, sender) => {
       // Removing the window's LAST tab closes the whole window (and Firefox, if
       // it's the only window). Guard it: report `last` so callers can ask for
       // confirmation, and only actually close on a second press (force).
-      const targetId = data.id != null ? data.id : (await getActiveTab())?.id;
-      const tabs = await realTabsInWindow();
+      const from = await getActiveTabFor(sender);
+      const winId =
+        from && typeof from.windowId === "number"
+          ? from.windowId
+          : senderWindowId(sender);
+      const targetId = data.id != null ? data.id : from?.id;
+      const tabs = await realTabsIn(winId);
       const isLast = tabs.length <= 1 && targetId != null && tabs[0] && tabs[0].id === targetId;
       if (isLast && !data.force) {
         return { ok: true, last: true };
@@ -106,26 +133,37 @@ export function createTabHandlers(deps: TabDeps): Domain<Owns> {
       return { ok: true, last: false };
     },
 
-    newTab: async () => {
-      // A new tab is the command center, never a stray about:blank.
-      await browser.tabs.create({ url: CC_URL, active: true });
+    newTab: async (_data, sender) => {
+      // A new tab is the command center, never a stray about:blank — and it
+      // opens in the window that asked, not in whichever one the background
+      // last touched (a `;n` from one session used to raise another).
+      const winId = senderWindowId(sender);
+      await browser.tabs.create({
+        url: CC_URL,
+        active: true,
+        ...(winId == null ? {} : { windowId: winId }),
+      });
       return { ok: true };
     },
 
-    duplicateTab: async () => {
-      const tab = await getActiveTab();
+    duplicateTab: async (_data, sender) => {
+      const tab = await getActiveTabFor(sender);
       if (tab) await browser.tabs.duplicate(tab.id);
       return { ok: true };
     },
 
-    reload: async () => {
-      const tab = await getActiveTab();
+    reload: async (_data, sender) => {
+      const tab = await getActiveTabFor(sender);
       if (tab) await browser.tabs.reload(tab.id);
       return { ok: true };
     },
 
-    back: async () => {
-      const tab = await getActiveTab();
+    // ;g / ;l. The tab that sent the message IS the one the user is looking at,
+    // so it is the one that navigates; resolving "the active tab" from the
+    // background put the step into another window's history and the user saw
+    // their session jump.
+    back: async (_data, sender) => {
+      const tab = await getActiveTabFor(sender);
       if (!tab) return { ok: false };
       const can = await browser.tabs.callPageMethod?.(tab.id, "canGoBack").catch?.(() => false) ?? true;
       if (!can) return { ok: true, atRoot: true };
@@ -133,8 +171,8 @@ export function createTabHandlers(deps: TabDeps): Domain<Owns> {
       return { ok: true };
     },
 
-    forward: async () => {
-      const tab = await getActiveTab();
+    forward: async (_data, sender) => {
+      const tab = await getActiveTabFor(sender);
       if (!tab) return { ok: false };
       const can = await browser.tabs.callPageMethod?.(tab.id, "canGoForward").catch?.(() => false) ?? true;
       if (!can) return { ok: true, atEnd: true };
@@ -159,8 +197,8 @@ export function createTabHandlers(deps: TabDeps): Domain<Owns> {
     // which is enough to rebuild the stack: a step back or forward is
     // recognised by where the URL already sits, and anything else is a new
     // visit that truncates the forward tail, exactly as the browser does.
-    navStack: async () => {
-      const tab = await getActiveTab();
+    navStack: async (_data, sender) => {
+      const tab = await getActiveTabFor(sender);
       if (!tab || tab.id == null) return { canBack: false, canForward: false, index: 0, entries: [] };
       const track = tabTrack(tab.id, tab.url || "", tab.title || "");
       const entries: NavEntry[] = track.entries.map((e) => ({
@@ -180,8 +218,8 @@ export function createTabHandlers(deps: TabDeps): Domain<Owns> {
     // Jump to a stack position by walking back/forward the needed steps.
     // Walking rather than a single "goto" is what Firefox's tabs API offers;
     // each step is instant from the user's perspective (bfcache).
-    navGoto: async (data) => {
-      const tab = await getActiveTab();
+    navGoto: async (data, sender) => {
+      const tab = await getActiveTabFor(sender);
       if (!tab || tab.id == null) return { ok: false };
       // data.index is the DELTA (negative = back steps, positive = forward)
       // computed by the popup against the stack it just showed.
@@ -199,8 +237,8 @@ export function createTabHandlers(deps: TabDeps): Domain<Owns> {
       }
     },
 
-    copyUrl: async () => {
-      const tab = await getActiveTab();
+    copyUrl: async (_data, sender) => {
+      const tab = await getActiveTabFor(sender);
       if (!tab) return { url: "", title: "" };
       return { url: tab.url || "", title: tab.title || "" };
     },

@@ -22,6 +22,7 @@ import {
 import {
   assignSessionMarker,
   deleteSession,
+  isResumeActive,
   moveTabBetweenSessions,
   newSession,
   quitBrowser,
@@ -76,7 +77,12 @@ export const relayHandlers: {
     // an array of lines joined with "\n" reads naturally everywhere it is
     // rendered.
     if (req.errs && req.errs.length) void writeKey("lfLoaderErrs", req.errs.join("\n"));
-    return { ok: true };
+    // AND one live fact back: is a launch resume running? A window whose helper
+    // boots during the restore has no way to know — the broadcast that raised the
+    // splash reached only the windows that already had a relay port — and this
+    // ack is the moment it can be told. Omitted (not `false`) when idle: absent is
+    // the ordinary case and the helper's splash stays down on it.
+    return isResumeActive() ? { ok: true, splash: true } : { ok: true };
   },
   // The helper flipped its own cached copy; flip storage to match so content
   // scripts, the command center and options agree.

@@ -1,5 +1,4 @@
 import "../vendor/wasm_exec.js";
-import { WASM_BASE64 } from "./wasm-embed";
 import { createCoreFacade } from "./corefacade";
 import type { DownloadEntry, HistoryRow, Lfc, NavState, RecoveryRow, VisitedItem, WkItem, WkPage } from "./types";
 
@@ -8,13 +7,17 @@ import type { DownloadEntry, HistoryRow, Lfc, NavState, RecoveryRow, VisitedItem
 // core is initialized lazily on first use and cached, so page loads and window
 // opens pay nothing until a leader key is actually pressed.
 //
-// The wasm is embedded as raw base64 so each bundle is self-contained and the
-// runtime needs only atob() + WebAssembly.instantiate() — both available in
-// every Lazyfox context (content scripts, extension pages, chrome). The chrome
-// helper deliberately does NOT use this default init: the browser window's CSP
-// blocks WebAssembly.instantiate(), so chrome.ts creates a CSP-free system
-// sandbox (corebootstrap.js) and points this facade at that sandbox's core via
-// setCoreApi().
+// THE WASM BYTES ARE NOT BUNDLED HERE ANY MORE. Every entry used to carry its
+// own 4.9 MB base64 copy of core.wasm, which meant the content script decoded
+// 4.9 MB on every top-level document (measured: 370 ms and ~77 MB of transient
+// RSS in V8) before the page had even started, and the background paid the same
+// on Firefox startup. The bytes now live once, as dist/extension/core.wasm, and
+// each context installs a source that loads them when the core is actually
+// needed (see corefetch.ts). The chrome helper keeps its own copy: its CSP-free
+// sandbox has no fetch, so corebootstrap.js still embeds base64.
+//
+// The runtime needs only atob() (for an embedded source) and
+// WebAssembly.instantiate(), both available in every Lazyfox context.
 
 export interface CoreApi {
   version(): string;
@@ -172,12 +175,35 @@ declare global {
 // Initializes the core inside an arbitrary global object. `scope` must have
 // atob, WebAssembly and a Go constructor (wasm_exec.js evaluated there first).
 // The Go program registers itself as scope.LazyfoxCore.
-export async function initCoreIn(scope: any): Promise<CoreApi> {
+export type CoreWasm = string | Uint8Array;
+
+// Where the bytes come from. A bundle that cannot ship them (the content
+// script, whose every byte is parsed on every page) installs a fetcher; the
+// chrome sandbox leaves the default alone and passes base64 explicitly.
+let wasmSource: (() => Promise<CoreWasm>) | null = null;
+
+export function setCoreWasmSource(fn: (() => Promise<CoreWasm>) | null): void {
+  wasmSource = fn;
+}
+
+export async function initCoreIn(scope: any, wasm?: CoreWasm): Promise<CoreApi> {
   const GoCtor = scope.Go;
   if (!GoCtor) throw new Error("Lazyfox core: wasm runtime missing");
   const go = new GoCtor();
-  const b64: string = scope.atob(WASM_BASE64);
-  const raw = Uint8Array.from(b64, (c) => c.charCodeAt(0));
+  const input = wasm ?? (wasmSource ? await wasmSource() : null);
+  if (!input) throw new Error("Lazyfox core: wasm bytes unavailable");
+  // A PLAIN LOOP, not Uint8Array.from(string, map): the map callback runs once
+  // per byte and costs ~425 ms for this 3.6 MB module (measured in V8), while
+  // atob + a charCodeAt loop is ~22 ms. The chrome sandbox still takes the
+  // string path, and that difference was paid on every window open.
+  let raw: Uint8Array;
+  if (typeof input === "string") {
+    const bin = scope.atob(input) as string;
+    raw = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) raw[i] = bin.charCodeAt(i);
+  } else {
+    raw = input;
+  }
   const { instance } = await scope.WebAssembly.instantiate(raw, go.importObject);
   go.run(instance);
   const api = scope.LazyfoxCore as CoreApi | undefined;

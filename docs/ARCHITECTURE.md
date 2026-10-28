@@ -86,8 +86,8 @@ dist/        the built output (committed so installs need no toolchain)
   own report of its state can be asserted without a DOM.
 - `ops.ts` — the `ActionOps` interface: every capability a popup or action
   needs, abstracted per context.
-- `dom.ts`, `dev.ts`, `wk.ts`, `wasm-embed.ts` — DOM helpers, dev logging,
-  which-key pagination, and the generated wasm blob.
+- `dom.ts`, `dev.ts`, `wk.ts`, `corefetch.ts` — DOM helpers, dev logging,
+  which-key pagination, and the lazy loader for the packaged `core.wasm`.
 
 ### src/chrome/ — the privileged helper
 

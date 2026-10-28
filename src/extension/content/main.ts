@@ -5,7 +5,7 @@
 // window-level key dispatch.
 
 import { mergeConfig } from "../../shared/config";
-import { ensureCore } from "../../shared/core";
+import { installFetchedCore } from "../../shared/corefetch";
 import { isExpandedCombobox, isTypingEvent, isTypingTarget, typingTargetOf } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
 import { installContentDom } from "./contentdom";
@@ -44,11 +44,7 @@ import { createScrollKeys } from "./scrollkeys";
 import { createDarkMode } from "./dark";
 import { barVerdict, createVerdictLatch, type BarVerdict } from "./dark/verdict";
 import { createReader } from "./reader";
-import {
-  installFrameChild,
-  installFrameParent,
-  type FrameKeyMessage,
-} from "./framekeys";
+import { installFrameParent, type FrameKeyMessage } from "./framekeys";
 import type { ContentPopupShell } from "./find";
 import { createFieldPark } from "./parkrule";
 import { createStickyBlur } from "./stickyblur";
@@ -56,19 +52,23 @@ import { createStickyBlur } from "./stickyblur";
 (function () {
   "use strict";
 
-  // A child frame hands its keys UP, and does nothing else: the owner of the
-  // leader, popups, hints and overlays is the TOP document (framekeys.ts). A
-  // frame must set no presence beacon, report no typing state, paint nothing —
-  // those describe the tab's top document, and a frame claiming them would
-  // make the chrome helper believe the wrong URL owns this tab.
+  // A child frame hands its keys UP through the tiny frame.js bundle and does
+  // nothing else: the owner of the leader, popups, hints and overlays is the TOP
+  // document (framekeys.ts). A frame must set no presence beacon, report no
+  // typing state, paint nothing — those describe the tab's top document, and a
+  // frame claiming them would make the chrome helper believe the wrong URL owns
+  // this tab. The manifest loads this file in the top frame only; the guard is
+  // there for a manual injection or an old manifest that still says all_frames.
   try {
-    if (window.top !== window) {
-      installFrameChild({ win: window, isTypingEvent });
-      return;
-    }
+    if (window.top !== window) return;
   } catch (e) {
     // ignore
   }
+
+  // Point the core at dist/extension/core.wasm. Nothing is loaded here: the
+  // first feature that needs the core (the first `;`, a hint run, yank) starts
+  // the one fetch, so a tab the user never drives never pays for Go's runtime.
+  installFetchedCore();
 
   // Handshake for the chrome helper: it keys off this attribute to tell "a
   // Lazyfox content script owns this page" from the pages it must cover
@@ -994,27 +994,11 @@ import { createStickyBlur } from "./stickyblur";
 
   /* ==================== boot ==================== */
 
-  // Warm the wasm core AND the bindings so the first leader press is already
-  // synchronous (lazy loading on the first `;` was the visible delay).
-  ensureCore()
-    .then(() => {
-      void leader.bindings().catch(() => {});
-      if (!__DEV__) return;
-      try {
-        document.documentElement.setAttribute("data-lf-debug", "core-ok");
-      } catch (e) {
-        // ignore
-      }
-    })
-    .catch((e) => {
-      if (!__DEV__) return;
-      dbg("content core init failed", (e && e.message) || String(e));
-      try {
-        document.documentElement.setAttribute("data-lf-debug", "core-failed");
-      } catch (x) {
-        // ignore
-      }
-    });
+  // NO EAGER CORE WARM HERE. This used to call ensureCore() and bindings() at
+  // document_start on every page, which — with the wasm inlined — decoded 4.9 MB
+  // and started a Go runtime before the page did, on every tab and in every
+  // frame. The first leader press now pays a one-time fetch + instantiate
+  // instead; a page the user never drives pays nothing.
 
   /* ==================== DOM wiring ==================== */
 
