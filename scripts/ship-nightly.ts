@@ -27,6 +27,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TARGETS, stageInstallerUploads, versionedInstallerName } from "./payload.ts";
+import { staleReleaseXpis } from "./ship-checks.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -160,6 +161,22 @@ try {
   }
 } finally {
   fs.rmSync(staged.dir, { recursive: true, force: true });
+}
+
+// 4. Drop the xpis earlier nightlies left behind. `upload --clobber` replaces
+//    the file this build names, not the one last build named, so the release
+//    grew a history of `lazyfox2-*.xpi` — and the extension reads those assets
+//    to learn which version the channel publishes. One xpi per rolling release.
+const keepXpi = `lazyfox2-${version}.xpi`;
+{
+  const names = ghJson(["release", "view", TAG, "--repo", repoSlug, "--json", "assets", "--jq", ".assets[].name"])
+    .split(/\r?\n/)
+    .map((n) => n.trim())
+    .filter(Boolean);
+  for (const name of staleReleaseXpis(names, keepXpi)) {
+    console.log(`[nightly] removing stale asset ${name}`);
+    shout("gh", ["release", "delete-asset", TAG, name, "--repo", repoSlug, "--yes"]);
+  }
 }
 
 console.log(`\n════════════════════════════════════════════════════════════`);
