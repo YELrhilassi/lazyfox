@@ -292,6 +292,14 @@
     // modules (relay, chromelayer) that this config deliberately cannot name. The
     // modules are typechecked by tsconfig.json, which owns the browser tree.
     "scripts/test/session-switch.test.ts",
+    // stealth-quit is the same shape once more: it drives stealth.ts — and so
+    // store.ts and tabs.ts — through a fake `browser`, and those modules reach
+    // the WebExtension global this config deliberately cannot name. The modules
+    // are typechecked by tsconfig.json, which owns the browser tree; only the
+    // Node-side test of them is out of scope here. Listed rather than left out
+    // silently because it pins the rule that decides whether a sandbox survives
+    // a restart, and a test no config compiles stops being true quietly.
+    "scripts/test/stealth-quit.test.ts",
     "scripts/test/session-autosave.test.ts",
     "scripts/test/hints-occlusion.test.ts",
     // hints-collect-budget and hints-labels are the same shape as the hints

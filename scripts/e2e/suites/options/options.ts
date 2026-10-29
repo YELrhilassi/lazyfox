@@ -29,6 +29,7 @@ export async function run(ctx: any): Promise<void> {
         statusBar: q("#statusBar") ? q("#statusBar").checked : null,
         statusBarPosition: q("#statusBarPosition") ? q("#statusBarPosition").value : null,
         autoRestore: q("#autoRestore") ? q("#autoRestore").checked : null,
+        keepStealth: q("#keepStealth") ? q("#keepStealth").checked : null,
         save: !!q("#save"),
         title: document.title,
       };
@@ -41,6 +42,7 @@ export async function run(ctx: any): Promise<void> {
     assert(f.statusBar === true, "statusBar checked");
     assert(f.statusBarPosition === "bottom" || f.statusBarPosition === "top", "status bar position select present: " + f.statusBarPosition);
     assert(f.autoRestore === true, "autoRestore checked");
+    assert(f.keepStealth === false, "keepStealth unchecked by default: " + f.keepStealth);
     assert(f.save === true, "save button present");
   });
   await t("options page: Esc goes back", async () => {

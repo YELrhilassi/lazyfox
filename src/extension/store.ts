@@ -397,6 +397,7 @@ const CONFIG_FIELDS: Record<string, (raw: unknown) => unknown> = {
   statusBar: vBoolean,
   statusBarPosition: vStatusBarPosition,
   autoRestore: vBoolean,
+  keepStealth: vBoolean,
   apps: vArray(vQuickApp),
   dark: (raw) => vDarkConfig(raw),
   reader: (raw) => vReaderConfig(raw),

@@ -11,6 +11,14 @@ export interface Config {
   statusBar: boolean;
   statusBarPosition: "top" | "bottom";
   autoRestore: boolean;
+  // Keep stealth jars when Firefox quits.
+  //
+  // A stealth tab is not session content, so a session switch leaves it (and
+  // its jar) alone whatever this says — that is not a preference, it is the
+  // rule. This is only about the NEXT LAUNCH: off (the default) means the
+  // startup sweep closes and wipes whatever came back, on means the tabs and
+  // their cookies are kept across the restart.
+  keepStealth: boolean;
   // Quick-launch web apps shown on the command-center home grid. Each entry
   // is one tile (site favicon + name); togglable and editable in the options
   // page. `enabled=false` hides the tile without deleting its definition.

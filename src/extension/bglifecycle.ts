@@ -278,7 +278,7 @@ function installBrowserLifecycle(): void {
   browser.runtime.onStartup.addListener(async () => {
     try {
       const c = await getConfig();
-      await resumeOnStartup(c.autoRestore);
+      await resumeOnStartup(c.autoRestore, c.keepStealth);
     } catch {
       // ignore
     }

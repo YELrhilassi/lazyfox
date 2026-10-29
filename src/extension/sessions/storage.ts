@@ -251,10 +251,18 @@ export async function openTabsInWindow(
   //
   //    WHAT MAY BE REMOVED: everything the outgoing session put in the window,
   //    pinned tabs included (leaving a pinned tab behind is leaving a tab of the
-  //    session being left). Two exceptions: the relay carrier (infrastructure,
-  //    see isRelayCarrier) and an in-flight `#lfc=req` tab (see
-  //    inFlightRequest). Stale `#lfc=` tabs and the split-panel companion ARE
-  //    removed — the split they accompanied does not survive the switch.
+  //    session being left). Three exceptions: the relay carrier
+  //    (infrastructure, see isRelayCarrier), an in-flight `#lfc=req` tab (see
+  //    inFlightRequest), and a tab in one of OUR stealth jars.
+  //
+  //    STEALTH TABS ARE NOT SESSION CONTENT, so a switch has no business
+  //    closing them: the jar would be wiped with them (see
+  //    stealth.removeStealthContainerForTab) and the user's sandbox would end
+  //    because they changed sessions. They stay open, in their container, in
+  //    the window they were opened in — the same rule snapshots already
+  //    follow, from the other end. Stale `#lfc=` tabs and the split-panel
+  //    companion ARE removed — the split they accompanied does not survive the
+  //    switch.
   //
   //    The list is read FRESH here rather than before the first create: a window
   //    made by `windows.create` may only list its blank host tab a beat later,
@@ -270,7 +278,12 @@ export async function openTabsInWindow(
     const cur = ((await browser.tabs.query(q).catch(() => [])) || []) as any[];
     const removable = cur.filter(
       (t: any) =>
-        t && t.id != null && !ours.has(t.id) && !isRelayCarrier(t) && !inFlightRequest(t)
+        t &&
+        t.id != null &&
+        !ours.has(t.id) &&
+        !isRelayCarrier(t) &&
+        !inFlightRequest(t) &&
+        !stealthContainers.has(t.cookieStoreId)
     );
     if (removable.length) {
       // ONE call, not one per tab: the strip is rebuilt in a single native step

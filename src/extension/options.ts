@@ -48,6 +48,7 @@ import type {
   const statusBar = document.getElementById("statusBar") as HTMLInputElement;
   const statusBarPosition = document.getElementById("statusBarPosition") as HTMLSelectElement;
   const autoRestore = document.getElementById("autoRestore") as HTMLInputElement;
+  const keepStealth = document.getElementById("keepStealth") as HTMLInputElement;
   const saveBtn = document.getElementById("save") as HTMLButtonElement;
   const statusEl = document.getElementById("status") as HTMLSpanElement;
 
@@ -406,6 +407,7 @@ import type {
       statusBar: statusBar.checked,
       statusBarPosition: statusBarPosition.value === "top" ? "top" : "bottom",
       autoRestore: autoRestore.checked,
+      keepStealth: keepStealth.checked,
       apps: appsFromForm(),
       dark: darkFromForm(),
       reader: readerFromForm()
@@ -537,6 +539,7 @@ import type {
     statusBar.checked = c.statusBar !== false;
     statusBarPosition.value = c.statusBarPosition === "top" ? "top" : "bottom";
     autoRestore.checked = c.autoRestore !== false;
+    keepStealth.checked = c.keepStealth === true;
     // Apps: fall back to defaults when absent (linked by reference via spread).
     // An explicitly emptied app list is a valid user choice, so "empty"
     // cannot mean "corrupt" — but vConfig has already guaranteed the array, so
