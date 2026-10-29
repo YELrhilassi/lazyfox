@@ -287,6 +287,11 @@
     "scripts/test/split-unsplit.test.ts",
     "scripts/test/dark-theme.test.ts",
     "scripts/test/startup-resume.test.ts",
+    // session-switch is the same shape: it drives the restore path through a fake
+    // `browser`, and restore.ts / sessions.ts reach DOM-free but browser-global
+    // modules (relay, chromelayer) that this config deliberately cannot name. The
+    // modules are typechecked by tsconfig.json, which owns the browser tree.
+    "scripts/test/session-switch.test.ts",
     "scripts/test/session-autosave.test.ts",
     "scripts/test/hints-occlusion.test.ts",
     // hints-collect-budget and hints-labels are the same shape as the hints

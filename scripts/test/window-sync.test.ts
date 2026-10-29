@@ -62,6 +62,7 @@ function harness(opts: { readyState?: string; autoRunTimers?: boolean } = {}) {
       pollDownloads: () => Promise.resolve(),
       setActiveStealth: () => {},
       getStealthFlags: () => [],
+      isStealthTab: () => false,
     },
     leader: () => null,
     keyboard: {

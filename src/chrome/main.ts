@@ -79,6 +79,7 @@ import { createPopupHost } from "./popup";
 import { createScrollKeys } from "./scrollkeys";
 import { createSplash } from "./splash";
 import { createSplitView, type SplitView } from "./splitview";
+import { createStealthPrivate } from "./stealthprivate";
 import { createStatusBar, type StatusBarCtl } from "./statusbar";
 import { resolveCcBaseUrl } from "./extbaseurl";
 import { createTypingChannel } from "./typing";
@@ -97,6 +98,13 @@ import { createGlobalWhichKey } from "./wkglobal";
   const env = createChromeEnv();
   const win = env.window;
   const doc = env.document;
+
+  // The privileged half of the stealth cleanup. Built before every surface so
+  // a jar's traces can be purged as soon as the helper is up, and so a crash
+  // that left password autofill held off is repaired at boot rather than at the
+  // next page load.
+  const stealthPrivate = createStealthPrivate(env);
+  stealthPrivate.restoreAutofill();
 
   if (__DEV__) {
     dbg("chrome bundle loaded", "ff=" + env.services.appinfo.version,
@@ -769,6 +777,13 @@ import { createGlobalWhichKey } from "./wkglobal";
 split,
     status,
     splash,
+    // The loader came down: the bar re-reads the session summary (the switch
+    // or resume may have replaced every tab the last reply described).
+    refreshSessionState: () => void channel.requestSessionState(),
+    // Stealth cleanup that only chrome can do: exact Places visits and the
+    // password-manager pref (see stealthprivate.ts).
+    removeStealthVisits: (visits, urls) => stealthPrivate.removeVisits(visits, urls),
+    setStealthAutofill: (off) => stealthPrivate.setAutofill(off),
     // A presence report arrives carrying a STRIP INDEX, because that is the only
     // coordinate the sending document can be given — and it is resolved to the
     // tab it is about at the door. Everything past this point is keyed by the

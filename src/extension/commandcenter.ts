@@ -19,7 +19,7 @@ import {
 } from "../shared/overlay";
 import { makeLeaderActions, runLeaderAction, type PopupCtx } from "../shared/popups";
 import { send } from "../shared/protocol";
-import { readKey, vBoolean, vConfig, vStealth, vString } from "./store";
+import { readKey, vBoolean, vConfig, vString } from "./store";
 import type { Config, QuickApp } from "../shared/types";
 import { openItem } from "./commandcenter/data";
 import { createKeyHandler } from "./commandcenter/keys";
@@ -112,7 +112,11 @@ import type { ContentPopupShell } from "./content/find";
     openAddons: () => void send("openAddons"),
     openPage: (url: string) => void send("openPage", { url }),
     setMode: (m: string) => renderer.setMode(m),
-    stealthOpen: () => void send("stealthOpen"),
+    // `;Nn` / `;Ns` / `;No`: the background opens the tab in this page's
+    // window jar (the sender's window, resolved there).
+    stealthOpen: () => void send("stealthOpen", {}),
+    stealthSearch: (query: string) => void send("stealthOpen", { query }),
+    stealthUrl: (url: string) => void send("stealthOpen", { url }),
   };
 
   /* ===================== the shared leader ===================== */
@@ -701,11 +705,20 @@ import type { ContentPopupShell } from "./content/find";
   // it is obvious at a glance that the tab is sandboxed and wipes on close.
   (async function detectStealthHome() {
     try {
-      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-      const t = tabs && tabs[0];
-      if (!t || !t.cookieStoreId || t.cookieStoreId === "firefox-default") return;
-      const { containers } = await readKey("lfStealth", vStealth, { containers: [] });
-      if (containers.indexOf(t.cookieStoreId) !== -1) {
+      // THIS PAGE's tab, not "the active tab of the current window". The old
+      // read asked for the active tab, so a home page loaded in the background
+      // (a `;Nn` from another tab, a tab restored as active elsewhere) got no
+      // class at all and the one badge that says "this tab is sandboxed" was
+      // missing exactly when the user came back to it.
+      const me = await browser.tabs.getCurrent().catch(() => null);
+      if (!me || !me.cookieStoreId || me.cookieStoreId === "firefox-default") return;
+      // The BACKGROUND's set is the authority, and it already knows the
+      // container when this page loads (the tab is created after the jar is
+      // recorded). Reading lfStealth from storage here raced that write and
+      // silently lost it.
+      const r = await browser.runtime.sendMessage({ action: "tabs" });
+      const row = ((r && r.tabs) || []).find((x: any) => x.id === me.id);
+      if (row && row.stealth === true) {
         document.documentElement.classList.add("lf-stealth");
       }
     } catch (e) {

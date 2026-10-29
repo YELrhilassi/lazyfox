@@ -6,10 +6,11 @@
 // restore path the primitives to turn a snapshot back into tabs.
 
 import { core } from "../../shared/core";
+import { stripStealthFromSession } from "../../shared/sessionwindows";
 import { splitIdsOf } from "../../shared/splits";
 import type { Session, SessionTab, SessionWindow } from "../../shared/types";
 import { CC_URL, isUITab } from "../tabs";
-import { reconcileStealth, stealthContainers, stealthCreateTab } from "../stealth";
+import { reconcileStealth, stealthContainers } from "../stealth";
 import { readKey, writeKey, vString, vSessions } from "../store";
 
 // Sessions keep EVERY tab in the window (no cap — switching sessions must never
@@ -17,7 +18,17 @@ import { readKey, writeKey, vString, vSessions } from "../store";
 export const MAX_SESSION_MARKER = 9;
 
 export async function readSessions(): Promise<Record<string, Session>> {
-  return readKey("lfSessions", vSessions, {});
+  const all = await readKey("lfSessions", vSessions, {});
+  // Snapshots written by a build that recorded stealth tabs still carry them.
+  // Reading is where that stops being true for the rest of the process: every
+  // restore, session list and tab count goes through here, so a stale entry
+  // cannot be re-opened into a container that was meant to be gone.
+  const out: Record<string, Session> = {};
+  for (const [name, s] of Object.entries(all)) {
+    if (!s) continue;
+    out[name] = stripStealthFromSession(s);
+  }
+  return out;
 }
 
 export async function writeSessions(all: Record<string, Session>): Promise<void> {
@@ -46,7 +57,16 @@ async function windowPart(tabs: any[], win: any): Promise<SessionWindow> {
   // Transient tabs are internal plumbing, never user content: the #lfc=
   // request channel and the splitpanel companion pane. Excluding them keeps a
   // checkpoint from capturing them and a restore from re-opening them.
-  const content = (tabs || []).filter((t: any) => !isUITab(t));
+  //
+  // STEALTH TABS ARE EXCLUDED for the same reason, from the other end: they
+  // are not content this snapshot is allowed to remember. Their container is
+  // wiped when the tab closes, so a saved copy can only ever restore a jar the
+  // user believes is gone (and on launch it is a tab nobody asked for). The
+  // active index and the split layout are computed AFTER this filter, or they
+  // would point at positions the saved list does not have.
+  const content = (tabs || []).filter(
+    (t: any) => !isUITab(t) && !stealthContainers.has(t.cookieStoreId)
+  );
   let active = content.findIndex((t: any) => t.active);
   if (active < 0) active = 0;
   // The split layout is computed once, in the Go core, from the read-only
@@ -61,8 +81,7 @@ async function windowPart(tabs: any[], win: any): Promise<SessionWindow> {
         url: t.url || "",
         title: t.title || "",
         pinned: !!t.pinned,
-        splitViewId: svId,
-        stealth: stealthContainers.has(t.cookieStoreId)
+        splitViewId: svId
       };
     }),
     active,
@@ -155,9 +174,26 @@ export async function layoutSettled(): Promise<boolean> {
   }
 }
 
+// Is this tab the window's persistent relay carrier? It is infrastructure that
+// belongs to the WINDOW, not to the session being restored: removing it cuts the
+// window off from the extension for as long as it takes the helper to notice and
+// create another one — which is exactly during a restore, when the split
+// commands and the "session settled" pushes have to go through.
+function isRelayCarrier(t: any): boolean {
+  return !!(t && typeof t.url === "string" && t.url.indexOf("relay.html") !== -1);
+}
+
+/** An in-flight `#lfc=req` carrier: its own handler closes it, and removing it
+ * from under that handler can crash Firefox. It is the one tab a restore may
+ * not touch (it is plumbing, not content, so leaving it changes nothing the
+ * user sees). */
+function inFlightRequest(t: any): boolean {
+  return !!(t && t.url && t.url.indexOf("#lfc=req") !== -1);
+}
+
 // Rebuild a saved tab list in ONE window, replacing what is there. Returns the
 // ordered tab ids matching the saved order. Split into its own function because
-// both restoreSession and resumeOnStartup need the exact same rebuild.
+// both a switch and the startup resume need the exact same rebuild.
 //
 // `winId` null means the window the background is "in" (the focused one); an id
 // means that window — which is how the extra windows of a multi-window session
@@ -165,7 +201,7 @@ export async function layoutSettled(): Promise<boolean> {
 export async function openTabsInWindow(
   winId: number | null,
   tabs: SessionTab[],
-  opts: { focus?: boolean } = {}
+  opts: { focus?: boolean; active?: number } = {}
 ): Promise<number[]> {
   await reconcileStealth();
   const q: any = winId != null ? { windowId: winId } : { currentWindow: true };
@@ -175,100 +211,114 @@ export async function openTabsInWindow(
   // window built beside the focused one would collect tabs into the focused
   // window and leave the new one holding a blank host.
   const inWin: any = winId != null ? { windowId: winId } : {};
-  const cur = ((await browser.tabs.query(q).catch(() => [])) || []) as any[];
   const entries = (tabs || []).filter((t) => t && t.url);
-  // Two different questions, previously answered by one list and therefore
-  // wrong in both directions.
-  //
-  //   1. What may this restore DELETE? Everything unpinned except an in-flight
-  //      `#lfc=req` tab (removing that one from inside its own onUpdated
-  //      handler, while it is still being processed, can crash Firefox — its
-  //      request handler cleans it up itself). This deliberately still includes
-  //      stale `#lfc=` tabs and the split-panel pane: the window is being
-  //      replaced, and leaving either behind leaves a stray pane in a session
-  //      that was supposed to be rebuilt from scratch.
-  //
-  //   2. What may this restore REUSE as the host for the first saved URL? Only
-  //      a REAL tab. An internal tab closes itself a moment later, so reusing
-  //      one meant the first saved tab was destroyed with it: the restore came
-  //      back a tab short, every position after it shifted by one, and a saved
-  //      split pair silently dissolved. The old code reused the last removable
-  //      tab, which could be a `#lfc=state` debug tab — the exact failure.
-  const inFlightRequest = (t: any) =>
-    !!(t && t.url && t.url.indexOf("#lfc=req") !== -1);
-  const removable = (cur || []).filter(
-    (t: any) => !t.pinned && !inFlightRequest(t)
-  );
-  // Never remove the window's last tab: closing it closes the whole window, so
-  // the fallback below still has to be a tab we can update in place.
-  const realCandidates = removable.filter((t: any) => !isUITab(t));
-  // The host is the FIRST real tab, not the last. It is reused for the first
-  // saved URL while the rest are appended after it, so its slot in the strip
-  // decides where the whole restored session starts. Taking the last real tab
-  // — which is what this did — left the first saved tab wherever the host
-  // happened to be, so a restore reproduced the tabs but not their ORDER: the
-  // numbering shifted and a saved split pair ended up on the wrong pair of
-  // tabs. Choosing the first real tab makes "reused in place" and "opened in
-  // order" the same thing, which is the property a restore actually needs.
-  const host =
-    realCandidates[0] ||
-    removable[0] ||
-    (cur || []).find((t: any) => t.active) ||
-    (cur || [])[0] ||
-    null;
 
-  const created: number[] = [];
-  let hostReused = false;
+  // Position i is the tab that carries entries[i], null when that URL refused
+  // to open. The ALIGNMENT is what makes the pins and the saved selection land
+  // on the right tabs after one failed create, instead of shifting by one.
+  const ids: Array<number | null> = new Array(entries.length).fill(null);
+  let home: number | null = null;
 
-  if (!entries.length) {
-    // Empty session (clean slate): park the host on the command center so a
-    // fresh session opens on the home page instead of a leftover tab.
-    if (host) {
-      try {
-        await browser.tabs.update(host.id, { url: CC_URL, active: true });
-      } catch {
-        // ignore
-      }
-      created.push(host.id);
-      hostReused = true;
+  // NO TAB IS REUSED, NOT EVEN THE FIRST. The old code navigated one old tab to
+  // the first saved URL and kept it; that tab kept its HISTORY, so Back in a
+  // freshly restored tab walked into the session the user had just left — the
+  // reported ";g / ;l switches to a tab in some other session". A restored tab
+  // starts with no history, exactly like a newly opened one.
+  const make = async (url: string): Promise<number | null> => {
+    try {
+      const t = await browser.tabs.create({ url, active: false, ...inWin });
+      return t && t.id != null ? t.id : null;
+    } catch {
+      // One URL that will not open must not stop the rest of the window.
+      return null;
     }
-  } else {
-    const first = entries[0]!;
-    if (first.stealth) {
-      // Stealth tabs can't reuse the host (they need their own container);
-      // open a fresh container tab first so the window never drops to zero.
-      const t = await stealthCreateTab(first.url, true, winId);
-      if (t && t.id != null) created.push(t.id);
-    } else if (host) {
+  };
+
+  // 1. ONE content tab first, so the window is never empty: closing a window's
+  //    last tab closes the window itself.
+  if (entries.length) ids[0] = await make(entries[0]!.url);
+  // A clean session opens on the command center instead of a leftover page.
+  else home = await make(CC_URL);
+
+  // 2. The outgoing tabs go BEFORE the rest are opened.
+  //
+  //    The old order created every incoming tab and only then removed the
+  //    outgoing ones, so switching from a 15-tab session to another 15-tab one
+  //    held thirty live documents at once — every one of them loading, every one
+  //    of them a renderer. The strip is covered while this happens, so the only
+  //    thing that order bought was a peak twice as high; what the user felt was
+  //    the browser stalling mid-switch.
+  //
+  //    WHAT MAY BE REMOVED: everything the outgoing session put in the window,
+  //    pinned tabs included (leaving a pinned tab behind is leaving a tab of the
+  //    session being left). Two exceptions: the relay carrier (infrastructure,
+  //    see isRelayCarrier) and an in-flight `#lfc=req` tab (see
+  //    inFlightRequest). Stale `#lfc=` tabs and the split-panel companion ARE
+  //    removed — the split they accompanied does not survive the switch.
+  //
+  //    The list is read FRESH here rather than before the first create: a window
+  //    made by `windows.create` may only list its blank host tab a beat later,
+  //    and a stale list left that host behind as a spurious extra tab in a
+  //    restored window.
+  //
+  //    If nothing could be created, NOTHING IS REMOVED. A failed restore has to
+  //    leave the window the user had, never an empty shell of it.
+  if (ids[0] != null || home != null) {
+    const ours = new Set<number>();
+    for (const id of ids) if (id != null) ours.add(id);
+    if (home != null) ours.add(home);
+    const cur = ((await browser.tabs.query(q).catch(() => [])) || []) as any[];
+    const removable = cur.filter(
+      (t: any) =>
+        t && t.id != null && !ours.has(t.id) && !isRelayCarrier(t) && !inFlightRequest(t)
+    );
+    if (removable.length) {
+      // ONE call, not one per tab: the strip is rebuilt in a single native step
+      // instead of shrinking visibly tab by tab.
       try {
-        await browser.tabs.update(host.id, { url: first.url, active: true });
+        await browser.tabs.remove(removable.map((t: any) => t.id));
       } catch {
-        // fall through — the tab may already be gone
+        // A tab may already be gone; the window is still correct.
       }
-      created.push(host.id);
-      hostReused = true;
-    } else {
-      const t = await browser.tabs.create({ url: first.url, active: true, ...inWin });
-      if (t && t.id != null) created.push(t.id);
-    }
-    for (let i = 1; i < entries.length; i++) {
-      const e = entries[i]!;
-      const t = e.stealth
-        ? await stealthCreateTab(e.url, false, winId)
-        : await browser.tabs.create({ url: e.url, active: false, ...inWin });
-      if (t && t.id != null) created.push(t.id);
     }
   }
 
-  // Remove the tabs the restore replaced (the reused host stays).
-  for (const t of removable) {
-    if (hostReused && host && t.id === host.id) continue;
+  // 3. The rest of the saved list, in order. Sequential on purpose: `tabs.create`
+  //    appends, so parallel creates would land in whatever order their replies
+  //    happened to arrive and scramble the strip. They load in the background as
+  //    they are created, so this is latency in opening, not in loading.
+  for (let i = 1; i < entries.length; i++) ids[i] = await make(entries[i]!.url);
+
+  // 4. PINNED TABS COME BACK PINNED. The old rebuild dropped the flag entirely, so
+  // every pinned tab returned unpinned; and its removal pass skipped pinned tabs,
+  // so the outgoing session's pinned tabs stayed. Pinning appends to the pinned
+  // region, and the saved list has its pinned prefix in front, so the order is
+  // preserved.
+  for (let i = 0; i < entries.length; i++) {
+    if (!entries[i]!.pinned) continue;
+    const id = ids[i];
+    if (id == null) continue;
     try {
-      await browser.tabs.remove(t.id);
+      await browser.tabs.update(id, { pinned: true });
+    } catch {
+      // ignore — an unpinned tab is better than a failed restore
+    }
+  }
+
+  // 5. Activate LAST: every tab above was created in the background, so the
+  // window paints its final content once instead of showing tab 1 and then
+  // jumping to the saved active tab.
+  const created: number[] = ids.filter((x): x is number => x != null);
+  if (home != null) created.push(home);
+  const at = Math.min(Math.max(0, opts.active || 0), Math.max(0, created.length - 1));
+  if (created[at] != null) {
+    try {
+      await browser.tabs.update(created[at]!, { active: true });
     } catch {
       // ignore
     }
   }
+
   if (opts.focus !== false) {
     try {
       await browser.windows.update(win.id, { focused: true });

@@ -9,7 +9,7 @@
 import type { LeaderPanelHtml, LeaderSignal } from "../shared/leadersignal";
 import type { Config } from "../shared/types";
 import { sessionState } from "./sessions";
-import { requestChrome } from "./services/relay";
+import { requestChrome, requestChromeToWindow } from "./services/relay";
 
 /**
  * Push a changed config to the chrome helper.
@@ -29,10 +29,18 @@ export function pushConfigToChrome(config: Config): void {
 // session mutation that did NOT originate from the helper (the helper
 // refreshes on its own actions; content-script and options actions would
 // otherwise leave its bar pointing at a stale session name).
-export async function pushSessionStateToChrome(): Promise<void> {
+//
+// A NAMED WINDOW gets NAMED delivery. `requestChrome` resolves "the current
+// window" from the background's point of view, so a push meant for the window
+// that opened a stealth tab could land in another window's helper — where it
+// described a strip that window does not have, and the bar there showed the
+// wrong session (or no stealth badge at all) until its next read.
+export async function pushSessionStateToChrome(winId?: number | null): Promise<void> {
   try {
-    const state = await sessionState();
-    requestChrome("sessionState", state);
+    const w = winId == null ? null : winId;
+    const state = await sessionState(w);
+    if (w != null) requestChromeToWindow(w, "sessionState", state);
+    else requestChrome("sessionState", state);
   } catch {
     // ignore
   }

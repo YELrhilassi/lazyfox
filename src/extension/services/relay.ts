@@ -61,7 +61,12 @@ export { isRelayUrl };
 // stuck `#lfr=cm.sessionState…` hash. The queue below has to stay a queue.
 export function acceptRelayPort(
   port: any,
-  onReq: (action: string, arg: unknown) => Promise<unknown>,
+  // `winId` is the window whose helper sent the request. It is part of the
+  // contract, not a convenience: the helper is per-window, and answers about
+  // "this window" (its session, its tab strip, its stealth jar) are wrong when
+  // resolved against whatever window the background happens to consider
+  // current. That mismatch is a session badge describing another window.
+  onReq: (action: string, arg: unknown, winId: number | null) => Promise<unknown>,
   transientTabIds: Set<number>
 ): void {
   if (!port || !port.name || port.name.indexOf("lazyfox-relay") !== 0) return;
@@ -104,7 +109,7 @@ export function acceptRelayPort(
   }
   port.onMessage.addListener((msg: any) => {
     if (!msg || msg.type !== "req") return;
-    onReq(String(msg.action || ""), msg.arg)
+    onReq(String(msg.action || ""), msg.arg, winId)
       .then((result) => {
         try {
           port.postMessage({ type: "resp", id: msg.id, result: result !== undefined ? result : null });

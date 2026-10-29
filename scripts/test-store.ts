@@ -276,11 +276,37 @@ check("vSessions drops one bad session and keeps the good ones",
   Object.keys(vSessions({ work: goodSession, broken: { name: "x" } })!).length === 1);
 
 // --- vStealth ------------------------------------------------------------
-eq("vStealth keeps valid container ids", vStealth({ containers: ["a", "b"] }), { containers: ["a", "b"] });
+const emptyStealth = { containers: [], urls: {}, visits: {}, downloads: {}, pending: [] };
+eq("vStealth keeps valid container ids", vStealth({ containers: ["a", "b"] }),
+  { ...emptyStealth, containers: ["a", "b"] });
 eq("vStealth drops a malformed id without failing the record",
-  vStealth({ containers: ["a", 3, null, "b"] }), { containers: ["a", "b"] });
-eq("vStealth turns a corrupt record into an empty set", vStealth("nope"), { containers: [] });
-eq("vStealth turns a missing record into an empty set", vStealth(undefined), { containers: [] });
+  vStealth({ containers: ["a", 3, null, "b"] }),
+  { ...emptyStealth, containers: ["a", "b"] });
+eq("vStealth turns a corrupt record into an empty set", vStealth("nope"),
+  emptyStealth);
+eq("vStealth turns a missing record into an empty set", vStealth(undefined),
+  emptyStealth);
+// The traces a jar has to purge on close ride the same record. A malformed
+// entry is dropped PER CONTAINER: one bad value must not take the container
+// list (and with it the badge) down with it.
+eq("vStealth keeps a jar's trace lists",
+  vStealth({ containers: ["a"], urls: { a: ["https://x/"] }, downloads: { a: [7] } }),
+  { ...emptyStealth, containers: ["a"], urls: { a: ["https://x/"] }, downloads: { a: [7] } });
+eq("vStealth drops malformed traces and keeps the rest",
+  vStealth({ containers: ["a"], urls: { a: ["u", 3], b: "x" }, downloads: { a: [1, "x"] } }),
+  { ...emptyStealth, containers: ["a"], urls: { a: ["u"] }, downloads: { a: [1] } });
+// Visits are what a wipe uses to delete its own pages and nothing else, so a
+// row without a usable timestamp must be dropped: a url alone is the legacy
+// shape and would fall back to deleting the whole URL's history.
+eq("vStealth keeps timestamped visits and drops url-only rows",
+  vStealth({
+    containers: ["a"],
+    visits: { a: [{ url: "https://x/", at: 10 }, { url: "https://y/" }, 4] },
+  }),
+  { ...emptyStealth, containers: ["a"], visits: { a: [{ url: "https://x/", at: 10 }] } });
+eq("vStealth keeps visits a wipe could not deliver",
+  vStealth({ pending: [{ url: "https://z/", at: 20 }] }),
+  { ...emptyStealth, pending: [{ url: "https://z/", at: 20 }] });
 
 console.log(`${pass} passed, ${fails.length} failed`);
 if (fails.length) {

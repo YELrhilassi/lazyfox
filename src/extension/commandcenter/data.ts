@@ -44,6 +44,8 @@ export interface QuickActions {
   openPage(url: string): void;
   setMode(mode: string): void;
   stealthOpen(): void;
+  stealthSearch(query: string): void;
+  stealthUrl(url: string): void;
 }
 
 // The home screen command grid, grouped into sections. `group` drives the

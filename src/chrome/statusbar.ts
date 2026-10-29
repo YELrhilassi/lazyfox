@@ -52,6 +52,11 @@ export interface StatusBarCtl {
   isFullscreen(): boolean;
   getTabIds(): number[];
   getStealthFlags(): boolean[];
+  // Is THIS tab in one of our stealth containers? Reads the tab's own
+  // container id and tests it against the set the background pushed, so the
+  // answer is about the tab in front of the user rather than about a position
+  // in a snapshot — which is what made the badge flicker off.
+  isStealthTab(tab: any): boolean;
   // The stealth badge must track the tab you switched to immediately (without
   // a sessionState round-trip), so the caller sets it locally and it is
   // pushed into the store.
@@ -133,6 +138,118 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   // Read-only mirror of the Go store's snapshot, updated only in paint(). The
   // bar's authoritative state lives in Go; this exists for synchronous reads.
   let lastSnap: StatusBarData | null = null;
+
+  // The stealth containers, as NUMERIC userContextIds.
+  //
+  // The chrome helper cannot call contextualIdentities (an extension-only API),
+  // but a <tab> carries its container id — so the background pushes the ids and
+  // the helper compares. That comparison is the whole fix for the badge that
+  // came and went: the old test was `tab.userContextId > 0`, which is true for
+  // the user's OWN containers and undefined for a tab object that does not
+  // expose the getter, so it was wrong in both directions depending on the
+  // build. The positional `stealthFlags` array is still here as the fallback
+  // for a background that has not sent ids yet, but it is no longer the answer
+  // of record: it indexes a tab list that a move or a close can already have
+  // invalidated.
+  let stealthIds: Set<number> = new Set();
+
+  // FOUR PLACES the same fact lives, tried in order of directness. One of them
+  // is empty depending on the Firefox build and on when the tab is asked about:
+  // `Tab.userContextId` is a getter on some versions, the attribute name has
+  // been parsed both ways in a non-HTML chrome document, and a tab element
+  // whose binding is being torn down exposes neither. Reading all four is what
+  // ends the badge disappearing on exactly the tab that needed it.
+  function containerIdOf(tab: any): number {
+    if (!tab) return 0;
+    let linked: any = null;
+    try {
+      linked = tab.linkedBrowser || null;
+    } catch (e) {
+      linked = null;
+    }
+    for (const direct of [tab.userContextId, linked && linked.userContextId]) {
+      if (typeof direct === "number" && direct > 0) return direct;
+    }
+    try {
+      // Both spellings on purpose: `getAttribute` is case-sensitive in a
+      // non-HTML chrome document, and the tabbrowser has set both spellings
+      // across versions.
+      const raw =
+        tab.getAttribute("userContextId") ||
+        tab.getAttribute("usercontextid") ||
+        "";
+      const n = parseInt(String(raw), 10);
+      if (Number.isFinite(n) && n > 0) return n;
+    } catch (e) {
+      // fall through to the principal
+    }
+    try {
+      // LAST RESORT, and the most authoritative one: the container is part of
+      // the document's origin attributes, which exist from the moment the tab
+      // has a browser, before any attribute is painted on the strip.
+      const oa = linked && linked.contentPrincipal && linked.contentPrincipal.originAttributes;
+      const n = oa ? Number(oa.userContextId) : 0;
+      if (Number.isFinite(n) && n > 0) return n;
+    } catch (e) {
+      // a dying wrapper answers nothing
+    }
+    return 0;
+  }
+
+  // Position in the strip, for the pushed per-tab fallback.
+  //
+  // Counted with `item()`, not `indexOf`: `gBrowser.tabs` is a XUL element, and
+  // the array helper this used to call is not guaranteed on every build — when
+  // it is missing the whole read throws and the badge silently falls back to a
+  // stale snapshot, which is one of the ways it "sometimes" disappeared.
+  function stripIndex(tab: any): number {
+    try {
+      const tabs = win.gBrowser.tabs;
+      const n = tabs ? tabs.length : 0;
+      for (let i = 0; i < n; i++) {
+        const t = typeof tabs.item === "function" ? tabs.item(i) : tabs[i];
+        if (t === tab) return i;
+      }
+    } catch (e) {
+      // a window mid-teardown has no strip to count
+    }
+    return -1;
+  }
+
+  function flagAt(tab: any): boolean {
+    const idx = stripIndex(tab);
+    return idx >= 0 && !!(lastSnap && lastSnap.stealthFlags && lastSnap.stealthFlags[idx]);
+  }
+
+  // The container id answers when it can be read; the pushed per-tab flags are
+  // the fallback for a tab object that exposes none of the four sources. The
+  // old version only asked the id set, so a tab whose id read came back empty
+  // was reported "not stealth" — the badge that came and went.
+  function isStealthTab(tab: any): boolean {
+    const id = containerIdOf(tab);
+    if (id > 0 && stealthIds.size) return stealthIds.has(id);
+    return flagAt(tab);
+  }
+
+  // The badge for the tab on screen. One function so compute(), TabSelect and
+  // applySessionState cannot answer the same question three ways.
+  function selectedStealth(): boolean {
+    try {
+      return isStealthTab(win.gBrowser.selectedTab);
+    } catch (e) {
+      // The window itself is mid-teardown; what the background last said about
+      // the active tab is better than flipping the badge off.
+      return !!(lastSnap && lastSnap.activeStealth);
+    }
+  }
+
+  function setStealthIds(ids: any): void {
+    const next = new Set<number>();
+    if (Array.isArray(ids)) {
+      for (const n of ids) if (typeof n === "number" && n > 0) next.add(n);
+    }
+    stealthIds = next;
+  }
 
   function isFullscreen(): boolean {
     // DOM fullscreen (a video, a gallery lightbox) must hide the window
@@ -252,19 +369,10 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
       const liveCount = real.length;
       const realSel = real.indexOf(win.gBrowser.selectedTab);
       const ui = deps.getUi();
-      // The stealth badge is a LIVE property of the selected tab (its
-      // container), never a cached flag: flags keyed by raw tab index go stale
-      // the moment a tab closes. userContextId > 0 = isolated container.
-      let selStealth = false;
-      try {
-        const t = win.gBrowser.selectedTab;
-        selStealth = !!(
-          t && typeof t.userContextId === "number" && t.userContextId > 0
-        );
-      } catch (e) {
-        // selection not readable mid-collapse; keep the pushed value
-        selStealth = !!(lastSnap && lastSnap.activeStealth);
-      }
+      // The stealth badge is a LIVE property of the selected tab — its
+      // container id against the set of containers WE created — never a cached
+      // flag. See selectedStealth.
+      const selStealth = selectedStealth();
       // NOTHING MOVED: the store already holds exactly these values and the bar
       // already draws them. The leader indicator below is still consulted — it
       // has its own, finer-grained guard (paintLeader) because it can change
@@ -383,6 +491,8 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   function applySessionState(state: any): void {
     try {
       state = state || {};
+      // The ids first: the badge below is decided against them.
+      setStealthIds(state.stealthIds);
       const ui = deps.getUi();
       pushAndPaint([
         { kind: "session", state: {
@@ -397,19 +507,9 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
           tabIds: Array.isArray(state.tabIds) ? state.tabIds : [],
           stealthFlags: Array.isArray(state.stealthFlags) ? state.stealthFlags : [],
         } },
-        // Re-derive the stealth badge from the fresh flags + current selection
-        // (the background's activeStealth can race the tab becoming selected).
-        {
-          kind: "stealth",
-          on: (() => {
-            try {
-              const sel = win.gBrowser.tabs.indexOf(win.gBrowser.selectedTab);
-              return sel >= 0 && !!(state.stealthFlags && state.stealthFlags[sel]);
-            } catch (e) {
-              return !!(lastSnap && lastSnap.activeStealth);
-            }
-          })(),
-        },
+        // Re-derive the stealth badge from the live selection (the background's
+        // activeStealth can race the tab becoming selected).
+        { kind: "stealth", on: selectedStealth() },
         { kind: "ui", popup: ui.popup, leader: ui.leader },
       ]);
     } catch (e) {
@@ -427,6 +527,7 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
     getTabIds: () => (lastSnap && lastSnap.tabIds ? lastSnap.tabIds.slice() : []),
     getStealthFlags: () =>
       lastSnap && lastSnap.stealthFlags ? lastSnap.stealthFlags.slice() : [],
+    isStealthTab,
     setActiveStealth: (on) => {
       pushAndPaint([{ kind: "stealth", on }]);
     },

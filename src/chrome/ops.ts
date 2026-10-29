@@ -53,6 +53,7 @@ export interface ChromeOpsDeps {
   status: {
     getTabIds(): number[];
     getStealthFlags(): boolean[];
+    isStealthTab(tab: any): boolean;
     getInfo(): { sessions: SessionSummaryItem[] };
   };
   // Chrome-side config (config.ts). Mutated in place for toggles so every
@@ -224,6 +225,8 @@ export function createChromeOps(deps: ChromeOpsDeps): ActionOps {
     retryDownload: (key: string) => ui.retryDownload(key),
     dismissDownload: (key?: string) => ui.dismissDownload(key),
     stealthOpen: () => ui.stealthOpen(),
+    stealthSearch: (query: string) => ui.stealthSearch(query),
+    stealthUrl: (url: string) => ui.stealthUrl(url),
     copyUrl: () => tabs.copyUrl(),
     pageUrl: async () => tabs.pageUrl(),
     muteTab: () => tabs.muteTab(),

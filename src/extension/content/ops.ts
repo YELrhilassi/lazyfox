@@ -43,6 +43,15 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
   // arms a confirmation and a second press within 2.5s actually closes (the
   // same TwoStep the chrome helper and the command center use).
   const closeArm = new TwoStep(2500);
+  // One entry point for the three stealth destinations: the background opens
+  // the tab in the SENDER's window jar, and a failure is never silent.
+  const openStealth = (arg: { url?: string; query?: string }): void => {
+    void send("stealthOpen", arg).then((r) => {
+      if (r && r.ok === true) toast("stealth tab opened");
+      else if (r) toast("stealth tab failed: " + (r.error || "unknown"));
+      else toast("stealth tab failed: extension not reachable");
+    });
+  };
   return {
     searchSuggest: async (q: string) => {
       const r = await send("searchSuggest", { q: q });
@@ -200,13 +209,9 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     openDownloadLocation: (key: string) => void send("openDownloadLocation", { id: key }),
     removeDownload: (key: string) => void send("removeDownload", { id: key }),
     retryDownload: (key: string) => void send("retryDownload", { id: key }),
-    stealthOpen: () => {
-      void send("stealthOpen").then((r) => {
-        if (r && r.ok === true) toast("stealth tab opened");
-        else if (r) toast("stealth tab failed: " + (r.error || "unknown"));
-        else toast("stealth tab failed: extension not reachable");
-      });
-    },
+    stealthOpen: () => openStealth({}),
+    stealthSearch: (query: string) => openStealth({ query }),
+    stealthUrl: (url: string) => openStealth({ url }),
     openSetup: () => void send("openSetup"),
     openDiagnostics: () => void send("openDiagnostics"),
     dismissDownload: (_key?: string) => {

@@ -30,20 +30,29 @@ import { createSplash } from "../../src/chrome/splash.ts";
 function clockedSplash(baseUrl: string | null = "moz-extension://abc/") {
   const env = createFakeChromeEnv();
   const queue = new Map<number, () => void>();
+  // The delay each pending timer was armed with. The two budgets (a switch's and
+  // a launch's) are policy, and this is the only place they can be read.
+  const armed = new Map<number, number>();
   let nextId = 0;
-  env.setTimeout = ((fn: () => void) => {
+  env.setTimeout = ((fn: () => void, ms?: number) => {
     const id = ++nextId;
     queue.set(id, fn);
+    armed.set(id, ms || 0);
     return id;
   }) as any;
   env.clearTimeout = ((h: any) => {
     queue.delete(h);
+    armed.delete(h);
   }) as any;
   const splash = createSplash({ env, baseUrl: () => baseUrl });
   return {
     env,
     queue,
     splash,
+    /** The delays of every pending timer, in the order they were armed. */
+    waits(): number[] {
+      return [...queue.keys()].map((id) => armed.get(id) || 0);
+    },
     /** Fire the oldest pending timer (the next thing the module asked for). */
     fire(): void {
       const [id, fn] = [...queue.entries()][0] || [];
@@ -123,6 +132,35 @@ describe("the launch splash", () => {
     assert.equal(t.mounts().length, 2, "the second resume was not covered");
     const second = t.mounts()[1];
     assert.notEqual(second.parent, null, "the second cover is not on screen");
+  });
+
+  test("a switch paints immediately, with its own label and its own budget", () => {
+    // A switch is something the user just asked for: waiting out the launch delay
+    // would put the cover on screen after the strip has already started changing.
+    const t = clockedSplash();
+    t.splash.set(true, "Switching to work\u2026");
+    assert.deepEqual(t.waits(), [0], "a switch did not paint on the next tick");
+    t.fire();
+    const host = t.host();
+    assert.ok(host, "the switch's cover never painted");
+    assert.equal(host.children[2].textContent, "Switching to work\u2026", "the cover does not say where it is going");
+    // The switch budget, not the launch one: a rebuild is bounded by its own page
+    // wait, so a cover still up after that belongs to a background that died.
+    assert.deepEqual(t.waits(), [8000], "a switch got the launch's failsafe");
+  });
+
+  test("a re-announce replaces the budget instead of keeping the first one", () => {
+    // Two switches in a row share ONE cover. If the first paint's failsafe stayed
+    // armed, it would take down the second switch's cover mid-rebuild.
+    const t = clockedSplash();
+    t.splash.set(true, "Switching to a\u2026");
+    t.fire();
+    const host = t.host();
+    t.splash.set(true, "Switching to b\u2026");
+    assert.deepEqual(t.waits(), [8000], "the first switch's failsafe was left armed beside the second");
+    assert.equal(host.children[2].textContent, "Switching to b\u2026", "the cover still names the old destination");
+    t.fire();
+    assert.equal(host.parent, null, "the cover outlived its budget");
   });
 
   test("an unreadable mark costs the logo, not the splash", () => {
