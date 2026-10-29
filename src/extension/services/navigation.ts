@@ -11,6 +11,7 @@
 //   - openUI: extension UI popups, routed through the same #lfc= hash channel.
 import { CC_URL, activeTabInWindow, isCommandCenter, stripHash } from "../tabs";
 import { getConfig } from "../config";
+import { stealthContainerOf } from "../stealth";
 
 // Known about: pages get a short key in the #lfc=open payload; any other
 // about: URL is carried base64-encoded so the hash grammar stays intact.
@@ -51,7 +52,12 @@ export async function openUrl(url: string, newTab: boolean | undefined, winId: n
   }
   const inWin = winId == null ? {} : { windowId: winId };
   if (newTab || !tab) {
-    await browser.tabs.create({ url, active: true, ...inWin });
+    // A link opened FROM a stealth tab belongs in that tab's jar. Without the
+    // cookieStoreId the new tab lands in the default jar, which is a silent
+    // escape from the sandbox: the page you clicked from was isolated and the
+    // one it opened was signed in as you.
+    const jar = await stealthContainerOf(tab);
+    await browser.tabs.create({ url, active: true, ...inWin, ...(jar ? { cookieStoreId: jar } : {}) });
   } else {
     await browser.tabs.update(tab.id, { url });
   }
@@ -92,10 +98,12 @@ export async function openPage(url: string, winId: number | null = null) {
     await browser.tabs.update(tab.id, { url, active: true });
     return { ok: true, reused: true };
   }
+  const jar = await stealthContainerOf(tab);
   await browser.tabs.create({
     url,
     active: true,
-    ...(winId == null ? {} : { windowId: winId })
+    ...(winId == null ? {} : { windowId: winId }),
+    ...(jar ? { cookieStoreId: jar } : {})
   });
   return { ok: true };
 }

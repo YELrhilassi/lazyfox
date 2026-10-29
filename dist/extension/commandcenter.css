@@ -185,5 +185,11 @@ footer .lead b { color: var(--accent); }
 }
 .rp-btns button:hover, #rpMax:hover { border-color: var(--accent); color: var(--accent); }
 
-/* Stealth (isolated-tab) state reveals the footer badge. */
+/* Stealth (isolated-tab) state reveals the footer badge.
+ *
+ * Hidden by RULE, not by an inline style: an inline `display:none` outranks
+ * this selector, so the badge stayed hidden in the one state it exists for
+ * (it was `none` on every stealth home page, measured in the sessions suite).
+ */
+#stealthNote { display: none; }
 html.lf-stealth #stealthNote { display: inline; }

@@ -252,13 +252,13 @@ export function buildTabRows(
   status: {
     getTabIds(): number[];
     getStealthFlags(): boolean[];
+    isStealthTab(tab: any): boolean;
   },
   q: string
 ): PopupItem[] {
   const win = env.window as any;
   const out: PopupItem[] = [];
   const tabIds = status.getTabIds();
-  const stealthFlags = status.getStealthFlags();
   const tabs = win.gBrowser.tabs;
   let real = 0;
   for (let i = 0; i < tabs.length; i++) {
@@ -290,7 +290,9 @@ export function buildTabRows(
       active: !!tab.selected,
       pinned: !!tab.pinned,
       muted: !!tab.muted,
-      stealth: !!stealthFlags[i],
+      // Per TAB, from its own container id — a row must not inherit the badge
+      // of whatever sat at this index when the last state push was built.
+      stealth: status.isStealthTab(tab),
       favIconUrl: /^https?:/i.test(rawIcon) ? rawIcon : faviconFor(uri),
     };
     real++;

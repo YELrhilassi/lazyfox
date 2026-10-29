@@ -25,11 +25,14 @@ export function createUiOps(deps: {
   applyHoverRevealPref(cfg: ChromeCfg): void;
   // Told the new value so an already-painted surface can stand down.
   onWhichKeyChanged?(on: boolean): void;
-  popup: { openResizePopup(): void };
-  channel: {
-    requestBg(action: "focusFirstInput" | "startHints" | "openSetup" | "openDiagnostics" | "toggleWhichKey" | "quit", arg?: any): void;
-    requestReply(action: "stealthOpen"): Promise<any>;
-  };
+  popup: { openResizePopup(): void };    channel: {
+      requestBg(action: "focusFirstInput" | "startHints" | "openSetup" | "openDiagnostics" | "toggleWhichKey" | "quit", arg?: any): void;
+      // The request carries where the new stealth tab lands (nothing = the
+      // empty home page). The background resolves the WINDOW from the relay
+      // port the request arrived on, so `;Nn` pressed in one session can no
+      // longer open its tab in another.
+      requestReply(action: "stealthOpen", arg?: { url?: string; query?: string }): Promise<any>;
+    };
   // The window's current address, for `;K e` to pre-fill. Resolved locally, not
   // relayed: it is a window fact the helper already owns, and routing it
   // through the background and back would make the field's contents depend on
@@ -38,6 +41,16 @@ export function createUiOps(deps: {
 }) {
   const win = deps.env.window as any;
   const doc = deps.env.document as any;
+  // The background opens the isolated tab and returns the outcome; toast it so
+  // a failure is never silent. Success is toasted for all three entry points
+  // because the tab that appears is a NEW one in an isolated jar — the toast is
+  // what says it is sandboxed rather than an ordinary tab.
+  const openStealth = (arg: { url?: string; query?: string }): void => {
+    void deps.channel.requestReply("stealthOpen", arg).then((r: any) => {
+      if (r && r.ok === true) toast("stealth tab opened");
+      else toast("stealth tab failed: " + ((r && r.error) || "unknown"));
+    });
+  };
   return {
     downloads: (q: string): Promise<PopupItem[]> => {
       const ql = q.trim().toLowerCase();
@@ -90,14 +103,9 @@ export function createUiOps(deps: {
     dismissDownload: (key?: string) => {
       dismissBarNotifications(key);
     },
-    stealthOpen: () => {
-      // The background opens the isolated tab and returns the outcome; toast
-      // it so a failure is never silent.
-      void deps.channel.requestReply("stealthOpen").then((r: any) => {
-        if (r && r.ok === true) toast("stealth tab opened");
-        else toast("stealth tab failed: " + ((r && r.error) || "unknown"));
-      });
-    },
+    stealthOpen: () => openStealth({}),
+    stealthSearch: (query: string) => openStealth({ query }),
+    stealthUrl: (url: string) => openStealth({ url }),
     zen: () => {
       win.fullScreen = !win.fullScreen;
     },

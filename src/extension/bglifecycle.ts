@@ -24,8 +24,12 @@ import {
   restoreAlternateTabs
 } from "./windowops";
 import {
+  noteStealthDownload,
+  noteStealthTab,
+  noteStealthVisit,
   reconcileStealth,
-  removeStealthContainerForTab
+  removeStealthContainerForTab,
+  stealthContainers
 } from "./stealth";
 import {
   bindChromeHooks,
@@ -192,13 +196,52 @@ function installSessionAutosave(): void {
   });
 }
 
-// When a stealth tab closes, wipe its container data + remove the container.
-// (Racy if the browser dies first — reconcileStealth catches orphans next
-// launch.)
+// Track what a stealth jar does and wipe it when its last tab closes.
+//
+// The jar's cleanup depends on knowing everything that entered it: tabs opened
+// by `openUrl`/`doSearch` never pass through stealthCreateTab, and the pages a
+// jar loads and the downloads it starts are the traces that live OUTSIDE the
+// cookie store. All three are recorded here, at the event source, rather than
+// in the four places that can open a tab.
+//
+// (Racy if the browser dies first — reconcileStealth catches orphans on the
+// next launch, and sweeps their history/download traces with them.)
 function installStealthCleanup(): void {
-  browser.tabs.onRemoved.addListener((tabId: number) => {
-    void removeStealthContainerForTab(tabId);
+  browser.tabs.onCreated.addListener((tab: any) => noteStealthTab(tab));
+  browser.tabs.onUpdated.addListener((_tabId: number, info: any, tab: any) => {
+    noteStealthTab(tab);
+    // `info` matters: only a URL change is a visit, and the timestamp it carries
+    // is what lets the wipe remove THIS visit rather than every visit of the URL.
+    noteStealthVisit(tab, info);
+    // A stealth tab's URL/title is NOT session content, so nothing else pushes
+    // on its behalf — and the bar's tab rows and badge describe a strip this
+    // navigation just changed. Pushing here (and only here) is what keeps the
+    // badge from waiting for an unrelated session action.
+    if (
+      info &&
+      (info.url || info.status === "complete") &&
+      tab &&
+      stealthContainers.has(tab.cookieStoreId)
+    ) {
+      void pushSessionStateToChrome(typeof tab.windowId === "number" ? tab.windowId : null);
+    }
   });
+  browser.tabs.onRemoved.addListener((tabId: number) => {
+    // The push is not cosmetic: the bar's badge is decided by the container
+    // IDS the background sends, and a wiped container must leave that set
+    // immediately — otherwise the next push would still call a dead id ours.
+    void removeStealthContainerForTab(tabId).then((owned) => {
+      if (owned) pushSessionStateToChrome();
+    });
+  });
+  try {
+    if (!browser.downloads) return;
+    browser.downloads.onCreated.addListener((item: any) => {
+      void noteStealthDownload(item);
+    });
+  } catch {
+    // No downloads permission: a jar simply has no download traces to track.
+  }
 }
 
 // WAKE THE BAR WHEN A DOWNLOAD APPEARS OR ENDS.

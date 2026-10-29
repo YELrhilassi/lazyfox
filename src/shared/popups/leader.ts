@@ -289,7 +289,10 @@ export function makeLeaderActions(ctx: PopupCtx): Record<string, () => void> {
     help: () => openHelpPopup(ctx),
     toggleWhichKey: () => ctx.ops.toggleWhichKey(),
     dismissDownload: () => ctx.ops.dismissDownload(),
+    // `;N` Stealth: one menu, three doors into the same window jar.
     stealthOpen: () => ctx.ops.stealthOpen(),
+    stealthSearch: () => openSearchPopup(ctx, false, true),
+    stealthUrl: () => openUrlPopup(ctx, false, true),
     // NOTE: no `openSetup` here. The setup page lost its chord (`;I`) because it
     // is a one-time install step rather than a command — it is reached from the
     // home page instead. Keeping the entry would make the keymap-coverage test

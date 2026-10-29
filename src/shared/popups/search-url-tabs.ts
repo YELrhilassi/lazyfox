@@ -6,14 +6,22 @@ import { planTabJump } from "../tabjump";
 import type { PopupItem } from "../types";
 import { basePanel, makeSelector, type PopupCtx } from "./kit";
 
-export function openSearchPopup(ctx: PopupCtx, replace = false): void {
+// `stealth` is the `;Ns` destination: the same field, the same suggestions,
+// but the result opens in this window's stealth jar instead of the default one.
+// It is a third destination rather than a second popup for the same reason
+// `;S` is — the query is what this panel holds, and a duplicated popup would
+// drift.
+export function openSearchPopup(ctx: PopupCtx, replace = false, stealth = false): void {
   ctx.open(
     basePanel(
-      replace ? "Search in current tab" : "Search",
+      stealth ? "Search in a stealth tab" : replace ? "Search in current tab" : "Search",
       "type to search",
-      "<span class='lf-badge'>Enter</span> search &middot; " +
-        "<span class='lf-badge'>Ctrl+Enter</span> in this tab &middot; " +
-        "<span class='lf-badge'>Esc</span> close"
+      stealth
+        ? "<span class='lf-badge'>Enter</span> search in the isolated tab &middot; " +
+          "<span class='lf-badge'>Esc</span> close"
+        : "<span class='lf-badge'>Enter</span> search &middot; " +
+          "<span class='lf-badge'>Ctrl+Enter</span> in this tab &middot; " +
+          "<span class='lf-badge'>Esc</span> close"
     ),
     (root) => {
       // WHERE THE RESULT OPENS IS A KEY, NOT A SECOND KEYMAP ENTRY.
@@ -26,6 +34,14 @@ export function openSearchPopup(ctx: PopupCtx, replace = false): void {
       // spelling and this chord cannot drift apart.
       const go = (q: string, here: boolean) => {
         ctx.close();
+        // `here` cannot apply to a stealth search: there is no such thing as
+        // searching "in this tab" of a jar the tab is not in yet, and reusing
+        // the current tab would push the sandbox into the page the user was
+        // reading. Both keys therefore mean the isolated destination.
+        if (stealth) {
+          ctx.ops.stealthSearch(q);
+          return;
+        }
         ctx.ops.search(q, here ? false : undefined);
       };
       return makeSelector<PopupItem>(ctx, root, {
@@ -57,12 +73,17 @@ export function openSearchPopup(ctx: PopupCtx, replace = false): void {
 }
 
 
-export function openUrlPopup(ctx: PopupCtx, replace = false): void {
+// `stealth` is the `;No` destination: one field, one rule for what counts as a
+// host, but the page opens in this window's stealth jar.
+export function openUrlPopup(ctx: PopupCtx, replace = false, stealth = false): void {
   ctx.open(
     basePanel(
-      replace ? "Open URL in current tab" : "Open URL",
+      stealth ? "Open URL in a stealth tab" : replace ? "Open URL in current tab" : "Open URL",
       "type a URL or a site name",
-      "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>Esc</span> close"
+      stealth
+        ? "<span class='lf-badge'>Enter</span> open in the isolated tab &middot; " +
+          "<span class='lf-badge'>Esc</span> close"
+        : "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>Esc</span> close"
     ),
     (root) =>
       makeSelector<PopupItem>(ctx, root, {
@@ -75,6 +96,10 @@ export function openUrlPopup(ctx: PopupCtx, replace = false): void {
           "<div class='s'>" + esc(it.subtitle || it.url || "") + "</div>",
         onPick: (it) => {
           ctx.close();
+          if (stealth) {
+            ctx.ops.stealthUrl(it.url || "");
+            return;
+          }
           // ;O (replace) opens in the current tab; ;o defers to the
           // openInNewTab config (new tab by default).
           ctx.ops.openUrl(it.url || "", replace ? false : undefined);
@@ -100,22 +125,29 @@ export function openUrlPopup(ctx: PopupCtx, replace = false): void {
           const v = (value || "").trim();
           if (!v) return false;
           ctx.close();
+          // One normalization rule, two destinations: the stealth variant
+          // differs only in where the answer lands, never in whether a bare
+          // word is a search.
+          const search = (q: string): void =>
+            stealth ? ctx.ops.stealthSearch(q) : ctx.ops.search(q, replace ? false : undefined);
+          const visit = (u: string): void =>
+            stealth ? ctx.ops.stealthUrl(u) : ctx.ops.openUrl(u, replace ? false : undefined);
           void core
             .isLikelyUrl(v)
             .then((likely) => {
               if (!likely) {
-                ctx.ops.search(v, replace ? false : undefined);
+                search(v);
                 return;
               }
               core
                 .normalizeUrl(v)
-                .then((u) => ctx.ops.openUrl(u, replace ? false : undefined))
-                .catch(() => ctx.ops.openUrl(v, replace ? false : undefined));
+                .then(visit)
+                .catch(() => visit(v));
             })
             // If the core is unavailable, fall back to opening it rather than
             // dropping the keystroke: that is the old behaviour, and a wrong
             // guess that still navigates beats a dead key.
-            .catch(() => ctx.ops.openUrl(v, replace ? false : undefined));
+            .catch(() => visit(v));
           return true;
         },
       })

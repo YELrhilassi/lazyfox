@@ -419,6 +419,18 @@
     "runs": 10,
     "passes": 10
   },
+  "content/popups › ;N o: URL popup opens the page in the window's stealth jar": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/popups › ;N s: search opens in a stealth container tab": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
   "content/popups › ;t tab switcher popup lists tabs and Enter switches": {
     "status": "pass",
     "group": "content",
@@ -874,7 +886,7 @@
     "runs": 5,
     "passes": 5
   },
-  "sessions/stealth › stealth: isolated jar, session round-trip, wiped on close": {
+  "sessions/stealth › stealth: isolated jar, never saved, wiped on close": {
     "status": "pass",
     "group": "sessions",
     "runs": 5,

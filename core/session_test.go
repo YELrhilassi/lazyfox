@@ -236,7 +236,8 @@ func TestSessionBindings(t *testing.T) {
 	}
 }
 
-// TestCategoryBindings pins the category heads (`;W`, `;Z`, `;K`, `;Y`, `;C`). A
+// TestCategoryBindings pins the category heads (`;W`, `;Z`, `;K`, `;Y`, `;C`,
+// `;N`). A
 // category head is not a binding on its own — it arms a capture for a sub-key —
 // so what matters is that the label NAMES the sub-keys: the overlay is where the
 // layout is learned, and a row reading only "Window & layout" would advertise a
@@ -260,6 +261,11 @@ func TestCategoryBindings(t *testing.T) {
 		// owns "select a region" (`;C f` arms it for a full page), and the
 		// preview/copy/download flow below that is the browser's own.
 		"C": {"f", "v"},
+		// Stealth. Three destinations into ONE jar per window: an empty tab, a
+		// search and a known address. The sub-key letters are the letters the
+		// underlying bindings already use (`;n` tab, `;s` search, `;o` URL), so
+		// the menu teaches the same vocabulary as the top level.
+		"N": {"n", "s", "o"},
 	}
 	found := map[string][]string{}
 	for _, r := range Keymap {

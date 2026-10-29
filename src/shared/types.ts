@@ -295,8 +295,10 @@ export interface SessionTab {
   // records it and the chrome helper is asked to recreate the pairing on
   // restore.
   splitViewId?: number;
-  // A stealth tab lives in its own ephemeral container (isolated cookies /
-  // storage) and is wiped when closed. Restore opens it in a fresh container.
+  // LEGACY, read-only. Stealth tabs are not session content any more: capture
+  // excludes them and readSessions strips any entry an older build wrote
+  // (stripStealthFromSession), so nothing produces `true` here today. The field
+  // stays declared because the validator must still READ those old snapshots.
   stealth?: boolean;
 }
 

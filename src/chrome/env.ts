@@ -71,6 +71,7 @@ export interface ChromeServices {
     getStringPref(name: string, fallback?: string): string;
     setBoolPref?(name: string, value: boolean): void;
     setStringPref?(name: string, value: string): void;
+    clearUserPref?(name: string): void;
   };
   dirsvc?: any;
   io?: any;
