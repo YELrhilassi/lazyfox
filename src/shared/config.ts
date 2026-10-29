@@ -74,6 +74,10 @@ export const CONFIG_DEFAULTS: Config = {
   statusBar: true,
   statusBarPosition: "bottom",
   autoRestore: true,
+  // A stealth tab ends with the tab. Keeping its jar across a quit is a
+  // deliberate choice, not the default: the feature's promise is that the
+  // sandbox is gone when the browser is.
+  keepStealth: false,
   apps: defaultApps(),
   dark: DARK_DEFAULTS,
   reader: READER_DEFAULTS,

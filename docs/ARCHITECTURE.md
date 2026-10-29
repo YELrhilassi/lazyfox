@@ -192,9 +192,13 @@ itself — it builds the modules below and wires them together.
   (relay, component discovery, home shim, navigation).
 - `search.ts` — search/URL suggestions, history and bookmarks.
 - `stealth.ts` — isolated container tabs: one jar per window, shared by every
-  stealth tab there and wiped when the last one closes. A jar's traces are
-  recorded AS THEY HAPPEN and removed when it goes: the exact Places visits its
-  pages made (URL and time, so a site browsed normally keeps its history), its
+  stealth tab there. Its lifetime has two ends, and only two: the last tab
+  closes, or the browser restarts (with `keepStealth` on, the restart is not an
+  end — the jar comes back with the session it was open in). A SESSION SWITCH is
+  deliberately not one of them: a stealth tab is not session content, so the
+  rebuild leaves it open and its jar untouched. A jar's traces are recorded AS
+  THEY HAPPEN and removed when it goes: the exact Places visits its pages made
+  (URL and time, so a site browsed normally keeps its history), its
   download-list rows, the matching entries in Firefox's own recently-closed
   list, and — for as long as a jar exists — the password manager's autofill.
   The privileged half of that is `chrome/stealthprivate.ts`; a visit the helper

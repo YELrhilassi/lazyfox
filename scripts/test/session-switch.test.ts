@@ -38,6 +38,7 @@ const { bindRestoreBroadcastChrome, bindRestoreRequestChrome, bindRestoreRequest
 const { moveTabBetweenSessions, restoreSession, resumeOnStartup } = await import(
   "../../src/extension/sessions.ts"
 );
+const { reconcileStealth, stealthContainers } = await import("../../src/extension/stealth.ts");
 
 type FakeTab = {
   id: number;
@@ -46,6 +47,7 @@ type FakeTab = {
   active: boolean;
   pinned: boolean;
   hidden?: boolean;
+  cookieStoreId?: string;
 };
 
 /**
@@ -138,7 +140,7 @@ function fakeBrowser(seedUrls: string[], withRelay = true, failUrls: string[] = 
         if (q && typeof q.windowId === "number") out = out.filter((t) => t.windowId === q.windowId);
         else if (q && q.currentWindow) out = out.filter((t) => t.windowId === focused);
         if (q && q.active) out = out.filter((t) => t.active);
-        if (q && q.cookieStoreId) out = [];
+        if (q && q.cookieStoreId) out = out.filter((t) => t.cookieStoreId === q.cookieStoreId);
         return out.map((t) => ({ ...t }));
       },
       async update(tabId: number, props: any) {
@@ -463,5 +465,50 @@ describe("session switching", () => {
     const winId = fake.focusedId();
     const live = fake.urlsOf(winId).filter((u) => u.indexOf("relay.html") === -1);
     assert.deepEqual(live, [URL_A1, URL_A2], "the outgoing window still holds its tabs");
+  });
+
+  test("a switch leaves a stealth tab, and its jar, alone", async () => {
+    // A stealth tab is not session content, and the OTHER half of that rule is
+    // that changing sessions must not end the sandbox: the rebuild used to
+    // remove every tab in the window, which closed the jar with it (the
+    // reported "my stealth tabs are cleaned when I switch sessions").
+    const JAR = "firefox-container-42";
+    const URL_S = "https://secret.test/page";
+    const fake = fakeBrowser([URL_A1, URL_S]);
+    (globalThis as any).browser = fake.browser;
+    captureChrome();
+
+    // The container registry is process-wide and the reconciler is memoized, so
+    // seed it AFTER it has run: this test must not depend on file order.
+    await reconcileStealth();
+    stealthContainers.add(JAR);
+    const stealth = fake.tabs.find((t) => t.url === URL_S)!;
+    stealth.cookieStoreId = JAR;
+    const stealthId = stealth.id;
+
+    fake.store.lfSessions = {
+      quiet: session("quiet", [win([URL_A1])]),
+      other: session("other", [win([URL_B1, URL_B2])]),
+    };
+    fake.store.lfCurrentSession = "quiet";
+
+    const r = await restoreSession("other");
+    assert.equal(r.ok, true, JSON.stringify(r));
+
+    const live = fake.tabs.filter((t) => t.windowId === fake.focusedId());
+    const kept = live.find((t) => t.id === stealthId);
+    assert.ok(kept, "the stealth tab is still open: " + JSON.stringify(live));
+    assert.equal(kept!.cookieStoreId, JAR, "it is still in its own container");
+    assert.ok(stealthContainers.has(JAR), "the jar was not wiped by the switch");
+    assert.deepEqual(
+      live.filter((t) => t.url.indexOf("relay.html") === -1 && t.id !== stealthId).map((t) => t.url),
+      [URL_B1, URL_B2],
+      "the incoming session was rebuilt around it"
+    );
+
+    // ...and it stayed out of the session being left, which is what makes it
+    // safe to keep: a checkpoint can never save a jar tab.
+    const quiet = (fake.store.lfSessions as Record<string, Session>).quiet!;
+    assert.deepEqual((quiet.tabs || []).map((t) => t.url), [URL_A1]);
   });
 });

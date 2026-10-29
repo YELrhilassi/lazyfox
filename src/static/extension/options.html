@@ -21,6 +21,7 @@
         <a href="#sec-general" data-sec="sec-general">General</a>
         <a href="#sec-apps" data-sec="sec-apps">Quick launch</a>
         <a href="#sec-sessions" data-sec="sec-sessions">Sessions &amp; bar</a>
+        <a href="#sec-stealth" data-sec="sec-stealth">Stealth</a>
         <a href="#sec-dark" data-sec="sec-dark">Dark mode</a>
         <a href="#sec-reader" data-sec="sec-reader">Reader mode</a>
         <a href="#sec-chrome" data-sec="sec-chrome">Firefox chrome</a>
@@ -59,6 +60,12 @@
           <option value="top">Top</option>
         </select></div>
       <div class="field"><label class="r"><input type="checkbox" id="autoRestore"> Restore the last session on startup</label></div>
+    </div>
+
+    <div class="card" id="sec-stealth">
+      <h2>Stealth</h2>
+      <div class="desc"><span class="kbd">;N</span> opens an isolated tab: its own container, its own cookies, logins and storage, one jar per window. A stealth tab is not part of a session, so switching sessions leaves it open and its jar intact. Closing its last tab wipes the jar; quitting Firefox does too, unless the option below is on.</div>
+      <div class="field"><label class="r"><input type="checkbox" id="keepStealth"> Keep stealth tabs across a restart (do not wipe their jar at the next launch)</label></div>
     </div>
 
     <div class="card" id="sec-dark">

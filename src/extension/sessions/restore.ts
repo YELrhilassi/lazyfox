@@ -28,6 +28,7 @@ import type { Session, SessionWindow } from "../../shared/types";
 import type { ChromeAction, ChromeReq } from "../../shared/protocol";
 import { openTabsInWindow } from "./storage";
 import { bumpRestoreEpoch } from "./epoch";
+import { reconcileStealth, stealthContainers } from "../stealth";
 
 // Chrome-helper hooks, injected by the sessions facade (breaks the import
 // cycle sessions -> relay -> sessions). Two of them because a restore now
@@ -180,8 +181,18 @@ export function endRestore(): void {
 // AND created the saved one beside it (the reported "sessions don't reload
 // properly", with the flashing that comes from the duplicate set).
 async function realTabsIn(winId: number): Promise<any[]> {
+  await reconcileStealth();
   const tabs = ((await browser.tabs.query({ windowId: winId }).catch(() => [])) || []) as any[];
-  return tabs.filter((t: any) => !!t && !!t.url && !isUITab(t));
+  // STEALTH TABS ARE NOT SESSION CONTENT, so they do not take part in the
+  // question "is this window the saved one?". A kept stealth tab (the default
+  // is to keep it across a session switch, and the `keepStealth` setting keeps
+  // it across a restart too) is one EXTRA tab against a snapshot that never
+  // recorded it; counting it turned the user's own window into a stranger and
+  // sent the resume down the rebuild path — the flashing this module exists to
+  // avoid. The snapshot side filters the same tabs out (sessions/storage).
+  return tabs.filter(
+    (t: any) => !!t && !!t.url && !isUITab(t) && !stealthContainers.has(t.cookieStoreId)
+  );
 }
 
 // Whether a window is missing split pairings its saved counterpart has. Native

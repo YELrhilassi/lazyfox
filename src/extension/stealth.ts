@@ -18,6 +18,13 @@
 // A stealth tab is NEVER session content: it is absent from every snapshot
 // (see sessions/storage.windowPart) and from the crash-recovery slot, so a
 // relaunch or a `;V` pick cannot resurrect a jar that was supposed to be gone.
+// That cuts both ways, and the second way is a rule: because it is not session
+// content, a SESSION SWITCH leaves it open — the rebuild skips a tab in one of
+// our containers (sessions/storage.openTabsInWindow), so changing sessions
+// never ends somebody's sandbox. The jar ends when its last tab closes, and on
+// the next launch unless the user asked to keep it (config.keepStealth, see
+// sessions.resumeOnStartup).
+//
 // Closing it also removes the traces the jar left OUTSIDE its cookie store —
 // the pages it put in history and the downloads it started (see
 // wipeStealthContainer).
@@ -583,8 +590,53 @@ export async function removeStealthContainerForTab(tabId: number): Promise<boole
     for (const t of left) noteStealthTab(t);
     return true;
   }
-  await wipeStealthContainer(cs);
+  scheduleJarWipe(cs);
   return true;
+}
+
+// A jar whose last tab closed is wiped a moment later, not inside the close
+// event. Two reasons, and the second one is why the delay is not just tidiness:
+//
+//   - Firefox reports closes one at a time. A jar's tabs can be closed as a
+//     group (a window teardown, "close other tabs"), and the first close of the
+//     group sees the others still listed — so the emptiness this decides on is
+//     only true after the burst.
+//   - A BROWSER THAT IS QUITTING MUST NOT WIPE ANYTHING. Firefox closes its
+//     windows before it unloads this context, so a wipe that ran on those close
+//     events would end every jar the user asked to keep across a restart
+//     (`keepStealth`). By the time this fires, a quit has no windows left — the
+//     question below cannot be confused with "the user closed a tab".
+const JAR_WIPE_DELAY_MS = 600;
+const jarWipeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleJarWipe(cs: string): void {
+  if (jarWipeTimers.has(cs)) return;
+  jarWipeTimers.set(
+    cs,
+    setTimeout(() => {
+      jarWipeTimers.delete(cs);
+      void wipeJarIfEmpty(cs);
+    }, JAR_WIPE_DELAY_MS)
+  );
+}
+
+async function wipeJarIfEmpty(cs: string): Promise<void> {
+  let left: any[] = [];
+  try {
+    left = await browser.tabs.query({ cookieStoreId: cs });
+  } catch {
+    left = [];
+  }
+  // A tab opened in the jar while the wipe was pending: the jar is alive again.
+  if (left && left.length) {
+    for (const t of left) noteStealthTab(t);
+    return;
+  }
+  // Quitting (no windows) or already gone (another path wiped it): leave it.
+  const wins = (await browser.windows.getAll().catch(() => [])) || [];
+  if (!wins.length) return;
+  if (!stealthContainers.has(cs)) return;
+  await wipeStealthContainer(cs);
 }
 
 // Close and wipe every tab that is still living in one of OUR containers.

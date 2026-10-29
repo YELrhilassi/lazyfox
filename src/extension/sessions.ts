@@ -16,7 +16,7 @@ import { core } from "../shared/core";
 import type { PopupItem, Session, SessionTab, SessionWindow } from "../shared/types";
 import type { ChromeAction, ChromeReq } from "../shared/protocol";
 import { realTabsInWindow } from "./tabs";
-import { sweepStealthTabs } from "./stealth";
+import { stealthContainers, sweepStealthTabs } from "./stealth";
 import { readKeyOr, writeKey, removeKey, vSession } from "./store";
 import {
   MAX_SESSION_MARKER,
@@ -120,15 +120,27 @@ export async function flushOnQuit(): Promise<void> {
   await flushOnQuitImpl();
 }
 
-export async function resumeOnStartup(autoRestore: boolean | undefined): Promise<void> {
+export async function resumeOnStartup(
+  autoRestore: boolean | undefined,
+  keepStealth?: boolean
+): Promise<void> {
   // BEFORE anything reads the window set: close and wipe any stealth tab that
   // Firefox's own session restore brought back (stealth.sweepStealthTabs).
-  // This runs whether or not autoRestore is on — "a stealth tab does not
-  // survive a relaunch" is the feature's promise, not a restore preference —
-  // and it runs first so the resume compares its saved windows against a strip
-  // that does not have an extra tab in it (which used to fail the window match
-  // and make the whole window flash through a rebuild).
-  await sweepStealthTabs();
+  //
+  // THIS IS THE ONE CLEANUP POINT, and the only place `keepStealth` acts. A
+  // stealth tab is not session content, so a session switch never touches it
+  // (sessions/storage.openTabsInWindow) — that is the rule, not a setting. What
+  // the setting decides is whether the RESTART ends the sandbox: off (the
+  // default) means the browser's own restore of the jar is swept and wiped
+  // before anything else runs, on means the tabs and their cookies come back
+  // with the session they were open in.
+  //
+  // It runs whether or not autoRestore is on — the sweep is the jar's lifetime,
+  // not a restore preference — and it runs first so the resume compares its
+  // saved windows against a strip that does not have an extra tab in it (which
+  // used to fail the window match and make the whole window flash through a
+  // rebuild).
+  if (!keepStealth) await sweepStealthTabs();
   if (autoRestore === false) {
     // The sweep may have wiped containers on this launch; the bar decides its
     // badge from the id set we send, so it has to hear about that even when
@@ -564,7 +576,13 @@ async function liveWindowSideEffects(
 ): Promise<void> {
   try {
     if (mode === "move" && srcName === curName) {
-      const real = await realTabsInWindow();
+      // STEALTH TABS ARE NOT IN THE STORED LIST (they never are), so they must
+      // not be in the list the stored INDEX is resolved against either: one of
+      // them before the moved tab shifted every position by one, and the close
+      // landed on a different tab than the one the user asked to move.
+      const real = (await realTabsInWindow()).filter(
+        (t) => !stealthContainers.has(t.cookieStoreId)
+      );
       const byIdx = real[srcIndex];
       // Match by stored index first, falling back to a URL search. Never close
       // a tab we cannot positively identify: if the window diverged from the

@@ -95,7 +95,7 @@ replaces is backed up first. The same binary removes Lazyfox again.
 | `;/` | find in page |
 | `;R` | reader mode |
 | `;Y` | theme menu: `d` this site, `g` default, `e` engine, `p` palette, `x` reset |
-| `;N` | stealth menu: `n` new isolated tab, `s` search there, `o` open a URL there. One jar per window, wiped when its last tab closes |
+| `;N` | stealth menu: `n` new isolated tab, `s` search there, `o` open a URL there. One jar per window; a session switch leaves it open, and it is wiped when its last tab closes or Firefox restarts (settings → Stealth keeps it across restarts) |
 | `;T` | diagnostics and performance |
 | `;q` | toggle the which-key overlay |
 | `;D` | dismiss the download notification |
