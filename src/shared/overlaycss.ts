@@ -153,6 +153,11 @@ ${fieldCss(".lf-input")}
   padding:20px 16px;text-align:center;color:var(--lf-dim);font-size:12px;}
 .lf-hist .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .lf-hist .s{display:flex;gap:8px;align-items:center;min-width:0;}
+/* The recovery rows share history's subtitle anatomy (host + time), so they
+   pull the same flex line: in a PLAIN block span the time's margin-left:auto
+   does nothing and the host and time print glued together
+   ("127.0.0.1:56351just now"). Seen on the ;V rows. */
+.lf-recover .s{display:flex;gap:8px;align-items:center;min-width:0;}
 .lf-host{color:var(--lf-accent);flex:none;}
 .lf-url{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--lf-dim);}
 .lf-time{color:var(--lf-dim);margin-left:auto;flex:none;}

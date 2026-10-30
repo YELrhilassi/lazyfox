@@ -195,6 +195,9 @@ export interface HistoryRow {
 }
 
 // One organized recovery row (closed tab or window) from the Go core.
+// `number` is the row's 1-based position over the FULL organized list — set by
+// the popup at load, not per search, so a row's chip doesn't change while the
+// query narrows. Window rows leave it empty (the badge line is their identity).
 export interface RecoveryRow {
   key: string;
   kind: string;
@@ -203,6 +206,7 @@ export interface RecoveryRow {
   tabCount: number;
   host: string;
   rel: string;
+  number?: number;
 }
 
 export interface Lfc {

@@ -21,6 +21,8 @@ export function openRecentlyClosedPopup(ctx: PopupCtx): void {
             time: it.time || 0
           })),
           Date.now()
+        ).then((rows) =>
+          rows.map((r, i) => ({ ...r, number: i + 1 }))
         )
       );
     }
@@ -39,6 +41,7 @@ export function openRecentlyClosedPopup(ctx: PopupCtx): void {
     (root) => {
       const ctl = makeSelector<RecoveryRow>(ctx, root, {
         debounceMs: 0,
+        itemClass: "lf-recover",
         emptyText: "no recently closed tabs or windows",
         search: async (q) => {
           const all = await ensureLoaded();
@@ -57,8 +60,15 @@ export function openRecentlyClosedPopup(ctx: PopupCtx): void {
               "</div>"
             );
           }
+          // An id chip over the FULL list (numbered at load, not per search)
+          // so the number for a given closed tab does not change while the
+          // query narrows the rows under it — the same contract the tab
+          // switcher's chips have. Window rows keep their badge line instead:
+          // they are not one address, so a position number would be a lie.
           return (
-            "<div class='t'><span class='txt'>" + esc(r.title) + "</span>" + faviconHtml(faviconFor(r.url)) + "</div>" +
+            "<div class='t'>" +
+            (r.number ? "<span class='lf-marker'>" + r.number + "</span>" : "") +
+            "<span class='txt'>" + esc(r.title) + "</span>" + faviconHtml(faviconFor(r.url)) + "</div>" +
             "<div class='s'><span class='lf-host'>" + esc(r.host || r.url || "") + "</span>" +
             (r.rel ? "<span class='lf-time'>" + esc(r.rel) + "</span>" : "") +
             "</div>"

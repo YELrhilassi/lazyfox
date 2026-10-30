@@ -1,7 +1,7 @@
 import { esc } from "../dom";
 import { core } from "../core";
 import { faviconHtml } from "../favicon";
-import { displayUrl } from "../format";
+import { shortUrl } from "../format";
 import { planTabJump } from "../tabjump";
 import type { PopupItem } from "../types";
 import { basePanel, makeSelector, type PopupCtx } from "./kit";
@@ -299,7 +299,7 @@ export function openTabsPopup(ctx: PopupCtx): void {
             // when the tab has none.
             faviconHtml(t.favIconUrl) +
             "</div><div class='s'>" +
-            esc(displayUrl(t.url || "")) +
+            esc(shortUrl(t.url || "")) +
             "</div>"
           );
         },
