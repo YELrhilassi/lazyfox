@@ -78,22 +78,28 @@ try {
   // What AMO says the published file IS, captured from whichever response names
   // the file id, so the bytes downloaded below can be checked against it.
   let fileHash: string | null = null;
-  const versions: { version: string; file?: { id?: string; hash?: string } }[] = res.json?.versions || [];
+  // The download URL rides along for the same reason: AMO serves the SIGNED
+  // bytes only at the URL the endpoint publishes (file.url, with the file's
+  // name); the bare id path now serves the unsigned upload (see downloadSigned).
+  let fileUrl: string | null = null;
+  const versions: { version: string; file?: { id?: string; hash?: string; url?: string } }[] = res.json?.versions || [];
   const target = versions.find((v) => v.version === version);
   if (target?.file?.id) {
     fileId = target.file.id;
     fileHash = target.file.hash ?? null;
+    fileUrl = target.file.url ?? null;
   }
   // BOTH fields, from the endpoint that has them. The add-on list is not
   // guaranteed to carry the fingerprint per version, and "the list gave me an id
   // but no hash" must not quietly mean "the byte check did not run" — which is
   // exactly what a guard-gated-on-a-missing-field does. Asking the version
   // endpoint costs one request and makes the check unconditional.
-  if (!fileId || !fileHash) {
+  if (!fileId || !fileHash || !fileUrl) {
     const vres = await api(`/addons/addon/${g}/versions/${encodeURIComponent(version)}/`);
     const v = vres.json || {};
     fileId = fileId ?? v?.file?.id ?? v?.file_id ?? null;
     fileHash = fileHash ?? v?.file?.hash ?? null;
+    fileUrl = fileUrl ?? v?.file?.url ?? null;
   }
   if (!fileId) {
     throw new Error(`no file id for version ${version}; AMO may be still reviewing/signing it`);
@@ -101,7 +107,7 @@ try {
 
   console.log(`[sync] downloading signed xpi for ${version} (file ${fileId})…`);
   const tmp = signedOut + ".dl";
-  await downloadSigned(fileId, tmp);
+  await downloadSigned(fileUrl || fileId, tmp);
   const buf = fs.readFileSync(tmp);
   if (!isSignedXpi(buf)) throw new Error("downloaded file is not a signed xpi");
   const dlVer = xpiVersion(buf);
