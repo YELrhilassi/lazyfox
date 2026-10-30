@@ -25,8 +25,8 @@ import { windowStep } from "../shared/resize";
       style.textContent =
         "#lazyfox-hud{position:fixed;top:12px;right:12px;z-index:2147483647;" +
         "background:rgba(22,22,30,.96);color:#7aa2f7;font:12px " + UI_FONT + ";" +
-        "padding:6px 12px;border:1px solid #414868;border-radius:8px;pointer-events:none;" +
-        "box-shadow:0 6px 24px rgba(0,0,0,.5);}";
+        "padding:6px 12px;border:1px solid var(--lf-border2);border-radius:var(--lf-r-lg);pointer-events:none;" +
+        "box-shadow:var(--lf-shadow);}";
       const sh = hudEl.attachShadow({ mode: "closed" });
       sh.appendChild(style);
       sh.appendChild(document.createElement("span"));

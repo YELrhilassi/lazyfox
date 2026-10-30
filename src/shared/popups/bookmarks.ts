@@ -8,14 +8,15 @@ export function openBookmarksPopup(ctx: PopupCtx): void {
   ctx.open(
     basePanel(
       "Bookmarks",
-      "type to search bookmarks",
-      "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>Esc</span> close"
+      "no bookmarks",
+      "<span class='lf-badge'>i</span> search &middot; <span class='lf-badge'>j/k</span> move &middot; " +
+        "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>Esc</span> close",
+      "i to search bookmarks"
     ),
     (root) =>
       makeSelector<PopupItem>(ctx, root, {
         debounceMs: 60,
-        vimNav: false,
-        emptyText: "type to search bookmarks",
+        emptyText: "no bookmarks",
         search: (q) => ctx.ops.bookmarks(q),
         render: (it) =>
           "<div class='t'><span class='txt'>" + esc(it.title || "") + "</span>" + faviconHtml(faviconFor(it.url)) + "</div>" +

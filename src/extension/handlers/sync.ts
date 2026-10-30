@@ -51,8 +51,15 @@ export interface SyncDeps {
   pushContentStateToChrome(index: number, active: boolean, url: string, doc?: string): void;
   pushFindStateToChrome(index: number, count: number, cur: number): void;
   pushDarkStateToChrome(index: number, on: boolean, mode: string, engine: string): void;
-  stealthOpen(onDone: () => void): Promise<{ ok: boolean; error?: string }>;
-  pushSessionStateToChrome(): Promise<void>;
+  // The request the page sent, plus the window resolved by the CALLER (the
+  // sender's own tab). Opening a stealth tab without a window is how it lands
+  // in another session's window.
+  stealthOpen(req: {
+    url?: string;
+    query?: string;
+    winId?: number | null;
+  }): Promise<{ ok: boolean; error?: string }>;
+  pushSessionStateToChrome(winId?: number | null): Promise<void>;
   /** Push the changed config to the chrome helper (see bgpushes). */
   pushConfigToChrome(config: import("../../shared/types").Config): void;
 }
@@ -230,6 +237,15 @@ export function createSyncHandlers(
       return { whichKey: c.whichKey };
     },
 
-    stealthOpen: () => deps.stealthOpen(() => void deps.pushSessionStateToChrome()),
+    stealthOpen: (data, sender) => {
+      // The SENDER's window, not the background's current one: a `;Nn` pressed
+      // in session B while session A has focus used to open the tab in A.
+      const tab = (sender as { tab?: { windowId?: number } } | undefined)?.tab;
+      return deps.stealthOpen({
+        url: data && data.url ? String(data.url) : undefined,
+        query: data && data.query ? String(data.query) : undefined,
+        winId: tab && typeof tab.windowId === "number" ? tab.windowId : null,
+      });
+    },
   };
 }

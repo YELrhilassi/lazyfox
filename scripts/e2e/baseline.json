@@ -290,110 +290,110 @@
   "content/hints › link hints: ;f then hint key activates the link": {
     "status": "pass",
     "group": "content",
-    "runs": 20,
-    "passes": 19
+    "runs": 21,
+    "passes": 20
   },
   "content/hints › link hints: hints track a page that shifts under them": {
     "status": "pass",
     "group": "content",
-    "runs": 15,
-    "passes": 15
+    "runs": 16,
+    "passes": 16
   },
   "content/hints › link hints: ] pages down to links below the fold": {
     "status": "pass",
     "group": "content",
-    "runs": 15,
-    "passes": 15
+    "runs": 16,
+    "passes": 16
   },
   "content/hints › link hints: a control inside a clickable media container wins the hint": {
     "status": "pass",
     "group": "content",
-    "runs": 20,
-    "passes": 20
+    "runs": 21,
+    "passes": 21
   },
   "content/hints › link hints: a click the page ignores is reported, not silent": {
-    "status": "pass",
-    "group": "content",
-    "runs": 20,
-    "passes": 19
-  },
-  "content/hints › link hints: the actor's trusted click produces a trusted event": {
-    "status": "pass",
-    "group": "content",
-    "runs": 20,
-    "passes": 20
-  },
-  "content/hints › link hints: the control inside the media container really activates": {
-    "status": "pass",
-    "group": "content",
-    "runs": 20,
-    "passes": 19
-  },
-  "content/hints › link hints: the page receives a trusted, well-formed click": {
-    "status": "pass",
-    "group": "content",
-    "runs": 20,
-    "passes": 20
-  },
-  "content/hints › link hints: a control that tracks press state still activates": {
-    "status": "pass",
-    "group": "content",
-    "runs": 20,
-    "passes": 19
-  },
-  "content/hints › link hints: an ambiguous prefix shows an enter badge, and it clears": {
-    "status": "pass",
-    "group": "content",
-    "runs": 20,
-    "passes": 19
-  },
-  "content/hints › link hints: nested targets collapse and labels never overlap": {
-    "status": "pass",
-    "group": "content",
-    "runs": 20,
-    "passes": 20
-  },
-  "content/hints › link hints: activating never scrolls the page (button and input)": {
-    "status": "pass",
-    "group": "content",
-    "runs": 20,
-    "passes": 20
-  },
-  "content/hints › link hints: scrolling to a new section re-hints its links": {
     "status": "pass",
     "group": "content",
     "runs": 21,
     "passes": 20
   },
+  "content/hints › link hints: the actor's trusted click produces a trusted event": {
+    "status": "pass",
+    "group": "content",
+    "runs": 21,
+    "passes": 21
+  },
+  "content/hints › link hints: the control inside the media container really activates": {
+    "status": "pass",
+    "group": "content",
+    "runs": 21,
+    "passes": 20
+  },
+  "content/hints › link hints: the page receives a trusted, well-formed click": {
+    "status": "pass",
+    "group": "content",
+    "runs": 21,
+    "passes": 21
+  },
+  "content/hints › link hints: a control that tracks press state still activates": {
+    "status": "pass",
+    "group": "content",
+    "runs": 21,
+    "passes": 20
+  },
+  "content/hints › link hints: an ambiguous prefix shows an enter badge, and it clears": {
+    "status": "pass",
+    "group": "content",
+    "runs": 21,
+    "passes": 20
+  },
+  "content/hints › link hints: nested targets collapse and labels never overlap": {
+    "status": "pass",
+    "group": "content",
+    "runs": 21,
+    "passes": 21
+  },
+  "content/hints › link hints: activating never scrolls the page (button and input)": {
+    "status": "pass",
+    "group": "content",
+    "runs": 21,
+    "passes": 21
+  },
+  "content/hints › link hints: scrolling to a new section re-hints its links": {
+    "status": "pass",
+    "group": "content",
+    "runs": 22,
+    "passes": 21
+  },
   "content/hints › link hints: a dense grid yields unique, capped hints": {
     "status": "pass",
     "group": "content",
-    "runs": 20,
-    "passes": 20
+    "runs": 21,
+    "passes": 21
   },
   "content/hints › link hints: clickable image and video thumbnails are hinted and click": {
     "status": "pass",
     "group": "content",
-    "runs": 20,
-    "passes": 20
+    "runs": 21,
+    "passes": 21
   },
   "content/hints › link hints: a control inserted after ;f gets a working hint": {
     "status": "pass",
     "group": "content",
-    "runs": 20,
-    "passes": 20
+    "runs": 21,
+    "passes": 21
   },
   "content/hints › link hints: a framework re-render keeps the same key and still clicks": {
     "status": "pass",
     "group": "content",
-    "runs": 20,
-    "passes": 20
+    "runs": 21,
+    "passes": 21
   },
   "content/hints › link hints: a late control does not reshuffle existing keys": {
     "status": "pass",
     "group": "content",
-    "runs": 20,
-    "passes": 20
+    "runs": 21,
+    "passes": 21
   },
   "content/popups › ;s search popup: type query, Enter searches": {
     "status": "pass",
@@ -418,6 +418,18 @@
     "group": "content",
     "runs": 10,
     "passes": 10
+  },
+  "content/popups › ;N o: URL popup opens the page in the window's stealth jar": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/popups › ;N s: search opens in a stealth container tab": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
   },
   "content/popups › ;t tab switcher popup lists tabs and Enter switches": {
     "status": "pass",
@@ -757,6 +769,12 @@
     "runs": 5,
     "passes": 4
   },
+  "sessions/statusbar › muted tab puts the mute badge on the bar, and unmuting takes it away": {
+    "status": "pass",
+    "group": "sessions",
+    "runs": 1,
+    "passes": 1
+  },
   "sessions/statusbar › status bar position: top setting moves the bar": {
     "status": "pass",
     "group": "sessions",
@@ -874,7 +892,7 @@
     "runs": 5,
     "passes": 5
   },
-  "sessions/stealth › stealth: isolated jar, session round-trip, wiped on close": {
+  "sessions/stealth › stealth: isolated jar, never saved, wiped on close": {
     "status": "pass",
     "group": "sessions",
     "runs": 5,
@@ -949,32 +967,32 @@
   "options/options › options page loads and renders the form": {
     "status": "pass",
     "group": "options",
-    "runs": 4,
-    "passes": 4
+    "runs": 5,
+    "passes": 5
   },
   "options/options › options page: Esc goes back": {
     "status": "pass",
     "group": "options",
-    "runs": 4,
-    "passes": 4
+    "runs": 5,
+    "passes": 5
   },
   "options/options › options page: save persists and survives a reload": {
     "status": "pass",
     "group": "options",
-    "runs": 4,
-    "passes": 4
+    "runs": 5,
+    "passes": 5
   },
   "options/options › options page: a corrupt config field falls back, the rest survives": {
     "status": "pass",
     "group": "options",
-    "runs": 4,
-    "passes": 4
+    "runs": 5,
+    "passes": 5
   },
   "options/popuppage › popup page (action popup) renders": {
     "status": "pass",
     "group": "options",
-    "runs": 4,
-    "passes": 4
+    "runs": 5,
+    "passes": 5
   },
   "content/indicator › an armed digit capture says which key it wants": {
     "status": "pass",
@@ -1117,8 +1135,8 @@
   "content/links › ;f starts link hints — the one-key access, not ;K h": {
     "status": "pass",
     "group": "content",
-    "runs": 9,
-    "passes": 9
+    "runs": 10,
+    "passes": 10
   },
   "content/multidigit › a jump leaves no prefix behind for the next one": {
     "status": "pass",
@@ -1501,26 +1519,26 @@
   "content/hints › link hints: a page whose controls are all in a frame says WHY, and stays off": {
     "status": "pass",
     "group": "content",
+    "runs": 19,
+    "passes": 19
+  },
+  "content/hints › link hints: controls inside open and closed shadow roots are hinted and click": {
+    "status": "pass",
+    "group": "content",
     "runs": 18,
     "passes": 18
   },
-  "content/hints › link hints: controls inside open and closed shadow roots are hinted and click": {
+  "content/hints › link hints: Ctrl+G cancels the batch instead of typing the letter g": {
     "status": "pass",
     "group": "content",
     "runs": 17,
     "passes": 17
   },
-  "content/hints › link hints: Ctrl+G cancels the batch instead of typing the letter g": {
+  "content/hints › link hints: a capture that declines a key does not swallow it": {
     "status": "pass",
     "group": "content",
     "runs": 16,
     "passes": 16
-  },
-  "content/hints › link hints: a capture that declines a key does not swallow it": {
-    "status": "pass",
-    "group": "content",
-    "runs": 15,
-    "passes": 15
   },
   "content/ownership › a tab opened next to a reporting tab does not inherit its answer": {
     "status": "fail",
@@ -1621,80 +1639,80 @@
   "content/hints › link hints: a thumbnail link's key navigates like any other link": {
     "status": "pass",
     "group": "content",
+    "runs": 14,
+    "passes": 14
+  },
+  "content/hints › link hints: an inert ancestor hides a control inside a closed shadow root": {
+    "status": "pass",
+    "group": "content",
     "runs": 13,
     "passes": 13
   },
-  "content/hints › link hints: an inert ancestor hides a control inside a closed shadow root": {
+  "content/hints › link hints: a hint key that names nothing says so instead of going quiet": {
     "status": "pass",
     "group": "content",
     "runs": 12,
     "passes": 12
   },
-  "content/hints › link hints: a hint key that names nothing says so instead of going quiet": {
+  "content/hints › link hints: a YouTube-shaped thumbnail link is hinted and its key navigates": {
     "status": "pass",
     "group": "content",
     "runs": 11,
     "passes": 11
-  },
-  "content/hints › link hints: a YouTube-shaped thumbnail link is hinted and its key navigates": {
-    "status": "pass",
-    "group": "content",
-    "runs": 10,
-    "passes": 10
   },
   "content/hints › link hints: the ad's Skip button appears mid-session and its key skips the ad": {
     "status": "pass",
     "group": "content",
-    "runs": 10,
-    "passes": 10
+    "runs": 11,
+    "passes": 11
   },
   "content/hints › link hints: a re-rendering page stays hinted and stays responsive": {
-    "status": "pass",
-    "group": "content",
-    "runs": 10,
-    "passes": 10
-  },
-  "content/hints › link hints: a badge whose control is washed out stays on screen and keeps its key": {
-    "status": "pass",
-    "group": "content",
-    "runs": 9,
-    "passes": 9
-  },
-  "content/hints › link hints: focus moving into a frame tears the layer down instead of trapping the keyboard": {
-    "status": "pass",
-    "group": "content",
-    "runs": 9,
-    "passes": 9
-  },
-  "content/hints › link hints: a popup, a cancelled session and a second session in a row": {
-    "status": "pass",
-    "group": "content",
-    "runs": 10,
-    "passes": 10
-  },
-  "content/hints › link hints: two sessions in a row, the first cancelled, both read keys": {
-    "status": "pass",
-    "group": "content",
-    "runs": 10,
-    "passes": 10
-  },
-  "content/hints › link hints: Tab pages to the next batch and the layer still activates": {
-    "status": "pass",
-    "group": "content",
-    "runs": 10,
-    "passes": 10
-  },
-  "content/hints › link hints: ;f and Esc in a row, eight times, every session draws and reads keys": {
     "status": "pass",
     "group": "content",
     "runs": 11,
     "passes": 11
   },
-  "content/hints › link hints: paging moves the pane the user is looking at, never the window": {
+  "content/hints › link hints: a badge whose control is washed out stays on screen and keeps its key": {
     "status": "pass",
     "group": "content",
     "runs": 10,
     "passes": 10
+  },
+  "content/hints › link hints: focus moving into a frame tears the layer down instead of trapping the keyboard": {
+    "status": "pass",
+    "group": "content",
+    "runs": 10,
+    "passes": 10
+  },
+  "content/hints › link hints: a popup, a cancelled session and a second session in a row": {
+    "status": "pass",
+    "group": "content",
+    "runs": 11,
+    "passes": 11
+  },
+  "content/hints › link hints: two sessions in a row, the first cancelled, both read keys": {
+    "status": "pass",
+    "group": "content",
+    "runs": 11,
+    "passes": 11
+  },
+  "content/hints › link hints: Tab pages to the next batch and the layer still activates": {
+    "status": "pass",
+    "group": "content",
+    "runs": 11,
+    "passes": 11
+  },
+  "content/hints › link hints: ;f and Esc in a row, eight times, every session draws and reads keys": {
+    "status": "pass",
+    "group": "content",
+    "runs": 12,
+    "passes": 12
+  },
+  "content/hints › link hints: paging moves the pane the user is looking at, never the window": {
+    "status": "pass",
+    "group": "content",
+    "runs": 11,
+    "passes": 11
   },
   "content/field › a chain of overlays leaves the next sentence typed into a field intact": {
     "status": "pass",
@@ -1993,8 +2011,8 @@
   "content/hints › link hints: a visible aria-hidden link is hinted; hidden, inert and pointer-dead ones are not": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/setup › the home page's install row opens the setup page with a GitHub Releases installer download": {
     "status": "pass",
@@ -2017,26 +2035,26 @@
   "content/hints › link hints: carousel prev/next in closed shadow roots late in a feed-sized DOM are hinted and click": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/hints › link hints: a Skip button hidden in the ad slot until the skip window opens still gets a key (attribute-only reveal)": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 3
+    "runs": 4,
+    "passes": 4
   },
   "content/hints › link hints: a trust-gated control is activated by the privileged real press": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 2
+    "runs": 4,
+    "passes": 3
   },
   "content/hints › link hints: the privileged press reaches a trust-gated control with genuinely trusted events": {
     "status": "pass",
     "group": "content",
-    "runs": 3,
-    "passes": 2
+    "runs": 4,
+    "passes": 3
   },
   "content/typing › a load-time autofocus gives the leader back on the first ;": {
     "status": "pass",
@@ -2077,8 +2095,8 @@
   "content/hints › link hints: a truncated re-collect must not take a label the page is still showing": {
     "status": "pass",
     "group": "content",
-    "runs": 4,
-    "passes": 3
+    "runs": 5,
+    "passes": 4
   },
   "content/theme › a transparent layer over a grid stays transparent, and the numbers stay readable": {
     "status": "pass",
@@ -2095,26 +2113,26 @@
   "content/hints › link hints: the ad's Skip control is pressed for real, not just given a pressed class": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a player toggle in the same overlay is pressed exactly once": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a dialog's own controls are hinted and the ones behind it are not": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a dialog opened under a live batch takes its labels away": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "content/field › Escape closes an open combobox's list and leaves the field": {
     "status": "pass",
@@ -2143,8 +2161,8 @@
   "options/options › add-ons page: lists installed add-ons, controls them, installs nothing": {
     "status": "pass",
     "group": "options",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "split/lifecycle › split: native split ;W h / ;W l are DIRECTIONAL, and the keyboard follows the pane": {
     "status": "pass",
@@ -2173,14 +2191,14 @@
   "content/hints › link hints: a control whose effect is elsewhere is pressed once, not twice": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "content/hints › link hints: a sidebar collapse driven by a class flip is pressed once": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "audit › tab: a twice — the toggle comes back to the tab it left": {
     "status": "pass",
@@ -2191,6 +2209,36 @@
   "commandcenter/firstchord › the first leader chord after the home page opens runs on one press": {
     "status": "pass",
     "group": "commandcenter",
+    "runs": 1,
+    "passes": 1
+  },
+  "options/options › options page: a preset repaints the page, saves and returns": {
+    "status": "pass",
+    "group": "options",
+    "runs": 1,
+    "passes": 1
+  },
+  "options/options › appearance: the bar preview is flat and the light preset stays readable": {
+    "status": "pass",
+    "group": "options",
+    "runs": 1,
+    "passes": 1
+  },
+  "sessions/sessions › sessions: the tabs pane marks the LIVE active tab (and never nothing)": {
+    "status": "pass",
+    "group": "sessions",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/hints › link hints: layered and clipped targets do not leak labels from behind the visible surface": {
+    "status": "pass",
+    "group": "content",
+    "runs": 2,
+    "passes": 2
+  },
+  "content/hints › link hints: a translucent click-through wash does not cost the page its hints": {
+    "status": "pass",
+    "group": "content",
     "runs": 1,
     "passes": 1
   }

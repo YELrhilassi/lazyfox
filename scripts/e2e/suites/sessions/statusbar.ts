@@ -139,6 +139,28 @@ export async function run(ctx: any): Promise<void> {
     // Re-enable the overlay so the rest of the suite runs with hints on.
     await ctx.ensureWhichKey(ctx.tabA, true);
   });
+  await t("muted tab puts the mute badge on the bar, and unmuting takes it away", async () => {
+    // The tab strip that used to show this is gone, so the badge is the ONLY
+    // place a muted tab is visible. The state is read from the selected tab on
+    // every compute (a site, the tab's context menu or `;m` can all change it),
+    // so the mirror is the honest assertion: it cannot be painted from a stale
+    // cached flag.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await ctx.activateTab(ctx.tabA);
+    await ctx.leaderPress(ctx.tabA, "m");
+    const on = await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.statusAttr && s.statusAttr.includes("|mute") ? s : null;
+    }, 15000).catch(() => null);
+    assert(on, "the muted tab shows the badge: " + JSON.stringify(on && on.statusAttr));
+    await ctx.leaderPress(ctx.tabA, "m");
+    const off = await waitFor(async () => {
+      const s = await ctx.chromeState();
+      return s && s.statusAttr && !s.statusAttr.includes("|mute") ? s : null;
+    }, 15000).catch(() => null);
+    assert(off, "unmuting removed the badge: " + JSON.stringify(off && off.statusAttr));
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
   await t("status bar position: top setting moves the bar", async () => {
     // Config reaches the chrome helper through the #lfc=cfg channel (the same
     // path the options page uses), then the bar re-renders on its 500ms poll.

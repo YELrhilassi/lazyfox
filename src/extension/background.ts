@@ -41,6 +41,7 @@ import {
   pageReport
 } from "./services/components";
 import { stealthOpen } from "./stealth";
+import { searchUrlFor } from "./search";
 import { quitBrowser, saveSession, scheduleLayoutSnapshot } from "./sessions";
 import { alternateTab as alternateTabOp, reopenTab } from "./windowops";
 import {
@@ -102,7 +103,18 @@ const handlers = {
     pushFindStateToChrome,
     pushDarkStateToChrome,
     pushConfigToChrome,
-    stealthOpen,
+    // `;Ns` arrives as a QUERY, not a URL: the engine list lives in the
+    // extension, so the background is where a query becomes an address. The
+    // tab and the confirming state push both go to the asking window.
+    stealthOpen: async (req) => {
+      const w = req.winId == null ? null : req.winId;
+      const url = req.query ? await searchUrlFor(req.query) : req.url;
+      return stealthOpen({
+        url,
+        winId: w,
+        onDone: () => void pushSessionStateToChrome(w),
+      });
+    },
     pushSessionStateToChrome,
   }),
 };

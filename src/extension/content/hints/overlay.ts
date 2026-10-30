@@ -9,6 +9,7 @@
 // a page that shifts under the hints (carousel slide, lazy image, layout shift)
 // must never leave badges floating where the links used to be.
 import { HINT_CSS, type HintItem, type HintLabel } from "./selectors";
+import { uiCss } from "../../../shared/theme";
 import { HINT_LABEL } from "../../../shared/hintlabel";
 import { mirrorFlag } from "../../../shared/observability";
 import { promoteToTopLayer } from "../../../shared/toplayer";
@@ -51,7 +52,15 @@ export interface HintSnapshot {
    * every label against — a drifted stored viewport or a dead rAF sweep is
    * exactly the kind of state that hides from both of the observables above.
    */
-  stats?: { items: number; pool: number; typed: string; active: boolean; doc: { w: number; h: number } };
+  stats?: {
+    items: number;
+    pool: number;
+    typed: string;
+    active: boolean;
+    doc: { w: number; h: number };
+    /** What the last `;f` cost: collection, then selection/coverage. */
+    pass?: { collect: number; select: number };
+  };
 }
 
 export interface HintOverlay {
@@ -187,6 +196,39 @@ export const NUDGES: ReadonlyArray<readonly [number, number]> = NUDGE_RINGS.flat
   NUDGE_DIRS.map(([ux, uy]) => [ux * d, uy * d] as const)
 );
 
+/**
+ * Remove a hint layer left behind by a PREVIOUS content-script instance.
+ *
+ * A content script's nodes do not die with it: an extension update, a dev
+ * re-install or a reloaded add-on leaves the host it appended to <html> — and
+ * its last batch of labels — in the document. That orphan is a top-layer
+ * element with `pointer-events:none`, so nothing on the page can dismiss it,
+ * and the next instance painted a second live layer over the frozen one. The
+ * report was exactly that: hint labels bleeding into each other, some on top of
+ * others. The new owner clears the old paint before it draws anything.
+ *
+ * `doc` is injectable because this is testable without a browser; the live
+ * callers pass the page's own document.
+ */
+export function clearStaleHintOverlay(doc?: Document): void {
+  try {
+    const d = doc || (typeof document !== "undefined" ? document : null);
+    if (!d || typeof d.querySelectorAll !== "function") return;
+    const stale = d.querySelectorAll("#lazyfox-hints");
+    for (let i = 0; i < stale.length; i++) {
+      try {
+        stale[i]!.remove();
+      } catch (e) {
+        // A node that refuses removal cannot be helped; keep clearing the rest.
+      }
+    }
+    // The cross-world flag described the old layer, so it is not true any more.
+    mirrorFlag("hints", false);
+  } catch (e) {
+    // A document that refuses the query leaves the live mount untouched.
+  }
+}
+
 export function createHintOverlay(): HintOverlay {
   let host: (HTMLElement & { _box: HTMLElement; _enter: HTMLElement }) | null = null;
   // The keys whose labels the last placement put on screen. See HintRender:
@@ -197,8 +239,14 @@ export function createHintOverlay(): HintOverlay {
   // the row Enter takes — see reposition), plus the viewport it was measured in.
   // Kept from the placement so `setEnterBadge(true)` can position the badge
   // AFTER the session has decided it should exist, with no second measurement.
-  let enterAt: { box: { l: number; t: number; r: number; b: number }; vw: number; vh: number } | null =
-    null;
+  let enterAt: {
+    box: { l: number; t: number; r: number; b: number };
+    vw: number;
+    vh: number;
+    // The placement grid of the sweep that produced `box`, so the badge can be
+    // put beside the row WITHOUT landing on a label when the batch is dense.
+    grid?: ReturnType<typeof boxGrid>;
+  } | null = null;
 
   // The symbol the badge MEANS. It is no longer what gets DRAWN: the badge
   // carries a solid vector arrow (HINT_LABEL.enterIcon), because a text glyph is
@@ -255,7 +303,7 @@ export function createHintOverlay(): HintOverlay {
       // Revealed only by placeEnter, and only once it has somewhere to be:
       // revealing it before positioning paints the glyph at an unset position
       // (0,0 on the first sweep) for one frame.
-      if (enterAt) placeEnter(enterAt.box, enterAt.vw, enterAt.vh);
+      if (enterAt) placeEnter(enterAt.box, enterAt.vw, enterAt.vh, enterAt.grid);
       else if (host._enter.style.display !== "none") host._enter.style.display = "none";
     } else if (host._enter && host._enter.style.display !== "none") {
       host._enter.style.display = "none";
@@ -263,6 +311,11 @@ export function createHintOverlay(): HintOverlay {
   }
 
   function mount(): void {
+    // ONE HOST, ALWAYS. `host` must be null here (this instance has not mounted
+    // or has unmounted), so any `#lazyfox-hints` still in the page belongs to a
+    // dead instance and must go before this one draws — see the function above.
+    if (host) return;
+    clearStaleHintOverlay(document);
     host = document.createElement("div") as unknown as HTMLElement & {
       _box: HTMLElement;
       _enter: HTMLElement;
@@ -278,7 +331,7 @@ export function createHintOverlay(): HintOverlay {
       "all:initial;position:fixed;inset:0;display:block;pointer-events:none;";
     const sh = host.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
-    style.textContent = HINT_CSS;
+    style.textContent = uiCss(HINT_CSS);
     const box = document.createElement("div");
     sh.appendChild(style);
     sh.appendChild(box);
@@ -298,6 +351,14 @@ export function createHintOverlay(): HintOverlay {
     // shadow root, and the page main world cannot even read an isolated-world
     // event detail (Xray), so a shared attribute on <html> is the only channel.
     mirrorFlag("hints", true);
+  }
+
+  // The box a label WILL occupy, from the metrics in shared/hintlabel.ts:
+  // measured there at 15.7px for one character and 23.3px for two, so the
+  // advance is ~7.6px plus 8.1px of padding. Rounded UP so a hidden label
+  // reserves at least its real width rather than at most it.
+  function labelBoxWidth(text: string): number {
+    return Math.ceil(8 + 7.8 * Math.max(1, (text || "").length));
   }
 
   // Render the labels for the items whose key matches the typed prefix.
@@ -347,12 +408,12 @@ export function createHintOverlay(): HintOverlay {
       }
       if (waiting) it.label.classList.add("hint-wait");
       else it.label.classList.remove("hint-wait");
-      // A covered control keeps its label and its key; the class is what says so
-      // on screen. Re-applied every render because coverage is a fact about the
-      // PAGE, not about the item: a scrim that scrolls away clears it on the
-      // next pass with nothing else having changed (see select.ts).
-      if (it.covered) it.label.classList.add("hint-covered");
-      else it.label.classList.remove("hint-covered");
+      // NO DIMMING. A partly covered control's label is anchored to its visible
+      // part (see the placement below), and a mostly covered control never earns
+      // an item — so a "covered" style has nothing left to say. The class is
+      // cleared because labels are REUSED across batches and an item from before
+      // this rule could still carry it.
+      it.label.classList.remove("hint-covered");
     }
     return reposition(items, resolve);
   }
@@ -391,6 +452,12 @@ export function createHintOverlay(): HintOverlay {
   ): HintRender {
     const h = host;
     if (!h || !items.length) {
+      // NOTHING TO PLACE IS NOT "LEAVE THE LAST PAINT UP": an emptied batch
+      // (a virtual list parking its rows, a re-render that removed the targets)
+      // would otherwise leave its final labels frozen on screen until exit.
+      for (const it of items) {
+        if (it.label && it.label.style.display !== "none") it.label.style.display = "none";
+      }
       shown = new Set<string>();
       enterAt = null;
       setEnterBadge(false);
@@ -453,9 +520,18 @@ export function createHintOverlay(): HintOverlay {
       // A label's own size is measured ONCE per text change (render() clears
       // these when it rewrites the text) and reused for every subsequent sweep.
       // Measuring here keeps every layout read in phase 1.
+      //
+      // A label that was HIDDEN last sweep (scrolled off, or colliding) has no
+      // layout to read: offsetWidth answers 0. Caching the old 16px fallback for
+      // a two-character label under-reserved its box by ~8px, which is exactly
+      // how two badges end up touching after a scroll. While hidden, reserve the
+      // size the shared metrics say the text will occupy; the first visible
+      // sweep replaces it with a real measurement.
       if (!label._w) {
-        label._w = label.offsetWidth || 16;
-        label._h = label.offsetHeight || 16;
+        const mw = label.offsetWidth;
+        const mh = label.offsetHeight;
+        label._w = mw > 0 ? mw : labelBoxWidth(String(label.textContent || ""));
+        label._h = mh > 0 ? mh : 17;
       }
       plan.push({ it, r, lw: label._w, lh: label._h || 16 });
     }
@@ -476,8 +552,13 @@ export function createHintOverlay(): HintOverlay {
     for (const { it, r, lw, lh } of plan) {
       const label = it.label;
       if (!label) continue;
-      const x = r.left;
-      const y = r.top;
+      // THE ANCHOR. For a fully visible control this is the element's own
+      // top-left (ax/ay = 0), which is exactly the placement the overlay has
+      // always used. A partly covered control carries the fraction of its box
+      // that is actually its own surface, so the label lands on the visible part
+      // instead of under the sticky bar, badge or panel covering the corner.
+      const x = r.left + (typeof it.ax === "number" ? r.width * it.ax : 0);
+      const y = r.top + (typeof it.ay === "number" ? r.height * it.ay : 0);
       // A label whose element has left the viewport is HIDDEN rather than left
       // floating at the edge: the user must never see a hint they cannot use,
       // and must never be yanked back to one they have scrolled past. Explicit
@@ -563,8 +644,8 @@ export function createHintOverlay(): HintOverlay {
     // Remember where the badge goes — the row Enter would take — and keep it
     // there if it is currently on. Whether it SHOULD be on is the session's
     // answer, given the keys that actually made it onto the screen.
-    enterAt = enterBox ? { box: enterBox, vw, vh } : null;
-    if (enterWanted && enterBox) placeEnter(enterBox, vw, vh);
+    enterAt = enterBox ? { box: enterBox, vw, vh, grid } : null;
+    if (enterWanted && enterBox) placeEnter(enterBox, vw, vh, grid);
     else if (host && host._enter && host._enter.style.display !== "none") {
       host._enter.style.display = "none";
     }
@@ -610,7 +691,10 @@ export function createHintOverlay(): HintOverlay {
   function placeEnter(
     box: { l: number; t: number; r: number; b: number } | null,
     vw: number,
-    vh: number
+    vh: number,
+    // The sweep's label grid, when there is one: the badge is as tall as a label
+    // and rows can be dense, so "beside the row" must also mean "not on a label".
+    grid?: { hits(c: { l: number; t: number; r: number; b: number }): boolean }
   ): void {
     const b = host && host._enter;
     if (!b) return;
@@ -618,10 +702,29 @@ export function createHintOverlay(): HintOverlay {
       if (b.style.display !== "none") b.style.display = "none";
       return;
     }
-    let left = box.r + 3;
-    if (left + ENTER_W > vw) left = Math.max(0, box.l - ENTER_W - 3);
-    let top = box.t + Math.max(0, (box.b - box.t - ENTER_H) / 2);
-    top = Math.max(0, Math.min(top, Math.max(0, vh - ENTER_H)));
+    const midTop = box.t + Math.max(0, (box.b - box.t - ENTER_H) / 2);
+    const midLeft = box.l + Math.max(0, (box.r - box.l - ENTER_W) / 2);
+    // Beside the row first (it reads as the row's own instruction), then its
+    // other side, then above and below. Every candidate is clamped into the
+    // viewport BEFORE it is judged, so a badge near an edge is still placed.
+    const spots: Array<[number, number]> = [
+      [box.r + 3, midTop],
+      [box.l - ENTER_W - 3, midTop],
+      [midLeft, box.b + 3],
+      [midLeft, box.t - ENTER_H - 3],
+    ];
+    let left = Math.max(0, Math.min(spots[0]![0], Math.max(0, vw - ENTER_W)));
+    let top = Math.max(0, Math.min(spots[0]![1], Math.max(0, vh - ENTER_H)));
+    for (let i = 0; i < spots.length; i++) {
+      const cl = Math.max(0, Math.min(spots[i]![0], Math.max(0, vw - ENTER_W)));
+      const ct = Math.max(0, Math.min(spots[i]![1], Math.max(0, vh - ENTER_H)));
+      const cand = { l: cl, t: ct, r: cl + ENTER_W, b: ct + ENTER_H };
+      if (!grid || !grid.hits(cand)) {
+        left = cl;
+        top = ct;
+        break;
+      }
+    }
     b.style.left = left + "px";
     b.style.top = top + "px";
     // Revealed with an EXPLICIT display, and last: `display = ""` would hand the

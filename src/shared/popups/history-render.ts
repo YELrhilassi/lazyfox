@@ -14,6 +14,7 @@
 
 import { esc } from "../dom";
 import { faviconFor, faviconHtml } from "../favicon";
+import { pathTail } from "../format";
 import { publishListState } from "../observability";
 import {
   currentRow,
@@ -217,7 +218,9 @@ export function createHistoryView(deps: HistoryViewDeps): HistoryView {
     const vis = visibleRows(state);
     if (state.idx >= vis.length) state.idx = Math.max(0, vis.length - 1);
     if (!state.rows.length) {
-      emptyEl.style.display = "block";
+      // "" so `.lf-empty`'s centring flex layout survives; an inline "block"
+      // pins the message to the top of the panel.
+      emptyEl.style.display = "";
       detailEl.textContent = "";
       relatedEl.textContent = "";
       updateFoot();
@@ -262,10 +265,17 @@ export function createHistoryView(deps: HistoryViewDeps): HistoryView {
       row.className =
         "lf-item lf-hist" + (vi === state.idx ? " selected" : "") + (armed ? " lf-armed" : "");
       row.innerHTML =
-        "<div class='t'><span class='txt'>" + esc(it.title || it.url) + "</span></div>" +
-        "<div class='s'><span class='lf-host'>" + esc(it.host) + "</span>" +
-        "<span class='lf-url'>" + esc(it.url) + "</span>" +
+        // The favicon lives on the TITLE line at the row's far-right edge, like
+        // every other list's row. It used to sit in the subtitle line, where it
+        // and the time both had auto margins in the same flex row — the free
+        // space split between them left the icon hovering mid-row, drifting
+        // with whatever the URL happened to be that day. The subtitle's URL
+        // span is the path AFTER the host (pathTail), not a repeat of it.
+        "<div class='t'><span class='txt'>" + esc(it.title || it.url) + "</span>" +
         faviconHtml(faviconFor(it.url)) +
+        "</div>" +
+        "<div class='s'><span class='lf-host'>" + esc(it.host) + "</span>" +
+        (pathTail(it.url) ? "<span class='lf-url'>" + esc(pathTail(it.url)) + "</span>" : "") +
         "<span class='lf-time'>" + esc(it.rel) + "</span></div>";
       row.addEventListener("mousedown", (ev) => {
         ev.preventDefault();

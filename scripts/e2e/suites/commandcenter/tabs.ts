@@ -136,9 +136,10 @@ export async function run(ctx: any): Promise<void> {
     await ctx.openCC(ctx.tabA);
     await ctx.activateTab(ctx.tabA);
     const before = await ctx.tabCount();
-    // Chrome owns the leader on the command center: ;N goes through the
+    // Chrome owns the leader on the command center: `;N n` goes through the
     // requestBg -> reqResult round-trip and must still open a container tab.
-    await ctx.leaderPress(ctx.tabA, "N");
+    // `;N` is the Stealth category, so the destination key is part of the chord.
+    await ctx.leaderSeq(ctx.tabA, ["N", "n"]);
     const opened = await waitFor(async () => {
       // `query({})`, not `query({currentWindow:true})`. The narrow form is
       // answered from the background, where `currentWindow` resolves to the
@@ -159,11 +160,27 @@ export async function run(ctx: any): Promise<void> {
     await new Promise((r) => setTimeout(r, 600));
     assert((await ctx.tabCount()) === before + 1, "one tab added: " + (await ctx.tabCount()));
     // With the stealth tab active, the window bar badges it.
+    // 20s for the same reason as the sessions suite's copy: a filtered run
+    // makes this the first #lfc=state request of the launch, and that channel
+    // answers slowly while the helper is still booting.
     const st = await waitFor(async () => {
       const s = await ctx.chromeState();
       return s && s.statusAttr && s.statusAttr.indexOf("stealth") !== -1 ? s : null;
-    }, 8000).catch(() => null);
-    assert(st, "status bar badges the stealth tab opened from the command center");
+    }, 20000).catch(() => null);
+    if (!st) {
+      // Say WHAT disagreed, not just that the badge is missing: the bar's own
+      // attribute, and the ids the background believes are stealth containers.
+      const state = await evalIn(
+        ctx.probe,
+        `browser.runtime.sendMessage({ action: "sessionState" }).then(s => JSON.stringify({ ids: s && s.stealthIds, flags: s && s.stealthFlags, active: s && s.activeStealth }))`
+      ).catch(() => "<sessionState failed>");
+      const s = await ctx.chromeState().catch(() => null);
+      throw new Error(
+        "status bar badges the stealth tab opened from the command center — " +
+          "bar=" + JSON.stringify(s && s.statusAttr) +
+          " state=" + state
+      );
+    }
     // Clean up: close the stealth tab and return to the command center.
     await evalIn(ctx.probe, `browser.tabs.remove(${opened.id}).catch(() => true); true`).catch(() => {});
     await waitFor(async () => (await ctx.tabCount()) === before ? true : null, 10000).catch(() => {});

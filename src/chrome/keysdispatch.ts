@@ -385,6 +385,16 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
         br = "popup-close";
         return true;
       }
+      // EVERY OTHER KEY REACHES THE POPUP'S CONTROLLER FIRST, and that is
+      // load-bearing now that the selector has a NORMAL mode: its field is
+      // deliberately unfocused while j/k navigate, so `i` and the vim keys are
+      // typed nowhere and would otherwise be swallowed by the branch below
+      // without ever being offered to the popup. A handler that declines (a
+      // printable key in INSERT mode) falls through to the field as before.
+      if (popup.handleKey(e as KeyboardEvent)) {
+        br = "popup-key";
+        return true;
+      }
       if (popup.resizeOnKey(e as KeyboardEvent)) {
         br = "popup-resize";
         return true;

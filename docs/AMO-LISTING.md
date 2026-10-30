@@ -71,7 +71,7 @@ history are real state in a throwaway profile.
 | 7 | `hints.png` | Link hints put a key on every visible control. |
 | 8 | `find.png` | Find in page, with a live count and yank. |
 | 9 | `options.png` | Settings for keys, sessions, dark mode and reader. |
-| 10 | `statusbar.png` | The status bar: session, tab position and downloads. |
+| 10 | `statusbar.png` | The status bar: tab position, every session with the current one in the accent, and a muted badge on the right. |
 
 AMO caps screenshots at ten. To replace the set, delete the old previews in the
 dashboard, then run `npm run screenshots`. Uploads are rate-limited, so a full

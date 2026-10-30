@@ -197,6 +197,56 @@ export async function run(ctx: any): Promise<void> {
     await ctx.waitExpr(ctx.tabA, `location.href.includes("/hello")`, true, 15000);
     assert((await ctx.tabCount()) === before, ";O opened no new tab");
   });
+  await t(";N o: URL popup opens the page in the window's stealth jar", async () => {
+    // `;N` is the Stealth category; `o` opens the same URL field `;o` does and
+    // sends the answer to the background, which owns the jar and the window
+    // resolution. The URL is local so the assertion never depends on a remote
+    // site.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await activate(ctx.tabA);
+    const beforeIds = new Set((await ctx.tabsInfo()).map((t) => t.id));
+    await openPopup(["N", "o"]);
+    const url = `http://127.0.0.1:${ctx.port}/hello`;
+    await ctx.typeIn(ctx.tabA, url);
+    await ctx.waitListEvent(ctx.tabA, { q: url });
+    await ctx.press(ctx.tabA, "Enter");
+    await ctx.waitPopupGone(ctx.tabA, 8000);
+    const opened = await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      return now.find((x) => !beforeIds.has(x.id) && (x.url || "").includes("/hello")) || null;
+    }, 20000).catch(() => null);
+    assert(opened, ";N o opened no tab at all");
+    const cs = await evalIn(ctx.probe, `browser.tabs.get(${opened.id}).then(t => t.cookieStoreId)`).catch(() => "");
+    assert(cs && cs !== "firefox-default",
+      ";N o opened the page outside a container: " + cs);
+    const here = await evalIn(ctx.tabA, `location.href`).catch(() => "");
+    assert(here && !String(here).includes("/hello"), ";N o navigated the current tab: " + here);
+    await evalIn(ctx.probe, `browser.tabs.remove(${opened.id}).catch(() => true)`).catch(() => {});
+    await activate(ctx.tabA);
+  });
+  await t(";N s: search opens in a stealth container tab", async () => {
+    // The search variant resolves the QUERY in the background (the engine list
+    // lives there) and opens the result in the same jar `;N o` uses. Only the
+    // container and the new tab are asserted: the engine's own page is an
+    // external site and must not decide whether this passes.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    await activate(ctx.tabA);
+    const beforeIds = new Set((await ctx.tabsInfo()).map((t) => t.id));
+    await openPopup(["N", "s"]);
+    await filterTo("lazyfox stealth");
+    await ctx.press(ctx.tabA, "Enter");
+    await ctx.waitPopupGone(ctx.tabA, 8000);
+    const opened = await waitFor(async () => {
+      const now = await ctx.tabsInfo();
+      return now.find((x) => !beforeIds.has(x.id)) || null;
+    }, 20000).catch(() => null);
+    assert(opened, ";N s opened no tab");
+    const cs = await evalIn(ctx.probe, `browser.tabs.get(${opened.id}).then(t => t.cookieStoreId)`).catch(() => "");
+    assert(cs && cs !== "firefox-default",
+      ";N s opened the search outside a container: " + cs);
+    await evalIn(ctx.probe, `browser.tabs.remove(${opened.id}).catch(() => true)`).catch(() => {});
+    await activate(ctx.tabA);
+  });
   await t(";t tab switcher popup lists tabs and Enter switches", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await openPopup("t");

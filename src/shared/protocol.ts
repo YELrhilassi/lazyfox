@@ -67,7 +67,10 @@ export interface BgApi {
   // the helper's, so `;D` on a page that has no bar used to be a documented
   // no-op — bound, consumed, and doing nothing.
   dismissDownload: { req: Record<string, never>; res: { ok: boolean } };
-  stealthOpen: { req: Record<string, never>; res: { ok: boolean; error?: string } };
+  // Open a tab in this window's stealth jar. `url` is where it lands (absent =
+  // the empty home page); `query` is a search that the background resolves
+  // with the user's engine — the helper has no engine of its own.
+  stealthOpen: { req: { url?: string; query?: string }; res: { ok: boolean; error?: string } };
   openSetup: { req: Record<string, never>; res: { ok: boolean } };
   // The diagnostics & performance page (live page diagnosis, framework
   // detection report, efficiency metering).
@@ -149,7 +152,9 @@ export interface BgApi {
   // the segment), engine native|dynamic|filter — what lets the bar tell "the
   // site's own theme" apart from one we recoloured.
   syncDark: { req: { on: boolean; mode: string; engine: string }; res: { ok: boolean } };
-  sessionList: { req: Record<string, never>; res: { sessions: Session[] } };
+  // `current` names the session the asking window is running, so the popup can
+  // mark that row in one read (see popups/sessions.ts).
+  sessionList: { req: Record<string, never>; res: { sessions: Session[]; current: string } };
   sessionSave: { req: { name: string }; res: { ok: boolean; session?: Session } };
   sessionNew: { req: { name: string }; res: { ok: boolean; note?: string } };
   sessionRestore: { req: { name: string }; res: { ok: boolean } };
@@ -216,6 +221,10 @@ export interface BgApi {
       tabIds: number[];
       activeStealth: boolean;
       stealthFlags: boolean[];
+      // Numeric userContextIds of the stealth containers. The helper matches
+      // these against the selected tab's own attribute, which is a live
+      // property rather than an index into a snapshot.
+      stealthIds: number[];
     };
   };
 }
@@ -291,9 +300,10 @@ export interface RelayApi {
   openSetup: { req: Record<string, never>; res: null };
   openDiagnostics: { req: Record<string, never>; res: null };
   quit: { req: Record<string, never>; res: null };
-  // Open a new container window; the result comes back so the helper can
-  // toast a failure instead of swallowing it.
-  stealthOpen: { req: Record<string, never>; res: { ok: boolean; error?: string } };
+  // Open a tab in this window's stealth jar; the result comes back so the
+  // helper can toast a failure instead of swallowing it. `query` is resolved
+  // to a search URL by the background (the helper has no engine list).
+  stealthOpen: { req: { url?: string; query?: string }; res: { ok: boolean; error?: string } };
   // Read-only pulls for the chrome-side UI.
   sessionState: { req: Record<string, never>; res: RelaySessionState };
   sessionTabs: { req: { name: string }; res: PopupItem[] };
@@ -302,14 +312,17 @@ export interface RelayApi {
   // Session + tab mutations; the helper refreshes the status bar itself.
   saveSession: { req: { name: string }; res: null };
   newSession: { req: { name: string }; res: null };
-  restoreSession: { req: { name: string }; res: null };
+  // ANSWERS, so the helper can tell "there is no such session" from "the
+  // rebuild is still running". A fire-and-forget switch that could not happen
+  // closed the popup and did nothing, indistinguishably.
+  restoreSession: { req: { name: string }; res: { ok: boolean; note?: string } };
   // deleteSession ANSWERS, unlike its siblings: a deletion must be
   // observable before anything re-reads the list — the popup's refetch once
   // landed before the storage write, so `x x` left the deleted session
   // sitting in the list. An awaited reply is the only ordering guarantee
   // that does not rest on a timer.
   deleteSession: { req: { name: string }; res: { ok: boolean; note?: string } };
-  switchSessionByMarker: { req: { marker: number }; res: null };
+  switchSessionByMarker: { req: { marker: number }; res: { ok: boolean; name?: string; note?: string } };
   assignSessionMarker: { req: { name: string; marker: number }; res: null };
   // Answer with a human-readable `note` on failure; fire-and-forget once
   // made a copy into a nonexistent session look exactly like a successful
@@ -349,6 +362,7 @@ export interface RelaySessionState {
   tabIds: number[];
   activeStealth: boolean;
   stealthFlags: boolean[];
+  stealthIds: number[];
 }
 
 export type RelayAction = keyof RelayApi;
@@ -373,11 +387,22 @@ export interface ChromeApi {
   // parent process a tick or two after `tabs.create` resolves, and pairing
   // early pairs the tabs being torn down.
   restoreSplits: { req: { groups: number[][]; expect?: number }; res: void };
-  // The launch splash: up while a session is being resumed, down when it has
-  // settled. Pushed to every window's helper (and answered in the alive ack for
-  // a window that boots mid-restore), because a multi-window session touches
-  // windows whose helpers came up at different moments.
-  splash: { req: { on: boolean }; res: void };
+  // The session loader: up while a session is being switched or resumed, down
+  // when it has settled. Pushed to every window's helper (and answered in the
+  // alive ack for a window that boots mid-restore), because a multi-window
+  // session touches windows whose helpers came up at different moments.
+  //
+  // `label` distinguishes a user switch ("Switching to work…") from a launch
+  // resume, and a switch's label also means "paint NOW": the user just asked
+  // for something, so a delayed cover would read as a late one.
+  splash: { req: { on: boolean; label?: string }; res: void };
+  // Remove exactly the visits a stealth jar made. Pushed to the helper because
+  // only chrome-privileged code can call Places; the background records each
+  // navigation with its time (see extension/stealth.ts).
+  stealthHistory: { req: { visits: { url: string; at: number }[]; urls?: string[] }; res: void };
+  // Hold Firefox's password autofill off while a stealth jar exists (`off:
+  // true`), or release the user's own value when the last jar goes.
+  stealthAutofill: { req: { off: boolean }; res: void };
   sessionState: { req: RelaySessionState; res: void };
   // Clear the bar's download notification(s) — pushed, because the page
   // that pressed `;D` has nothing left to do once the bar is told.

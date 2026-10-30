@@ -19,9 +19,9 @@
 // also lists `;W z`, `;K c` and the rest — otherwise searching "split" or
 // "zoom" in the reference would return nothing at all.
 //
-// vimNav is disabled on purpose: in this popup j/k must type into the search
-// box (that is the whole point of the popup), while the arrow keys move the
-// selection. Enter runs the highlighted binding.
+// j/k move the selection, `i` (or any typed character) enters the search box,
+// Esc leaves it — the same modal split every popup uses. Enter runs the
+// highlighted binding.
 import { esc } from "../dom";
 import type { WkItem } from "../types";
 import { actionForChord, keymapLeafRows, loadKeymap, type KeymapLeafRow } from "../keymap";
@@ -57,16 +57,14 @@ export function openHelpPopup(ctx: PopupCtx): void {
   ctx.open(
     basePanel(
       "Keybindings",
-      "search shortcuts — key, name or group",
-      "<span class='lf-badge'>Enter</span> run &middot; " +
-        "<span class='lf-badge'>&uarr;&darr;</span> move &middot; " +
-        "<span class='lf-badge'>Esc</span> close"
+      "no matching shortcut",
+      "<span class='lf-badge'>i</span> search &middot; <span class='lf-badge'>j/k</span> move &middot; " +
+        "<span class='lf-badge'>Enter</span> run &middot; <span class='lf-badge'>Esc</span> close",
+      "i to search shortcuts"
     ),
     (root) =>
       makeSelector<HelpRow>(ctx, root, {
         debounceMs: 20,
-        // j/k are search characters here, not navigation.
-        vimNav: false,
         emptyText: "no matching shortcut",
         groupBy: (h) => h.group || "Other",
         search: async (q) => {

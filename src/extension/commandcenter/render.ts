@@ -125,7 +125,10 @@ export function createRenderer(deps: RenderDeps): Renderer {
     resultsEl.textContent = "";
     resultsEl.classList.toggle("quick", state.quickView);
     if (!state.all.length) {
-      emptyEl.style.display = "block";
+      // "" hands the layout to the stylesheet: #empty is a centring flex box and
+      // a "block" written here would outrank it, dropping the message back to
+      // the top of the page (the same trap overlay-selector.ts documents).
+      emptyEl.style.display = "";
       emptyEl.textContent = EMPTY_TEXTS[state.mode] || "";
       return;
     }

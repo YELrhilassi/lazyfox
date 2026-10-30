@@ -1,7 +1,7 @@
 // hints tests (content). Deterministic: every wait targets a product signal
 // (data-lf-hints state, hint label positions, page-side reports) instead of
 // fixed sleeps.
-import { evalIn, waitFor } from "../../bidi.ts";
+import { captureScreenshot, evalIn, waitFor } from "../../bidi.ts";
 import { assert } from "../../runner.ts";
 export async function run(ctx: any): Promise<void> {
   // The test id is "<group>/<file> › <name>", so two tests with the same
@@ -131,8 +131,9 @@ export async function run(ctx: any): Promise<void> {
     );
     return pos.map((p) => {
       const el = (els || []).find((candidate) => Math.abs(candidate.x - p.x) <= 2 && Math.abs(candidate.y - p.y) <= 2);
-      // `covered` rides through: it is the label's own state (dimmed), pulled
-      // from the overlay's snapshot, and the occlusion test asserts on it.
+      // `covered` rides through: it says part of the control's own surface is
+      // painted over, pulled from the overlay's snapshot; the occlusion test
+      // asserts on it. It no longer changes how the label is drawn.
       return { key: p.key, id: el ? el.id : null, dataId: el ? el.dataId : null, x: p.x, y: p.y, covered: !!p.covered };
     });
   };
@@ -195,7 +196,12 @@ export async function run(ctx: any): Promise<void> {
   const beginHints = async () => {
     await ctx.leaderPress(ctx.tabA, "f");
     await hintsOn();
-    await waitFor(async () => ((await hintSnapshot()).positions || []).length > 0 ? true : null, 5000);
+    try {
+      await waitFor(async () => ((await hintSnapshot()).positions || []).length > 0 ? true : null, 5000);
+    } catch (e) {
+      const snap = await hintSnapshot().catch((x) => ({ error: String(x) }));
+      throw new Error(String((e as Error).message || e) + " — hint snapshot: " + JSON.stringify(snap));
+    }
   };
   // Activate the hint currently assigned to `id`. Single-character keys can be
   // a prefix of longer ones, in which case typing the key narrows instead of
@@ -214,11 +220,15 @@ export async function run(ctx: any): Promise<void> {
   // node from the ACCESSIBILITY tree, not from the page — duplicate affordances
   // wear it while the accessible twin sits beside it. `hidden`/`inert` still
   // stay unpinned, together with the CSS and occlusion cases.
-  // Occlusion is no longer a veto: covered-link gets a DIMMED label (plan A —
-  // withholding it was the one failure the layer cannot recover from; the act
-  // clicks the ELEMENT, not the point under the label). Un-hinted stays what
-  // nobody can use at all: hidden, inert, visibility:hidden, opacity:0,
-  // pointer-events:none.
+  // OCCLUSION IS A SHARE, NOT A VETO AND NOT A DIMMED LABEL.
+  //
+  // `covered-link` sits under a scrim that covers its whole box, so it earns no
+  // label: a label lives in the top layer and would be painted ON the scrim —
+  // the reported "hints show from behind the elements in front of them".
+  // `body-visible` has only its centre covered (a small badge), so it keeps a
+  // full-strength label anchored to an uncovered point, and its row says
+  // `covered` because part of it really is. Un-hinted stays what nobody can use
+  // at all: hidden, inert, visibility:hidden, opacity:0, pointer-events:none.
   await t("link hints: a visible aria-hidden link is hinted; hidden, inert and pointer-dead ones are not", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
     await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
@@ -226,27 +236,83 @@ export async function run(ctx: any): Promise<void> {
     await beginHints();
     const rows = await readHints();
     const ids = rows.map((x) => x.id || x.dataId);
-    const must = ["visible-link", "nested-btn", "act-btn", "scroll-input", "nearby-link", "body-visible", "thumbnail-link", "covered-link"];
+    const must = ["visible-link", "nested-btn", "act-btn", "scroll-input", "nearby-link", "body-visible", "thumbnail-link"];
     for (const id of must) assert(ids.indexOf(id) !== -1, "expected a hint for " + id + " (got: " + ids.join(",") + ")");
-    const mustNot = ["hidden-opacity-link", "hidden-vis-link", "inert-link", "hidden-link", "hidden-shadow-inner", "pe-none-btn"];
+    // A control whose own surface is entirely under another layer has no honest
+    // place to draw a label, so it is not hinted at all (it used to get a dimmed
+    // one painted over the scrim).
+    const mustNot = ["covered-link", "hidden-opacity-link", "hidden-vis-link", "inert-link", "hidden-link", "hidden-shadow-inner", "pe-none-btn"];
     for (const id of mustNot) assert(ids.indexOf(id) === -1, "a non-actionable element was hinted: " + id);
-    // The FLAG is the observable half of the new rule: the batch says the
-    // control is covered, and that is what draws its label dimmed. A row that
-    // is merely present would not distinguish "kept and dimmed" from "kept and
-    // pretending nothing is over it".
-    const coveredRow = rows.find((x) => (x.id || x.dataId) === "covered-link");
-    assert(coveredRow && coveredRow.covered === true, "the covered control's label is flagged as dimmed");
+    // The FLAG survives as a fact about the page: the button with a badge over
+    // its centre is partly covered, so its label is anchored to a visible point
+    // (full strength — dimming was the "faint hints" report) and the row says
+    // so. A row that is merely present could not distinguish "partly covered and
+    // anchored" from "pretending nothing is over it".
+    const partlyRow = rows.find((x) => (x.id || x.dataId) === "body-visible");
+    assert(partlyRow && partlyRow.covered === true, "the partly covered control's row is flagged");
     const plainRow = rows.find((x) => (x.id || x.dataId) === "nearby-link");
-    assert(plainRow && !plainRow.covered, "an uncovered control's label is NOT dimmed: " + JSON.stringify(plainRow));
-    // ...and the dimmed hint is not decoration: the key has to ACT. Activation
-    // clicks the element itself, so a control under a scrim is still reachable by
-    // key — which is the whole reason it is kept rather than withheld.
-    await activateHint("covered-link");
-    await ctx.waitExpr(ctx.tabA, `location.hash`, "#cov", 8000);
-    assert(
-      (await evalIn(ctx.tabA, `location.hash`)) === "#cov",
-      "a covered control's key still activated it"
-    );
+    assert(plainRow && !plainRow.covered, "a fully visible control's row is NOT flagged: " + JSON.stringify(plainRow));
+    await ctx.press(ctx.tabA, "Escape");
+  });
+  await t("link hints: layered and clipped targets do not leak labels from behind the visible surface", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/hintlayers`);
+    await pageSettled();
+    const startupTrace: Array<{ hints: unknown; snapshot: unknown }> = [];
+    await ctx.leaderPress(ctx.tabA, "f");
+    try {
+      await waitFor(async () => {
+        const snapshot = await hintSnapshot().catch((x) => ({ error: String(x) }));
+        const hints = await evalIn(ctx.tabA, `document.documentElement.getAttribute("data-lf-hints")`);
+        startupTrace.push({ hints, snapshot });
+        return hints === "1" && (snapshot.positions || []).length > 0 ? true : null;
+      }, 5000);
+    } catch (e) {
+      const afterHints = await evalIn(ctx.probe, `(async function(){ for (const t of await browser.tabs.query({})) { try { const r=await browser.tabs.sendMessage(t.id,{action:"pageReport"}); if (r && r.report && r.report.url && r.report.url.includes("/hintlayers")) return r.report.hints; } catch(e) {} } return null; })()`);
+      const sessionState = await ctx.hintSnapshot(ctx.tabA).catch((x) => ({ error: String(x) }));
+      const pageState = await evalIn(ctx.tabA, `({hints:document.documentElement.getAttribute("data-lf-hints"),leader:document.documentElement.getAttribute("data-lf-leader"),host:!!document.getElementById("lazyfox-hints")})`);
+      const paint = await evalIn(ctx.tabA, `(() => { const el=document.getElementById("outside-veil"), veil=document.getElementById("veil"); const r=el.getBoundingClientRect(), v=veil.getBoundingClientRect(); const stackAt=(x,y,enableVeil)=>{const old=veil.style.getPropertyValue("pointer-events"),pri=veil.style.getPropertyPriority("pointer-events");try{if(enableVeil)veil.style.setProperty("pointer-events","auto","important");return document.elementsFromPoint(x,y).slice(0,12).map(n=>({id:n.id,tag:n.tagName,pe:getComputedStyle(n).pointerEvents,opacity:getComputedStyle(n).opacity}));}finally{if(old)veil.style.setProperty("pointer-events",old,pri);else veil.style.removeProperty("pointer-events");}}; const cx=r.left+r.width/2,cy=r.top+r.height/2;return {host:!!document.getElementById("lazyfox-hints"),outside:stackAt(r.left+10,r.top+10,false),under:stackAt(cx,cy,false),underWithVeil:stackAt(cx,cy,true),veil:v.toJSON(),target:r.toJSON(),underTarget:document.getElementById("under-veil").getBoundingClientRect().toJSON()}; })()`);
+      await captureScreenshot(ctx.tabA, ".tmp-hints-layered-failure.png", ctx.signal).catch(() => "");
+      const activeAudit = await evalIn(ctx.tabA, `(() => { const host=document.getElementById("lazyfox-hints"), veil=document.getElementById("veil"); const ids=["under-veil","outside-veil","clipped-link","overlap-link","overlap-button"]; const stack=(id,hide)=>{const el=document.getElementById(id),r=el.getBoundingClientRect(),x=r.left+Math.min(8,r.width/2),y=r.top+Math.min(8,r.height/2),v=host?.style.getPropertyValue("visibility"),p=host?.style.getPropertyPriority("visibility");try{if(hide)host?.style.setProperty("visibility","hidden","important");void getComputedStyle(host||document.body).display;return document.elementsFromPoint(x,y).slice(0,6).map(n=>({id:n.id,tag:n.tagName,pe:getComputedStyle(n).pointerEvents,vis:getComputedStyle(n).visibility}));}finally{if(host){v?host.style.setProperty("visibility",v,p):host.style.removeProperty("visibility");}}};return {host:!!host,popover:host?.matches(":popover-open"),targets:ids.map(id=>({id,normal:stack(id,false),hidden:stack(id,true)}))};})()`);
+      await captureScreenshot(ctx.tabA, ".tmp-hints-layered-active-failure.png", ctx.signal).catch(() => "");
+      throw new Error(String((e as Error).message || e) + " — after: " + JSON.stringify(afterHints) + " — startup: " + JSON.stringify(startupTrace) + " — session: " + JSON.stringify(sessionState) + " — page: " + JSON.stringify(pageState) + " — paint: " + JSON.stringify(paint) + " — active: " + JSON.stringify(activeAudit));
+    }
+    await captureScreenshot(ctx.tabA, ".tmp-hints-layered.png", ctx.signal);
+    const stack = await evalIn(ctx.tabA, `(() => { const e=document.getElementById("under-veil"); const r=e.getBoundingClientRect(); const x=r.left+10,y=r.top+10; return {hit:document.elementFromPoint(x,y)?.id, stack:document.elementsFromPoint(x,y).map(n=>({id:n.id,tag:n.tagName,pointer:getComputedStyle(n).pointerEvents,opacity:getComputedStyle(n).opacity})), clip:(()=>{const q=document.getElementById("clipped-link").getBoundingClientRect();return {top:q.top,bottom:q.bottom,clip:document.getElementById("clip").getBoundingClientRect().toJSON()}})()}; })()`);
+    const rows = await readHints();
+    const ids = rows.map((x) => x.id || x.dataId);
+    assert(ids.includes("outside-veil"), "uncovered target beside the overlay remains hintable: " + ids.join(","));
+    assert(!ids.includes("under-veil"), "pointer-transparent overlay still visually covers the target: " + JSON.stringify({ ids, stack }));
+    assert(!ids.includes("clipped-link"), "overflow-clipped target does not receive a label outside its clip: " + JSON.stringify({ ids, stack }));
+    assert(ids.includes("overlap-link") && ids.includes("overlap-button"), "distinct overlapping sibling actions both retain hints: " + ids.join(","));
+    await ctx.press(ctx.tabA, "Escape");
+
+    await evalIn(ctx.tabA, `document.getElementById("open-modal").click(); true`);
+    await ctx.waitExpr(ctx.tabA, `getComputedStyle(document.getElementById("modal")).display`, "block", 3000);
+    await beginHints();
+    const modalRows = await readHints();
+    const modalIds = modalRows.map((x) => x.id || x.dataId);
+    assert(modalIds.includes("dialog-link"), "the active dialog control stays hintable: " + modalIds.join(","));
+    assert(!modalIds.includes("outside-veil") && !modalIds.includes("overlap-link") && !modalIds.includes("overlap-button"), "underlying page controls are not hinted over the dialog: " + modalIds.join(","));
+    assert(modalRows.every((row) => row.x > 250), "no label from behind the dialog was painted over the modal: " + JSON.stringify(modalRows));
+    await ctx.press(ctx.tabA, "Escape");
+  });
+  // THE "NO HINTS AT ALL" REPORT, at its cause.
+  //
+  // A half-transparent click-through wash sits over every link on the page — a
+  // shimmer, a tinted overlay, a decorative texture. It is painted above the
+  // links, so a coverage rule that treats "anything painted on top" as "hidden"
+  // rejects the whole page: every control is reported behind an overlay, the
+  // batch is empty, and the user sees a page full of links with no hints on it.
+  // The honest reading is the opposite — the page is still readable through the
+  // wash and every link is still pressable — so all three links keep labels.
+  // A near-opaque sheet is the case that IS a veil and it lives on /hintlayers.
+  await t("link hints: a translucent click-through wash does not cost the page its hints", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/hintwash`);
+    await pageSettled();
+    await beginHints();
+    const ids = (await readHints()).map((x) => x.id || x.dataId);
+    for (const id of ["under-wash", "under-wash-2", "plain-wash"])
+      assert(ids.indexOf(id) !== -1, "expected a hint for " + id + " under a translucent wash (got: " + ids.join(",") + ")");
     await ctx.press(ctx.tabA, "Escape");
   });
   // THE LEAK REPORT: "hints show from behind the elements in front of them".

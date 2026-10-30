@@ -41,12 +41,20 @@
 // as tall as a label so the pair reads as one row.
 
 export const HINT_LABEL = {
-  /** The fill. Solid, and the only thing carrying legibility on any ground. */
-  fill: "#7aa2f7",
-  /** Text on the fill: near-black, ~7.5:1 against the blue on paper or on ink. */
-  text: "#0b0d12",
+  /** The fill. Solid, and the only thing carrying legibility on any ground.
+   *  Tokenised (see shared/theme.ts): a hint badge is the product's accent, and
+   *  the fallback is the Tokyo Night value for the one host that draws into a
+   *  page with no tokens on it (chrome/pagehints.ts on a page with no content
+   *  script). */
+  fill: "var(--lf-accent,#7aa2f7)",
+  /** Text on the fill: whatever the palette says reads on that accent. */
+  text: "var(--lf-on-accent,#0b0d12)",
   /** The fill of the WAITING label — the typed prefix IS the whole key. */
-  wait: "#2ac3de",
+  wait: "var(--lf-cyan,#2ac3de)",
+  /** Ink on the waiting fill. A separate token because the accent's ink is not
+   *  automatically readable on cyan: on the light preset the accent needs white
+   *  while the cyan still needs black. */
+  waitText: "var(--lf-on-cyan,#0b0d12)",
   /** Monospace: every key cap in the product uses it (see shared/theme.ts). */
   font:
     '700 13px/1 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace',
@@ -103,7 +111,7 @@ export const HINT_LABEL = {
    * wears the waiting colour and the two read as one instruction. Its icon is
    * drawn in `text`, on top of this fill.
    */
-  enterFill: "#2ac3de",
+  enterFill: "var(--lf-cyan,#2ac3de)",
 } as const;
 
 /**
@@ -113,10 +121,19 @@ export const HINT_LABEL = {
  * deliberately the caller's business, because the chrome helper places labels
  * from the page's own rects and has no shared box model to inherit.
  */
-export function hintLabelInlineStyle(extra = ""): string {
+export function hintLabelInlineStyle(
+  extra = "",
+  fill: string = HINT_LABEL.fill,
+  ink: string = HINT_LABEL.text
+): string {
+  // The CONTENT script's labels live in a shadow root whose stylesheet is
+  // prefixed with the tokens (see uiCss), so HINT_CSS can keep using `var()`.
+  // A label the CHROME helper draws is a plain span on a page that has no
+  // `--lf-*` properties, so that caller passes the palette's LITERAL accent and
+  // ink — otherwise every chrome-mode label stays Tokyo blue on a light preset.
   return (
     "position:fixed;z-index:2147483647;" +
-    "background:" + HINT_LABEL.fill + ";color:" + HINT_LABEL.text + ";" +
+    "background:" + fill + ";color:" + ink + ";" +
     "font:" + HINT_LABEL.font + ";padding:" + HINT_LABEL.padding + ";" +
     "border-radius:" + HINT_LABEL.radius + ";letter-spacing:" + HINT_LABEL.letterSpacing + ";" +
     "text-align:center;pointer-events:none" +

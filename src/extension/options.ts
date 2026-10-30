@@ -15,6 +15,15 @@ import {
 import { corpusStats, parseFixList } from "../shared/dark-rules";
 import { paletteById, paletteOptions } from "../shared/darkpalettes";
 import { readKey, writeKey, vConfig, vStringMap } from "./store";
+import { applyStoredTheme, applyTheme, logoUrl } from "./pagetheme";
+import { iconHtml } from "../shared/icons";
+import { sessionPillHtml } from "../shared/statusbar-segments";
+import {
+  DEFAULT_UI_PRESET,
+  UI_PRESETS,
+  presetById,
+  resolvePalette,
+} from "../shared/theme";
 import { core } from "../shared/core";
 import { installFetchedCore } from "../shared/corefetch";
 import { favicon } from "../shared/dom";
@@ -31,6 +40,7 @@ import type {
   ReaderConfig,
   ReaderTheme,
   SiteRule,
+  UiThemeConfig,
 } from "../shared/types";
 
 (function () {
@@ -48,6 +58,11 @@ import type {
   const statusBar = document.getElementById("statusBar") as HTMLInputElement;
   const statusBarPosition = document.getElementById("statusBarPosition") as HTMLSelectElement;
   const autoRestore = document.getElementById("autoRestore") as HTMLInputElement;
+  const keepStealth = document.getElementById("keepStealth") as HTMLInputElement;
+  const presetsEl = document.getElementById("presets") as HTMLDivElement;
+  const uiAccent = document.getElementById("uiAccent") as HTMLInputElement;
+  const uiBackground = document.getElementById("uiBackground") as HTMLInputElement;
+  const uiReset = document.getElementById("uiReset") as HTMLButtonElement;
   const saveBtn = document.getElementById("save") as HTMLButtonElement;
   const statusEl = document.getElementById("status") as HTMLSpanElement;
 
@@ -78,6 +93,133 @@ import type {
   const readerLineHeight = document.getElementById("readerLineHeight") as HTMLInputElement;
   const readerFont = document.getElementById("readerFont") as HTMLInputElement;
   const readerImages = document.getElementById("readerImages") as HTMLInputElement;
+
+  /* ------------------------------ appearance ----------------------------- */
+
+  // The pending theme, saved with the rest of the form. Editing a preset or a
+  // swatch repaints THIS page immediately (the preview is the point), while the
+  // status bar and overlay panels pick it up at the next launch.
+  let uiTheme: UiThemeConfig = {
+    preset: DEFAULT_UI_PRESET,
+    accent: "",
+    background: "",
+  };
+
+  function renderPresets(): void {
+    presetsEl.textContent = "";
+    for (const preset of UI_PRESETS) {
+      const p = resolvePalette({ preset: preset.id, accent: "", background: "" });
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "preset" + (preset.id === uiTheme.preset ? " on" : "");
+      btn.setAttribute("role", "radio");
+      btn.setAttribute("aria-checked", preset.id === uiTheme.preset ? "true" : "false");
+      btn.title = preset.name + " — " + preset.credit;
+
+      const sw = document.createElement("span");
+      sw.className = "sw";
+      // Ground, surface, ink and accent: the four colours that decide what the
+      // preset looks like in use, rather than an arbitrary five.
+      for (const c of [p.bg, p.panel, p.fg, p.accent]) {
+        const chip = document.createElement("i");
+        chip.style.background = c;
+        sw.appendChild(chip);
+      }
+
+      const nm = document.createElement("span");
+      nm.className = "nm";
+      nm.textContent = preset.name;
+      if (p.light) {
+        const tag = document.createElement("span");
+        tag.className = "lt";
+        tag.textContent = "light";
+        nm.appendChild(tag);
+      }
+
+      const bl = document.createElement("span");
+      bl.className = "bl";
+      bl.textContent = preset.blurb;
+
+      const cr = document.createElement("span");
+      cr.className = "cr";
+      cr.textContent = preset.credit;
+
+      btn.appendChild(sw);
+      btn.appendChild(nm);
+      btn.appendChild(bl);
+      btn.appendChild(cr);
+      btn.addEventListener("click", () => {
+        // A preset REPLACES the tweaks: they were chosen against the previous
+        // palette, and keeping them is how a click on "Solarized" produces tokyo
+        // blue in a paper UI.
+        uiTheme = { preset: preset.id, accent: "", background: "" };
+        renderPresets();
+        syncThemeInputs();
+        applyTheme(uiTheme);
+      });
+      presetsEl.appendChild(btn);
+    }
+  }
+
+  // A colour input can only show a real colour, so an unset override shows the
+  // preset's own value. Saving compares against that: picking the preset colour
+  // stores "" rather than an override that pins the preset's blue.
+  function syncThemeInputs(): void {
+    const p = resolvePalette(uiTheme);
+    uiAccent.value = p.accent;
+    uiBackground.value = p.bg;
+  }
+
+  uiAccent.addEventListener("input", () => {
+    const preset = presetById(uiTheme.preset).palette.accent;
+    uiTheme.accent = uiAccent.value.toLowerCase() === preset.toLowerCase() ? "" : uiAccent.value;
+    applyTheme(uiTheme);
+  });
+
+  uiBackground.addEventListener("input", () => {
+    const preset = presetById(uiTheme.preset).palette.bg;
+    uiTheme.background = uiBackground.value.toLowerCase() === preset.toLowerCase() ? "" : uiBackground.value;
+    applyTheme(uiTheme);
+  });
+
+  uiReset.addEventListener("click", () => {
+    uiTheme.accent = "";
+    uiTheme.background = "";
+    syncThemeInputs();
+    applyTheme(uiTheme);
+  });
+
+  // First paint in the stored palette; the config read below repaints once it
+  // lands (and that is the one that also fills the form).
+  applyStoredTheme();
+
+  /**
+   * The preview strip above the Appearance card.
+   *
+   * Built from the SHARED pieces — `iconHtml` for the glyphs and
+   * `sessionPillHtml` for the pills — rather than hand-written HTML, because a
+   * preview that is drawn separately is a preview that lies the first time the
+   * bar changes. It is static markup: the colours come from the tokens, so the
+   * strip repaints with the page and needs no rebuild when the preset changes.
+   */
+  function renderThemePreview(): void {
+    const bar = document.getElementById("tpBar");
+    if (!bar) return;
+    const pill = (marker: number, name: string, count: number, current: boolean) =>
+      sessionPillHtml({ marker, name, tabCount: count, splitCount: 0, current });
+    bar.innerHTML =
+      "<span class='tp-seg'>" + iconHtml("tabs", "") +
+      "<b>3</b><span class='cnt'>/12</span></span>" +
+      "<span class='tp-seg stealth'>" + iconHtml("stealth", "") + "Stealth</span>" +
+      pill(1, "Work", 5, false) +
+      pill(2, "Mail", 3, true) +
+      pill(3, "Dev", 0, false) +
+      "<span class='tp-sp'></span>" +
+      "<span class='tp-seg lead'>;N</span>" +
+      "<span class='tp-seg dark'>" + iconHtml("moon", "") + "Dark</span>" +
+      "<span class='tp-seg mute'>" + iconHtml("muted", "") + "Muted</span>";
+  }
+  renderThemePreview();
 
   const MODES: DarkMode[] = ["auto", "dark", "light", "off"];
   const ENGINES: DarkEngine[] = ["auto", "dynamic", "filter"];
@@ -406,9 +548,11 @@ import type {
       statusBar: statusBar.checked,
       statusBarPosition: statusBarPosition.value === "top" ? "top" : "bottom",
       autoRestore: autoRestore.checked,
+      keepStealth: keepStealth.checked,
       apps: appsFromForm(),
       dark: darkFromForm(),
-      reader: readerFromForm()
+      reader: readerFromForm(),
+      theme: uiTheme
     };
   }
 
@@ -537,6 +681,15 @@ import type {
     statusBar.checked = c.statusBar !== false;
     statusBarPosition.value = c.statusBarPosition === "top" ? "top" : "bottom";
     autoRestore.checked = c.autoRestore !== false;
+    keepStealth.checked = c.keepStealth === true;
+    uiTheme = {
+      preset: c.theme?.preset || DEFAULT_UI_PRESET,
+      accent: c.theme?.accent || "",
+      background: c.theme?.background || "",
+    };
+    renderPresets();
+    syncThemeInputs();
+    applyTheme(uiTheme);
     // Apps: fall back to defaults when absent (linked by reference via spread).
     // An explicitly emptied app list is a valid user choice, so "empty"
     // cannot mean "corrupt" — but vConfig has already guaranteed the array, so
@@ -551,10 +704,11 @@ import type {
     loadDarkForm(c.dark, c.reader);
   });
 
-  // Horizontal logo (icon + wordmark) in the settings header.
+  // Horizontal logo (icon + wordmark) in the settings header. `logoUrl` asks
+  // the palette: a light preset needs the dark-wordmark file.
   try {
     const img = document.getElementById("logoImg") as HTMLImageElement;
-    img.src = browser.runtime.getURL("lazyfox-logo.svg");
+    img.src = logoUrl();
   } catch (e) {
     // ignore
   }

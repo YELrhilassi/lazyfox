@@ -31,8 +31,10 @@
 
 import { copyText, removeHtmlAttr, setHtmlAttr } from "../../shared/dom";
 import { manualTextKey, type PopupCtl } from "../../shared/overlay";
+import { fieldCss } from "../../shared/overlaycss";
 import { send } from "../../shared/protocol";
 import { windowStep } from "../../shared/resize";
+import { uiCss } from "../../shared/theme";
 import { createSession, createTextModel } from "./find/model";
 import { flashOverlay, hitOverlay } from "./find/overlays";
 import { createScrollMemory } from "./find/scroll";
@@ -60,23 +62,29 @@ const FIND_CSS =
   "pointer-events:none !important;}" +
   ".lf-popup .lf-panel{pointer-events:auto;width:380px;max-width:94vw;max-height:none;}" +
   ".lf-frow{display:flex;align-items:center;gap:8px;padding:8px 12px;}" +
-  ".lf-finput{flex:1;min-width:0;background:#16161e;border:1px solid #414868;border-radius:6px;color:#c0caf5;" +
-  "font:13px ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;padding:5px 9px;outline:none;}" +
-  ".lf-finput:focus{border-color:#7aa2f7;}" +
-  ".lf-finput.lf-cmd{color:#565f89;}" +
-  ".lf-finput.lf-yank{border-color:#e0af68;}" +
-  ".lf-fcount{flex:none;font:700 11px ui-monospace,Menlo,Consolas,monospace;color:#7aa2f7;" +
-  "background:#16161e;border:1px solid #414868;border-radius:6px;padding:3px 8px;min-width:34px;text-align:center;}" +
-  ".lf-fcount.zero{color:#f7768e;border-color:#f7768e;}" +
-  ".lf-fcount.vis{background:#292e42;border-color:#2ac3de;color:#2ac3de;}" +
-  ".lf-fcount.sel{background:#292e42;border-color:#e0af68;color:#e0af68;}" +
+  // The same field the popups draw — one skin, imported, not copied. See
+  // overlaycss.ts fieldCss: the find widget builds its own small sheet so a
+  // page never receives the whole popup stylesheet, and its private copy of
+  // that skin had already drifted (a different border token, a different type
+  // size) before this became shared.
+  fieldCss(".lf-finput") +
+  ".lf-finput{flex:1;min-width:0;margin:0;}" +
+  ".lf-finput.lf-yank{border-color:var(--lf-yellow);}" +
+  ".lf-fcount{flex:none;font:700 11px ui-monospace,Menlo,Consolas,monospace;color:var(--lf-accent);" +
+  "background:var(--lf-bg2);border:1px solid var(--lf-border2);border-radius:var(--lf-r-sm);padding:3px 8px;min-width:34px;text-align:center;}" +
+  ".lf-fcount.zero{color:var(--lf-red);border-color:var(--lf-red);}" +
+  ".lf-fcount.vis{background:var(--lf-raise);border-color:var(--lf-cyan);color:var(--lf-cyan);}" +
+  ".lf-fcount.sel{background:var(--lf-raise);border-color:var(--lf-yellow);color:var(--lf-yellow);}" +
   ".lf-fhint{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:center;padding:6px 12px 8px;" +
-  "font-size:10px;color:#565f89;border-top:1px solid #2a2f45;min-height:20px;}" +
-  ".lf-fhint b{color:#7aa2f7;font-weight:700;}" +
-  ".lf-frange{flex:1;text-align:right;color:#e0af68;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}";
+  "font-size:10px;color:var(--lf-dim);border-top:1px solid var(--lf-border);min-height:20px;}" +
+  ".lf-fhint b{color:var(--lf-accent);font-weight:700;}" +
+  ".lf-frange{flex:1;text-align:right;color:var(--lf-yellow);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}";
 
-const FIND_HTML =
-  "<style>" + FIND_CSS + "</style>" +
+// A BUILDER, not a constant: the stylesheet now carries the palette tokens, and
+// a constant would bake whichever palette happened to be current when this
+// module was imported — before the config push arrives.
+const findHtml = (): string =>
+  "<style>" + uiCss(FIND_CSS) + "</style>" +
   "<div class='lf-panel'>" +
   "<div class='lf-frow'>" +
   "<input class='lf-finput' placeholder='find in page' spellcheck='false'/>" +
@@ -90,17 +98,17 @@ const FIND_HTML =
 
 const RESIZE_CSS =
   ".rz{position:fixed;right:18px;bottom:18px;z-index:2147483647;min-width:320px;" +
-  "background:rgba(20,20,30,.98);color:#c0caf5;font:13px/1.5 ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;" +
-  "border:1px solid #414868;border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.55);padding:12px 14px}" +
-  ".rz-title{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#565f89;" +
-  "border-bottom:1px solid #2a2f45;padding-bottom:8px;margin-bottom:8px}" +
-  ".rz-size{font-size:16px;color:#7aa2f7;font-weight:600}" +
-  ".rz-keys{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:#9aa5ce}" +
-  ".rz-k{display:inline-block;background:#16161e;border:1px solid #414868;border-bottom-width:2px;" +
-  "border-radius:4px;padding:0 6px;color:#7aa2f7;font-size:11px;margin-right:6px}";
+  "background:var(--lf-panel);color:var(--lf-fg);font:13px/1.5 ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;" +
+  "border-radius:var(--lf-r-lg);box-shadow:var(--lf-shadow);padding:12px 14px}" +
+  ".rz-title{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--lf-dim);" +
+  "border-bottom:1px solid var(--lf-border);padding-bottom:8px;margin-bottom:8px}" +
+  ".rz-size{font-size:16px;color:var(--lf-accent);font-weight:600}" +
+  ".rz-keys{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:var(--lf-sub)}" +
+  ".rz-k{display:inline-block;background:var(--lf-bg2);border:1px solid var(--lf-border2);border-bottom-width:2px;" +
+  "border-radius:var(--lf-r-sm);padding:0 6px;color:var(--lf-accent);font-size:11px;margin-right:6px}";
 
-const RESIZE_HTML =
-  "<style>" + RESIZE_CSS + "</style>" +
+const resizeHtml = (): string =>
+  "<style>" + uiCss(RESIZE_CSS) + "</style>" +
   "<div class='rz'><div class='rz-title'>Resize window</div>" +
   "<div class='rz-size'>\u2014 \u00d7 \u2014</div>" +
   "<div class='rz-keys'>" +
@@ -114,7 +122,7 @@ export function openFindPopup(
   shell: ContentPopupShell,
   setFindState?: (s: { cur: number; count: number } | null) => void
 ): void {
-  shell.open(FIND_HTML, (root) => {
+  shell.open(findHtml(), (root) => {
     const input = root.querySelector(".lf-finput") as HTMLInputElement;
     const countEl = root.querySelector(".lf-fcount") as HTMLElement;
     const keysEl = root.querySelector(".lf-fkeys") as HTMLElement;
@@ -352,7 +360,7 @@ export function openFindPopup(
 
 export function openResizePopup(shell: ContentPopupShell): void {
   shell.close();
-  shell.open(RESIZE_HTML, (root) => {
+  shell.open(resizeHtml(), (root) => {
     const sizeEl = root.querySelector(".rz-size") as HTMLElement;
     const updateSize = () => {
       void send("windowSize").then((r) => {

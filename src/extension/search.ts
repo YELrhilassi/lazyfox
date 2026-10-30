@@ -6,6 +6,7 @@
 
 import { core } from "../shared/core";
 import { activeTabInWindow, isCommandCenter } from "./tabs";
+import { stealthContainerOf } from "./stealth";
 
 let visitedCache: any[] = [];
 let visitedCacheAt = 0;
@@ -153,22 +154,29 @@ export async function doSearch(query: string, winId: number | null = null) {
     await browser.tabs.update(tab.id, { url: await searchUrlFor(q), active: true });
     return { ok: true, engine: "default", reused: true };
   }
-  try {
-    await browser.search.search({ query: q });
-    return { ok: true };
-  } catch (e) {
-    // browser.search.search throws when the engine is disabled or the user
-    // removed it. Fall back to opening a search URL ourselves -- through
-    // searchUrlFor, not a hardcoded Google: this path previously hardcoded
-    // google.com, so a user whose engine was DuckDuckGo silently got Google
-    // the one time the preferred API failed.
+  // A search started from a stealth tab stays inside the sandbox, so its query
+  // never travels in the default jar — where the result page would arrive
+  // signed in, which is exactly the leak the stealth tab exists to prevent.
+  const jar = await stealthContainerOf(tab);
+  if (!jar) {
+    try {
+      await browser.search.search({ query: q });
+      return { ok: true };
+    } catch (e) {
+      // browser.search.search throws when the engine is disabled or the user
+      // removed it. Fall back to opening a search URL ourselves -- through
+      // searchUrlFor, not a hardcoded Google: this path previously hardcoded
+      // google.com, so a user whose engine was DuckDuckGo silently got Google
+      // the one time the preferred API failed.
+    }
   }
   await browser.tabs.create({
     url: await searchUrlFor(q),
     active: true,
     ...(winId == null ? {} : { windowId: winId }),
+    ...(jar ? { cookieStoreId: jar } : {}),
   });
-  return { ok: true, engine: "fallback" };
+  return { ok: true, engine: jar ? "stealth" : "fallback" };
 }
 
 export async function historySearch(q: string) {

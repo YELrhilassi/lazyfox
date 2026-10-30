@@ -275,6 +275,10 @@
     "scripts/test/hints-focus.test.ts",
     "scripts/test/hints-activation.test.ts",
     "scripts/test/hints-resolve.test.ts",
+    // hints-clip tests visibleRect's ancestor clip math: it builds BODY/HTML
+    // chains from synthetic elements, and probe.ts — which the test imports —
+    // is DOM-typed (Element, getComputedStyle) and belongs to tsconfig.json.
+    "scripts/test/hints-clip.test.ts",
     "scripts/test/typing-signals.test.ts",
     "scripts/wk-preview.ts",
     "scripts/hints-preview.ts",
@@ -287,6 +291,24 @@
     "scripts/test/split-unsplit.test.ts",
     "scripts/test/dark-theme.test.ts",
     "scripts/test/startup-resume.test.ts",
+    // session-switch is the same shape: it drives the restore path through a fake
+    // `browser`, and restore.ts / sessions.ts reach DOM-free but browser-global
+    // modules (relay, chromelayer) that this config deliberately cannot name. The
+    // modules are typechecked by tsconfig.json, which owns the browser tree.
+    "scripts/test/session-switch.test.ts",
+    // session-tabs is the same shape: it drives sessions.ts through a fake
+    // `browser` to pin which tab row the popup marks, and sessions.ts reaches
+    // the WebExtension global this config cannot name. The module itself is
+    // typechecked by tsconfig.json.
+    "scripts/test/session-tabs.test.ts",
+    // stealth-quit is the same shape once more: it drives stealth.ts — and so
+    // store.ts and tabs.ts — through a fake `browser`, and those modules reach
+    // the WebExtension global this config deliberately cannot name. The modules
+    // are typechecked by tsconfig.json, which owns the browser tree; only the
+    // Node-side test of them is out of scope here. Listed rather than left out
+    // silently because it pins the rule that decides whether a sandbox survives
+    // a restart, and a test no config compiles stops being true quietly.
+    "scripts/test/stealth-quit.test.ts",
     "scripts/test/session-autosave.test.ts",
     "scripts/test/hints-occlusion.test.ts",
     // hints-collect-budget and hints-labels are the same shape as the hints

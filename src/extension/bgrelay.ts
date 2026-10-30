@@ -22,7 +22,7 @@ import {
 import {
   assignSessionMarker,
   deleteSession,
-  isResumeActive,
+  isSplashActive,
   moveTabBetweenSessions,
   newSession,
   quitBrowser,
@@ -35,7 +35,8 @@ import {
 } from "./sessions";
 import { markChromeAlive } from "./services/chromelayer";
 import { openDiagnosticsTab, openSetupTab } from "./services/components";
-import { stealthOpen } from "./stealth";
+import { stealthChromeAlive, stealthOpen } from "./stealth";
+import { searchUrlFor } from "./search";
 import { pushConfigToChrome, pushSessionStateToChrome } from "./bgpushes";
 
 // Forward a request to the active tab's content script.
@@ -55,8 +56,15 @@ async function relayToContent(
 // One handler per RelayAction. The helper's requests arrive over the relay
 // port (services/relay.ts); a missing handler answers null so the helper's
 // request/reply never hangs until its timeout.
+//
+// The second argument is the window whose helper asked. Only the handlers that
+// describe "this window" read it (session state, the stealth jar); the rest
+// target a tab the request already names.
 export const relayHandlers: {
-  [K in RelayAction]: (req: RelayReq<K>) => Promise<RelayRes<K>> | RelayRes<K>;
+  [K in RelayAction]: (
+    req: RelayReq<K>,
+    winId?: number | null
+  ) => Promise<RelayRes<K>> | RelayRes<K>;
 } = {
   // The chrome helper announces its version, the active profile's name and
   // directory leaf, and whether the Lazyfox window actor is registered. Stored
@@ -65,6 +73,11 @@ export const relayHandlers: {
   // retrying (a fire-and-forget req only proves acceptance, not delivery).
   alive: (req) => {
     markChromeAlive();
+    // The helper owns two pieces of state the background can only ask it to
+    // apply: the autofill policy (its boot restores the user's pref) and the
+    // visit traces a wipe could not deliver. An announce is the moment both can
+    // be settled.
+    stealthChromeAlive();
     void writeKey("chromeHelperVersion", req.version || "");
     // Optional fields stay absent rather than becoming "": the emptiness is
     // meaningful ("the helper has not reported one yet").
@@ -77,12 +90,15 @@ export const relayHandlers: {
     // an array of lines joined with "\n" reads naturally everywhere it is
     // rendered.
     if (req.errs && req.errs.length) void writeKey("lfLoaderErrs", req.errs.join("\n"));
-    // AND one live fact back: is a launch resume running? A window whose helper
-    // boots during the restore has no way to know — the broadcast that raised the
-    // splash reached only the windows that already had a relay port — and this
-    // ack is the moment it can be told. Omitted (not `false`) when idle: absent is
-    // the ordinary case and the helper's splash stays down on it.
-    return isResumeActive() ? { ok: true, splash: true } : { ok: true };
+    // AND one live fact back: is a session operation covering the windows right
+    // now? A window whose helper boots during a restore has no way to know — the
+    // broadcast that raised the splash reached only the windows that already had
+    // a relay port — and this ack is the moment it can be told. It covers a
+    // launch RESUME and a user SWITCH alike: both rebuild window sets, and a
+    // window that boots mid-switch must cover itself too. Omitted (not `false`)
+    // when idle: absent is the ordinary case and the helper's splash stays down
+    // on it.
+    return isSplashActive() ? { ok: true, splash: true } : { ok: true };
   },
   // The helper flipped its own cached copy; flip storage to match so content
   // scripts, the command center and options agree.
@@ -129,10 +145,21 @@ export const relayHandlers: {
     return null;
   },
   // The result ({ ok, error }) goes back so the helper can toast the outcome
-  // instead of swallowing it.
-  stealthOpen: () => stealthOpen(() => pushSessionStateToChrome()),
+  // instead of swallowing it. The tab lands in the ASKING window's jar, and the
+  // confirming state push goes back to that same window — `requestChrome`
+  // would have sent it to whichever window the background considered current,
+  // which is how a session badge could describe the wrong window.
+  stealthOpen: async (req, winId) => {
+    const url = req && req.query ? await searchUrlFor(req.query) : req && req.url;
+    const w = winId == null ? null : winId;
+    return stealthOpen({
+      url,
+      winId: w,
+      onDone: () => void pushSessionStateToChrome(w),
+    });
+  },
   // Read-only pulls for the chrome-side UI.
-  sessionState: () => sessionState(),
+  sessionState: (_req, winId) => sessionState(winId == null ? null : winId),
   sessionTabs: (req) => sessionTabs(req.name),
   recentlyClosed: () => recentlyClosed(),
   // Routed here rather than calling gBrowser.undoCloseTab locally so it goes
@@ -149,17 +176,14 @@ export const relayHandlers: {
     await newSession(req.name);
     return null;
   },
-  restoreSession: async (req) => {
-    await restoreSession(req.name);
-    return null;
-  },
+  // Both answer with the outcome: "could not switch" has to be distinguishable
+  // from "still switching" on the helper, or `;P` on a dead name silently did
+  // nothing.
+  restoreSession: (req) => restoreSession(req.name),
   // Returns the outcome: the caller awaits it to know the storage write has
   // landed before it re-reads the list (see protocol.ts).
   deleteSession: (req) => deleteSession(req.name),
-  switchSessionByMarker: async (req) => {
-    await switchSessionByMarker(req.marker);
-    return null;
-  },
+  switchSessionByMarker: (req) => switchSessionByMarker(req.marker),
   assignSessionMarker: async (req) => {
     await assignSessionMarker(req.name, req.marker);
     return null;
@@ -189,12 +213,20 @@ export const relayHandlers: {
   },
 };
 
-export function handleRelayReq(action: string, arg: unknown): Promise<unknown> {
-  const fn = relayHandlers[action as RelayAction] as ((req: unknown) => unknown) | undefined;
+export function handleRelayReq(
+  action: string,
+  arg: unknown,
+  winId: number | null = null
+): Promise<unknown> {
+  const fn = relayHandlers[action as RelayAction] as
+    | ((req: unknown, winId?: number | null) => unknown)
+    | undefined;
   if (!fn) return Promise.resolve(null);
   // Every live request from the helper is evidence the chrome layer is up —
   // keep the gate latched even if the dedicated announce raced the extension
   // still loading on a cold start.
   if (action !== "alive") markChromeAlive();
-  return Promise.resolve(fn((arg || {}) as never)).then((r) => (r === undefined ? null : r));
+  return Promise.resolve(fn((arg || {}) as never, winId)).then((r) =>
+    r === undefined ? null : r
+  );
 }

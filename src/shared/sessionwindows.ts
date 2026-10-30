@@ -41,6 +41,64 @@ export function sessionWindowsOf(s: WindowSetSource | null | undefined): Session
 }
 
 /**
+ * A session with every stealth tab removed.
+ *
+ * Stealth tabs are not session content: their whole promise is that they end
+ * with the tab, so remembering one (or re-opening it at launch) would keep a
+ * jar alive that the user was told is wiped. New snapshots never contain one —
+ * sessions/storage excludes them at capture time — but profiles upgraded from a
+ * build that recorded them DO, and reading is the only place that can stop an
+ * old snapshot from resurrecting a container.
+ *
+ * `splits` is cleared only when a tab was actually dropped: the encoded pairs
+ * are POSITIONS, so removing one tab renumbers every pair after it, and a
+ * stale pair would silently pair two tabs the user never split. The per-tab
+ * `splitViewId` grouping (splitGroupsOfTabs) is position-independent and takes
+ * over from there.
+ */
+export function stripStealthFromSession(s: Session): Session {
+  const tabs = Array.isArray(s.tabs) ? s.tabs : [];
+  const windows = Array.isArray(s.windows) ? s.windows : null;
+  const dropInWindow = (w: SessionWindow): SessionWindow => {
+    const before = Array.isArray(w.tabs) ? w.tabs : [];
+    const keep = before.filter((t) => !(t && t.stealth === true));
+    if (keep.length === before.length) return w;
+    return { ...w, tabs: keep, active: activeAfterDrop(before, keep, w.active), splits: "" };
+  };
+  const flatKeep = tabs.filter((t) => !(t && t.stealth === true));
+  const next: Session = {
+    ...s,
+    tabs: flatKeep,
+    active: activeAfterDrop(tabs, flatKeep, s.active),
+    splits: flatKeep.length === tabs.length ? s.splits || "" : "",
+  };
+  if (windows) next.windows = windows.map(dropInWindow);
+  // The flat fields MIRROR the first window (see sessionFromWindows), and a
+  // session whose two accounts of itself disagree restores one thing and
+  // reports another. Re-derive from the filtered first window.
+  if (next.windows && next.windows.length) {
+    const first = next.windows[0]!;
+    next.tabs = first.tabs;
+    next.active = first.active;
+    next.splits = first.splits || "";
+  }
+  return next;
+}
+
+// The saved active index, re-pointed after tabs were removed: the tab that WAS
+// active keeps the selection when it survived, and otherwise the index is
+// clamped into the shorter list (dropping the selection entirely would make a
+// restore open on an arbitrary tab).
+function activeAfterDrop(before: SessionTab[], keep: SessionTab[], active: number | undefined): number {
+  const at = typeof active === "number" && active >= 0 ? active : 0;
+  if (keep.length === before.length) return at;
+  const was = before[at];
+  const found = was ? keep.indexOf(was) : -1;
+  if (found >= 0) return found;
+  return Math.min(Math.max(0, at), Math.max(0, keep.length - 1));
+}
+
+/**
  * Build a session from a captured window set.
  *
  * The flat fields MIRROR the first window rather than being dropped: they are

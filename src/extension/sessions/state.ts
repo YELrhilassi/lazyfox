@@ -4,10 +4,13 @@
 
 import { core } from "../../shared/core";
 import { isUITab } from "../tabs";
-import { reconcileStealth, stealthContainers } from "../stealth";
+import { reconcileStealth, stealthContainers, stealthUserContextIds } from "../stealth";
 import { readCurrentSessionName, readSessions } from "./storage";
 
-export async function sessionState(): Promise<{
+// `winId` is the window whose helper (or page) asked. Absent means "the
+// background's current window", which is only right for a caller with no
+// window of its own.
+export async function sessionState(winId?: number | null): Promise<{
   name: string;
   marker: number;
   tabIndex: number;
@@ -20,9 +23,11 @@ export async function sessionState(): Promise<{
   tabIds: number[];
   activeStealth: boolean;
   stealthFlags: boolean[];
+  stealthIds: number[];
 }> {
   await reconcileStealth();
-  const allTabs = await browser.tabs.query({ currentWindow: true });
+  const w = winId == null ? null : winId;
+  const allTabs = await browser.tabs.query(w != null ? { windowId: w } : { currentWindow: true });
   const all = await readSessions();
   const name = (await readCurrentSessionName()) || "default";
   const cur = all[name];
@@ -86,7 +91,13 @@ export async function sessionState(): Promise<{
     activeStealth:
       active >= 0 && !!list[active] && stealthContainers.has(list[active]!.cookieStoreId),
     // Parallel to tabIds (strip order) so the chrome helper can mark each
-    // tab's stealth state without re-deriving it.
-    stealthFlags: (allTabs || []).map((t: any) => stealthContainers.has(t.cookieStoreId))
+    // tab's stealth state without re-deriving it. Kept as the FALLBACK: the
+    // array is positional against this query, and by the time the helper reads
+    // it a tab may have moved or closed, which is how the badge used to lie.
+    stealthFlags: (allTabs || []).map((t: any) => stealthContainers.has(t.cookieStoreId)),
+    // The authoritative form: the container ids themselves. The helper reads
+    // the selected tab's userContextId (a live property) and tests membership,
+    // so the badge cannot describe the wrong tab.
+    stealthIds: stealthUserContextIds()
   };
 }

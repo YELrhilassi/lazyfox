@@ -80,10 +80,12 @@ dist/        the built output (committed so installs need no toolchain)
   `overlaycss.ts`; every one of these modules is behaviour only.
 - `observability.ts` — the page-level contract the e2e suite reads
   (`data-lf-*` mirrors, `lazyfox:list` events).
-- `statusbar.ts` — the tmux-style status bar renderer. Its stylesheet is in
-  `statusbar-css.ts` and its pure formatters (pill colours, readable ink, the
-  `data-lf-status` mirror string) are in `statusbar-segments.ts`, so the bar’s
-  own report of its state can be asserted without a DOM.
+- `statusbar.ts` — the status bar renderer: flat segments, session pills with
+  one accent for the current session, and the state badges on the right. Its
+  stylesheet is in `statusbar-css.ts`, its icons in `icons.ts`, and its pure
+  formatters (pill text/markup, the dark-mode segment, the `data-lf-status`
+  mirror string) are in `statusbar-segments.ts`, so the bar’s own report of its
+  state can be asserted without a DOM.
 - `ops.ts` — the `ActionOps` interface: every capability a popup or action
   needs, abstracted per context.
 - `dom.ts`, `dev.ts`, `wk.ts`, `corefetch.ts` — DOM helpers, dev logging,
@@ -165,10 +167,45 @@ itself — it builds the modules below and wires them together.
   place, the rest created beside it — re-pairing each window's splits through
   that window's own chrome helper (`requestChromeToWindow`). The flat
   tabs/active/splits fields mirror the focused window for older readers.
+
+  A SWITCH is serialized from checkpoint to rebuild (`restore.serializeRestore`),
+  and it names the session it is leaving from memory rather than from storage:
+  the pointer is written only after the rebuild succeeds, so a second switch
+  queued behind the first used to checkpoint the new window into the old
+  session. A queued switch that has been overtaken by a newer one stands down
+  entirely instead of rebuilding a session that is about to be replaced.
+
+  A rebuild opens ONE new tab first, drops the outgoing tabs, and only then
+  opens the rest: the outgoing tabs stay if nothing could be opened (a window
+  with no content tab would close itself), and the window never holds both sets
+  loading at once. Rebuilt tabs are always NEW tabs — reusing one kept its
+  history, so Back walked into the session just left — pins are restored, and
+  the window's relay tab survives (it is the channel the restore reports over).
+
+  The chrome helper covers every window with the Lazyfox loader from the moment
+  a switch is asked for, labelled with the destination. The cover comes down
+  when the FOCUSED window's front page has loaded (bounded at 2.5s: past that
+  the logo is hiding the page rather than the churn), and its end is what makes
+  every status bar re-read its session summary. A launch resume is the other
+  case: it waits for the whole restored set, and it settles on the restored
+  window set instead of a fixed pause, so a launch that matches its snapshot
+  starts reconciling immediately.
 - `services/` — the chrome-helper-facing services the background talks to
   (relay, component discovery, home shim, navigation).
 - `search.ts` — search/URL suggestions, history and bookmarks.
-- `stealth.ts` — isolated container tabs that wipe their data on close.
+- `stealth.ts` — isolated container tabs: one jar per window, shared by every
+  stealth tab there. Its lifetime has two ends, and only two: the last tab
+  closes, or the browser restarts (with `keepStealth` on, the restart is not an
+  end — the jar comes back with the session it was open in). A SESSION SWITCH is
+  deliberately not one of them: a stealth tab is not session content, so the
+  rebuild leaves it open and its jar untouched. A jar's traces are recorded AS
+  THEY HAPPEN and removed when it goes: the exact Places visits its pages made
+  (URL and time, so a site browsed normally keeps its history), its
+  download-list rows, the matching entries in Firefox's own recently-closed
+  list, and — for as long as a jar exists — the password manager's autofill.
+  The privileged half of that is `chrome/stealthprivate.ts`; a visit the helper
+  was not running to delete is queued in the record and purged on its next
+  announce rather than dropped.
 - `windowops.ts` — window resize/move/zoom/zen and tab activate/mute. Its two
   recovery flows live beside it and are re-exported, so the leader key surface
   still has one import site: `closedtabs.ts` (Firefox’s recently-closed list,

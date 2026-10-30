@@ -23,9 +23,19 @@ import type { StatusBarCtl } from "./statusbar";
 export interface PushDeps {
   split: SplitView;
   status: StatusBarCtl;
-  // The launch splash (see splash.ts). Driven from the background, which is the
-  // only side that knows a session resume is running.
+  // The session loader (see splash.ts). Driven from the background, which is
+  // the only side that knows a switch/resume is running.
   splash: SplashCtl;
+  // Ask the background for the fresh session state. Called when the loader
+  // comes down: that is the one moment every window's bar has to agree with
+  // what the window now holds, and the push that would have told it can be
+  // lost while a restore is rebuilding the strip.
+  refreshSessionState(): void;
+  // Remove exactly these Places visits (a stealth jar's traces). Privileged:
+  // the background cannot touch Places, so the request rides a push.
+  removeStealthVisits(visits: Array<{ url: string; at: number }>, urls?: string[]): void;
+  // Turn Firefox's password autofill off for as long as a stealth jar exists.
+  setStealthAutofill(off: boolean): void;
   // Records that a tab's own content script is running. `doc` identifies the
   // reporting document; the URL only describes it (see noteContentPresent).
   setContentPresent(index: number, active: boolean, url: string, doc?: string): void;
@@ -62,9 +72,28 @@ export function createPushDispatcher(deps: PushDeps): PushDispatcher {
       // Session restore finished opening tabs; re-create the native split
       // groupings. Positions are 1-based over the SAVED tab list.
       restoreSplits: (req) => deps.split.restoreSplits(req.groups, req.expect),
-      // A startup resume is running (or has finished): cover the window while
-      // Firefox's native restore and our reconcile churn through it.
-      splash: (req) => deps.splash.set(!!req.on),
+      // A switch or startup resume is running (or has finished): cover the
+      // window while the restore churns through it. The label is what makes a
+      // user switch paint immediately.
+      // A stealth jar closed: remove the visits it made, not the URL's whole
+      // history (see chrome/stealthprivate.ts).
+      stealthHistory: (req) =>
+        deps.removeStealthVisits(
+          Array.isArray(req.visits) ? req.visits : [],
+          Array.isArray(req.urls) ? req.urls : []
+        ),
+      // A jar exists (or the last one just went): hold saved-login autofill off
+      // for its lifetime, because Firefox's password manager fills by origin and
+      // has no container dimension.
+      stealthAutofill: (req) => deps.setStealthAutofill(!!req.off),
+      splash: (req) => {
+        deps.splash.set(!!req.on, req.label);
+        // COVER DOWN MEANS "READ THE BAR AGAIN". The background pushes the new
+        // session state too, but a restore removes and recreates tabs while
+        // that push is in flight, and a lost push used to leave the bar on the
+        // old session name until the next restart.
+        if (!req.on) deps.refreshSessionState();
+      },
       // Status-bar push/reply: the fresh session summary as an object.
       sessionState: (req) => deps.status.applySessionState(req),
       // `;D` from a page (web page or the command center): clear the bar's

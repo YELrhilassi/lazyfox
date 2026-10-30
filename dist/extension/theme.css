@@ -1,0 +1,57 @@
+/* The UI palette's defaults, for every Lazyfox page.
+   Loaded BEFORE a page's own stylesheet, and before any script: the page's
+   script replaces these custom properties with the user's chosen preset (see
+   shared/theme.ts and extension/pagetheme.ts), and every surface below reads the
+   tokens. Keeping the defaults here rather than in each page means a page that
+   forgets to apply the theme still renders in a coherent palette instead of
+   falling back to black-on-white.
+
+   This is NOT dark mode. Dark mode recolours web pages (docs/DARK-MODE.md); this
+   file paints Lazyfox's own surfaces. */
+
+:root {
+  color-scheme: dark;
+  --lf-bg: #1a1b26;
+  --lf-bg2: #16161e;
+  --lf-panel: #1e1e2e;
+  --lf-fg: #c0caf5;
+  --lf-sub: #9aa5ce;
+  --lf-dim: #838aa8;
+  --lf-border: #2a2f45;
+  --lf-border2: #414868;
+  --lf-raise: #292e42;
+  /* The ACTIVE row: a coloured step toward the accent, deliberately brighter
+     than a hovered row's neutral --lf-raise so the selected item is the first
+     thing the eye lands on. Derived per preset in theme.ts; this is Tokyo's. */
+  --lf-sel: #3e4c71;
+  /* The session chip's fill. A separate token from --lf-raise because the
+     presets that cannot separate a raised surface from the bar get a measured
+     step instead (theme.ts); this is Tokyo's, which does separate. */
+  --lf-chip: #292e42;
+  --lf-accent: #7aa2f7;
+  --lf-green: #9ece6a;
+  --lf-red: #f7768e;
+  --lf-yellow: #e0af68;
+  --lf-purple: #bb9af7;
+  --lf-cyan: #2ac3de;
+  --lf-on-accent: #101014;
+  --lf-on-green: #101014;
+  --lf-on-red: #101014;
+  --lf-on-yellow: #101014;
+  --lf-on-purple: #101014;
+  --lf-on-cyan: #101014;
+  --lf-tint: rgba(255, 255, 255, .05);
+  --lf-backdrop: rgba(8, 8, 14, .45);
+  --lf-shadow: 0 18px 46px rgba(0, 0, 0, .5);
+  /* Shape. Same three steps as shared/theme.ts RADIUS; every border-radius in
+     a Lazyfox stylesheet reads one of these instead of a literal. */
+  --lf-r-lg: 6px;
+  --lf-r-md: 4px;
+  --lf-r-sm: 2px;
+}
+
+/* Form controls, scrollbars and the caret follow the ground, not the OS. A
+   light preset is unusable while Firefox still paints its dark widgets. */
+:root[data-lf-ui="light"] {
+  color-scheme: light;
+}

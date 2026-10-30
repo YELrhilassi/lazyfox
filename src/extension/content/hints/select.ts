@@ -1,40 +1,84 @@
 // Turning candidates into the batch that gets labels: in viewport → visible →
-// reachable (not occluded) → not a nested/duplicate of something already kept.
+// ON THE PAGE'S VISIBLE SURFACE → not a nested/duplicate of something already
+// kept.
 //
 // The order matters and the diagnostics page runs this exact function, so the
 // numbers it reports are the numbers `;f` acted on.
 //
-// OCCLUSION DEGRADES THE LABEL, IT DOES NOT DELETE THE CONTROL.
+// OCCLUSION IS A SHARE, AND A LABEL IS ONLY DRAWN WHERE THE CONTROL IS VISIBLE.
 //
-// This used to be a veto: `reachable()` false dropped the candidate, so any
-// control with something painted over it — a sticky header over the first row, a
-// cookie wall, a player's control bar, an ad layer — simply had no key. That is
-// the one failure the hint layer cannot recover from, because the user has no
-// way to learn the control exists: there is nothing on screen to say "this one is
-// there, but something is on top of it right now". A hint under a scrim is
-// usually still activatable (activation clicks the ELEMENT, not the point the
-// label sits on — see hints/activate.ts, which deliberately keeps the pointer
-// sequence off a foreign target and still calls the control's own click), and
-// when it is not, the existing activation watcher reports "the page did nothing"
-// rather than silence.
+// Two earlier policies both failed the user, in opposite directions:
 //
-// So a covered control is KEPT and FLAGGED. The flag reaches the overlay, which
-// draws that label dimmed, and it is in the hint snapshot so a test can assert
-// the state instead of inferring it from a missing key.
-import { hintVisible, inViewport, reachable, sheetOver } from "./probe";
-import { createVisibilityPass, type VisibilityPass } from "./visibility";
-import { isMediaSurface, specificity } from "./collect";
-import { BATCH_SCAN_FACTOR } from "./selectors";
+//   1. `reachable()` was a veto, so a control with anything painted over any of
+//      its points was dropped entirely. On a page with a sticky header or a
+//      floating player bar that is most of the first screen: "there is a button
+//      right there and no hint ever appears for it".
+//   2. it became "keep it, flag it, draw it dimmed". That produced labels for
+//      controls nobody can see: on a page that stacks two layers of content
+//      (a carousel keeping its slides, a duplicated sticky shell, a drawer
+//      holding the previous screen) the layer underneath got a whole faint batch
+//      of its own, and a control behind a dialog got a label drawn ON the dialog
+//      — because labels live in the top layer.
+//
+// The answer is neither: a control is on the user's surface by a DEGREE, and the
+// degree decides both whether it may be labelled and where. `coverageOf` samples
+// a grid over the control and reports the share of its own pixels the pointer can
+// reach, the first thing covering the rest, whether the control is topmost at its
+// own centre, and the free point its label belongs at.
+//
+//   * less than MIN_VISIBLE_SHARE of it is its own surface → NOT hinted. That is
+//     the faint batch under a folded layer and the label on top of a dialog,
+//     gone at the cause rather than dimmed;
+//   * the rest of its surface is free → hinted, at full strength, anchored to
+//     the visible part (see the overlay), because a label half under a sticky bar
+//     is the same lie at a smaller scale;
+//   * `covered` survives only as a DIAGNOSTIC: "part of this control is painted
+//     over". It no longer changes how the label is drawn.
+import { coverageOf, hintVisible, inViewport, type Coverage } from "./probe";
+import { composedContains, createVisibilityPass, type VisibilityPass } from "./visibility";
+import { specificity } from "./collect";
+import { BATCH_SCAN_FACTOR, MIN_VISIBLE_SHARE } from "./selectors";
+import { coverageBench } from "./probe";
 
-/** One element that earned a label, and whether something is over it right now. */
+function nowMs(): number {
+  try {
+    return typeof performance !== "undefined" ? performance.now() : Date.now();
+  } catch {
+    return Date.now();
+  }
+}
+
+/**
+ * What the LAST selectHintables call cost, and where. Diagnostics only: the dev
+ * snapshot reads this to answer "the select pass is slow" with numbers.
+ * `coverage` aggregates the defaults real probe (coverageBench) whenever the
+ * default cover is what was driven; an injected cover is a test's, and its cost
+ * is not the engine's.
+ */
+export const selectBench = {
+  /** Candidates handed in. */
+  candidates: 0,
+  /** Candidates the loop actually judged before the scan cap stopped it. */
+  judged: 0,
+  coverageCalls: 0,
+  coverageMs: 0,
+  clipMs: 0,
+  sampleMs: 0,
+  samples: 0,
+};
+
+/** One element that earned a label, and where its label belongs. */
 export interface HintCandidate {
   el: Element;
   /**
-   * Nothing of the control's own surface could be hit-tested when the batch was
-   * built — an overlay, a sticky bar or a scrim is on top of it. The label is
-   * drawn DIMMED and the key still works; see the note at the top of this file.
+   * Part of the control's own surface is painted over (a sticky bar, a badge),
+   * so its label is anchored to the visible part (see `ax`/`ay`). This is a
+   * fact for the diagnostics page only — the label is drawn at full strength.
    */
   covered: boolean;
+  /** Fraction of the control's box the label should be anchored at. */
+  ax?: number;
+  ay?: number;
 }
 
 /**
@@ -57,15 +101,15 @@ export interface Rejection {
 export interface SelectResult {
   kept: HintCandidate[];
   hidden: number;
-  /** Kept, and flagged as covered. Not a rejection count any more. */
+  /** Kept, with part of its surface painted over. Not a filter stage. */
   covered: number;
   duplicate: number;
   /**
-   * Fully hidden behind a SEPARATE surface (a dialog, a popup sheet, a modal),
-   * and therefore not hinted at all — see hints/probe.ts sheetOver. This is not
-   * the dimmed case: a dimmed label is a statement about the same surface ("the
-   * control is here, something is painted over it"), while a label for a control
-   * behind a dialog would be drawn on top of the dialog.
+   * Not enough of the control is on the page's visible surface to be honest
+   * about: a dialog, a popup sheet, an opaque layer above it, or the layer
+   * underneath a stacked page. These are NOT hinted at all — a label for a
+   * control behind a dialog would be drawn on top of the dialog, and a label for
+   * the layer under a folded page points at pixels nobody can see.
    */
   behind: number;
   /**
@@ -81,19 +125,28 @@ export interface SelectResult {
  * How much a candidate deserves one of the limited labels, when there are more
  * candidates in view than the cap allows.
  *
- * Deterministic by construction: geometry and order only — no clock, no
- * randomness, no state. A fully-visible control outranks a partially-clipped one
- * (a control half under the viewport edge is harder to read, and often half
- * under a sticky bar), and within each band the nearer the viewport centre wins,
- * because that is what the user is looking at. Equal scores are resolved by the
- * caller's stable sort, i.e. document order.
+ * Two bands and nothing else. A fully-visible control outranks one that pokes
+ * into the viewport only partly (a control half under the edge is harder to
+ * read, and often half under a sticky bar); within a band the stable sort's
+ * anchor — document order — decides, so the batch reads like the page: the nav
+ * bar and the first rows get keys before the middle, and the ones that did not
+ * fit are the page's BOTTOM, counted as `more`, not a silent hole in the top.
+ *
+ * The centre-distance term this ranking used to carry is gone, and that was
+ * deliberate. It dropped the page's top edge on exactly the pages the user
+ * reads first: a HN front page kept its middle rows and lost the nav bar and
+ * the first five posts (the real-page diagnostic answered "not reached (batch
+ * scan limit)" for the nav links). "Reading order" is also what the tie-break
+ * has always been on a sub-cap page, so over the cap and under it now behave
+ * the same way instead of two different heuristics.
+ *
+ * Deterministic by construction: geometry and index only — no clock, no
+ * randomness, no state. Equal scores are resolved by the caller's stable sort,
+ * i.e. document order.
  */
 export function rankScore(r: DOMRect, vw: number, vh: number): number {
   const fullyIn = r.left >= 0 && r.top >= 0 && r.right <= vw && r.bottom <= vh;
-  const nx = vw > 0 ? (r.left + r.width / 2 - vw / 2) / (vw / 2) : 0;
-  const ny = vh > 0 ? (r.top + r.height / 2 - vh / 2) / (vh / 2) : 0;
-  const d = Math.min(Math.sqrt(nx * nx + ny * ny), 2);
-  return (fullyIn ? 8 : 0) + (2 - d);
+  return fullyIn ? 8 : 0;
 }
 
 // The fraction of the smaller box covered by the intersection of two rects.
@@ -122,8 +175,22 @@ export function targetKey(el: Element): string {
   }
 }
 
+// One entry in the kept list. `top` is the candidate's answer to "is the pointer
+// on me at my own centre?", which the duplicate rules use to tell a control that
+// merely overlaps a bigger clickable box from a copy painted underneath it.
+interface Kept {
+  el: Element;
+  r: DOMRect;
+  key: string;
+  covered: boolean;
+  rank: number;
+  top: boolean;
+  ax: number;
+  ay: number;
+}
+
 // The shared selection pipeline every hint surface runs:
-//   viewport → CSS-visible → reachable (not occluded) → not a duplicate/nested
+//   viewport → CSS-visible → on the visible surface → not a duplicate/nested
 //   target → ranked into the batch.
 //
 // Elements are kept in document order while the batch has room, so on an
@@ -133,10 +200,14 @@ export function targetKey(el: Element): string {
 // never produce two labels on the same pixels.
 //
 // WHEN THE PAGE HAS MORE CONTROLS THAN LABELS, the batch is RANKED (see
-// rankScore) instead of being the first N in document order. That cap used to be
-// silent and first-come: on a dense page the header and the sidebar took the
-// keys and the rows on screen got none, with nothing telling the user the rest
-// were reachable with `]`. The count of what did not fit comes back as `more`, so
+// rankScore): fully-visible controls first, then reading order — the top of the
+// page is hinted before the bottom, the way the user reads. The cap used to be
+// silent and first-come over everything INCLUDING off-screen controls — on a
+// dense page the one thing visible got the keys and the user could not reach
+// anything on it — and a later experiment ranked by distance to the viewport
+// centre, which threw away the top edge on reading-first pages (the HN report:
+// no nav, no first posts). Off-screen and half-clipped controls still lose to
+// fully visible ones. The count of what did not fit comes back as `more`, so
 // the session can say it out loud.
 //
 // The diagnostics page runs this exact function, so its numbers cannot drift
@@ -149,64 +220,130 @@ export function selectHintables(
   // the cache means the selector matches are not re-walked here. Given none, a
   // one-shot pass is created — the pre-cache cost, nothing left behind.
   pass?: VisibilityPass,
-  // The occlusion answer, injectable for the same reason the pass is: the claim
-  // here is a POLICY (covered is kept and flagged), and a policy should be
-  // testable without a browser to paint a scrim in. Defaults to the real probe.
-  reach: (el: Element) => boolean = reachable,
-  // The "is it behind a separate surface" answer, injectable for the same reason
-  // the reach probe is: the rule is a policy, and a policy should be testable
-  // without painting a modal in a browser. Defaults to the real geometry.
-  sheet: (el: Element) => Element | null = sheetOver,
+  // The paint-coverage answer, injectable for the same reason the pass is: the
+  // claim here is a POLICY (how much of a control must be on screen to earn a
+  // label, and which control wins a shared area), and a policy should be
+  // testable without a browser to stack two layers in. Defaults to the real
+  // probe.
+  cover: (el: Element) => Coverage = coverageOf,
   // Called once per rejected candidate, with the rule and the winner. Absent on
   // the live path (`;f`): the pass must not pay for an explanation nobody reads.
   explain?: (r: Rejection) => void
 ): SelectResult {
   const vis = pass || createVisibilityPass();
   const cap = Math.max(1, Math.floor(limit) || 1);
+  selectBench.candidates = candidates.length;
+  selectBench.judged = 0;
+  selectBench.coverageCalls = 0;
+  selectBench.coverageMs = 0;
+  if (cover === coverageOf) {
+    coverageBench.clipMs = 0;
+    coverageBench.sampleMs = 0;
+    coverageBench.samples = 0;
+  }
   // Scan a bounded window past the cap: enough to keep what is on screen when a
   // page has far more controls than labels, small enough that the duplicate
   // scan below (quadratic by design) cannot own the main thread.
   const scanCap = cap * Math.max(1, Math.floor(BATCH_SCAN_FACTOR) || 1);
   const vw = window.innerWidth || 0;
   const vh = window.innerHeight || 0;
-  const kept: Array<{ el: Element; r: DOMRect; key: string; covered: boolean; rank: number }> = [];
+  const kept: Kept[] = [];
   let hidden = 0;
   let covered = 0;
   let duplicate = 0;
   let behind = 0;
   // How many candidates the loop actually judged (the rest are not-scanned).
   let visited = 0;
-  // A covered control must not outrank a clickable one that overlaps it: the
-  // point of the label is to be pressed, and the earlier candidate is only a
+  // A partly covered control must not outrank a fully visible one that overlaps
+  // it: the point of the label is to be read, and the earlier candidate is only a
   // duplicate because of where the page happened to put it. Replacing in place
-  // keeps the surviving control's slot (and therefore its short key).
-  function winsOver(loser: { covered: boolean }, newCovered: boolean): boolean {
-    return !newCovered && loser.covered;
+  // keeps the survivor's slot (and therefore its short key).
+  function outranks(s: Kept, cov: Coverage, isCovered: boolean): boolean {
+    // The pointer is on the newcomer at its own centre and not on the incumbent:
+    // the newcomer is the pressable surface, whatever the boxes say.
+    if (cov.top && !s.top) return true;
+    return s.covered && !isCovered;
   }
-  for (const el of candidates) {
-    visited++;
+  // TWO PHASES, so the expensive samples are spent on the batch that could
+  // exist.
+  //
+  // Phase 1 is the cheap gate — in viewport + CSS visible — plus the rank
+  // favour lists. It runs over every candidate and costs one rect read each,
+  // which the phase-2 body reuses instead of reading again.
+  //
+  // Phase 2 walks a WINDOW of at most scanCap candidates, the ranked best
+  // (favour lists first, then document order), and spends the coverage
+  // sampling and duplicate scanning there. When a page presents more visible
+  // controls than the window can judge, coverage was previously paid for ALL
+  // of them — nine hit tests each — and the surplus was discarded by the cap
+  // at the end: hundreds of milliseconds of hits for labels that would never
+  // exist. The surplus is still judged (phase 1) and, if the window is full,
+  // reported as not-scanned; `more` says the cap, not the page, is why.
+  //
+  // Sub-cap pages are unchanged: with everything judged, the window is
+  // document order and the kept list comes back in document order exactly as
+  // before.
+  interface Judged {
+    el: Element;
+    r: DOMRect;
+    rank: number;
+    idx: number;
+  }
+  const judged: Judged[] = [];
+  for (let ci = 0; ci < candidates.length; ci++) {
+    const el = candidates[ci]!;
     if (!inViewport(el) || !hintVisible(el, vis)) {
       hidden++;
       if (explain) explain({ el: el, reason: "hidden" });
       continue;
     }
-    // Covered is a LABEL STATE, not a rejection (see the note at the top) — with
-    // one exception: a control hidden behind another SURFACE (a dialog, a popup
-    // sheet). There the label would be painted on top of the surface the user is
-    // looking at, and the key would fire at something that surfaces is covering,
-    // so it is not a hint at all. The distinction lives in probe.sheetOver and is
-    // made on geometry, not on the page's identity.
-    const isCovered = !reach(el);
-    if (isCovered) {
-      if (sheet(el)) {
-        behind++;
-        if (explain) explain({ el: el, reason: "behind" });
-        continue;
-      }
-      covered++;
+    let r: DOMRect;
+    try {
+      r = el.getBoundingClientRect();
+    } catch {
+      hidden++;
+      if (explain) explain({ el: el, reason: "hidden" });
+      continue;
     }
-    const r = el.getBoundingClientRect();
+    judged.push({ el: el, r: r, rank: rankScore(r, vw, vh), idx: ci });
+  }
+  const ranked = judged.length > scanCap
+    ? judged.slice().sort((a, b) => b.rank - a.rank || a.idx - b.idx)
+    : judged;
+  for (const j of ranked) {
+    visited++;
+    const el = j.el;
+    const covT0 = nowMs();
+    const cov = cover(el);
+    selectBench.coverageCalls++;
+    selectBench.coverageMs += nowMs() - covT0;
+    const share = cov.total > 0 ? cov.own / cov.total : 0;
+    // NOT ENOUGH OF IT IS VISIBLE TO POINT AT. There is no label that can be
+    // honest here: it would be painted on top of whatever is covering the
+    // control (labels live in the top layer), or on the sliver of a layer the
+    // page has folded away. See the note at the top of this file.
+    if (share < MIN_VISIBLE_SHARE) {
+      behind++;
+      if (explain) explain({ el: el, reason: "behind" });
+      continue;
+    }
+    // Part of it is painted over but most of it is on screen: keep it, and let
+    // the anchor put the label on the visible part. No dimming — a faint label
+    // is the same lie as a label on the covering layer, just quieter.
+    const isCovered = cov.own < cov.total;
+    if (isCovered) covered++;
+    const r = j.r;
     const key = targetKey(el);
+    const entry: Kept = {
+      el: el,
+      r: r,
+      key: key,
+      covered: isCovered,
+      rank: j.rank,
+      top: cov.top,
+      ax: cov.ux,
+      ay: cov.uy,
+    };
     let dup = false;
     for (let i = 0; i < kept.length; i++) {
       const s = kept[i]!;
@@ -218,25 +355,18 @@ export function selectHintables(
       //
       // The rule now is "the most specific actionable control wins", and the
       // container is replaced IN PLACE when it loses, so the surviving control
-      // keeps the container's early slot (and therefore a short key). A
-      // clickable control also beats a covered one at the same place, whatever
-      // their specificity: one of the two can actually be pressed.
-      if (s.el.contains(el)) {
-        if (specificity(el) > specificity(s.el) || winsOver(s, isCovered))
-          kept[i] = { el: el, r: r, key: key, covered: isCovered, rank: rankScore(r, vw, vh) };
+      // keeps the container's early slot (and therefore a short key).
+      // COMPOSED containment, so a component host and the control its shadow
+      // root paints are one click area rather than two labels on the same
+      // pixels. `Node.contains` cannot see across that boundary; the composed
+      // walk can, at any nesting depth.
+      if (composedContains(s.el, el)) {
+        if (specificity(el) > specificity(s.el) || outranks(s, cov, isCovered)) kept[i] = entry;
         else if (explain) explain({ el: el, reason: "duplicate", rule: "nested", by: s.el });
         dup = true;
         break;
       }
       const sr = s.r;
-      // A media surface and a control drawn over it are DIFFERENT actions (Skip
-      // ad over a video, a play button over a thumbnail), and which of the two is
-      // seen first depends only on how the control was discovered — selector
-      // matches first, then walk order. So the "sits almost entirely inside an
-      // earlier box" rule is skipped for such a pair, in EITHER direction, and
-      // both keep their own key. The same-box rule below is NOT skipped: two
-      // candidates on identical pixels are one click area whatever they are.
-      const mediaPair = isMediaSurface(el) || isMediaSurface(s.el);
       // Same box within a couple of pixels: a wrapper/copy of the same target.
       if (
         Math.abs(r.left - sr.left) <= 2 &&
@@ -244,30 +374,32 @@ export function selectHintables(
         Math.abs(r.width - sr.width) <= 2 &&
         Math.abs(r.height - sr.height) <= 2
       ) {
-        if (winsOver(s, isCovered))
-          kept[i] = { el: el, r: r, key: key, covered: isCovered, rank: rankScore(r, vw, vh) };
+        if (outranks(s, cov, isCovered)) kept[i] = entry;
         else if (explain) explain({ el: el, reason: "duplicate", rule: "same-box", by: s.el });
         dup = true;
         break;
       }
-      // This box sits almost entirely inside an earlier one: an absolutely
-      // positioned overlay or inner copy of the same click area. That is true
-      // for a copy — and false for the very common framework shape where a
-      // card's overlay link covers the card and the row's own buttons sit on top
-      // of it as SIBLINGS: the button is the one the pointer can press, so a
-      // clickable newcomer replaces a covered earlier box instead of vanishing.
-      if (!mediaPair && overlapFraction(r, sr) >= 0.85) {
-        if (winsOver(s, isCovered))
-          kept[i] = { el: el, r: r, key: key, covered: isCovered, rank: rankScore(r, vw, vh) };
-        else if (explain) explain({ el: el, reason: "duplicate", rule: "inside", by: s.el });
-        dup = true;
-        break;
-      }
+      // "THIS BOX SITS ALMOST ENTIRELY INSIDE AN EARLIER ONE" IS NO LONGER A
+      // DUPLICATE RULE, and deleting it is the fix for missing hints.
+      //
+      // The shape it was written for — an absolutely positioned overlay copy of
+      // the same click area — is already gone before this point: if the copy is
+      // painted under the earlier element, that element is what the pointer sees,
+      // so the copy's coverage is zero and it was never hinted. What the rule
+      // actually caught on real pages was a card's full-card link and the card's
+      // own buttons drawn over it as SIBLINGS: both are visible, both are
+      // pressable, both are separate actions, and the geometry merely says the
+      // button's box is inside the link's. The button lost its key — the
+      // reported "some hints are missing (maybe they got filtered out)".
+      //
+      // Two controls that both have their own pixels on screen are two controls.
+      // Nested ones were already collapsed above (composed containment), and two
+      // handlers for one destination are collapsed below by the href rule.
+      //
       // Two handlers for the SAME destination that overlap heavily (a thumbnail
       // link stacked on the title link of one card) are one hint, not two.
       if (key && key === s.key && overlapFraction(r, sr) > 0.4) {
-        if (winsOver(s, isCovered))
-          kept[i] = { el: el, r: r, key: key, covered: isCovered, rank: rankScore(r, vw, vh) };
+        if (outranks(s, cov, isCovered)) kept[i] = entry;
         else if (explain) explain({ el: el, reason: "duplicate", rule: "same-target", by: s.el });
         dup = true;
         break;
@@ -277,24 +409,36 @@ export function selectHintables(
       duplicate++;
       continue;
     }
-    kept.push({ el: el, r: r, key: key, covered: isCovered, rank: rankScore(r, vw, vh) });
+    kept.push(entry);
     if (kept.length >= scanCap) break;
   }
+  selectBench.judged = visited;
+  selectBench.clipMs = coverageBench.clipMs;
+  selectBench.sampleMs = coverageBench.sampleMs;
+  selectBench.samples = coverageBench.samples;
   if (explain) {
-    for (let i = visited; i < candidates.length; i++) {
+    // Ranked-out (cheap-judged but never cover-tested) and unjudged (beyond
+    // the phase-1 gate list) are both "not scanned for a label"; give each
+    // explanation its own element so a diagnostic cannot double-report.
+    for (let i = visited; i < ranked.length; i++) {
+      explain({ el: ranked[i]!.el, reason: "not-scanned" });
+    }
+    for (let i = ranked.length; i < candidates.length; i++) {
       explain({ el: candidates[i]!, reason: "not-scanned" });
     }
   }
   let more = 0;
   let chosen = kept;
   if (kept.length > cap) {
-    // Stable sort (the spec guarantees it), so equal scores keep document order.
+    // Stable sort (the spec guarantees it), so equal scores keep the order the
+    // window was walked in — document order on a sub-cap page, and the ranked
+    // window's own rank-then-document order on a full one.
     chosen = kept.slice().sort((a, b) => b.rank - a.rank);
     more = chosen.length - cap;
     chosen = chosen.slice(0, cap);
   }
   return {
-    kept: chosen.map((k) => ({ el: k.el, covered: k.covered })),
+    kept: chosen.map((k) => ({ el: k.el, covered: k.covered, ax: k.ax, ay: k.ay })),
     hidden: hidden,
     covered: covered,
     duplicate: duplicate,
@@ -302,4 +446,3 @@ export function selectHintables(
     more: more,
   };
 }
-

@@ -42,6 +42,12 @@ export function createSessionHandlers(deps: SessionDeps): Domain<Owns> {
     sessionAssignMarker: (data) => assignSessionMarker(data.name, data.marker),
     sessionTabCopy: (data) => moveTabBetweenSessions(data.from, data.index, data.to, "copy"),
     sessionTabMove: (data) => moveTabBetweenSessions(data.from, data.index, data.to, "move"),
-    sessionState: () => sessionState(),
+    // The ASKING page's window: the command center asks for the state it
+    // renders, and answering with another window's strip made its session
+    // label and stealth badge describe a window the user was not looking at.
+    sessionState: (_data, sender) => {
+      const tab = (sender as { tab?: { windowId?: number } } | undefined)?.tab;
+      return sessionState(tab && typeof tab.windowId === "number" ? tab.windowId : null);
+    },
   };
 }

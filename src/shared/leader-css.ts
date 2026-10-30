@@ -70,7 +70,7 @@ export const WK_CSS =
   // No border, because a 1px line around a dark panel is the "card" the rest of
   // this sheet is avoiding; the shadow is what separates it from the document.
   ".wk{position:fixed;pointer-events:auto;right:24px;bottom:30px;z-index:2147483646;width:360px;max-width:94vw;" +
-  "background:#191924;color:#c3cae3;border-radius:8px;box-shadow:0 18px 46px rgba(0,0,0,.5);" +
+  "background:var(--lf-panel);color:var(--lf-fg);border-radius:var(--lf-r-lg);box-shadow:var(--lf-shadow);" +
   "display:none;font-family:" +
   UI_FONT +
   ";font-size:12.5px;line-height:1.45;overflow:hidden;-moz-user-select:none;user-select:none}" +
@@ -81,21 +81,21 @@ export const WK_CSS =
   ".wk-head{display:flex;align-items:baseline;gap:9px;padding:11px 12px 0}" +
   ".wk-chord{flex:none;font-family:" +
   KEY_FONT +
-  ";font-size:13px;font-weight:600;color:#7aa2f7}" +
-  ".wk-title{font-size:12px;color:#8b96bd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+  ";font-size:13px;font-weight:600;color:var(--lf-accent)}" +
+  ".wk-title{font-size:12px;color:var(--lf-sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
   // THE BODY. Padding, not rules, is what separates the header and the footer
   // from the list.
   ".wk-body{padding:5px 9px 7px;max-height:min(64vh,420px);overflow-y:auto;overscroll-behavior:contain;" +
-  "scrollbar-width:thin;scrollbar-color:#2f3549 transparent}" +
+  "scrollbar-width:thin;scrollbar-color:var(--lf-border2) transparent}" +
   // A GROUP NAME is a quiet line of text; the space above it separates the
   // groups. (No rule, no capitals, no tracking — see the header comment.)
-  ".wk-group{margin:11px 2px 2px;font-size:11px;color:#6d769a}" +
+  ".wk-group{margin:11px 2px 2px;font-size:11px;color:var(--lf-dim)}" +
   ".wk-group:first-child{margin-top:0}" +
   // TWO COLUMNS, single line each: the panel is a glance, not a document.
   ".wk-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}" +
   // ONE ROW: key, label, optional count.
   ".wk-item{display:grid;grid-template-columns:38px minmax(0,1fr) auto;align-items:baseline;gap:6px;" +
-  "min-width:0;padding:1px 3px;border-radius:5px;cursor:default}" +
+  "min-width:0;padding:1px 3px;border-radius:var(--lf-r-sm);cursor:default}" +
   // The label is the only part that may be ellipsized; a clipped key or count
   // would misreport the line. See the header comment for why it is one line.
   ".wk-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
@@ -103,29 +103,32 @@ export const WK_CSS =
   // column — no cap, no bevel, no box.
   ".wk-kbd{display:block;font-family:" +
   KEY_FONT +
-  ";font-size:15.5px;font-weight:500;line-height:1.3;color:#7aa2f7;white-space:nowrap}" +
-  // THE SELECTED ROW IS LIT, not filled: a tint you have to look for, brighter
-  // ink, and a brighter key. The cursor is the only state this panel has, and
-  // weight is enough to show it.
-  ".wk-item.sel{background:rgba(255,255,255,.045);color:#eef1f8}" +
-  ".wk-item.sel .wk-kbd{color:#a9c1ff}" +
-  ".wk-item.sel .wk-more{color:#a9b6da}" +
+  ";font-size:15.5px;font-weight:500;line-height:1.3;color:var(--lf-accent);white-space:nowrap}" +
+  // THE SELECTED ROW IS FILLED with the same bright selection token every list
+  // uses. It used to be a 5% tint — the "cursor you have to look for" — and at
+  // a glance the row the next key would run was indistinguishable from its
+  // neighbours. Its key is body ink rather than the accent because the accent
+  // on the selection fill is only ~3:1, and the key column is the one thing the
+  // row cannot afford to lose.
+  ".wk-item.sel{background:var(--lf-sel);color:var(--lf-fg)}" +
+  ".wk-item.sel .wk-kbd{color:var(--lf-fg)}" +
+  ".wk-item.sel .wk-more{color:var(--lf-fg)}" +
   // A DOOR: the same key colour as everything else, and the count of what is
   // behind it at the end of the line. The count is the ONLY thing that marks the
   // row, so it is drawn a shade brighter than the other dim text here — a door
   // whose affordance is invisible reads as a binding with a stray glyph after it.
-  ".wk-more{justify-self:end;white-space:nowrap;font-size:11px;color:#6d769a}" +
-  ".wk-door .wk-more{color:#8b96bd}" +
+  ".wk-more{justify-self:end;white-space:nowrap;font-size:11px;color:var(--lf-dim)}" +
+  ".wk-door .wk-more{color:var(--lf-sub)}" +
   // Firefox's own shortcuts, when a caller includes them: reference only, so the
   // whole line — key included — is drawn in the dimmest ink on the panel.
-  ".wk-item.dim{color:#5a6280}" +
-  ".wk-item.dim .wk-kbd{color:#5a6280}" +
+  ".wk-item.dim{color:var(--lf-dim)}" +
+  ".wk-item.dim .wk-kbd{color:var(--lf-dim)}" +
   // THE FOOT: one dim line of what the current state can do, with the page
   // number at the far end. No border above it, no pill around it.
   ".wk-foot{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;padding:7px 12px 9px;" +
-  "font-size:11px;color:#6d769a}" +
-  ".wk-live{color:#8b96bd}" +
-  ".wk-foot .wk-page{margin-left:auto;color:#8b96bd;font-variant-numeric:tabular-nums}";
+  "font-size:11px;color:var(--lf-dim)}" +
+  ".wk-live{color:var(--lf-sub)}" +
+  ".wk-foot .wk-page{margin-left:auto;color:var(--lf-sub);font-variant-numeric:tabular-nums}";
 
 // The overlay's static markup. `.wk-head` is the PANEL HEADER; a row that opens
 // something is `.wk-door` (see wk.ts — the two used to share a class, and the

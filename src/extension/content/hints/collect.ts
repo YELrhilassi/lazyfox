@@ -45,6 +45,7 @@ import {
   SHADOW_DEPTH,
 } from "./selectors";
 import { createVisibilityPass, type VisibilityPass } from "./visibility";
+import { beginOccluderFeed, feedOccluder, finishOccluderFeed } from "./probe";
 import { shadowRootOf, walkElements } from "../../../shared/dom";
 
 // The viewport's area, or 0 where there is no window (the unit tests drive this
@@ -528,6 +529,16 @@ export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): E
         else stop("deferred");
         return;
       }
+      // COLLECT BUILDS THE COVER ENGINE'S OCCLUDER LIST AS A SIDE EFFECT.
+      //
+      // The standalone occluder scan walks the whole document a second time
+      // (~100ms on an article-long page) to find the pointer-transparent veils
+      // that can hide a control; this walk is already here, reading the same
+      // rect for the viewport gate, so the question is answered for almost
+      // nothing. On-screen only: a veil outside the window cannot hide anything
+      // the user is looking at, and off-screen nodes are exactly what this
+      // branch already declined to probe.
+      if (r) feedOccluder(el, r, pass ? pass.styleOf(el) ?? undefined : undefined);
       probe(el, r);
     });
     // MAX_SCAN: the cheap tier itself did not reach the end of this root. The
@@ -549,6 +560,7 @@ export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): E
     stats.pointerControls = 0;
     stats.shadowRoots = 0;
   }
+  beginOccluderFeed();
   walk(document, 0);
   // ---- phase 2: the off-screen tail ---------------------------------------
   // Probed only with the budget the viewport did not spend, and in document
@@ -560,6 +572,13 @@ export function collectHintables(stats?: CollectStats, pass?: VisibilityPass): E
     if (seen.has(el)) continue;
     probe(el, rectOf(el));
   }
+  // The feed is complete when the walk itself completed: an emergency halt or
+  // a MAX_SCAN truncation leaves parts of the document unseen, and an unseen
+  // veil would read as an absence of veils — the false-clear surface this
+  // module exists to avoid (see the stats contract above). A spent probe list
+  // or an over-full deferral list does NOT make the walk incomplete: every
+  // node was still visited (and fed) on those exits.
+  finishOccluderFeed(!halt && truncatedBy !== "scan");
   if (stats) {
     stats.truncated = truncated;
     stats.truncatedBy = truncatedBy;

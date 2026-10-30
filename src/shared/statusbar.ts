@@ -1,12 +1,15 @@
-// Shared status bar (lualine-style, nvim flavor), rendered identically by the
-// content script (web pages) and the chrome helper (about:/moz-extension
-// pages). It is a fixed, pointer-transparent strip whose position (top/bottom)
-// is config. Colored chevron blocks read left-to-right like lualine:
+// Shared status bar, rendered identically by the content script (web pages)
+// and the chrome helper (about:/moz-extension pages). It is a fixed,
+// pointer-transparent strip whose position (top/bottom) is config. Flat
+// segments read left-to-right; the session pills are one control, not a chip
+// rack:
 //
-//   [◈ 3 · work][▤ 3/12][⧉ 1/2]  ...other sessions (dim, right-aligned)
+//   [▤ 3/12][1 work 5][2 mail 3][3 dev]   ...  [;N][☾ dark][🔇 muted]
 //
-// The palette is tokyonight; icons carry the meaning so labels stay short.
-// The bar is thin (20px) so it never gets in the way of content.
+// Only the CURRENT session wears the accent; every other pill shares one quiet
+// fill and the 1px gap between them says where each starts and ends. Icons are
+// one flat set (shared/icons.ts) and carry the meaning so labels stay short.
+// The bar is 18px so it never gets in the way of content.
 //
 // Rendered in a closed shadow root so page CSS cannot restyle it.
 import {
@@ -14,8 +17,10 @@ import {
   makeLeaderSignal,
   type LeaderSignal,
 } from "./leadersignal";
-import { darkSegment, pillColorFor, sessionPillText, statusMirrorFragment } from "./statusbar-segments";
+import { darkSegment, sessionPillHtml, statusMirrorFragment } from "./statusbar-segments";
 import { STATUS_BAR_CSS } from "./statusbar-css";
+import { iconHtml, iconNode, setIcon } from "./icons";
+import { uiCss } from "./theme";
 import type { StatusBarData } from "./types";
 
 // The bar's data shape lives in types.ts alongside every other shared model:
@@ -106,29 +111,37 @@ export class StatusBar {
     // leader key is armed — it is the ONLY visible sign when the which-key
     // overlay is disabled via ;q.
     sh.innerHTML =
-      "<style>" + CSS + "</style>" +
+      "<style>" + uiCss(CSS) + "</style>" +
       "<div class='lf-status " + this.position + "'>" +
-      "<span class='seg sess'><span class='ic'>◈</span><span class='marker'></span><span class='name'></span></span>" +
-      "<span class='seg tabs linked'><span class='ic'>▤</span><span class='st'>🕶</span><b></b><span class='cnt'></span></span>" +
-      "<span class='seg find' style='display:none'><span class='ic'>🔍</span><b class='cur'></b><span class='cnt'></span></span>" +
+      // WHAT THIS BAR SAYS, left to right:
+      //
+      //   ▤ 3/12  [pills…]  🔍 2/9  ⭳  ...  ;N  ☾ dark  🔇 muted │
+      //
+      // There is no "current session" cell any more: the pills ARE the list,
+      // and the active one is the accent, so a separate name cell repeated what
+      // the highlighted pill already said — in a colour nothing else used.
+      "<span class='seg tabs'>" + iconHtml("tabs") +
+      "<b></b><span class='cnt'></span></span>" +
+      "<span class='seg stealth' style='display:none' title='Stealth tab'>" +
+      iconHtml("stealth") + "<span class='lbl'>Stealth</span></span>" +
       "<span class='seg chips'></span>" +
-      "<span class='seg dl' style='display:none'><span class='ic'>⭳</span><span class='items'></span></span>" +
-      // THE RIGHT HAND SIDE, in the order the user asked for:
-      //
-      //   ────────── leader  dark mode │
-      //
-      // The spacer takes every spare pixel, so this pair is flush right; the
-      // leader indicator comes first because it is a transient (a chord in
-      // progress) and the dark-mode verdict is the last thing on the bar, where
-      // a steady status belongs. The leader glyph alone is shown while waiting
-      // for a first key and `<glyph> <committed key>` once a chord is in
-      // progress, painted synchronously at key time (see setLeaderSignal).
+      "<span class='seg find' style='display:none'>" + iconHtml("search") +
+      "<b class='cur'></b><span class='cnt'></span></span>" +
+      "<span class='seg dl' style='display:none'>" + iconHtml("download") +
+      "<span class='items'></span></span>" +
+      // The spacer takes every spare pixel, so the right-hand group is flush
+      // right: the leader indicator (a transient) first, then the dark-mode
+      // verdict, and the muted badge last — it belongs to the tab you are on.
       "<span class='spacer'></span>" +
       "<span class='seg leader' style='display:none'></span>" +
-      // Dark mode, as the CONTENT SCRIPT sees this page: a moon for our remap,
-      // a moon in a different tone for the site's own theme, a sun for `light`.
-      // Hidden when the feature is not touching the page — see darkSegment.
-      "<span class='seg dark' style='display:none'><span class='ic'></span><span class='lbl'></span></span>" +
+      "<span class='seg dark' style='display:none'><span class='ic'></span>" +
+      "<span class='lbl'></span></span>" +
+      // Muted: the tab strip that used to show it is gone, so the bar is the
+      // ONLY place this state can be seen. Shown at all times while muted, not
+      // on hover: a muted tab that looks identical to a silent one is how a user
+      // ends up hunting for audio that is already off.
+      "<span class='seg mute' style='display:none' title='Tab muted'>" +
+      iconHtml("muted") + "<span class='lbl'>Muted</span></span>" +
       "</div>";
     host._sh = sh;
     this.doc.documentElement.appendChild(host);
@@ -258,6 +271,9 @@ export class StatusBar {
   // DOM write entirely. The Go store is the source of truth; this view only
   // paints when the store's model actually changed.
   private lastKey: string | null = null;
+  // The session list the chips were last rebuilt from, so a repaint that only
+  // changed the leader chord does not regenerate every pill.
+  private chipsKey: string | null = null;
 
   setData(d: Partial<StatusBarData>): void {
     const next = Object.assign({}, this.data, d);
@@ -288,6 +304,24 @@ export class StatusBar {
     this.data.mode = mode;
   }
 
+  /**
+   * Paint the muted badge from the selected tab.
+   *
+   * Deliberately NOT a store op: the Go status store models what a SESSION is
+   * (name, marker, tab counts, stealth), while this is a property of one tab's
+   * document that can change without the session moving at all (a site starts
+   * its own audio, a tab is muted from its context menu). setData's merge keeps
+   * the field across the store's own repaints, so the next snapshot cannot
+   * clear it — the next compute() re-reads the tab and decides again.
+   */
+  setMuted(on: boolean): void {
+    const next = !!on;
+    if (!!this.data.muted === next) return;
+    this.data.muted = next;
+    this.lastKey = JSON.stringify(this.data);
+    this.render();
+  }
+
   private render(): void {
     if (!this.host) return;
     // Self-heal: if the body appeared after we first reserved (content script
@@ -295,13 +329,11 @@ export class StatusBar {
     this.reserveBody();
     const sh = this.host._sh;
     const leader = sh.querySelector(".leader") as HTMLElement | null;
-    const sess = sh.querySelector(".sess") as HTMLElement | null;
-    const marker = sh.querySelector(".sess .marker") as HTMLElement | null;
-    const name = sh.querySelector(".sess .name") as HTMLElement | null;
+    const stealth = sh.querySelector(".stealth") as HTMLElement | null;
     const tabs = sh.querySelector(".tabs") as HTMLElement | null;
     const tabIdx = tabs ? (tabs.querySelector("b") as HTMLElement | null) : null;
     const tabCnt = tabs ? (tabs.querySelector(".cnt") as HTMLElement | null) : null;
-    const stealth = tabs ? (tabs.querySelector(".st") as HTMLElement | null) : null;
+    const mute = sh.querySelector(".mute") as HTMLElement | null;
     const dark = sh.querySelector(".dark") as HTMLElement | null;
     const find = sh.querySelector(".find") as HTMLElement | null;
     const findCur = find ? (find.querySelector(".cur") as HTMLElement | null) : null;
@@ -334,16 +366,11 @@ export class StatusBar {
         leader.classList.toggle("stale", true);
       }
     }
-    if (name) name.textContent = this.data.name;
-    if (marker) {
-      marker.textContent = this.data.marker ? String(this.data.marker) : "";
-      marker.style.display = this.data.marker ? "" : "none";
-    }
-    if (sess) sess.style.display = this.data.name ? "" : "none";
     if (tabIdx) tabIdx.textContent = String(this.data.tabIndex);
     if (tabCnt) tabCnt.textContent = "/" + this.data.tabCount;
     if (tabs) tabs.style.display = this.data.tabCount > 0 ? "" : "none";
     if (stealth) stealth.style.display = this.data.activeStealth ? "" : "none";
+    if (mute) mute.style.display = this.data.muted ? "" : "none";
 
     // Live find-in-page count: "🔍 cur/count" while a find session is open
     // on the page, "🔍 0" (red) when a query has no matches.
@@ -352,16 +379,16 @@ export class StatusBar {
       if (f && f.count > 0) {
         // cur is 1-based (0 = a query is typed but nothing walked to yet).
         find.style.display = "";
+        find.classList.remove("none");
         findCur.textContent = String(f.cur > 0 ? f.cur : 0);
         findCnt.textContent = "/" + f.count;
         findCur.style.display = "";
-        findCur.classList.remove("none");
       } else if (f && f.count === 0) {
         find.style.display = "";
+        find.classList.add("none");
         findCur.textContent = "0";
         findCnt.textContent = "";
         findCur.style.display = "";
-        findCur.classList.add("none");
       } else {
         find.style.display = "none";
       }
@@ -374,12 +401,11 @@ export class StatusBar {
       dark.style.display = seg ? "" : "none";
       if (seg) {
         dark.className = "seg dark tone-" + seg.tone;
-        const ic = dark.querySelector(".ic");
+        setIcon(dark.querySelector(".ic"), seg.icon);
         const lbl = dark.querySelector(".lbl");
-        if (ic) ic.textContent = seg.icon;
         if (lbl) lbl.textContent = seg.label;
         dark.title =
-          "dark mode: " +
+          "Dark mode: " +
           (this.data.dark && this.data.dark.mode ? this.data.dark.mode : "?") +
           " \u00B7 " +
           (this.data.dark && this.data.dark.engine ? this.data.dark.engine : "?");
@@ -392,7 +418,7 @@ export class StatusBar {
       for (const d of this.data.downloads) {
         const item = this.doc.createElement("span");
         item.className = "dlitem";
-        item.title = "dismiss";
+        item.title = "Dismiss";
         const name = this.doc.createElement("span");
         name.className = "n";
         name.textContent = d.filename;
@@ -401,13 +427,13 @@ export class StatusBar {
           // small green indicator for a finished download
           const ok = this.doc.createElement("span");
           ok.className = "ok";
-          ok.textContent = "\u2713";
+          ok.appendChild(iconNode(this.doc, "done"));
           item.appendChild(ok);
         } else if (d.state === "failed") {
           // small red indicator for a failed download
           const bad = this.doc.createElement("span");
           bad.className = "bad";
-          bad.textContent = "\u2717";
+          bad.appendChild(iconNode(this.doc, "failed"));
           item.appendChild(bad);
         } else {
           if (d.percent >= 0) {
@@ -431,28 +457,18 @@ export class StatusBar {
     }
 
     if (chips) {
-      // Session list as connected chevron blocks right after the tabs segment:
-      // each reads `id:name count` and links into the previous one. The active
-      // session is already shown by the first (session-name) segment, so the
-      // list needs no extra current marker; split counts were dropped as noise.
-      const frag = this.doc.createDocumentFragment();
-      this.data.sessions.slice(0, 12).forEach((s, i) => {
-        // First block is a full chevron (> id:name count); every block after
-        // it links into the previous one's point (> id:name count > ...).
-        const block = this.doc.createElement("span");
-        block.className = "sesspill" + (i > 0 ? " linked" : "");
-        // Stable color keyed to the marker (not list position), so switching
-        // sessions never recolors another one.
-        // Stable color keyed to the marker (not list position), so switching
-        // sessions never recolors another one — see statusbar-segments.ts.
-        const c = pillColorFor(s.marker);
-        block.style.background = c.gradient;
-        block.style.color = c.ink;
-        block.textContent = sessionPillText(s);
-        frag.appendChild(block);
-      });
-      chips.textContent = "";
-      chips.appendChild(frag);
+      // Session list as chevron chips: the stylesheet shapes each pill and
+      // leaves a 1px gap, so the row reads as >>. Only the current one is the
+      // accent; every other one shares a quiet fill, so the list reads as one
+      // control with one active position instead of as nine unrelated colours.
+      //
+      // Rebuilt only when the list actually changed: a leader key repaints this
+      // bar, and regenerating a dozen pills for it is work nobody asked for.
+      const ck = JSON.stringify(this.data.sessions);
+      if (ck !== this.chipsKey) {
+        this.chipsKey = ck;
+        chips.innerHTML = this.data.sessions.slice(0, 12).map(sessionPillHtml).join("");
+      }
     }
 
     // Testability/debug hook: mirror the state onto the document root (the

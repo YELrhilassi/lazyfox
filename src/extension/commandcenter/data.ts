@@ -3,6 +3,7 @@
 // No DOM or state here — everything is a function of (mode, query, item).
 
 import { esc, favicon } from "../../shared/dom";
+import { faviconHtml, faviconFor } from "../../shared/favicon";
 import { displayUrl } from "../../shared/format";
 import { send } from "../../shared/protocol";
 import type { QuickApp } from "../../shared/types";
@@ -44,6 +45,8 @@ export interface QuickActions {
   openPage(url: string): void;
   setMode(mode: string): void;
   stealthOpen(): void;
+  stealthSearch(query: string): void;
+  stealthUrl(url: string): void;
 }
 
 // The home screen command grid, grouped into sections. `group` drives the
@@ -117,8 +120,15 @@ export function getItems(mode: string, q: string): Promise<any[]> {
     });
   }
   if (mode === "tabs") {
+    // Strip position and derived favicon are attached HERE, over the
+    // UNFILTERED list, so a filtered view keeps the jump numbers the digit
+    // bindings address — the same rule the `;t` popup's listTabs follows.
     return send("tabs").then((r: any) => {
-      const items = (r && r.tabs) || [];
+      const items = ((r && r.tabs) || []).map((t: any, i: number) => ({
+        ...t,
+        number: i + 1,
+        favIconUrl: /^https?:/i.test(t.favIconUrl || "") ? t.favIconUrl : faviconFor(t.url),
+      }));
       const ql = q.toLowerCase();
       if (!ql) return items;
       return items.filter((t: any) =>
@@ -158,8 +168,20 @@ export function renderItem(it: any, mode: string, quickView: boolean): string {
     );
   }
   if (mode === "tabs") {
+    // THE ID COLUMN + favicon, the same row the `;t` popup and the sessions
+    // pane draw: accent number with the 1px rule, glyph badges, ellipsized
+    // title, favicon at the row's right edge. `tflex` opts THIS line into the
+    // flex layout the other modes' bare-text titles must not take.
+    const glyphs =
+      (it.pinned ? "\uD83D\uDCCC " : "") +
+      (it.muted ? "\uD83D\uDD07 " : "") +
+      (it.stealth ? "\uD83D\uDD75 " : "");
     return (
-      "<div class='t'>" + (it.active ? "<span class='dot'></span>" : "") + esc(it.title) +
+      "<div class='t" + (it.active ? " act" : "") + " tflex'>" +
+      (it.number != null ? "<span class='lf-marker'>" + it.number + "</span>" : "") +
+      glyphs +
+      "<span class='txt'>" + esc(it.title) + "</span>" +
+      faviconHtml(it.favIconUrl) +
       "</div><div class='s'>" + esc(displayUrl(it.url || "")) + "</div>"
     );
   }

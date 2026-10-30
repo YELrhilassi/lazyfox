@@ -44,6 +44,7 @@ import type {
   SessionTab,
   SessionWindow,
   SiteRule,
+  UiThemeConfig,
 } from "../shared/types";
 
 /** Declares the schema. Every entry is (key, validator, fallback). */
@@ -116,9 +117,37 @@ export interface InstallerCheckRecord {
   at: number;
 }
 
+export interface StealthVisit {
+  /** The http(s) URL the jar loaded. */
+  url: string;
+  /** When the navigation committed, ms since epoch. */
+  at: number;
+}
+
 export interface StealthRecord {
   /** cookieStoreIds this extension owns. */
   containers: string[];
+  /**
+   * LEGACY, URL-only traces written by builds before visits were timestamped.
+   * Kept so an upgrade can still purge them (at URL granularity, which is all
+   * that shape supports); nothing writes this map any more.
+   */
+  urls: Record<string, string[]>;
+  /**
+   * What each jar loaded, WITH the moment it loaded it, keyed by cookieStoreId.
+   * Firefox writes a jar's pages into Places (history is not container-scoped),
+   * so closing the jar removes exactly those visits again — a URL and a time
+   * window, not the URL's whole history (see stealth.wipeStealthContainer).
+   */
+  visits: Record<string, StealthVisit[]>;
+  /** Download ids started from each jar, erased when the jar closes. */
+  downloads: Record<string, number[]>;
+  /**
+   * Visits a wipe could not hand to the chrome helper (it was not running).
+   * They stay here — NOT silently dropped — so the next helper announce purges
+   * them instead of leaving a private page in history forever.
+   */
+  pending: StealthVisit[];
 }
 
 export type StoreKey = keyof StoreSpec;
@@ -323,6 +352,30 @@ function vDarkConfig(raw: unknown): DarkConfig | undefined {
   return out as unknown as DarkConfig;
 }
 
+// The UI theme is three fields and none of them can make the product unusable:
+// an unknown preset resolves to the default, and an accent/background that is
+// not a hex colour is dropped so the preset's own value applies. Validated
+// field by field rather than replaced, for the same reason as `dark` — a stored
+// `{preset}` must not erase the user's accent.
+// The hex check is inlined rather than imported from shared/theme: the e2e
+// fixture loads this file with plain `node`, which cannot resolve the
+// extensionless import the bundler allows, and a validator is the wrong place
+// to gain a dependency on the UI layer anyway.
+const HEX_COLOR = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+function vThemeConfig(raw: unknown): UiThemeConfig | undefined {
+  if (!isObject(raw)) return undefined;
+  const out: Record<string, unknown> = {};
+  const preset = vString(raw.preset);
+  if (preset !== undefined) out.preset = preset;
+  for (const field of ["accent", "background"]) {
+    const v = raw[field];
+    // "" is the valid "use the preset" value, so it must survive validation.
+    if (v === "" || (typeof v === "string" && HEX_COLOR.test(v))) out[field] = v;
+  }
+  return out as unknown as UiThemeConfig;
+}
+
 function vReaderConfig(raw: unknown): ReaderConfig | undefined {
   if (!isObject(raw)) return undefined;
   const out: Record<string, unknown> = {};
@@ -369,9 +422,11 @@ const CONFIG_FIELDS: Record<string, (raw: unknown) => unknown> = {
   statusBar: vBoolean,
   statusBarPosition: vStatusBarPosition,
   autoRestore: vBoolean,
+  keepStealth: vBoolean,
   apps: vArray(vQuickApp),
   dark: (raw) => vDarkConfig(raw),
   reader: (raw) => vReaderConfig(raw),
+  theme: (raw) => vThemeConfig(raw),
 };
 
 export const vConfig: Validator<Partial<Config>> = (raw) => {
@@ -471,9 +526,59 @@ export const vSession: Validator<Session> = (raw) => {
 
 export const vSessions: Validator<Record<string, Session>> = vRecordOf(vSession);
 
-export const vStealth: Validator<StealthRecord> = (raw) => ({
-  containers: vArray(vString)(isObject(raw) ? raw.containers : undefined) || [],
-});
+export const vStealth: Validator<StealthRecord> = (raw) => {
+  const o = isObject(raw) ? raw : {};
+  // The trace maps are keyed by cookieStoreId. A malformed entry is dropped
+  // per container rather than rejecting the whole record, so one bad key can
+  // never take the container list (and with it the badge) down with it.
+  const strings = (v: unknown): Record<string, string[]> => {
+    const out: Record<string, string[]> = {};
+    if (!isObject(v)) return out;
+    for (const [k, list] of Object.entries(v)) {
+      const a = vArray(vString)(list);
+      if (a && a.length) out[k] = a;
+    }
+    return out;
+  };
+  const numbers = (v: unknown): Record<string, number[]> => {
+    const out: Record<string, number[]> = {};
+    if (!isObject(v)) return out;
+    for (const [k, list] of Object.entries(v)) {
+      const a = vArray(vNumber)(list);
+      if (a && a.length) out[k] = a;
+    }
+    return out;
+  };
+  // A visit list is parsed row by row: one malformed row (a truncated write, a
+  // hand-edited storage) drops that row, not the whole trace list.
+  const visitList = (v: unknown): StealthVisit[] => {
+    if (!Array.isArray(v)) return [];
+    const out: StealthVisit[] = [];
+    for (const row of v) {
+      if (!isObject(row)) continue;
+      const url = vString(row.url);
+      const at = vNumber(row.at);
+      if (url && typeof at === "number") out.push({ url, at });
+    }
+    return out;
+  };
+  const visitMap = (v: unknown): Record<string, StealthVisit[]> => {
+    const out: Record<string, StealthVisit[]> = {};
+    if (!isObject(v)) return out;
+    for (const [k, list] of Object.entries(v)) {
+      const a = visitList(list);
+      if (a.length) out[k] = a;
+    }
+    return out;
+  };
+  return {
+    containers: vArray(vString)(o.containers) || [],
+    urls: strings(o.urls),
+    visits: visitMap(o.visits),
+    downloads: numbers(o.downloads),
+    pending: visitList(o.pending),
+  };
+};
 
 /** A cached release answer: a channel, a version, and when it was fetched. */
 export const vInstallerCheck: Validator<InstallerCheckRecord> = (raw) => {

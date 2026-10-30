@@ -60,9 +60,15 @@ export interface ChannelDeps {
   };
   split: SplitView;
   status: StatusBarCtl;
-  // The launch splash: raised and dropped by the background's `splash` push and
-  // by the alive ack (a window booting mid-restore). See splash.ts.
+  // The session loader: raised and dropped by the background's `splash` push
+  // and by the alive ack (a window booting mid-restore). See splash.ts.
   splash: SplashCtl;
+  // Re-read the session summary when the loader comes down (see pushes.ts).
+  refreshSessionState(): void;
+  // Stealth traces the background recorded but only chrome can delete/reset:
+  // exact Places visits and the password-manager pref (see stealthprivate.ts).
+  removeStealthVisits(visits: Array<{ url: string; at: number }>, urls?: string[]): void;
+  setStealthAutofill(off: boolean): void;
   // Records that a tab's own content script is running (see noteContentPresent).
   // `doc` identifies the reporting DOCUMENT — the URL describes it but cannot
   // identify it across a single-page navigation.

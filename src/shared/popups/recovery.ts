@@ -21,6 +21,8 @@ export function openRecentlyClosedPopup(ctx: PopupCtx): void {
             time: it.time || 0
           })),
           Date.now()
+        ).then((rows) =>
+          rows.map((r, i) => ({ ...r, number: i + 1 }))
         )
       );
     }
@@ -31,13 +33,15 @@ export function openRecentlyClosedPopup(ctx: PopupCtx): void {
     basePanel(
       "Recently closed",
       "no recently closed tabs or windows",
-      "<span class='lf-badge'>Enter</span> restore &middot; <span class='lf-badge'>a</span> restore all &middot; <span class='lf-badge'>Esc</span> close"
+      "<span class='lf-badge'>i</span> search &middot; <span class='lf-badge'>j/k</span> move &middot; " +
+        "<span class='lf-badge'>Enter</span> restore &middot; <span class='lf-badge'>a</span> restore all &middot; " +
+        "<span class='lf-badge'>Esc</span> close",
+      "i to search recently closed"
     ),
     (root) => {
-      const titleEl = root.querySelector(".lf-title") as HTMLElement | null;
       const ctl = makeSelector<RecoveryRow>(ctx, root, {
         debounceMs: 0,
-        vimNav: false,
+        itemClass: "lf-recover",
         emptyText: "no recently closed tabs or windows",
         search: async (q) => {
           const all = await ensureLoaded();
@@ -56,8 +60,15 @@ export function openRecentlyClosedPopup(ctx: PopupCtx): void {
               "</div>"
             );
           }
+          // An id chip over the FULL list (numbered at load, not per search)
+          // so the number for a given closed tab does not change while the
+          // query narrows the rows under it — the same contract the tab
+          // switcher's chips have. Window rows keep their badge line instead:
+          // they are not one address, so a position number would be a lie.
           return (
-            "<div class='t'><span class='txt'>" + esc(r.title) + "</span>" + faviconHtml(faviconFor(r.url)) + "</div>" +
+            "<div class='t'>" +
+            (r.number ? "<span class='lf-marker'>" + r.number + "</span>" : "") +
+            "<span class='txt'>" + esc(r.title) + "</span>" + faviconHtml(faviconFor(r.url)) + "</div>" +
             "<div class='s'><span class='lf-host'>" + esc(r.host || r.url || "") + "</span>" +
             (r.rel ? "<span class='lf-time'>" + esc(r.rel) + "</span>" : "") +
             "</div>"
@@ -76,12 +87,6 @@ export function openRecentlyClosedPopup(ctx: PopupCtx): void {
           }
           return false;
         },
-      });
-      // Show a running total (items · tabs) in the title once loaded.
-      void ensureLoaded().then((all) => {
-        if (!titleEl || !all.length) return;
-        const tabs = all.reduce((s, r) => s + (r.tabCount || 1), 0);
-        titleEl.textContent = "Recently closed (" + all.length + " \u00b7 " + tabs + " tabs)";
       });
       return ctl;
     }

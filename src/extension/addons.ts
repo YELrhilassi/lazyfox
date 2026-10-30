@@ -12,6 +12,7 @@
 // management events and re-reads rather than mutating its own copy.
 
 import { esc } from "../shared/dom";
+import { applyStoredTheme } from "./pagetheme";
 
 interface AddonInfo {
   id: string;
@@ -267,6 +268,9 @@ function onKey(e: KeyboardEvent): void {
 
 (function () {
   "use strict";
+
+  // See shared/theme.ts: this page draws in the user's chosen palette.
+  applyStoredTheme();
 
   const input = $("filter") as HTMLInputElement;
   input.addEventListener("input", () => {
