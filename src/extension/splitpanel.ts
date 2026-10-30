@@ -5,6 +5,7 @@
 
 import { esc } from "../shared/dom";
 import { send } from "../shared/protocol";
+import { applyStoredTheme } from "./pagetheme";
 
 interface SplitTab {
   index: number;
@@ -37,6 +38,9 @@ function shortUrl(url: string): string {
 
 (function () {
   "use strict";
+  // Paint this page with the user's UI palette (shared/theme.ts). Independent of
+  // dark mode: this is Lazyfox's own chrome, not the page under it.
+  applyStoredTheme();
 
   const input = document.getElementById("input") as HTMLInputElement;
   const list = document.getElementById("tabs") as HTMLUListElement;
@@ -87,13 +91,12 @@ function shortUrl(url: string): string {
           t.index +
           "</span>" +
           fav +
-          "<span class='txt'><span class='t'>" +
+          "<span class='txt'><span class='t" + (t.active ? " act" : "") + "'>" +
           title +
           "</span><span class='s'>" +
           sub +
           "</span></span>" +
-          (t.active ? "<span class='dot'></span>" : "") +
-          "<span class='go'>\u21B5</span>" +
+                    "<span class='go'>\u21B5</span>" +
           "</li>"
         );
       })

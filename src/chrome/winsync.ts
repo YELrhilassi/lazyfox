@@ -231,6 +231,20 @@ export function installWinSync(deps: WinSyncDeps): void {
     // ignore
   }
 
+  // Muting is not a tab switch. A site starting audio, the tab's own context
+  // menu or our ;m op all change the muted attribute without firing TabSelect,
+  // and the status bar's muted badge would otherwise wait for the next poll —
+  // which reads as "the indicator is broken" on the one action that asks for it.
+  try {
+    win.gBrowser.tabContainer.addEventListener("TabAttrModified", (e: any) => {
+      const changed = e && e.detail && e.detail.changed;
+      if (Array.isArray(changed) && changed.indexOf("muted") === -1) return;
+      status.compute();
+    });
+  } catch {
+    // A build without the event still updates the badge on the poll.
+  }
+
   /* ---- the real-tab #lfc= channels ---- */
 
   win.gBrowser.addTabsProgressListener({

@@ -81,6 +81,9 @@ export const CONFIG_DEFAULTS: Config = {
   apps: defaultApps(),
   dark: DARK_DEFAULTS,
   reader: READER_DEFAULTS,
+  // Tokyo Night, no overrides: the look the product already shipped. Theming
+  // our own UI is independent of `dark`, which is off by default.
+  theme: { preset: "tokyonight", accent: "", background: "" },
 };
 
 
@@ -100,6 +103,9 @@ export function mergeConfig(partial: Partial<Config> | undefined): Config {
   // and the palette along with it.
   merged.dark = Object.assign({}, DARK_DEFAULTS, partial?.dark || {});
   merged.reader = Object.assign({}, READER_DEFAULTS, partial?.reader || {});
+  // Same rule again for the UI theme: a stored `{preset}` must not wipe the
+  // accent/background fields and vice versa.
+  merged.theme = Object.assign({}, CONFIG_DEFAULTS.theme, partial?.theme || {});
   return merged;
 }
 

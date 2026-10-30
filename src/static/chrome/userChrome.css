@@ -10,16 +10,44 @@
     with the pref off the toolbar never appears. In fullscreen (zen mode, ;z)
     it never appears either.                                                */
 
+/* The palette tokens. These are DEFAULTS: the chrome helper writes the user's
+   chosen preset onto the window root as inline custom properties, which beat
+   these. Keep the names in step with shared/theme.ts (uiVars) — a token that
+   exists in only one of the two files is a colour that silently never themes. */
 :root {
-  --lf-bg: #1e1e2e;
+  --lf-bg: #1a1b26;
   --lf-bg2: #16161e;
+  --lf-panel: #1e1e2e;
   --lf-fg: #c0caf5;
   --lf-muted: #9aa5ce;
-  --lf-dim: #565f89;
-  --lf-border: #414868;
-  --lf-border2: #2a2f45;
+  --lf-sub: #9aa5ce;
+  --lf-dim: #838aa8;
+  /* border is the quiet hairline, border2 the stronger one — the same order as
+     every other Lazyfox surface. */
+  --lf-border: #2a2f45;
+  --lf-border2: #414868;
   --lf-accent: #7aa2f7;
-  --lf-sel: #292e42;
+  --lf-raise: #292e42;
+  /* The active row's fill (see shared/theme.ts): a coloured step toward the
+     accent, brighter than a hovered row's neutral --lf-raise. */
+  --lf-sel: #3e4c71;
+  --lf-chip: #292e42;
+  --lf-green: #9ece6a;
+  --lf-red: #f7768e;
+  --lf-yellow: #e0af68;
+  --lf-purple: #bb9af7;
+  --lf-cyan: #2ac3de;
+  --lf-on-accent: #101014;
+  --lf-on-green: #101014;
+  --lf-on-red: #101014;
+  --lf-on-yellow: #101014;
+  --lf-on-purple: #101014;
+  --lf-on-cyan: #101014;
+  --lf-tint: rgba(255, 255, 255, .05);
+  --lf-shadow: 0 18px 46px rgba(0, 0, 0, .5);
+  --lf-r-lg: 6px;
+  --lf-r-md: 4px;
+  --lf-r-sm: 2px;
   --lf-hover-strip: 12px;
 }
 
@@ -131,24 +159,28 @@ html[data-lf-reveal="1"] #navigator-toolbox:hover #nav-bar {
 #nav-bar toolbarbutton:hover:active,
 #PanelUI-button:hover,
 #PanelUI-button[open] {
-  background: var(--lf-sel) !important;
+  background: var(--lf-raise) !important;
 }
 
 #nav-bar toolbarbutton:hover .toolbarbutton-icon,
 #PanelUI-button:hover .toolbarbutton-icon {
-  fill: #ffffff !important;
+  /* The hover state brightens through the palette's own ink: a fixed white
+     disappears on the light preset, where the icons are already dark. */
+  fill: var(--lf-fg) !important;
 }
 
 #nav-bar toolbarseparator {
   border-color: var(--lf-border2) !important;
 }
 
-/* the URL bar */
+/* the URL bar — a FIELD, so it takes the control radius (md), the same step as
+   every text field Lazyfox draws. A 6px corner made the one always-visible
+   control on screen the roundest thing in the product. */
 #urlbar,
 #urlbar-background {
   background: var(--lf-bg2) !important;
   border: 1px solid var(--lf-border) !important;
-  border-radius: 8px !important;
+  border-radius: var(--lf-r-md) !important;
   box-shadow: none !important;
 }
 
@@ -173,8 +205,8 @@ html[data-lf-reveal="1"] #navigator-toolbox:hover #nav-bar {
   background: var(--lf-bg) !important;
   color: var(--lf-fg) !important;
   border: 1px solid var(--lf-border) !important;
-  border-radius: 8px !important;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5) !important;
+  border-radius: var(--lf-r-lg) !important;
+  box-shadow: var(--lf-shadow) !important;
 }
 
 .urlbarView-row {
@@ -183,7 +215,7 @@ html[data-lf-reveal="1"] #navigator-toolbox:hover #nav-bar {
 
 .urlbarView-row:hover,
 .urlbarView-row[selected] {
-  background: var(--lf-sel) !important;
+  background: var(--lf-raise) !important;
 }
 
 .urlbarView-row .urlbarView-title,
@@ -232,7 +264,7 @@ tab-split-view-wrapper .tabbrowser-tab .tab-background {
 }
 
 tab-split-view-wrapper[hasactivetab] {
-  background: var(--lf-sel) !important;
+  background: var(--lf-raise) !important;
   border: 1px solid var(--lf-accent) !important;
 }
 

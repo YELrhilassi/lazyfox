@@ -40,6 +40,7 @@ import { createAliveAnnounce, detectProfile } from "./alive";
 import { createCacheCtl } from "./cache";
 import { createChannel, type Channel } from "./channel";
 import { applyHoverRevealPref, loadCfg, persistCfg, type ChromeCfg } from "./config";
+import { applyChromeTheme } from "./theme";
 
 import { ensureChromeCore, initChromeCore } from "./core";
 import { createDebug, type DebugHandlers } from "./debug";
@@ -118,6 +119,9 @@ import { createGlobalWhichKey } from "./wkglobal";
 
   const cfg: ChromeCfg = loadCfg();
   applyHoverRevealPref(cfg);
+  // Before anything below mounts a surface: the splash, the status bar and every
+  // popup this window opens read the palette at construction time.
+  applyChromeTheme(cfg);
   const leaderKey = () => cfg.config.leader || ";";
 
   /* ===================== modules ===================== */
@@ -805,6 +809,10 @@ split,
       cfg.config = mergeConfig(config);
       persistCfg(cfg, cfg.config);
       applyHoverRevealPref(cfg);
+      // A live config push repaints this window's own surfaces immediately; the
+      // browser chrome (toolbar/URL bar) picks the palette up on the next window
+      // start, exactly as the settings page says.
+      applyChromeTheme(cfg);
       if (cfg.config.whichKey === false && leader) leader.unpaint();
       // ...and the mirror a split page asked for, which is not the helper's
       // own panel and would otherwise survive the toggle on screen.

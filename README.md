@@ -104,6 +104,15 @@ replaces is backed up first. The same binary removes Lazyfox again.
 The leader is `;` by default; it can be changed in settings. `j`/`k`/`d`/`u`,
 `gg` and `G` scroll the page or the focused scroll region.
 
+## Appearance
+
+Settings → Appearance picks the palette the interface draws with: Tokyo Night,
+Catppuccin Mocha, Rosé Pine, Gruvbox Dark and Solarized Light, plus an optional
+accent and background of your own. It covers the status bar, popups, overlays,
+the settings page and the window chrome. It is separate from Dark mode, which
+recolours web pages; the two settings never touch each other. A new palette
+reaches the window chrome, status bar and overlay panels at the next launch.
+
 ## How it works
 
 - **`src/extension/`** is a regular WebExtension: content scripts, background,

@@ -11,6 +11,7 @@
 // to show or not show it.
 
 import { WK_CSS, WK_HOST_HTML } from "./leader-css";
+import { uiCss } from "./theme";
 import { promoteToTopLayer } from "./toplayer";
 
 export type LeaderHost = HTMLElement & { _sh: ShadowRoot };
@@ -31,6 +32,17 @@ export class LeaderPanel {
    * detached it. */
   ensure(): LeaderHost {
     if (!this.host) {
+      // A LAYER FROM A DEAD INSTANCE IS NOT A LAYER OF THIS ONE. An extension
+      // update leaves the old host — and its last painted menu — in the
+      // document, in the top layer, with nothing alive to hide it. The ids are
+      // per-owner (the chrome leader and the split-page mirror use different
+      // ones), so removing this class's own id cannot touch a sibling host.
+      try {
+        const stale = document.getElementById(this.id);
+        if (stale) stale.remove();
+      } catch (e) {
+        // A document that refuses the read falls through to the fresh host.
+      }
       const host = document.createElement("div") as unknown as LeaderHost;
       host.id = this.id;
       // A viewport-sized box that ignores the pointer: the panel inside it is
@@ -40,7 +52,7 @@ export class LeaderPanel {
       host.style.cssText =
         "all:initial;position:fixed;inset:0;display:block;pointer-events:none;";
       const sh = host.attachShadow({ mode: "closed" });
-      sh.innerHTML = "<style>" + WK_CSS + "</style>" + WK_HOST_HTML;
+      sh.innerHTML = "<style>" + uiCss(WK_CSS) + "</style>" + WK_HOST_HTML;
       host._sh = sh;
       document.documentElement.appendChild(host);
       // ABOVE THE PAGE, NOT MERELY ABOVE ITS z-index.

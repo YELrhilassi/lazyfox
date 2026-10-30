@@ -44,6 +44,7 @@ import type {
   SessionTab,
   SessionWindow,
   SiteRule,
+  UiThemeConfig,
 } from "../shared/types";
 
 /** Declares the schema. Every entry is (key, validator, fallback). */
@@ -351,6 +352,30 @@ function vDarkConfig(raw: unknown): DarkConfig | undefined {
   return out as unknown as DarkConfig;
 }
 
+// The UI theme is three fields and none of them can make the product unusable:
+// an unknown preset resolves to the default, and an accent/background that is
+// not a hex colour is dropped so the preset's own value applies. Validated
+// field by field rather than replaced, for the same reason as `dark` — a stored
+// `{preset}` must not erase the user's accent.
+// The hex check is inlined rather than imported from shared/theme: the e2e
+// fixture loads this file with plain `node`, which cannot resolve the
+// extensionless import the bundler allows, and a validator is the wrong place
+// to gain a dependency on the UI layer anyway.
+const HEX_COLOR = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+function vThemeConfig(raw: unknown): UiThemeConfig | undefined {
+  if (!isObject(raw)) return undefined;
+  const out: Record<string, unknown> = {};
+  const preset = vString(raw.preset);
+  if (preset !== undefined) out.preset = preset;
+  for (const field of ["accent", "background"]) {
+    const v = raw[field];
+    // "" is the valid "use the preset" value, so it must survive validation.
+    if (v === "" || (typeof v === "string" && HEX_COLOR.test(v))) out[field] = v;
+  }
+  return out as unknown as UiThemeConfig;
+}
+
 function vReaderConfig(raw: unknown): ReaderConfig | undefined {
   if (!isObject(raw)) return undefined;
   const out: Record<string, unknown> = {};
@@ -401,6 +426,7 @@ const CONFIG_FIELDS: Record<string, (raw: unknown) => unknown> = {
   apps: vArray(vQuickApp),
   dark: (raw) => vDarkConfig(raw),
   reader: (raw) => vReaderConfig(raw),
+  theme: (raw) => vThemeConfig(raw),
 };
 
 export const vConfig: Validator<Partial<Config>> = (raw) => {

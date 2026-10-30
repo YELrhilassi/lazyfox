@@ -104,13 +104,14 @@ export function openNavPopup(ctx: PopupCtx): void {
       (stack.canForward ? "" : " — at end") +
       (tree.stuck ? " — redirect loop, this page is a repeat" : "");
     const foot =
+      "<span class='lf-badge'>i</span> filter &middot; <span class='lf-badge'>j/k</span> move &middot; " +
       "<span class='lf-badge'>Enter</span> go" +
       (tree.root ? " &middot; <span class='lf-badge'>0</span> back to start" : "") +
       (tree.truncated ? ` &middot; ${tree.truncated} older entr${tree.truncated === 1 ? "y" : "ies"}` : "") +
       " &middot; <span class='lf-badge'>Esc</span> close";
 
     ctx.open(
-      basePanel(title, "no history", foot),
+      basePanel(title, "no history", foot, "i to filter"),
       (root) =>
         makeSelector<NavRow>(ctx, root, {
           debounceMs: 0,
@@ -118,7 +119,6 @@ export function openNavPopup(ctx: PopupCtx): void {
           // j/k walk the rows while the field is empty. Every other list in the
           // app navigates this way; this one used to require the arrow keys for
           // no reason a user could see.
-          vimNav: true,
           // Open WITH the cursor on the page you are on. The rows are not a
           // ranking — they are a position — so lighting row 0 (the pinned root,
           // or the oldest entry in the window) would put the selection as far
@@ -128,8 +128,7 @@ export function openNavPopup(ctx: PopupCtx): void {
           search: async () => items,
           render: (it) => {
             const n = it.node;
-            const mark = it.active ? "<span class='dot'></span>" : "";
-            const dir = it.step < 0 ? "\u2190" : it.step > 0 ? "\u2192" : "";
+                        const dir = it.step < 0 ? "\u2190" : it.step > 0 ? "\u2192" : "";
             const stepBadge =
               it.step !== 0 && Math.abs(it.step) <= 9
                 ? "<span class='lf-marker'>" + (it.step < 0 ? it.step : "+" + it.step) + "</span>"
@@ -141,7 +140,7 @@ export function openNavPopup(ctx: PopupCtx): void {
             const root = n.root ? "<span class='lf-rel'>\u2302</span>" : "";
             const when = relTime(n.time);
             return (
-              "<div class='t'>" + stepBadge + mark + dir + root + loop +
+              "<div class='t" + (it.active ? " act" : "") + "'>" + stepBadge + dir + root + loop +
               esc(it.title || "") +
               (n.visits > 1 ? " <span class='lf-rel'>\u00d7" + n.visits + "</span>" : "") +
               "</div><div class='s'>" +

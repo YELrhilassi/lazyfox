@@ -13,9 +13,14 @@
 // pretending the page is broken.
 
 import { isTypingTarget } from "../shared/dom";
+import { applyStoredTheme, logoUrl } from "./pagetheme";
 import { createGgArm } from "../shared/gg";
 import { send } from "../shared/protocol";
 import type { CacheMode, CacheScope, CacheState, PageReport } from "../shared/types";
+
+// Paint this page with the user's UI palette (shared/theme.ts). Independent of
+// dark mode: this is Lazyfox's own chrome, not the page under it.
+applyStoredTheme();
 
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
 
@@ -118,10 +123,10 @@ function renderPage(r: PageReport | null, note?: string): void {
       "Hint candidates",
       String(r.hints.candidates) +
         " found · " + r.hints.hinted + " hinted (" + r.hints.covered +
-        " dimmed: covered) · rejected: " +
+        " partly covered) · rejected: " +
         r.hints.rejected.hidden + " hidden, " +
         r.hints.rejected.duplicate + " duplicate, " +
-        r.hints.rejected.behind + " behind a dialog",
+        r.hints.rejected.behind + " not on the visible surface",
       r.hints.hinted ? "ok" : "warn",
     ],
     [
@@ -306,7 +311,7 @@ function schedule(): void {
 (async () => {
   try {
     const img = document.getElementById("logoImg") as HTMLImageElement;
-    img.src = browser.runtime.getURL("lazyfox-logo.svg");
+    img.src = logoUrl();
   } catch (e) {
     // ignore — header works without the logo
   }

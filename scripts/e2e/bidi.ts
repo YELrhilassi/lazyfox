@@ -1016,6 +1016,34 @@ export async function focusPage(context: string, signal?: AbortSignal): Promise<
     try { await clickPage(context, pt[0], pt[1], signal); } catch { /* keep going */ }
     await sleep(120, signal);
   }
+
+  // THE CLICKS MUST NOT LEAVE A PAGE FIELD PARKED WITH THE CARET.
+  //
+  // A trusted pointer press blesses a focused field for typing (the product's
+  // park rule, parkrule.ts: a click into the box means the box is the user's).
+  // Page scripts re-park their OWN caret after a click elsewhere — YouTube's
+  // masthead restores focus to its search box — so the pointer stamp becomes
+  // exactly the blessing that turns the next leader keydown into typed text
+  // ('; appears in YouTube's search box; the leader never arms; every retry
+  // repeats the mistake three times'). The clicks stay (the window needs the
+  // OS focus); the caret state they may leave behind does not: blur last, and
+  // verify the caret is actually out of any field before returning.
+  for (let i = 0; i < 3; i++) {
+    await evalIn(
+      context,
+      `(() => {
+        const ae = document.activeElement;
+        if (ae && ae !== document.body && ae !== document.documentElement || (ae && (ae.tagName || "").toUpperCase() === "INPUT")) {
+          try { ae.blur(); } catch (e) {}
+        }
+        if (document.body && document.activeElement === document.body) {
+          try { document.body.setAttribute("tabindex", "-1"); document.body.focus({ preventScroll: true }); } catch (e) {}
+        }
+        return document.activeElement === document.body ? true : null;
+      })()`,
+      { signal },
+    ).catch(() => {});
+  }
 }
 
 /**

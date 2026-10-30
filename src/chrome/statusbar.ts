@@ -350,6 +350,24 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
   // per window, forever.
   let computeKey: string | null = null;
 
+  // Is the SELECTED tab muted? Read from the tab element itself on every
+  // compute, like the stealth badge: the state changes from places that know
+  // nothing about this bar (a site's own audio controls, the tab's context menu,
+  // our `;m` op), so a cached flag would go stale in exactly the case the badge
+  // exists for.
+  function selectedMuted(): boolean {
+    try {
+      const tab = win.gBrowser && win.gBrowser.selectedTab;
+      if (!tab) return false;
+      // Current Firefox exposes the muted attribute; mutedInfo is the older API
+      // and still the only answer on some builds, so read both.
+      if (typeof tab.muted === "boolean") return tab.muted;
+      return !!(tab.mutedInfo && tab.mutedInfo.muted);
+    } catch (e) {
+      return false;
+    }
+  }
+
   function compute(): void {
     // The raw strip index, read defensively and SEPARATELY. It is the one
     // volatile input the leader indicator needs, and it is exactly what throws
@@ -394,6 +412,9 @@ export function createStatusBar(deps: StatusBarDeps): StatusBarCtl {
       // as "did my key land", so a stale value here is the exact bug it
       // exists to prevent.
     }
+    // The muted badge is painted directly, outside the store batch: it is a
+    // property of one tab rather than of the session the store models.
+    chromeStatusBar.setMuted(selectedMuted());
     // The far-right indicator rides OUTSIDE the store batch: it is painted
     // directly on the view so a `;` press lights it with zero async hops, and
     // it is repainted even when the batch above could not run.

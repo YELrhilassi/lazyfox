@@ -69,6 +69,7 @@ export function createSessionOps(
         kind: "session",
         title: s.name,
         marker: s.marker || 0,
+        current: !!s.current,
         subtitle:
           (s.marker ? "marker " + s.marker + " \u00b7 " : "") +
           (s.tabCount || 0) +

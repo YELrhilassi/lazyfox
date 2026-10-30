@@ -204,6 +204,9 @@ export async function run(ctx: any): Promise<void> {
     // must save, without waiting for the (formerly debounced) search to land.
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
     await openSessionsPopup(ctx.tabA);
+    // `i` focuses the field; without it the leading `i` of a query is spent on
+    // entering insert mode (every other first letter is typed AND focuses).
+    await ctx.press(ctx.tabA, "i");
     await ctx.typeIn(ctx.tabA, "instant");
     await ctx.press(ctx.tabA, "Enter"); // no settling sleep
     await waitStore(`browser.storage.local.get("lfSessions").then(r => r.lfSessions && r.lfSessions.instant && r.lfSessions.instant.tabs && r.lfSessions.instant.tabs.length)`);
@@ -671,5 +674,129 @@ export async function run(ctx: any): Promise<void> {
     if (movedTab) await evalIn(ctx.probe, `browser.tabs.remove(${movedTab.id}).catch(() => true)`).catch(() => {});
     await evalIn(ctx.probe, `browser.storage.local.get("lfSessions").then(r => { const a = r.lfSessions || {}; delete a.lfSrc; delete a.lfCur; return browser.storage.local.set({ lfSessions: a }); }).then(() => browser.storage.local.set({ lfCurrentSession: "work" })); true`);
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+  });
+  await t("sessions: the tabs pane marks the LIVE active tab (and never nothing)", async () => {
+    // The right-hand pane must draw the tab the user is actually on in the
+    // accent. It used to fall back to the index saved with the session, and a
+    // saved index that no longer exists in the tab list marked NO row at all:
+    // every row looked the same, which is the reported "the active tab shows no
+    // difference in colour".
+    //
+    // The saved index and the live one are made deliberately DIFFERENT here:
+    // the session is saved with the first tab active, then a different tab is
+    // made active before the popup opens. Only reading the live strip can pass.
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    // The session this window belonged to before the test — restored at the
+    // end, so a full-suite run continues from where it was.
+    const before = await evalIn(
+      ctx.probe,
+      `browser.storage.local.get("lfCurrentSession").then(r => r.lfCurrentSession || "")`
+    ).catch(() => "");
+    const extra = await createTab();
+    await navigate(extra, `${ctx.base}/lf-mark-b`, "complete");
+    const probeTabs = async () =>
+      evalIn(
+        ctx.probe,
+        `browser.tabs.query({}).then(ts => ts.filter(t => !(t.url || "").includes("relay.html") && !(t.url || "").includes("#lfc=")).map(t => ({ id: t.id, url: t.url, active: t.active, windowId: t.windowId })))`
+      );
+    const liveNow = await probeTabs();
+    const markTab = (liveNow || []).find((x) => (x.url || "").includes("/lf-mark-b"));
+    assert(markTab, "the second tab exists: " + JSON.stringify(liveNow));
+    // Save with the FIRST tab of the window active, so the stored `active`
+    // cannot be the index the live strip reports later.
+    const first = (liveNow || []).find((x) => x.windowId === markTab.windowId && x.id !== markTab.id);
+    assert(first, "the window has a tab besides the marked one");
+    await evalIn(ctx.probe, `browser.tabs.update(${first.id}, { active: true }).then(() => true)`);
+    await waitFor(async () => {
+      const ts = await probeTabs().catch(() => []);
+      return ts && ts.some((x) => x.id === first.id && x.active);
+    }, 8000, 100, { what: "the first tab active before the save" });
+    const saved = await evalIn(
+      ctx.probe,
+      `browser.runtime.sendMessage({ action: "sessionSave", data: { name: "lfMark" } }).then(r => r)`
+    );
+    assert(saved && saved.ok === true, "session saved: " + JSON.stringify(saved));
+    const savedActive = await evalIn(
+      ctx.probe,
+      `browser.storage.local.get("lfSessions").then(r => (r.lfSessions.lfMark || {}).active)`
+    );
+    // Now move to the OTHER tab. The pane's answer has to change with it.
+    await evalIn(ctx.probe, `browser.tabs.update(${markTab.id}, { active: true }).then(() => true)`);
+    await waitFor(async () => {
+      const ts = await probeTabs().catch(() => []);
+      return ts && ts.some((x) => x.id === markTab.id && x.active);
+    }, 8000, 100, { what: "the marked tab active before the popup opens" });
+    // THE ROW THE PANE SHOULD MARK, read from the session the pane lists: the
+    // row whose URL is this tab's. Counting a second, independent live list
+    // here made the assertion depend on which plumbing tabs each side filters
+    // (a borrowed `#lfc=` tab is the USER's tab to the product but looks like
+    // plumbing to a URL filter), which is not what this test is about.
+    const expected = await evalIn(
+      ctx.probe,
+      `browser.storage.local.get("lfSessions").then(r => ((r.lfSessions || {}).lfMark.tabs || []).findIndex(t => (t.url || "").includes("/lf-mark-b")))`
+    );
+    assert(expected > 0, "the marked tab is not row 0: " + expected);
+    assert(savedActive !== expected, "the saved index differs from the live one (saved=" + savedActive + " live=" + expected + ")");
+
+    await watchPopupEvents(extra);
+    await ctx.leaderSeq(extra, ["P"], { shift: true });
+    await ctx.waitPopup(extra, 8000);
+    await ctx.waitListEvent(extra, { count: { ge: 1 } }, 10000);
+    // Filter to this session so the pane is unambiguously showing ITS tabs.
+    await ctx.press(extra, "i");
+    await ctx.typeIn(extra, "lfMark");
+    const pane: any = await waitFor(
+      async () => {
+        const d = await evalIn(extra, `window.__lfTabs`).catch(() => null);
+        return d && d.name === "lfMark" && d.count > 0 ? d : null;
+      },
+      10000,
+      120,
+      { what: "the tabs pane to render lfMark" }
+    );
+    assert(
+      pane.activeIdx === expected,
+      "the active tab is the one drawn in the accent: pane=" + JSON.stringify(pane) + " expected=" + expected + " saved=" + savedActive
+    );
+    // "Marked a row" is not enough: the mark must be a real index into the pane.
+    assert(pane.activeIdx >= 0 && pane.activeIdx < pane.count, "exactly one row is marked: " + JSON.stringify(pane));
+
+    // TWO Escapes: the first leaves the filter field (insert mode owns Esc),
+    // the second closes the popup.
+    await ctx.press(extra, "Escape");
+    await ctx.press(extra, "Escape");
+    await ctx.waitPopupGone(extra, 5000);
+    // Leave the window on the session it came from. The SWITCH GOES THROUGH
+    // THE POPUP, like the user's: asking `sessionRestore` from this tab cannot
+    // work, because the restore replaces the very tab that is awaiting the
+    // reply (the promise dies with it and the call looks like a null result).
+    // A rebuild necessarily replaces this window's tabs, so the test
+    // re-establishes its contexts after it. With nothing to go back to (an
+    // --only run on a fresh profile) the throwaway just keeps the window.
+    const backMarker = before
+      ? await evalIn(
+          ctx.probe,
+          `browser.storage.local.get("lfSessions").then(r => ((r.lfSessions || {})[${JSON.stringify(before)}] || {}).marker || 0)`
+        ).catch(() => 0)
+      : 0;
+    if (before && before !== "lfMark" && backMarker >= 1 && backMarker <= 9) {
+      await ctx.leaderSeq(extra, ["P"], { shift: true });
+      await ctx.waitPopup(extra, 8000);
+      await ctx.waitListEvent(extra, { count: { ge: 1 } }, 10000);
+      await ctx.press(extra, String(backMarker));
+      await ctx.waitCurrentSession(before);
+      ctx.tabA = await createTab();
+      await ctx.gotoPage(ctx.tabA, `${ctx.base}/`);
+    } else {
+      await closeContext(extra).catch(() => {});
+    }
+    // Drop the throwaway session through a realm that survived the switch.
+    await ctx.ensureProbe().catch(() => {});
+    if (ctx.probe) {
+      await evalIn(
+        ctx.probe,
+        `browser.storage.local.get("lfSessions").then(r => { const a = r.lfSessions || {}; delete a.lfMark; return browser.storage.local.set({ lfSessions: a }); })`
+      ).catch(() => {});
+    }
   });
 }

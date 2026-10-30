@@ -5,6 +5,7 @@
 // the event listeners. All logic lives in commandcenter/{state,data,render,keys}.
 
 import { mergeConfig } from "../shared/config";
+import { applyStoredTheme, logoUrl } from "./pagetheme";
 import { core, ensureCore } from "../shared/core";
 import { installFetchedCore } from "../shared/corefetch";
 import { LeaderController, isCancel } from "../shared/leader";
@@ -31,6 +32,9 @@ import type { ContentPopupShell } from "./content/find";
 
 (function () {
   "use strict";
+  // Paint this page with the user's UI palette (shared/theme.ts). Independent of
+  // dark mode: this is Lazyfox's own chrome, not the page under it.
+  applyStoredTheme();
 
   // POINT THE CORE AT THE PACKAGED WASM BEFORE ANYTHING CAN ASK IT ANYTHING.
   //
@@ -571,7 +575,8 @@ import type { ContentPopupShell } from "./content/find";
     const logo = document.getElementById("brandLogo");
     if (logo) {
       const img = document.createElement("img");
-      img.src = browser.runtime.getURL("lazyfox-logo.svg");
+      img.setAttribute("data-lf-logo", "");
+      img.src = logoUrl();
       img.alt = "Lazyfox";
       logo.appendChild(img);
     }

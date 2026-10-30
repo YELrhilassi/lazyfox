@@ -4,13 +4,14 @@
 //   probe.ts     visibility + naming            overlay.ts  label DOM and placement
 //   collect.ts   page walk for candidates       activate.ts clicking/focusing + verdict
 //   life.ts      "the page did something"       diagnose.ts the "why isn't this hinted" report
-import { core } from "../../../shared/core";
+import { makeHintKeys } from "../../../shared/hintkeys";
 import { toast } from "../../../shared/overlay";
 import type { HintActivation } from "../../../shared/types";
 import {
   DOM_RESYNC_DELAY,
   DOM_RESYNC_MAX_WAIT,
   MAX_HINTS,
+  MIN_VISIBLE_SHARE,
   PAGE_GUARD,
   POOL_RESYNC_MS,
   RESYNC_DELAY,
@@ -18,9 +19,9 @@ import {
 } from "./selectors";
 import { createHintOverlay } from "./overlay";
 import { createActivator } from "./activate";
-import { targetKey, type HintCandidate } from "./select";
+import { selectBench, targetKey, type HintCandidate } from "./select";
 import { createHintResolve, type HintPager } from "./hintresolve";
-import { sheetOver } from "./probe";
+import { coverageOf } from "./probe";
 import { shadowRootOf, walkElements } from "../../../shared/dom";
 import { createCoalescer } from "../../../shared/coalesce";
 import { createMotionWatch, type MotionKind, type MotionWatch } from "./motion";
@@ -55,6 +56,16 @@ export interface LinkHints {
   snapshot(): {
     positions: Array<{ key: string; x: number; y: number; held?: boolean }>;
     boxes: Array<{ key: string; l: number; t: number; r: number; b: number; held?: boolean }>;
+    // Dev-only counters (see createLinkHints): the batch, the pool, and what
+    // the last `;f` cost.
+    stats?: {
+      items: number;
+      pool: number;
+      typed: string;
+      active: boolean;
+      doc: { w: number; h: number };
+      pass?: { collect: number; select: number };
+    };
   };
 }
 
@@ -174,10 +185,30 @@ export function createLinkHints(
   // hand-placed `starting = false` on each branch. Miss one and the layer can
   // never be started again on that page: `;f` would return immediately, with
   // no error and nothing on screen.
+  // What the last `;f` actually cost, split into its two halves. Diagnostics
+  // only (it rides the dev snapshot): "the hints got slow" is answerable with
+  // numbers instead of a guess about which half to blame.
+  let lastPass: {
+    collect: number;
+    select: number;
+    /** Where the select half went; see selectBench. Diagnostics only. */
+    bench?: {
+      candidates: number;
+      judged: number;
+      coverageCalls: number;
+      coverageMs: number;
+      clipMs: number;
+      sampleMs: number;
+      samples: number;
+    };
+  } = { collect: 0, select: 0 };
+
   async function runStart(mySession: number): Promise<void> {
     // Through the resolve layer, so the pool and the visibility pass it will be
     // selected with are built TOGETHER (see hintresolve.refreshPool).
+    const passStarted = performance.now();
     pool = resolve.refreshPool();
+    const collected = performance.now();
     // The content script is intentionally top-frame-only today. A visible
     // iframe is a real part of the screen, so silently presenting the top
     // document's partial set as "all hints" is misleading. Say so on each
@@ -202,21 +233,31 @@ export function createLinkHints(
       return;
     }
     if (hasVisibleFrame) toast("iframe contents aren't included in link hints");
-    // One key sequence for the whole session (see keyPool). Generated up front
-    // so a later re-hint never has to await the core mid-flight.
-    try {
-      keyPool = await core.makeHints(MAX_HINTS + 18, hintChars());
-    } catch (e) {
-      toast("core unavailable");
-      return;
-    }
-    if (session !== mySession) return; // exited (ESC) during the await
+    // One key sequence for the whole session (see keyPool). Generated locally
+    // and synchronously: the core round-trip was a promise hop to the chrome
+    // sandbox whose failure left the layer dead with "core unavailable", and
+    // key generation is string logic the content realm can do in microseconds.
+    keyPool = makeHintKeys(MAX_HINTS + 18, hintChars());
+    if (session !== mySession) return; // exited (ESC) during earlier awaits
     starting = false;
     // HINTS NEVER MOVE THE PAGE. An old loop scrolled up to PAGE_GUARD
     // viewports hunting links, jumping the page under the user's hands and
     // stalling heavy documents. "Nothing here is hintable" is said outright;
     // `]` / `[` page toward other links.
     const sel = resolve.viewportItems();
+    lastPass = {
+      collect: Math.round(collected - passStarted),
+      select: Math.round(performance.now() - collected),
+      bench: {
+        candidates: selectBench.candidates,
+        judged: selectBench.judged,
+        coverageCalls: selectBench.coverageCalls,
+        coverageMs: Math.round(selectBench.coverageMs),
+        clipMs: Math.round(selectBench.clipMs),
+        sampleMs: Math.round(selectBench.sampleMs),
+        samples: selectBench.samples,
+      },
+    };
     const vis = sel.kept;
     if (!vis.length) {
       toast("no hints in view \u2014 ] for the next batch");
@@ -277,7 +318,11 @@ export function createLinkHints(
       prev.length === chosen.length &&
       chosen.every((c, i) => prev[i] && prev[i]!.el === c.el)
     ) {
-      for (let i = 0; i < chosen.length; i++) prev[i]!.covered = chosen[i]!.covered;
+      for (let i = 0; i < chosen.length; i++) {
+        prev[i]!.covered = chosen[i]!.covered;
+        prev[i]!.ax = chosen[i]!.ax;
+        prev[i]!.ay = chosen[i]!.ay;
+      }
       render();
       return;
     }
@@ -343,6 +388,8 @@ export function createLinkHints(
         cy: 0,
         target: targetKey(c.el),
         covered: c.covered,
+        ax: c.ax,
+        ay: c.ay,
       });
     }
     for (const it of prev) {
@@ -378,12 +425,15 @@ export function createLinkHints(
     const vw = window.innerWidth || 0;
     const vh = window.innerHeight || 0;
     if (r.bottom <= 0 || r.right <= 0 || r.top >= vh || r.left >= vw) return false;
-    // A control that a DIALOG or a popup sheet now covers is not a survivor: the
-    // page put a surface on top of it, and keeping the label would draw it over
-    // that surface. (A scrim or a sticky bar is not this — sheetOver is the
-    // question "is a separate surface over it", not "is it obstructed".)
+    // A control the page has now covered is not a survivor: a dialog, a popup
+    // sheet or the layer above it means the label would be painted on top of
+    // that surface, and a control folded under another layer is not visible at
+    // all. Same share the selection pass uses, so a label the next batch would
+    // not earn cannot outlive it through the survivor merge.
     try {
-      if (sheetOver(el)) return false;
+      const cov = coverageOf(el);
+      const share = cov.total > 0 ? cov.own / cov.total : 0;
+      if (share < MIN_VISIBLE_SHARE) return false;
     } catch (e) {
       // A hostile element must not keep a label alive either; fall through.
     }
@@ -439,7 +489,7 @@ export function createLinkHints(
     const freshSet = new Set(vis.map((c) => c.el));
     const extra = survivors
       .filter((it) => !freshSet.has(it.el))
-      .map((it) => ({ el: it.el, covered: it.covered }));
+      .map((it) => ({ el: it.el, covered: it.covered, ax: it.ax, ay: it.ay }));
     if (!extra.length) return vis;
     const all = [...extra, ...vis];
     try {
@@ -961,6 +1011,7 @@ export function createLinkHints(
         typed: typed,
         active: active,
         doc: { w: window.innerWidth || 0, h: window.innerHeight || 0 },
+        pass: lastPass,
       };
       return base;
     },

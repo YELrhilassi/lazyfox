@@ -152,7 +152,9 @@ export interface BgApi {
   // the segment), engine native|dynamic|filter — what lets the bar tell "the
   // site's own theme" apart from one we recoloured.
   syncDark: { req: { on: boolean; mode: string; engine: string }; res: { ok: boolean } };
-  sessionList: { req: Record<string, never>; res: { sessions: Session[] } };
+  // `current` names the session the asking window is running, so the popup can
+  // mark that row in one read (see popups/sessions.ts).
+  sessionList: { req: Record<string, never>; res: { sessions: Session[]; current: string } };
   sessionSave: { req: { name: string }; res: { ok: boolean; session?: Session } };
   sessionNew: { req: { name: string }; res: { ok: boolean; note?: string } };
   sessionRestore: { req: { name: string }; res: { ok: boolean } };

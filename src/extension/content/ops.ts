@@ -261,6 +261,7 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
     startHints: () => deps.startHints(),
     listSessions: async (q: string) => {
       const r = await send("sessionList");
+      const currentName = (r && r.current) || "";
       const sessions: PopupItem[] = ((r && r.sessions) || []).map((s) => {
         const splitCount = (s.tabs || []).filter(
           (t: any) => typeof t.splitViewId === "number" && t.splitViewId >= 0
@@ -269,6 +270,7 @@ export function createContentOps(deps: ContentOpsDeps): ActionOps {
           kind: "session",
           title: s.name,
           marker: s.marker || 0,
+          current: !!currentName && currentName === s.name,
           subtitle:
             (s.marker ? "marker " + s.marker + " \u00b7 " : "") +
             s.tabs.length +
