@@ -1,6 +1,7 @@
 // Sessions popup: two-pane (session list | its tabs), marker jumps, pending
 // copy/move target picker, armed delete.
 import { esc } from "../dom";
+import { faviconHtml, faviconFor } from "../favicon";
 // The shared cancel predicate (Escape or Ctrl+G) — see its own note. The
 // sessions popup is the one surface with its own key routing (panes, a pending
 // copy/move picker), so it has to ask the same question rather than test for
@@ -72,17 +73,17 @@ export function openSessionsPopup(ctx: PopupCtx): void {
 
   ctx.open(
     // Two columns: the session list on the left, the selected session's tabs
-    // on the right. The input lives in the left column (the chrome helper's
-    // popup re-creates it there if Firefox drops the form control).
-    "<div class='lf-panel wide'><div class='lf-title'>Sessions</div>" +
+    // on the right. The field is at the TOP of the left column, so the popup
+    // reads as a palette: type above, list below.
+    "<div class='lf-panel wide' data-lf-title='Sessions'>" +
       "<div class='lf-split'>" +
       "<div class='lf-col'>" +
+      "<input class='lf-input' placeholder='i to type a name · Enter saves' spellcheck='false'/>" +
       "<div class='lf-main'><div class='lf-list'></div><div class='lf-empty' style='display:none'>no saved sessions</div></div>" +
-      "<input class='lf-input' placeholder='type a name and press Enter to save the current tabs' spellcheck='false'/>" +
       "</div>" +
-      "<div class='lf-col'><div class='lf-col-head'>Tabs</div><div class='lf-tabs'><div class='lf-tabs-empty'>select a session to see its tabs</div></div></div>" +
+      "<div class='lf-col'><div class='lf-tabs'><div class='lf-tabs-empty'>select a session to see its tabs</div></div></div>" +
       "</div>" +
-      "<div class='lf-foot'><span class='lf-hint'><span class='lf-badge'>Enter</span> save/switch &middot; <span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Ctrl+1-9</span> mark &middot; <span class='lf-badge'>n</span> new &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Tab</span> tabs &middot; <span class='lf-badge'>Esc</span> close</span><span class='lf-status' style='display:none'></span></div>" +
+      "<div class='lf-foot'><span class='lf-hint'><span class='lf-badge'>i</span> type &middot; <span class='lf-badge'>j/k</span> move &middot; <span class='lf-badge'>Enter</span> save/switch &middot; <span class='lf-badge'>1-9</span> jump &middot; <span class='lf-badge'>Ctrl+1-9</span> mark &middot; <span class='lf-badge'>n</span> new &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Tab</span> tabs &middot; <span class='lf-badge'>Esc</span> close</span><span class='lf-status' style='display:none'></span></div>" +
       "</div>",
     (root) => {
       // Two-step delete confirmation: the first x arms the delete (red
@@ -139,8 +140,20 @@ export function openSessionsPopup(ctx: PopupCtx): void {
           const row = document.createElement("div");
           row.className =
             "lf-item lf-tab" + (t.active ? " active" : "") + (i === tabIdx ? " selected" : "");
+          // THE ACTIVE TAB IS MARKED BY INK, not by a dot: its title runs in
+          // the accent, which is the same signal the status bar gives the
+          // current session. `.t` is the row's title line, so the mark travels
+          // with the text instead of sitting in front of it.
           row.innerHTML =
-            (t.active ? "<span class='dot'></span>" : "") +
+            "<div class='t" + (t.active ? " act" : "") + "'>" +
+            // THE ID COLUMN, the same figure the session list draws (
+            // lf-marker: accent, tabular, 1px rule before the name). A saved
+            // session's tabs answer to their position in the SAVED order —
+            // the same number copy/move (c/m) addresses — so the id is not
+            // decoration: it is the address the popup's other keys use.
+            "<span class='lf-marker'>" +
+            (t.sessionIndex != null ? t.sessionIndex + 1 : i + 1) +
+            "</span>" +
             (t.pinned ? "\uD83D\uDCCC " : "") +
             (t.stealth ? "\uD83D\uDD75 " : "") +
             // THE TITLE IS WRAPPED, not merely escaped. A bare text node
@@ -148,18 +161,35 @@ export function openSessionsPopup(ctx: PopupCtx): void {
             // flex item cannot be told to ellipsize — a long tab title pushed
             // the column's width out instead of clipping, which is what "the
             // tabs popup should truncate long text of the tab" was about.
-            "<div class='t'><span class='txt'>" + esc(t.title || "") + "</span></div>" +
+            "<span class='txt'>" + esc(t.title || "") + "</span>" +
+            // Favicon pinned to the row's right edge (matches the tab
+            // switcher): derived from the page URL, because the session record
+            // stores where the tab was, not what icon it showed.
+            faviconHtml(faviconFor(t.url)) +
+            "</div>" +
             "<div class='s'>" + esc(displayUrl(t.subtitle || t.url || "")) + "</div>";
           tabsPane.appendChild(row);
         });
         // Same observable contract as the left list's `lazyfox:list` event: the
         // tabs pane lives in a closed shadow root, so page observers (and the
         // e2e harness) track its render + selection through this composed event.
+        // `activeIdx` is the row drawn in the accent (-1 when the pane marks
+        // none). It is the one part of the "is the active tab visible" promise
+        // no outside observer can otherwise see through the closed shadow
+        // root, and the e2e harness needs it to tell a mark from a miss.
         tabsPane.dispatchEvent(
           new CustomEvent("lazyfox:tabs", {
             bubbles: true,
             composed: true,
-            detail: { count: tabRows.length, idx: tabIdx },
+            detail: {
+              // Which session the pane is showing. Its rows are counts and an
+              // index, never titles or URLs; the NAME is already on screen and
+              // is what makes "this render belongs to that session" testable.
+              name: lastSel,
+              count: tabRows.length,
+              idx: tabIdx,
+              activeIdx: tabRows.findIndex((t) => !!t.active),
+            },
           })
         );
       };
@@ -246,14 +276,24 @@ export function openSessionsPopup(ctx: PopupCtx): void {
         }
         updateFoot();
       };
+      // THE PICKER OWNS THE FIELD ONLY WHILE IT IS PENDING. Focusing the field
+      // is what puts the selector in insert mode (its focus listener), so
+      // leaving it focused after Enter/Esc made the popup need a FOURTH Escape:
+      // the extra press went to leaving a field nobody was typing into any
+      // more. Blurring hands the keyboard back to the panes.
+      const leavePicker = () => {
+        const f = root.querySelector(".lf-input") as HTMLInputElement | null;
+        if (f) f.blur();
+      };
       const cancelPending = () => {
         pending = null;
+        leavePicker();
         setPane("R");
       };
 
       const sel = makeSelector<PopupItem>(ctx, root, {
         debounceMs: 0,
-        emptyText: "type a name and press Enter to save the current tabs",
+        emptyText: "type a name to save the current tabs",
         search: async (q) => {
           await ensureLoaded();
           return results(q);
@@ -261,20 +301,20 @@ export function openSessionsPopup(ctx: PopupCtx): void {
         render: (s) => {
           if (s.kind === "save") {
             return (
-              "<div class='t'><span class='dot'></span>" +
-              "<span class='txt'>" + esc(s.title || "") + "</span>" +
+              "<div class='t'><span class='txt'>" + esc(s.title || "") + "</span>" +
               "</div><div class='s'>" + esc(s.subtitle || "") + "</div>"
             );
           }
           if (s.kind === "new") {
             return (
-              "<div class='t'><span class='dot new'></span>" +
-              "<span class='txt'>" + esc(s.title || "") + "</span>" +
+              "<div class='t'><span class='txt'>" + esc(s.title || "") + "</span>" +
               "</div><div class='s'>" + esc(s.subtitle || "") + "</div>"
             );
           }
           return (
-            "<div class='t'>" +
+            // The current session is marked by INK, like the current tab on
+            // the other side of the popup and the current session on the bar.
+            "<div class='t" + (s.current ? " act" : "") + "'>" +
             (s.marker ? "<span class='lf-marker'>" + s.marker + "</span>" : "") +
             "<span class='txt'>" + esc(s.title || "") + "</span>" +
             "</div><div class='s'>" + esc(s.subtitle || "") + "</div>"
@@ -308,6 +348,8 @@ export function openSessionsPopup(ctx: PopupCtx): void {
             lastSel = p.name;
             if (p.mode === "copy") ctx.ops.sessionTabCopy(p.name, p.idx, target);
             else ctx.ops.sessionTabMove(p.name, p.idx, target);
+            // The target has been chosen: the field is no longer the prompt.
+            leavePicker();
             setPane("R");
             renderTabs(p.name);
             // Invalidate the cached session list so the next search shows the

@@ -1,6 +1,12 @@
 // Shared types across all Lazyfox contexts (chrome helper, content script,
 // background, command center, options).
 
+import type { UiThemeConfig } from "./theme";
+
+// Re-exported so a consumer that already reads Config does not need a second
+// import for the field's type.
+export type { UiThemeConfig } from "./theme";
+
 export interface Config {
   leader: string;
   hintChars: string;
@@ -28,6 +34,11 @@ export interface Config {
   dark: DarkConfig;
   // Reader mode: the article overlay's own typography.
   reader: ReaderConfig;
+  // The Lazyfox UI's own colours (chrome, status bar, popups, settings). This is
+  // NOT dark mode: `dark` recolours web pages, `theme` paints our own surfaces,
+  // and the two are independent. A preset id plus optional accent/background
+  // overrides; see shared/theme.ts for the palettes.
+  theme: UiThemeConfig;
 }
 
 /**
@@ -261,6 +272,9 @@ export interface PopupItem {
   time?: number;
   favIconUrl?: string;
   marker?: number;
+  // Sessions: this row is the session the asking window is running. Drawn in
+  // the accent, the same mark the status bar gives the current session.
+  current?: boolean;
   // The index of a sessionTab row within its session's saved tabs array (the
   // identity session copy/move actions address).
   sessionIndex?: number;
@@ -408,17 +422,20 @@ export interface PageReport {
     candidates: number;
     hinted: number;
     /**
-     * Hinted, but drawn DIMMED because something is painted over the control
-     * right now (a sticky header, a scrim, a player's control bar). Covered
-     * controls are no longer rejected — the key works and the label says so —
-     * so this is a subset of `hinted`, not a filter stage. See hints/select.ts.
+     * Hinted, with part of the control's own surface painted over (a sticky
+     * header, a badge, a player's control bar). The label is drawn at FULL
+     * strength, anchored to the visible part of the control — faint labels were
+     * the "ghost batch under a stacked layer" report. This is a subset of
+     * `hinted`, not a filter stage. See hints/select.ts and hints/probe.ts.
      */
     covered: number;
     /**
-     * `behind` counts candidates dropped because a SEPARATE surface (a dialog,
-     * a popup sheet, a full-screen scrim) sits over them. Unlike `covered`,
-     * these are not hinted at all: a label drawn on top of the dialog would be
-     * a hint for something the page is currently hiding.
+     * `behind` counts candidates that are not really on the page's visible
+     * surface: a dialog, a popup sheet, an opaque layer, or the layer underneath
+     * a page that is folded/stacked on itself covers too much of them (below the
+     * MIN_VISIBLE_SHARE of their own pixels). Unlike `covered`, these are not
+     * hinted at all, because any label would be painted on top of whatever is
+     * covering them.
      */
     rejected: { hidden: number; duplicate: number; behind: number };
     /**
@@ -549,6 +566,11 @@ export interface StatusBarData {
   downloads: StatusBarDownload[];
   // True when the active tab is a stealth tab — shows a badge on the bar.
   activeStealth?: boolean;
+  // True when the active tab is MUTED. A muted tab is otherwise silent about it:
+  // the tab strip is removed, so the bar is the only place the state can be
+  // seen. Painted live from the selected tab's own `muted` attribute (see
+  // chrome/statusbar.ts), not through the store.
+  muted?: boolean;
   // Live find-in-page state (content-script find widget): current match
   // (1-based, 0 = none selected yet) and total matches. Shown as a "find"
   // segment; null (or count 0) hides it. Pushed by the content script and

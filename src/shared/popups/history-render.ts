@@ -217,7 +217,9 @@ export function createHistoryView(deps: HistoryViewDeps): HistoryView {
     const vis = visibleRows(state);
     if (state.idx >= vis.length) state.idx = Math.max(0, vis.length - 1);
     if (!state.rows.length) {
-      emptyEl.style.display = "block";
+      // "" so `.lf-empty`'s centring flex layout survives; an inline "block"
+      // pins the message to the top of the panel.
+      emptyEl.style.display = "";
       detailEl.textContent = "";
       relatedEl.textContent = "";
       updateFoot();

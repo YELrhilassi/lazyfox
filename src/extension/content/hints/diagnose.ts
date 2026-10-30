@@ -3,19 +3,20 @@
 // It re-runs the ordinary collection and the ordinary viewport pass with
 // counters attached, so what it reports is exactly what `;f` would do — not a
 // second implementation that drifts. Nothing here clicks anything.
-import { rectCenter, reachable, shortName, deepHit, inViewport, hintVisible, sheetOver } from "./probe";
+import { rectCenter, coverageOf, shortName, deepHit, inViewport, hintVisible } from "./probe";
 import { collectHintables, type CollectStats } from "./collect";
 import { selectHintables, type Rejection } from "./select";
 import { createVisibilityPass } from "./visibility";
-import { MAX_HINTS } from "./selectors";
+import { MAX_HINTS, MIN_VISIBLE_SHARE } from "./selectors";
 import type { HintProbe } from "../../../shared/types";
 
 export interface HintDiagnosticsSnapshot {
   candidates: number;
   hinted: number;
   /**
-   * Hinted, with a DIMMED label: something is over the control right now. It is
-   * a state of the batch, not a rejection — the key still fires.
+   * Hinted, with part of the control's surface painted over. The label is drawn
+   * at full strength, anchored to the visible part — this is a fact about the
+   * page, not a state of the batch.
    */
   covered: number;
   rejected: { hidden: number; duplicate: number; behind: number };
@@ -90,7 +91,7 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
   // Same selection the live flow runs, so the counters are the truth. The
   // explain sink is the ONE difference and it changes no decision.
   const why = new Map<Element, string>();
-  const sel = selectHintables(pool, MAX_HINTS, pass, undefined, undefined, (r) => {
+  const sel = selectHintables(pool, MAX_HINTS, pass, undefined, (r) => {
     why.set(r.el, describeRejection(r));
   });
   const kept = new Set<Element>(sel.kept.map((k) => k.el));
@@ -126,10 +127,16 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     const vis = inViewport(el) && hintVisible(el, pass);
     const center = rectCenter(el);
     const hit = vis ? deepHit(center[0], center[1]) : null;
-    const reach = vis && reachable(el);
-    // Covered by a SEPARATE surface (a dialog, a popup sheet): the label is not
-    // drawn at all, because it would be drawn on top of that surface.
-    const sheet = reach ? null : sheetOver(el);
+    // HOW MUCH OF IT IS ACTUALLY ON SCREEN. This used to be a boolean
+    // (`reachable`), which could not tell a control with one free corner from a
+    // fully visible one — and the report is read by a human asking exactly that.
+    const cov = vis ? coverageOf(el) : null;
+    const share = cov && cov.total > 0 ? cov.own / cov.total : 0;
+    const reach = !!cov && cov.own > 0;
+    // Covered by a dialog, a popup sheet or the layer above it: the label is not
+    // drawn at all, because it would be painted on top of that surface (labels
+    // live in the top layer).
+    const buried = !!cov && share < MIN_VISIBLE_SHARE;
     let reason: string;
     // THE SELECTION'S OWN ANSWER COMES FIRST when the element has none: a row
     // that is visible and clickable but carries no label is the reported shape
@@ -138,18 +145,31 @@ export function diagnoseHints(limit: number): HintDiagnosticsSnapshot {
     // is the answer.
     const dropped = kept.has(el) ? "" : why.get(el) || "";
     if (!vis) reason = "outside the viewport (page to it with ])";
-    else if (dropped) reason = dropped + " \u2014 no label";
-    else if (reach) reason = "clickable here";
-    else if (sheet)
+    else if (dropped)
       reason =
-        "behind " +
-        String(sheet.tagName || "?").toLowerCase() +
-        " (a dialog or overlay) \u2014 not hinted";
-    else
+        dropped +
+        " \u2014 no label (coverage " +
+        (cov ? cov.own + "/" + cov.total : "unavailable") +
+        ", center " +
+        (hit ? String(hit.tagName || "?").toLowerCase() + (hit.id ? "#" + hit.id : "") : "none") +
+        ", cover " +
+        (cov && cov.cover ? String(cov.cover.tagName || "?").toLowerCase() + (cov.cover.id ? "#" + cov.cover.id : "") : "none") +
+        ")";
+    else if (reach && !buried)
       reason =
-        "covered by " +
-        (hit ? String(hit.tagName || "?").toLowerCase() : "another element") +
-        " \u2014 still hinted, label dimmed";
+        share >= 1
+          ? "clickable here"
+          : "partly covered by " +
+            (cov && cov.cover ? String(cov.cover.tagName || "?").toLowerCase() : "another element") +
+            " \u2014 hinted on the visible part";
+    else if (buried)
+      reason =
+        "" +
+        Math.round(share * 100) +
+        "% visible, behind " +
+        (hit ? String(hit.tagName || "?").toLowerCase() : "another layer") +
+        " \u2014 not hinted";
+    else reason = "not on the visible surface \u2014 not hinted";
     probes.push({
       tag: String(el.tagName || "?").toLowerCase(),
       role: role,

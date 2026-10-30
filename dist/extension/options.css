@@ -12,10 +12,22 @@
        .actions (sticky save bar)
      p.foot */
 
+/* Every colour here is a token (theme.css); the page script replaces the
+   tokens with the user's preset at startup. */
 :root {
-  --bg: #0e1116; --bg2: #161922; --bg3: #1d2130; --panel: #1a1e2a;
-  --fg: #d3d7e6; --muted: #5f6a85; --sub: #9aa3bf; --accent: #6d8fdb;
-  --green: #8fbf5e; --red: #e07a7a; --border: #262b3d; --border2: #343b54; --sel: #2b3150;
+  --bg: var(--lf-bg);
+  --bg2: var(--lf-bg2);
+  --bg3: var(--lf-raise);
+  --panel: var(--lf-panel);
+  --fg: var(--lf-fg);
+  --muted: var(--lf-dim);
+  --sub: var(--lf-sub);
+  --accent: var(--lf-accent);
+  --green: var(--lf-green);
+  --red: var(--lf-red);
+  --border: var(--lf-border);
+  --border2: var(--lf-border2);
+  --sel: var(--lf-sel);
 }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
@@ -31,17 +43,17 @@ body {
 .head h1 { font-size: 20px; margin: 0 0 3px; color: var(--fg); font-weight: 680; }
 .back {
   position: absolute; top: 2px; right: 0; color: var(--sub); text-decoration: none; font-size: 12px; cursor: pointer;
-  border: 1px solid var(--border2); border-radius: 7px; padding: 6px 12px; background: var(--bg2);
+  border: 1px solid var(--border2); border-radius: var(--lf-r-md); padding: 6px 12px; background: var(--bg2);
 }
 .back:hover { border-color: var(--accent); color: var(--accent); }
-.sub { color: var(--muted); font-size: 12px; max-width: 700px; line-height: 1.6; margin: 0; }
+.sub { color: var(--sub); font-size: 12px; max-width: 700px; line-height: 1.6; margin: 0; }
 
 /* ---- the two panes ------------------------------------------------------ */
 .layout { display: flex; gap: 26px; align-items: flex-start; }
 .nav {
   flex: none; width: 168px; position: sticky; top: 16px;
   display: flex; flex-direction: column; gap: 2px;
-  padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg2);
+  padding: 10px; border: 1px solid var(--border); border-radius: var(--lf-r-lg); background: var(--bg2);
 }
 .nav-cap {
   font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
@@ -49,10 +61,13 @@ body {
 }
 .nav a {
   color: var(--sub); text-decoration: none; font-size: 13px; line-height: 1.4;
-  padding: 6px 10px; border-radius: 7px; border: 1px solid transparent; outline: none;
+  padding: 6px 10px; border-radius: var(--lf-r-md); border: 1px solid transparent; outline: none;
 }
 .nav a:hover { color: var(--fg); background: var(--bg3); }
-.nav a.active { color: var(--accent); background: var(--sel); }
+/* The current section wears the same "selected row" language as every list: a
+   bright --sel fill and an accent rule. Its ink is body ink rather than the
+   accent, because the accent on a selected fill measures 2.7-3.7:1. */
+.nav a.active { color: var(--fg); background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); }
 .content { flex: 1; min-width: 0; }
 
 /* Narrow window: the nav becomes a horizontal chip row on top. */
@@ -68,7 +83,7 @@ body {
 
 /* ---- cards -------------------------------------------------------------- */
 .card {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--lf-r-lg);
   padding: 20px 22px; margin-bottom: 18px;
   scroll-margin-top: 24px;
 }
@@ -77,27 +92,111 @@ body {
   display: flex; align-items: center; gap: 8px; font-weight: 650;
 }
 .card > h2 + .desc { margin-top: 6px; }
-.card .desc { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 2px 0 16px; }
+.card .desc { font-size: 12px; color: var(--sub); line-height: 1.6; margin: 2px 0 16px; }
 .field { margin-bottom: 14px; }
 .field:last-child { margin-bottom: 0; }
 .field label.r { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: var(--sub); cursor: pointer; }
 .field label.r input { margin-top: 3px; accent-color: var(--accent); width: 15px; height: 15px; }
 .field label.lbl { display: block; font-size: 12px; color: var(--sub); margin-bottom: 6px; }
+/* One field shape across the product: the same 1px border, 4px corner, 7px/10px
+   padding and 13px type as the popups' `.lf-input` (shared/overlaycss.ts
+   fieldCss). These were 8px/12px on a stronger border, so the settings page's
+   fields were a different control from the ones the same user types in all day. */
 input[type="text"], select {
-  padding: 8px 12px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border2);
-  border-radius: 7px; font-family: inherit; font-size: 13px; outline: none; width: 260px;
+  padding: 7px 10px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: var(--lf-r-md); font-family: inherit; font-size: 13px; outline: none; width: 260px;
   transition: border-color .12s ease;
 }
 input[type="text"]:focus, select:focus { border-color: var(--accent); }
 .kbd {
   display: inline-block; background: var(--bg2); border: 1px solid var(--border2); border-bottom-width: 2px;
-  border-radius: 4px; padding: 1px 7px; color: var(--accent); font-size: 11px;
+  border-radius: var(--lf-r-sm); padding: 1px 7px; color: var(--accent); font-size: 11px;
   font-family: ui-monospace, Menlo, Consolas, monospace;
 }
 .kv { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; font-size: 13px; }
 .kv .lbl { color: var(--sub); }
 .kv .val { color: var(--fg); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
-.hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.hint { color: var(--sub); font-size: 12px; margin-top: 4px; }
+/* ---- appearance: preset cards, swatches, preview ------------------------ */
+.note { color: var(--sub); font-weight: 400; margin-left: 6px; }
+.presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 9px; }
+.preset {
+  text-align: left; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--lf-r-lg);
+  padding: 9px 10px 10px; cursor: pointer; font: inherit; color: var(--sub);
+  transition: border-color .12s ease, transform .12s ease;
+}
+.preset:hover { border-color: var(--border2); }
+.preset.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.preset .sw { display: flex; height: 18px; border-radius: var(--lf-r-sm); overflow: hidden; margin-bottom: 8px; }
+.preset .sw i { flex: 1; display: block; }
+.preset .nm { font-size: 12.5px; color: var(--fg); font-weight: 650; display: flex; align-items: center; gap: 6px; }
+.preset .lt { font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.preset .bl { font-size: 11px; color: var(--sub); margin-top: 3px; line-height: 1.4; }
+.preset .cr { font-size: 9.5px; color: var(--dim); margin-top: 5px; }
+.swatch-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+.swatch-row label { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--sub); }
+input[type="color"] {
+  width: 36px; height: 26px; padding: 0; border: 1px solid var(--border); border-radius: var(--lf-r-md);
+  background: var(--bg2); cursor: pointer;
+}
+input[type="color"]::-moz-color-swatch { border: none; border-radius: var(--lf-r-sm); }
+button.ghost {
+  background: transparent; border: 1px solid var(--border2); color: var(--sub);
+  border-radius: var(--lf-r-md); padding: 7px 12px; font-family: inherit; font-size: 12px; cursor: pointer;
+}
+button.ghost:hover { color: var(--fg); border-color: var(--accent); }
+/* The preview is the real bar in miniature: same segment anatomy, same 1px
+   gaps, same inks. Its markup is built by options.ts from the SAME shared
+   helpers the live bar uses (icons, pill parts), so the two cannot drift. */
+.theme-preview { border: 1px solid var(--border); border-radius: var(--lf-r-lg); overflow: hidden; }
+/* True size: an 18px strip with the bar's 15px text and the same 3px bottom
+   padding, so the preview cannot flatter the type by drawing it in a taller or
+   roomier box than the real one. The face comes from the token the bar reads. */
+.tp-bar { display: flex; align-items: stretch; height: 18px; overflow: hidden;
+  background: var(--lf-bg2); color: var(--lf-sub);
+  font: 500 15px/1 var(--lf-bar-font); font-variant-numeric: tabular-nums; }
+.tp-seg { display: flex; align-items: center; gap: 4px; padding: 0 6px 3px; white-space: nowrap; }
+.tp-seg + .tp-seg,
+.tp-bar .sesspill + .tp-seg,
+.tp-sp + .tp-seg { border-left: 1px solid var(--lf-border); }
+/* Both halves of the tab count: one weight, one ink — the bar sets them as a
+   single fact, and the preview must not reintroduce the difference. */
+.tp-seg b, .tp-seg .cnt { color: var(--lf-fg); font-weight: 700; font-size: 16px; }
+.tp-seg svg { display: block; width: 13px; height: 13px; position: relative; top: 1px; }
+.tp-seg.stealth { color: var(--lf-purple); }
+.tp-seg.dark { background: var(--lf-purple); color: var(--lf-on-purple); }
+/* The pills reuse the bar's own class and markup (sessionPillHtml), so the
+   preview shows the real thing rather than a redrawn approximation. */
+/* The pill strip is the one segment whose children must FILL the bar rather
+   than sit in its 15px text box: a 18px pill centred in 15px would hang 1.5px
+   over each edge, and the text with it. */
+.tp-bar .tp-seg.chips { gap: 1px; padding: 0; align-items: stretch; overflow: hidden; }
+/* The same chevron as the shipped pill — notch on the left, point on the right,
+   20px/12px padding so the notch never crowds the first glyph. */
+.tp-bar .sesspill { display: flex; align-items: center; gap: 4px; padding: 0 9px 3px 13px;
+  background: var(--lf-chip); color: var(--lf-fg); font-weight: 500;
+  line-height: 1; white-space: nowrap;
+  clip-path: polygon(0 0, calc(100% - 5px) 0, 100% 50%, calc(100% - 5px) 100%, 0 100%, 5px 50%); }
+.tp-bar .sesspill .mk { flex: none; color: var(--lf-accent);
+  font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tp-bar .sesspill .sep { flex: none; width: 1px; height: 11px; background: var(--lf-border2); }
+.tp-bar .sesspill .nm { min-width: 0; max-width: 170px; overflow: hidden;
+  text-overflow: ellipsis; font-size: 14px; font-weight: 700; }
+.tp-bar .sesspill .nm::first-letter { text-transform: uppercase; }
+.tp-bar .sesspill .ct { color: var(--lf-dim); font-size: 14px; font-weight: 600;
+  font-variant-numeric: tabular-nums; margin-left: 3px; }
+.tp-bar .sesspill.active { background: var(--lf-accent); color: var(--lf-on-accent); }
+.tp-bar .sesspill.active .mk,
+.tp-bar .sesspill.active .ct { color: var(--lf-on-accent); }
+.tp-bar .sesspill.active .sep { background: color-mix(in srgb, var(--lf-on-accent) 45%, transparent); }
+.tp-sp { flex: 1; }
+.tp-seg.lead { background: var(--lf-cyan); color: var(--lf-on-cyan); font-weight: 800; }
+.tp-seg.mute { background: var(--lf-purple); color: var(--lf-on-purple); font-weight: 700; }
+.tp-body { background: var(--lf-panel); color: var(--lf-fg); padding: 10px 12px 12px; }
+.tp-row { display: flex; gap: 9px; align-items: baseline; font-size: 12px; line-height: 1.7; }
+.tp-key { color: var(--lf-accent); font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 700; }
+.tp-note { color: var(--lf-dim); font-size: 11px; }
+
 /* ---- the save bar -------------------------------------------------------- */
 .actions {
   display: flex; align-items: center; gap: 14px; margin-top: 4px;
@@ -106,20 +205,19 @@ input[type="text"]:focus, select:focus { border-color: var(--accent); }
   background: var(--bg);
 }
 #save {
-  padding: 10px 26px; background: var(--accent); color: #0b0e18;
-  border: none; border-radius: 7px; font-family: inherit; font-size: 13px; font-weight: 650; cursor: pointer;
-  box-shadow: 0 4px 18px rgba(109, 143, 219, .25);
+  padding: 10px 26px; background: var(--accent); color: var(--lf-on-accent);
+  border: none; border-radius: var(--lf-r-md); font-family: inherit; font-size: 13px; font-weight: 650; cursor: pointer;
 }
 #save:hover { filter: brightness(1.07); }
 #save:focus-visible { outline: 2px solid var(--sub); outline-offset: 2px; }
 #status { color: var(--green); font-size: 12px; }
 #chStatus { color: var(--green); font-size: 12px; }
-.foot { margin-top: 20px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.foot { margin-top: 20px; color: var(--sub); font-size: 12px; line-height: 1.8; }
 
 /* ---- quick-launch apps editor ------------------------------------------- */
 .app-row {
   display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--border);
-  border-radius: 8px; margin-bottom: 8px; background: var(--bg2);
+  border-radius: var(--lf-r-md); margin-bottom: 8px; background: var(--bg2);
 }
 .app-row .en { flex: none; }
 .app-row input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; }
@@ -138,23 +236,23 @@ input[type="text"]:focus, select:focus { border-color: var(--accent); }
    A rule corpus is pasted text, so the textarea is the one input on this page
    that is monospace by meaning rather than for a key cap. */
 textarea {
-  width: 100%; padding: 9px 12px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border2);
-  border-radius: 8px; font: 12px/1.55 ui-monospace, Menlo, Consolas, monospace; resize: vertical;
+  width: 100%; padding: 9px 12px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: var(--lf-r-md); font: 12px/1.55 ui-monospace, Menlo, Consolas, monospace; resize: vertical;
 }
 textarea:focus { border-color: var(--accent); outline: none; }
 .swatch-row, .num-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
 .swatch-row label, .num-row label { font-size: 12px; color: var(--sub); display: flex; align-items: center; gap: 7px; }
 .swatch-row input[type="color"] {
-  width: 42px; height: 26px; padding: 0; border: 1px solid var(--border2); background: var(--bg2); border-radius: 6px;
+  width: 42px; height: 26px; padding: 0; border: 1px solid var(--border); background: var(--bg2); border-radius: var(--lf-r-md);
 }
 .num-row input[type="number"] {
-  width: 78px; padding: 6px 8px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border2);
-  border-radius: 6px;
+  width: 78px; padding: 7px 10px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: var(--lf-r-md);
 }
 .num-row input[type="number"]:focus { border-color: var(--accent); outline: none; }
 .site-row {
   display: flex; gap: 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--border);
-  border-radius: 8px; margin-bottom: 8px; background: var(--bg2);
+  border-radius: var(--lf-r-md); margin-bottom: 8px; background: var(--bg2);
 }
 .site-row input[type="text"] { flex: 1.4; min-width: 0; }
 .site-row select { flex: 1; min-width: 0; }
@@ -166,6 +264,6 @@ textarea:focus { border-color: var(--accent); outline: none; }
 .btn-row .add-app { width: auto; flex: 1; margin-top: 0; }
 .add-app {
   margin-top: 10px; background: var(--bg2); color: var(--sub); border: 1px dashed var(--border2);
-  border-radius: 8px; padding: 9px; width: 100%; font-family: inherit; font-size: 13px; cursor: pointer;
+  border-radius: var(--lf-r-md); padding: 9px; width: 100%; font-family: inherit; font-size: 13px; cursor: pointer;
 }
 .add-app:hover { color: var(--accent); border-color: var(--accent); }

@@ -11,8 +11,10 @@ export function openDownloadsPopup(ctx: PopupCtx): void {
   const ctl = ctx.open(
     basePanel(
       "Downloads",
-      "filter downloads\u2026",
-      "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>o</span> location &middot; <span class='lf-badge'>r</span> retry &middot; <span class='lf-badge'>y</span> copy link &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Esc</span> close"
+      "no downloads",
+      "<span class='lf-badge'>i</span> filter &middot; <span class='lf-badge'>j/k</span> move &middot; " +
+        "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>o</span> location &middot; <span class='lf-badge'>r</span> retry &middot; <span class='lf-badge'>y</span> copy link &middot; <span class='lf-badge'>x x</span> delete &middot; <span class='lf-badge'>Esc</span> close",
+      "i to filter downloads"
     ),
     (root) => {
       panelRoot = root;
@@ -62,9 +64,10 @@ export function openDownloadsPopup(ctx: PopupCtx): void {
                     : d.state === "canceled"
                       ? "canceled"
                       : d.state || "";
+          // A RUNNING download is the active row, so its name carries the
+          // accent; paused keeps plain ink and lets its state badge speak.
           return (
-            "<div class='t'>" +
-            (d.state === "in_progress" || d.state === "paused" ? "<span class='dot'></span>" : "") +
+            "<div class='t" + (d.state === "in_progress" ? " act" : "") + "'>" +
             esc(d.filename || d.url || "") +
             " <span class='dl-state'>" + esc(label) + "</span>" +
             (pct >= 0 ? " <span class='dl-pct'>" + pct + "%</span>" : "") +

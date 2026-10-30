@@ -28,7 +28,7 @@
 // the chrome document, with the little CSS it needs injected as a stylesheet —
 // the chrome document has no CSP, so a shadow root buys nothing here.
 
-import { UI_FONT } from "../shared/theme";
+import { UI_FONT, uiPalette } from "../shared/theme";
 import type { ChromeEnv, ChromeDocument } from "./env";
 
 export interface SplashCtl {
@@ -76,8 +76,13 @@ const DEFAULT_LABEL = "Restoring your session\u2026";
 // Only the spinner needs a stylesheet: a keyframe animation cannot be written as
 // an inline style. Everything else is inline, and every selector is scoped to the
 // host id, so nothing here can reach the browser's own chrome.
+// Tokens, not literals: the cover is the first thing a launch paints, so it has
+// to be the user's palette from the very first frame. The fallbacks are the
+// Tokyo Night values, for the one case where this paints before the chrome helpers'
+// tokens exist.
 const SPLASH_CSS =
-  "#lf-splash .lf-spin{border:2px solid rgba(128,128,128,.35);border-top-color:#d79d00;" +
+  "#lf-splash .lf-spin{border:2px solid var(--lf-border2,#414868);" +
+  "border-top-color:var(--lf-accent,#7aa2f7);" +
   "border-radius:50%;animation:lf-splash-spin .9s linear infinite}" +
   "@keyframes lf-splash-spin{to{transform:rotate(360deg)}}";
 
@@ -122,10 +127,15 @@ export function createSplash(deps: SplashDeps): SplashCtl {
       // the declarations after it win over that reset (later wins inside one
       // style attribute). z-index is above every other Lazyfox surface — the
       // popup host sits one below it.
+      //
+      // The colours come from the palette rather than from Canvas/CanvasText:
+      // the cover is Lazyfox's own surface, so a user on the Gruvbox or Solarized
+      // preset should not watch a system-themed rectangle sit over their window.
+      const pal = uiPalette();
       root.style.cssText =
         "all:initial;position:fixed;inset:0;z-index:2147483647;display:flex;" +
         "flex-direction:column;align-items:center;justify-content:center;gap:18px;" +
-        "background:Canvas;color:CanvasText;pointer-events:none;" +
+        "background:" + pal.bg + ";color:" + pal.fg + ";pointer-events:none;" +
         "user-select:none;-moz-user-select:none;font:13px/1.4 " + UI_FONT + ";";
       const base = deps.baseUrl();
       if (base) {
@@ -151,7 +161,10 @@ export function createSplash(deps: SplashDeps): SplashCtl {
       const spinner = el(doc, "div", { class: "lf-spin" });
       spinner.style.cssText = "width:22px;height:22px;";
       const text = el(doc, "div", null, label);
-      text.style.cssText = "opacity:.72;letter-spacing:.02em;";
+      // Secondary ink, not a faded primary: opacity on a dark ground is exactly
+      // the washed-out look the palette pass removed, and it composites badly
+      // over whatever the window painted underneath.
+      text.style.cssText = "color:" + pal.sub + ";letter-spacing:.02em;";
       root.appendChild(spinner);
       root.appendChild(text);
       textEl = text;

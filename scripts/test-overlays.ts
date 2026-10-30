@@ -657,12 +657,15 @@ ok(
 //
 //   1. the panel has not moved (its size and anchor are what the user has
 //      learned; a redesign is of the content inside that box),
-//   2. **nothing draws a box**: no border, no background on a row or a key, no
-//      inset shadow. That is the design, not a coincidence of the current
-//      numbers — the panel is a list of keys, read by alignment and ink, and a
-//      single stray border or bevel brings back the card-of-capsules look this
-//      sheet was rewritten to remove. `border-radius` is allowed (the panel's
-//      own corners and the selected row's tint); `border:` is not,
+//   2. **nothing draws a box**: no border, no resting background on a row or a
+//      key, no inset shadow. That is the design, not a coincidence of the
+//      current numbers — the panel is a list of keys, read by alignment and ink,
+//      and a single stray border or bevel brings back the card-of-capsules look
+//      this sheet was rewritten to remove. The ONE exception is the selected
+//      row: an active item must be findable at a glance, so it takes the same
+//      bright selection fill every other list uses (the old 5% tint was a
+//      cursor you had to hunt for). `border-radius` is allowed (the panel's own
+//      corners and that selection); `border:` is not,
 //   3. the class that means "panel header" is not also the class that means
 //      "category row". Sharing the name forced the two designs to be separated
 //      by source order, and the header lost: it was rendered with the row's flat
@@ -712,21 +715,30 @@ ok(
   );
   // THE FLAT RULE. `border-radius` is allowed and `border:` is not, so the panel
   // may have soft corners but nothing may have an edge drawn around it.
+  //
+  // The token names are stripped first: `--lf-border` and `--lf-border2` are
+  // COLOURS now, and a bare /border/ test would fail on the variable that makes
+  // the sheet themeable rather than on a property that draws an edge.
+  const WK_DECLS = WK_CSS.replace(/var\(--lf-[a-z0-9]+\)/g, "TOKEN");
   ok(
     "nothing in the sheet draws a border",
-    !/\bborder(?!-radius)/.test(WK_CSS),
+    !/\bborder(?!-radius)/.test(WK_DECLS),
   );
   ok(
-    "no row and no key carries a background",
-    !/(\.wk-item|\.wk-kbd|\.wk-chord|\.wk-foot|\.wk-head)\{[^}]*background/.test(WK_CSS),
+    "only the selected row carries a background",
+    // No resting row, key, chord, foot or head paints a fill...
+    !/(\.wk-item(?!\.sel)|\.wk-kbd|\.wk-chord|\.wk-foot|\.wk-head)\{[^}]*background/.test(WK_CSS) &&
+      // ...while the selected row DOES, with the product's bright selection token.
+      /\.wk-item\.sel\{[^}]*background:var\(--lf-sel\)/.test(WK_CSS),
   );
   ok(
     "the only shadow in the sheet is the panel's own (no inset bars or bevels)",
     !/box-shadow:[^;}]*inset/.test(WK_CSS),
   );
   ok(
-    "the selected row is lit by ink and a whisper of tint, not by a container",
-    /\.wk-item\.sel\{background:rgba\(255,255,255,\.0\d+\)/.test(WK_CSS),
+    "the selected row is the brightest row in the list, not a whisper of tint",
+    /\.wk-item\.sel\{background:var\(--lf-sel\)/.test(WK_CSS) &&
+      WK_CSS.indexOf(".wk-item.sel{background:var(--lf-tint)") === -1,
   );
   // The most recognisable version of the look this sheet avoids: small capitals
   // with wide tracking over every group name. Because the panel's whole job is

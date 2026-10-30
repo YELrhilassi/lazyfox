@@ -9,6 +9,9 @@ import { describeTarget } from "./probe";
 
 export { createLinkHints } from "./session";
 export type { LinkHints } from "./session";
+// A content-script instance's nodes outlive it; the next instance clears the
+// previous hint paint at boot (see overlay.clearStaleHintOverlay).
+export { clearStaleHintOverlay } from "./overlay";
 export { diagnoseHints } from "./diagnose";
 export type { HintDiagnosticsSnapshot } from "./diagnose";
 

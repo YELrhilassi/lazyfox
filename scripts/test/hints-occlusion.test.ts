@@ -1,25 +1,34 @@
-// Occlusion DEGRADES a label, it does not delete the control.
+// How much of a control is on the page's VISIBLE surface decides whether it is
+// hinted and where its label goes.
 //
-// This file pins the policy, not the browser: `selectHintables` used to drop any
-// candidate whose surface could not be hit-tested, so a link under a sticky
-// header, a scrim or a player's control bar simply had no key — and a missing
-// key is the one failure the hint layer cannot recover from, because there is
-// nothing on screen to tell the user the control is there at all. The rule now
-// is "keep it, flag it": the label is drawn dimmed and the key still fires
-// (activation clicks the ELEMENT, not the point under the label).
+// This file pins the policy, not the browser. Two rules matter, and they replace
+// the two that failed:
 //
-// The occlusion answer is injected for the same reason the visibility pass is
-// (see hints/visibility.ts): the claim is a policy, and a policy should be
-// testable without painting a scrim in a browser. What is NOT injected is the
-// rest — hidden, duplicate and nesting are the real functions, and the cases
-// below include the two directions this change could have gone wrong in:
-// coverage must not resurrect an invisible control, and it must not break the
-// duplicate rule that keeps two labels off one click area.
+//   1. a control whose own surface is (almost) entirely covered by another layer
+//      earns NO label. It used to keep a dimmed one, and on a page with stacked
+//      layers that produced a faint ghost batch for the layer underneath, plus
+//      labels painted on top of dialogs (labels live in the top layer);
+//   2. a control with only part of its surface covered keeps a FULL-strength
+//      label anchored to the visible part (`ax`/`ay`), never to the covered
+//      corner. Dimming was the "faint hints" report.
+//
+// Also pinned: the duplicate rules may not delete a control that has its own
+// pixels on screen. The old "sits inside an earlier box" rule swallowed the
+// buttons of a card that had a full-card overlay link, which is "some hints are
+// missing". Coverage now answers that question (a copy underneath has no pixels
+// of its own), so two visible controls stay two hints.
+//
+// The coverage answer is injected for the same reason the visibility pass is: the
+// claim is a policy, and a policy should be testable without stacking two layers
+// in a browser. What is NOT injected is the rest — hidden, nested, same-target and
+// the cap are the real functions.
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { createVisibilityPass } from "../../src/extension/content/hints/visibility.ts";
 import { selectHintables } from "../../src/extension/content/hints/select.ts";
+import { MIN_VISIBLE_SHARE } from "../../src/extension/content/hints/selectors.ts";
+import type { Coverage } from "../../src/extension/content/hints/probe.ts";
 
 interface FakeStyle {
   display: string;
@@ -97,171 +106,199 @@ function el(
 // whole geometry contract a selection run needs.
 (globalThis as unknown as { window: unknown }).window = { innerWidth: 1000, innerHeight: 800 };
 
+// A fully visible control: every sample is its own surface and it is topmost at
+// its centre, which is what the 3x3 grid reports for an unobstructed element.
+const VISIBLE: Coverage = { total: 9, own: 9, cover: null, top: true, ux: 0, uy: 0 };
+
 function run(
   candidates: FakeEl[],
-  coveredIds: string[],
+  covers: Record<string, Partial<Coverage>> = {},
   limit = 80,
-  // The ids hidden behind a SEPARATE surface (a dialog, a popup sheet). Default
-  // empty, so every older case keeps its meaning: covered and dimmed.
-  sheetIds: string[] = [],
 ) {
-  const covered = new Set(coveredIds);
-  const sheets = new Set(sheetIds);
   const pass = createVisibilityPass(
     (node) => (node as unknown as FakeEl)._style as unknown as CSSStyleDeclaration,
   );
-  return selectHintables(
-    candidates as unknown as Element[],
-    limit,
-    pass,
-    (node) => !covered.has((node as unknown as FakeEl).id),
-    (node) =>
-      sheets.has((node as unknown as FakeEl).id)
-        ? (el("sheet", { tag: "DIALOG" }) as unknown as Element)
-        : null,
-  );
+  const cover = (node: Element): Coverage => {
+    const override = covers[(node as unknown as FakeEl).id];
+    return override ? { ...VISIBLE, ...override } : VISIBLE;
+  };
+  return selectHintables(candidates as unknown as Element[], limit, pass, cover);
 }
 
-describe("a covered control keeps its hint, dimmed", () => {
-  test("a covered control is kept and flagged instead of dropped", () => {
-    const coveredLink = el("covered-link");
-    const r = run([coveredLink], ["covered-link"]);
-    assert.equal(r.kept.length, 1, "the covered control is in the batch");
-    assert.equal(r.kept[0]!.el, coveredLink as unknown as Element);
-    assert.equal(r.kept[0]!.covered, true, "and it is flagged, which is what draws the label dimmed");
-    assert.equal(r.covered, 1, "the report counts it as dimmed, not as rejected");
-  });
+const ids = (r: { kept: Array<{ el: Element }> }): string[] =>
+  r.kept.map((c) => (c.el as unknown as FakeEl).id);
 
-  test("an uncovered control is kept unflagged, and not counted", () => {
-    const r = run([el("plain-link")], []);
+describe("a label is only drawn where the control is actually visible", () => {
+  test("a fully visible control is kept, unflagged, at its own top-left", () => {
+    const r = run([el("plain-link")]);
     assert.equal(r.kept.length, 1);
     assert.equal(r.kept[0]!.covered, false);
+    assert.equal(r.kept[0]!.ax, 0);
+    assert.equal(r.kept[0]!.ay, 0);
     assert.equal(r.covered, 0);
-  });
-
-  test("coverage does not resurrect a control nobody can see", () => {
-    // visibility:hidden is a different question from occlusion: nothing about
-    // being covered makes an invisible control usable, so it stays rejected.
-    const hidden = el("hidden-vis-link", { style: { visibility: "hidden" } });
-    const r = run([hidden], []);
-    assert.equal(r.kept.length, 0, "a hidden control is still not hinted");
-    assert.equal(r.hidden, 1);
-    assert.equal(r.covered, 0, "and it never reaches the occlusion question");
-  });
-
-  test("a hidden control that is also covered is still only hidden", () => {
-    // The order of the two answers matters: hidden is decided first, so a page
-    // that both hides and covers something does not get a dimmed label for it.
-    const hidden = el("hidden-opacity-link", { style: { opacity: "0" } });
-    const r = run([hidden], ["hidden-opacity-link"]);
-    assert.equal(r.kept.length, 0);
-    assert.equal(r.hidden, 1);
-    assert.equal(r.covered, 0);
-  });
-
-  test("coverage does not defeat the duplicate rule", () => {
-    // Two controls on the same pixels are one click area: the second one is a
-    // duplicate whether or not something is painted over it, or a scrim would
-    // double every label it covers.
-    const a = el("top", { x: 100, y: 100 });
-    const b = el("copy", { x: 100, y: 100 });
-    const r = run([a, b], ["copy"]);
-    assert.equal(r.kept.length, 1);
-    assert.equal(r.kept[0]!.el, a as unknown as Element);
-    assert.equal(r.kept[0]!.covered, false, "the kept control keeps ITS OWN occlusion answer");
-    assert.equal(r.duplicate, 1);
-    assert.equal(r.covered, 1, "the count still describes what was seen, duplicates included");
-  });
-
-  test("a clickable control replaces a COVERED box it overlaps", () => {
-    // The card-link-overlay shape: a whole-card link, and the row's own button
-    // painted on top of it as a SIBLING (so `contains` is false). The overlap
-    // rule used to drop the button because the link came first in document
-    // order — and the link was the one nobody could press. The control that the
-    // pointer can actually reach wins, in place.
-    const card = el("card-link", { x: 100, y: 100, w: 300, h: 200 });
-    const button = el("row-button", { x: 340, y: 120, w: 40, h: 20 });
-    const r = run([card, button], ["card-link"]);
-    assert.equal(r.kept.length, 1);
-    assert.equal(r.kept[0]!.el, button as unknown as Element);
-    assert.equal(r.kept[0]!.covered, false);
-    assert.equal(r.duplicate, 1, "still one click area, still one label");
-  });
-
-  test("two clickable boxes on one area are still one hint", () => {
-    // The same shape with nothing covered: the earlier candidate keeps the
-    // label, exactly as before. Coverage only decides the tie.
-    const card = el("card-link", { x: 100, y: 100, w: 300, h: 200 });
-    const button = el("row-button", { x: 340, y: 120, w: 40, h: 20 });
-    const r = run([card, button], []);
-    assert.equal(r.kept.length, 1);
-    assert.equal(r.kept[0]!.el, card as unknown as Element);
-    assert.equal(r.duplicate, 1);
-  });
-
-  test("a covered control can win the nested-target rule and take its flag with it", () => {
-    // The container is seen first, the more specific control inside it replaces
-    // it in place. The flag must be the SURVIVOR's, not the one it displaced.
-    const outer = el("card", { w: 300, h: 200 });
-    const inner = el("play", { w: 40, h: 20, style: { pointerEvents: "auto" } });
-    inner._attrs.role = "button";
-    inner.textContent = "Play";
-    outer._attrs.onclick = "";
-    inner.parentElement = outer;
-    const r = run([outer, inner], ["play"]);
-    assert.equal(r.kept.length, 1);
-    assert.equal(r.kept[0]!.el, inner as unknown as Element, "the specific control wins");
-    assert.equal(r.kept[0]!.covered, true, "and it carries its own covered flag");
-  });
-});
-
-describe("a control behind another SURFACE is not hinted at all", () => {
-  // The report this pins: "hints leak and show from behind the elements in front
-  // of them". A label lives in the top layer, so a label for a page control
-  // behind an open dialog is painted ON the dialog, pointing at something the
-  // dialog covers. The distinction from the dimmed case above is the surface:
-  // same screen, covered → kept and dimmed; different surface on top → no label.
-  test("a control behind a dialog is dropped and counted, not dimmed", () => {
-    const pageLink = el("page-link");
-    const r = run([pageLink], ["page-link"], 80, ["page-link"]);
-    assert.equal(r.kept.length, 0, "no label is drawn over the dialog");
-    assert.equal(r.behind, 1, "and it is reported as hidden behind a surface");
-    assert.equal(r.covered, 0, "it is not the dimmed case");
-    assert.equal(r.duplicate, 0, "nor a duplicate");
-  });
-
-  test("the dialog's own control keeps its label in the same batch", () => {
-    const pageLink = el("page-link");
-    const dialogButton = el("dialog-button", { x: 400, y: 300, tag: "BUTTON" });
-    const r = run([pageLink, dialogButton], ["page-link"], 80, ["page-link"]);
-    assert.equal(r.kept.length, 1);
-    assert.equal(r.kept[0]!.el, dialogButton as unknown as Element);
-    assert.equal(r.kept[0]!.covered, false, "a control on the surface is not dimmed by it");
-    assert.equal(r.behind, 1);
-  });
-
-  test("a covered control with no separate surface is still kept and dimmed", () => {
-    // The two answers come from different questions, and only the second one
-    // removes a label: a scrim band or a sticky header must not start hiding
-    // controls because a modal exists somewhere else on the page.
-    const coveredLink = el("covered-link");
-    const r = run([coveredLink], ["covered-link"], 80, []);
-    assert.equal(r.kept.length, 1);
-    assert.equal(r.kept[0]!.covered, true);
     assert.equal(r.behind, 0);
   });
 
-  test("behind is not counted against the batch cap", () => {
-    // `more` is "in view but the batch is full", so a dropped-by-surface control
-    // must not consume a slot or inflate that number: the message it drives
-    // ("] pages to them") would be false.
-    const a = el("a");
-    const b = el("b", { x: 200 });
-    const behindLink = el("behind-link", { x: 400 });
-    const r = run([a, b, behindLink], ["behind-link"], 2, ["behind-link"]);
-    assert.equal(r.kept.length, 2);
-    assert.equal(r.more, 0);
+  test("a control entirely under another layer is dropped, not dimmed", () => {
+    // The scrim case (a cookie wall, a player's poster, the layer above a folded
+    // page): every sampled pixel belongs to something else. There is no honest
+    // place to paint a label, because labels live in the top layer — a dimmed one
+    // was painted ON the scrim.
+    const coveredLink = el("covered-link");
+    const r = run([coveredLink], {
+      "covered-link": { own: 0, top: false, cover: el("scrim", { tag: "DIV" }) },
+    });
+    assert.equal(r.kept.length, 0, "no label is drawn over the covering layer");
     assert.equal(r.behind, 1);
+    assert.equal(r.covered, 0, "and it is not the partly-covered case");
+    assert.equal(r.duplicate, 0);
+  });
+
+  test("a control with less than the minimum visible share is dropped", () => {
+    // 2 of 9 samples: the control is a sliver under a dialog. A label there would
+    // point at pixels the user cannot see, so it is not a hint.
+    const r = run([el("sliver")], { sliver: { own: 2, top: false } });
+    assert.equal(r.kept.length, 0);
+    assert.equal(r.behind, 1);
+    assert.ok(2 / 9 < MIN_VISIBLE_SHARE, "premise: two samples are below the line");
+    assert.ok(3 / 9 >= MIN_VISIBLE_SHARE, "and three are above it (see the side-panel case)");
+  });
+
+  test("a control with enough of its surface visible is kept, anchored on it", () => {
+    // 4 of 9 samples, the visible ones starting at the middle: the label belongs
+    // at the middle, not at the covered top-left corner.
+    const link = el("half-lit");
+    const r = run([link], { "half-lit": { own: 4, top: true, ux: 0.5, uy: 0.5 } });
+    assert.equal(r.kept.length, 1);
+    assert.equal(r.kept[0]!.covered, true, "part of it is painted over, and the row says so");
+    assert.equal(r.kept[0]!.ax, 0.5);
+    assert.equal(r.kept[0]!.ay, 0.5);
+    assert.equal(r.covered, 1);
+    assert.equal(r.behind, 0);
+  });
+
+  test("a control half covered by a side panel keeps a key on its visible half", () => {
+    // 3 of 9 samples, all in the right-hand column: the pointer cannot reach the
+    // covered half, but the visible half is a real target, so the hint stays and
+    // its label is anchored there. Below a quarter the control is a sliver under
+    // an overlay, and that is the case that earns no label at all.
+    const r = run([el("side-covered")], { "side-covered": { own: 3, top: false, ux: 1, uy: 0.5 } });
+    assert.equal(r.kept.length, 1);
+    assert.equal(r.kept[0]!.covered, true);
+    assert.equal(r.kept[0]!.ax, 1);
+    assert.equal(r.kept[0]!.ay, 0.5);
+    assert.equal(r.behind, 0);
+  });
+
+  test("a badge over the centre keeps the label at the top-left at full strength", () => {
+    // The common case the old dimmed policy got visually wrong: 8 of 9 samples
+    // free, only the centre under a small badge. The first free sample is the
+    // control's own top-left, so placement is unchanged.
+    const r = run([el("body-visible")], { "body-visible": { own: 8, top: false } });
+    assert.equal(r.kept.length, 1);
+    assert.equal(r.kept[0]!.covered, true);
+    assert.equal(r.kept[0]!.ax, 0);
+    assert.equal(r.kept[0]!.ay, 0);
+  });
+
+  test("visibility still comes first: a hidden control is not resurrected by coverage", () => {
+    const hidden = el("hidden-vis-link", { style: { visibility: "hidden" } });
+    const r = run([hidden]);
+    assert.equal(r.kept.length, 0, "a hidden control is still not hinted");
+    assert.equal(r.hidden, 1);
+    assert.equal(r.covered, 0, "and it never reaches the coverage question");
+    assert.equal(r.behind, 0);
+  });
+
+  test("a hidden control that is also covered is only hidden", () => {
+    const hidden = el("hidden-opacity-link", { style: { opacity: "0" } });
+    const r = run([hidden], { "hidden-opacity-link": { own: 0, top: false } });
+    assert.equal(r.kept.length, 0);
+    assert.equal(r.hidden, 1);
+    assert.equal(r.covered, 0);
+    assert.equal(r.behind, 0);
+  });
+
+  test("two stacked copies are one hint: the layer on top keeps it", () => {
+    // The "page folded on itself" shape. Both elements are in the DOM, same box,
+    // different layers; only the upper one has an actionable surface. The lower
+    // one must not produce a second batch.
+    const top = el("top-layer", { x: 200, y: 200, w: 120, h: 30 });
+    const under = el("under-layer", { x: 200, y: 200, w: 120, h: 30 });
+    const r = run([top, under], { "under-layer": { own: 0, top: false } });
+    assert.deepEqual(ids(r), ["top-layer"]);
+    assert.equal(r.behind, 1, "the buried copy is reported as not on the visible surface");
+    assert.equal(r.duplicate, 0, "it never reaches the duplicate rule");
+  });
+});
+
+describe("an overlapping clickable box does not swallow a pressable control", () => {
+  test("a card link and the button drawn over it keep one hint each", () => {
+    // THE MISSING-HINTS REPORT. A full-card overlay link, with the row's own
+    // button painted over it as a SIBLING. Both are visible and pressable, both
+    // are different actions. The old "sits almost entirely inside an earlier
+    // box" rule deleted the button because its geometry is inside the link's.
+    const card = el("card-link", { x: 100, y: 100, w: 300, h: 200 });
+    const button = el("row-button", { x: 340, y: 120, w: 40, h: 20, tag: "BUTTON" });
+    const r = run([card, button]);
+    assert.deepEqual(ids(r), ["card-link", "row-button"]);
+    assert.equal(r.duplicate, 0, "two controls with their own pixels are two hints");
+    assert.equal(r.behind, 0);
+  });
+
+  test("a copy painted underneath is still one hint", () => {
+    // The shape the old rule was actually for: the copy has no pixels of its
+    // own, so coverage removes it before duplicate logic is consulted.
+    const card = el("card-link", { x: 100, y: 100, w: 300, h: 200 });
+    const copy = el("card-copy", { x: 100, y: 100, w: 300, h: 200 });
+    const r = run([card, copy], { "card-copy": { own: 0, top: false } });
+    assert.deepEqual(ids(r), ["card-link"]);
+    assert.equal(r.behind, 1);
+    assert.equal(r.duplicate, 0);
+  });
+
+  test("two controls on exactly the same pixels are still one hint", () => {
+    const a = el("top", { x: 100, y: 100 });
+    const b = el("copy", { x: 100, y: 100 });
+    const r = run([a, b]);
+    assert.deepEqual(ids(r), ["top"]);
+    assert.equal(r.duplicate, 1);
+    assert.equal(r.kept[0]!.covered, false, "the kept control keeps ITS OWN occlusion answer");
+  });
+
+  test("when the later box is the pressable one, it takes the slot", () => {
+    const under = el("under", { x: 100, y: 100, w: 300, h: 200 });
+    const over = el("over", { x: 100, y: 100, w: 300, h: 200 });
+    const r = run([under, over], { under: { own: 6, top: false } });
+    assert.deepEqual(ids(r), ["over"]);
+    assert.equal(r.duplicate, 1);
+  });
+
+  test("two handlers for one destination are still one hint", () => {
+    const a = el("thumb-link", { x: 100, y: 100, w: 200, h: 120 });
+    const b = el("title-link", { x: 110, y: 150, w: 160, h: 60 });
+    a._attrs.href = "/article";
+    b._attrs.href = "/article";
+    const r = run([a, b]);
+    assert.deepEqual(ids(r), ["thumb-link"]);
+    assert.equal(r.duplicate, 1);
+  });
+
+  test("a control inside a component's shadow root replaces the host that paints it", () => {
+    const host = el("card", { w: 300, h: 200 });
+    const inner = el("play", { w: 40, h: 20 });
+    host._attrs.onclick = "";
+    inner._attrs.role = "button";
+    inner.textContent = "Play";
+    // A real shadow boundary: the light-DOM containment check cannot cross it,
+    // while the composed chain (getRootNode().host) can.
+    host.contains = () => false;
+    inner.getRootNode = () => ({ host });
+    assert.equal(host.contains(inner), false, "premise: plain contains cannot cross the boundary");
+    const r = run([host, inner]);
+    assert.equal(r.kept.length, 1, "one label, not two on the same pixels");
+    assert.equal((r.kept[0]!.el as unknown as FakeEl).id, "play", "the specific control wins");
+    assert.equal(r.duplicate, 1);
   });
 });
 
@@ -282,29 +319,48 @@ describe("the batch cap is ranked, counted, and silent no more", () => {
     return out;
   };
 
-  test("over the cap, the controls in the middle of the screen keep the keys", () => {
-    const r = run(page(), [], 80);
-    const ids = r.kept.map((c) => (c.el as unknown as FakeEl).id);
-    assert.ok(ids.includes("centre-mid"), "the link nearest the centre is kept");
-    assert.ok(ids.includes("centre-top"), "and the runner-up around it");
-    assert.ok(!ids.includes("col-a-0"), "while the top-left corner loses its key");
-    assert.equal(r.kept.length, 80, "the batch is still capped");
+  test("over the cap, the batch reads like the page: top first, bottom counted", () => {
+    // The centre-out ranking that once lived here kept the middle rows and
+    // dropped the page's top edge — on a real HN front page that meant the nav
+    // bar and the first five posts lost every key (the live diagnostic answered
+    // "not reached (batch scan limit)" for exactly those), and the user read
+    // the batch as missing hints. Reading order is the rule: either everything
+    // in view fits (this fixture is over the cap either way) and the first
+    // things on the page get keys, or the ones that did not fit are the BOTTOM
+    // of the page and come back as `more`.
+    const r = run(page(), {}, 80);
+    const kept = ids(r);
+    assert.ok(kept.includes("col-a-0"), "top-left, first in reading order, keeps its key");
+    assert.ok(kept.includes("col-b-0"), "same row, second column, also first");
+    assert.ok(!kept.includes("centre-mid"), "the slowest row in reading order loses, and `more` says why");
+    assert.ok(!kept.includes("col-a-49"), "the last rows are what did not fit");
+    assert.equal(kept.length, 80, "the batch is still capped");
     assert.equal(r.more, 22, "the ones that did not fit are counted, not hidden");
   });
 
   test("the ranking is deterministic across runs", () => {
-    const first = run(page(), [], 80).kept.map((c) => (c.el as unknown as FakeEl).id);
-    const second = run(page(), [], 80).kept.map((c) => (c.el as unknown as FakeEl).id);
+    const first = ids(run(page(), {}, 80));
+    const second = ids(run(page(), {}, 80));
     assert.deepEqual(first, second);
   });
 
   test("under the cap, document order is untouched", () => {
-    // The ranking must not reorder an ordinary batch: the first link on the page
-    // still keeps the shortest key, which is the rule the key assignment and
-    // every hint test were written against.
-    const r = run(page(), [], 200);
-    assert.equal((r.kept[0]!.el as unknown as FakeEl).id, "col-a-0", "first in document order first");
+    const r = run(page(), {}, 200);
+    assert.equal(ids(r)[0], "col-a-0", "first in document order first");
     assert.equal(r.kept.length, 102);
     assert.equal(r.more, 0);
+  });
+
+  test("a control that is not on the visible surface does not consume a slot", () => {
+    // `more` is "in view but the batch is full", so a dropped-by-coverage control
+    // must not inflate that number: the message it drives ("] pages to them")
+    // would be false.
+    const a = el("a");
+    const b = el("b", { x: 200 });
+    const hiddenLayer = el("under", { x: 400 });
+    const r = run([a, b, hiddenLayer], { under: { own: 0, top: false } }, 2);
+    assert.equal(r.kept.length, 2);
+    assert.equal(r.more, 0);
+    assert.equal(r.behind, 1);
   });
 });

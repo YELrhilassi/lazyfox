@@ -2,14 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
 <title>Lazyfox settings</title>
+<link rel="stylesheet" href="theme.css">
 <link rel="stylesheet" href="options.css">
 </head>
 <body>
   <div class="wrap">
     <header class="head">
-      <div class="logo"><img id="logoImg" alt="Lazyfox"></div>
+      <div class="logo"><img id="logoImg" data-lf-logo src="lazyfox-logo.svg" alt="Lazyfox"></div>
       <h1>Settings</h1>
       <a class="back" href="#" id="back">&#8592; Back</a>
       <p class="sub">Changes apply immediately. The <span class="kbd">;</span> leader opens the which-key overlay — Tab / Shift+Tab flips pages, arrows select, or press a binding's key.</p>
@@ -18,6 +19,7 @@
     <div class="layout">
       <nav class="nav" id="settingsNav" aria-label="Settings sections">
         <span class="nav-cap">Settings</span>
+        <a href="#sec-appearance" data-sec="sec-appearance">Appearance</a>
         <a href="#sec-general" data-sec="sec-general">General</a>
         <a href="#sec-apps" data-sec="sec-apps">Quick launch</a>
         <a href="#sec-sessions" data-sec="sec-sessions">Sessions &amp; bar</a>
@@ -29,6 +31,30 @@
       </nav>
 
       <div class="content">
+    <div class="card" id="sec-appearance">
+      <h2>Appearance</h2>
+      <div class="desc">How Lazyfox itself looks: the status bar, popups, overlays and this page.
+      This is separate from <span class="kbd">Dark mode</span> below, which recolours web pages — the two
+      settings never touch each other. A new look reaches the window chrome, the status bar and the
+      overlay panels at the next launch; this page and the preview below change immediately.</div>
+      <div class="field"><label class="lbl">Preset</label>
+        <div class="presets" id="presets" role="radiogroup" aria-label="UI preset"></div></div>
+      <div class="field"><label class="lbl">Your tweaks <span class="note">optional — picking a preset resets them</span></label>
+        <div class="swatch-row">
+          <label>Accent <input type="color" id="uiAccent"></label>
+          <label>Background <input type="color" id="uiBackground"></label>
+          <button type="button" class="ghost" id="uiReset">Reset to preset</button>
+        </div></div>
+      <div class="field"><label class="lbl">Preview</label>
+        <div class="theme-preview" id="themePreview" aria-hidden="true">
+          <div class="tp-bar" id="tpBar"></div>
+          <div class="tp-body">
+            <div class="tp-row"><span class="tp-key">;g</span> switch session</div>
+            <div class="tp-row"><span class="tp-key">;N</span> stealth tab &nbsp;<span class="tp-note">isolated cookies</span></div>
+          </div>
+        </div></div>
+    </div>
+
     <div class="card" id="sec-general">
       <h2>General</h2>
       <div class="desc">Leader key, link hints, and core key behaviour.</div>

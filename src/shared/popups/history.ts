@@ -66,13 +66,13 @@ export function openHistoryPopup(ctx: PopupCtx): void {
   const tz = -new Date().getTimezoneOffset();
 
   ctx.open(
-    "<div class='lf-panel wide'><div class='lf-title'>History</div>" +
+    "<div class='lf-panel wide' data-lf-title='History'>" +
       "<div class='lf-split'>" +
       "<div class='lf-col'>" +
-      "<div class='lf-main'><div class='lf-list'></div><div class='lf-empty' style='display:none'>no history yet</div></div>" +
       "<input class='lf-input lf-cmd' placeholder='i to search \u00b7 j/k move' spellcheck='false'/>" +
+      "<div class='lf-main'><div class='lf-list'></div><div class='lf-empty' style='display:none'>no history yet</div></div>" +
       "</div>" +
-      "<div class='lf-col'><div class='lf-col-head'>Details</div>" +
+      "<div class='lf-col'>" +
       "<div class='lf-detail'></div><div class='lf-related'></div></div>" +
       "</div>" +
       "<div class='lf-foot'><span class='lf-hint'>" +
@@ -339,7 +339,10 @@ export function openHistoryPopup(ctx: PopupCtx): void {
           void ensureLoaded().then(() => organize());
         },
         close: () => {},
-        focus: () => inputEl.focus(),
+        // No autofocus. The popup opens in COMMAND mode (j/k move, i enters the
+        // field), matching every other popup; focusing the input here would
+        // make the first j/k a search character again.
+        focus: () => {},
       };
     }
   );

@@ -80,10 +80,12 @@ dist/        the built output (committed so installs need no toolchain)
   `overlaycss.ts`; every one of these modules is behaviour only.
 - `observability.ts` — the page-level contract the e2e suite reads
   (`data-lf-*` mirrors, `lazyfox:list` events).
-- `statusbar.ts` — the tmux-style status bar renderer. Its stylesheet is in
-  `statusbar-css.ts` and its pure formatters (pill colours, readable ink, the
-  `data-lf-status` mirror string) are in `statusbar-segments.ts`, so the bar’s
-  own report of its state can be asserted without a DOM.
+- `statusbar.ts` — the status bar renderer: flat segments, session pills with
+  one accent for the current session, and the state badges on the right. Its
+  stylesheet is in `statusbar-css.ts`, its icons in `icons.ts`, and its pure
+  formatters (pill text/markup, the dark-mode segment, the `data-lf-status`
+  mirror string) are in `statusbar-segments.ts`, so the bar’s own report of its
+  state can be asserted without a DOM.
 - `ops.ts` — the `ActionOps` interface: every capability a popup or action
   needs, abstracted per context.
 - `dom.ts`, `dev.ts`, `wk.ts`, `corefetch.ts` — DOM helpers, dev logging,

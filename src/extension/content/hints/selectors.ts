@@ -30,11 +30,16 @@ export interface HintItem {
   // re-rendered node be matched back to the control it replaced, so its key
   // survives a virtual-DOM re-render instead of reshuffling.
   target: string;
-  // Something is painted over this control right now (see hints/select.ts). The
-  // key still works, so the label is NOT withheld — it is drawn dimmed, which is
-  // the only way the user can tell "there is a link there, something is on top
-  // of it" from "there is no link there at all".
+  // Part of this control's own surface is painted over (see hints/select.ts).
+  // The label is NOT dimmed and NOT withheld: it is anchored to the visible part
+  // of the control (`ax`/`ay`). A control that is mostly covered never produces
+  // an item at all.
   covered: boolean;
+  // Where the label belongs, as a fraction of the element's box: the first
+  // sampled point that is the control's own surface. 0,0 is the element's
+  // top-left, which is where a fully visible control's label has always gone.
+  ax?: number;
+  ay?: number;
 }
 
 // THE LABEL. Flat, and that is the whole design: no border, no outline ring, no
@@ -101,7 +106,7 @@ export const HINT_CSS =
   // between a look that lives in one place and one that is half in the overlay.
   ".hint-enter svg{position:absolute;inset:0;margin:auto;display:block;pointer-events:none;" +
   "width:" + HINT_LABEL.enterIconSize + "px;height:" + HINT_LABEL.enterIconSize + "px;" +
-  "fill:" + HINT_LABEL.text + "}" +
+  "fill:" + HINT_LABEL.waitText + "}" +
   // The row whose key the user has already typed in full, while a longer key
   // still shares that prefix. It keeps its whole key (never an empty box) and is
   // outlined so the enter badge beside it reads as "this one, press Enter".
@@ -109,17 +114,14 @@ export const HINT_CSS =
   // gone with the rest of the chrome, so the state is carried by the FILL alone:
   // the label is still the whole key (never an empty box), and the enter badge
   // beside it is what says what to press.
-  ".hint.hint-wait{background:" + HINT_LABEL.wait + ";color:" + HINT_LABEL.text + "}" +
-  // COVERED: the key works, but something is painted over the control right now
-  // (a sticky header, a cookie wall, a player's control bar, an ad layer). The
-  // label used to be withheld entirely, which left the user no way to learn the
-  // control was there — see hints/select.ts for why that is the worse failure.
-  //
-  // Dimmed rather than hollow: the label's shape is the product's one visual
-  // constant (no border, no ring), and a hollow copy would read as a different
-  // KIND of object. Half-opacity says "same thing, weaker claim" without adding
-  // a second visual vocabulary, and it survives both grounds a label sits on.
-  ".hint.hint-covered{opacity:.55}" +
+  ".hint.hint-wait{background:" + HINT_LABEL.wait + ";color:" + HINT_LABEL.waitText + "}" +
+  // NO DIMMED STATE. A partly covered control keeps a full-strength label (the
+  // overlay anchors it to the visible part of the control); a control that is
+  // mostly covered is not labelled at all. Half-opacity was the "faint hints"
+  // report: on a page with two stacked layers it read as a ghost batch for the
+  // layer underneath. The rule stays as a no-op so a stale class from an older
+  // overlay can never make a label faint.
+  ".hint.hint-covered{opacity:1}" +
   // Off-screen hint labels are hidden, not moved; see the note in overlay.ts.
   ".hint[style*='display:none'],.hint-off{display:none}";
 
@@ -211,6 +213,16 @@ export const LEAF_MAX_AREA = 0.15;
 // Cap per viewport. With the default 9 hint chars this keeps every key at one
 // or two characters (9 + 81 = 90 > 80), so labels never sprawl.
 export const MAX_HINTS = 80;
+
+// The share of a control's own sampled surface that must be reachable for it to
+// earn a label. Below this the control is not on the page's visible surface — a
+// dialog or an opaque layer sits over it, or it is the layer underneath a folded
+// (stacked/duplicated) page — and any label would be painted on top of whatever
+// is covering it, because labels live in the top layer. A quarter is the line: a
+// control with one clear column/row of the grid is still recognisably there, and
+// its label is anchored to that part (see hints/select.ts and hints/probe.ts),
+// while a control with a single free corner under a dialog is not hinted.
+export const MIN_VISIBLE_SHARE = 0.25;
 // How far ] / [ page when scrolling between hint batches (fraction of the
 // viewport height, so a batch roughly fills the screen).
 export const PAGE_FACTOR = 0.8;
@@ -219,7 +231,7 @@ export const PAGE_GUARD = 8;
 // How deep to descend into open shadow roots looking for hintables. Framework
 // UIs (YouTube's Polymer/Lit components, Reddit's faceplate-*) nest custom
 // elements several deep, so a shallow walk missed real controls.
-export const SHADOW_DEPTH = 6;
+export const SHADOW_DEPTH = 12;
 // How many elements of one root (document or shadow root) the discovery walk
 // may visit.
 //

@@ -31,13 +31,14 @@ export function openRecentlyClosedPopup(ctx: PopupCtx): void {
     basePanel(
       "Recently closed",
       "no recently closed tabs or windows",
-      "<span class='lf-badge'>Enter</span> restore &middot; <span class='lf-badge'>a</span> restore all &middot; <span class='lf-badge'>Esc</span> close"
+      "<span class='lf-badge'>i</span> search &middot; <span class='lf-badge'>j/k</span> move &middot; " +
+        "<span class='lf-badge'>Enter</span> restore &middot; <span class='lf-badge'>a</span> restore all &middot; " +
+        "<span class='lf-badge'>Esc</span> close",
+      "i to search recently closed"
     ),
     (root) => {
-      const titleEl = root.querySelector(".lf-title") as HTMLElement | null;
       const ctl = makeSelector<RecoveryRow>(ctx, root, {
         debounceMs: 0,
-        vimNav: false,
         emptyText: "no recently closed tabs or windows",
         search: async (q) => {
           const all = await ensureLoaded();
@@ -76,12 +77,6 @@ export function openRecentlyClosedPopup(ctx: PopupCtx): void {
           }
           return false;
         },
-      });
-      // Show a running total (items · tabs) in the title once loaded.
-      void ensureLoaded().then((all) => {
-        if (!titleEl || !all.length) return;
-        const tabs = all.reduce((s, r) => s + (r.tabCount || 1), 0);
-        titleEl.textContent = "Recently closed (" + all.length + " \u00b7 " + tabs + " tabs)";
       });
       return ctl;
     }

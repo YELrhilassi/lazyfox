@@ -13,7 +13,12 @@
 //     label\" a property rather than a race.
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { boxGrid, NUDGES, NUDGE_RINGS } from "../../src/extension/content/hints/overlay.ts";
+import {
+  boxGrid,
+  clearStaleHintOverlay,
+  NUDGES,
+  NUDGE_RINGS,
+} from "../../src/extension/content/hints/overlay.ts";
 
 interface Box {
   l: number;
@@ -116,5 +121,38 @@ describe("the fallback lattice is deterministic and stays near its control", () 
     assert.deepEqual(NUDGES, NUDGES.map(([dx, dy]) => [dx, dy]));
     const seen = new Set(NUDGES.map(([dx, dy]) => dx + "," + dy));
     assert.equal(seen.size, NUDGES.length, "no duplicate candidates in the lattice");
+  });
+});
+
+describe("a dead hint layer is cleared before the next one draws", () => {
+  // A content script's nodes outlive it: an extension update / dev re-install
+  // leaves the host it appended to <html> in the document, still in the top
+  // layer with its last batch of labels frozen on it. The next instance then
+  // paints a live layer over a dead one — the reported "hint layers bleeding
+  // into each other". Clearing is by the host id the overlay owns; nothing else
+  // in the page may be touched.
+  test("every hint host is removed, and only hint hosts are looked for", () => {
+    const removed: string[] = [];
+    const stale = (): { remove: () => void } => ({ remove: () => removed.push("hints") });
+    const a = stale();
+    const b = stale();
+    const asked: string[] = [];
+    const doc = {
+      querySelectorAll: (sel: string) => {
+        asked.push(sel);
+        return sel === "#lazyfox-hints" ? [a, b] : [];
+      },
+    };
+    clearStaleHintOverlay(doc as unknown as Document);
+    assert.deepEqual(asked, ["#lazyfox-hints"], "a prefix match would delete the live popup too");
+    assert.equal(removed.length, 2, "both dead layers go, not just the first");
+  });
+
+  test("a document that refuses the query does not throw", () => {
+    clearStaleHintOverlay({
+      querySelectorAll: () => {
+        throw new Error("hostile document");
+      },
+    } as unknown as Document);
   });
 });

@@ -30,6 +30,13 @@ export async function run(ctx: any): Promise<void> {
         statusBarPosition: q("#statusBarPosition") ? q("#statusBarPosition").value : null,
         autoRestore: q("#autoRestore") ? q("#autoRestore").checked : null,
         keepStealth: q("#keepStealth") ? q("#keepStealth").checked : null,
+        // Appearance is its own section, separate from Dark mode: five presets,
+        // a live accent/background override and a preview strip.
+        appearanceNav: !!document.querySelector('a[data-sec="sec-appearance"]'),
+        presetCount: document.querySelectorAll("#presets .preset").length,
+        presetOn: !!document.querySelector("#presets .preset.on"),
+        uiAccent: q("#uiAccent") ? q("#uiAccent").value : null,
+        uiBackground: q("#uiBackground") ? q("#uiBackground").value : null,
         save: !!q("#save"),
         title: document.title,
       };
@@ -43,6 +50,11 @@ export async function run(ctx: any): Promise<void> {
     assert(f.statusBarPosition === "bottom" || f.statusBarPosition === "top", "status bar position select present: " + f.statusBarPosition);
     assert(f.autoRestore === true, "autoRestore checked");
     assert(f.keepStealth === false, "keepStealth unchecked by default: " + f.keepStealth);
+    assert(f.appearanceNav === true, "Appearance section in the settings nav");
+    assert(f.presetCount === 5, "five UI presets offered: " + f.presetCount);
+    assert(f.presetOn === true, "the current preset is marked");
+    assert(/^#[0-9a-f]{6}$/i.test(f.uiAccent || ""), "accent swatch shows a hex colour: " + f.uiAccent);
+    assert(/^#[0-9a-f]{6}$/i.test(f.uiBackground || ""), "background swatch shows a hex colour: " + f.uiBackground);
     assert(f.save === true, "save button present");
   });
   await t("options page: Esc goes back", async () => {
@@ -91,6 +103,117 @@ export async function run(ctx: any): Promise<void> {
       return browser.storage.local.set({ config: c });
     })`);
   });
+  // The palette is not a picture of the palette: picking a preset has to
+  // actually repaint the page, save it, and come back after a reload. The
+  // computed colour is the check that the tokens reached the document rather
+  // than only the radio being marked.
+  await t("options page: a preset repaints the page, saves and returns", async () => {
+    const u = ctx.ccUrl.replace("commandcenter.html", "options.html");
+    await ctx.gotoUrl(ctx.tabA, u, "complete");
+    await ctx.waitExpr(
+      ctx.tabA,
+      `document.querySelectorAll("#presets .preset").length === 5`,
+      true,
+      8000,
+    );
+    const after = await evalIn(ctx.tabA, `(() => {
+      const btn = [...document.querySelectorAll("#presets .preset")]
+        .find((b) => (b.title || "").indexOf("Catppuccin") === 0);
+      if (!btn) return { error: "no Catppuccin preset" };
+      btn.click();
+      return {
+        bg: getComputedStyle(document.body).backgroundColor,
+        accent: getComputedStyle(document.documentElement).getPropertyValue("--lf-accent").trim(),
+        marked: !!document.querySelector("#presets .preset.on"),
+      };
+    })()`);
+    assert(!after.error, after.error || "");
+    // Catppuccin Mocha's base is #1e1e2e.
+    assert(after.bg === "rgb(30, 30, 46)", "the page repainted in the preset's ground, got " + after.bg);
+    assert(after.accent === "#89b4fa", "the accent token moved with the preset, got " + after.accent);
+    assert(after.marked === true, "the chosen preset is marked");
+    await evalIn(ctx.tabA, `document.querySelector("#save").click()`);
+    await waitFor(async () => {
+      const s = await evalIn(ctx.tabA, `document.querySelector("#status").textContent`);
+      return s === "saved" ? true : null;
+    }, 5000);
+    await ctx.gotoUrl(ctx.tabA, u, "complete");
+    await ctx.waitExpr(
+      ctx.tabA,
+      `document.querySelectorAll("#presets .preset").length === 5`,
+      true,
+      8000,
+    );
+    const stored = await evalIn(ctx.tabA, `browser.storage.local.get("config").then((r) => (r.config.theme || {}).preset)`);
+    assert(stored === "catppuccin", "the preset persisted under config.theme, got " + JSON.stringify(stored));
+    const back = await evalIn(ctx.tabA, `getComputedStyle(document.body).backgroundColor`);
+    assert(back === "rgb(30, 30, 46)", "the reloaded page paints the saved preset, got " + back);
+  });
+
+  // The appearance pass is judged on two things a screenshot cannot assert:
+  // that the preview is the same flat bar the product draws (one accent, 1px
+  // gaps, mute last), and that every ink stays readable on the LIGHT preset —
+  // the case that used to paint white text on paper.
+  await t("appearance: the bar preview is flat and the light preset stays readable", async () => {
+    const u = ctx.ccUrl.replace("commandcenter.html", "options.html");
+    await ctx.gotoUrl(ctx.tabA, u, "complete");
+    await ctx.waitExpr(ctx.tabA, `document.querySelectorAll("#presets .preset").length === 5`, true, 8000);
+    const r = await evalIn(ctx.tabA, `(() => {
+      const rgb = (s) => (String(s).match(/\\d+(\\.\\d+)?/g) || []).slice(0, 3).map(Number);
+      const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+      const lum = (s) => { const c = rgb(s); return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]); };
+      const ratio = (a, b) => { const la = lum(a), lb = lum(b); const hi = Math.max(la, lb), lo = Math.min(la, lb); return (hi + 0.05) / (lo + 0.05); };
+      const sun = Array.from(document.querySelectorAll("#presets .preset"))
+        .find((b) => /Solarized/.test(b.textContent || ""));
+      sun.click();
+      const bar = document.getElementById("tpBar");
+      const pills = bar.querySelectorAll(".sesspill");
+      const active = bar.querySelector(".sesspill.active");
+      const idle = bar.querySelector(".sesspill:not(.active)");
+      const body = getComputedStyle(document.body);
+      return {
+        light: document.documentElement.getAttribute("data-lf-ui"),
+        bodyRatio: ratio(body.color, body.backgroundColor),
+        cardRatio: ratio(getComputedStyle(document.querySelector(".card")).color,
+                        getComputedStyle(document.querySelector(".card")).backgroundColor),
+        activeInk: ratio(getComputedStyle(active).color, getComputedStyle(active).backgroundColor),
+        idleInk: ratio(getComputedStyle(idle).color, getComputedStyle(idle).backgroundColor),
+        activeBg: getComputedStyle(active).backgroundColor,
+        idleBg: getComputedStyle(idle).backgroundColor,
+        gap: getComputedStyle(pills[1]).marginLeft,
+        clip: getComputedStyle(active).clipPath,
+        barHeight: getComputedStyle(bar).height,
+        barFont: getComputedStyle(bar).fontSize,
+        pillFont: getComputedStyle(active).fontSize,
+        mkFont: getComputedStyle(active.querySelector(".mk")).fontSize,
+        oldCell: bar.querySelectorAll(".seg.sess, .sess").length,
+        icons: bar.querySelectorAll("svg").length,
+        last: bar.lastElementChild ? bar.lastElementChild.className : "",
+        logo: (document.getElementById("logoImg") || {}).src || "",
+      };
+    })()`);
+    assert(r.light === "light", "the light preset marks the document as light: " + r.light);
+    assert(r.bodyRatio >= 7, "body ink on the light ground = " + r.bodyRatio.toFixed(1) + ":1");
+    assert(r.cardRatio >= 7, "card ink on its panel = " + r.cardRatio.toFixed(1) + ":1");
+    assert(r.activeInk >= 4.5, "active pill ink on the accent = " + r.activeInk.toFixed(1) + ":1");
+    assert(r.idleInk >= 4.5, "idle pill ink on its fill = " + r.idleInk.toFixed(1) + ":1");
+    assert(r.activeBg !== r.idleBg, "only the active session wears the accent: " + r.activeBg + " vs " + r.idleBg);
+    assert(r.gap === "1px", "session pills are separated by 1px, got " + r.gap);
+    // The preview has to show the pills as they ship: a chevron with a notch on
+    // its left edge and a point on its right, not a rounded box.
+    assert(/polygon\(/.test(r.clip), "the pill is the shipped chevron, got " + r.clip);
+    assert(/5px 50%/.test(r.clip), "the pill's left edge is a notch, got " + r.clip);
+    // The type was enlarged WITHOUT growing the strip; the paddings paid for it.
+    assert(r.barHeight === "18px", "the preview keeps the real bar's 18px height, got " + r.barHeight);
+    assert(r.barFont === "15px", "the bar's type is 15px, got " + r.barFont);
+    assert(r.pillFont === "15px", "session names inherit the bar's 15px, got " + r.pillFont);
+    assert(r.mkFont === "16px", "the marker id leads the pill's scale at 16px, got " + r.mkFont);
+    assert(r.oldCell === 0, "the separate current-session cell is gone");
+    assert(r.icons >= 4, "the bar uses the shared icon set, got " + r.icons + " svg");
+    assert(/\bmute\b/.test(r.last), "the muted badge is the last segment, got " + r.last);
+    assert(/lazyfox-logo-light\.svg$/.test(r.logo), "the light UI uses the dark wordmark: " + r.logo);
+  });
+
   // Per-field validation is the new behaviour, and the assertion that matters
   // is the one about what SURVIVES: a corrupt field must fall back to its
   // default without taking the user's valid fields down with it.

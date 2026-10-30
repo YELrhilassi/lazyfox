@@ -18,6 +18,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { createChromePageHints } from "../../src/chrome/pagehints.ts";
 import { HINT_LABEL, hintLabelInlineStyle } from "../../src/shared/hintlabel.ts";
+import { resolvePalette, setUiPalette } from "../../src/shared/theme.ts";
 
 interface FakeLabel {
   tag: string;
@@ -111,10 +112,13 @@ describe("chrome-side hint labels", () => {
     engine.show();
     try {
       assert.equal(labels.length, 2, "one label per link");
+      // The chrome host writes LITERAL colours (a page has no --lf-* tokens),
+      // taken from the palette the window is painted with.
+      const pal = resolvePalette();
       for (const label of labels) {
         const style = label.attrs.style || "";
-        assert.ok(style.includes("background:" + HINT_LABEL.fill), "the shared fill: " + style);
-        assert.ok(style.includes("color:" + HINT_LABEL.text), "the shared text colour: " + style);
+        assert.ok(style.includes("background:" + pal.accent), "the palette fill: " + style);
+        assert.ok(style.includes("color:" + pal.onAccent), "the palette ink: " + style);
         assert.ok(style.includes("font:" + HINT_LABEL.font), "the shared font: " + style);
         assert.ok(
           style.includes("border-radius:" + HINT_LABEL.radius),
@@ -138,6 +142,29 @@ describe("chrome-side hint labels", () => {
       assert.equal(labelCount(leader.armed, 2), true, "the one-shot capture was armed for two links");
     } finally {
       engine.clear(); // also stops the 8s cleanup timer, so the test can end
+    }
+  });
+
+  test("follow the palette the window is painted with, not the default", () => {
+    const solarized = resolvePalette({ preset: "solarized" });
+    const tokyo = resolvePalette();
+    setUiPalette(solarized);
+    try {
+      const { win, labels } = fakePage(1);
+      const engine = createChromePageHints({} as never, win as never, () => fakeLeader() as never);
+      engine.show();
+      try {
+        const style = labels[0]!.attrs.style || "";
+        assert.ok(style.includes("background:" + solarized.accent), "Solarized's accent: " + style);
+        assert.ok(!style.includes("background:" + tokyo.accent), "not the default blue: " + style);
+      } finally {
+        engine.clear();
+      }
+    } finally {
+      // The palette is module-level state shared by every surface in a host;
+      // a test that leaves it on Solarized turns every later assertion into a
+      // question about test order.
+      setUiPalette(tokyo);
     }
   });
 

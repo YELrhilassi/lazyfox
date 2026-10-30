@@ -189,21 +189,69 @@ export async function resumeOnStartup(
   pushSessionState();
 }
 
-export async function sessionList(): Promise<{ sessions: Session[] }> {
+export async function sessionList(): Promise<{ sessions: Session[]; current: string }> {
   const all = await readSessions();
+  // WHICH SESSION IS THIS WINDOW'S is part of the list, not a second lookup:
+  // the popup has to mark the current row, and asking twice let the mark and
+  // the rows describe different reads.
+  const current = await readCurrentSessionName().catch(() => "");
   const sessions = Object.keys(all)
     .map((k) => all[k])
     .filter((s): s is Session => !!s && Array.isArray(s.tabs))
     .sort((a, b) => (a.marker || 99) - (b.marker || 99));
-  return { sessions };
+  return { sessions, current };
 }
 
 // The tabs of one named session, as popup rows — for the sessions popup's
 // right-hand pane ("what's inside this session").
 export async function sessionTabs(name: string): Promise<PopupItem[]> {
   const all = await readSessions();
-  const s = all[(name || "").trim()];
+  const nm = (name || "").trim();
+  const s = all[nm];
   if (!s || !Array.isArray(s.tabs)) return [];
+  // THE ACTIVE TAB IS THE LIVE ONE when the session on screen is the session
+  // this window is running: `s.active` is the index recorded the last time the
+  // session was SAVED, so after browsing for a minute the accent sat on a tab
+  // the user left long ago. A session that is not current has no live tab to
+  // read, so it falls back to the saved index.
+  // AN INDEX IS ONLY TRUSTWORTHY INSIDE THE LIST IT INDEXES. A session whose
+  // `active` points past its tabs (tabs closed since the save, or a snapshot
+  // written before the field was maintained) used to mark NOTHING: every row
+  // kept the same ink, which is indistinguishable from a popup that does not
+  // mark the active tab at all.
+  let activeIdx =
+    typeof s.active === "number" && s.active >= 0 && s.active < s.tabs.length ? s.active : -1;
+  try {
+    const current = await readCurrentSessionName();
+    if (current && current === nm) {
+      // REAL tabs in strip order — the same list the tab numbers and the saved
+      // order use, so a companion UI tab can never shift the accent by one.
+      const live = await realTabsInWindow();
+      const i = (live || []).findIndex((t: any) => !!t.active);
+      if (i >= 0) {
+        // The saved list can lag the live window (autosave is debounced) and
+        // can hold a different number of rows, so a bare INDEX only decides
+        // when the two lists line up — at the same position or in length.
+        // Otherwise the live tab is matched by its URL, which is what the row
+        // actually represents; keying off the index would mark its neighbour.
+        const liveUrl = (live[i] && live[i].url) || "";
+        const sameAt = i < s.tabs.length && ((s.tabs[i] && s.tabs[i].url) || "") === liveUrl;
+        if (sameAt || live.length === s.tabs.length) {
+          activeIdx = i;
+        } else {
+          const byUrl = liveUrl
+            ? s.tabs.findIndex((t) => (t.url || "") === liveUrl)
+            : -1;
+          activeIdx = byUrl;
+        }
+      }
+    }
+  } catch {
+    // no live window (or the query was refused): the saved index still marks one
+  }
+  // A stale index must still leave ONE row marked: the pane's promise is that
+  // the active tab is in the accent, and "none of them" is a broken promise.
+  if (activeIdx < 0 && s.tabs.length) activeIdx = 0;
   return s.tabs.map((t, i) => {
     const badges: string[] = [];
     if (t.pinned) badges.push("pinned");
@@ -214,7 +262,7 @@ export async function sessionTabs(name: string): Promise<PopupItem[]> {
       title: t.title || t.url || "",
       url: t.url || "",
       subtitle: (badges.length ? badges.join(" \u00b7 ") + " \u00b7 " : "") + (t.url || ""),
-      active: i === (s.active || 0),
+      active: i === activeIdx,
     };
   });
 }

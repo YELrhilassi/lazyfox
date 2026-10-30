@@ -15,6 +15,7 @@
 
 import { digitExpect } from "../shared/leadersignal";
 import { hintLabelInlineStyle } from "../shared/hintlabel";
+import { uiPalette } from "../shared/theme";
 import { toast } from "../shared/overlay";
 import type { LeaderController } from "../shared/leader";
 import type { ChromeEnv, ChromeWindow } from "./env";
@@ -141,6 +142,11 @@ export function createChromePageHints(
       // Draw the 1-9 labels over each hintable link.
       try {
         const host = doc.body || doc.documentElement;
+        // The palette's LITERAL colours (see the label style below): these
+        // labels are plain spans in the page's own DOM, where `--lf-*` does not
+        // exist and must not be injected — that would leak Lazyfox's variables
+        // into the site.
+        const pal = uiPalette();
         entries.forEach((it, i) => {
           const r = it.el.getBoundingClientRect();
           const label = doc.createElement("span");
@@ -157,7 +163,9 @@ export function createChromePageHints(
           label.setAttribute(
             "style",
             hintLabelInlineStyle(
-              "top:" + (r.top + 2) + "px;left:" + (r.left + 2) + "px"
+              "top:" + (r.top + 2) + "px;left:" + (r.left + 2) + "px",
+              pal.accent,
+              pal.onAccent
             )
           );
           host.appendChild(label);
