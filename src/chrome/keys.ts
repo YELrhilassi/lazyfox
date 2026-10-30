@@ -245,14 +245,32 @@ export function handleKeys(
     }
     const k = seq[i++] || { k: "" };
     try {
-      const ev = {
+      // A COMPLIANT EVENT SHROUD, not a bare object: the synthetic key rides a
+      // plain object through the channel, but every downstream controller —
+      // the popups' handleKey, the selector's keymap — expects the shape a
+      // KeyboardEvent offers and calls preventDefault on the keys it consumes.
+      // A bare object threw "W.preventDefault is not a function" there, which
+      // the channel reported as keys.err and the whole sequence died mid-run.
+      // preventDefault is a real record (the popup text-insertion contract
+      // reads defaultPrevented to mean "do not type this"), the propagation
+      // stoppers are no-ops because there is no propagation model on a
+      // object the helper dispatches directly.
+      const shroud: { defaultPrevented: boolean; preventDefault(): void; stopPropagation(): void; stopImmediatePropagation(): void } = {
+        defaultPrevented: false,
+        preventDefault() {
+          shroud.defaultPrevented = true;
+        },
+        stopPropagation() {},
+        stopImmediatePropagation() {},
+      };
+      const ev = Object.assign(shroud, {
         key: k.shift ? shiftedKey(k.k) : k.k,
         ctrlKey: !!k.ctrl,
         altKey: !!k.alt,
         shiftKey: !!k.shift,
         metaKey: !!k.meta,
         isComposing: false,
-      };
+      });
       // The release half of the keystroke, unless the caller is deliberately
       // holding the key down (`up: false`). A real keyboard always produces
       // one, and the leader's held state is defined by whether it arrives — so

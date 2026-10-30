@@ -591,10 +591,18 @@ describe("a page that cannot see the keyboard gets it back", () => {
     // guard (the URL bar is a typing target holding the page's address) and the
     // user gets the field report: the leader key does something, the page does
     // nothing, and only a click or a reload repairs it.
+    //
+    // AND THE LEADER ARMS WITH THE REPAIR on this class — helper-owned means no
+    // content script is present or expected, so no one else will ever answer the
+    // next key. The repair used to consume `;` without arming (the old
+    // "no helper leader was armed" assertion): one find — whose native find bar
+    // parks the keyboard in the browser chrome — and every later leader press
+    // on a neterror or uninjectable page was spent on nothing, forever. The
+    // arming is pinned in keysdispatch as branch `leader-rescue-arm`.
     const { leader, down, focused } = helperOwnsPage();
     assert.equal(down.chromeKeyDown(keydown(";")), true, "the leader key is spent on the repair");
     assert.ok(focused.length >= 1, "and the page was given the keyboard back");
-    assert.equal(leader.active, false, "no helper leader was armed over a page that cannot see it");
+    assert.equal(leader.active, true, "the helper leader armed: nobody else can answer the next key here");
   });
 
   test("but NOT on a document no content script can own: the leader key arms Lazyfox", () => {
@@ -636,9 +644,19 @@ describe("a page that cannot see the keyboard gets it back", () => {
     // URL bar (the typing guard's page-class exception is what arms it — before
     // that exception named this page class, this state spent `;` as a character),
     // and `leader-arm` when the caret is nowhere at all. Neither is a repair.
+    //
+    // A THIRD branch exists for the repair on a helper-owned WEB document:
+    // `leader-rescue-arm` (the focus repair fired AND the leader armed), which
+    // is what separates "one find and the leader never came back" from this
+    // contract. It belongs in this pin because the ring is the only place a
+    // field report can say it.
     const previous = (globalThis as any).__DEV__;
     (globalThis as any).__DEV__ = true;
     try {
+      const rescue = helperOwnsPage(); // WEB spec: content-ownable, helper-owned
+      rescue.down.chromeKeyDown(keydown(";"));
+      assert.equal(rescue.down.dispatchTrace().slice(-1)[0].br, "leader-rescue-arm");
+      assert.equal(rescue.leader.active, true);
       const inUrlBar = helperOwnsPage("moz-extension://abc/diagnostics.html");
       inUrlBar.down.chromeKeyDown(keydown(";"));
       assert.equal(inUrlBar.down.dispatchTrace().slice(-1)[0].br, "typing-arm");
