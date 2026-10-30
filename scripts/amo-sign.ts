@@ -88,10 +88,12 @@ if (signable) {
         throw new Error("built unsigned xpi is unexpectedly signed or has wrong version");
       }
       console.log(`[amo] submitting ${version} to AMO (listed)…`);
-      const { fileId, version: signedVer } = await signXpi(unsigned);
+      // The url, not the bare id, is what AMO serves the signed bytes at
+      // (see downloadSigned).
+      const { fileId, fileUrl, version: signedVer } = await signXpi(unsigned);
       console.log(`[amo] downloading signed xpi (file ${fileId})…`);
       const dlTmp = out + ".dl";
-      const signed = await downloadSigned(fileId, dlTmp);
+      const signed = await downloadSigned(fileUrl || fileId, dlTmp);
       if (!isSignedXpi(signed)) throw new Error("downloaded file is not a signed xpi");
       const dlVer = xpiVersion(signed);
       if (dlVer !== version) throw new Error(`signed version mismatch: ${dlVer} != ${version}`);

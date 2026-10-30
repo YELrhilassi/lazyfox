@@ -405,7 +405,7 @@ export function fingerprintOf(
 export async function signXpi(
   xpiPath: string,
   { license = "MIT", category = "tabs", guid = "lazyfox@lazyfox.dev" }: { license?: string; category?: string; guid?: string } = {}
-): Promise<{ fileId: string; slug: string | undefined; version: string | undefined }> {
+): Promise<{ fileId: string; fileUrl: string | undefined; slug: string | undefined; version: string | undefined }> {
   const g = encodeURIComponent(guid);
 
   const exist = await api(`/addons/addon/${g}/`);
@@ -461,11 +461,23 @@ export async function signXpi(
   const file = v?.file || {};
   const fileId = file.id || v?.file_id;
   if (!fileId) throw new Error("no signed file id returned");
-  return { fileId, slug: known ? exist.json?.slug : ver.json?.slug, version: v?.version };
+  // The download URL rides along: the bare id path no longer serves the signed
+  // bytes (see downloadSigned).
+  return { fileId, fileUrl: file.url, slug: known ? exist.json?.slug : ver.json?.slug, version: v?.version };
 }
 
-export async function downloadSigned(fileId: string, outPath: string): Promise<Buffer> {
-  const res = await fetch(`https://addons.mozilla.org/firefox/downloads/file/${fileId}/`);
+// The signed file is downloaded from the URL the API itself publishes for it
+// (`file.url`, which embeds the file's NAME), not from a bare
+// `https://addons.mozilla.org/firefox/downloads/file/${fileId}/` the id used to
+// make. AMO started serving the UNSIGNED original upload at the bare id URL —
+// a 200 with plausible zip bytes that failed the signature check — so the only
+// URL worth trusting is the one the version endpoint hands back, and the
+// signature check below remains the second line of defense.
+export async function downloadSigned(url: string, outPath: string): Promise<Buffer> {
+  if (!url || !/^https?:\/\//.test(url)) {
+    throw new Error(`downloadSigned needs the file url from the AMO endpoint (got "${String(url).slice(0, 60)}")`);
+  }
+  const res = await fetch(url, { redirect: "follow" });
   if (!res.ok) throw new Error(`signed download failed: ${res.status}`);
   const buf = Buffer.from(await res.arrayBuffer());
   fs.writeFileSync(outPath, buf);
