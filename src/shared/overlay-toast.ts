@@ -8,6 +8,7 @@
 
 import { mirror } from "./observability";
 import { TOAST_CSS } from "./overlaycss";
+import { uiCss } from "./theme";
 import { promoteToTopLayer } from "./toplayer";
 
 const HOST_CSS =
@@ -30,7 +31,7 @@ export function toast(msg: string): void {
     host.style.pointerEvents = "none";
     const sh = host.attachShadow({ mode: "closed" });
     const style = document.createElement("style");
-    style.textContent = TOAST_CSS;
+    style.textContent = uiCss(TOAST_CSS);
     const box = document.createElement("div");
     box.className = "t";
     const span = document.createElement("span");

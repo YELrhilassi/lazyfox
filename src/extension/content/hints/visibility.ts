@@ -103,6 +103,50 @@ export function composedParentOf(el: Element): Element | null {
  */
 const MAX_COMPOSED_DEPTH = 512;
 
+/**
+ * Does `ancestor` contain `node` in the COMPOSED tree?
+ *
+ * `Node.contains` stops at a shadow boundary: a custom element's host does not
+ * contain the button inside its shadow root as far as that method is concerned,
+ * even though the user sees one control. Hint dedup, occlusion and the "is this
+ * control behind a dialog" walk all need the question the user can answer, not
+ * the one the light-DOM tree can — otherwise a host and the control painted by
+ * its own root are two different answers to "what is on these pixels" and both
+ * get a label.
+ *
+ * Plain `contains` is tried first (it is the fast path and the only one that
+ * works on the plain objects the unit tests drive), then the composed parent
+ * chain, which crosses shadow roots AND slot assignment. Bounded like every
+ * other composed walk, and every read is wrapped: a hostile element answers "no"
+ * rather than ending the hint pass.
+ */
+export function composedContains(ancestor: Element | null, node: Element | null): boolean {
+  if (!ancestor || !node) return false;
+  try {
+    if (ancestor === node) return true;
+    if (typeof ancestor.contains === "function" && ancestor.contains(node)) return true;
+  } catch (e) {
+    // Fall through to the composed walk; the answer is still worth having.
+  }
+  // THE HOT PATH IS THE LIGHT-DOM ONE. Dedup asks this for every candidate
+  // against every kept element, and the common answer is "unrelated" — walking
+  // both trees to discover that would put a composed walk in the hint batch's
+  // inner loop. A node whose root is the DOCUMENT can only be contained by a
+  // light-DOM ancestor, which `contains` already answered, so it returns here.
+  try {
+    const root = typeof node.getRootNode === "function" ? node.getRootNode() : null;
+    if (root && (root as Document).nodeType === 9) return false;
+  } catch (e) {
+    // An element that refuses the read falls through to the bounded walk.
+  }
+  let cur: Element | null = node;
+  for (let hops = 0; cur && hops < MAX_COMPOSED_DEPTH; hops++) {
+    if (cur === ancestor) return true;
+    cur = composedParentOf(cur);
+  }
+  return false;
+}
+
 function defaultStyleReader(el: Element): CSSStyleDeclaration {
   return getComputedStyle(el);
 }

@@ -24,7 +24,7 @@ export function tabChooserPanel(prefix: string): string {
   return keyPanel(
     "Tab " + prefix + "\u2026",
     "no tab " + prefix,
-    "<span class='lf-badge'>0-9</span> continue &middot; " +
+    "<span class='lf-badge'>0-9</span> continue &middot; <span class='lf-badge'>j/k</span> move &middot; " +
       "<span class='lf-badge'>&uarr;&darr;</span> move &middot; " +
       "<span class='lf-badge'>Enter</span> go &middot; " +
       "<span class='lf-badge'>Esc</span> close"
@@ -79,15 +79,13 @@ export function openSplitChooser(
         debounceMs: 0,
         itemClass: "lf-tab",
         emptyText: "no split to move into",
-        vimNav: true,
         search: async () => targets,
         keyOf: (t) => t.split,
         render: (t) =>
-          "<div class='t'>" +
+          "<div class='t" + (t.active ? " act" : "") + "'>" +
           "<span class='lf-marker'>" +
           t.split +
           "</span>" +
-          (t.active ? "<span class='dot'></span>" : "") +
           "<span class='txt'>" +
           esc(t.panes.map((p) => p.title || p.url || "untitled").join("  \u2502  ")) +
           "</span></div><div class='s'>" +
@@ -134,7 +132,6 @@ export function openTabChooser(
         debounceMs: 0,
         itemClass: "lf-tab",
         emptyText: "no tab " + current,
-        vimNav: true,
         // Re-derived from the shared planner on every render, so the list can
         // never disagree with what a digit press would do.
         search: async () => tabCandidates(count, current),
@@ -142,10 +139,9 @@ export function openTabChooser(
           const t = byNumber.get(n);
           const qk = tabQuickKey(n, current);
           return (
-            "<div class='t'>" +
+            "<div class='t" + (t && t.active ? " act" : "") + "'>" +
             "<span class='lf-marker'>" + n + "</span>" +
             (qk ? "<span class='lf-badge'>" + qk + "</span>" : "") +
-            (t && t.active ? "<span class='dot'></span>" : "") +
             "<span class='txt'>" + esc((t && t.title) || "tab " + n) + "</span>" +
             (t ? faviconHtml(t.favIconUrl) : "") +
             "</div><div class='s'>" +
@@ -168,10 +164,11 @@ export function openTabChooser(
             act(next.plan.n);
             return true;
           }
-          // Still ambiguous: retitle to the wider prefix and let the search
-          // re-run through the (already debounced-at-zero) refresh.
-          const title = root.querySelector(".lf-title");
-          if (title) title.textContent = "Tab " + current + "\u2026";
+          // Still ambiguous: keep narrowing. There is no header to retitle
+          // (the panel has none); the candidate ROWS are the feedback, and the
+          // prefix is carried in data-lf-title for the observability mirror.
+          const panel = root.querySelector(".lf-panel");
+          if (panel) panel.setAttribute("data-lf-title", "Tab " + current + "\u2026");
           sel.refresh();
           return true;
         },

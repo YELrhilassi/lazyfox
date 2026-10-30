@@ -26,6 +26,7 @@
 
 import { backdropWheel } from "./keyguard";
 import { PANEL_CSS } from "./overlaycss";
+import { uiCss } from "./theme";
 import { mirror } from "./observability";
 import { toast } from "./overlay-toast";
 import { promoteToTopLayer } from "./toplayer";
@@ -134,7 +135,7 @@ export function openPopup(
   host.style.cssText = HOST_CSS;
   const sh = host.attachShadow({ mode: "closed" });
   const style = document.createElement("style");
-  style.textContent = PANEL_CSS;
+  style.textContent = uiCss(PANEL_CSS);
   const root = document.createElement("div");
   root.className = "lf-popup";
   root.innerHTML = html;
@@ -164,13 +165,14 @@ export function openPopup(
   // and never a row's data (the rows stay count-only on purpose — they carry
   // other tabs' titles and URLs).
   try {
-    // `.lf-title` is the selector popups' heading; `.rz-title` is the resize
-    // panel's own (it is a custom panel, not a selector). Either one is the
-    // panel's identity.
-    const titleEl =
-      (root.querySelector(".lf-title") as HTMLElement | null) ||
-      (root.querySelector(".rz-title") as HTMLElement | null);
-    const title = titleEl ? String(titleEl.textContent || "").trim() : "";
+    // The label is an ATTRIBUTE now that the header strip is gone: the panel is
+    // built from data-lf-title, and the resize panel keeps its own heading
+    // (`.rz-title`, a custom panel rather than a selector). The mirror string is
+    // unchanged, so everything that names a popup still works.
+    const panelEl = root.querySelector(".lf-panel") as HTMLElement | null;
+    const named = panelEl ? String(panelEl.getAttribute("data-lf-title") || "").trim() : "";
+    const rzEl = named ? null : (root.querySelector(".rz-title") as HTMLElement | null);
+    const title = named || (rzEl ? String(rzEl.textContent || "").trim() : "");
     mirror("popup-title", title || null);
   } catch (e) {
     // observability only — a popup that renders must not die reporting itself

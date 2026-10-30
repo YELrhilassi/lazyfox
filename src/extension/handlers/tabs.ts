@@ -12,6 +12,7 @@ import {
   senderWindowId,
 } from "../tabs";
 import { tabTrack } from "../navstore";
+import { stealthContainerOf } from "../stealth";
 import { activateTabByIndex, noteClosedTab, tabsInWindow } from "../windowops";
 import type { NavEntry } from "../../shared/types";
 import type { Domain } from "./types";
@@ -137,11 +138,17 @@ export function createTabHandlers(deps: TabDeps): Domain<Owns> {
       // A new tab is the command center, never a stray about:blank — and it
       // opens in the window that asked, not in whichever one the background
       // last touched (a `;n` from one session used to raise another).
+      //
+      // It also opens in the SAME JAR as the tab that asked: `;n` inside a
+      // stealth tab used to hand back a home page in the default jar, so the
+      // very next search left the sandbox without saying so.
       const winId = senderWindowId(sender);
+      const jar = await stealthContainerOf(await getActiveTabFor(sender));
       await browser.tabs.create({
         url: CC_URL,
         active: true,
         ...(winId == null ? {} : { windowId: winId }),
+        ...(jar ? { cookieStoreId: jar } : {}),
       });
       return { ok: true };
     },

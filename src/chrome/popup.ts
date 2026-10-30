@@ -106,7 +106,7 @@ export function createPopupHost(env: ChromeEnv): PopupHost {
     const root = el(doc, "div");
     root.style.cssText =
       "position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;" +
-      "background:rgba(8,8,14,.4);font-family:" + UI_FONT;
+      "background:var(--lf-backdrop);font-family:" + UI_FONT;
     const hdoc = (doc as any).implementation.createHTMLDocument("");
     hdoc.body.innerHTML = html;
     while (hdoc.body.firstChild) root.appendChild(hdoc.body.firstChild);
@@ -122,9 +122,14 @@ export function createPopupHost(env: ChromeEnv): PopupHost {
         input.setAttribute("spellcheck", "false");
         const empty = panel.querySelector(".lf-empty");
         if (empty) input.setAttribute("placeholder", (empty.textContent || "").trim());
-        const foot = panel.querySelector(".lf-foot");
-        if (foot) panel.insertBefore(input, foot);
-        else panel.appendChild(input);
+        // THE TOP, matching basePanel: the field leads the palette and the
+        // list follows it. A two-column panel (sessions, history) keeps its
+        // field inside the first column, where the markup puts it — a
+        // panel-wide field above the split would be a different popup from the
+        // one the content script draws.
+        const col = panel.querySelector(".lf-col");
+        if (col) col.insertBefore(input, col.firstChild);
+        else panel.insertBefore(input, panel.firstChild);
       }
     }
     const st = el(doc, "style");
@@ -182,14 +187,14 @@ export function createPopupHost(env: ChromeEnv): PopupHost {
     const root = el(doc, "div");
     root.style.cssText =
       "position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;" +
-      "background:rgba(8,8,14,.4);font-family:" + UI_FONT;
+      "background:var(--lf-backdrop);font-family:" + UI_FONT;
     const panel = el(doc, "div");
     panel.style.cssText =
-      "width:520px;background:#1e1e2e;color:#c0caf5;border:1px solid #414868;border-radius:10px;" +
-      "box-shadow:0 24px 70px rgba(0,0,0,.6);padding:20px 22px;text-align:center";
+      "width:520px;background:var(--lf-panel);color:var(--lf-fg);border-radius:var(--lf-r-lg);" +
+      "box-shadow:var(--lf-shadow);padding:20px 22px;text-align:center";
     panel.innerHTML =
-      "<div style='font-size:13px;color:#c0caf5'>Resize / move window</div>" +
-      "<div style='margin-top:12px;font-size:12px;color:#7aa2f7'>" +
+      "<div style='font-size:13px;color:var(--lf-fg)'>Resize / move window</div>" +
+      "<div style='margin-top:12px;font-size:12px;color:var(--lf-accent)'>" +
       "arrows resize \u00b7 shift+arrows move \u00b7 Esc close</div>";
     root.appendChild(panel);
     doc.documentElement.appendChild(root);

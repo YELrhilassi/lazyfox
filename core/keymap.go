@@ -240,7 +240,27 @@ var Keymap = []KeymapRow{
 	{Spec: "shift+/", Key: "?", Action: "help", Label: "Keybindings help", Group: "Tools"},
 	{Spec: "q", Key: "q", Action: "toggleWhichKey", Label: "Toggle which-key overlay", Group: "Tools"},
 	{Spec: "shift+d", Key: "D", Action: "dismissDownload", Label: "Dismiss download notification", Group: "Tools"},
-	{Spec: "shift+n", Key: "N", Action: "stealthOpen", Label: "Stealth tab (isolated, wiped on close)", Group: "Tools"},
+	// STEALTH IS A MENU, NOT ONE KEY.
+	//
+	// `;N` used to mean exactly one thing (a new empty isolated tab), which left
+	// the two ways a sandbox actually starts — a search and a known address —
+	// without a door: both had to go through a normal tab first, which defeats
+	// the point. The three sub-keys are the three intentions a container tab
+	// has, and they share one destination: this window's single stealth jar.
+	//
+	// `;N` alone now opens the menu rather than a tab. That is deliberate and it
+	// is the same grammar as `;W`, `;Z`, `;K` and `;Y`: a head that shows its
+	// leaves is how the other families teach themselves, and a head that fired
+	// would make every sub-key a second, unreachable spelling.
+	{
+		Spec: "shift+n", Key: "N", Action: "category", Label: "Stealth", Group: "Tools",
+		Cat: "Stealth", CatLabel: "Stealth",
+		CatKeys: []CatKey{
+			{Spec: "n", Key: "n", Action: "stealthOpen", Label: "New isolated tab"},
+			{Spec: "s", Key: "s", Action: "stealthSearch", Label: "Search in an isolated tab"},
+			{Spec: "o", Key: "o", Action: "stealthUrl", Label: "Open a URL in an isolated tab"},
+		},
+	},
 	// `;I` (openSetup) is deliberately absent. The setup page is a one-time
 	// install step, not a keyboard command: it lives on the home page ("Complete
 	// the install", plus the first-run banner) where a user who needs it is

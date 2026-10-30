@@ -379,7 +379,9 @@ export function createStateReader(deps: StateReaderDeps): StateReader {
         wkOn: doc.documentElement.getAttribute("data-lf-whichkey") === "1" ? 1 : 0,
         rootInputs: doc.querySelectorAll(".lf-popup .lf-input").length,
         panels: panels.map((p) => ({
-          title: (p.querySelector(".lf-title") || {}).textContent || "",
+          // The panel's name is an attribute now (there is no header strip):
+          // the caller writes data-lf-title and the mirror reads it too.
+          title: (p.querySelector(".lf-panel") || {}).getAttribute?.("data-lf-title") || "",
           hasInput: !!p.querySelector(".lf-input"),
           status: (p.querySelector(".lf-status") || { textContent: "" }).textContent || "",
         })),

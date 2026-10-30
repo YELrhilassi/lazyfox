@@ -70,12 +70,23 @@ export interface PopupCtx {
   manualText: boolean;
 }
 
-export function basePanel(title: string, placeholder: string, foot: string): string {
+// `title` is not drawn. The panel has no header — it carries its name in
+// data-lf-title, which is what the observability mirror reads, so "which popup is
+// up" is still answerable without a strip of chrome above every list.
+export function basePanel(title: string, emptyText: string, foot: string, fieldHint?: string): string {
+  // The FIELD's hint and the EMPTY state's text are different sentences now:
+  // the field says how to type (`i to search`), the empty state says what is
+  // missing (`no bookmarks`). They shared one string, so a popup with nothing
+  // in it said "type to search" over an empty list.
+  const hint = fieldHint || emptyText;
   return (
-    "<div class='lf-panel'><div class='lf-title'>" + esc(title) + "</div>" +
+    // THE FIELD IS FIRST. With no header, the panel reads as a command palette:
+    // type at the top, results below. It used to sit between the list and the
+    // footer, where a borderless well looked like part of the footer.
+    "<div class='lf-panel' data-lf-title='" + esc(title) + "'>" +
+    "<input class='lf-input' placeholder='" + esc(hint) + "' spellcheck='false'/>" +
     "<div class='lf-main'><div class='lf-list'></div>" +
-    "<div class='lf-empty' style='display:none'>" + esc(placeholder) + "</div></div>" +
-    "<input class='lf-input' placeholder='" + esc(placeholder) + "' spellcheck='false'/>" +
+    "<div class='lf-empty' style='display:none'>" + esc(emptyText) + "</div></div>" +
     "<div class='lf-foot'>" + (foot || "") + "</div></div>"
   );
 }
@@ -86,7 +97,7 @@ export function basePanel(title: string, placeholder: string, foot: string): str
 // would steal the digits the popup is actually driven by.
 export function keyPanel(title: string, placeholder: string, foot: string): string {
   return (
-    "<div class='lf-panel'><div class='lf-title'>" + esc(title) + "</div>" +
+    "<div class='lf-panel' data-lf-title='" + esc(title) + "'>" +
     "<div class='lf-main'><div class='lf-list'></div>" +
     "<div class='lf-empty' style='display:none'>" + esc(placeholder) + "</div></div>" +
     "<div class='lf-foot'>" + (foot || "") + "</div></div>"
@@ -100,7 +111,6 @@ export function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
   emptyText?: string;
   debounceMs?: number;
   itemClass?: string;
-  vimNav?: boolean;
   extraKeys?: (e: KeyboardEvent, sel: { empty: boolean; item: T | null; refresh(): void; refreshSoon(delayMs: number): void }) => boolean;
   onEnter?: (value: string, item: T | null) => boolean;
   onChange?: (idx: number, item: T | null, count: number) => void;
@@ -131,7 +141,6 @@ export function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
     manualText: ctx.manualText,
     debounceMs: opts.debounceMs,
     itemClass: opts.itemClass,
-    vimNav: opts.vimNav,
     emptyText: opts.emptyText,
     search: opts.search,
     render: opts.render,
@@ -148,9 +157,11 @@ export function makeSelector<T>(ctx: PopupCtx, root: HTMLElement, opts: {
     refresh: sel.refresh,
     refreshSoon: (ms: number) => sel.refreshSoon && sel.refreshSoon(ms),
     close: sel.close,
-    focus: () => {
-      if (inputEl.isConnected) inputEl.focus();
-    },
+    // DELIBERATELY NO FOCUS. The popup opens in NORMAL mode (j/k navigate,
+    // `i` enters the field); focusing the field here would put every key back
+    // into the text box and undo the split. overlay-selector.ts focuses it
+    // when the user asks, and only then.
+    focus: () => {},
   };
 }
 

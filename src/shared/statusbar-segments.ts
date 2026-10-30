@@ -11,57 +11,9 @@
 // the only page-level answer). Keeping it here means the format can be asserted
 // directly instead of by driving a browser to read a string back out.
 
+import type { IconName } from "./icons";
 import { leaderMirrorFragment, type LeaderSignal } from "./leadersignal";
 import type { StatusBarData, StatusBarSessions } from "./types";
-
-/**
- * Black or white ink, whichever stays readable on `hex`.
- *
- * The session pills are generated colours, so the text on them has to be chosen
- * against the background rather than hard-coded: a fixed ink is unreadable on
- * roughly half the palette.
- */
-export function readableOn(hex: string): string {
-  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
-  if (!m) return "#000";
-  const r = parseInt(m[1]!, 16);
-  const g = parseInt(m[2]!, 16);
-  const b = parseInt(m[3]!, 16);
-  // Perceived lightness, 0..255. The quick midpoint of max/min is good enough
-  // here: the palettes are hand-picked and none of them sit near the boundary.
-  const l = (Math.max(r, g, b) + Math.min(r, g, b)) / 2;
-  return l > 140 ? "#101010" : "#ffffff";
-}
-
-// Gradient endpoints for the session pills. Nine entries, chosen to stay
-// distinguishable from each other at 18px.
-const PILL_COLORS: Array<[string, string]> = [
-  ["#7aa2f7", "#5d89ea"], // blue
-  ["#9ece6a", "#7fae49"], // green
-  ["#e0af68", "#cd9445"], // amber
-  ["#bb9af7", "#9e77ef"], // purple
-  ["#7dcfff", "#4fb6ea"], // cyan
-  ["#f7768e", "#e75f79"], // red
-  ["#ff9e64", "#f58541"], // orange
-  ["#2ac3de", "#14a9c6"], // teal
-  ["#c0caf5", "#a3aee4"], // lavender
-];
-
-/**
- * The gradient for a session's pill.
- *
- * Keyed to the MARKER, not to the list position, so switching sessions never
- * recolors another one — a pill that changes colour when you move the selection
- * reads as "this is a different kind of session" rather than "you moved".
- */
-export function pillColorFor(marker: number): { gradient: string; ink: string } {
-  const idx = marker > 0 ? (marker - 1) % PILL_COLORS.length : 0;
-  const c = PILL_COLORS[idx]!;
-  return {
-    gradient: "linear-gradient(180deg," + c[0] + "," + c[1] + ")",
-    ink: readableOn(c[0] || "#7aa2f7"),
-  };
-}
 
 /** `3:work 12` — the marker, the name, and the tab count when there is one. */
 export function sessionPillText(s: StatusBarSessions): string {
@@ -69,6 +21,36 @@ export function sessionPillText(s: StatusBarSessions): string {
   let text = id + ":" + s.name;
   if (s.tabCount > 0) text += " " + s.tabCount;
   return text;
+}
+
+/**
+ * A session pill, split into the pieces the bar lays out.
+ *
+ * They are separate SPANS rather than one text run because each has its own
+ * size and weight (the marker id, the name, a tab count), and because the id
+ * and the name are separated by a rule that is drawn by the stylesheet rather
+ * than typed. The plain string stays as the accessible name, so a screen
+ * reader still hears what the one-line form said.
+ *
+ * A session with no marker gets neither id nor rule: an empty id would leave a
+ * floating separator with nothing to separate.
+ */
+export interface SessionPillParts {
+  marker: string;
+  name: string;
+  count: string;
+  title: string;
+  active: boolean;
+}
+
+export function sessionPillParts(s: StatusBarSessions): SessionPillParts {
+  return {
+    marker: s.marker > 0 ? String(s.marker) : "",
+    name: s.name,
+    count: s.tabCount > 0 ? String(s.tabCount) : "",
+    title: sessionPillText(s),
+    active: !!s.current,
+  };
 }
 
 /**
@@ -88,20 +70,56 @@ export function sessionPillText(s: StatusBarSessions): string {
  * on every tab, which is exactly the kind of always-on chrome this bar avoids.
  */
 export interface DarkSegment {
-  icon: string;
+  /** Which glyph in the shared icon set stands for this state. */
+  icon: IconName;
   label: string;
-  /** A class suffix the stylesheet colours: site | on | filter | light. */
+  /** A class suffix the stylesheet colours: native | on | filter | light. */
   tone: string;
 }
 
 export function darkSegment(d: { on: boolean; mode: string; engine: string } | null | undefined): DarkSegment | null {
   if (!d || !d.mode || d.mode === "off") return null;
-  if (d.engine === "native") return { icon: "\u263E", label: "site", tone: "native" };
-  if (d.mode === "light") return { icon: "\u2600", label: "light", tone: "light" };
+  // Sentence case throughout: the bar's labels are the first word of a label,
+  // not a code, and lower-case fragments next to a 12px tab count read as
+  // debris rather than as words.
+  if (d.engine === "native") return { icon: "moon", label: "Site", tone: "native" };
+  if (d.mode === "light") return { icon: "sun", label: "Light", tone: "light" };
   if (!d.on) return null;
-  if (d.engine === "filter") return { icon: "\u263E", label: "invert", tone: "filter" };
-  return { icon: "\u263E", label: "dark", tone: "on" };
+  if (d.engine === "filter") return { icon: "moon", label: "Invert", tone: "filter" };
+  return { icon: "moon", label: "Dark", tone: "on" };
 }
+
+/** The bar's own markup for a session pill, shared with the settings preview
+ *  so the two cannot drift into different-looking pills. */
+export function sessionPillHtml(s: StatusBarSessions): string {
+  const p = sessionPillParts(s);
+  return (
+    "<span class='sesspill" + (p.active ? " active" : "") + "' title='" + escAttr(p.title) + "'>" +
+    (p.marker
+      ? "<span class='mk'>" + escAttr(p.marker) + "</span><span class='sep'></span>"
+      : "") +
+    "<span class='nm'>" + escAttr(p.name) + "</span>" +
+    (p.count ? "<span class='ct'>" + escAttr(p.count) + "</span>" : "") +
+    "</span>"
+  );
+}
+
+/** Minimal attribute escape: session names are user data and land in an
+ *  attribute (the title) as well as in text.
+ *
+ *  BOTH quote characters are escaped because the pill's attributes are
+ *  single-quoted: a session called `don't` would otherwise close the title
+ *  attribute, and the chrome document parses this markup as XML, where that is
+ *  a parse error — one apostrophe in one name took the whole chip strip down. */
+function escAttr(v: string): string {
+  return String(v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 
 /**
  * The bar's whole state as one pipe-delimited string on <html>.
@@ -134,6 +152,9 @@ export function statusMirrorFragment(data: StatusBarData, position: string, lead
     // and for debugging (the shadow root is closed).
     leaderMirrorFragment(leader || data.leader) +
     (darkSegment(data.dark) ? "|dark:" + darkSegment(data.dark)!.tone + "/" + data.dark!.engine : "") +
+    // Present only while muted, so every existing mirror string is unchanged in
+    // the common case.
+    (data.muted ? "|mute" : "") +
     (data.find && data.find.count > 0
       ? "|find:" + data.find.cur + "/" + data.find.count
       : data.find && data.find.count === 0

@@ -11,6 +11,7 @@
 import type { Session, SessionWindow } from "../../shared/types";
 import { sessionFromWindows } from "../../shared/sessionwindows";
 import { writeKey } from "../store";
+import { currentRestoreEpoch } from "./epoch";
 import {
   layoutSettled,
   readCurrentSessionName,
@@ -23,31 +24,68 @@ import {
 // re-querying (the windows are already gone by the time windows.onRemoved fires,
 // and an empty query would clobber the save).
 let lastSnapshot: SessionWindow[] | null = null;
+// The restore epoch `lastSnapshot` was measured in. A snapshot taken before a
+// switch describes the OUTGOING session, while the current-session pointer will
+// name the incoming one — so a quit that flushed it would write one session's
+// tabs into another. The stamp is how flushOnQuit tells the two apart.
+let lastSnapshotEpoch = -1;
+
+function rememberSnapshot(wins: SessionWindow[]): void {
+  lastSnapshot = wins;
+  lastSnapshotEpoch = currentRestoreEpoch();
+}
 
 export function lastWindowSnapshot(): SessionWindow[] | null {
   return lastSnapshot;
 }
 
 export async function setLastWindowSnapshot(): Promise<void> {
-  lastSnapshot = await snapshotWindows();
+  const epoch = currentRestoreEpoch();
+  const wins = await snapshotWindows();
+  // A restore that began while this query ran makes the result a mid-rebuild
+  // window; refusing it leaves the previous (coherent) snapshot in place.
+  if (currentRestoreEpoch() !== epoch) return;
+  rememberSnapshot(wins);
 }
 
 // Checkpoint: persist the current window before switching away. The snapshot
 // is always written to the crash-recovery "last" slot, and if the window
 // belongs to a named session, that session is updated in place too. A
 // pre-captured snapshot (used by the quit flush) skips the re-query.
+//
+// `nameOverride` is the session the window belongs to, for callers that know it
+// better than storage does. A switch is that caller: it checkpoints the window
+// it is LEAVING, and `lfCurrentSession` still names that session only because
+// the switch has not finished. Letting this read storage would make a queued
+// switch checkpoint the freshly-built window into the session it is about to
+// leave.
 export async function autosaveCurrentSession(
   all: Record<string, Session>,
-  preSnap?: SessionWindow[]
+  preSnap?: SessionWindow[],
+  nameOverride?: string
 ): Promise<void> {
   try {
+    const epoch = currentRestoreEpoch();
     const wins = preSnap && preSnap.length ? preSnap : await snapshotWindows();
-    lastSnapshot = wins;
+    // A RESTORE BEGINNING UNDER THE QUERY INVALIDATES THE RESULT: what was
+    // captured is a window mid-rebuild. Dropping the write is safe — the switch
+    // checkpoints the outgoing window itself, before it touches anything.
+    if (!(preSnap && preSnap.length) && currentRestoreEpoch() !== epoch) return;
+    // NOTHING TO REMEMBER is not the same as an empty session.
+    //
+    // A window holding only stealth tabs contributes no content (see
+    // storage.windowPart), and a browser where every window is like that
+    // snapshots to `[]`. Writing that would replace the crash-recovery slot —
+    // and, worse, the user's current named session — with zero tabs, so the
+    // last real session would be destroyed by the act of working in a stealth
+    // tab. An empty session exists only when the user asks for one.
+    if (!wins.length) return;
+    rememberSnapshot(wins);
     // The session IS the window set now, so the checkpoint records every window
     // — not just the one on screen. The focused window stays mirrored in the
     // flat fields (sessionFromWindows), which is what every older reader and
     // the tab move/copy paths still address.
-    const name = await readCurrentSessionName();
+    const name = nameOverride !== undefined ? nameOverride : await readCurrentSessionName();
     const existing = name ? all[name] : null;
     if (name && existing) {
       const session = sessionFromWindows(wins, name, existing.marker || 0, Date.now());
@@ -92,6 +130,11 @@ export function scheduleAutosave(whileRestoring: () => boolean): void {
   if (autosaveTimer != null) clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(async () => {
     autosaveTimer = null;
+    // A RESTORE CAN START after this timer was armed. Running now would snapshot
+    // a half-rebuilt window and write it into the session being left — the
+    // switch's own checkpoint already saved that window, and the switch re-arms
+    // this timer when it is done, so standing down loses nothing.
+    if (whileRestoring()) return;
     try {
       // Persist the CURRENT window into BOTH its named session (if it has one)
       // and the crash-recovery "last" slot. Writing only "last" here was the
@@ -138,6 +181,7 @@ export function scheduleLayoutSnapshot(whileRestoring: () => boolean): void {
     // restored. The restore checkpoints the finished window itself, so the only
     // correct thing here is to stand down.
     if (whileRestoring()) return;
+    const epoch = currentRestoreEpoch();
     let settled = true;
     try {
       lastSnapshot = await snapshotWindows();
@@ -145,6 +189,10 @@ export function scheduleLayoutSnapshot(whileRestoring: () => boolean): void {
     } catch {
       // ignore — a failed read is not a reason to stop reading
     }
+    // A restore ran during the read: the measurement is of a strip that no
+    // longer exists. It must not be written, and it must not be kept as the
+    // snapshot a quit would flush either.
+    if (currentRestoreEpoch() !== epoch || whileRestoring()) return;
     if (settled || ++layoutTries >= LAYOUT_SETTLE_TRIES) {
       await autosaveCurrentSession(await readSessions(), lastSnapshot || undefined);
       return;
@@ -175,8 +223,12 @@ export function scheduleSnapshot(whileRestoring: () => boolean): void {
   if (snapshotTimer != null) clearTimeout(snapshotTimer);
   snapshotTimer = setTimeout(async () => {
     snapshotTimer = null;
+    if (whileRestoring()) return;
+    const epoch = currentRestoreEpoch();
     try {
-      lastSnapshot = await snapshotWindows();
+      const wins = await snapshotWindows();
+      if (currentRestoreEpoch() !== epoch || whileRestoring()) return;
+      rememberSnapshot(wins);
     } catch {
       // ignore — best-effort
     }
@@ -190,7 +242,12 @@ export function scheduleSnapshot(whileRestoring: () => boolean): void {
 // an empty query would overwrite a good session with an empty one.
 export async function flushOnQuit(): Promise<void> {
   const remaining = await browser.windows.getAll();
-  if (remaining.length === 0 && lastSnapshot) {
+  if (!remaining.length && lastSnapshot) {
+    // ONLY A SNAPSHOT FROM THE CURRENT WINDOW SET. One measured before a switch
+    // belongs to the session that was left; writing it now would land it in the
+    // session the pointer names (the one just entered). Skipping is safer: the
+    // switch refreshed this snapshot itself when it finished.
+    if (lastSnapshotEpoch !== currentRestoreEpoch()) return;
     await autosaveCurrentSession(await readSessions(), lastSnapshot);
   }
 }

@@ -13,9 +13,22 @@ export interface SessionChannel {
     action: K,
     arg?: any
   ): void;
-  requestReply<K extends "sessionTabCopy" | "sessionTabMove" | "deleteSession">(
+  requestReply<
+    K extends
+      | "sessionTabCopy"
+      | "sessionTabMove"
+      | "deleteSession"
+      | "restoreSession"
+      | "switchSessionByMarker"
+  >(
     action: K,
-    arg: K extends "deleteSession" ? { name: string } : { from: string; index: number; to: string }
+    arg: K extends "sessionTabCopy" | "sessionTabMove"
+      ? { from: string; index: number; to: string }
+      : K extends "deleteSession"
+        ? { name: string }
+        : K extends "restoreSession"
+          ? { name: string }
+          : { marker: number }
   ): Promise<any>;
   requestSessionState(): Promise<boolean>;
   requestSessionTabs(name: string): Promise<PopupItem[]>;
@@ -41,12 +54,22 @@ export function createSessionOps(
       // Await a fresh status-bar refresh so the list reflects a just-completed
       // save/delete instead of the stale cache (the sessions popup reads this
       // list right after a mutation).
-      await channel().requestSessionState();
+      //
+      // ONE RETRY, because a popup can open while the relay is still coming up
+      // (a launch, or right after a switch replaced the window's tabs): the
+      // first read then answers false and the list would render empty even
+      // though the sessions exist. A failed read costs a property read, not a
+      // tab.
+      if (!(await channel().requestSessionState())) {
+        await new Promise<void>((r) => env.setTimeout(() => r(), 250));
+        await channel().requestSessionState();
+      }
       const ql = (q || "").trim().toLowerCase();
       let items: PopupItem[] = status.getInfo().sessions.map((s) => ({
         kind: "session",
         title: s.name,
         marker: s.marker || 0,
+        current: !!s.current,
         subtitle:
           (s.marker ? "marker " + s.marker + " \u00b7 " : "") +
           (s.tabCount || 0) +
@@ -59,7 +82,18 @@ export function createSessionOps(
     listSessionTabs: (name: string) => channel().requestSessionTabs(name),
     saveSession: (name: string) => sessionAction("saveSession", { name }),
     newSession: (name: string) => sessionAction("newSession", { name }),
-    restoreSession: (name: string) => sessionAction("restoreSession", { name }),
+    // BY REPLY, so a switch that cannot happen says so. It used to be
+    // fire-and-forget: `;P` on a session whose name had just been deleted closed
+    // the popup and did nothing, with no way to tell that from a slow restore.
+    // The wait is only the rebuild; the loader settles afterwards on its own.
+    // A null reply is a relay timeout, which is not a failure to report.
+    restoreSession: (name: string) =>
+      void channel()
+        .requestReply("restoreSession", { name })
+        .then((r) => {
+          if (r && r.ok === false) toast("could not switch session: " + (r.note || "unknown"));
+        })
+        .catch(() => {}),
     // By REPLY, not fire-and-forget, and not the delayed status refresh its
     // siblings use. `sessionAction` refreshes the status bar 900ms later, and
     // `listSessions` reads THAT cache — so the popup's immediate re-read after
@@ -74,7 +108,13 @@ export function createSessionOps(
           return channel().requestSessionState();
         })
         .then(() => undefined),
-    switchSessionByMarker: (marker: number) => sessionAction("switchSessionByMarker", { marker }),
+    switchSessionByMarker: (marker: number) =>
+      void channel()
+        .requestReply("switchSessionByMarker", { marker })
+        .then((r) => {
+          if (r && r.ok === false) toast("no session at marker " + marker);
+        })
+        .catch(() => {}),
     assignSessionMarker: (name: string, marker: number) => sessionAction("assignSessionMarker", { name, marker }),
     // These two answer with a reason when they fail, so they use the reply
     // path: a copy into a session that does not exist used to look exactly

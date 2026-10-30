@@ -500,54 +500,74 @@ html,body{margin:0}
   // chrome helper renders, seeded like the screenshot script) so README
   // screenshots can capture the bar as a slim strip.
   "/statusbar": {
+    // Mirrors the shipped bar (shared/statusbar-css.ts): flat segments, a
+    // 1px gap between session pills, one accent for the active session, and
+    // the muted badge on the far right. Used by the README/AMO screenshots.
     body: `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>status bar</title>
 <style>
   html,body{margin:0;padding:0;background:#1a1b26;}
   .lf-status{position:fixed;left:0;right:0;bottom:0;height:18px;z-index:2147482000;
-    display:flex;align-items:stretch;
-    background:#1a1b26;color:#c0caf5;
-    font:600 11px/18px ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
-    pointer-events:none;user-select:none;
-    border-top:1px solid #24283b;}
-  .seg{display:flex;align-items:center;gap:6px;white-space:nowrap;
-    padding:0 12px 0 10px;
-    clip-path:polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%);}
-  .seg.linked{margin-left:-8px;padding-left:18px;}
-  .seg .ic{opacity:.95;font-weight:700;}
-  .seg.sess{background:#7aa2f7;color:#1a1b26;font-weight:800;}
-  .seg.sess .marker{font-weight:800;}
-  .seg.tabs{background:#24283b;color:#c0caf5;font-weight:600;}
-  .seg.tabs b{color:#7aa2f7;font-weight:800;}
-  .seg.tabs .cnt{color:#9aa5ce;font-weight:600;}
-  .seg.dl{margin-left:auto;background:#16161e;color:#c0caf5;font-weight:700;clip-path:none;
-    border-left:1px solid #24283b;}
-  .seg.dl .ic{color:#7dcfff;}
-  .seg.dl .dlitem{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;padding:0 10px;}
-  .seg.dl .dlitem+.dlitem{padding-left:10px;border-left:1px solid #24283b;}
-  .seg.dl .pct{color:#7dcfff;font-weight:700;}
-  .seg.dl .ok{color:#9ece6a;font-weight:900;}
-  .seg.chips{background:none;clip-path:none;margin-left:0;gap:0;
-    overflow:hidden;padding:0;align-items:stretch;}
-  .sesspill{display:flex;align-items:center;white-space:nowrap;
-    padding:0 10px 0 16px;font-weight:700;
-    clip-path:polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%, 8px 50%);}
-  .sesspill.linked{margin-left:-8px;padding-left:16px;}
+    box-sizing:border-box;display:flex;align-items:stretch;
+    background:#16161e;color:#9aa5ce;
+    font:500 15px/1 "Segoe UI Variable Text","SF Pro Text",system-ui,"Segoe UI",Roboto,sans-serif;
+    font-variant-numeric:tabular-nums;
+    pointer-events:none;user-select:none;box-shadow:inset 0 1px 0 #2a2f45;}
+  .seg{display:flex;align-items:center;gap:4px;white-space:nowrap;box-sizing:border-box;padding:0 6px 3px;}
+  .seg+.seg:not(.spacer){box-shadow:inset 1px 0 0 #2a2f45;}
+  .seg .ic{display:inline-flex;align-items:center;flex:none;position:relative;top:1px;}
+  .seg .ic svg{display:block;width:13px;height:13px;}
+  .seg.dl .ic svg{width:12px;height:12px;}
+  .seg.tabs{color:#c0caf5;font-weight:700;font-size:16px;}
+  .seg.tabs .ic{color:#7880a1;}
+  .seg.stealth{color:#bb9af7;font-weight:600;gap:4px;}
+  .seg.chips{gap:1px;padding:0;align-items:stretch;overflow:hidden;background:#16161e;}
+  .sesspill{display:flex;align-items:center;gap:4px;white-space:nowrap;flex:none;
+    padding:0 9px 3px 13px;background:#292e42;color:#c0caf5;font-weight:500;line-height:1;
+    clip-path:polygon(0 0,calc(100% - 5px) 0,100% 50%,calc(100% - 5px) 100%,0 100%,5px 50%);}
+  .sesspill .mk{flex:none;font-size:16px;font-weight:700;color:#7aa2f7;font-variant-numeric:tabular-nums;}
+  .sesspill .sep{flex:none;width:1px;height:11px;background:#3b4261;}
+  .sesspill .nm{min-width:0;max-width:170px;overflow:hidden;text-overflow:ellipsis;
+    font-size:14px;font-weight:700;}
+  .sesspill .nm::first-letter{text-transform:uppercase;}
+  .sesspill .ct{color:#838aa8;font-weight:600;font-size:14px;margin-left:3px;
+    font-variant-numeric:tabular-nums;}
+  .sesspill.active{background:#7aa2f7;color:#101014;}
+  .sesspill.active .mk,
+  .sesspill.active .ct{color:#101014;}
+  .sesspill.active .sep{background:rgba(16,16,20,.4);}
+  .seg.find{background:#2ac3de;color:#101014;font-weight:700;}
+  .seg.find b{font-weight:800;}
+  .seg.dl{background:#16161e;color:#c0caf5;font-weight:500;}
+  .seg.dl .dlitem{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;padding:0 5px;}
+  .seg.dl .dlitem+.dlitem{border-left:1px solid #2a2f45;}
+  .seg.dl .n{color:#9aa5ce;font-weight:500;}
+  .seg.dl .pct{color:#2ac3de;font-weight:700;}
+  .seg.dl .ok{color:#9ece6a;}
+  .seg.leader{background:#2ac3de;color:#101014;font-weight:700;padding:0 6px 3px;
+    font-family:ui-monospace,Consolas,monospace;letter-spacing:.04em;}
+  .seg.dark{background:#bb9af7;color:#101014;font-weight:600;gap:4px;}
+  .seg.mute{background:#bb9af7;color:#101014;font-weight:600;gap:4px;padding:0 6px 3px;}
+  .spacer{flex:1 1 auto;min-width:0;}
 </style></head><body>
 <div class="lf-status">
-  <span class="seg sess"><span class="ic">\u25C6</span><span class="marker">1</span><span class="name">work</span></span>
-  <span class="seg tabs linked"><span class="ic">\u25A4</span><b>3</b><span class="cnt">/7</span></span>
+  <span class="seg tabs"><span class="ic"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span><b>3</b><span class="cnt">/12</span></span>
+  <span class="seg stealth"><span class="ic"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg></span><span class="lbl">Stealth</span></span>
   <span class="seg chips">
-    <span class="sesspill" style="background:linear-gradient(180deg,#7aa2f7,#5d89ea);color:#16161e">1:work 5</span>
-    <span class="sesspill linked" style="background:linear-gradient(180deg,#9ece6a,#7fae49);color:#16161e">2:mail 3</span>
-    <span class="sesspill linked" style="background:linear-gradient(180deg,#e0af68,#cd9445);color:#16161e">3:dev 5</span>
-    <span class="sesspill linked" style="background:linear-gradient(180deg,#bb9af7,#9e77ef);color:#16161e">4:news 2</span>
-    <span class="sesspill linked" style="background:linear-gradient(180deg,#7dcfff,#4fb6ea);color:#16161e">5:shop 4</span>
+    <span class="sesspill"><span class="mk">1</span><span class="sep"></span><span class="nm">Work</span><span class="ct">5</span></span>
+    <span class="sesspill active"><span class="mk">2</span><span class="sep"></span><span class="nm">Mail</span><span class="ct">3</span></span>
+    <span class="sesspill"><span class="mk">3</span><span class="sep"></span><span class="nm">Dev</span><span class="ct">5</span></span>
+    <span class="sesspill"><span class="mk">4</span><span class="sep"></span><span class="nm">News</span><span class="ct">2</span></span>
   </span>
-  <span class="seg dl"><span class="ic">\u2AF3</span>
-    <span class="dlitem"><span class="n">lazyfox-setup.exe</span><span class="pct">64%</span><span class="pct">2.4 MB/s</span></span>
-    <span class="dlitem"><span class="n">notes.md</span><span class="ok">\u2713</span></span>
+  <span class="seg find"><span class="ic"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span><b>2</b><span class="cnt">/9</span></span>
+  <span class="seg dl"><span class="ic"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></span>
+    <span class="dlitem"><span class="n">lazyfox-setup.exe</span><span class="pct">64%</span></span>
+    <span class="dlitem"><span class="n">notes.md</span><span class="ok">Done</span></span>
   </span>
+  <span class="spacer"></span>
+  <span class="seg leader">;N</span>
+  <span class="seg dark"><span class="ic"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></span><span class="lbl">Dark</span></span>
+  <span class="seg mute"><span class="ic"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/></svg></span><span class="lbl">Muted</span></span>
 </div>
 </body></html>`,
   },
@@ -2145,6 +2165,64 @@ left out of it.</p>
   // (closed and open) so a test can prove the controls are hintable in the first
   // place, and that they are not while the panel is up. Every control carries
   // data-id so the harness can name which element got a key.
+  "/hintlayers": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>HINT LAYERS</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px; font:16px/1.5 system-ui,sans-serif; color:#172033; background:#f5f7fb; }
+  .target { display:block; width:250px; height:34px; margin:10px 0; padding:5px 8px; background:#fff; border:1px solid #779; }
+  /* Cover only the first target: a viewport-tall strip accidentally hid the
+     clipped and overlapping controls too, making the fixture's expectations
+     contradictory rather than testing independent cases. */
+  #veil { position:fixed; z-index:9999; pointer-events:none; top:72px; left:0; width:360px; height:110px; background:rgba(20,30,55,.92); }
+  #clip { position:relative; margin-top:24px; width:300px; height:34px; overflow:hidden; border:1px solid #999; }
+  #clipped-link { position:absolute; top:-27px; left:0; height:30px; margin:0; }
+  #overlap { position:relative; width:320px; height:52px; margin-top:20px; }
+  #overlap-link { position:absolute; inset:0; margin:0; }
+  #overlap-button { position:absolute; right:10px; top:10px; width:90px; height:30px; }
+  #modal-backdrop { position:fixed; inset:0; z-index:11000; background:rgba(15,20,35,.75); display:none; }
+  #modal { position:fixed; z-index:11001; left:40%; top:30%; width:260px; padding:16px; background:white; display:none; }
+  #modal.open, #modal-backdrop.open { display:block; }
+</style></head><body>
+  <h1>Layer and clipping regression fixture</h1>
+  <a class="target" id="under-veil" data-id="under-veil" href="#under">Covered by pointer-transparent overlay</a>
+  <a class="target" id="outside-veil" data-id="outside-veil" href="#outside" style="margin-left:420px">Outside overlay</a>
+  <div id="clip"><a class="target" id="clipped-link" data-id="clipped-link" href="#clip">Mostly clipped control</a></div>
+  <div id="overlap"><a class="target" id="overlap-link" data-id="overlap-link" href="#card">Card overlay link</a><button id="overlap-button" data-id="overlap-button" type="button">Save</button></div>
+  <button id="open-modal" type="button" onclick="document.getElementById('modal-backdrop').classList.add('open');document.getElementById('modal').classList.add('open')">Open dialog</button>
+  <div id="modal-backdrop" aria-hidden="true"></div>
+  <section id="modal" role="dialog" aria-modal="true"><a id="dialog-link" data-id="dialog-link" href="#dialog">Dialog action</a></section>
+  <div id="veil" aria-hidden="true"></div>
+</body></html>`,
+  },
+  // TWO click-through layers that must NOT cost the page its hints: a
+  // half-transparent wash (a skeleton/shimmer or a tinted overlay — the page is
+  // still readable through it) and a decorative repeating texture. Both are
+  // painted above the links and neither is a surface you see INSTEAD of them,
+  // so every link keeps a label. A near-opaque sheet is the opposite case and
+  // lives on /hintlayers (`#veil`, 0.92): that one is a veil and hides what is
+  // under it.
+  //
+  // This exists because the wash rule used to reject EVERY control on such a
+  // page ("hints don't show") and cost seconds of probing to do it.
+  "/hintwash": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>HINT WASH</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px; font:16px/1.5 system-ui,sans-serif; color:#172033; background:#f5f7fb; }
+  .target { display:block; width:280px; height:34px; margin:12px 0; padding:5px 8px; background:#fff; border:1px solid #779; }
+  #wash { position:fixed; inset:0; z-index:10; pointer-events:none; background:rgba(255,255,255,.6); }
+  #grain { position:fixed; inset:0; z-index:11; pointer-events:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='6'><circle cx='3' cy='3' r='1' fill='%23000' opacity='.05'/></svg>"); }
+</style></head><body>
+  <h1>Wash and texture fixture</h1>
+  <a class="target" id="under-wash" data-id="under-wash" href="#wash1">Under a half-transparent wash</a>
+  <a class="target" id="under-wash-2" data-id="under-wash-2" href="#wash2">Second link under the wash</a>
+  <a class="target" id="plain-wash" data-id="plain-wash" href="#wash3">Third link under the wash</a>
+  <div id="wash" aria-hidden="true"></div>
+  <div id="grain" aria-hidden="true"></div>
+</body></html>`,
+  },
   "/dialog": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>DIALOG</title>
 <style>

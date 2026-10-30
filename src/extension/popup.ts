@@ -8,9 +8,13 @@
 // contract was not checked: a renamed action or a changed payload compiled
 // fine here and failed only when the button was pressed.
 import { send } from "../shared/protocol";
+import { applyStoredTheme } from "./pagetheme";
 
 (function () {
   "use strict";
+  // Paint this page with the user's UI palette (shared/theme.ts). Independent of
+  // dark mode: this is Lazyfox's own chrome, not the page under it.
+  applyStoredTheme();
 
   function openUI(which: string): void {
     void send("openUI", { which: which });

@@ -5,6 +5,7 @@
 // window-level key dispatch.
 
 import { mergeConfig } from "../../shared/config";
+import { resolvePalette, setUiPalette } from "../../shared/theme";
 import { installFetchedCore } from "../../shared/corefetch";
 import { isExpandedCombobox, isTypingEvent, isTypingTarget, typingTargetOf } from "../../shared/dom";
 import { dbg } from "../../shared/dev";
@@ -37,7 +38,7 @@ import { send } from "../../shared/protocol";
 import { readKey, writeKey, vConfig } from "../store";
 import type { Config } from "../../shared/types";
 import { collectPageReport } from "./diagnostics";
-import { createLinkHints, focusFirstInput } from "./hints";
+import { clearStaleHintOverlay, createLinkHints, focusFirstInput } from "./hints";
 import { createContentOps } from "./ops";
 import { createScrollController } from "./scroll";
 import { createScrollKeys } from "./scrollkeys";
@@ -78,6 +79,12 @@ import { createStickyBlur } from "./stickyblur";
   } catch (e) {
     // ignore
   }
+
+  // A PREVIOUS INSTANCE'S PAINT IS NOT OURS. An extension update or a dev
+  // re-install tears down the script but not the nodes it added, so a hint layer
+  // left mid-session stayed in the page (in the top layer, unclickable) and the
+  // next `;f` drew over it. Clear it at boot, before this document can draw.
+  clearStaleHintOverlay(document);
 
   let config: Config = mergeConfig(undefined);
 
@@ -135,10 +142,26 @@ import { createStickyBlur } from "./stickyblur";
   });
   darkMode.early();
 
+  // The page's own overlays (which-key, popups, find, hints) draw in the user's
+  // UI palette. It is a MODULE-LEVEL fact rather than a page-wide variable on
+  // purpose: the tokens are baked into each overlay's closed shadow stylesheet
+  // at mount, and writing `--lf-*` onto the page root would both leak our palette
+  // into the site and let the site's own CSS override ours.
+  function applyUiPalette(c: Config): void {
+    try {
+      setUiPalette(resolvePalette(c.theme));
+    } catch (e) {
+      // A malformed stored theme has already been through vConfig; the default
+      // palette is a safe answer here.
+    }
+  }
+  applyUiPalette(config);
+
   function loadConfig() {
     try {
       void readKey("config", vConfig, {}).then((c) => {
         config = mergeConfig(c);
+        applyUiPalette(config);
         darkVerdicts.reset();
         darkMode.update(config);
       });
@@ -156,6 +179,7 @@ import { createStickyBlur } from "./stickyblur";
       (changes: { config?: { newValue?: Partial<Config> } }, area: string) => {
         if (area === "local" && changes.config) {
           config = mergeConfig(changes.config.newValue || {});
+          applyUiPalette(config);
           darkVerdicts.reset();
           darkMode.update(config);
           // Turning which-key OFF has to take down the panel that is already

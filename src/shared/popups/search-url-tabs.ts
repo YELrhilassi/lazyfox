@@ -1,19 +1,28 @@
 import { esc } from "../dom";
 import { core } from "../core";
 import { faviconHtml } from "../favicon";
-import { displayUrl } from "../format";
+import { shortUrl } from "../format";
 import { planTabJump } from "../tabjump";
 import type { PopupItem } from "../types";
 import { basePanel, makeSelector, type PopupCtx } from "./kit";
 
-export function openSearchPopup(ctx: PopupCtx, replace = false): void {
+// `stealth` is the `;Ns` destination: the same field, the same suggestions,
+// but the result opens in this window's stealth jar instead of the default one.
+// It is a third destination rather than a second popup for the same reason
+// `;S` is — the query is what this panel holds, and a duplicated popup would
+// drift.
+export function openSearchPopup(ctx: PopupCtx, replace = false, stealth = false): void {
   ctx.open(
     basePanel(
-      replace ? "Search in current tab" : "Search",
-      "type to search",
-      "<span class='lf-badge'>Enter</span> search &middot; " +
-        "<span class='lf-badge'>Ctrl+Enter</span> in this tab &middot; " +
-        "<span class='lf-badge'>Esc</span> close"
+      stealth ? "Search in a stealth tab" : replace ? "Search in current tab" : "Search",
+      "no suggestions",
+      "<span class='lf-badge'>i</span> type &middot; <span class='lf-badge'>j/k</span> move &middot; " +
+        (stealth
+          ? "<span class='lf-badge'>Enter</span> search in the isolated tab &middot; "
+          : "<span class='lf-badge'>Enter</span> search &middot; " +
+            "<span class='lf-badge'>Ctrl+Enter</span> in this tab &middot; ") +
+        "<span class='lf-badge'>Esc</span> close",
+      "i to type a search"
     ),
     (root) => {
       // WHERE THE RESULT OPENS IS A KEY, NOT A SECOND KEYMAP ENTRY.
@@ -26,12 +35,19 @@ export function openSearchPopup(ctx: PopupCtx, replace = false): void {
       // spelling and this chord cannot drift apart.
       const go = (q: string, here: boolean) => {
         ctx.close();
+        // `here` cannot apply to a stealth search: there is no such thing as
+        // searching "in this tab" of a jar the tab is not in yet, and reusing
+        // the current tab would push the sandbox into the page the user was
+        // reading. Both keys therefore mean the isolated destination.
+        if (stealth) {
+          ctx.ops.stealthSearch(q);
+          return;
+        }
         ctx.ops.search(q, here ? false : undefined);
       };
       return makeSelector<PopupItem>(ctx, root, {
         debounceMs: 60,
-        vimNav: false,
-        emptyText: "type to search",
+        emptyText: "no suggestions",
         search: (q) => ctx.ops.searchSuggest(q),
         render: (it) =>
           "<div class='t'>" + esc(it.title || "") + "</div>" +
@@ -57,24 +73,34 @@ export function openSearchPopup(ctx: PopupCtx, replace = false): void {
 }
 
 
-export function openUrlPopup(ctx: PopupCtx, replace = false): void {
+// `stealth` is the `;No` destination: one field, one rule for what counts as a
+// host, but the page opens in this window's stealth jar.
+export function openUrlPopup(ctx: PopupCtx, replace = false, stealth = false): void {
   ctx.open(
     basePanel(
-      replace ? "Open URL in current tab" : "Open URL",
-      "type a URL or a site name",
-      "<span class='lf-badge'>Enter</span> open &middot; <span class='lf-badge'>Esc</span> close"
+      stealth ? "Open URL in a stealth tab" : replace ? "Open URL in current tab" : "Open URL",
+      "no suggestions",
+      "<span class='lf-badge'>i</span> type &middot; <span class='lf-badge'>j/k</span> move &middot; " +
+        (stealth
+          ? "<span class='lf-badge'>Enter</span> open in the isolated tab &middot; "
+          : "<span class='lf-badge'>Enter</span> open &middot; ") +
+        "<span class='lf-badge'>Esc</span> close",
+      "i to type a URL or a site name"
     ),
     (root) =>
       makeSelector<PopupItem>(ctx, root, {
         debounceMs: 70,
-        vimNav: false,
-        emptyText: "type a URL or a site name",
+        emptyText: "no suggestions",
         search: (q) => ctx.ops.urlSuggest(q),
         render: (it) =>
           "<div class='t'>" + esc(it.title || "") + "</div>" +
           "<div class='s'>" + esc(it.subtitle || it.url || "") + "</div>",
         onPick: (it) => {
           ctx.close();
+          if (stealth) {
+            ctx.ops.stealthUrl(it.url || "");
+            return;
+          }
           // ;O (replace) opens in the current tab; ;o defers to the
           // openInNewTab config (new tab by default).
           ctx.ops.openUrl(it.url || "", replace ? false : undefined);
@@ -100,22 +126,29 @@ export function openUrlPopup(ctx: PopupCtx, replace = false): void {
           const v = (value || "").trim();
           if (!v) return false;
           ctx.close();
+          // One normalization rule, two destinations: the stealth variant
+          // differs only in where the answer lands, never in whether a bare
+          // word is a search.
+          const search = (q: string): void =>
+            stealth ? ctx.ops.stealthSearch(q) : ctx.ops.search(q, replace ? false : undefined);
+          const visit = (u: string): void =>
+            stealth ? ctx.ops.stealthUrl(u) : ctx.ops.openUrl(u, replace ? false : undefined);
           void core
             .isLikelyUrl(v)
             .then((likely) => {
               if (!likely) {
-                ctx.ops.search(v, replace ? false : undefined);
+                search(v);
                 return;
               }
               core
                 .normalizeUrl(v)
-                .then((u) => ctx.ops.openUrl(u, replace ? false : undefined))
-                .catch(() => ctx.ops.openUrl(v, replace ? false : undefined));
+                .then(visit)
+                .catch(() => visit(v));
             })
             // If the core is unavailable, fall back to opening it rather than
             // dropping the keystroke: that is the old behaviour, and a wrong
             // guess that still navigates beats a dead key.
-            .catch(() => ctx.ops.openUrl(v, replace ? false : undefined));
+            .catch(() => visit(v));
           return true;
         },
       })
@@ -245,7 +278,6 @@ export function openTabsPopup(ctx: PopupCtx): void {
         // j/k walk the list while the input is empty — the tab switcher's
         // arrow keys move the selection regardless (handled unconditionally
         // in the selector), but vim-style letters match the rest of the app.
-        vimNav: true,
         search: (q) =>
           ctx.ops.listTabs(q).then((rows) => {
             if (!q.trim()) count = rows.length;
@@ -257,10 +289,9 @@ export function openTabsPopup(ctx: PopupCtx): void {
           // number is still reachable, as a longer digit sequence.
           const n = t.number != null ? '<span class="lf-marker">' + t.number + "</span>" : "";
           return (
-            "<div class='t'>" +
+            "<div class='t" + (t.active ? " act" : "") + "'>" +
             n +
-            (t.active ? "<span class='dot'></span>" : "") +
-            (t.pinned ? "\uD83D\uDCCC " : "") +
+                        (t.pinned ? "\uD83D\uDCCC " : "") +
             (t.muted ? "\uD83D\uDD07 " : "") +
             (t.stealth ? "\uD83D\uDD75 " : "") +
             "<span class='txt'>" + esc(t.title || "") + "</span>" +
@@ -268,7 +299,7 @@ export function openTabsPopup(ctx: PopupCtx): void {
             // when the tab has none.
             faviconHtml(t.favIconUrl) +
             "</div><div class='s'>" +
-            esc(displayUrl(t.url || "")) +
+            esc(shortUrl(t.url || "")) +
             "</div>"
           );
         },

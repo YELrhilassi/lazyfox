@@ -18,6 +18,11 @@ import { send } from "../shared/protocol";
 import { checkForUpdate, installerCheckUsable, installerNotice, type ReleaseChannel } from "../shared/updates";
 import { compareVersions, installedHeadline } from "../shared/versions";
 import { readKey, vBoolean, vInstallerCheck, vString, writeKey } from "./store";
+import { applyStoredTheme, logoUrl } from "./pagetheme";
+
+// Paint this page with the user's UI palette (shared/theme.ts). Independent of
+// dark mode: this is Lazyfox's own chrome, not the page under it.
+applyStoredTheme();
 
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
 
@@ -278,7 +283,7 @@ async function render(): Promise<void> {
 
 (async () => {
   try {
-    ($("logoImg") as HTMLImageElement).src = browser.runtime.getURL("lazyfox-logo.svg");
+    ($("logoImg") as HTMLImageElement).src = logoUrl();
   } catch (e) {
     // header works without the logo
   }

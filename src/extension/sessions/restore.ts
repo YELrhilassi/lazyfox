@@ -27,6 +27,8 @@ import { splitPairsInRange, splitTabsOf } from "../../shared/splits";
 import type { Session, SessionWindow } from "../../shared/types";
 import type { ChromeAction, ChromeReq } from "../../shared/protocol";
 import { openTabsInWindow } from "./storage";
+import { bumpRestoreEpoch } from "./epoch";
+import { reconcileStealth, stealthContainers } from "../stealth";
 
 // Chrome-helper hooks, injected by the sessions facade (breaks the import
 // cycle sessions -> relay -> sessions). Two of them because a restore now
@@ -55,7 +57,7 @@ export function bindRestoreBroadcastChrome(fn: RequestChrome): void {
   broadcastChrome = fn;
 }
 
-// True while restoreSession/resumeOnStartup is rebuilding the window; tab-change
+// True while a switch or a startup resume is rebuilding the window; tab-change
 // side effects (home conversion, autosave, status refresh) are suppressed
 // during it. The facade exposes isRestoring() from this flag.
 let restoring = false;
@@ -67,8 +69,23 @@ let restoring = false;
 // so it must win.
 let inFlight: Promise<unknown> | null = null;
 
+// Which switch currently owns the loader. Every accepted switch takes a number;
+// only the newest one is allowed to clear the splash. That is what keeps a
+// stale settle (a switch to B finishing its page wait after the user has
+// already asked for C) from uncovering C's rebuild.
+let switchSeq = 0;
+// True while the splash is up (or has been announced and is waiting for the
+// chrome's own paint delay). Guards against sending the same drop twice.
+let splashUp = false;
+
 export function isRestoringFlag(): boolean {
   return restoring;
+}
+
+/** A splash is up/announced right now: the answer a helper booting mid-switch
+ * needs, so it covers itself instead of flashing through the rebuild. */
+export function isSplashActive(): boolean {
+  return splashUp;
 }
 
 // True from the moment a startup resume decides it has something to do until
@@ -141,10 +158,14 @@ export async function splitGroupsOfSession(s: Session): Promise<number[][]> {
 
 export function beginRestore(): void {
   restoring = true;
+  // Every autosave in flight now holds a measurement of a window that is about
+  // to be replaced; the bump tells it to drop the write (see sessions/epoch.ts).
+  bumpRestoreEpoch();
 }
 
 export function endRestore(): void {
   restoring = false;
+  bumpRestoreEpoch();
 }
 
 // The user-visible tabs of ONE window, in strip order. The current-window form
@@ -160,8 +181,18 @@ export function endRestore(): void {
 // AND created the saved one beside it (the reported "sessions don't reload
 // properly", with the flashing that comes from the duplicate set).
 async function realTabsIn(winId: number): Promise<any[]> {
+  await reconcileStealth();
   const tabs = ((await browser.tabs.query({ windowId: winId }).catch(() => [])) || []) as any[];
-  return tabs.filter((t: any) => !!t && !!t.url && !isUITab(t));
+  // STEALTH TABS ARE NOT SESSION CONTENT, so they do not take part in the
+  // question "is this window the saved one?". A kept stealth tab (the default
+  // is to keep it across a session switch, and the `keepStealth` setting keeps
+  // it across a restart too) is one EXTRA tab against a snapshot that never
+  // recorded it; counting it turned the user's own window into a stranger and
+  // sent the resume down the rebuild path — the flashing this module exists to
+  // avoid. The snapshot side filters the same tabs out (sessions/storage).
+  return tabs.filter(
+    (t: any) => !!t && !!t.url && !isUITab(t) && !stealthContainers.has(t.cookieStoreId)
+  );
 }
 
 // Whether a window is missing split pairings its saved counterpart has. Native
@@ -208,19 +239,46 @@ async function repSplitWindow(winId: number | null, w: SessionWindow): Promise<v
   else requestChromeToWindow(winId, "restoreSplits", { groups, expect });
 }
 
-/** Rebuild ONE window from its saved counterpart. Returns the created tab ids. */
+/**
+ * Rebuild ONE window from its saved counterpart. Returns the created tab ids.
+ *
+ * AN EMPTY RESULT MEANS THE WINDOW WAS NOT TOUCHED (see openTabsInWindow: the
+ * outgoing tabs stay when nothing could be opened). Callers decide what that
+ * costs them: a switch aborts, because a switch that reports success while the
+ * old session is still on screen points the current-session name at a session
+ * nobody is looking at, and the next checkpoint then writes the old window into
+ * it. A resume skips that window and keeps the others.
+ */
 async function restoreOneWindow(
   winId: number | null,
   w: SessionWindow,
   focus: boolean
 ): Promise<number[]> {
-  const ids = await openTabsInWindow(winId, w.tabs, { focus });
+  // The selection and the pins are applied INSIDE the rebuild (see
+  // openTabsInWindow): activating here as well meant the window painted its
+  // first tab and then jumped to the saved one.
+  const ids = await openTabsInWindow(winId, w.tabs, { focus, active: w.active || 0 });
   await repSplitWindow(winId, w);
-  const active = Math.min(Math.max(0, w.active || 0), ids.length - 1);
-  if (ids[active] != null) {
-    await browser.tabs.update(ids[active], { active: true }).catch(() => {});
-  }
+  await applyWindowState(winId, w.windowState);
   return ids;
+}
+
+/**
+ * A saved window's size state, when it is one worth applying.
+ *
+ * Only maximized/fullscreen: "normal" is deliberately a no-op. Forcing it would
+ * shrink a window the user had maximized by hand before the switch, which reads
+ * as a bug rather than as a restored state.
+ */
+async function applyWindowState(winId: number | null, state: string | undefined): Promise<void> {
+  if (winId == null) return;
+  const st = state === "maximized" || state === "fullscreen" ? state : "";
+  if (!st) return;
+  try {
+    await browser.windows.update(winId, { state: st });
+  } catch {
+    // A window that refuses the state keeps whatever it has; not a restore failure.
+  }
 }
 
 /**
@@ -238,9 +296,16 @@ async function createRestoredWindow(w: SessionWindow): Promise<number | null> {
   }
   const id = created && created.id != null ? created.id : null;
   if (id == null) return null;
-  // The blank host tab is reused for the first saved URL, so the window's tabs
-  // are built by the same code (and land in the same order) as the focused one.
-  await restoreOneWindow(id, w, false);
+  // The blank tab `windows.create` makes is replaced like every other outgoing
+  // tab — same rebuild, same order, same pins as the focused window. A window
+  // that could not be filled is reported as not created: the caller then leaves
+  // it out of `keep`, and the cleanup pass closes it. One window that will not
+  // open must never stop the others.
+  try {
+    await restoreOneWindow(id, w, false);
+  } catch {
+    return null;
+  }
   return id;
 }
 
@@ -250,12 +315,14 @@ async function createRestoredWindow(w: SessionWindow): Promise<number | null> {
 async function closeWindowsNotIn(keep: Set<number>): Promise<void> {
   if (!keep.size) return; // never close the last window: that quits Firefox
   const wins = ((await browser.windows.getAll().catch(() => [])) || []) as any[];
-  for (const w of wins) {
-    if (!w || w.id == null) continue;
-    if (w.type && w.type !== "normal") continue;
-    if (keep.has(w.id)) continue;
-    await browser.windows.remove(w.id).catch(() => {});
-  }
+  // In parallel: these windows are being discarded, and waiting for each one
+  // to finish closing made a three-window switch visibly longer than the
+  // rebuild it was cleaning up after.
+  await Promise.all(
+    wins
+      .filter((w: any) => !!w && w.id != null && (!w.type || w.type === "normal") && !keep.has(w.id))
+      .map((w: any) => browser.windows.remove(w.id).catch(() => {}))
+  );
 }
 
 /**
@@ -281,17 +348,23 @@ export async function applySessionToWindows(s: Session): Promise<number[]> {
   const curWin = (await browser.windows.getLastFocused().catch(() => null)) as any;
   const focusWinId = curWin && curWin.id != null ? curWin.id : null;
   const firstIds = await restoreOneWindow(focusWinId, first, true);
+  // The window could not be rebuilt at all. Abort: the session is not on screen,
+  // and the caller must not name the window after it.
+  if (!firstIds.length) throw new Error("no tab could be opened for the session");
   const keep = new Set<number>();
   if (focusWinId != null) keep.add(focusWinId);
   // 2. The rest, created unfocused (focusing each in turn would flicker the
   //    user's screen through every window of the session), each filled by the
   //    same rebuild and re-paired through its own helper.
-  for (let i = 1; i < targets.length; i++) {
-    const tw = targets[i];
-    if (!tw || !tw.tabs.length) continue;
-    const id = await createRestoredWindow(tw);
-    if (id != null) keep.add(id);
-  }
+  //
+  //    IN PARALLEL, because they are independent windows. One after another
+  //    meant a three-window session paid three window-boot sequences end to
+  //    end, which is most of what made a multi-window switch feel slow.
+  const extras = targets
+    .slice(1)
+    .filter((tw): tw is SessionWindow => !!tw && (tw.tabs || []).length > 0);
+  const extraIds = await Promise.all(extras.map((tw) => createRestoredWindow(tw)));
+  for (const id of extraIds) if (id != null) keep.add(id);
   // 3. The session owns the window set: anything it does not describe is
   //    closed, AFTER the checkpoint the caller made, so the outgoing session
   //    still holds those windows' tabs.
@@ -299,25 +372,72 @@ export async function applySessionToWindows(s: Session): Promise<number[]> {
   return firstIds;
 }
 
-export async function restoreSession(
-  s: Session,
-  checkpoint: () => Promise<void>,
-  onRestored: () => Promise<void>
-): Promise<void> {
-  return serializeRestore(async () => {
-    beginRestore();
-    try {
-      await applySessionToWindows(s);
-      await onRestored();
-    } finally {
-      endRestore();
-      // Refresh the in-memory snapshot to the freshly-restored windows
-      // immediately: flushOnQuit writes lastSnapshot into the current session
-      // on quit, and without this a quit right after a switch would persist
-      // the pre-switch checkpoint.
-      await checkpoint();
-    }
-  });
+/* ========================== the switch lifecycle ========================== */
+//
+// A switch is three phases, and only the middle one takes the restore lock:
+//
+//   1. COVER. Raise the loader immediately, in every window (a session is a
+//      window set). This happens before the lock so a switch queued behind a
+//      slow one still gives the user feedback the moment they ask.
+//   2. REBUILD. Serialized with every other switch and with a startup resume,
+//      so two switches can never interleave their checkpoints and rebuilds.
+//   3. SETTLE. Wait for the front page of every window, then drop the cover —
+//      OUTSIDE the lock, or the next switch would wait for the previous
+//      session's background pages to finish loading.
+
+/**
+ * Announce a user switch and take ownership of the loader.
+ *
+ * The label paints immediately in the chrome (see chrome/splash.ts): the user
+ * asked for something, and the answer to that is a loader now, not 250ms from
+ * now. The number it returns is what later proves this switch still owns the
+ * cover; only the newest switch is allowed to clear it.
+ */
+export function beginSwitch(name: string): number {
+  const seq = ++switchSeq;
+  splashOn(true, "Switching to " + name + "\u2026");
+  return seq;
+}
+
+/**
+ * Is this switch still the newest one?
+ *
+ * A switch that was queued behind another and has been overtaken is no longer
+ * the user's intent: rebuilding it would tear the window down and load a session
+ * that is about to be replaced. The label over the window belongs to the newer
+ * request too, so standing down costs nothing.
+ */
+export function ownsSwitch(seq: number): boolean {
+  return seq === switchSeq;
+}
+
+/**
+ * Take the cover down NOW, unless a newer switch has taken it over.
+ *
+ * Used when a switch fails: there is nothing left to hide, and waiting out the
+ * page load of the session the user is staying in would hold a logo over a
+ * window that is already showing the right thing.
+ */
+export function dropSwitchCover(seq: number): void {
+  if (seq === switchSeq) splashOff();
+}
+
+/**
+ * Wait for the pages this switch opened, then drop the cover — if this switch
+ * is still the newest one.
+ *
+ * A switch bounds the wait to the ACTIVE tab of each window: the front page is
+ * what the user is about to look at, and holding a logo over a window while its
+ * background tabs finish loading is the difference between "snappy" and
+ * "stuck". A startup resume waits for everything (see resumeOnStartup) because
+ * there the background tabs are the session the user is coming back to.
+ */
+export async function settleSwitch(seq: number): Promise<void> {
+  try {
+    await waitForPagesLoaded("focused", PAGE_LOAD_WAIT_SWITCH_MS);
+  } finally {
+    if (seq === switchSeq) splashOff();
+  }
 }
 
 // The live normal windows with their real tabs, focused window first, as the
@@ -337,42 +457,113 @@ async function liveWindows(): Promise<Array<{ winId: number; tabs: any[] }>> {
   return rows.map((r) => ({ winId: r.winId, tabs: r.tabs }));
 }
 
-// Wait until the browser has stopped bringing windows back. Firefox's native
-// restore populates windows a beat apart, and creating a window for a saved one
-// that has not appeared yet would produce TWO copies of it.
-async function settleWindows(): Promise<void> {
-  let last = -1;
-  for (let i = 0; i < 6; i++) {
-    const n = ((await browser.windows.getAll().catch(() => [])) || []).length;
-    if (n === last) return;
-    last = n;
-    await new Promise((r) => setTimeout(r, 400));
+// Are the live windows exactly the saved ones, all of them claimed?
+//
+// Saved windows with no tabs are ignored: they cannot appear in `live` (a window
+// with no content tab is plumbing, not a session window), so counting them would
+// make this never true and force every launch down the slow path.
+function windowsMatchAll(live: Array<{ tabs: any[] }>, targets: SessionWindow[]): boolean {
+  if (!live.length) return false;
+  const used = new Set<number>();
+  for (const lw of live) {
+    const idx = matchSavedWindow(contentUrls(lw.tabs), targets, used);
+    if (idx < 0) return false;
+    used.add(idx);
   }
+  return used.size === targets.filter((w) => (w.tabs || []).length > 0).length;
 }
 
-// How long the cover may stay up waiting for the pages a resume opened, and how
-// often it looks. The splash exists to hide the churn of a restore, and the
-// churn does not stop when a tab exists: its document is still arriving, the
-// first paint still lands, a web app still hydrates. Dropping the cover at the
-// former moment ("every window has its tabs") put that second wave back on
-// screen a beat later, which is the reported "everything flashes while things
-// are loading".
+/**
+ * Wait for Firefox's OWN session restore to stop adding windows and tabs, then
+ * hand the resume the window set it should work from.
+ *
+ * WHY NOT A FIXED PAUSE. A launch used to sleep a flat second and then wait for
+ * the WINDOW COUNT to stop changing. That is a second of logo on every launch —
+ * including the common one, where native restore had already finished — and it
+ * still could not see tabs arriving into a window that already existed, which is
+ * exactly what made a near-miss window get rebuilt.
+ *
+ * Two signals, whichever comes first:
+ *
+ *   - every live window matches a saved one EXACTLY and every saved window is
+ *     claimed: native restore is done and there is nothing left to wait for. The
+ *     common launch, for the price of one poll.
+ *   - the window/tab set stops changing for two reads, after a short floor so a
+ *     launch that has not begun restoring is not mistaken for a settled one.
+ *
+ * Bounded: a browser that never settles must not hold the logo.
+ */
+async function settleLaunch(
+  targets: SessionWindow[]
+): Promise<Array<{ winId: number; tabs: any[] }>> {
+  const floorMs = 750;
+  const started = Date.now();
+  let sig = "";
+  let live = await liveWindows();
+  for (let i = 0; i < 10; i++) {
+    if (windowsMatchAll(live, targets)) return live;
+    const next = live.length + ":" + live.reduce((n, w) => n + w.tabs.length, 0);
+    if (next === sig && Date.now() - started >= floorMs) return live;
+    sig = next;
+    await new Promise((r) => setTimeout(r, 250));
+    live = await liveWindows();
+  }
+  return live;
+}
+
+// How long the cover may stay up waiting for pages, and how often it looks.
+// The loader exists to hide the churn of a restore, and the churn does not stop
+// when a tab exists: its document is still arriving, the first paint still
+// lands, a web app still hydrates. Dropping the cover at the former moment
+// ("every window has its tabs") put that second wave back on screen a beat
+// later, which is the reported "everything flashes while things are loading".
 //
 // BOUNDED on purpose: a stalled request must never leave a logo over the
 // window, and the splash is an overlay rather than a gate — the user can click
 // through it while it waits.
-const PAGE_LOAD_WAIT_MS = 10000;
+//
+// A SWITCH gets a much shorter budget than a launch. The rebuild it has to hide
+// is over in a few hundred milliseconds; what the cover would be waiting for
+// afterwards is a page's own network, and past a couple of seconds the logo is
+// no longer hiding churn, it is hiding the page the user asked for. A LAUNCH
+// restores a whole working set and is allowed to be slower.
+const PAGE_LOAD_WAIT_ALL_MS = 10000;
+const PAGE_LOAD_WAIT_SWITCH_MS = 2500;
 const PAGE_LOAD_POLL_MS = 120;
 
-// Does any real tab of any normal window still report a document in flight?
-async function pagesStillLoading(): Promise<boolean> {
+// "all": every real tab of every normal window. "active": only the tab each
+// window is showing. "focused": only the tab the FOCUSED window is showing —
+// the one the user is looking at, and the only one a switch can be judged by.
+//
+// A startup resume restores a whole working set and the background tabs are
+// part of what the user is coming back to, so it waits for everything. A switch
+// waits for the front page of the window in front: the other windows it built
+// are loading out of sight, and holding a logo over the window the user is
+// using until a background tab of another window finishes made a fast switch
+// feel stuck for as long as the slowest page in the browser.
+type LoadScope = "all" | "active" | "focused";
+
+// Does any real tab in scope still report a document in flight?
+async function pagesStillLoading(scope: LoadScope): Promise<boolean> {
   const wins = ((await browser.windows.getAll().catch(() => [])) || []) as any[];
+  // "focused" narrows the WINDOW set; the TAB set inside it is the active one.
+  // A browser with no focused window (minimized, a helper booting) falls back to
+  // every window's active tab, which is the older behaviour rather than a wait
+  // that can never finish.
+  let onlyWin: number | null = null;
+  if (scope === "focused") {
+    const f = (await browser.windows.getLastFocused().catch(() => null)) as any;
+    onlyWin = f && f.id != null ? f.id : null;
+  }
+  const activeOnly = scope !== "all";
   for (const w of wins) {
     if (!w || w.id == null) continue;
     if (w.type && w.type !== "normal") continue;
+    if (onlyWin != null && w.id !== onlyWin) continue;
     const tabs = ((await browser.tabs.query({ windowId: w.id }).catch(() => [])) || []) as any[];
-    for (const t of tabs) {
-      if (!t || !t.url || isUITab(t)) continue;
+    const real = tabs.filter((t: any) => !!t && !!t.url && !isUITab(t));
+    const check = activeOnly ? real.filter((t: any) => !!t.active) : real;
+    for (const t of check) {
       // ONLY an explicit "loading" holds the cover. A host that does not
       // report `status` (a stripped build, a test fake) must not be read as
       // "loading forever" and sit out the whole timeout, and a discarded tab
@@ -384,7 +575,7 @@ async function pagesStillLoading(): Promise<boolean> {
 }
 
 /**
- * Hold the launch cover until the resumed pages have finished loading.
+ * Hold the cover until the pages in scope have finished loading.
  *
  * TWO consecutive clean reads, not one: a tab that was just created can report
  * `complete` while it is still `about:blank`, and a document that is committed
@@ -392,12 +583,12 @@ async function pagesStillLoading(): Promise<boolean> {
  * enough for that transition to become visible, short enough that a genuinely
  * loaded window drops the cover in a quarter of a second.
  */
-async function waitForPagesLoaded(): Promise<void> {
-  const deadline = Date.now() + PAGE_LOAD_WAIT_MS;
+async function waitForPagesLoaded(scope: LoadScope, capMs: number): Promise<void> {
+  const deadline = Date.now() + capMs;
   let clean = 0;
   while (Date.now() < deadline) {
     try {
-      if (await pagesStillLoading()) clean = 0;
+      if (await pagesStillLoading(scope)) clean = 0;
       else if (++clean >= 2) return;
     } catch {
       // A window torn down mid-wait is not a reason to keep the cover up.
@@ -439,16 +630,24 @@ export async function resumeOnStartup(
   // return, thrown error or closed window can leave a logo covering the window —
   // the helper's own failsafe is the second line of defence, not the first.
   resumeActive = true;
-  splashOn();
+  // The resume takes a sequence number too. A switch that starts while a launch
+  // is still settling is the newer intent: it takes ownership of the cover, and
+  // this resume must not clear it when its own page wait ends.
+  const seq = ++switchSeq;
+  splashOn(false);
   try {
-    await resumeWindows(targets, postRestore);
+    // SERIALIZED with switches. Before this, a switch made during a launch
+    // resume could interleave with the resume's rebuild and leave a window set
+    // that belonged to neither session.
+    await serializeRestore(() => resumeWindows(targets, postRestore));
     // LAST, and still inside the cover: the windows have their tabs by now, but
     // the pages in them are only starting to load, and that is the part of a
-    // launch the user actually watches happen.
-    await waitForPagesLoaded();
+    // launch the user actually watches happen. Outside the lock: a user switch
+    // must not have to wait for this.
+    await waitForPagesLoaded("all", PAGE_LOAD_WAIT_ALL_MS);
   } finally {
     resumeActive = false;
-    splashOff();
+    if (seq === switchSeq) splashOff();
   }
 }
 
@@ -457,12 +656,11 @@ async function resumeWindows(
   targets: SessionWindow[],
   postRestore: () => Promise<void>
 ): Promise<void> {
-  // Let Firefox's native session restore finish populating the windows before
-  // we compare or rebuild — the wait only happens when there is actually a
-  // session to resume.
-  await new Promise((r) => setTimeout(r, 1000));
-  await settleWindows();
-  const live = await liveWindows();
+  // Let Firefox's native session restore finish populating the windows before we
+  // compare or rebuild (see settleLaunch: this returns as soon as what it brought
+  // back already IS the saved set, and only a launch that restores something
+  // different pays the floor).
+  const live = await settleLaunch(targets);
   const usedLive = new Set<number>();
   const usedSaved = new Set<number>();
 
@@ -501,7 +699,12 @@ async function resumeWindows(
       const s = spare[k];
       if (s) {
         usedLive.add(s.winId);
-        await restoreOneWindow(s.winId, w, false);
+        try {
+          await restoreOneWindow(s.winId, w, false);
+        } catch {
+          // A window that could not be filled keeps the tabs it had; the rest of
+          // the session is still worth restoring.
+        }
       } else {
         const id = await createRestoredWindow(w);
         if (id != null) usedLive.add(id);
@@ -516,10 +719,16 @@ async function resumeWindows(
         await browser.windows.remove(lw.winId).catch(() => {});
       }
     }
-    await postRestore();
   } finally {
     endRestore();
   }
+  // AFTER the guard comes down: the post-restore callback stores the finished
+  // window set as the snapshot a quit flushes, and a measurement taken inside
+  // the guard would be stamped with an epoch that `endRestore` immediately
+  // invalidates (see sessions/epoch.ts), so the flush would refuse it. Its own
+  // autosave re-arm is suppressed while `restoring` is true, for the same
+  // reason.
+  await postRestore();
 }
 
 // The chrome-side launch splash, announced to every window's helper.
@@ -536,15 +745,20 @@ async function resumeWindows(
 // window, queued for the relay if it is not up yet); the drop is a BROADCAST,
 // because by then every window of the session has a helper that may be showing
 // one — including windows this resume created itself.
-function splashOn(): void {
+function splashOn(all: boolean, label?: string): void {
+  splashUp = true;
   try {
-    requestChrome("splash", { on: true });
+    const arg = label ? { on: true, label } : { on: true };
+    if (all) broadcastChrome("splash", arg);
+    else requestChrome("splash", arg);
   } catch {
-    // A splash is cosmetic: never let it affect the resume.
+    // A splash is cosmetic: never let it affect the restore.
   }
 }
 
 function splashOff(): void {
+  if (!splashUp) return;
+  splashUp = false;
   try {
     broadcastChrome("splash", { on: false });
   } catch {

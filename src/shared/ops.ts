@@ -68,8 +68,14 @@ export interface ActionOps {
   openDownloadLocation(key: string): void;
   retryDownload(key: string): void;
   dismissDownload(key?: string): void;
-  // Open the current page in a stealth (isolated, self-wiping) tab.
+  // Open a tab in this window's stealth jar. One jar per window, shared by
+  // every stealth tab there, wiped when its last tab closes.
   stealthOpen(): void;
+  // The two destinations a sandbox can start at: a search (`;Ns`) and a URL
+  // (`;No`). The query is resolved by the extension, which owns the engine
+  // list; the host only carries the text.
+  stealthSearch(query: string): void;
+  stealthUrl(url: string): void;
   copyUrl(): void;
   // The current page's address, for `;K e` to pre-fill its editable field.
   // Resolved through the HOST (the chrome helper reads the window's URI, the

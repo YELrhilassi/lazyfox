@@ -40,6 +40,7 @@ import { createAliveAnnounce, detectProfile } from "./alive";
 import { createCacheCtl } from "./cache";
 import { createChannel, type Channel } from "./channel";
 import { applyHoverRevealPref, loadCfg, persistCfg, type ChromeCfg } from "./config";
+import { applyChromeTheme } from "./theme";
 
 import { ensureChromeCore, initChromeCore } from "./core";
 import { createDebug, type DebugHandlers } from "./debug";
@@ -79,6 +80,7 @@ import { createPopupHost } from "./popup";
 import { createScrollKeys } from "./scrollkeys";
 import { createSplash } from "./splash";
 import { createSplitView, type SplitView } from "./splitview";
+import { createStealthPrivate } from "./stealthprivate";
 import { createStatusBar, type StatusBarCtl } from "./statusbar";
 import { resolveCcBaseUrl } from "./extbaseurl";
 import { createTypingChannel } from "./typing";
@@ -98,6 +100,13 @@ import { createGlobalWhichKey } from "./wkglobal";
   const win = env.window;
   const doc = env.document;
 
+  // The privileged half of the stealth cleanup. Built before every surface so
+  // a jar's traces can be purged as soon as the helper is up, and so a crash
+  // that left password autofill held off is repaired at boot rather than at the
+  // next page load.
+  const stealthPrivate = createStealthPrivate(env);
+  stealthPrivate.restoreAutofill();
+
   if (__DEV__) {
     dbg("chrome bundle loaded", "ff=" + env.services.appinfo.version,
       "evalSys=" + env.services.prefs.getBoolPref("security.allow_eval_with_system_principal", false),
@@ -110,6 +119,9 @@ import { createGlobalWhichKey } from "./wkglobal";
 
   const cfg: ChromeCfg = loadCfg();
   applyHoverRevealPref(cfg);
+  // Before anything below mounts a surface: the splash, the status bar and every
+  // popup this window opens read the palette at construction time.
+  applyChromeTheme(cfg);
   const leaderKey = () => cfg.config.leader || ";";
 
   /* ===================== modules ===================== */
@@ -769,6 +781,13 @@ import { createGlobalWhichKey } from "./wkglobal";
 split,
     status,
     splash,
+    // The loader came down: the bar re-reads the session summary (the switch
+    // or resume may have replaced every tab the last reply described).
+    refreshSessionState: () => void channel.requestSessionState(),
+    // Stealth cleanup that only chrome can do: exact Places visits and the
+    // password-manager pref (see stealthprivate.ts).
+    removeStealthVisits: (visits, urls) => stealthPrivate.removeVisits(visits, urls),
+    setStealthAutofill: (off) => stealthPrivate.setAutofill(off),
     // A presence report arrives carrying a STRIP INDEX, because that is the only
     // coordinate the sending document can be given — and it is resolved to the
     // tab it is about at the door. Everything past this point is keyed by the
@@ -790,6 +809,10 @@ split,
       cfg.config = mergeConfig(config);
       persistCfg(cfg, cfg.config);
       applyHoverRevealPref(cfg);
+      // A live config push repaints this window's own surfaces immediately; the
+      // browser chrome (toolbar/URL bar) picks the palette up on the next window
+      // start, exactly as the settings page says.
+      applyChromeTheme(cfg);
       if (cfg.config.whichKey === false && leader) leader.unpaint();
       // ...and the mirror a split page asked for, which is not the helper's
       // own panel and would otherwise survive the toggle on screen.

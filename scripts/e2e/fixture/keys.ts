@@ -173,6 +173,29 @@ ctx.leaderPress = async function leaderPress(tab, key, opts) {
     }
     for (let attempt = 1; attempt <= 3; attempt++) {
       await focusPage(tab).catch(() => {});
+      // A page that auto-RE-focuses a field after any pointer press (Reddit's
+      // search custom element) re-parks the caret inside the product's 700ms
+      // park window, and a `;` pressed that fast correctly TYPES into it. A
+      // user pressing `;` a beat later never hits this; the harness must
+      // represent that beat. Detection uses the product's own typing mirror
+      // (data-lf-typing): the caret can sit inside a CLOSED shadow root whose
+      // tagName regex reads as a custom element, and a host-level blur leaves
+      // the inner input focused, so the blur walks the shadow chain. Each
+      // iteration makes the last re-park at least a dwell old — three cover a
+      // page that re-parks on a timer — and the loop exits as soon as the
+      // caret is out.
+      for (let ward = 0; ward < 3; ward++) {
+        const typing = await evalIn(tab, `document.documentElement.getAttribute("data-lf-typing") === "1"`).catch(() => false);
+        if (!typing) break;
+        await evalIn(
+          tab,
+          `(() => { let ae = document.activeElement; for (let i = 0; ae && ae.shadowRoot && ae.shadowRoot.activeElement && i < 8; i++) ae = ae.shadowRoot.activeElement;
+            if (ae && ae.blur) { try { ae.blur(); } catch (e) {} }
+            try { document.body.setAttribute("tabindex", "-1"); document.body.focus({ preventScroll: true }); } catch (e) {}
+            return true; })()`,
+        ).catch(() => {});
+        await sleep(900);
+      }
       await ctx.press(tab, ";");
       const armed = await ctx.tryArm(tab, 2500);
       if (armed) {

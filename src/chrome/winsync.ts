@@ -40,6 +40,7 @@ export interface WinSyncDeps {
     pollDownloads(force?: boolean): Promise<void>;
     setActiveStealth(on: boolean): void;
     getStealthFlags(): boolean[];
+    isStealthTab(tab: any): boolean;
   };
   // The chrome leader, late-bound.
   leader(): { active: boolean; hasPending(): boolean; hide(): void } | null;
@@ -204,12 +205,13 @@ export function installWinSync(deps: WinSyncDeps): void {
   try {
     win.gBrowser.tabContainer.addEventListener("TabSelect", () => {
       deps.split.rememberSplit();
-      // The stealth badge must track the tab you switched to immediately;
-      // sessionState round-trips are not polled on TabSelect, so derive the
-      // flag locally from the per-tab stealthFlags the last reply carried.
+      // The stealth badge must track the tab you switched to immediately, so
+      // it is decided from THIS tab's container id against the ids the
+      // background pushed — not from an index into the last reply's per-tab
+      // flags, which describes the strip as it was when that reply was built
+      // (the tab you just selected may not even be at that index any more).
       try {
-        const sel = win.gBrowser.tabs.indexOf(win.gBrowser.selectedTab);
-        status.setActiveStealth(!!(status.getStealthFlags()[sel] || false));
+        status.setActiveStealth(status.isStealthTab(win.gBrowser.selectedTab));
       } catch {
         // ignore
       }
@@ -227,6 +229,20 @@ export function installWinSync(deps: WinSyncDeps): void {
     });
   } catch {
     // ignore
+  }
+
+  // Muting is not a tab switch. A site starting audio, the tab's own context
+  // menu or our ;m op all change the muted attribute without firing TabSelect,
+  // and the status bar's muted badge would otherwise wait for the next poll —
+  // which reads as "the indicator is broken" on the one action that asks for it.
+  try {
+    win.gBrowser.tabContainer.addEventListener("TabAttrModified", (e: any) => {
+      const changed = e && e.detail && e.detail.changed;
+      if (Array.isArray(changed) && changed.indexOf("muted") === -1) return;
+      status.compute();
+    });
+  } catch {
+    // A build without the event still updates the badge on the poll.
   }
 
   /* ---- the real-tab #lfc= channels ---- */
