@@ -42,6 +42,13 @@ export interface TargetSpec {
   devOut: string;
   /** Committed file name of the release binary (embeds the signed add-on). */
   releaseOut: string;
+  /**
+   * Optional SECOND product for this platform: the pure-Go terminal installer
+   * (`-tags nogui`). The GUI binaries link the platform webview (WebKitGTK on
+   * linux); on a desktop without it the GUI binary cannot start, so linux
+   * ships a TUI binary alongside it and install.sh probes which one to run.
+   */
+  tui?: { dev: string; release: string };
 }
 
 interface Declaration {
@@ -110,6 +117,15 @@ export function targetFor(goos: string): TargetSpec | null {
  * The canonical (unversioned) name a target's binary is declared under: the name
  * the release publishes it as, and the name install.sh / the setup page download.
  */
+/**
+ * tuiBaseFor is the canonical (unversioned) name of a target's optional TUI
+ * product — the pure-Go terminal installer built with `-tags nogui` — or null
+ * when the target declares none.
+ */
+export function tuiBaseFor(t: TargetSpec, channel: "dev" | "release"): string | null {
+  return t.tui ? t.tui[channel] : null;
+}
+
 export function installerBase(t: TargetSpec, channel: "dev" | "release"): string {
   return channel === "dev" ? t.devOut : t.releaseOut;
 }
@@ -166,7 +182,9 @@ export function stageInstallerUploads(assets: string[]): { dir: string; paths: s
 
 /** Does this file name belong to a target+channel, whatever its version? */
 export function isBuiltInstallerName(file: string, t: TargetSpec, channel: "dev" | "release"): boolean {
-  return installerNameVersion(file, installerBase(t, channel)) !== null;
+  if (installerNameVersion(file, installerBase(t, channel)) !== null) return true;
+  const tui = tuiBaseFor(t, channel);
+  return !!tui && installerNameVersion(file, tui) !== null;
 }
 
 /**
@@ -663,7 +681,10 @@ export function verifyBinaries(root: string): Verdict[] {
     for (const f of readdirSync(binDir)) {
       if (seen.has(f) || f.endsWith(".stamp") || f === "payload-state.json") continue;
       const known = TARGETS.some(
-        (t) => installerNameVersion(f, t.devOut) !== null || installerNameVersion(f, t.releaseOut) !== null,
+        (t) =>
+          installerNameVersion(f, t.devOut) !== null ||
+          installerNameVersion(f, t.releaseOut) !== null ||
+          !!t.tui && (installerNameVersion(f, t.tui.dev) !== null || installerNameVersion(f, t.tui.release) !== null),
       );
       if (!known) continue;
       out.push({ out: f, status: "unverified", reason: "present but not recorded in payload-state.json" });

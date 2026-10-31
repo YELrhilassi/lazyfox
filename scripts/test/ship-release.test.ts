@@ -25,12 +25,15 @@ import { stageInstallerUploads } from "../payload.ts";
 describe("the release asset list", () => {
   test("it names every asset a stable release publishes", () => {
     const assets = releaseAssets("/repo", "0.5.9");
-    assert.equal(assets.length, 6);
+    // Seven, not three: linux also ships the pure-Go TUI fallback beside its
+    // GUI binary — the product a machine without WebKitGTK actually launches.
+    assert.equal(assets.length, 7);
     // The built installers are named for the add-on version they carry, so the
     // release must name exactly this version's file — never "whatever is in
     // bin/", which is how an older signed build once got shipped.
     assert.deepEqual(assets, [
       path.join("/repo", "installer", "bin", "lazyfox-install-linux-0.5.9"),
+      path.join("/repo", "installer", "bin", "lazyfox-install-linux-tui-0.5.9"),
       path.join("/repo", "installer", "bin", "lazyfox-install-darwin-0.5.9"),
       path.join("/repo", "installer", "bin", "lazyfox-install-windows-0.5.9.exe"),
       path.join("/repo", "installer", "scripts", "install.sh"),
@@ -50,13 +53,13 @@ describe("the release asset list", () => {
       for (const asset of built) {
         fs.mkdirSync(path.dirname(asset), { recursive: true });
         fs.writeFileSync(asset, asset);
-      }
-      const staged = stageInstallerUploads(built);
+      }      const staged = stageInstallerUploads(built);
       try {
         assert.deepEqual(
           staged.paths.map((p) => path.basename(p)),
           [
             "lazyfox-install-linux",
+            "lazyfox-install-linux-tui",
             "lazyfox-install-darwin",
             "lazyfox-install-windows.exe",
             "install.sh",
@@ -79,7 +82,7 @@ describe("the release asset list", () => {
     // and the space surviving inside each entry is the reason it matters.
     const root = path.join("/home", "some one", "Default Project", "lazyfox");
     const assets = releaseAssets(root, "0.5.9");
-    assert.equal(assets.length, 6);
+    assert.equal(assets.length, 7);
     for (const asset of assets) {
       assert.ok(asset.startsWith(root), `${asset} should still start with the root`);
       assert.ok(asset.includes("Default Project"), `${asset} lost the space in the root`);
@@ -142,7 +145,9 @@ describe("missing assets", () => {
       fs.mkdirSync(path.dirname(xpi), { recursive: true });
       fs.writeFileSync(xpi, "x");
       const missing = missingAssets(root, "9.9.9");
-      assert.equal(missing.length, 5);
+      // Three platform binaries + the linux TUI fallback + the two one-line
+      // installer scripts.
+      assert.equal(missing.length, 6);
       assert.ok(!missing.includes(xpi));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

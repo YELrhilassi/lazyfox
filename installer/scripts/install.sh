@@ -12,6 +12,7 @@
 #   LAZYFOX_REPO=owner/name   use a fork's releases
 #   LAZYFOX_DIR=/some/dir     download here instead of a temp dir (keeps the binary)
 #   LAZYFOX_NO_RUN=1          download only, print the path, do not run
+#   LAZYFOX_TUI=1             force the terminal installer instead of the window
 #
 # Piping hides this script's own stdin?  No: because we are piped, stdin is the
 # script itself, so before running the installer we re-attach the terminal
@@ -49,13 +50,41 @@ if [ "$machine" = "darwin" ] && [ "$cpu" != "arm64" ]; then
   die "no prebuilt installer for darwin/$cpu yet (linux/amd64 and darwin/arm64 are shipped)"
 fi
 
-if [ "$CHANNEL" = "nightly" ]; then
-  asset="lazyfox-install-dev-$machine"
-  url="https://github.com/$REPO/releases/download/nightly/$asset"
-else
-  asset="lazyfox-install-$machine"
-  url="https://github.com/$REPO/releases/latest/download/$asset"
+rel_url_for() { # asset
+  if [ "$CHANNEL" = "nightly" ]; then
+    printf 'https://%s/releases/download/nightly/%s\n' "$REPO" "$1"
+  else
+    printf 'https://%s/releases/latest/download/%s\n' "$REPO" "$1"
+  fi
+}
+
+# The graphical installer for this machine (the default), plus — linux only —
+# the pure-Go terminal fallback. The GUI binary links the platform webview
+# (libwebkit2gtk on linux); a desktop without it cannot even start the binary,
+# and the failure reads as "error while loading shared libraries", not as
+# anything about Lazyfox. So we look before we leap.
+asset="lazyfox-install$([ "$CHANNEL" = "nightly" ] && printf -- '-dev')-$machine"
+# LAZYFOX_TUI: unset → probe and fall back automatically; 1 → always the
+# terminal installer; 0 → always the graphical installer, no probe.
+# Only linux ships the -tui download at all (macOS always has WKWebView).
+if [ "$machine" = "linux" ]; then
+  tui_pref="${LAZYFOX_TUI-}"
+  if [ "$tui_pref" = "1" ]; then
+    asset="${asset}-tui"
+  elif [ -z "$tui_pref" ]; then
+    # A library probe is a fast, accurate pre-check; ldconfig reads the same ELF
+    # dependency data the dynamic loader itself would use, so it misses nothing
+    # above the four-point-oh library line.
+    if ! ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.0'; then
+      say "note: this machine has no libwebkit2gtk-4.0 — the graphical installer cannot launch here."
+      say "      Falling back to the terminal installer every Lazyfox release also ships."
+      say "      (The package is called 'webkit2gtk-4.0' on most distros; after installing it,"
+      say "       LAZYFOX_TUI=0 puts the graphical window back.)"
+      asset="${asset}-tui"
+    fi
+  fi
 fi
+url="$(rel_url_for "$asset")"
 
 dir="${LAZYFOX_DIR:-$(mktemp -d 2>/dev/null || echo /tmp)}"
 target="$dir/$asset"

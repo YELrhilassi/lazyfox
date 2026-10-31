@@ -64,6 +64,8 @@ jobs:
             bin: |
               installer/bin/lazyfox-install-linux-*
               installer/bin/lazyfox-install-dev-linux-*
+              # The pure-Go TUI fallback for machines without WebKitGTK live
+              # beside the GUI binary in the same artifact (dev + stable).
           - os: macos-14
             name: darwin
             artifact: lazyfox-install-darwin
