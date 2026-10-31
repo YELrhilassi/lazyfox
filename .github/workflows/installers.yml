@@ -223,8 +223,20 @@ jobs:
           # Remove the host's own WebKitGTK so the gate below cannot silently
           # pass on the RUNNER's packages (the version-skew trap documented in
           # packaging AppImages: the host helper dir gets used as if it were
-          # the bundle). The binaries are already verified and uploaded above.
-          sudo apt-get remove -y libwebkit2gtk-4.0-38 libwebkit2gtk-4.0-38-dbg || true
+          # the bundle). Name the packages by what dpkg actually has installed:
+          # jammy publishes libwebkit2gtk-4.0-37, not -38, and a remove of a
+          # non-existing name is an error silently skipped — the one state that
+          # makes the no-webkit gate a lie. The binaries are already verified
+          # and uploaded above.
+          webkit_pkgs="$(dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | grep '^libwebkit2gtk' || true)"
+          if [ -n "$webkit_pkgs" ]; then
+            sudo apt-get purge -y $webkit_pkgs || sudo dpkg -P --force-all $webkit_pkgs || sudo dpkg -r --force-all $webkit_pkgs || true
+          fi
+          if ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk'; then
+            echo "host WebKitGTK is still installed after the purge — the no-webkit gate below cannot be trusted"
+            exit 1
+          fi
+          echo "no host WebKitGTK remains — the gate below proves the bundle alone"
           installer/scripts/package-appimage.sh --bin "$bin" --out "installer/bin/${prefix}-${version}.AppImage"
 
       # The headless gate, after the packaging step's own `--mode list`: open

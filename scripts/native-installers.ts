@@ -169,10 +169,19 @@ export function dispatchNativeBuilds(root: string, opts: { release: boolean; ref
  * The workflow_dispatch run for one commit: located by its head SHA (a run's
  * headSha is the commit it checked out), never guessed from ordering — two
  * dispatches racing would otherwise be indistinguishable.
+ *
+ * Only dispatch runs count. A push can ALSO record name-matching failure-stub
+ * runs for this workflow file (observed: a push to master/dev immediately
+ * followed by a dispatch produced a no-job "failure" row with the push's head
+ * sha) — and since a stub lists the SAME head sha as the real dispatch run,
+ * an unfiltered lookup would return it, declare the run dead, and skip the
+ * build before the dispatch ever queued.
  */
 export function findNativeRun(root: string, headSha: string): NativeRun | null {
   const out = sh(["run", "list", "--workflow", NATIVE_WORKFLOW, "--limit", "20", "--json", "databaseId,headSha,status,conclusion,event"], root);
-  for (const r of JSON.parse(out || "[]") as NativeRun[]) {
+  const runs = JSON.parse(out || "[]") as (NativeRun & { event: string })[];
+  for (const r of runs) {
+    if (r.event !== "workflow_dispatch") continue;
     if (r.headSha === headSha) return r;
   }
   return null;
