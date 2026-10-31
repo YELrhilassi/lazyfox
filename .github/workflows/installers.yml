@@ -105,6 +105,15 @@ jobs:
       - name: Build dist, the add-on and the installers
         run: npm run build
 
+      # Diagnostic, not a gate: every job builds the same commit, but the linux
+      # and macos runners have produced a different payload hash than windows
+      # (and the local checkout) with the SAME pinned Go — which means one of
+      # the payload's input files is built env-dependently. If this surfaces
+      # again, diffing two jobs' manifests pinpoints the file; the digests go
+      # into the job log with the manifest's sha256 as the one-line summary.
+      - name: Dump the payload manifest
+        run: node scripts/dump-payload-manifest.ts
+
       # The upload is not the verification. This is: the binaries just built are
       # re-checked by content (payload hash, source fingerprint, staged payload,
       # and this machine's binary actually running with a usable embedded
