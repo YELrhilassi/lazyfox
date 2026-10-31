@@ -35,12 +35,12 @@ jobs:
     strategy:
       fail-fast: false
       # Each artifact carries BOTH channels' binaries for the platform: the dev
-  # installer (unsigned add-on) and the stable one (signed add-on, when one is
-  # present in dist/). The dev builds from one machine are cross-compiled
-  # terminal installers — this job is what replaces them with the graphical
-  # window, and having both channels here means neither has to be re-built
-  # cross-platform ever again.
-  matrix:
+      # installer (unsigned add-on) and the stable one (signed add-on, when one
+      # is present in dist/). The dev builds from one machine are cross-compiled
+      # terminal installers — this job is what replaces them with the graphical
+      # window, and having both channels here means neither has to be re-built
+      # cross-platform ever again.
+      matrix:
         include:
           - os: ubuntu-22.04
             name: linux
