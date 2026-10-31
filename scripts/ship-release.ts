@@ -29,7 +29,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { TARGETS, sha256File, stageInstallerUploads, versionedInstallerName } from "./payload.ts";
+import { TARGETS, sha256File, stageInstallerUploads, versionedAppImageName, versionedInstallerName } from "./payload.ts";
 
 /** The notes every signed release carries. */
 export const RELEASE_NOTES = "Signed release for stable Firefox";
@@ -49,6 +49,19 @@ export function releaseAssets(root: string, version: string): string[] {
   // build refuses any version but this one — so the expected file names are
   // exact, not "whatever is in bin/".
   const installers = TARGETS.flatMap((t) => {
+    if (t.goos === "linux") {
+      // Linux's graphical installer is the fully bundled AppImage (it carries
+      // its own WebKitGTK + helper processes, so it starts on ANY desktop that
+      // can run an AppImage — no libwebkit2gtk package needed), built by the
+      // "Installers - native builds" workflow and overlaid by ship. The raw
+      // libwebkit-linked ELF is no longer a published asset: a desktop without
+      // the library can never run it, which is the failure made users ask for
+      // this. The pure-Go TUI fallback stays published beside it.
+      return [
+        versionedAppImageName(t.releaseOut, version),
+        versionedInstallerName(t.tui!.release, version),
+      ].map((n) => path.join(root, "installer", "bin", n));
+    }
     const plain = [versionedInstallerName(t.releaseOut, version)];
     // The linux TUI fallback ships beside its GUI binary (see artifacts.json);
     // targets without a declared TUI product contribute nothing here.
