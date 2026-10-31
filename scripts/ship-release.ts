@@ -50,16 +50,18 @@ export function releaseAssets(root: string, version: string): string[] {
   // exact, not "whatever is in bin/".
   const installers = TARGETS.flatMap((t) => {
     if (t.goos === "linux") {
-      // Linux's graphical installer is the fully bundled AppImage (it carries
-      // its own WebKitGTK + helper processes, so it starts on ANY desktop that
-      // can run an AppImage — no libwebkit2gtk package needed), built by the
-      // "Installers - native builds" workflow and overlaid by ship. The raw
-      // libwebkit-linked ELF is no longer a published asset: a desktop without
-      // the library can never run it, which is the failure made users ask for
-      // this. The pure-Go TUI fallback stays published beside it.
+      // Linux ships ONE graphical installer: the fully bundled AppImage (its
+      // own WebKitGTK + helper processes, so it starts on ANY desktop that can
+      // run an AppImage — no libwebkit2gtk package, no FUSE needed thanks to
+      // install.sh's extract-and-run path), built by the "Installers - native
+      // builds" workflow and overlaid by ship. The raw libwebkit-linked ELF and
+      // the pure-Go TUI fallback are no longer release assets: the first could
+      // never run without the exact system package and the second is the
+      // terminal fallback only the dev channel still carries — publishing
+      // binaries that exist for a state the AppImage abolished made the release
+      // page a list of ways to fail.
       return [
         versionedAppImageName(t.releaseOut, version),
-        versionedInstallerName(t.tui!.release, version),
       ].map((n) => path.join(root, "installer", "bin", n));
     }
     const plain = [versionedInstallerName(t.releaseOut, version)];
