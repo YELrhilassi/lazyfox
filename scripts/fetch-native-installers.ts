@@ -27,6 +27,11 @@ const release = argv.includes("--release");
 const dev = argv.includes("--dev");
 const runIdx = argv.indexOf("--run");
 const runId = runIdx !== -1 ? Number(argv[runIdx + 1]) : null;
+// The ref the workflow is dispatched against ("HEAD" by default reads oddly to
+// the API — it wants a real ref name — so this points the dispatch at master,
+// the only branch the release build is meant to run on).
+const refIdx = argv.indexOf("--ref");
+const ref = refIdx !== -1 ? argv[refIdx + 1] : "HEAD";
 
 const self = fileURLToPath(import.meta.url);
 if (process.argv[1] !== self && !process.argv[1]?.endsWith("fetch-native-installers.ts")) {
@@ -45,7 +50,7 @@ try {
     id = runId;
     console.log(`[native] using the requested run ${id}`);
   } else {
-    dispatchNativeBuilds(ROOT, { release, ref: "HEAD" });
+    dispatchNativeBuilds(ROOT, { release, ref });
     const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
     console.log(`[native] dispatched the native builds (${sha.slice(0, 12)}) — waiting…`);
     id = (await waitNativeRun(ROOT, sha)).databaseId;
