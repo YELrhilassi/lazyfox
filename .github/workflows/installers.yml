@@ -66,8 +66,14 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          # Repo modules (root + installer) require Go 1.26; must match go.mod.
-          go-version: "1.26"
+          # Repo modules require Go 1.26; must match go.mod — AND the patch must
+          # match the machine that builds the committed dev installers, because
+          # the Go compiler version is inside the payload it stamps (dist/'s
+          # core.wasm bytes differ between 1.26.5 and 1.26.7, and with them the
+          # payload hash every installer binary embeds). A floating "1.26"
+          # resolved to 1.26.7 here and made every CI-built binary disagree on
+          # payload with the same source built locally.
+          go-version: "1.26.5"
 
       - name: Setup Node
         uses: actions/setup-node@v4
