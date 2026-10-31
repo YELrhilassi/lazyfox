@@ -83,12 +83,15 @@ jobs:
       - name: Install the installer window's dependencies
         run: npm run ui:deps
 
-      # Wails' Linux backend links WebKitGTK through CGO.
+      # Wails' Linux backend links WebKitGTK through CGO. The pkg-config name
+      # Wails v2 builds against is webkit2gtk-4.0 (its 4.1 sibling breaks the
+      # build with "Package 'webkit2gtk-4.0', required by 'virtual:world',
+      # not found"), so the dev package installed must be the 4.0 one.
       - name: Install webview build dependencies (Linux)
         if: matrix.name == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
 
       # One command: dist/, the unsigned add-on, and every committed installer
       # (this platform's with its graphical window, the others as terminal

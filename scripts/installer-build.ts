@@ -99,7 +99,19 @@ export function buildInstaller(opts: {
   // production -ldflags "-w -s"` (plus `-H windowsgui` on Windows); we reproduce
   // exactly that here, which is what makes a plain `go build` produce a working
   // window instead of the stub.
-  const args = ["build", "-buildvcs=false", "-trimpath", `-ldflags=${opts.ldflags}`];
+  // Wails v2.16's Darwin Objective-C calls UTType (the UniformTypeIdentifiers
+  // framework, imported in WailsContext.h) but every #cgo LDFLAGS in that
+  // package stops at Foundation/Cocoa/WebKit, so the link dies with
+  // "Undefined symbols for architecture arm64: _OBJC_CLASS_$_UTType" — on a
+  // runner without the framework implicitly linked, and equally to a plain
+  // `wails build`. Our build supplies what its build system forgot at link
+  // time (external ldflags land after the objects, which is where a framework
+  // belongs), rather than forking the library over one missing flag.
+  let ldflags = opts.ldflags;
+  if (gui && target.goos === "darwin") {
+    ldflags += ' -extldflags "-framework UniformTypeIdentifiers"';
+  }
+  const args = ["build", "-buildvcs=false", "-trimpath", `-ldflags=${ldflags}`];
   if (gui) {
     args.push("-tags", "production");
   } else {
