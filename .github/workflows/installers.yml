@@ -18,6 +18,16 @@ name: Installers - native builds
 # which payload a committed binary carries — so a maintainer who wants to commit
 # a CI-built binary has the record that goes with it instead of having to
 # hand-write one.
+#
+# With `release: true` the job runs the RELEASE build (`node scripts/
+# release-build.ts`) instead of the dev build. It must be dispatched on MASTER
+# and only there: the release build embeds an AMO-signed add-on, which it takes
+# from the signed xpi committed on master (sync-signed-xpi.ts reuses it offline,
+# no credentials needed) — a release build on a dev branch would find an
+# unsigned canonical xpi and stop. Run it after master carries the merged dev
+# source, when the committed linux/mac installers that ship() can only
+# cross-compile from one machine must be rebuilt as the genuine graphical
+# window, on release-mode dist, for a release refresh.
 
 on:
   # MANUAL, AND DELIBERATELY. Three native builds (Linux, macOS, Windows) are
@@ -27,6 +37,12 @@ on:
   # where one of them must be produced on the platform itself. A push that needs
   # verification is a push to master — see master.yml.
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Release build (release-mode dist + signed add-on) — dispatch on MASTER only"
+        type: boolean
+        default: false
+        required: false
 
 jobs:
   installer:
@@ -99,11 +115,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
 
-      # One command: dist/, the unsigned add-on, and every committed installer
+      # One command: dist/, the add-on, and every committed installer
       # (this platform's with its graphical window, the others as terminal
       # installers, plus the release set when a signed add-on is present).
+      # `release: true` switches to the RELEASE build: release-mode dist
+      # (__DEV__=false), the AMO-signed canonical xpi (reused offline from the
+      # signed xpi committed on master), and installer binaries rebuilt from
+      # both — so a committed binary embeds the same release payload master
+      # shipped, byte for byte.
       - name: Build dist, the add-on and the installers
-        run: npm run build
+        run: |
+          if [ "${{ inputs.release }}" = "true" ]; then
+            node scripts/release-build.ts
+          else
+            npm run build
+          fi
 
       # Diagnostic, not a gate: every job builds the same commit, but the linux
       # and macos runners have produced a different payload hash than windows
