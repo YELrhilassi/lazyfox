@@ -6,11 +6,11 @@
       "channel": "stable",
       "goos": "darwin",
       "arch": "arm64",
-      "xpi": "dist/lazyfox2-0.5.20.xpi",
+      "xpi": "dist/lazyfox2-0.5.20-signed.xpi",
       "xpiVersion": "0.5.20",
-      "payload": "cd854effaa81e97080fcc47eef812467543f793f2e3c017885e6184920362321",
-      "source": "b3a17fa84ec2c2c0a8a98414910275e67340c3b7766798f2f6d2591b3db6d0b7",
-      "bin": "48f2ffb9a826044ac4a180a5b91f8f15f082adb36cdab1d7f596112ec5fcfd0a"
+      "payload": "24131cd2de92691bb9d89fb1c2d645202f315609c7898160b499a463e559bf7f",
+      "source": "8dfee4768da12a7b978c90f35a69fbb670a237b50995801a38768797a47acf6d",
+      "bin": "1a6b6d24d32a509d335ee22f30ef92b81c75ddd0b1b06fd214988e934d7c2925"
     },
     "lazyfox-install-dev-darwin-0.5.20": {
       "out": "lazyfox-install-dev-darwin-0.5.20",
@@ -19,9 +19,9 @@
       "arch": "arm64",
       "xpi": "dist/lazyfox2-0.5.20.xpi",
       "xpiVersion": "0.5.20",
-      "payload": "cd854effaa81e97080fcc47eef812467543f793f2e3c017885e6184920362321",
-      "source": "b3a17fa84ec2c2c0a8a98414910275e67340c3b7766798f2f6d2591b3db6d0b7",
-      "bin": "1c99003839d7f53ec8ffe6bd9ef120c6a4f047d6aaa7b6856aed286f4d581be3"
+      "payload": "3bc0c2b85bd043001e8f96f28e5aeaccdbec2eb3f2d57d6d06e615e8d88471f4",
+      "source": "8dfee4768da12a7b978c90f35a69fbb670a237b50995801a38768797a47acf6d",
+      "bin": "37bcad460045540afbadd2a71e473088cc5429e9fc1277b0388342a95d84e286"
     },
     "lazyfox-install-dev-linux-0.5.20": {
       "out": "lazyfox-install-dev-linux-0.5.20",
@@ -61,11 +61,11 @@
       "channel": "stable",
       "goos": "linux",
       "arch": "amd64",
-      "xpi": "dist/lazyfox2-0.5.20.xpi",
+      "xpi": "dist/lazyfox2-0.5.20-signed.xpi",
       "xpiVersion": "0.5.20",
-      "payload": "cd854effaa81e97080fcc47eef812467543f793f2e3c017885e6184920362321",
-      "source": "b3a17fa84ec2c2c0a8a98414910275e67340c3b7766798f2f6d2591b3db6d0b7",
-      "bin": "ecf5cbcf47ca19a5e441a6e044b83b28bb26f0e2c0b861ac12caa136438314e6"
+      "payload": "24131cd2de92691bb9d89fb1c2d645202f315609c7898160b499a463e559bf7f",
+      "source": "8dfee4768da12a7b978c90f35a69fbb670a237b50995801a38768797a47acf6d",
+      "bin": "76df56d8832f63a9a41e90c9cfc659830ba1f26adb757a50feeb56657d9f9eeb"
     },
     "lazyfox-install-linux-tui-0.5.20": {
       "out": "lazyfox-install-linux-tui-0.5.20",
@@ -83,11 +83,11 @@
       "channel": "stable",
       "goos": "windows",
       "arch": "amd64",
-      "xpi": "dist/lazyfox2-0.5.20.xpi",
+      "xpi": "dist/lazyfox2-0.5.20-signed.xpi",
       "xpiVersion": "0.5.20",
-      "payload": "cd854effaa81e97080fcc47eef812467543f793f2e3c017885e6184920362321",
-      "source": "b3a17fa84ec2c2c0a8a98414910275e67340c3b7766798f2f6d2591b3db6d0b7",
-      "bin": "21ca699e61afc090135f467eaa1b9ef023e6fbded87e6b39f2ac20dead2aafb7"
+      "payload": "24131cd2de92691bb9d89fb1c2d645202f315609c7898160b499a463e559bf7f",
+      "source": "8dfee4768da12a7b978c90f35a69fbb670a237b50995801a38768797a47acf6d",
+      "bin": "58818d2adebd8c08a9ac1fefa3b19086067b588cf416131b60c6396585043a8b"
     }
   }
 }
