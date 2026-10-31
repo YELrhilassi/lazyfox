@@ -13,14 +13,15 @@ import { CC_URL, activeTabInWindow, isCommandCenter, stripHash } from "../tabs";
 import { getConfig } from "../config";
 import { stealthContainerOf } from "../stealth";
 
-// Known about: pages get a short key in the #lfc=open payload; any other
-// about: URL is carried base64-encoded so the hash grammar stays intact.
-const CHROME_PAGES: { [k: string]: string } = {
-  "about:preferences": "preferences",
-  "about:addons": "addons",
-  "about:history": "history",
-  "about:downloads": "downloads"
-};
+// Named page keys USED to live here ("about:history" → "history"), but the
+// helper's #lfc=open grammar already reserves those nouns: open.history and
+// open.downloads are the chrome history/downloads POPUPS (see the POPUP map in
+// chrome/channel.ts). So "open the about:page" arrived at the helper as a name
+// whose first token named a popup, and the helper — by its own contract —
+// opened the popup instead of the page. about:preferences dodged it only
+// because no popup is called "preferences". Every about: URL now rides the
+// base64 payload the helper already opens natively (u.<b64>), which carries
+// fragments (about:preferences#search) without a name map at all.
 
 function base64Url(url: string): string | null {
   try {
@@ -67,18 +68,7 @@ export async function openUrl(url: string, newTab: boolean | undefined, winId: n
 export async function openPage(url: string, winId: number | null = null) {
   const tab = await activeTabInWindow(winId);
   let payload: string | null = null;
-  let target = CHROME_PAGES[url];
-  if (!target) {
-    for (const [key, t] of Object.entries(CHROME_PAGES)) {
-      if (url.startsWith(key)) {
-        target = t + url.slice(key.length);
-        break;
-      }
-    }
-  }
-  if (target) {
-    payload = target;
-  } else if (/^about:/i.test(url)) {
+  if (/^about:/i.test(url)) {
     payload = base64Url(url);
     if (!payload) return { ok: false };
   }

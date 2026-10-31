@@ -354,6 +354,18 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     // script (diagnostics, any about:): the repair handed the keyboard to a
     // document with no key engine while the leader key it spent never armed
     // anything, so ";T then ;x did nothing" (session step 23 measured it).
+    //
+    // AND WHEN THE REPAIR DOES FIRE, THE LEADER MUST ARM WITH IT. This branch
+    // only runs while chromeOwnsKeys() is true — no content script present and
+    // none expected — so the "; T H E   N E X T press" nobody else can answer:
+    // a web document would (the repair exists there so the page's own leader
+    // catches the next key), a helper-owned document has no such second
+    // chance. Merely consuming the key turned the second press into a permanent
+    // repair loop: one find (the native find bar parks the keyboard in the
+    // browser chrome) and every later leader press on a neterror or uninjectable
+    // page was spent on focus and armed nothing, again and again, and
+    // ";f ;t ;o never came back". The repair AND the arm is the one honest
+    // outcome on a page only the helper is answering.
     if (
       !fromActor &&
       chromeOwnsKeys(win) &&
@@ -363,6 +375,12 @@ export function createChromeKeyDown(deps: KeyDispatchDeps) {
     ) {
       if (givePageKeyboardBack(e) === "consumed") {
         br = "web-page-leader-rescue-split";
+        // No keyup path survives a synthetic channel key either — the same
+        // tap-vs-hold routing the leader branch itself takes below.
+        const rl = leader();
+        if (rl && armHeldLeader(rl, e, noKeyup)) {
+          br = "leader-rescue-arm";
+        }
         return true;
       }
     }
