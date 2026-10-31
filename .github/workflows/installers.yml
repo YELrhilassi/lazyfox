@@ -118,6 +118,21 @@ jobs:
       # re-checked by content (payload hash, source fingerprint, staged payload,
       # and this machine's binary actually running with a usable embedded
       # payload) before they are offered to anyone.
+      # The freshly built wasm core is uploaded from one job as well: with the
+      # SAME pinned go 1.26.5 and identical flags (-buildvcs=false -trimpath
+      # -ldflags="-s -w"), the windows runner produced different wasm bytes than
+      # the linux/darwin runners (measured: 25341862... vs 6f337c11...), and
+      # corebootstrap.js — the payload input that embeds it — drifted with it.
+      # Uploading the file lets the two byte streams be diffed locally to find
+      # which part of the wasm is host-OS-dependent.
+      - name: Upload the fresh core.wasm
+        if: matrix.name == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fresh-core-wasm-linux
+          path: core/js/core.wasm
+          if-no-files-found: error
+
       - name: Verify the binaries that were just built
         run: node scripts/check-installer-payload.ts
 
