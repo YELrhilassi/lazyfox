@@ -24,10 +24,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildInstallerSet, type InstallerTarget } from "./installer-build.ts";
 import {
-  HOST,	TARGETS as ALL_PLATFORM_TARGETS,
-	isNativeTarget,
-	latestUnsignedXpi,
-	versionedInstallerName,
+  HOST,
+  TARGETS as ALL_PLATFORM_TARGETS,
+  isNativeTarget,
+  latestUnsignedXpi,
+  tuiBaseFor,
+  versionedInstallerName,
 } from "./payload.ts";
 import { xpiVersion } from "./amo-lib.ts";
 
@@ -56,11 +58,14 @@ console.log(`[dev-installer] embedding unsigned xpi: ${unsignedXpi}`);
 // The target list is declared once, in installer/internal/payload/artifacts.json
 // (see scripts/payload.ts), not restated here: a fourth copy of "which platforms
 // ship an installer" is a fourth place to forget one.
-const ALL_TARGETS: InstallerTarget[] = ALL_PLATFORM_TARGETS.map((t) => ({
-  goos: t.goos,
-  arch: t.arch,
-  out: t.devOut,
-}));
+const ALL_TARGETS: InstallerTarget[] = ALL_PLATFORM_TARGETS.flatMap((t) => {
+  const plain: InstallerTarget[] = [{ goos: t.goos, arch: t.arch, out: t.devOut }];
+  // The TUI fallback product ships for the same platform and the same channel,
+  // so its freshness is decided by the same `npm run check` gates.
+  const tui = tuiBaseFor(t, "dev");
+  if (tui) plain.push({ goos: t.goos, arch: t.arch, out: tui, tui: true });
+  return plain;
+});
 
 // Which binaries this run produces.
 //

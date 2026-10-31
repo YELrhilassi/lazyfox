@@ -402,11 +402,14 @@ const extensionVersion = JSON.parse(readFileSync(join(root, "dist", "extension",
 //   lazyfox-install-linux-<version>, lazyfox-install-darwin-<version>,
 //   lazyfox-install-windows-<version>.exe
 // (the version in the name is the add-on the binary embeds)
-const INSTALLER_TARGETS: InstallerTarget[] = TARGETS.map((t) => ({
-  goos: t.goos,
-  arch: t.arch,
-  out: t.releaseOut,
-}));
+const INSTALLER_TARGETS: InstallerTarget[] = TARGETS.flatMap((t) => {
+  const plain: InstallerTarget[] = [{ goos: t.goos, arch: t.arch, out: t.releaseOut }];
+  // A declared TUI fallback product is part of this platform's release set
+  // exactly like its GUI binary (same staging, same freshness gate).
+  const tui = t.tui ? t.tui.release : null;
+  if (tui) plain.push({ goos: t.goos, arch: t.arch, out: tui, tui: true });
+  return plain;
+});
 
 // Stage the payloads the installer embeds and compile every target — through
 // the SAME function the dev installers use (scripts/installer-build.ts), so the

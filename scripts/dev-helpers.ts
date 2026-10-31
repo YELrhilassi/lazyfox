@@ -11,6 +11,7 @@ import {
   readState,
   sha256File as payloadSha256File,
   targetFor,
+  tuiBaseFor,
 } from './payload.ts';
 
 const HELPERS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -342,6 +343,29 @@ function devInstallerIsFresh(root: string, binPath: string, xpi: string | null):
   return entry.bin === sha256File(binPath) && entry.payload === devPayloadHash(root, xpi);
 }
 
+// A GUI installer binary cannot start without its platform webview (WebKitGTK
+// on linux); when the dev-install runner spawns one there it dies before main()
+// with "error while loading shared libraries". `--mode list` is non-interactive
+// and only prints, so it is a safe probe: if it cannot even run, hand back the
+// platform's TUI binary instead — same payload, same channel, no webview.
+// Windows has no TUI product and macOS always has the system webview, so the
+// probe only applies where a TUI product is declared.
+function probeOrTuiFallback(root: string, bin: string | null): string | null {
+  if (!bin) return null;
+  const tui = targetFor(hostGoos())?.tui ? builtInstallerNamed(root, tuiBaseFor(targetFor(hostGoos())!, 'dev')!) : null;
+  if (!tui) return bin;
+  try {
+    execFileSync(bin, ['--mode', 'list'], { stdio: 'ignore', timeout: 20000 });
+    return bin;
+  } catch {
+    console.log(
+      '[dev-installer] the graphical installer cannot launch on this machine ' +
+        '(its webview dependency is missing) — using the terminal installer instead.',
+    );
+    return tui;
+  }
+}
+
 // Resolve the dev installer the scripts should invoke.
 //
 // The committed per-OS dev binary is reused ONLY when it is newer than every
@@ -360,7 +384,7 @@ export function ensureDevInstaller(
   const hostFormBase = process.platform === 'win32' ? 'lazyfox-install.exe' : 'lazyfox-install';
 
   const fresh = !!committed && devInstallerIsFresh(root, committed, xpi);
-  if (!rebuild && fresh) return committed!;
+  if (!rebuild && fresh) return probeOrTuiFallback(root, committed) ?? committed!;
 
   // (Re)build this machine's dev installer with the current payload. The script
   // stages into installer/internal/payload/data/ (where //go:embed reads) and
@@ -383,7 +407,8 @@ export function ensureDevInstaller(
   // Re-resolve after the rebuild: a version bump writes a NEW file name, so the
   // path resolved before it is the old build (and may no longer exist).
   const rebuilt = target ? builtInstaller(root, target, 'dev') : null;
-  if (rebuilt) return rebuilt;
+  const launched = probeOrTuiFallback(root, rebuilt);
+  if (launched) return launched;
   const rebuiltHostForm = builtInstallerNamed(root, hostFormBase);
   if (rebuiltHostForm) return rebuiltHostForm;
   throw new Error('ensureDevInstaller: the dev installer rebuild produced no binary in installer/bin');
