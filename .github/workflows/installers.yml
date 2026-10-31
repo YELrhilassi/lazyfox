@@ -124,6 +124,10 @@ jobs:
       # both — so a committed binary embeds the same release payload master
       # shipped, byte for byte.
       - name: Build dist, the add-on and the installers
+        # bash, not the runner default: on windows that is PowerShell, which
+        # cannot parse `if [ … ]` — the windows job died at parse time and
+        # produced no artifact while linux/darwin succeeded.
+        shell: bash
         run: |
           if [ "${{ inputs.release }}" = "true" ]; then
             node scripts/release-build.ts
