@@ -34,11 +34,16 @@
   ],
 
   "_targets": "Every shipping installer target, with the CANONICAL file name each one is committed under. The build appends -<add-on version> before any .exe, so a committed file is e.g. lazyfox-install-windows-0.5.12.exe — the name states which build it carries. devOut embeds the UNSIGNED add-on (nightly channel, for `npm run dev-install`); releaseOut embeds the AMO-signed one (stable channel) and refuses to build with any other version's signed xpi. The native GUI window can only be compiled on its own platform — every other target gets the cross-compiled terminal installer (see buildInstaller).",
+  "_tui": "A target may declare a SECOND product: the pure-Go terminal installer (-tags nogui) for the same platform. It exists because the GUI binaries link the platform webview (WebKitGTK on linux); on a desktop without that library the GUI binary cannot even start. The TUI binary has no ELF GUI dependency, so it always launches; install.sh probes webkit and falls back to it.",
   "targets": [
     {
       "goos": "linux",
       "arch": "amd64",
       "devOut": "lazyfox-install-dev-linux",
+      "tui": {
+        "dev": "lazyfox-install-dev-linux-tui",
+        "release": "lazyfox-install-linux-tui"
+      },
       "releaseOut": "lazyfox-install-linux"
     },
     {

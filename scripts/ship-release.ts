@@ -29,7 +29,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { TARGETS, sha256File, stageInstallerUploads, versionedInstallerName } from "./payload.ts";
+import { TARGETS, sha256File, stageInstallerUploads, versionedAppImageName, versionedInstallerName } from "./payload.ts";
 
 /** The notes every signed release carries. */
 export const RELEASE_NOTES = "Signed release for stable Firefox";
@@ -48,9 +48,29 @@ export function releaseAssets(root: string, version: string): string[] {
   // The built installers are named for the add-on they carry, and the release
   // build refuses any version but this one — so the expected file names are
   // exact, not "whatever is in bin/".
-  const installers = TARGETS.map((t) =>
-    path.join(root, "installer", "bin", versionedInstallerName(t.releaseOut, version)),
-  );
+  const installers = TARGETS.flatMap((t) => {
+    if (t.goos === "linux") {
+      // Linux ships ONE graphical installer: the fully bundled AppImage (its
+      // own WebKitGTK + helper processes, so it starts on ANY desktop that can
+      // run an AppImage — no libwebkit2gtk package, no FUSE needed thanks to
+      // install.sh's extract-and-run path), built by the "Installers - native
+      // builds" workflow and overlaid by ship. The raw libwebkit-linked ELF and
+      // the pure-Go TUI fallback are no longer release assets: the first could
+      // never run without the exact system package and the second is the
+      // terminal fallback only the dev channel still carries — publishing
+      // binaries that exist for a state the AppImage abolished made the release
+      // page a list of ways to fail.
+      return [
+        versionedAppImageName(t.releaseOut, version),
+      ].map((n) => path.join(root, "installer", "bin", n));
+    }
+    const plain = [versionedInstallerName(t.releaseOut, version)];
+    // The linux TUI fallback ships beside its GUI binary (see artifacts.json);
+    // targets without a declared TUI product contribute nothing here.
+    const tui = t.tui ? versionedInstallerName(t.tui.release, version) : null;
+    if (tui) plain.push(tui);
+    return plain.map((n) => path.join(root, "installer", "bin", n));
+  });
   return [
     ...installers,
     path.join(root, "installer", "scripts", "install.sh"),

@@ -22,7 +22,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isSignedXpi, xpiVersion } from "./amo-lib.ts";
 import { buildInstallerSet, type InstallerTarget } from "./installer-build.ts";
-import { HOST, TARGETS, isNativeTarget, versionedInstallerName } from "./payload.ts";
+import { HOST, TARGETS, isNativeTarget, tuiBaseFor, versionedInstallerName } from "./payload.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const installerDir = join(root, "installer");
@@ -66,11 +66,14 @@ console.log(`[installer] embedding signed xpi: ${xpi} (extension dir version ${v
 
 // Same declared target list as the dev installers (artifacts.json), so the two
 // channels can never drift onto different platforms or file names.
-const ALL_TARGETS: InstallerTarget[] = TARGETS.map((t) => ({
-  goos: t.goos,
-  arch: t.arch,
-  out: t.releaseOut,
-}));
+const ALL_TARGETS: InstallerTarget[] = TARGETS.flatMap((t) => {
+  const plain: InstallerTarget[] = [{ goos: t.goos, arch: t.arch, out: t.releaseOut }];
+  // Same rule as the dev installers: a declared TUI fallback ships in both
+  // channels, so the same freshness gate covers it.
+  const tui = tuiBaseFor(t, "release");
+  if (tui) plain.push({ goos: t.goos, arch: t.arch, out: tui, tui: true });
+  return plain;
+});
 
 // `host` refreshes only this machine's installer; `all` (default) is for releases.
 const ONLY = (process.env.LF_INSTALLER_TARGETS || "all").toLowerCase();
