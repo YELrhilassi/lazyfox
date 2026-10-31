@@ -63,9 +63,13 @@ jobs:
             artifact: lazyfox-install-linux
             bin: |
               installer/bin/lazyfox-install-linux-*
+              installer/bin/lazyfox-install-linux-*.AppImage
               installer/bin/lazyfox-install-dev-linux-*
-              # The pure-Go TUI fallback for machines without WebKitGTK live
-              # beside the GUI binary in the same artifact (dev + stable).
+              installer/bin/lazyfox-install-dev-linux-*.AppImage
+              # The pure-Go TUI fallback for machines without WebKitGTK lives
+              # beside the GUI binary in the same artifact (dev + stable), and
+              # the fully bundled AppImage (its own WebKitGTK + helper
+              # processes) is packaged below from that GUI binary.
           - os: macos-14
             name: darwin
             artifact: lazyfox-install-darwin
@@ -111,11 +115,13 @@ jobs:
       # Wails v2 builds against is webkit2gtk-4.0 (its 4.1 sibling breaks the
       # build with "Package 'webkit2gtk-4.0', required by 'virtual:world',
       # not found"), so the dev package installed must be the 4.0 one.
+      # patchelf is linuxdeploy's dependency-deploy tool; xvfb runs the packaged
+      # AppImage's GUI smoke test without a display server.
       - name: Install webview build dependencies (Linux)
         if: matrix.name == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev patchelf xvfb
 
       # One command: dist/, the add-on, and every committed installer
       # (this platform's with its graphical window, the others as terminal
@@ -146,6 +152,27 @@ jobs:
       - name: Dump the payload manifest
         run: node scripts/dump-payload-manifest.ts
 
+      # macOS's graphical installer is the native WKWebView binary. It must
+      # answer a non-interactive request with a usable embedded payload — the
+      # same content check the workflow already ran, now on the REAL artifact
+      # the release will publish, from the platform it was built for.
+      - name: Verify the darwin GUI binary runs
+        if: matrix.name == 'darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel=""; [ "${{ inputs.release }}" = "true" ] || channel="-dev"
+          bin=$(ls installer/bin/lazyfox-install${channel}-darwin-* | head -n 1)
+          cp "$bin" /tmp/darwin-check
+          out=$(/tmp/darwin-check --mode list 2>&1) || true
+          printf '%s\n' "$out"
+          if ! printf '%s' "$out" | grep -q 'add-on payload : present'; then
+            echo "$out"
+            echo "the darwin GUI binary does not report a usable payload"
+            exit 1
+          fi
+          echo "the darwin GUI binary reports a usable embedded payload"
+
       # The upload is not the verification. This is: the binaries just built are
       # re-checked by content (payload hash, source fingerprint, staged payload,
       # and this machine's binary actually running with a usable embedded
@@ -168,13 +195,63 @@ jobs:
       - name: Verify the binaries that were just built
         run: node scripts/check-installer-payload.ts
 
+      # Linux's PUBLISHED graphical installer is the fully bundled AppImage:
+      # its own WebKitGTK + the WebKitWebProcess/WebKitNetworkProcess helpers
+      # that a linked libwebkit spawns from a path baked into the library, so
+      # `libwebkit2gtk cannot open shared object file` (a desktop without the
+      # 4.0 package) can no longer happen. Package the JUST-BUILT GUI binary,
+      # then prove the AppImage headlessly: `--mode list` on a machine with the
+      # host webkit packages REMOVED — a failed bundle there is a hard stop,
+      # because a walled-garden-only dark-empty-window is what users report
+      # otherwise. The AppImage file name carries the embedded add-on version.
+      # (macOS needs no such wrapper: WKWebView is part of the OS; the raw
+      # binary IS the graphical installer and the smoke test below exercises it
+      # directly.)
+      - name: Package the Linux AppImage (bundled WebKitGTK)
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel=""; [ "${{ inputs.release }}" = "true" ] || channel="-dev"
+          prefix="lazyfox-install${channel}-linux"
+          bin=$(ls installer/bin/${prefix}-* | grep -v -- '-tui-' | head -n 1)
+          version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('dist/extension/manifest.json','utf8')).version)")
+          # Remove the host's own WebKitGTK so the gate below cannot silently
+          # pass on the RUNNER's packages (the version-skew trap documented in
+          # packaging AppImages: the host helper dir gets used as if it were
+          # the bundle). The binaries are already verified and uploaded above.
+          sudo apt-get remove -y libwebkit2gtk-4.0-38 libwebkit2gtk-4.0-38-dbg || true
+          installer/scripts/package-appimage.sh --bin "$bin" --out "installer/bin/${prefix}-${version}.AppImage"
+
+      # The headless gate, after the packaging step's own `--mode list`: open
+      # the REAL window on Xvfb and expect the timeout kill (124). Anything
+      # else — a crash, a clean early exit — means the webview did not come up,
+      # and that is exactly the defect this pipeline exists to catch before a
+      # user reports it.
+      - name: Smoke the AppImage GUI headlessly
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          set -uo pipefail
+          appimg=$(ls installer/bin/*.AppImage | head -n 1)
+          timeout 90 xvfb-run -a "$appimg" --appimage-extract-and-run >/dev/null 2>&1
+          rc=$?
+          if [ "$rc" -eq 124 ]; then
+            echo "the AppImage GUI window stayed alive for the full timeout — packaged correctly"
+          else
+            echo "the AppImage GUI exited early with code $rc — see the output above"
+            exit 1
+          fi
+
       - name: Upload this platform's installer
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           # Built binaries carry the add-on version in their name, so the upload
           # is a glob; check-installer-payload has already verified the file it
-          # matches.
+          # matches. The AppImage is the packaged form of that same just-built
+          # binary — the overlay (`scripts/native-installers.ts`) is what
+          # carries it into installer/bin/ — so it rides the same artifact.
           path: |
             ${{ matrix.bin }}
             installer/bin/payload-state.json

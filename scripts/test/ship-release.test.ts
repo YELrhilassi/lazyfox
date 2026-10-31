@@ -25,14 +25,17 @@ import { stageInstallerUploads } from "../payload.ts";
 describe("the release asset list", () => {
   test("it names every asset a stable release publishes", () => {
     const assets = releaseAssets("/repo", "0.5.9");
-    // Seven, not three: linux also ships the pure-Go TUI fallback beside its
-    // GUI binary — the product a machine without WebKitGTK actually launches.
+    // Seven, not three: linux ships the bundled WebKitGTK AppImage (the GUI a
+    // machine without libwebkit2gtk can still start) beside its pure-Go TUI
+    // fallback — the products that exist when the webkit-linked ELF would not
+    // even load. The raw linux ELF is NOT published: a desktop without the
+    // library can never run it.
     assert.equal(assets.length, 7);
     // The built installers are named for the add-on version they carry, so the
     // release must name exactly this version's file — never "whatever is in
     // bin/", which is how an older signed build once got shipped.
     assert.deepEqual(assets, [
-      path.join("/repo", "installer", "bin", "lazyfox-install-linux-0.5.9"),
+      path.join("/repo", "installer", "bin", "lazyfox-install-linux-0.5.9.AppImage"),
       path.join("/repo", "installer", "bin", "lazyfox-install-linux-tui-0.5.9"),
       path.join("/repo", "installer", "bin", "lazyfox-install-darwin-0.5.9"),
       path.join("/repo", "installer", "bin", "lazyfox-install-windows-0.5.9.exe"),
@@ -53,12 +56,13 @@ describe("the release asset list", () => {
       for (const asset of built) {
         fs.mkdirSync(path.dirname(asset), { recursive: true });
         fs.writeFileSync(asset, asset);
-      }      const staged = stageInstallerUploads(built);
+      }
+      const staged = stageInstallerUploads(built);
       try {
         assert.deepEqual(
           staged.paths.map((p) => path.basename(p)),
           [
-            "lazyfox-install-linux",
+            "lazyfox-install-linux.AppImage",
             "lazyfox-install-linux-tui",
             "lazyfox-install-darwin",
             "lazyfox-install-windows.exe",
@@ -145,8 +149,8 @@ describe("missing assets", () => {
       fs.mkdirSync(path.dirname(xpi), { recursive: true });
       fs.writeFileSync(xpi, "x");
       const missing = missingAssets(root, "9.9.9");
-      // Three platform binaries + the linux TUI fallback + the two one-line
-      // installer scripts.
+      // The linux AppImage + TUI fallback, the darwin and windows GUI binaries,
+      // and the two one-line installer scripts.
       assert.equal(missing.length, 6);
       assert.ok(!missing.includes(xpi));
     } finally {

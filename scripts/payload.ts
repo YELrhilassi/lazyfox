@@ -152,6 +152,16 @@ export function canonicalInstallerName(file: string): string {
   return `${stem.replace(/-\d+\.\d+\.\d+$/, "")}${ext}`;
 }
 
+/**
+ * The Linux GUI installer ships as a versioned AppImage, named exactly like the
+ * ELF it packages with the AppImage identity appended as the real extension, so
+ * the canonical published name is `lazyfox-install-linux.AppImage` — the same
+ * stripping rules: the version belongs to the local build name only.
+ */
+export function versionedAppImageName(base: string, version: string): string {
+  return `${versionedInstallerName(base, version)}.AppImage`;
+}
+
 /** The version a built binary's file name carries, or null if it is not one. */
 export function installerNameVersion(file: string, base: string): string | null {
   const ext = binaryExt(base);
@@ -210,9 +220,11 @@ export function builtInstallerNamed(root: string, base: string): string | null {
   return best ? join(dir, best.file) : null;
 }
 
-/** The binary extension (`.exe` on Windows targets), or "". */
+/** The binary extension (`.exe` on Windows targets, `.AppImage` on Linux), or "". */
 function binaryExt(name: string): string {
-  return name.endsWith(".exe") ? ".exe" : "";
+  if (name.endsWith(".exe")) return ".exe";
+  if (name.endsWith(".AppImage")) return ".AppImage";
+  return "";
 }
 
 function escapeRe(s: string): string {

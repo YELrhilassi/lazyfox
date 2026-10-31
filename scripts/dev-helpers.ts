@@ -352,7 +352,9 @@ function devInstallerIsFresh(root: string, binPath: string, xpi: string | null):
 // probe only applies where a TUI product is declared.
 function probeOrTuiFallback(root: string, bin: string | null): string | null {
   if (!bin) return null;
-  const tui = targetFor(hostGoos())?.tui ? builtInstallerNamed(root, tuiBaseFor(targetFor(hostGoos())!, 'dev')!) : null;
+  const goos = hostGoos();
+  const target = goos ? targetFor(goos) : null;
+  const tui = target?.tui ? builtInstallerNamed(root, tuiBaseFor(target, 'dev')!) : null;
   if (!tui) return bin;
   try {
     execFileSync(bin, ['--mode', 'list'], { stdio: 'ignore', timeout: 20000 });
