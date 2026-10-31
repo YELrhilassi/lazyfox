@@ -25,6 +25,10 @@ Thumbs.db
 *.log
 core/js/core.wasm
 src/shared/wasm-embed.ts
+# The staging tree `npm run native:fetch` / `npm run ship` download CI-built
+# installer artifacts into before overlaying them into installer/bin/. It is
+# regenerable by definition (its contents are downloaded from a workflow run).
+dist/native-installers/
 # The installer binaries' payload records (installer/bin/payload-state.json) are
 # COMMITTED on purpose: they are what lets `npm run check` prove by content that
 # no committed installer is stale, in a fresh clone and in CI, without rebuilding

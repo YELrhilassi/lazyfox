@@ -105,9 +105,14 @@ const unsignedXpi = path.join(root, "dist", `lazyfox2-${version}.xpi`);
 // Built binaries are named for the add-on they carry (…-dev-linux-0.5.12); the
 // upload copies below put the canonical name back so the nightly URLs stay put.
 const assets = [
-  ...TARGETS.map((t) =>
-    path.join(root, "installer", "bin", versionedInstallerName(t.devOut, version)),
-  ),
+  ...TARGETS.flatMap((t) => {
+    const names = [versionedInstallerName(t.devOut, version)];
+    // Same rule as the stable release: a declared TUI fallback ships in both
+    // channels beside its GUI binary.
+    const tui = t.tui ? versionedInstallerName(t.tui.dev, version) : null;
+    if (tui) names.push(tui);
+    return names.map((n) => path.join(root, "installer", "bin", n));
+  }),
   // The one-line installers, published under their base names so the nightly
   // pipes work:  …/releases/download/nightly/install.sh  /  install.ps1
   path.join(root, "installer", "scripts", "install.sh"),

@@ -45,6 +45,12 @@ export interface InstallerTarget {
   arch: string;
   /** File name inside installer/bin/. */
   out: string;
+  /**
+   * Build the terminal form (`-tags nogui`) of this target instead of the GUI
+   * window. Declared by artifacts.json for linux (its TUI fallback product);
+   * targets without it keep rule 1 unchanged.
+   */
+  tui?: boolean;
 }
 
 /**
@@ -87,7 +93,7 @@ export function buildInstaller(opts: {
   out: string;
 }): boolean {
   const { target } = opts;
-  const gui = isNativeTarget(target);
+  const gui = isNativeTarget(target) && !target.tui;
 
   // Wails v2 will not run unless the binary was compiled with the `production`
   // build tag. Without it, internal/app falls back to a stub that shows

@@ -320,6 +320,16 @@ then compile the installer:
   `.github/workflows/installers.yml` does exactly that, on request
   (`workflow_dispatch`), for a binary that has to be produced there.
 
+Linux additionally ships a **declared TUI fallback** (`lazyfox-install[dev-]linux-tui`
+in artifacts.json, both channels): the GUI binary links WebKitGTK at load time,
+so on a system with no `libwebkit2gtk-4.0` it cannot even start — the failure
+is an ELF loader error, before any Lazyfox code runs. The TUI binary has no GUI
+dependency and always launches. `installer/scripts/install.sh` probes the
+library with ldconfig and downloads the TUI when it is absent (override with
+`LAZYFOX_TUI=1` / `LAZYFOX_TUI=0`); the dev-install runner probes `--mode list`
+the same way. A TUI product is only ever compiled with `-tags nogui` —
+`InstallerTarget.tui` — so it can never accidentally carry the window.
+
 For the Windows target both paths run `scripts/winres.ts`
 (`go run … go-winres make`) to generate `rsrc_windows_amd64.syso` (manifest +
 icon + version; best-effort — the binary still builds without it), then link

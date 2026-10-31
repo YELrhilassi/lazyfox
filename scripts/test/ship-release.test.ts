@@ -25,12 +25,18 @@ import { stageInstallerUploads } from "../payload.ts";
 describe("the release asset list", () => {
   test("it names every asset a stable release publishes", () => {
     const assets = releaseAssets("/repo", "0.5.9");
+    // Six. Linux ships ONLY the bundled WebKitGTK AppImage — the GUI any
+    // desktop that can run an AppImage can start, with no libwebkit2gtk
+    // package and no FUSE (install.sh's extract-and-run path). The raw
+    // webkit-linked ELF was never publishable (a desktop without the exact
+    // 4.0 package cannot even load it), and the pure-Go TUI fallback is the
+    // dev channel's terminal rescue for a state the AppImage abolished.
     assert.equal(assets.length, 6);
     // The built installers are named for the add-on version they carry, so the
     // release must name exactly this version's file — never "whatever is in
     // bin/", which is how an older signed build once got shipped.
     assert.deepEqual(assets, [
-      path.join("/repo", "installer", "bin", "lazyfox-install-linux-0.5.9"),
+      path.join("/repo", "installer", "bin", "lazyfox-install-linux-0.5.9.AppImage"),
       path.join("/repo", "installer", "bin", "lazyfox-install-darwin-0.5.9"),
       path.join("/repo", "installer", "bin", "lazyfox-install-windows-0.5.9.exe"),
       path.join("/repo", "installer", "scripts", "install.sh"),
@@ -56,7 +62,7 @@ describe("the release asset list", () => {
         assert.deepEqual(
           staged.paths.map((p) => path.basename(p)),
           [
-            "lazyfox-install-linux",
+            "lazyfox-install-linux.AppImage",
             "lazyfox-install-darwin",
             "lazyfox-install-windows.exe",
             "install.sh",
@@ -142,6 +148,8 @@ describe("missing assets", () => {
       fs.mkdirSync(path.dirname(xpi), { recursive: true });
       fs.writeFileSync(xpi, "x");
       const missing = missingAssets(root, "9.9.9");
+      // The linux AppImage, the darwin and windows GUI binaries, and the two
+      // one-line installer scripts.
       assert.equal(missing.length, 5);
       assert.ok(!missing.includes(xpi));
     } finally {

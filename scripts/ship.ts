@@ -281,7 +281,11 @@ const { isSignedXpi, xpiVersion } = await import("./amo-lib.ts");
   }
 }
 
-// 7. Commit, tag, push.
+// 7. Commit the signed artifacts and push master FIRST: the native-builds
+//    workflow is dispatched against master's commit below, so its runs and
+//    artifacts must be able to name a commit the remote can already resolve.
+//    The tag lands after the native overlay, naming the commit the release's
+//    own assets came from.
 const tag = `v${version}`;
 shout("git", ["add", "-A"]);
 try {
@@ -289,11 +293,46 @@ try {
 } catch {
   console.log("[ship] nothing new to commit on master (already at this state).");
 }
+shout("git", ["push", remote, "master"]);
+
+// 8. The NATIVE graphical installers. A release published from this machine
+//    can only cross-compile terminal installers for linux and macOS — the
+//    graphical window links the platform webview through cgo and is built ON
+//    its platform (the "Installers - native builds" workflow). Without this
+//    step the release historically shipped a Linux installer that died with
+//    libwebkit2gtk cannot open shared object file and a macOS installer that
+//    was a terminal build. Dispatch the workflow, wait for the build, download
+//    the artifacts and overlay them into installer/bin/ (Linux: the fully
+//    bundled AppImage; macOS: the real WKWebView binary). LF_SKIP_NATIVE=1
+//    skips the wait for an emergency path, but the AppImage is then absent and
+//    the release refuses to publish that asset below.
+if (process.env.LF_SKIP_NATIVE === "1") {
+  console.log("[ship] LF_SKIP_NATIVE=1 — skipping the native graphical installers.");
+} else {
+  const { dispatchNativeBuilds, downloadNativeArtifacts, overlayNativeInstallers, rmStaging, waitNativeRun } =
+    await import("./native-installers.ts");
+  console.log("\n[ship] dispatching the native builds (Linux AppImage + macOS graphical installer)…");
+  dispatchNativeBuilds(root, { release: true, ref: "master" });
+  const sha = gitOutput(["rev-parse", "HEAD"], root);
+  const run = await waitNativeRun(root, sha);
+  downloadNativeArtifacts(root, run.databaseId);
+  const { plugins, state } = overlayNativeInstallers(root);
+  rmStaging(root);
+  console.log(`[ship] native installers overlaid: ${plugins.join(", ")} (${state.length} state entries).`);
+  shout("git", ["add", "installer/bin"]);
+  try {
+    shout("git", ["commit", "-m", `chore(release): v${version} native graphical installers (Linux AppImage, macOS GUI)`]);
+  } catch {
+    console.log("[ship] nothing new to commit for the native installers.");
+  }
+}
+
+// 9. Tag at the commit the release assets came from, then push.
 shout("git", ["tag", "-a", tag, "-m", `Lazyfox ${tag} signed release`]);
 shout("git", ["push", remote, "master"]);
 shout("git", ["push", remote, tag]);
 
-// 8. GitHub Release with the installers + signed xpi.
+// 9. GitHub Release with the installers + signed xpi.
 //    The asset list is built and passed as an ARRAY in scripts/ship-release.ts.
 //    It used to be assembled here with `.join(" ")` and handed over as
 //    `...assets.split(" ")`, which re-tokenizes every path on a space — and this
