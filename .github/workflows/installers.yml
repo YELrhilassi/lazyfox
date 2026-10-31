@@ -70,8 +70,12 @@ jobs:
               # beside the GUI binary in the same artifact (dev + stable), and
               # the fully bundled AppImage (its own WebKitGTK + helper
               # processes) is packaged below from that GUI binary.
-          - os: macos-14
-            name: darwin
+          # macos-15, deliberately: the macos-14 image browned out and was
+          # retired on 2026-11-02 (actions/runner-images#13518) — dispatches
+          # failed with "scheduled image brownout" inside a second, killing the
+          # darwin artifact (the WKWebView graphical installer) before a build
+          # could even start. Anything past macos-15 must re-verify the WKWebView
+          # backend, not assume it carries over unchanged.
             artifact: lazyfox-install-darwin
             bin: |
               installer/bin/lazyfox-install-darwin-*
