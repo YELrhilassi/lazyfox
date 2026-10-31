@@ -359,8 +359,13 @@ function sha256FileLf(p: string): string {
  * is compiled per target during an installer build, so it cannot go into the
  * shared hash — but its SOURCE can, and it must: otherwise editing native-host
  * would leave every installer looking fresh while still embedding the old host.
+ *
+ * Exported for dump-payload-manifest.ts, which is how a payload disagreement
+ * between two builder machines gets narrowed to the file that actually differs
+ * (payloadHash collapses every input into one digest; a rerun of that alone
+ * can only say "different", never "which one").
  */
-function nativeHostSources(root: string): string[] {
+export function nativeHostSources(root: string): string[] {
   const dir = join(root, "native-host");
   const out: string[] = [];
   const walk = (d: string, prefix: string): void => {

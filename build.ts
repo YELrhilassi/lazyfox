@@ -15,6 +15,7 @@
 // dist/ is committed to the repo so installers consume prebuilt output and
 // users who clone don't need a Go toolchain to install.
 
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -97,7 +98,43 @@ console.log("[wasm] building core.wasm (GOOS=js GOARCH=wasm)...");
 // "dist/ does not match the source" signal the payload check exists to raise.
 // With it, `-buildvcs=false -trimpath` is deterministic: the same source and
 // toolchain give the same bytes whatever the git state is.
-run("go", ["build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", wasmOut, "./core/js"], {
+//
+// -buildid=<fingerprint>, the last reproducibility wall in that same road — and
+// the one that actually separated MACHINES, not builds. Measured from CI: the
+// windows runner's core.wasm and the linux/darwin runners' differed by EXACTLY
+// 40 bytes inside the two copies of `go:buildid` — the leading hash components
+// of the ID, which the go tool derives from a hash of the compiler BINARY it
+// is about to use. The compiler binary is a different executable on every host
+// OS, so with the same go version, identical flags and identical sources, a
+// wasm built on windows can never be byte-equal to one built on linux or
+// macOS. An explicit build ID (it goes to the linker, hence inside -ldflags —
+// `go build` itself rejects -buildid) replaces the derived one, and the
+// remaining 3,675,136 bytes were already provably identical — so the artifact
+// becomes host-independent for real. The value is a content fingerprint of the
+// core's source (line endings normalised, the same rule payloadHash applies to
+// the native host's sources): stable across builders for the same source, it
+// still names the source it was built from in crash reports.
+const coreBuildId = (() => {
+  const files: string[] = [];
+  const walk = (d: string, prefix: string): void => {
+    if (!existsSync(d)) return;
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(join(d, e.name), rel);
+      else if (/\.(go|mod|sum)$/.test(e.name)) files.push(rel);
+    }
+  };
+  walk(join(root, "core"), "");
+  files.sort();
+  const h = createHash("sha256");
+  for (const rel of files) {
+    h.update(rel + "\0");
+    h.update(readFileSync(join(root, "core", rel)).toString("utf8").replace(/\r\n/g, "\n"));
+    h.update("\0");
+  }
+  return `lazyfox-core-${h.digest("hex").slice(0, 32)}`;
+})();
+run("go", ["build", "-buildvcs=false", "-trimpath", `-ldflags=-buildid=${coreBuildId} -s -w`, "-o", wasmOut, "./core/js"], {
   cwd: root,
   env: { ...process.env, GOOS: "js", GOARCH: "wasm" },
 });
