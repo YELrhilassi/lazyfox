@@ -29,6 +29,28 @@ const loader = LOADER_FILES.map((f) => `dist/chrome/loader/${f}`);
 const host = nativeHostSources(ROOT);
 const xpi = latestUnsignedXpi(ROOT);
 
+// core/js/core.wasm is not itself inside the payload — corebootstrap.js ships it
+// as base64, and that bundle IS a payload input. If the wasm bytes differ
+// between two builder machines, corebootstrap.js differs too, and the payload
+// collapses the whole story into "slightly different". Print the wasm and the
+// go environment next to the dist files so the bisect can say WHICH side moved.
+const wasmOut = join(ROOT, "core", "js", "core.wasm");
+const goKeys = ["GOTOOLCHAIN", "GOROOT", "GOFLAGS", "GOOS", "GOARCH"];
+const shell = process.platform === "win32";
+let goVersion = "(go not ready)";
+let goEnvStr = "";
+const { execFileSync } = await import("node:child_process");
+try {
+  goVersion = execFileSync("go", ["version"], { encoding: "utf8", shell }).trim();
+  goEnvStr = goKeys
+    .map((k) => `${k}=${execFileSync("go", ["env", k], { encoding: "utf8", shell }).trim()}`)
+    .join(" ");
+} catch (e) {
+  goEnvStr = `go env failed: ${e instanceof Error ? e.message : e}`;
+}
+console.log(`# go: ${goVersion}`);
+console.log(`# env: ${goEnvStr}`);
+
 const rows: Array<{ path: string; sha: string; bytes: number }> = [];
 const add = (rel: string): void => {
   const abs = join(ROOT, rel);
@@ -40,6 +62,12 @@ const add = (rel: string): void => {
 };
 
 for (const rel of [...chrome, ...loader, ...host]) add(rel);
+try {
+  const buf = readFileSync(wasmOut);
+  rows.push({ path: "core/js/core.wasm", sha: sha256(wasmOut), bytes: buf.length });
+} catch {
+  rows.push({ path: "core/js/core.wasm", sha: "MISSING", bytes: 0 });
+}
 if (xpi) add(xpi);
 
 rows.sort((a, b) => a.path.localeCompare(b.path));
