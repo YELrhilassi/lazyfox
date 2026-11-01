@@ -149,8 +149,18 @@ StartupNotify=true
 EOF
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ICON="$SCRIPT_DIR/winres/icon256.png"
-[ -f "$ICON" ] || die "icon not found: $ICON"
+# Icons must ALREADY be inside the AppDir named after the desktop entry's
+# Icon=lazyfox-install, sized from the real per-size sources. The old
+# `--icon-file winres/icon256.png` was wrong: linuxdeploy keeps the FILE's
+# basename (…/256x256/apps/icon256.png) and then fails the desktop deployment
+# with "Could not find suitable icon for Icon entry: lazyfox-install".
+for size in 256 128 64 48 32 16; do
+  src="$SCRIPT_DIR/winres/icon${size}.png"
+  [ -f "$src" ] || src="$SCRIPT_DIR/winres/icon256.png"
+  dst="$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps/lazyfox-install.png"
+  mkdir -p "$(dirname "$dst")"
+  cp "$src" "$dst"
+done
 
 mkdir -p "$APPDIR$WEBKIT_LIBEXEC"
 cp -a "$WEBKIT_LIBEXEC"/. "$APPDIR$WEBKIT_LIBEXEC/"
@@ -159,8 +169,7 @@ cp -a "$WEBKIT_LIBEXEC"/. "$APPDIR$WEBKIT_LIBEXEC/"
 say "[appimage] deploying dependencies ($APPDIR)"
 NO_STRIP=1 DEPLOY_GTK_VERSION=3 run_linuxdeploy \
   --appdir "$APPDIR" \
-  --desktop-file "$APPDIR/lazyfox-install.desktop" \
-  --icon-file "$ICON" || die "linuxdeploy (pass 1) failed"
+  --desktop-file "$APPDIR/lazyfox-install.desktop" || die "linuxdeploy (pass 1) failed"
 
 # --- linuxdeploy pass 2: the WebKit helpers' own dependency closure ------------------
 # Nothing links the helper executables, so pass 1 never copies their deps — and a
