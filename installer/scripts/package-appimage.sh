@@ -259,9 +259,25 @@ rm -f "$OUT"
 say "[appimage] packing $OUT"
 ARCH="$ARCH" run_appimagetool --runtime-file "$RUNTIME" "$APPDIR" "$OUT" || die "appimagetool failed"
 
-# --- prove it out of the box: the AppImage itself runs --mode list headlessly -----------
-timeout 120 "$OUT" --appimage-extract-and-run --mode list >/dev/null || \
-  die "the packaged AppImage failed --mode list"
+# --- prove it out of the box: the packed AppRun runs --mode list headlessly -------------
+# The same steps the runtime's extract-and-run does, but as an explicit extract
+# followed by `bash -x AppRun`: if anything inside the AppDir is wrong (a path,
+# a hook, an entry point) the xtrace names the failing line and its argument
+# directly in the log, instead of leaving one unexplained error line to decode
+# from outside.
+smoke_dir="$(mktemp -d /tmp/lazyfox-smoke.XXXXXX)"
+(
+  cd "$smoke_dir"
+  timeout 120 "$OUT" --appimage-extract >/dev/null
+) || die "the packed AppImage is not extractable"
+SQUASH="$smoke_dir/squashfs-root"
+say "[appimage] (debug) usr/bin entries:"
+ls -la "$SQUASH/usr/bin"
+(
+  cd "$SQUASH"
+  timeout 120 bash -x ./AppRun --mode list >/dev/null
+) || die "the packed AppRun failed --mode list"
+rm -rf "$smoke_dir"
 
 say "[appimage] OK: $OUT"
 
