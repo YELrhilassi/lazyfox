@@ -256,8 +256,13 @@ jobs:
           fi
           echo "no host WebKitGTK remains — the bundle is all the window gets"
           appimg=$(ls installer/bin/*.AppImage | head -n 1)
-          timeout 90 xvfb-run -a "$appimg" --appimage-extract-and-run >/dev/null 2>&1
-          rc=$?
+          # Actions runs this script with `bash -e -o pipefail`, so the
+          # TIMEOUT KILL's 124 — the SUCCESS signal this gate waits for —
+          # must be captured by the guarded command itself; a bare
+          # `timeout … || rc=$?` line would make errexit abort the script on
+          # exactly the case that proves the bundle works.
+          rc=0
+          timeout 90 xvfb-run -a "$appimg" --appimage-extract-and-run >/dev/null 2>&1 || rc=$?
           if [ "$rc" -eq 124 ]; then
             echo "the AppImage GUI window stayed alive for the full timeout — packaged correctly"
           else
