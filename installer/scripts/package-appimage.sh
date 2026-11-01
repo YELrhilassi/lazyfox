@@ -185,7 +185,11 @@ for helper in WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess; do
 done
 
 # --- the WebKit byte-patch: baked absolute helper path -> relative -------------------
-WK_LIB="$(find "$APPDIR/usr" -type f -o -type l | grep '/libwebkit2gtk-' | head -n 1)"
+# The file must be the LIBRARY itself: linuxdeploy also copies the dpkg
+# copyright doc (…/doc/libwebkit2gtk-4.0-37/copyright), whose path contains
+# the same substring and would otherwise be 'patched' — a text file with no
+# baked ELF string, and a hard assert in the patcher below.
+WK_LIB="$(find "$APPDIR/usr" -type f -o -type l | grep '/libwebkit2gtk-[0-9.]*\.so' | head -n 1)"
 [ -n "$WK_LIB" ] || die "libwebkit2gtk was not deployed into the AppDir"
 REAL_LIB="$(readlink -f "$WK_LIB")"
 say "[appimage] patching helper path in $(basename "$REAL_LIB")"
