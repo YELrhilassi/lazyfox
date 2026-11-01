@@ -82,7 +82,11 @@ mkdir -p "$TOOLS_DIR"
 fetch_tool() { # <url> <local name> -> prints the local path
   local url="$1" dst="$TOOLS_DIR/$2"
   if [ ! -s "$dst" ]; then
-    say "[appimage] fetching $url"
+    # Progress goes to STDERR, deliberate: this function is command-substituted
+    # (its stdout IS the tool path), and a stdout progress line would become
+    # part of the value — observed on CI as LINUXDEPLOY = "[appimage] fetching
+    # <url>\n/tmp/...AppImage", which bash then tries to run as two commands.
+    say "[appimage] fetching $url" >&2
     if command -v curl >/dev/null 2>&1; then
       curl -fL --proto '=https' --tlsv1.2 -o "$dst" "$url" || die "download failed: $url"
     else
