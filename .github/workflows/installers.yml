@@ -76,6 +76,8 @@ jobs:
           # darwin artifact (the WKWebView graphical installer) before a build
           # could even start. Anything past macos-15 must re-verify the WKWebView
           # backend, not assume it carries over unchanged.
+          - os: macos-15
+            name: darwin
             artifact: lazyfox-install-darwin
             bin: |
               installer/bin/lazyfox-install-darwin-*
