@@ -252,6 +252,8 @@ if [ -d /sys/module/nvidia ]; then
   export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
 fi
 EOF
+say "[appimage] (debug) usr/bin after the hook write:"
+ls -la "$APPDIR/usr/bin"
 
 cat > "$APPDIR/AppRun" <<'EOF'
 #!/usr/bin/env bash
@@ -267,14 +269,24 @@ for hook in "$APPDIR"/apprun-hooks/*.sh; do
 done
 exec "$APPDIR/usr/bin/lazyfox-install" "$@"
 EOF
+say "[appimage] (debug) usr/bin after the AppRun write:"
+ls -la "$APPDIR/usr/bin"
 chmod +x "$APPDIR/AppRun" "$APPDIR"/apprun-hooks/*.sh
 
 # --- the runtime gate: nothing may be left unresolved --------------------------------
 # ldd on a NON-ELF prints "not a dynamic executable" and ZERO 'not found'
 # lines, which made the gate below pass while the entry had been quietly
 # replaced by a bash script — so the ELF-ness is asserted explicitly first.
-file "$APPDIR/usr/bin/lazyfox-install" | grep -q 'ELF' || \
-  die "the installer entry in the AppDir is not an ELF at pack time:\n$(ls -la "$APPDIR/usr/bin")"
+if ! file "$APPDIR/usr/bin/lazyfox-install" | grep -q 'ELF'; then
+  say "[appimage] (debug) usr/bin right after the AppRun chmod:"
+  ls -la "$APPDIR/usr/bin"
+  echo "--- impostor content ---"
+  head -c 600 "$APPDIR/usr/bin/lazyfox-install"
+  echo
+  echo "--- AppDir root contents ---"
+  ls -la "$APPDIR"
+  die "the installer entry in the AppDir is not an ELF at pack time"
+fi
 MISSING="$(ldd "$APPDIR/usr/bin/lazyfox-install" 2>/dev/null | grep 'not found' || true)"
 [ -z "$MISSING" ] || die "unresolved dependencies after deploy:
 $MISSING"
