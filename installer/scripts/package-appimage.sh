@@ -67,6 +67,13 @@ done
 [ -n "$OUT" ] || die "--out is required (the AppImage file to write)"
 [ -f "$BIN" ] || die "binary not found: $BIN"
 
+# Absolute paths at the boundary. Later steps change directory (the smoke cd's
+# into a scratch dir), and a relative --out/--bin passed by an invoking CI step
+# then resolves from the wrong cwd — observed as "No such file or directory" on
+# an AppImage that had just been written successfully.
+BIN="$(readlink -f "$BIN")"
+OUT="$(readlink -f "$OUT")"
+
 command -v python3  >/dev/null 2>&1 || die "python3 is required for the WebKit byte-patch"
 command -v ldd      >/dev/null 2>&1 || die "ldd is required for the runtime gate"
 command -v file     >/dev/null 2>&1 || die "file is required to sanity-check the binary"
