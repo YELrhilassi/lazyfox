@@ -20,6 +20,11 @@
 #   (c) chdir the process into the AppDir before exec, so the relative path
 #       resolves into the squashfs mount.
 #
+# WARNING about the pins: a release tag that does not exist 404s the whole
+# packaging (the 1-alpha-20240109 pin was missing its "-1" suffix and every
+# download died before a build started). Verify the tag against the release
+# list before bumping: linuxdeploy names alphas 1-alpha-YYYYMMDD-*.
+#
 # The dependency closure and the GTK module caches come from linuxdeploy (+ the
 # gtk plugin), the watch on "nothing is missing at runtime" is a plain ldd gate,
 # and appimagetool does the packaging. It must run on the native Linux build
@@ -67,7 +72,7 @@ command -v ldd      >/dev/null 2>&1 || die "ldd is required for the runtime gate
 command -v file     >/dev/null 2>&1 || die "file is required to sanity-check the binary"
 
 # --- the three AppImage tools, pinned and cached -----------------------------------
-TAG_LINUXDEPLOY="${LINUXDEPLOY_TAG:-1-alpha-20240109}"
+TAG_LINUXDEPLOY="${LINUXDEPLOY_TAG:-1-alpha-20251107-1}"
 TAG_APPIMAGETOOL="${APPIMAGETOOL_TAG:-continuous}"
 TAG_RUNTIME="${TYPE2_RUNTIME_TAG:-continuous}"
 
