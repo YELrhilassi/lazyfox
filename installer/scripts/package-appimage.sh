@@ -172,11 +172,25 @@ done
 mkdir -p "$APPDIR$WEBKIT_LIBEXEC"
 cp -a "$WEBKIT_LIBEXEC"/. "$APPDIR$WEBKIT_LIBEXEC/"
 
+# --- instrumentation: what is usr/bin/lazyfox-install at each stage ------------------
+# The extractor once found a 436-BYTE BASH SCRIPT in this slot instead of the
+# ELF, without any single step obviously claiming the substitution; dumping the
+# entry's state after every linuxdeploy phase is the way to see WHEN it flips
+# rather than inferring from the final smoke.
+usrbin_state() {
+  ls -la "$APPDIR/usr/bin"
+  file "$APPDIR/usr/bin/lazyfox-install"
+}
+say "[appimage] (debug) usr/bin before pass 1:"
+usrbin_state
+
 # --- linuxdeploy pass 1: deploy the dependency closure + GTK integration ------------
 say "[appimage] deploying dependencies ($APPDIR)"
 NO_STRIP=1 DEPLOY_GTK_VERSION=3 run_linuxdeploy \
   --appdir "$APPDIR" \
   --desktop-file "$APPDIR/lazyfox-install.desktop" || die "linuxdeploy (pass 1) failed"
+say "[appimage] (debug) usr/bin after pass 1:"
+usrbin_state
 
 # --- linuxdeploy pass 2: the WebKit helpers' own dependency closure ------------------
 # Nothing links the helper executables, so pass 1 never copies their deps — and a
@@ -190,6 +204,8 @@ for helper in WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess; do
     --appdir "$APPDIR" \
     --deploy-deps-only="$f" || die "linuxdeploy (helper $helper) failed"
 done
+say "[appimage] (debug) usr/bin after pass 2:"
+usrbin_state
 
 # --- the WebKit byte-patch: baked absolute helper path -> relative -------------------
 # The file must be the LIBRARY itself: linuxdeploy also copies the dpkg
@@ -254,6 +270,11 @@ EOF
 chmod +x "$APPDIR/AppRun" "$APPDIR"/apprun-hooks/*.sh
 
 # --- the runtime gate: nothing may be left unresolved --------------------------------
+# ldd on a NON-ELF prints "not a dynamic executable" and ZERO 'not found'
+# lines, which made the gate below pass while the entry had been quietly
+# replaced by a bash script — so the ELF-ness is asserted explicitly first.
+file "$APPDIR/usr/bin/lazyfox-install" | grep -q 'ELF' || \
+  die "the installer entry in the AppDir is not an ELF at pack time:\n$(ls -la "$APPDIR/usr/bin")"
 MISSING="$(ldd "$APPDIR/usr/bin/lazyfox-install" 2>/dev/null | grep 'not found' || true)"
 [ -z "$MISSING" ] || die "unresolved dependencies after deploy:
 $MISSING"
