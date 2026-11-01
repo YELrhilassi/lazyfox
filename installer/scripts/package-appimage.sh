@@ -237,6 +237,13 @@ lib_path.write_bytes(data.replace(old_b, new_b))
 print(f"patched {count} occurrence(s) of {old} -> {new} in {lib_path}")
 PY
 
+# --- AppRun: our launcher replaces linuxdeploy's symlink -----------------------------
+# linuxdeploy pass 1 deploys an AppRun as a SYMLINK to the Exec target when the
+# AppDir has none. Writing ours with `cat >` would FOLLOW that symlink and
+# overwrite usr/bin/lazyfox-install with the AppRun text — observed on CI as a
+# 436-byte script in the ELF's slot. Remove the symlink (or file) first.
+rm -f "$APPDIR/AppRun"
+
 # --- AppRun: fetch the plugin's env hook, chdir for the patched path, NVIDIA guard --
 cat > "$APPDIR/apprun-hooks/zz-webkit-cwd.sh" <<'EOF'
 # The bundled libwebkit spawns its WebKitWebProcess / WebKitNetworkProcess
