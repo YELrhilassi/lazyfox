@@ -222,35 +222,39 @@ jobs:
           prefix="lazyfox-install${channel}-linux"
           bin=$(ls installer/bin/${prefix}-* | grep -v -- '-tui-' | head -n 1)
           version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('dist/extension/manifest.json','utf8')).version)")
-          # Remove the host's own WebKitGTK so the gate below cannot silently
-          # pass on the RUNNER's packages (the version-skew trap documented in
-          # packaging AppImages: the host helper dir gets used as if it were
-          # the bundle). Name the packages by what dpkg actually has installed:
-          # jammy publishes libwebkit2gtk-4.0-37, not -38, and a remove of a
-          # non-existing name is an error silently skipped — the one state that
-          # makes the no-webkit gate a lie. The binaries are already verified
-          # and uploaded above.
+          # PACKING NEEDS THE HOST'S WEBKIT: package-appimage.sh copies the
+          # WebKitWebProcess / WebKitNetworkProcess helper directory out of the
+          # installed library's libexec path and byte-patches the baked absolute
+          # path into the bundle. Purging the host library first (the tempting
+          # order, and what an earlier form of this step did) starves the
+          # packager — "no webkit2gtk helper directory found" — so the purge
+          # lives in the smoke step below, where it makes the gate honest.
+          installer/scripts/package-appimage.sh --bin "$bin" --out "installer/bin/${prefix}-${version}.AppImage"
+
+      # The headless gate, after the packaging step's own `--mode list` (which
+      # proves the LINKED library at least comes from the bundle): purge the
+      # runner's WebKitGTK entirely, verify it is REALLY gone, and only then
+      # open the REAL window on Xvfb and expect the timeout kill (124). The
+      # purge names the packages dpkg actually has installed — jammy publishes
+      # libwebkit2gtk-4.0-37, not -38, and a remove of a non-existing name is
+      # an error silently skipped, the one state that makes a no-webkit gate a
+      # lie. Anything other than the timeout kill — a crash, an early exit —
+      # means the webview did not come up, and that is exactly the defect this
+      # pipeline exists to catch before a user reports it.
+      - name: Smoke the AppImage GUI without any host WebKitGTK
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          set -uo pipefail
           webkit_pkgs="$(dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | grep '^libwebkit2gtk' || true)"
           if [ -n "$webkit_pkgs" ]; then
             sudo apt-get purge -y $webkit_pkgs || sudo dpkg -P --force-all $webkit_pkgs || sudo dpkg -r --force-all $webkit_pkgs || true
           fi
           if ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk'; then
-            echo "host WebKitGTK is still installed after the purge — the no-webkit gate below cannot be trusted"
+            echo "host WebKitGTK is still installed after the purge — this smoke cannot be trusted"
             exit 1
           fi
-          echo "no host WebKitGTK remains — the gate below proves the bundle alone"
-          installer/scripts/package-appimage.sh --bin "$bin" --out "installer/bin/${prefix}-${version}.AppImage"
-
-      # The headless gate, after the packaging step's own `--mode list`: open
-      # the REAL window on Xvfb and expect the timeout kill (124). Anything
-      # else — a crash, a clean early exit — means the webview did not come up,
-      # and that is exactly the defect this pipeline exists to catch before a
-      # user reports it.
-      - name: Smoke the AppImage GUI headlessly
-        if: matrix.name == 'linux'
-        shell: bash
-        run: |
-          set -uo pipefail
+          echo "no host WebKitGTK remains — the bundle is all the window gets"
           appimg=$(ls installer/bin/*.AppImage | head -n 1)
           timeout 90 xvfb-run -a "$appimg" --appimage-extract-and-run >/dev/null 2>&1
           rc=$?
