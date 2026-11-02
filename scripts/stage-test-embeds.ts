@@ -14,7 +14,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isSignedXpi } from "./amo-lib.ts";
 import { ensureFrontend } from "./installer-build.ts";
 import { STAGED_CHROME_FILES } from "./payload.ts";
 
@@ -40,8 +39,13 @@ if (!existsSync(chromeDst) || STAGED_CHROME_FILES.some((f) => !existsSync(join(c
   console.log("[stage-embeds] staged data/chrome from dist/chrome");
 }
 
-// data/extension — this version's signed xpi, resolved the way the release
-// build resolves it (the manifest version, canonical then -signed copy).
+// data/extension — this version's add-on for the embed, resolved the way the
+// release build resolves the path (the manifest's version, canonical file
+// first, then the same version's -signed copy). Signedness itself is not this
+// script's gate: staging only has to satisfy //go:embed for `go test`, and
+// anything that SHIPS an xpi goes through requireSignedXpi, which refuses an
+// unsigned one. In CI's master checkout the canonical file is the signed one
+// anyway (ship commits it that way).
 const xpiDst = join(payloadData, "extension", "lazyfox2.xpi");
 if (!existsSync(xpiDst)) {
   const manifest = join(root, "dist", "extension", "manifest.json");
@@ -53,10 +57,10 @@ if (!existsSync(xpiDst)) {
     join(root, "dist", `lazyfox2-${version}.xpi`),
     join(root, "dist", `lazyfox2-${version}-signed.xpi`),
   ];
-  const xpi = candidates.find((p) => existsSync(p) && isSignedXpi(readFileSync(p)));
+  const xpi = candidates.find((p) => existsSync(p));
   if (!xpi) {
     console.error(
-      `stage-test-embeds: no signed lazyfox2-${version}.xpi in dist/ — fetch it with \`node scripts/sync-signed-xpi.ts\`.`,
+      `stage-test-embeds: no dist/lazyfox2-${version}.xpi (or its -signed copy) exists — run \`npm run build\` first.`,
     );
     process.exit(1);
   }
