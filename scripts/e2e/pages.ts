@@ -1460,6 +1460,26 @@ html,body{margin:0}
 </script>
 </body></html>`,
   },
+  // A page whose ROOT element does the scrolling (x.com sets
+  // `html { overflow-y: scroll }`, so do Reddit and most app shells). The hints
+  // clip walk used the root's own box as a clip rectangle, and that box is the
+  // DOCUMENT positioned at -scrollY: past one viewport every control read as
+  // covered and `;f` answered "no hints in view". Every other fixture leaves the
+  // root `visible`, which is why the suite could not see it.
+  "/rootscroll": {
+    body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Root Scroll</title>
+<style>
+  html { overflow-y:scroll; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; }
+  .gap { height:2600px; }
+</style></head>
+<body>
+<a id="top-link" data-id="top-link" href="#top">top link</a>
+<div class="gap">scroll space</div>
+<a id="lower-link" data-id="lower-link" href="#lower">lower link</a>
+</body></html>`,
+  },
+
   "/uitest": {
     body: `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>UI Heavy</title>
 <style>
