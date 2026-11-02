@@ -292,6 +292,11 @@ export function App() {
           </Button>
         ) : (
           <>
+            {!running && result && !result.ok && (
+              <Button size="sm" variant="outline" onClick={() => void run()}>
+                Try again
+              </Button>
+            )}
             {!running && (
               <Button size="sm" variant="outline" onClick={() => void startOver()}>
                 Start over

@@ -16,13 +16,18 @@ import (
 // tasklist. Because the installer is a GUI-subsystem binary, every one of those
 // console programs popped a console window — and the wait loop polled tasklist
 // every 250ms for up to 20s, so a single install flashed dozens of command
-// windows on screen. Worse, the polling was the only thing standing between
+// windows on screen. Worse, the polling was the only standing between
 // "Firefox closed" and "abort the install", so a slow exit failed the install
 // outright.
 //
 // Everything below uses the Win32 API directly (a thread snapshot plus process
-// handles), so nothing is ever shown on screen and waiting is a kernel wait
-// rather than a poll.
+// handles), so nothing is ever shown on screen and waiting is a kernel wait or a
+// bounded poll rather than a fixed sleep.
+
+var (
+	user32           = windows.NewLazySystemDLL("user32.dll")
+	procPostMessageW = user32.NewProc("PostMessageW")
+)
 
 // RunningFirefoxPIDs returns the pids of every running firefox.exe.
 func RunningFirefoxPIDs() []uint32 { return RunningPIDs("firefox.exe") }
@@ -46,6 +51,17 @@ func RunningPIDs(name string) []uint32 {
 		}
 	}
 	return pids
+}
+
+// ProfileFirefoxAlive reports whether a Firefox process is still running at all.
+//
+// Windows cannot attribute the profile lock to a process (a sharing violation
+// never says who owns it), so "locked AND some firefox.exe is alive" is the
+// honest pair: after our stop pass, no live firefox.exe means nothing can be
+// writing this profile, whatever else has the lock file open for a moment — and
+// that is exactly the state the old code aborted over.
+func ProfileFirefoxAlive(profileDir string) bool {
+	return len(RunningFirefoxPIDs()) > 0
 }
 
 // StopProcessesNamed terminates every process whose executable matches name and
@@ -83,30 +99,100 @@ func stopProcess(pid uint32) bool {
 	return true
 }
 
-// StopFirefoxForProfile terminates the Firefox processes holding profileDir and
-// waits until the profile lock is actually released, returning how many were
-// stopped.
+// closeWindowsOf posts WM_CLOSE to every top-level window owned by pid and
+// reports whether it found any.
 //
-// A normally launched Firefox does not put `-profile <dir>` on its command line
-// (and reading another process's command line needs the PEB), so while this
-// profile is locked every firefox.exe is a candidate — the same rule the old
-// implementation used. Nothing is killed when the profile is not locked.
+// This is the "ask politely" half of the close: a window close is what Firefox
+// responds to by saving its session and releasing the profile cleanly. The old
+// straight-to-TerminateProcess path gave the browser no chance to do that, so
+// every install looked like a crash on the next start — Firefox keeps the lock
+// file's timestamp precisely to notice that — and a browser caught mid-write was
+// a profile caught mid-write.
+func closeWindowsOf(pid uint32) bool {
+	found := false
+	callback := windows.NewCallback(func(hwnd, lparam uintptr) uintptr {
+		var owner uint32
+		if _, err := windows.GetWindowThreadProcessId(windows.HWND(hwnd), &owner); err == nil && owner == pid {
+			const wmClose = 0x0010
+			_, _, _ = procPostMessageW.Call(hwnd, wmClose, 0, 0)
+			found = true
+		}
+		return 1 // keep enumerating
+	})
+	if err := windows.EnumWindows(callback, nil); err != nil {
+		return false
+	}
+	return found
+}
+
+// waitForExit polls (by process NAME, so a pid that exited and was reused can
+// never be mistaken for our browser) until none of pids is running, or the
+// deadline passes.
+func waitForExit(pids []uint32, wait time.Duration) {
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		running := RunningFirefoxPIDs()
+		live := false
+		for _, pid := range pids {
+			for _, r := range running {
+				if r == pid {
+					live = true
+					break
+				}
+			}
+			if live {
+				break
+			}
+		}
+		if !live {
+			return
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// StopFirefoxForProfile closes the Firefox using profileDir and waits until the
+// profile lock is released, returning how many processes were terminated.
+//
+// It closes politely first: WM_CLOSE to each firefox window, bounded at six
+// seconds, so the browser can save its session and let go of the profile the way
+// a user close would. Whatever is still alive after that is terminated, the list
+// re-scanned so a process that appeared during the wait is included, and the wait
+// for the lock is bounded — never a fixed sleep, and never given up on while a
+// firefox.exe still exists.
+//
+// As before, while this profile is locked every firefox.exe is a candidate: a
+// normally launched Firefox does not put `-profile <dir>` on its command line
+// (and reading another process's command line needs the PEB).
 func StopFirefoxForProfile(profileDir string) int {
 	if !ProfileLocked(profileDir) {
 		return 0
 	}
+	pids := RunningFirefoxPIDs()
+	if len(pids) == 0 {
+		// The lock reads held but no Firefox exists: the holder is something
+		// else (an antivirus or indexer that has the file open for a moment).
+		// There is nothing to close, and the caller's verdict is made on
+		// liveness — see ProfileFirefoxAlive.
+		return 0
+	}
+
+	// 1. Ask politely.
+	for _, pid := range pids {
+		closeWindowsOf(pid)
+	}
+	waitForExit(pids, 6*time.Second)
+
+	// 2. Force whatever ignored that, with a fresh scan for stragglers.
 	stopped := 0
 	for _, pid := range RunningFirefoxPIDs() {
 		if stopProcess(pid) {
 			stopped++
 		}
 	}
-	if stopped == 0 {
-		return 0
-	}
-	// The thing we actually care about is the lock file, not the process list:
-	// Firefox unlinks it on clean shutdown. Wait for that, with a hard bound so
-	// a wedged Firefox cannot hang the installer forever.
+
+	// 3. The lock is what the caller's writes depend on: wait for it to clear,
+	//    with a hard bound so a wedged Firefox cannot hang the installer.
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if !ProfileLocked(profileDir) {

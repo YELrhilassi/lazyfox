@@ -5,47 +5,68 @@ package platform
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
-// StopFirefoxForProfile terminates every process of this uid whose command line
-// references profileDir, returning how many were signalled.
+// ProfileFirefoxAlive reports whether the Firefox using profileDir still runs.
+//
+// The profile's fcntl lock names its holder, and a record lock dies with its
+// process, so "the lock names a live pid" IS "the browser is alive" — no process
+// scan needed, and none trustworthy: command lines do not carry `-profile` for a
+// normally launched Firefox.
+func ProfileFirefoxAlive(profileDir string) bool {
+	return ProfileLockHolder(profileDir) > 0
+}
+
+// StopFirefoxForProfile terminates the Firefox holding profileDir's lock and
+// waits until the lock is released, returning how many were signalled.
+//
+// The holder of the profile's fcntl lock IS the Firefox using it (fcntl records
+// the owning pid), so that is the pid this signals. The old rule — "every
+// process whose command line mentions the profile path" — never matched a
+// normally launched Firefox (the launcher omits `-profile`) and could just as
+// easily match the installer's own `--profile` argument, a shell, or an editor
+// with the path open, all of which were then sent SIGTERM.
+//
+// SIGTERM first: Firefox's own handler releases the fcntl lock and unlinks the
+// legacy symlink on the way out. SIGKILL only for whatever ignores that, after a
+// bounded wait, because a killed Firefox leaves the legacy link behind — that
+// cleanup runs from a signal handler only.
 func StopFirefoxForProfile(profileDir string) int {
-	n := 0
-	pids := pidsMatchingProfile(profileDir)
-	for _, pid := range pids {
-		if pid > 0 && syscall.Kill(pid, syscall.SIGTERM) == nil {
-			n++
-		}
+	if !ProfileLocked(profileDir) {
+		return 0
 	}
-	if n == 0 {
-		return n
+	pid := ProfileLockHolder(profileDir)
+	if pid <= 0 || pid == os.Getpid() {
+		return 0 // locked, but no live local holder can be named: nothing to signal
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	if syscall.Kill(pid, syscall.SIGTERM) != nil {
+		return 0
+	}
+	if waitForLockRelease(profileDir, 5*time.Second) {
+		return 1
+	}
+	// Straggler: escalate so the profile files are released, then give the
+	// kernel a moment to make that true.
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	waitForLockRelease(profileDir, 3*time.Second)
+	return 1
+}
+
+// waitForLockRelease polls until the profile reads as free, or the deadline
+// passes; true means it is free.
+func waitForLockRelease(profileDir string, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
-		alive := false
-		for _, pid := range pids {
-			if unixAlive(pid) {
-				alive = true
-				break
-			}
+		if !ProfileLocked(profileDir) {
+			return true
 		}
-		if !alive {
-			return n
-		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 	}
-	// Escalate to SIGKILL for stragglers so the profile files are released.
-	for _, pid := range pids {
-		if unixAlive(pid) {
-			syscall.Kill(pid, syscall.SIGKILL)
-		}
-	}
-	return n
+	return !ProfileLocked(profileDir)
 }
 
 // StopProcessesNamed terminates every process of this uid whose executable name
@@ -85,43 +106,6 @@ func StopProcessesNamed(name string) int {
 	return n
 }
 
-// pidsMatchingProfile lists pids for this user whose command line contains the
-// profile path (pgrep when available, else a /proc scan).
-func pidsMatchingProfile(profileDir string) []int {
-	norm := filepath.Clean(profileDir)
-	if p, err := FindPath("pgrep"); err == nil {
-		out, err := exec.Command(p, "-u", strconv.Itoa(os.Getuid()), "-f", norm).Output()
-		if err == nil {
-			var pids []int
-			for _, f := range strings.Fields(string(out)) {
-				if v, err := strconv.Atoi(f); err == nil {
-					pids = append(pids, v)
-				}
-			}
-			return pids
-		}
-	}
-	var pids []int
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil
-	}
-	for _, e := range entries {
-		if _, err := strconv.Atoi(e.Name()); err != nil {
-			continue
-		}
-		cmdline, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
-		if err != nil {
-			continue
-		}
-		if strings.Contains(strings.ReplaceAll(string(cmdline), "\x00", " "), norm) {
-			pid, _ := strconv.Atoi(e.Name())
-			pids = append(pids, pid)
-		}
-	}
-	return pids
-}
-
 func unixAlive(pid int) bool {
 	return pid > 0 && syscall.Kill(pid, 0) == nil
 }
@@ -140,5 +124,6 @@ func LaunchFirefox(bin, profileDir string, args ...string) error {
 }
 
 // RunningFirefoxPIDs is Windows-only (a thread snapshot is the only way to
-// enumerate processes here); on Unix the stop below walks /proc or pgrep.
+// enumerate processes there); Unix attributes Firefox through its profile lock
+// instead (see ProfileFirefoxAlive).
 func RunningFirefoxPIDs() []uint32 { return nil }

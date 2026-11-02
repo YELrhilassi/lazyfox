@@ -35,3 +35,6 @@ dist/native-installers/
 # anything. Only the per-binary .stamp sidecars from the older mechanism are
 # ignored, so a checkout that still carries one does not show them as untracked.
 installer/bin/*.stamp
+
+# Freebuff chat attachments — local tooling, never committed
+.cloud-attachments/

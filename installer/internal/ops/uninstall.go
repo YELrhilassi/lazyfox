@@ -40,9 +40,18 @@ type UninstallOptions struct {
 func RunUninstall(src *payload.Source, rep Reporter, o UninstallOptions, pw PasswordProvider) error {
 	profileDir := o.Profile.Dir
 
-	if !o.NoStop && (platform.ProfileLocked(profileDir) || RunningForProfile(profileDir)) {
+	// Firefox must be gone before the first file is touched: removing the xpi or
+	// rewriting extensions.json under a running browser half-removes Lazyfox and
+	// then reports leftovers. The verdict is liveness, not the lock file (see
+	// RunningForProfile): if a live Firefox still holds the profile after the
+	// stop attempt, nothing has been changed yet — abort with what to do, rather
+	// than the old path that half-removed and then failed verification.
+	if !o.NoStop && RunningForProfile(profileDir) {
 		rep.Note("Profile in use; closing Firefox…")
-		_ = platform.StopFirefoxForProfile(profileDir)
+		platform.StopFirefoxForProfile(profileDir)
+		if RunningForProfile(profileDir) {
+			return errFirefoxStillOpen()
+		}
 	}
 
 	// 1. chrome/* — driven by the same registry the install uses.
@@ -75,7 +84,7 @@ func RunUninstall(src *payload.Source, rep Reporter, o UninstallOptions, pw Pass
 		addon := payload.AddonArtifact()
 		xpi := payload.Dest(profileDir, addon)
 		if platform.Exists(xpi) {
-			if platform.ProfileLocked(profileDir) || RunningForProfile(profileDir) {
+			if RunningForProfile(profileDir) {
 				rep.Warn("%s is locked (Firefox is running). Quit Firefox and re-run to remove it.", xpi)
 			} else if _, err := backupThenRemove(xpi); err != nil {
 				rep.Warn("could not remove xpi: %v", err)
@@ -124,7 +133,7 @@ func RunUninstall(src *payload.Source, rep Reporter, o UninstallOptions, pw Pass
 
 	// 7. remove a Lazyfox-owned dedicated profile, if this was one.
 	if o.RemoveDedicated && fx.IsLazyfoxOwnedProfile(profileDir) {
-		if platform.ProfileLocked(profileDir) || RunningForProfile(profileDir) {
+		if RunningForProfile(profileDir) {
 			rep.Warn("profile in use; quit Firefox and re-run to delete it.")
 		} else if err := fx.RemoveDedicatedProfile(o.Profile.Root, profileDir); err != nil {
 			rep.Warn("could not remove the Lazyfox profile: %v", err)
