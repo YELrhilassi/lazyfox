@@ -3,11 +3,87 @@
 package platform
 
 import (
+	"bufio"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
+
+// TestMain doubles as the lock-holder helper process. When LF_FLOCK_HOLD names
+// a file, this (re-executed) test binary takes Firefox's fcntl lock on that
+// file, reports "locked" on stdout, and holds it until killed.
+//
+// The holder has to be ANOTHER process: POSIX record locks are owned by the
+// process table, and F_GETLK deliberately reports no conflict against the
+// calling process's own locks — an in-process lock would read as free, so the
+// probe could never be exercised by locking in the test itself.
+func TestMain(m *testing.M) {
+	if path := os.Getenv("LF_FLOCK_HOLD"); path != "" {
+		f, err := os.OpenFile(path, os.O_RDWR, 0)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "lock holder: open:", err)
+			os.Exit(2)
+		}
+		lk := syscall.Flock_t{Type: syscall.F_WRLCK}
+		if err := syscall.FcntlFlock(f.Fd(), syscall.F_SETLK, &lk); err != nil {
+			fmt.Fprintln(os.Stderr, "lock holder: F_SETLK:", err)
+			os.Exit(3)
+		}
+		fmt.Fprintln(os.Stdout, "locked")
+		for {
+			time.Sleep(time.Second)
+		}
+	}
+	os.Exit(m.Run())
+}
+
+// startLockHolder re-executes this test binary as a lock holder on file and
+// waits for the child to actually hold the lock. The child is killed on test
+// cleanup — after which its locks are gone, which is exactly the "Firefox
+// closed" state the last assertion of the test makes.
+func startLockHolder(t *testing.T, file string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "LF_FLOCK_HOLD="+file)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("piping the lock holder: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting the lock holder: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+	ready := make(chan bool, 1)
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			if strings.TrimSpace(sc.Text()) == "locked" {
+				ready <- true
+				return
+			}
+		}
+		ready <- false // EOF without "locked": the child died first
+	}()
+	select {
+	case ok := <-ready:
+		if !ok {
+			t.Fatalf("the lock holder exited before locking: %s", strings.TrimSpace(stderr.String()))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the lock holder never reported that it holds the lock")
+	}
+	return cmd
+}
 
 // TestProfileLockedTestsTheLockNotTheFile pins the fix for the worst install bug
 // this installer had: Firefox locks `.parentlock` with fcntl and never deletes
@@ -31,24 +107,29 @@ func TestProfileLockedTestsTheLockNotTheFile(t *testing.T) {
 		t.Fatal("a leftover .parentlock must not read as a running Firefox")
 	}
 
-	// Hold it the way Firefox does: fcntl(F_SETLK) on .parentlock.
-	f, err := os.OpenFile(filepath.Join(dir, ".parentlock"), os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	var lk syscall.Flock_t
-	lk.Type = syscall.F_WRLCK
-	if err := syscall.FcntlFlock(f.Fd(), syscall.F_SETLK, &lk); err != nil {
-		t.Fatalf("could not take the lock the way Firefox does: %v", err)
-	}
-	defer syscall.FcntlFlock(f.Fd(), syscall.F_UNLCK, &lk)
+	// Hold it the way Firefox does — from another process: fcntl(F_SETLK) on
+	// .parentlock. In this process the lock would exist yet be invisible to the
+	// F_GETLK probe above, because a process never conflicts with itself.
+	holder := startLockHolder(t, filepath.Join(dir, ".parentlock"))
 
 	if !ProfileLocked(dir) {
 		t.Fatal("a held .parentlock must read as locked")
 	}
-	if holder := ProfileLockHolder(dir); holder != os.Getpid() {
-		t.Fatalf("holder = %d, want this process (%d)", holder, os.Getpid())
+	if pid := ProfileLockHolder(dir); pid != holder.Process.Pid {
+		t.Fatalf("holder = %d, want the holding child (%d)", pid, holder.Process.Pid)
+	}
+
+	// The holder exits the way Firefox does: the process dies and its locks die
+	// with it, while the file stays behind. That is the state in which the
+	// install must proceed.
+	if err := holder.Process.Kill(); err != nil {
+		t.Fatalf("killing the lock holder: %v", err)
+	}
+	if _, err := holder.Process.Wait(); err != nil {
+		t.Fatalf("waiting for the lock holder: %v", err)
+	}
+	if ProfileLocked(dir) {
+		t.Fatal("once the holder is dead the leftover .parentlock must read as free")
 	}
 }
 
