@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ReactNode } from "react";
 
 import { Input } from "@/components/ui/input";
@@ -7,6 +8,7 @@ import { Choice, Toggle } from "@/components/Choice";
 import { PathText } from "@/components/PathText";
 import { installer } from "@/lib/installer";
 import { needsProfile } from "@/lib/selection";
+import { cn } from "@/lib/utils";
 import { PROFILE_NAME_RE, type ProfileInfo, type Selection, type State } from "@/lib/types";
 
 /** NEW_PROFILE is the radio value for "make me a new profile". */
@@ -40,6 +42,11 @@ export function SettingsPanel({
   description: string;
   onChange: (patch: Partial<Selection>) => void;
 }) {
+  const [showOptions, setShowOptions] = useState(false);
+  // Only the three profile actions have options at all; the loader actions
+  // carry an admin note instead, which must stay visible without a click.
+  const hasOptions = sel.action === "install" || sel.action === "update" || sel.action === "uninstall";
+  const single = state.installs.length === 1 ? state.installs[0] : undefined;
   const showProfile = needsProfile(sel.action);
   const selected = state.profiles.find((p) => p.dir === sel.profileDir);
   // An update only ever refreshes a profile Lazyfox is already in; offering
@@ -67,6 +74,19 @@ export function SettingsPanel({
           <Line tone="warning">
             No {state.channelShort} installation was found. Point the installer at one with Choose folder.
           </Line>
+        ) : single ? (
+          // One detected Firefox: a fact, not a choice — a radio list with a
+          // single row reads as a decision the user got wrong. The folder
+          // button below stays for a portable install detection missed.
+          <div className="flex items-start gap-3 rounded-md border border-border px-3 py-2.5">
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="text-[13px] font-medium leading-5">{single.flavor}</span>
+              <PathText path={single.dir} />
+            </span>
+            <span className="shrink-0 pt-0.5 text-[11px] text-muted-foreground">
+              {loaderLabel(single.loader)}
+            </span>
+          </div>
         ) : (
           <RadioGroup
             value={sel.installDir}
@@ -189,7 +209,22 @@ export function SettingsPanel({
       )}
 
       <Section label="Options">
-        <div className="divide-y divide-border overflow-hidden rounded-md border border-border">
+        {hasOptions && (
+          <button
+            type="button"
+            aria-expanded={showOptions}
+            onClick={() => setShowOptions((v) => !v)}
+            className="flex w-fit items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            {showOptions ? "Hide options" : "Show options"}
+          </button>
+        )}
+        <div
+          className={cn(
+            "divide-y divide-border overflow-hidden rounded-md border border-border",
+            hasOptions && !showOptions && "hidden",
+          )}
+        >
           {sel.action === "install" && (
             <>
               <Toggle
