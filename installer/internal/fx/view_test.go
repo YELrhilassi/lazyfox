@@ -135,7 +135,7 @@ func TestViewOffersProfilesOfAnUndetectedInstall(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(portable, "firefox.exe"), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(portable, executableName()), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// LastAppDir points at the portable install, so attribution by install works
