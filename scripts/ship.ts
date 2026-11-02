@@ -286,8 +286,22 @@ const { isSignedXpi, xpiVersion } = await import("./amo-lib.ts");
 //    artifacts must be able to name a commit the remote can already resolve.
 //    The tag lands after the native overlay, naming the commit the release's
 //    own assets came from.
+// Windows git records new binaries as 100644 (core.filemode=false), so a
+// release committed here left every fresh macOS/Linux clone with installer
+// binaries it could not exec. Set the bit in the index before committing;
+// .exe and the AppImage are downloaded assets, not repo-tree executables.
+function markUnixInstallersExecutable(): void {
+  const files = sh("git", ["ls-files", "installer/bin"])
+    .split(/\r?\n/)
+    .filter((f) => f !== "" && !/\.(exe|AppImage|json)$/i.test(f));
+  if (files.length > 0) {
+    shout("git", ["update-index", "--chmod=+x", ...files]);
+  }
+}
+
 const tag = `v${version}`;
 shout("git", ["add", "-A"]);
+markUnixInstallersExecutable();
 // Not shout inside try: shout's own catch calls fail() and exits the process,
 // so this branch could never run — a tree with nothing new to commit killed the
 // release right after every artifact was built and verified. Ask the index
@@ -324,6 +338,7 @@ if (process.env.LF_SKIP_NATIVE === "1") {
   rmStaging(root);
   console.log(`[ship] native installers overlaid: ${plugins.join(", ")} (${state.length} state entries).`);
   shout("git", ["add", "installer/bin"]);
+  markUnixInstallersExecutable();
   // Same dead-catch as the signed-artifacts commit above: shout exits, so ask
   // the index whether there is anything to record before committing.
   if (sh("git", ["status", "--porcelain", "--", "installer/bin"])) {
