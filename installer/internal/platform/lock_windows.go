@@ -10,10 +10,12 @@ import (
 
 // lockHeld reports whether a live process holds the OS lock on this file.
 //
-// Firefox locks `parent.lock` with LockFileEx while it runs and leaves the file
-// itself behind, so this re-opens it with no sharing at all: a sharing violation
-// means someone still has it open, which is the only honest signal that Firefox
-// is running. A missing file, or one nobody holds, is not a lock.
+// Firefox locks `parent.lock` with CreateFile(no sharing) while it runs and
+// never deletes the file — "always create the profile lock and never delete it
+// so we can use its modification timestamp to detect startup crashes" — so this
+// re-opens it with no sharing at all: a sharing violation means somebody still
+// has it open, which is the only honest signal available. A missing file, or one
+// nobody holds, is not a lock.
 func lockHeld(path string) bool {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
@@ -33,4 +35,12 @@ func lockHeld(path string) bool {
 	}
 	windows.CloseHandle(h)
 	return false
+}
+
+// lockHolder: the no-share re-open proves that *somebody* holds the file, but
+// CreateFile never says who — there is no portable way to ask Windows which
+// process owns a sharing violation. Windows therefore names no pid; callers use
+// the firefox.exe process list there (see ProfileLockHolder).
+func lockHolder(path string) int {
+	return 0
 }

@@ -438,19 +438,25 @@ ignore a security prompt.
 - **One write path for Firefox state.** Every profile-side write goes through
   `internal/ops` with a timestamped backup first, and every verification reads
   back through the same registry the write used.
-- **A leftover lock file is not a running Firefox.** `platform.ProfileLocked`
-  tests the *lock* (`LockFileEx` on Windows via an exclusive re-open, `flock` on
-  Unix), not the file's existence. Firefox leaves `parent.lock` behind in every
-  profile it has ever opened, so an existence check reported “Firefox is running”
-  for essentially every profile on a machine: installs would close Firefox
-  unbidden, skip enabling the add-on, then abort (“Firefox is still running with
-  this profile and did not close”) — which is the “it said it installed but
-  nothing was installed” report. Verified against a real profile store: five
-  profiles with a leftover `parent.lock`, exactly one live holder.
+- **Only a live Firefox counts as a running Firefox.** `platform.ProfileLocked`
+  tests the *lock*, never the file's existence: an exclusive no-share re-open on
+  Windows, the same fcntl lock Firefox takes (`F_GETLK`) on Unix. Firefox's own
+  source keeps those files forever — "always create the profile lock and never
+  delete it … so we can use its modification timestamp to detect startup crashes"
+  — so a `.parentlock` in a profile says only that Firefox has run there, and
+  believing it read every opened profile as running. The install/uninstall verdict
+  is stricter still: locked **and** a live holder (`ops.RunningForProfile`). A
+  lock held by anything else — an antivirus mid-scan — no longer aborts an install
+  with "Firefox did not close" while the browser is already closed, and the Unix
+  stop signals the holder pid the fcntl lock records instead of guessing from
+  command lines (which never matched a normally launched Firefox and could match
+  the installer's own `--profile` argument).
 - **The installer spawns no Windows helper processes.** Closing Firefox is a
-  Win32 thread snapshot plus `TerminateProcess` and a kernel wait
-  (`internal/platform/firefoxproc_windows.go`); the only child processes left are
-  the browser open and the Firefox relaunch, and both are created with
+  Win32 thread snapshot plus `WM_CLOSE` to each of its windows — the browser
+  saves its session and releases the profile the way a user close would — then a
+  `TerminateProcess` pass for whatever ignored that, and a bounded wait on the
+  kernel (`internal/platform/firefoxproc_windows.go`). The only child processes
+  left are the browser open and the Firefox relaunch, both created with
   `CREATE_NO_WINDOW`. The previous implementation shelled out to `powershell`,
   `tasklist` and `taskkill` — and because the installer is a GUI-subsystem exe,
   every one of those popped a console window, while a 250 ms `tasklist` poll for
