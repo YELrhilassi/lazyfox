@@ -288,9 +288,13 @@ const { isSignedXpi, xpiVersion } = await import("./amo-lib.ts");
 //    own assets came from.
 const tag = `v${version}`;
 shout("git", ["add", "-A"]);
-try {
+// Not shout inside try: shout's own catch calls fail() and exits the process,
+// so this branch could never run — a tree with nothing new to commit killed the
+// release right after every artifact was built and verified. Ask the index
+// instead; a real commit failure (a rejected hook, a locked repo) still stops.
+if (sh("git", ["status", "--porcelain"])) {
   shout("git", ["commit", "-m", `chore(release): v${version} signed artifacts`]);
-} catch {
+} else {
   console.log("[ship] nothing new to commit on master (already at this state).");
 }
 shout("git", ["push", remote, "master"]);
@@ -320,9 +324,11 @@ if (process.env.LF_SKIP_NATIVE === "1") {
   rmStaging(root);
   console.log(`[ship] native installers overlaid: ${plugins.join(", ")} (${state.length} state entries).`);
   shout("git", ["add", "installer/bin"]);
-  try {
+  // Same dead-catch as the signed-artifacts commit above: shout exits, so ask
+  // the index whether there is anything to record before committing.
+  if (sh("git", ["status", "--porcelain", "--", "installer/bin"])) {
     shout("git", ["commit", "-m", `chore(release): v${version} native graphical installers (Linux AppImage, macOS GUI)`]);
-  } catch {
+  } else {
     console.log("[ship] nothing new to commit for the native installers.");
   }
 }
