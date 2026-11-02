@@ -43,7 +43,7 @@
       "xpiVersion": "0.5.21",
       "payload": "aec94251111775ed0f747517419a50aa28c4f312fd0b1e4f8fd30ac3ee6bd7cd",
       "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "90d21c8e37d8bc23a4ba24e2da8641071ecc29a6feee9821a8d2659e70b2dcfb"
+      "bin": "953673081847dbc69b354abba50b5746034d468047e07ebc280fa83c7f2d73ac"
     },
     "lazyfox-install-linux-0.5.21": {
       "out": "lazyfox-install-linux-0.5.21",
@@ -87,7 +87,7 @@
       "xpiVersion": "0.5.21",
       "payload": "aec94251111775ed0f747517419a50aa28c4f312fd0b1e4f8fd30ac3ee6bd7cd",
       "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "399c1aa22e777859ba3c10e1b2a7ceabacd4337b45d26641c3850323731cd3ec"
+      "bin": "2f0de8d00fb81a18059d1aaee83994ab0e7d7254c800f0f976ee8f07409c32f4"
     }
   }
 }
