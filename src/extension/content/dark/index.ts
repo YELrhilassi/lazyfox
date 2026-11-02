@@ -668,6 +668,31 @@ export function createDarkMode(deps: DarkDeps): DarkController {
       if (state.engine === "native") state.engine = "auto";
     }
 
+    // MODE `off` IS NOT A MEASUREMENT.
+    //
+    // The sampler walks the document and reads a computed style per element. On
+    // a real app — WhatsApp Web's virtualised chat and message lists, Gmail, a
+    // long feed — that is thousands of reads per pass, and every load asks for
+    // one: boot, the stored config and DOMContentLoaded each request a pass.
+    // The mode already answered the only question a pass could ask (build a
+    // theme, or not), so all of it was spent building a theme `decide` then
+    // discards. That is the reported freeze on heavy pages — "it freezes after
+    // it loads", Firefox naming the add-on — on a page nobody asked us to
+    // recolour.
+    if (((state.site?.mode ?? config.dark.mode) as Mode) === "off") {
+      finishEarlySheet();
+      applier.clear();
+      state.on = false;
+      state.mode = "off";
+      state.engine = (state.site?.engine ?? config.dark.engine) as EnginePref;
+      state.reason = "turned off";
+      // The anchors describe a palette that is no longer on screen; building the
+      // next theme from them would paint colours measured before the stand-down.
+      liveAnalysis = null;
+      liveEngine = null;
+      mirror();
+      return;
+    }
     // THE PAGE'S OWN DECLARATION IS READ WHILE OUR SHEET IS NOT IN THE WAY.
     // While the native question is still open our sheet declares no scheme, so
     // the root's computed value is the PAGE's; once the answer is in, the cached
