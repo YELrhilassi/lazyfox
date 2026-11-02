@@ -10,7 +10,7 @@
       "xpiVersion": "0.5.21",
       "payload": "aec94251111775ed0f747517419a50aa28c4f312fd0b1e4f8fd30ac3ee6bd7cd",
       "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "9bdd5ac0e9a63097a6a74d200e74168bc1f7b7bceae779334f421f28eb71d5d7"
+      "bin": "644d50bd4f8f512e2eb68454672cbdbfacd4ee01807452b4e17744d21828dd9a"
     },
     "lazyfox-install-dev-linux-tui-0.5.21": {
       "out": "lazyfox-install-dev-linux-tui-0.5.21",
@@ -21,7 +21,7 @@
       "xpiVersion": "0.5.21",
       "payload": "aec94251111775ed0f747517419a50aa28c4f312fd0b1e4f8fd30ac3ee6bd7cd",
       "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "9bdd5ac0e9a63097a6a74d200e74168bc1f7b7bceae779334f421f28eb71d5d7"
+      "bin": "6fd976b0bbf132c871dba9a728700fde63330797c7a53378e2c6fa1d4caa623d"
     },
     "lazyfox-install-dev-darwin-0.5.21": {
       "out": "lazyfox-install-dev-darwin-0.5.21",
@@ -32,7 +32,7 @@
       "xpiVersion": "0.5.21",
       "payload": "aec94251111775ed0f747517419a50aa28c4f312fd0b1e4f8fd30ac3ee6bd7cd",
       "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "bfcc0a75416ab12f7f0b096a25b94119ec7e2c0d3d02e1d811682eebe1e9a440"
+      "bin": "0cff19ab1c49e34949c3f07511bd3b483ae7bf5429ab335c06f85e903b5d047a"
     },
     "lazyfox-install-dev-windows-0.5.21.exe": {
       "out": "lazyfox-install-dev-windows-0.5.21.exe",
@@ -54,7 +54,7 @@
       "xpiVersion": "0.5.21",
       "payload": "aec94251111775ed0f747517419a50aa28c4f312fd0b1e4f8fd30ac3ee6bd7cd",
       "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "c8cb50f2b8f42393f2d6a6de759378948b7b8967a9e876afcf2974624bf3b6ae"
+      "bin": "8746e0097055b25935a8e455ff13c84c6045154d17e34243b2aed45e2978b10b"
     },
     "lazyfox-install-linux-tui-0.5.21": {
       "out": "lazyfox-install-linux-tui-0.5.21",
@@ -65,7 +65,7 @@
       "xpiVersion": "0.5.21",
       "payload": "aec94251111775ed0f747517419a50aa28c4f312fd0b1e4f8fd30ac3ee6bd7cd",
       "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "c8cb50f2b8f42393f2d6a6de759378948b7b8967a9e876afcf2974624bf3b6ae"
+      "bin": "1ceb8c46e102082ab3f99c9281d3691d823480a4033a4ccb38f9345153b5fbcf"
     },
     "lazyfox-install-darwin-0.5.21": {
       "out": "lazyfox-install-darwin-0.5.21",
@@ -76,7 +76,7 @@
       "xpiVersion": "0.5.21",
       "payload": "aec94251111775ed0f747517419a50aa28c4f312fd0b1e4f8fd30ac3ee6bd7cd",
       "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "28ca71e5a48e107c5e1f6b3aa950b85e8761174940214a0e3d65643fc24222ae"
+      "bin": "a95bdbdcb2ca10ee5b27baf95c8110721285936db7add1cf8e41d95d01262149"
     },
     "lazyfox-install-windows-0.5.21.exe": {
       "out": "lazyfox-install-windows-0.5.21.exe",
