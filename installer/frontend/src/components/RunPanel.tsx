@@ -74,7 +74,7 @@ export function RunPanel({
 
       {result && (
         <div className="flex flex-col gap-2">
-          <p className={cn("text-[13px] font-medium", result.ok ? "text-success" : "text-destructive")}>
+          <p className={cn("min-w-0 whitespace-pre-wrap break-words text-[13px] font-medium", result.ok ? "text-success" : "text-destructive")}>
             {result.text}
           </p>
           {/* Only after an INSTALL or UPDATE: a removal that ended with "press ;
