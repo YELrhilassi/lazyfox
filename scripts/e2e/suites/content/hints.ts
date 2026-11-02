@@ -1004,6 +1004,101 @@ export async function run(ctx: any): Promise<void> {
     }
     await ctx.press(ctx.tabA, "Escape");
   });
+  // THE PLACEMENT AUDIT, across every hint fixture at once. The per-fixture
+  // tests above each pin one stacked-layout SEMANTIC (occlusion, dialogs,
+  // clipping); this one walks the whole set and pins the GEOMETRY of whatever
+  // batch the engine actually placed there:
+  //
+  //   * every label box is inside the viewport — a label at x=-8 or past the
+  //     right edge is a paint defect no per-fixture assertion happens to catch;
+  //   * no two label boxes overlap, pairing each page's real batch (the
+  //     /uitest test does it for that page's layout only);
+  //   * each label still reads as belonging to its control: its box centre sits
+  //     inside the element rect or within the fallback lattice's reach (~57px
+  //     diag, see overlay's NUDGES), so a hint cannot drift onto the
+  //     neighbouring element it does not activate;
+  //   * the batch is never empty on a page rich in visible controls.
+  //
+  // Boxes come from the hint host (#lazyfox-hints) so they are real paint
+  // geometry, not the collected positions. Screenshot per page, so a human can
+  // eyeball the same numbers.
+  await t("link hints: placement audit across every stacked fixture", async () => {
+    const PAGES = ["/uitest", "/hintlayers", "/dialog", "/hintwash", "/press", "/playerlike", "/ytcard"];
+    const LATTICE_REACH = 40 * Math.SQRT2 + 16; // outermost nudge diag + label slack
+    const report: string[] = [];
+    for (const route of PAGES) {
+      await ctx.gotoPage(ctx.tabA, `${ctx.base}${route}`);
+      await pageSettled();
+      await beginHints();
+      const snap = await hintSnapshot();
+      const rows = snap.positions || [];
+      const boxes = snap.boxes || [];
+      assert(boxes.length > 0, `${route}: the engine placed no labels on a page full of controls`);
+      assert(
+        boxes.length === rows.length,
+        `${route}: one box per placed hint (${boxes.length} boxes vs ${rows.length} rows)`,
+      );
+      const vw = (await evalIn(ctx.tabA, "window.innerWidth")) || 1070;
+      const vh = (await evalIn(ctx.tabA, "window.innerHeight")) || 900;
+      for (const b of boxes) {
+        assert(
+          b.l >= -2 && b.t >= -2 && b.r <= vw + 2 && b.b <= vh + 2,
+          `${route}: label ${b.key} painted outside the viewport (${JSON.stringify(b)})`,
+        );
+      }
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          const a = boxes[i];
+          const b = boxes[j];
+          const overlap = a.l < b.r + 1 && a.r > b.l - 1 && a.t < b.b + 1 && a.b > b.t - 1;
+          assert(!overlap, `${route}: hint labels ${a.key} and ${b.key} overlap`);
+        }
+      }
+      // The anchoring check: element rects by anchor position (rows carry the
+      // element's own top-left), then the placed box centre must be on the
+      // element or within the fallback lattice's reach of it.
+      const anchors = await evalIn(
+        ctx.tabA,
+        `(function(){ var out={};
+           const collect = (name) => { var r = name.getBoundingClientRect();
+             out[name.getAttribute("data-id")] = r.toJSON(); out[name.id] = r.toJSON(); };
+           document.querySelectorAll("[data-id]").forEach(collect);
+           document.querySelectorAll("[id]").forEach((el) => {
+             if (out[el.id] === undefined) collect(el);
+           });
+           return out; })()`,
+      );
+      let anchored = 0;
+      let checked = 0;
+      for (const row of rows) {
+        const box = boxes.find((b) => b.key === row.key);
+        const name = (row.id || row.dataId || "") as string;
+        const rect = anchors[name];
+        if (!box || !rect) continue;
+        checked++;
+        const cx = (box.l + box.r) / 2;
+        const cy = (box.t + box.b) / 2;
+        const on = cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom;
+        const near =
+          cx >= rect.left - LATTICE_REACH && cx <= rect.right + LATTICE_REACH &&
+          cy >= rect.top - LATTICE_REACH && cy <= rect.bottom + LATTICE_REACH;
+        if (on || near) anchored++;
+        else assert(
+          false,
+          `${route}: label ${row.key} for ${name} parked too far from its control (box ${JSON.stringify(box)}, rect ${JSON.stringify(rect)})`,
+        );
+      }
+      assert(
+        checked >= boxes.length / 2,
+        `${route}: only ${checked}/${boxes.length} labels could be mapped to a named control — the fixture or the mapping is broken`,
+      );
+      report.push(`${route}: ${boxes.length} labels, all in-viewport, ${anchored}/${checked} on-or-near their control`);
+      const file = process.platform === "win32" ? `.tmp-place-${route.replace(/\W+/g, "_")}.png` : `./.tmp-place-${route.replace(/\W+/g, "_")}.png`;
+      await captureScreenshot(ctx.tabA, file, ctx.signal).catch(() => "");
+      await ctx.press(ctx.tabA, "Escape");
+    }
+    for (const line of report) console.log("   [placement audit] " + line);
+  });
   await t("link hints: activating never scrolls the page (button and input)", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
     // Park the button just under the fixed header, the exact case where the old

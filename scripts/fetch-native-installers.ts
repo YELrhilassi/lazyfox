@@ -31,7 +31,7 @@ const runId = runIdx !== -1 ? Number(argv[runIdx + 1]) : null;
 // the API — it wants a real ref name — so this points the dispatch at master,
 // the only branch the release build is meant to run on).
 const refIdx = argv.indexOf("--ref");
-const ref = refIdx !== -1 ? argv[refIdx + 1] : "HEAD";
+const ref = refIdx !== -1 ? (argv[refIdx + 1] ?? "HEAD") : "HEAD";
 
 const self = fileURLToPath(import.meta.url);
 if (process.argv[1] !== self && !process.argv[1]?.endsWith("fetch-native-installers.ts")) {

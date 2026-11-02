@@ -70,21 +70,21 @@ func Run(src *payload.Source, rep Reporter, o InstallOptions, pw PasswordProvide
 	}
 
 	// 1. Stop Firefox on this profile so the .xpi / extensions.json can be
-	//    replaced and the add-on enabled. If Firefox is STILL holding the
-	//    profile after the stop attempt, abort before touching anything:
-	//    writing over a running Firefox leaves the profile half-installed and
-	//    the .xpi write fails with Windows' ERROR_USER_MAPPED_FILE.
-	if !o.NoStop {
-		rep.Note("Checking if this profile is in use…")
-		if platform.ProfileLocked(profileDir) || RunningForProfile(profileDir) {
-			rep.Step("Closing Firefox…")
-			if platform.StopFirefoxForProfile(profileDir) > 0 {
-				time.Sleep(2 * time.Second)
-			}
-			if platform.ProfileLocked(profileDir) {
-				return fmt.Errorf("Firefox did not close.\n" +
-					"Quit it completely, then run the installer again.")
-			}
+	//    replaced and the add-on enabled. The stop asks politely first (a real
+	//    window close, SIGTERM) and only then terminates; the VERDICT afterwards
+	//    is not "does the lock file look held" but "is a live Firefox still
+	//    holding this profile" (RunningForProfile). Lock files deliberately
+	//    outlive Firefox — its own source keeps them for the crash-detection
+	//    timestamp — and any program can hold one for a moment, so judging by
+	//    the file aborted installs while no browser was running at all. If
+	//    nothing live holds the profile, nothing can be writing it and the run
+	//    proceeds; if something does, nothing has been touched yet, and the
+	//    message says what to do about it.
+	if !o.NoStop && RunningForProfile(profileDir) {
+		rep.Step("Closing Firefox…")
+		platform.StopFirefoxForProfile(profileDir)
+		if RunningForProfile(profileDir) {
+			return errFirefoxStillOpen()
 		}
 	}
 
@@ -252,7 +252,7 @@ func installExtension(src *payload.Source, rep Reporter, profileDir string, o In
 
 	extJSON := filepath.Join(profileDir, fx.ExtensionsJSONName)
 	if platform.Exists(extJSON) {
-		if platform.ProfileLocked(profileDir) || RunningForProfile(profileDir) {
+		if RunningForProfile(profileDir) {
 			rep.Note("Profile in use; quit Firefox and re-run to enable Lazyfox.")
 			return false, nil
 		}
