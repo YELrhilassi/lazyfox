@@ -1150,6 +1150,29 @@ export async function run(ctx: any): Promise<void> {
     assert(bottom.indexOf("visible-link") === -1, "the stale top-section hint is gone after scrolling");
     await ctx.press(ctx.tabA, "Escape");
   });
+  // THE ROOT'S OWN BOX IS NOT A CLIP RECTANGLE (x.com): the clip walk clipped a
+  // candidate by `documentElement.getBoundingClientRect()`, which is the document
+  // at -scrollY, so once the page was scrolled past one viewport the visible rect
+  // of every control came back empty — each one reported "behind something" and
+  // `;f` said "no hints in view". Only a page that declares overflow on <html>
+  // hits it, which is the "some sites" in the report.
+  await t("link hints: a page that scrolls on its root element is hinted after scrolling", async () => {
+    await ctx.gotoPage(ctx.tabA, `${ctx.base}/rootscroll`);
+    await evalIn(ctx.tabA, `window.scrollTo(0, 0); true`);
+    await scrollDone(0);
+    await beginHints();
+    const top = (await readHints()).map((x) => x.id || x.dataId);
+    assert(top.indexOf("top-link") !== -1, "the top link is hinted at the top");
+    await evalIn(ctx.tabA, `window.scrollTo(0, document.body.scrollHeight); true`);
+    const lower = await waitFor(async () => {
+      const ids = (await readHints()).map((x) => x.id || x.dataId);
+      return ids.indexOf("lower-link") !== -1 ? ids : null;
+    }, 6000).catch(async (e) => {
+      throw new Error(String((e && (e as Error).message) || e) + " — " + (await hintDiag()));
+    });
+    assert(lower.indexOf("top-link") === -1, "the stale top-section hint is gone after scrolling");
+    await ctx.press(ctx.tabA, "Escape");
+  });
   await t("link hints: a dense grid yields unique, capped hints", async () => {
     await ctx.gotoPage(ctx.tabA, `${ctx.base}/uitest`);
     // Bring the 100-button grid into view.

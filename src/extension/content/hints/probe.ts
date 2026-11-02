@@ -268,6 +268,23 @@ function visibleRect(el: Element, viewport: { width: number; height: number }): 
     cur = composedParentOf(el);
     for (; cur && hops < 512; hops++, cur = composedParentOf(cur)) {
     try {
+      // THE ROOT ELEMENT IS NOT A CLIP BOX HERE.
+      //
+      // Its getBoundingClientRect() is the initial containing block, positioned
+      // at the DOCUMENT origin: on a scrolled page its `top` is `-scrollY`, while
+      // `clientHeight` is the viewport's. Clipping by that pair describes a band
+      // that has already scrolled off the top of the screen, so once the page is
+      // scrolled past one viewport EVERY candidate's visible rect came back empty
+      // — on any page that declares `overflow` on <html> (x.com sets
+      // `overflow-y: scroll`; so do most app shells) every control then read as
+      // `behind` something and `;f` answered "no hints in view". Pages that leave
+      // the root `visible` were unaffected, which is why it looked like "some
+      // sites". (Reproduced in the e2e fixture by adding that one declaration to
+      // the hints page: the scrolled batch went from labelled to empty.)
+      //
+      // The root's scrollport IS the viewport, and that intersection is already
+      // the base of `clipped` above, so there is nothing left for it to clip.
+      if (docEl && cur === docEl) continue;
       const cs = styleOf(cur);
       if (!cs) return null;
       // The propagated body: its overflow values are the viewport's and its own
