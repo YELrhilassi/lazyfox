@@ -2241,5 +2241,11 @@
     "group": "content",
     "runs": 1,
     "passes": 1
+  },
+  "content/hints › link hints: a page that scrolls on its root element is hinted after scrolling": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
   }
 }
