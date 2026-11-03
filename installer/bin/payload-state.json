@@ -45,49 +45,49 @@
       "source": "8dfee4768da12a7b978c90f35a69fbb670a237b50995801a38768797a47acf6d",
       "bin": "58818d2adebd8c08a9ac1fefa3b19086067b588cf416131b60c6396585043a8b"
     },
-    "lazyfox-install-dev-linux-0.5.21": {
-      "out": "lazyfox-install-dev-linux-0.5.21",
+    "lazyfox-install-dev-linux-0.5.22": {
+      "out": "lazyfox-install-dev-linux-0.5.22",
       "channel": "nightly",
       "goos": "linux",
       "arch": "amd64",
-      "xpi": "dist/lazyfox2-0.5.21.xpi",
-      "xpiVersion": "0.5.21",
-      "payload": "e421848c4dd36c896ac95df5e19cac952cc23c90eb7a404694c6059380e2f854",
-      "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "5ad121acdac486dfa36119c79a57eb2a9d633904110ae094efc890c61fedb279"
+      "xpi": "dist/lazyfox2-0.5.22.xpi",
+      "xpiVersion": "0.5.22",
+      "payload": "f31713e99fe846cfcdf18d868ae6b264a94ff2840925192ec9e7b8fffb7d5fef",
+      "source": "d0b53f9cc277357ae4fa6dcf39bf4acbc4c278aade71263becba26d78c0442b0",
+      "bin": "54a8baac6ef90bdd6da612714f6d9b14686fec374693247fb644920d207a29c6"
     },
-    "lazyfox-install-dev-linux-tui-0.5.21": {
-      "out": "lazyfox-install-dev-linux-tui-0.5.21",
+    "lazyfox-install-dev-linux-tui-0.5.22": {
+      "out": "lazyfox-install-dev-linux-tui-0.5.22",
       "channel": "nightly",
       "goos": "linux",
       "arch": "amd64",
-      "xpi": "dist/lazyfox2-0.5.21.xpi",
-      "xpiVersion": "0.5.21",
-      "payload": "e421848c4dd36c896ac95df5e19cac952cc23c90eb7a404694c6059380e2f854",
-      "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "5ad121acdac486dfa36119c79a57eb2a9d633904110ae094efc890c61fedb279"
+      "xpi": "dist/lazyfox2-0.5.22.xpi",
+      "xpiVersion": "0.5.22",
+      "payload": "f31713e99fe846cfcdf18d868ae6b264a94ff2840925192ec9e7b8fffb7d5fef",
+      "source": "d0b53f9cc277357ae4fa6dcf39bf4acbc4c278aade71263becba26d78c0442b0",
+      "bin": "54a8baac6ef90bdd6da612714f6d9b14686fec374693247fb644920d207a29c6"
     },
-    "lazyfox-install-dev-darwin-0.5.21": {
-      "out": "lazyfox-install-dev-darwin-0.5.21",
+    "lazyfox-install-dev-darwin-0.5.22": {
+      "out": "lazyfox-install-dev-darwin-0.5.22",
       "channel": "nightly",
       "goos": "darwin",
       "arch": "arm64",
-      "xpi": "dist/lazyfox2-0.5.21.xpi",
-      "xpiVersion": "0.5.21",
-      "payload": "e421848c4dd36c896ac95df5e19cac952cc23c90eb7a404694c6059380e2f854",
-      "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "1de417452ffb457de7b9a27b4b50cfcfb5d667d3d6d6fcf39294e6123747de83"
+      "xpi": "dist/lazyfox2-0.5.22.xpi",
+      "xpiVersion": "0.5.22",
+      "payload": "f31713e99fe846cfcdf18d868ae6b264a94ff2840925192ec9e7b8fffb7d5fef",
+      "source": "d0b53f9cc277357ae4fa6dcf39bf4acbc4c278aade71263becba26d78c0442b0",
+      "bin": "20ad471d7aafe4b5ec8121777d82fb3dfafedecc4f31163135c99b8963bacdba"
     },
-    "lazyfox-install-dev-windows-0.5.21.exe": {
-      "out": "lazyfox-install-dev-windows-0.5.21.exe",
+    "lazyfox-install-dev-windows-0.5.22.exe": {
+      "out": "lazyfox-install-dev-windows-0.5.22.exe",
       "channel": "nightly",
       "goos": "windows",
       "arch": "amd64",
-      "xpi": "dist/lazyfox2-0.5.21.xpi",
-      "xpiVersion": "0.5.21",
-      "payload": "e421848c4dd36c896ac95df5e19cac952cc23c90eb7a404694c6059380e2f854",
-      "source": "7fb7ce8e4250979ab8df636e7a2c33a3c69f2100fef493b99aefb12e941c33db",
-      "bin": "019da47a791ba580ae3aa15c6353521963180700c142d7f8389eccb33c2a543b"
+      "xpi": "dist/lazyfox2-0.5.22.xpi",
+      "xpiVersion": "0.5.22",
+      "payload": "f31713e99fe846cfcdf18d868ae6b264a94ff2840925192ec9e7b8fffb7d5fef",
+      "source": "d0b53f9cc277357ae4fa6dcf39bf4acbc4c278aade71263becba26d78c0442b0",
+      "bin": "087bd30ac628f0f4ab55b84730f0656e67c9ada46dd107efea82194310c1c290"
     }
   }
 }
