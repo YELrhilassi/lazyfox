@@ -220,8 +220,16 @@ jobs:
           set -euo pipefail
           channel=""; [ "${{ inputs.release }}" = "true" ] || channel="-dev"
           prefix="lazyfox-install${channel}-linux"
-          bin=$(ls installer/bin/${prefix}-* | grep -v -- '-tui-' | head -n 1)
           version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('dist/extension/manifest.json','utf8')).version)")
+          # THE BINARY IS NAMED, NEVER GLOBBED. `ls ${prefix}-*` also matched a
+          # PREVIOUS release's AppImage still committed in the tree (…-linux-0.5.21
+          # .AppImage sorts before …-linux-0.5.22), so the packager was handed an
+          # AppImage: ldd said "not a dynamic executable", the webkit soname came
+          # back empty, and the step died with an empty libwebkit2gtk- on a run
+          # whose GUI binary had built perfectly. Name what this build produced,
+          # and fail loudly if the build did not produce it.
+          bin="installer/bin/${prefix}-${version}"
+          [ -f "$bin" ] || { echo "no GUI binary at $bin — this build produced none for ${version}"; exit 1; }
           # PACKING NEEDS THE HOST'S WEBKIT: package-appimage.sh copies the
           # WebKitWebProcess / WebKitNetworkProcess helper directory out of the
           # installed library's libexec path and byte-patches the baked absolute
@@ -246,6 +254,9 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          channel=""; [ "${{ inputs.release }}" = "true" ] || channel="-dev"
+          prefix="lazyfox-install${channel}-linux"
+          version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('dist/extension/manifest.json','utf8')).version)")
           webkit_pkgs="$(dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | grep '^libwebkit2gtk' || true)"
           if [ -n "$webkit_pkgs" ]; then
             sudo apt-get purge -y $webkit_pkgs || sudo dpkg -P --force-all $webkit_pkgs || sudo dpkg -r --force-all $webkit_pkgs || true
@@ -255,7 +266,10 @@ jobs:
             exit 1
           fi
           echo "no host WebKitGTK remains — the bundle is all the window gets"
-          appimg=$(ls installer/bin/*.AppImage | head -n 1)
+          # Named, for the reason the packaging step spells out: a glob here once
+          # selected the previous release's AppImage and smoked the wrong file.
+          appimg="installer/bin/${prefix}-${version}.AppImage"
+          [ -f "$appimg" ] || { echo "no AppImage at $appimg"; exit 1; }
           # Actions runs this script with `bash -e -o pipefail`, so the
           # TIMEOUT KILL's 124 — the SUCCESS signal this gate waits for —
           # must be captured by the guarded command itself; a bare
