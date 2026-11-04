@@ -1585,8 +1585,8 @@
   "content/field › ;i focuses the composer, not the first small field": {
     "status": "pass",
     "group": "content",
-    "runs": 11,
-    "passes": 11
+    "runs": 12,
+    "passes": 12
   },
   "content/field › a large video surface is hinted, and its key reaches the player": {
     "status": "pass",
@@ -2143,8 +2143,8 @@
   "content/field › Escape leaves a composer that takes its caret back": {
     "status": "pass",
     "group": "content",
-    "runs": 1,
-    "passes": 1
+    "runs": 2,
+    "passes": 2
   },
   "content/setup › setup page: a newer published installer is one quiet line, and silence otherwise": {
     "status": "pass",
@@ -2243,6 +2243,12 @@
     "passes": 1
   },
   "content/hints › link hints: a page that scrolls on its root element is hinted after scrolling": {
+    "status": "pass",
+    "group": "content",
+    "runs": 1,
+    "passes": 1
+  },
+  "content/field › a composer that takes its caret back EVERY time cannot spin the page": {
     "status": "pass",
     "group": "content",
     "runs": 1,

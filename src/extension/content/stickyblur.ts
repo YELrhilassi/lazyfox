@@ -23,10 +23,26 @@
 
 import { blurTypingFocus, deepTypingFocus } from "../../shared/dom";
 
+// AND IT IS BOUNDED IN TAKES, NOT ONLY IN TIME. Measured on WhatsApp Web
+// (2026-11-04, Firefox Profiler capture of the freeze): the composer re-takes
+// the caret from ITS OWN blur handler on every blur, so one Escape turned the
+// trap and the page into a fight at ~240 rounds/second — 1,213 focus/blur
+// rounds in five seconds, each round a whole-document style invalidation plus a
+// `syncTyping` message to the browser, which is 99% CPU in the tab, a gigabyte
+// of retained style data, and a machine whose keyboard answers nowhere until it
+// stops. A page that refocuses SYNCHRONOUSLY (inside our own blur) is worse
+// still: blur -> focusin -> trap -> blur, straight down the stack.
+//
+// So the trap never re-enters itself, and it gives up after KEEP_OUT_TAKES
+// attempts. Losing the caret to a page that insists on keeping it is a field
+// the user can click out of; the alternative is a browser that stops
+// responding, which is not a trade this helper is allowed to make.
+//
 // Long enough to outlast a page's own blur handler, its `setTimeout(…, 0)` and
 // a framework's rAF/effect pass; short enough that nothing a user does inside
 // two keystrokes is overruled.
 const KEEP_OUT_MS = 350;
+const KEEP_OUT_TAKES = 3;
 
 export interface StickyBlur {
   /**
@@ -80,6 +96,15 @@ export function createStickyBlur(): StickyBlur {
 
     install();
     const pressedAt = Date.now();
+    // How many times THIS gesture has taken the caret back; reset per leave(),
+    // so each press gets its own budget.
+    let takes = 0;
+    // True while our own blur() is on the stack. A page that refocuses from its
+    // blur handler synchronously dispatches focusin before blur() returns, so
+    // re-entering the trap there is recursion, not a round the page can lose.
+    let blurring = false;
+    // One deferred retry at a time (see the blurring branch in trap).
+    let retryQueued = false;
     const stillThere = (): boolean => {
       try {
         return deepTypingFocus(document.activeElement) === target;
@@ -105,10 +130,39 @@ export function createStickyBlur(): StickyBlur {
       // another field taking focus is the page doing something the user can
       // see, and is none of this helper's business.
       if (!stillThere()) return;
+      // Re-entered from our own blur(): the page took the caret back before
+      // blur() even returned. Recursing here would grow the stack rather than
+      // move the caret, so the retry goes on the NEXT task — still inside this
+      // gesture's budget, so a strict focus trap is answered exactly as often
+      // as an asynchronous one, and no more.
+      if (blurring) {
+        if (takes < KEEP_OUT_TAKES && !retryQueued) {
+          retryQueued = true;
+          try {
+            setTimeout(() => {
+              retryQueued = false;
+              trap();
+            }, 0);
+          } catch (err) {
+            // no timers: the take we already spent stands
+          }
+        }
+        return;
+      }
+      // A page that puts the caret back every single time cannot be outrun.
+      // Stand down for this gesture instead of spinning the document.
+      if (takes >= KEEP_OUT_TAKES) {
+        stop();
+        return;
+      }
+      takes++;
+      blurring = true;
       try {
         (target as HTMLElement).blur();
       } catch (err) {
         // A hostile element must not break the trap.
+      } finally {
+        blurring = false;
       }
     }
     try {

@@ -325,6 +325,70 @@ export async function run(ctx: any): Promise<void> {
   );
 
   await t(
+    "a composer that takes its caret back EVERY time cannot spin the page",
+    async () => {
+      // THE FREEZE (2026-11-04, Firefox Profiler capture of WhatsApp Web):
+      // the composer re-took the caret from its OWN blur handler on every
+      // blur, and the sticky trap answered each take with another blur. The
+      // capture measured 1,213 focus/blur rounds in five seconds, every round
+      // carrying a whole-document style invalidation and a `syncTyping`
+      // message to the browser: 99% CPU in the tab, a gigabyte of retained
+      // style data, and a machine whose keyboard answered nowhere.
+      //
+      // The trap is bounded in TAKES now (stickyblur.ts, KEEP_OUT_TAKES), so
+      // the fight ends after a few rounds. Both halves are asserted: the count
+      // stays small, and the count STOPS GROWING — a bound that merely slowed
+      // the loop down would still burn the machine.
+      await ctx.gotoPage(ctx.tabA, `${ctx.base}/escapes`);
+      await settled();
+      await evalIn(
+        ctx.tabA,
+        `window.__refocus = 1e9; document.getElementById("composer").focus(); true`
+      );
+      await ctx.typeIn(ctx.tabA, "hello");
+      await ctx.press(ctx.tabA, "Escape");
+      const read = async () =>
+        JSON.parse(
+          String(
+            await evalIn(
+              ctx.tabA,
+              `JSON.stringify({ blurs: window.__composerBlurs, escapes: window.__escapes })`
+            )
+          )
+        );
+      // Past the trap's window and the page's refocus timers.
+      await new Promise((r) => setTimeout(r, 900));
+      const first = await read();
+      await new Promise((r) => setTimeout(r, 600));
+      const second = await read();
+      assert(
+        second.blurs <= 6,
+        "a composer that refocuses forever must not be blurred forever — the trap is bounded " +
+          "in takes, and every round it fights costs the whole document a style invalidation " +
+          "(saw " +
+          second.blurs +
+          " blurs)"
+      );
+      assert(
+        second.blurs === first.blurs,
+        "the fight must be OVER, not merely slower: the blur count kept growing after the " +
+          "trap's window (" +
+          first.blurs +
+          " -> " +
+          second.blurs +
+          ")"
+      );
+      assert(
+        second.escapes === 0,
+        "the press stays consumed: the page's own Escape action (close the chat) is not what " +
+          "leaving a field means (saw " +
+          second.escapes +
+          ")"
+      );
+    }
+  );
+
+  await t(
     "Escape with nothing to clean is the page's, first press",
     async () => {
       // The other end of the ladder, on a page where the caret is nowhere near a
