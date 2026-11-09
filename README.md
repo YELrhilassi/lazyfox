@@ -2,7 +2,7 @@
   <img alt="Lazyfox" src="docs/img/lazyfox-logo.svg" width="520">
 </p>
 
-Lazyfox is Firefox with the browser UI removed.
+Lazyfox is a keyboard-first Firefox.
 
 No tab strip, no address bar, no menus. Pages get the whole window. A thin bar
 along the bottom shows the current session, your place in the tab list, running

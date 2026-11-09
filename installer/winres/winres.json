@@ -46,7 +46,7 @@
         },
         "info": {
           "0409": {
-            "Comments": "Keyboard-first, UI-free Firefox installer",
+            "Comments": "Keyboard-first Firefox installer",
             "CompanyName": "Lazyfox",
             "FileDescription": "Lazyfox Installer",
             "FileVersion": "0.5.7.0",

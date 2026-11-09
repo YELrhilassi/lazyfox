@@ -445,7 +445,7 @@ export async function signXpi(
   if (!processed) throw new Error("upload still processing after 180s");
 
   const version = { upload: uuid, license, channel: "listed" };
-  const body = known ? version : { version, categories: { firefox: [category] }, name: { "en-US": "Lazyfox" }, summary: { "en-US": "Keyboard-first, UI-free Firefox: leader-key navigation, link hints, sessions, find-in-page with yank, and a status bar." } };
+  const body = known ? version : { version, categories: { firefox: [category] }, name: { "en-US": "Lazyfox" }, summary: { "en-US": "Keyboard-first Firefox: leader-key navigation, link hints, sessions, find-in-page with yank, and a status bar." } };
   const target = known ? `/addons/addon/${g}/versions/` : `/addons/addon/${g}/`;
   const ver = await api(target, {
     method: known ? "POST" : "PUT",

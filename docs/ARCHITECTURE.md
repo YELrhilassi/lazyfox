@@ -6,7 +6,7 @@ big picture and works down to the files.
 
 ## The big picture
 
-Lazyfox is Firefox with the browser UI stripped away and replaced by a
+Lazyfox is a keyboard-first Firefox: the browser's own UI is replaced by a
 keyboard-driven interface. Two pieces make that work:
 
 1. **A profile patch** (`userChrome.css` + a small chrome helper). Firefox
