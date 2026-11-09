@@ -1,0 +1,20 @@
+{
+  // Typecheck for the build-side files: vite.config.ts and the prerender step.
+  // They run under Node, are not part of the bundle, and config.mjs is plain JS
+  // (it is imported by both, so it must stay tsc-free).
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"]
+  },
+  "include": ["vite.config.ts", "scripts/**/*.mjs"]
+}
