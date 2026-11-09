@@ -1,6 +1,0 @@
-node_modules/
-dist/
-# The SSR bundle: build output of `vite build --ssr`, read once by prerender.
-.ssr/
-# The dev server's pid record, written when it is started from a tool.
-.vite.pid
